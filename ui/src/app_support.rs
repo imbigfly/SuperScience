@@ -1,6 +1,6 @@
 use super::{
-    HOME_SEARCH_ARTIFACT_LIMIT, HOME_SEARCH_PROJECT_LIMIT, HOME_SEARCH_SESSION_LIMIT,
-    THEME_STORAGE_KEY, window_capture_escape,
+    window_capture_escape, HOME_SEARCH_ARTIFACT_LIMIT, HOME_SEARCH_PROJECT_LIMIT,
+    HOME_SEARCH_SESSION_LIMIT, THEME_STORAGE_KEY,
 };
 use crate::bindings::{
     attach_cropped_region, crop_region_to_upload, invoke, invoke_checked, is_mac, mount_preview,
@@ -14,8 +14,7 @@ use crate::text::{
     is_external_href, is_separator, is_table_row, md_document_to_html, md_inline_to_html,
     md_to_html, next_artifact_id, normalize_path, opens_in_system_browser, parent_path,
     parse_csv_line, parse_notebook, pretty_json, provider_defaults, provider_value, split_row,
-    tool_card_label, tool_lang, unique_dom_id,
-    user_message_presentation, NbOutput, Notebook,
+    tool_card_label, tool_lang, unique_dom_id, user_message_presentation, NbOutput, Notebook,
 };
 use leptos::{ev, window_event_listener, *};
 use serde_wasm_bindgen::to_value;
@@ -223,6 +222,7 @@ pub(super) enum ComposerPickerItem {
         name: String,
     },
     Skill(SkillRow),
+    Workflow(WorkflowTemplate),
     Context {
         id: String,
         label: String,
@@ -250,6 +250,10 @@ pub(super) enum ComposerReferenceChip {
         name: String,
     },
     Skill {
+        name: String,
+    },
+    Workflow {
+        id: String,
         name: String,
     },
     Context {
@@ -336,6 +340,7 @@ impl ComposerReferenceChip {
             Self::Session { id, .. } => format!("session:{id}"),
             Self::Project { id, .. } => format!("project:{id}"),
             Self::Skill { name } => format!("skill:{name}"),
+            Self::Workflow { id, .. } => format!("workflow:{id}"),
             Self::Context { id, .. } => format!("context:{id}"),
             Self::Runtime {
                 context_id,
@@ -347,7 +352,9 @@ impl ComposerReferenceChip {
 
     pub(super) fn label(&self) -> String {
         match self {
-            Self::Artifact { name, .. } | Self::Skill { name } => name.clone(),
+            Self::Artifact { name, .. }
+            | Self::Skill { name }
+            | Self::Workflow { name, .. } => name.clone(),
             Self::Session {
                 title,
                 project_name,
@@ -369,6 +376,7 @@ impl ComposerReferenceChip {
             Self::Session { .. } => "session",
             Self::Project { .. } => "project",
             Self::Skill { .. } => "skill",
+            Self::Workflow { .. } => "workflow",
             Self::Context { .. } => "context",
             Self::Runtime { .. } => "runtime",
         }
@@ -380,6 +388,7 @@ impl ComposerReferenceChip {
             Self::Session { id, .. } => ComposerReferenceArg::Session { id: id.clone() },
             Self::Project { id, .. } => ComposerReferenceArg::Project { id: id.clone() },
             Self::Skill { name } => ComposerReferenceArg::Skill { name: name.clone() },
+            Self::Workflow { id, .. } => ComposerReferenceArg::Workflow { id: id.clone() },
             Self::Context { id, .. } => ComposerReferenceArg::Context { id: id.clone() },
             Self::Runtime {
                 context_id,
@@ -2851,6 +2860,7 @@ pub(super) fn message_with_composer_context(
     let mut sessions = Vec::new();
     let mut projects = Vec::new();
     let mut skills = Vec::new();
+    let mut workflows = Vec::new();
     let mut contexts = Vec::new();
     let mut runtimes = Vec::new();
     for reference in references {
@@ -2863,6 +2873,7 @@ pub(super) fn message_with_composer_context(
             } => sessions.push(format!("{project_name} / {title}")),
             ComposerReferenceChip::Project { name, .. } => projects.push(name.clone()),
             ComposerReferenceChip::Skill { name } => skills.push(name.clone()),
+            ComposerReferenceChip::Workflow { name, .. } => workflows.push(name.clone()),
             ComposerReferenceChip::Context { label, .. } => contexts.push(label.clone()),
             ComposerReferenceChip::Runtime { .. } => runtimes.push(reference.label()),
         }
@@ -2872,6 +2883,7 @@ pub(super) fn message_with_composer_context(
         ("Attached sessions", sessions),
         ("Project context", projects),
         ("Selected skills", skills),
+        ("Selected workflows", workflows),
         ("Target environments", contexts),
         ("Target runtimes", runtimes),
     ] {
@@ -4042,6 +4054,10 @@ mod start_user_turn_tests {
             ComposerReferenceChip::Skill {
                 name: "bear-review".into(),
             },
+            ComposerReferenceChip::Workflow {
+                id: "roundtable".into(),
+                name: "Roundtable".into(),
+            },
             ComposerReferenceChip::Context {
                 id: "ssh:cpu1".into(),
                 label: "CPU1".into(),
@@ -4059,7 +4075,7 @@ mod start_user_turn_tests {
                 &refs,
                 &[]
             ),
-            "Compare these\n\nUploaded files: uploads/plot.png\n\nAttached artifacts: counts.csv\n\nAttached sessions: Atlas / QC review\n\nProject context: Atlas\n\nSelected skills: bear-review\n\nTarget environments: CPU1\n\nTarget runtimes: R · Local"
+            "Compare these\n\nUploaded files: uploads/plot.png\n\nAttached artifacts: counts.csv\n\nAttached sessions: Atlas / QC review\n\nProject context: Atlas\n\nSelected skills: bear-review\n\nSelected workflows: Roundtable\n\nTarget environments: CPU1\n\nTarget runtimes: R · Local"
         );
     }
 
@@ -4250,7 +4266,10 @@ mod start_user_turn_tests {
                 model: None,
                 resources: Vec::new(),
             },
-            ChatItem::QueuedUser { id: 1, text: "queued".into() },
+            ChatItem::QueuedUser {
+                id: 1,
+                text: "queued".into(),
+            },
         ];
 
         assert_eq!(trailing_queue_start(&items), 2);
@@ -4393,7 +4412,10 @@ mod start_user_turn_tests {
                 reasoning: 0,
                 cached: 0,
             },
-            ChatItem::QueuedUser { id: 1, text: "next".into() },
+            ChatItem::QueuedUser {
+                id: 1,
+                text: "next".into(),
+            },
         ];
 
         assert_eq!(process_item_insert_index(&items), 2);
@@ -4409,7 +4431,10 @@ mod start_user_turn_tests {
                 model: None,
                 resources: Vec::new(),
             },
-            ChatItem::QueuedUser { id: 1, text: display.clone() },
+            ChatItem::QueuedUser {
+                id: 1,
+                text: display.clone(),
+            },
         ];
 
         start_user_turn(&mut items, "图片里有啥文字?".into(), None);
@@ -4431,8 +4456,14 @@ mod start_user_turn_tests {
                 model: None,
                 resources: Vec::new(),
             },
-            ChatItem::QueuedUser { id: 1, text: "queued".into() },
-            ChatItem::QueuedUser { id: 2, text: "later".into() },
+            ChatItem::QueuedUser {
+                id: 1,
+                text: "queued".into(),
+            },
+            ChatItem::QueuedUser {
+                id: 2,
+                text: "later".into(),
+            },
         ];
 
         start_user_turn(&mut items, "queued".into(), Some("model".into()));
@@ -4808,7 +4839,11 @@ pub(super) fn format_message_datetime(ts: i64, locale: Locale) -> String {
     };
     js_sys::Date::new(&JsValue::from_f64(ts_ms))
         .to_locale_string(
-            if locale == Locale::Zh { "zh-CN" } else { "en-US" },
+            if locale == Locale::Zh {
+                "zh-CN"
+            } else {
+                "en-US"
+            },
             &JsValue::UNDEFINED,
         )
         .as_string()
@@ -4893,6 +4928,8 @@ pub(super) fn settings_section_label(loc: Locale, section: &str) -> String {
         "pet" => t(loc, "settings.nav.pet"),
         "environments" => t(loc, "settings.nav.environments"),
         "models" => t(loc, "settings.nav.models"),
+        "quick-actions" => t(loc, "settings.nav.quick_actions"),
+        "workflows" => t(loc, "settings.nav.workflows"),
         "specialists" => t(loc, "settings.nav.specialists"),
         "memory" => t(loc, "settings.nav.memory"),
         "skills" => t(loc, "settings.nav.skills"),
@@ -6121,8 +6158,7 @@ pub(super) fn refresh_folders(folders: RwSignal<Vec<FolderInfo>>) {
 pub(super) fn nest_branch_sessions(
     list: &[SessionInfo],
 ) -> (Vec<SessionInfo>, HashMap<String, Vec<SessionInfo>>) {
-    let by_id: HashMap<&str, &SessionInfo> =
-        list.iter().map(|s| (s.id.as_str(), s)).collect();
+    let by_id: HashMap<&str, &SessionInfo> = list.iter().map(|s| (s.id.as_str(), s)).collect();
     let visible_source = |s: &SessionInfo| -> Option<String> {
         let mut cur = s;
         let mut hops = 0;
@@ -6183,7 +6219,10 @@ mod branch_nesting_tests {
         );
         // Branch-of-a-branch flattens onto the topmost visible source.
         assert_eq!(
-            branches["main"].iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            branches["main"]
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
             ["b1", "b2"]
         );
     }
@@ -8330,7 +8369,7 @@ pub(super) fn ArtifactModal(
     on_close: Callback<()>,
     on_open_center: Callback<ModalArtifact>,
     on_open_path: Callback<(String, String)>, // open an input file (path, kind)
-    on_rerun: Callback<String>, // drop a rerun request into the composer (#455)
+    on_rerun: Callback<String>,               // drop a rerun request into the composer (#455)
     library_items: ReadSignal<Vec<LibraryItem>>,
     on_library_changed: Callback<()>,
 ) -> impl IntoView {
@@ -8569,6 +8608,7 @@ pub(super) fn composer_text_from_user_message(text: &str) -> String {
         "\n\nAttached sessions: ",
         "\n\nProject context: ",
         "\n\nSelected skills: ",
+        "\n\nSelected workflows: ",
         "\n\nTarget environments: ",
         "\n\nTarget runtimes: ",
         "\n\nAI source-edit instruction: ",
@@ -8981,9 +9021,7 @@ pub(super) fn ImageGenerationCard(
         spawn_local(async move {
             match load_file_content(&load_path, loc).await {
                 Ok(file) => match file.base64 {
-                    Some(base64) => {
-                        source.set(Some(format!("data:{};base64,{base64}", file.mime)))
-                    }
+                    Some(base64) => source.set(Some(format!("data:{};base64,{base64}", file.mime))),
                     None => preview_failed.set(true),
                 },
                 Err(_) => preview_failed.set(true),
@@ -9321,13 +9359,18 @@ pub(super) fn UserMessage(
         ("session", "attachment.session", presentation.sessions),
         ("project", "attachment.project", presentation.projects),
         ("skill", "attachment.skill", presentation.skills),
+        (
+            "workflow",
+            "attachment.workflow",
+            presentation.workflows,
+        ),
     ]
     .into_iter()
     .flat_map(|(kind, label_key, items)| {
         items.into_iter().map(move |label| {
             view! {
                 <span class=format!("user-context-card {kind}") data-reference-kind=kind>
-                    <span class="user-context-icon">{compose_icon(if kind == "skill" { "skill" } else if kind == "session" { "chat" } else if kind == "project" { "folder" } else { "doc" })}</span>
+                    <span class="user-context-icon">{compose_icon(if kind == "skill" { "skill" } else if kind == "workflow" { "branch" } else if kind == "session" { "chat" } else if kind == "project" { "folder" } else { "doc" })}</span>
                     <span class="user-context-copy">
                         <span class="user-context-label">{label}</span>
                         <span class="user-context-meta">{move || t(locale.get(), label_key)}</span>
@@ -10751,6 +10794,39 @@ pub(super) fn route_items(
     }
 }
 
+pub(super) fn quick_action_label(locale: Locale, action: &QuickAction) -> String {
+    if action.id == "literature_research" && action.name == "Research literature" {
+        t(locale, "selection.research_literature").into()
+    } else {
+        action.name.clone()
+    }
+}
+
+pub(super) fn selection_popup_x(x: i32) -> i32 {
+    let Some(viewport) = web_sys::window()
+        .and_then(|window| window.inner_width().ok())
+        .and_then(|value| value.as_f64())
+        .map(|value| value.round() as i32)
+    else {
+        return x;
+    };
+    let usable = (viewport - 24).max(0);
+    let half_width = usable.min(720) / 2;
+    x.clamp(half_width, viewport - half_width)
+}
+
+pub(super) fn selection_popup_y(y: i32) -> i32 {
+    let Some(viewport) = web_sys::window()
+        .and_then(|window| window.inner_height().ok())
+        .and_then(|value| value.as_f64())
+        .map(|value| value.round() as i32)
+    else {
+        return y;
+    };
+    let max_y = (viewport - 12).max(0);
+    y.clamp(120.min(max_y), max_y)
+}
+
 /// A dedicated project window (#52) carries `?project=<id>` in its URL. Returns
 /// that id so the window opens straight into the project and skips the landing.
 /// Project ids are UUIDs or "default" — no percent-decoding needed.
@@ -11112,13 +11188,7 @@ pub(super) fn ActionPalette(
                 navigate.clone(),
                 "",
             ),
-            (
-                "library",
-                "star",
-                "command.library",
-                navigate.clone(),
-                "",
-            ),
+            ("library", "star", "command.library", navigate.clone(), ""),
             (
                 "toggle-sidebar",
                 "panel",
@@ -11354,8 +11424,10 @@ pub(super) fn SessionImportModal(
     let import_notice = create_rw_signal(None::<(String, bool)>);
     let expanded_path = create_rw_signal(None::<String>);
     let preview_loading = create_rw_signal(None::<String>);
-    let previews =
-        create_rw_signal(HashMap::<String, Result<Vec<ExternalSessionPreviewLine>, String>>::new());
+    let previews = create_rw_signal(HashMap::<
+        String,
+        Result<Vec<ExternalSessionPreviewLine>, String>,
+    >::new());
 
     let refresh = move |provider: SessionImportProvider, context_id: String, force: bool| {
         scan_epoch.update(|epoch| *epoch += 1);
@@ -11402,8 +11474,7 @@ pub(super) fn SessionImportModal(
             refresh(provider, "local".into(), false);
             spawn_local(async move {
                 let value = invoke("list_execution_contexts", JsValue::UNDEFINED).await;
-                if let Ok(contexts) =
-                    serde_wasm_bindgen::from_value::<Vec<ExecutionContext>>(value)
+                if let Ok(contexts) = serde_wasm_bindgen::from_value::<Vec<ExecutionContext>>(value)
                 {
                     source_contexts.set(contexts);
                 }
@@ -11429,10 +11500,10 @@ pub(super) fn SessionImportModal(
             }))
             .unwrap();
             let result = match invoke_checked(provider.preview_command(), args).await {
-                Ok(value) => serde_wasm_bindgen::from_value::<Vec<ExternalSessionPreviewLine>>(
-                    value,
-                )
-                .map_err(|error| error.to_string()),
+                Ok(value) => {
+                    serde_wasm_bindgen::from_value::<Vec<ExternalSessionPreviewLine>>(value)
+                        .map_err(|error| error.to_string())
+                }
                 Err(error) => Err(localize_backend(
                     locale.get_untracked(),
                     &js_error_text(error),
@@ -11470,9 +11541,8 @@ pub(super) fn SessionImportModal(
                 .unwrap();
                 match invoke_checked(provider.import_command(), args).await {
                     Ok(value) => {
-                        let result =
-                            serde_wasm_bindgen::from_value::<ExternalImportSummary>(value)
-                                .unwrap_or_default();
+                        let result = serde_wasm_bindgen::from_value::<ExternalImportSummary>(value)
+                            .unwrap_or_default();
                         summary.imported += result.imported;
                         summary.updated += result.updated;
                         summary.skipped += result.skipped;

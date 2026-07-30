@@ -1,4 +1,5 @@
 use crate::app_support::{selection_targets_center_file, SessionTransferMode};
+use crate::dto::QuickAction;
 use crate::i18n::{self, Locale};
 use crate::window_capture_escape;
 use leptos::*;
@@ -38,14 +39,8 @@ struct SubmenuAnchor {
     top: f64,
 }
 
-fn submenu_anchor_from_event(
-    item_index: usize,
-    ev: &web_sys::MouseEvent,
-) -> Option<SubmenuAnchor> {
-    let target = ev
-        .current_target()?
-        .dyn_into::<web_sys::Element>()
-        .ok()?;
+fn submenu_anchor_from_event(item_index: usize, ev: &web_sys::MouseEvent) -> Option<SubmenuAnchor> {
+    let target = ev.current_target()?.dyn_into::<web_sys::Element>().ok()?;
     let rect = target.get_bounding_client_rect();
     Some(SubmenuAnchor {
         item_index,
@@ -223,11 +218,7 @@ fn session_move_items(session_id: &str, locale: Locale) -> Vec<CtxItem> {
             .get_attribute("data-folder-name")
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| i18n::t(locale, "folder.untitled"));
-        items.push(item(
-            "moveSession",
-            name,
-            format!("{session_id}\u{1e}{id}"),
-        ));
+        items.push(item("moveSession", name, format!("{session_id}\u{1e}{id}")));
     }
     items
 }
@@ -253,7 +244,14 @@ pub fn session_menu(
         ));
         items.push(item(
             if pinned { "unpinSession" } else { "pinSession" },
-            i18n::t(locale, if pinned { "ctx.unpin_session" } else { "ctx.pin_session" }),
+            i18n::t(
+                locale,
+                if pinned {
+                    "ctx.unpin_session"
+                } else {
+                    "ctx.pin_session"
+                },
+            ),
             session_id.to_string(),
         ));
         items.push(item(
@@ -316,6 +314,7 @@ pub fn build(
     locale: Locale,
     _can_export: bool,
     center_file: Option<&str>,
+    quick_actions: &[QuickAction],
 ) -> Option<CtxMenu> {
     let target = event_target(ev)?;
     let x = ev.client_x() as f64;
@@ -364,24 +363,37 @@ pub fn build(
                 i18n::t(locale, "selection.add_to_chat")
             };
             let quote_payload = format!("{}\u{1e}{text}", source.as_deref().unwrap_or_default());
-            return Some(CtxMenu {
-                x,
-                y,
-                items: vec![
-                    item("copy", i18n::t(locale, "ctx.copy"), text.clone()),
-                    item("quoteSelection", quote_label, quote_payload.clone()),
-                    item(
-                        "quoteSelectionSideChat",
-                        i18n::t(locale, "selection.quote_side_chat"),
-                        quote_payload,
-                    ),
-                    item(
-                        "explainSelection",
-                        i18n::t(locale, "selection.explain"),
-                        text,
-                    ),
-                ],
-            });
+            let mut items = vec![
+                item("copy", i18n::t(locale, "ctx.copy"), text.clone()),
+                item("quoteSelection", quote_label, quote_payload.clone()),
+                item(
+                    "quoteSelectionSideChat",
+                    i18n::t(locale, "selection.quote_side_chat"),
+                    quote_payload,
+                ),
+            ];
+            items.extend(
+                quick_actions
+                    .iter()
+                    .filter(|action| action.enabled && action.context == "selection")
+                    .map(|action| {
+                        item(
+                            "runQuickAction",
+                            crate::app_support::quick_action_label(locale, action),
+                            format!(
+                                "{}\u{1e}{}\u{1e}{text}",
+                                action.id,
+                                source.as_deref().unwrap_or_default()
+                            ),
+                        )
+                    }),
+            );
+            items.push(item(
+                "explainSelection",
+                i18n::t(locale, "selection.explain"),
+                text,
+            ));
+            return Some(CtxMenu { x, y, items });
         }
     }
 

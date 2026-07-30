@@ -635,6 +635,9 @@ async fn composer_references_resolve_non_reader_context() {
         ComposerReferenceArg::Skill {
             name: "test-skill".into(),
         },
+        ComposerReferenceArg::Workflow {
+            id: "roundtable".into(),
+        },
         ComposerReferenceArg::Context {
             id: "ssh:gpu".into(),
         },
@@ -650,6 +653,8 @@ async fn composer_references_resolve_non_reader_context() {
     assert!(injected.contains("data.csv"));
     assert!(!injected.contains("prior result"));
     assert!(injected.contains("Use the test workflow"));
+    assert!(injected.contains("selected the reusable Workflow “Roundtable”"));
+    assert!(injected.contains("\"chair_synthesis\""));
     assert!(injected.contains("GPU (context_id: ssh:gpu, kind: ssh)"));
     assert!(injected.contains("r runtime on GPU (context_id: ssh:gpu)"));
     assert!(resolve_composer_references(
