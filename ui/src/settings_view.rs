@@ -1,10 +1,11 @@
+use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanelState};
 use crate::app_support::{
     allow_drop, build_conn_json, close_details_ancestor, compose_icon, conn_form_from_row,
     context_capability_summary, drag_session_id, focus_element_soon, format_relative_time,
-    join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form, reviewer_backend_key,
-    reviewer_backend_label, reviewer_missing_acp_profile_id, set_reviewer_backend,
-    settings_section_label,
-    settings_subpage_label, skill_matches_filter, start_session_drag, CRED_GROUPS,
+    join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form, quick_action_label,
+    reviewer_backend_key, reviewer_backend_label, reviewer_missing_acp_profile_id,
+    set_reviewer_backend, settings_section_label, settings_subpage_label, skill_matches_filter,
+    start_session_drag, CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
@@ -218,7 +219,10 @@ mod memory_category_tests {
             Some("Projects")
         );
         assert_eq!(memory_category_of("--x.md"), None);
-        assert_eq!(memory_note_label("Projects--2026-07-26.md"), "2026-07-26.md");
+        assert_eq!(
+            memory_note_label("Projects--2026-07-26.md"),
+            "2026-07-26.md"
+        );
         assert_eq!(memory_note_label("2026-07-26.md"), "2026-07-26.md");
     }
 
@@ -393,6 +397,10 @@ pub(super) struct SettingsViewState {
     pub(super) acp_form_msg: RwSignal<Option<(bool, String)>>,
     pub(super) acp_infos: RwSignal<HashMap<String, AcpAgentInfo>>,
     pub(super) specialists: RwSignal<Vec<Specialist>>,
+    pub(super) quick_actions: RwSignal<Vec<QuickAction>>,
+    pub(super) workflow_templates: RwSignal<Vec<WorkflowTemplate>>,
+    pub(super) workflow_studio: AgentPanelState,
+    pub(super) selected_workflow_template: RwSignal<Option<String>>,
     pub(super) specialist_form_open: Memo<bool>,
     pub(super) memory_view: RwSignal<Option<MemoryView>>,
     pub(super) memory_editor: RwSignal<String>,
@@ -492,6 +500,10 @@ pub(super) fn SettingsView(
         acp_form_msg,
         acp_infos,
         specialists,
+        quick_actions,
+        workflow_templates,
+        workflow_studio,
+        selected_workflow_template,
         specialist_form_open,
         memory_view,
         memory_editor,
@@ -551,6 +563,9 @@ pub(super) fn SettingsView(
     // time the Environments section opens.
     let ssh_trust_edges = create_rw_signal(Vec::<SshTrustEdge>::new());
     let trust_cleanup_error = create_rw_signal(None::<String>);
+    let quick_action_form = create_rw_signal(None::<QuickAction>);
+    let quick_action_busy = create_rw_signal(false);
+    let quick_action_error = create_rw_signal(None::<String>);
     window_capture_escape(move || {
         if !show_settings.get_untracked() {
             return false;
@@ -672,10 +687,56 @@ pub(super) fn SettingsView(
             join_busy.set(false);
         });
     };
+    let persist_quick_action = Callback::new(move |action: QuickAction| {
+        if quick_action_busy.get_untracked() {
+            return;
+        }
+        quick_action_busy.set(true);
+        quick_action_error.set(None);
+        spawn_local(async move {
+            let args = serde_json::json!({ "action": action });
+            match invoke_checked("save_quick_action", to_value(&args).unwrap()).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<Vec<QuickAction>>(value) {
+                    Ok(items) => {
+                        quick_actions.set(items);
+                        quick_action_form.set(None);
+                    }
+                    Err(error) => quick_action_error.set(Some(error.to_string())),
+                },
+                Err(error) => quick_action_error.set(Some(js_error_text(error))),
+            }
+            quick_action_busy.set(false);
+        });
+    });
+    let save_quick_action_form = Callback::new(move |_: web_sys::MouseEvent| {
+        let Some(action) = quick_action_form.get_untracked() else {
+            return;
+        };
+        persist_quick_action.call(action);
+    });
+    let remove_quick_action = Callback::new(move |action_id: String| {
+        if quick_action_busy.get_untracked() {
+            return;
+        }
+        quick_action_busy.set(true);
+        quick_action_error.set(None);
+        spawn_local(async move {
+            let args = serde_json::json!({ "actionId": action_id });
+            match invoke_checked("remove_quick_action", to_value(&args).unwrap()).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<Vec<QuickAction>>(value) {
+                    Ok(items) => quick_actions.set(items),
+                    Err(error) => quick_action_error.set(Some(error.to_string())),
+                },
+                Err(error) => quick_action_error.set(Some(js_error_text(error))),
+            }
+            quick_action_busy.set(false);
+        });
+    });
 
     move || {
         show_settings.get().then(|| view! {
-        <div class="settings-page">
+        <div class="settings-page"
+            class:workflow-studio-mode=move || settings_section.get() == "workflows">
             <div class="settings-nav">
                 <button type="button" class="settings-app-back settings-head-close"
                     on:click=move |_| show_settings.set(false)>
@@ -715,6 +776,14 @@ pub(super) fn SettingsView(
                     <button class:active=move || settings_section.get()=="models"
                         on:click=move |_| go_settings_section.call("models".into())>
                         {move || t(locale.get(), "settings.nav.models")}</button>
+                    <button class:active=move || settings_section.get()=="quick-actions"
+                        data-testid="settings-nav-quick-actions"
+                        on:click=move |_| go_settings_section.call("quick-actions".into())>
+                        {move || t(locale.get(), "settings.nav.quick_actions")}</button>
+                    <button class:active=move || settings_section.get()=="workflows"
+                        data-testid="settings-nav-workflows"
+                        on:click=move |_| go_settings_section.call("workflows".into())>
+                        {move || t(locale.get(), "settings.nav.workflows")}</button>
                     <button class:active=move || settings_section.get()=="specialists"
                         on:click=move |_| go_settings_section.call("specialists".into())>
                         {move || t(locale.get(), "settings.nav.specialists")}</button>
@@ -2056,6 +2125,238 @@ pub(super) fn SettingsView(
                             <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
                             <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
                         </div>
+                    </div>
+                }.into_view())}
+                {move || (settings_section.get() == "quick-actions").then(|| view! {
+                    <div class="settings-pane settings-pane-list quick-actions-pane"
+                        data-testid="quick-actions-settings">
+                        <div class="quick-actions-hero">
+                            <div>
+                                <h3>{move || t(locale.get(), "quick_actions.title")}</h3>
+                                <p>{move || t(locale.get(), "quick_actions.help")}</p>
+                            </div>
+                            <button type="button" class="primary" data-testid="quick-action-new"
+                                disabled=move || workflow_templates.get().is_empty()
+                                on:click=move |_| {
+                                    let workflow_template_id = workflow_templates
+                                        .get_untracked()
+                                        .first()
+                                        .map(|template| template.id.clone())
+                                        .unwrap_or_default();
+                                    let sort_order = quick_actions
+                                        .get_untracked()
+                                        .iter()
+                                        .map(|action| action.sort_order)
+                                        .max()
+                                        .unwrap_or(0)
+                                        + 10;
+                                    quick_action_form.set(Some(QuickAction {
+                                        id: String::new(),
+                                        name: String::new(),
+                                        description: String::new(),
+                                        icon: "sparkles".into(),
+                                        context: "selection".into(),
+                                        workflow_template_id,
+                                        enabled: true,
+                                        sort_order,
+                                        builtin: false,
+                                    }));
+                                    quick_action_error.set(None);
+                                }>
+                                {move || format!("+ {}", t(locale.get(), "quick_actions.new"))}
+                            </button>
+                        </div>
+                        {move || quick_action_form.get().map(|form| {
+                            let builtin = form.builtin;
+                            view! {
+                                <div class="quick-action-form" data-testid="quick-action-form">
+                                    <div class="settings-form-grid">
+                                        <label>
+                                            <span>{move || t(locale.get(), "quick_actions.name")}</span>
+                                            <input type="text" data-testid="quick-action-name"
+                                                prop:value=move || quick_action_form.get()
+                                                    .map(|action| action.name)
+                                                    .unwrap_or_default()
+                                                on:input=move |event| quick_action_form.update(|action| {
+                                                    if let Some(action) = action {
+                                                        action.name = event_target_value(&event);
+                                                    }
+                                                }) />
+                                        </label>
+                                        <label>
+                                            <span>{move || t(locale.get(), "quick_actions.workflow")}</span>
+                                            <select data-testid="quick-action-workflow"
+                                                disabled=builtin
+                                                on:change=move |event| quick_action_form.update(|action| {
+                                                    if let Some(action) = action {
+                                                        action.workflow_template_id = dom_value(&event);
+                                                    }
+                                                })>
+                                                <For each=move || workflow_templates.get()
+                                                    key=|template| template.id.clone()
+                                                    children=move |template| {
+                                                        let id = template.id.clone();
+                                                        view! {
+                                                            <option value=template.id
+                                                                prop:selected=move || quick_action_form.get()
+                                                                    .is_some_and(|action| {
+                                                                        action.workflow_template_id == id
+                                                                    })>
+                                                                {template.name}
+                                                            </option>
+                                                        }
+                                                    }
+                                                />
+                                            </select>
+                                        </label>
+                                        <label class="span-2">
+                                            <span>{move || t(locale.get(), "quick_actions.description")}</span>
+                                            <input type="text" data-testid="quick-action-description"
+                                                prop:value=move || quick_action_form.get()
+                                                    .map(|action| action.description)
+                                                    .unwrap_or_default()
+                                                disabled=builtin
+                                                on:input=move |event| quick_action_form.update(|action| {
+                                                    if let Some(action) = action {
+                                                        action.description = event_target_value(&event);
+                                                    }
+                                                }) />
+                                        </label>
+                                    </div>
+                                    <label class="settings-check">
+                                        <input type="checkbox"
+                                            prop:checked=move || quick_action_form.get()
+                                                .is_some_and(|action| action.enabled)
+                                            on:change=move |event| quick_action_form.update(|action| {
+                                                if let Some(action) = action {
+                                                    action.enabled = event_target_checked(&event);
+                                                }
+                                            }) />
+                                        <span>{move || t(locale.get(), "quick_actions.enabled")}</span>
+                                    </label>
+                                    <div class="row">
+                                        <button type="button"
+                                            on:click=move |_| quick_action_form.set(None)>
+                                            {move || t(locale.get(), "settings.cancel")}
+                                        </button>
+                                        <button type="button" class="primary"
+                                            data-testid="quick-action-save"
+                                            disabled=move || {
+                                                quick_action_busy.get()
+                                                    || quick_action_form.get()
+                                                        .is_none_or(|action| {
+                                                            action.name.trim().is_empty()
+                                                                || action.workflow_template_id.is_empty()
+                                                        })
+                                            }
+                                            on:click=move |event| {
+                                                save_quick_action_form.call(event);
+                                            }>
+                                            {move || t(locale.get(), "settings.save")}
+                                        </button>
+                                    </div>
+                                </div>
+                            }
+                        })}
+                        {move || quick_action_error.get().map(|error| view! {
+                            <div class="settings-status fail" data-testid="quick-action-error">
+                                {error}
+                            </div>
+                        })}
+                        <div class="settings-list quick-action-list">
+                            <For each=move || quick_actions.get() key=|action| action.id.clone()
+                                children=move |action| {
+                                    let workflow_name = workflow_templates
+                                        .get_untracked()
+                                        .into_iter()
+                                        .find(|template| {
+                                            template.id == action.workflow_template_id
+                                        })
+                                        .map(|template| template.name)
+                                        .unwrap_or_else(|| action.workflow_template_id.clone());
+                                    let workflow_id = action.workflow_template_id.clone();
+                                    let edit_action = action.clone();
+                                    let toggle_action = action.clone();
+                                    let remove_id = action.id.clone();
+                                    let is_builtin = action.builtin;
+                                    view! {
+                                        <div class="settings-list-row quick-action-row"
+                                            data-testid="quick-action-row"
+                                            data-action-id=action.id.clone()>
+                                            <div class="settings-list-main">
+                                                <span class="settings-list-title">
+                                                    {compose_icon(&action.icon)}
+                                                    <strong>{quick_action_label(locale.get(), &action)}</strong>
+                                                    {is_builtin.then(|| view! {
+                                                        <small>{move || t(locale.get(), "quick_actions.builtin")}</small>
+                                                    })}
+                                                </span>
+                                                <span class="settings-list-sub">{action.description}</span>
+                                                <code>{workflow_name}</code>
+                                            </div>
+                                            <div class="settings-list-actions">
+                                                <label class="toggle" title=move || {
+                                                    t(locale.get(), "quick_actions.enabled")
+                                                }>
+                                                    <input type="checkbox"
+                                                        data-testid="quick-action-toggle"
+                                                        prop:checked=action.enabled
+                                                        disabled=move || quick_action_busy.get()
+                                                        on:change=move |event| {
+                                                            let mut next = toggle_action.clone();
+                                                            next.enabled = event_target_checked(&event);
+                                                            persist_quick_action.call(next);
+                                                        } />
+                                                    <span class="toggle-track" aria-hidden="true"></span>
+                                                </label>
+                                                <button type="button" data-testid="quick-action-open-workflow"
+                                                    on:click=move |_| {
+                                                        selected_workflow_template
+                                                            .set(Some(workflow_id.clone()));
+                                                        go_settings_section.call("workflows".into());
+                                                    }>
+                                                    {move || t(locale.get(), "quick_actions.open_workflow")}
+                                                </button>
+                                                <button type="button" class="settings-list-edit"
+                                                    data-testid="quick-action-edit"
+                                                    title=move || t(locale.get(), "quick_actions.edit")
+                                                    on:click=move |_| {
+                                                        quick_action_form.set(Some(edit_action.clone()));
+                                                        quick_action_error.set(None);
+                                                    }>
+                                                    {compose_icon("edit")}
+                                                </button>
+                                                {(!is_builtin).then(|| view! {
+                                                    <button type="button" class="settings-list-remove"
+                                                        data-testid="quick-action-delete"
+                                                        title=move || t(locale.get(), "quick_actions.delete")
+                                                        on:click=move |_| {
+                                                            remove_quick_action.call(remove_id.clone());
+                                                        }>
+                                                        {compose_icon("close")}
+                                                    </button>
+                                                })}
+                                            </div>
+                                        </div>
+                                    }
+                                }
+                            />
+                        </div>
+                    </div>
+                }.into_view())}
+                {move || (settings_section.get() == "workflows").then(|| view! {
+                    <div class="settings-pane workflow-settings-pane">
+                        {workflow_studio_view(
+                            workflow_studio,
+                            workflow_templates,
+                            selected_workflow_template,
+                            specialists,
+                            models,
+                            locale,
+                            Callback::new(move |_: ()| {
+                                go_settings_section.call("quick-actions".into());
+                            }),
+                        )}
                     </div>
                 }.into_view())}
                 {move || (settings_section.get() == "specialists").then(|| {

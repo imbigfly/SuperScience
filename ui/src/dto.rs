@@ -199,7 +199,10 @@ pub(crate) enum ChatItem {
     /// waits, editable/cancellable, until the backend drains it into a fresh
     /// turn (or a cut-in folds it into the running one) and emits the matching
     /// User event. `id` is the frontend-assigned key the queue commands target.
-    QueuedUser { id: u64, text: String },
+    QueuedUser {
+        id: u64,
+        text: String,
+    },
     Assistant {
         text: String,
         model: Option<String>,
@@ -574,9 +577,7 @@ pub(crate) fn parse_question_card(payload: &serde_json::Value) -> QuestionCard {
             .get("allow_freeform")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true),
-        source: str_at("source")
-            .map(PlanSource::from)
-            .unwrap_or_default(),
+        source: str_at("source").map(PlanSource::from).unwrap_or_default(),
         request_id: str_at("request_id").filter(|id| !id.is_empty()),
         state: match str_at("status").as_deref() {
             Some("answered") => QuestionState::Answered,
@@ -881,6 +882,9 @@ pub(crate) enum ComposerReferenceArg {
     },
     Skill {
         name: String,
+    },
+    Workflow {
+        id: String,
     },
     Context {
         id: String,
@@ -2072,6 +2076,37 @@ pub(crate) enum RightTab {
     Provenance,
     Hosts,
     SideChat,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QuickAction {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) icon: String,
+    pub(crate) context: String,
+    pub(crate) workflow_template_id: String,
+    pub(crate) enabled: bool,
+    pub(crate) sort_order: i64,
+    pub(crate) builtin: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct WorkflowTemplate {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) proposal: DynamicAgentWorkflowProposal,
+    pub(crate) builtin: bool,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QuickActionRun {
+    pub(crate) action: QuickAction,
+    pub(crate) session_id: String,
+    pub(crate) display_message: String,
+    pub(crate) workflow: AgentWorkflowSnapshot,
+    pub(crate) started: bool,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]

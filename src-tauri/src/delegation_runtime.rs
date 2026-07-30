@@ -954,6 +954,25 @@ async fn spawn_agent_workflow(
     project: ActiveProject,
     workflow_id: String,
 ) -> Result<(), String> {
+    spawn_agent_workflow_with_completion_override(state, project, workflow_id, None).await
+}
+
+pub(crate) async fn spawn_agent_workflow_with_auto_resume(
+    state: &crate::AppState,
+    project: ActiveProject,
+    workflow_id: String,
+    auto_resume: bool,
+) -> Result<(), String> {
+    spawn_agent_workflow_with_completion_override(state, project, workflow_id, Some(auto_resume))
+        .await
+}
+
+async fn spawn_agent_workflow_with_completion_override(
+    state: &crate::AppState,
+    project: ActiveProject,
+    workflow_id: String,
+    auto_resume: Option<bool>,
+) -> Result<(), String> {
     let project_activity = state.begin_project_activity(&project.id)?;
     let workflow = project_workflow(&state.store, &project.id, &workflow_id).await?;
     let frame_id = workflow
@@ -966,7 +985,7 @@ async fn spawn_agent_workflow(
     let display_ids = crate::delegation_tool::display_task_ids(&plan);
     let delivery = state
         .store
-        .create_agent_workflow_delivery(&workflow_id, completion.auto_resume)
+        .create_agent_workflow_delivery(&workflow_id, auto_resume.unwrap_or(completion.auto_resume))
         .await
         .map_err(|error| error.to_string())?;
     let store = state.store.clone();

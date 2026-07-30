@@ -19,13 +19,12 @@ use agent_workflows::{
     agent_workflows_panel, refresh_agent_resources, refresh_agent_workflows, AgentPanelState,
 };
 use bindings::{
-    attach_chat_autoscroll, clear_selection, close_mcp_app, download_app_update,
-    force_chat_bottom, invoke, invoke_checked, invoke_timeout, is_mac, is_windows,
-    jump_chat_to_item, jump_chat_to_last_user, jump_chat_to_user, listen,
-    listen_native_file_drop, mount_mcp_app, mount_terminal, native_drop_in_composer,
-    open_external_url, park_mcp_app, pasted_image_count, preserve_chat_prepend_position,
-    preview_selection, schedule_chat_follow, set_saved_marks, set_terminal_active,
-    unmount_terminal, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    attach_chat_autoscroll, clear_selection, close_mcp_app, download_app_update, force_chat_bottom,
+    invoke, invoke_checked, invoke_timeout, is_mac, is_windows, jump_chat_to_item,
+    jump_chat_to_last_user, jump_chat_to_user, listen, listen_native_file_drop, mount_mcp_app,
+    mount_terminal, native_drop_in_composer, open_external_url, park_mcp_app, pasted_image_count,
+    preserve_chat_prepend_position, preview_selection, schedule_chat_follow, set_saved_marks,
+    set_terminal_active, unmount_terminal, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -49,10 +48,11 @@ use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use text::{
-    dom_value, event_target_checked, event_target_value, file_kind, format_bytes, DEEPSEEK_FLASH_MODEL,
+    dom_value, event_target_checked, event_target_value, file_kind, format_bytes,
     format_duration_ms, group_artifact_indices, ime_composing, join_path, md_to_html,
     note_composition_end, opens_in_system_browser, parent_path, provider_defaults, provider_value,
     runtime_language, tool_card_label, unique_dom_id, user_message_presentation,
+    DEEPSEEK_FLASH_MODEL,
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -78,9 +78,7 @@ const SIDE_CHAT_INPUT_ID: &str = "side-chat-input";
 /// Let component-owned inner surfaces consume Escape before the app-level
 /// stack sees it. The listener is capture-phase and owner-scoped, so it does
 /// not depend on focus landing inside the surface and is removed on cleanup.
-pub(crate) fn window_capture_escape(
-    mut close_topmost: impl FnMut() -> bool + 'static,
-) {
+pub(crate) fn window_capture_escape(mut close_topmost: impl FnMut() -> bool + 'static) {
     let listener = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::wrap(Box::new(
         move |event: web_sys::KeyboardEvent| {
             if event.key() != "Escape"
@@ -1303,6 +1301,8 @@ fn App() -> impl IntoView {
     });
     let agent_panel = AgentPanelState::new(active_session);
     refresh_agent_resources(agent_panel, specialists);
+    let workflow_studio_state = AgentPanelState::new(active_session);
+    refresh_agent_resources(workflow_studio_state, specialists);
     let file_source = create_rw_signal("local".to_string());
     let file_query = create_rw_signal(String::new());
     let file_cwd = create_rw_signal(".".to_string());
@@ -1455,7 +1455,7 @@ fn App() -> impl IntoView {
         open_resource.call(resource);
     });
 
-    // Inline @ artifact, # session, and / skill pickers all share one cursor
+    // Inline @ artifact, # session, and / skill or Workflow pickers all share one cursor
     // model and one chip list. Uploads remain separate because they have async
     // progress/error state; selected catalog items are already durable records.
     let composer_references = create_rw_signal::<Vec<ComposerReferenceChip>>(vec![]);
@@ -1498,6 +1498,32 @@ fn App() -> impl IntoView {
     // The source path is Some only when the selection is inside a file preview —
     // it gates the "annotate" action and names the review sidecar.
     let selection_popup = create_rw_signal::<Option<(String, Option<String>, i32, i32)>>(None);
+    let quick_actions = create_rw_signal::<Vec<QuickAction>>(vec![]);
+    let workflow_templates = create_rw_signal::<Vec<WorkflowTemplate>>(vec![]);
+    let selected_workflow_template = create_rw_signal::<Option<String>>(None);
+    let refresh_quick_actions = move || {
+        spawn_local(async move {
+            if let Ok(value) = invoke_checked("list_quick_actions", JsValue::UNDEFINED).await {
+                if let Ok(mut actions) = serde_wasm_bindgen::from_value::<Vec<QuickAction>>(value) {
+                    actions.sort_by_key(|action| action.sort_order);
+                    quick_actions.set(actions);
+                }
+            }
+        });
+    };
+    let refresh_workflow_templates = move || {
+        spawn_local(async move {
+            if let Ok(value) = invoke_checked("list_workflow_templates", JsValue::UNDEFINED).await {
+                if let Ok(templates) =
+                    serde_wasm_bindgen::from_value::<Vec<WorkflowTemplate>>(value)
+                {
+                    workflow_templates.set(templates);
+                }
+            }
+        });
+    };
+    refresh_quick_actions();
+    refresh_workflow_templates();
     let picker_mode = create_rw_signal(None::<ComposerPickerMode>);
     let picker_token_range = create_rw_signal(None::<(usize, usize)>);
     let picker_query = create_rw_signal(String::new());
@@ -1549,15 +1575,19 @@ fn App() -> impl IntoView {
                     }
                 }
             }),
-            ComposerPickerMode::Skill if skills_list.get_untracked().is_empty() => {
-                spawn_local(async move {
-                    let v = invoke("list_skills", JsValue::UNDEFINED).await;
-                    if let Ok(rows) = serde_wasm_bindgen::from_value::<Vec<SkillRow>>(v) {
-                        skills_list.set(rows);
-                    }
-                })
+            ComposerPickerMode::Skill => {
+                if skills_list.get_untracked().is_empty() {
+                    spawn_local(async move {
+                        let v = invoke("list_skills", JsValue::UNDEFINED).await;
+                        if let Ok(rows) = serde_wasm_bindgen::from_value::<Vec<SkillRow>>(v) {
+                            skills_list.set(rows);
+                        }
+                    });
+                }
+                if workflow_templates.get_untracked().is_empty() {
+                    refresh_workflow_templates();
+                }
             }
-            ComposerPickerMode::Skill => {}
         }
     });
     let picker_items = create_memo(move |_| {
@@ -1615,6 +1645,16 @@ fn App() -> impl IntoView {
                 items
             }
             Some(ComposerPickerMode::Skill) => {
+                let mut workflows = workflow_templates
+                    .get()
+                    .into_iter()
+                    .filter(|workflow| {
+                        workflow.name.to_lowercase().contains(&query)
+                            || workflow.description.to_lowercase().contains(&query)
+                            || workflow.proposal.goal.to_lowercase().contains(&query)
+                    })
+                    .collect::<Vec<_>>();
+                workflows.sort_by_key(|workflow| (!workflow.builtin, workflow.name.clone()));
                 let mut rows: Vec<_> = skills_list
                     .get()
                     .into_iter()
@@ -1626,7 +1666,11 @@ fn App() -> impl IntoView {
                     })
                     .collect();
                 rows.sort_by_key(|s| (!s.builtin, s.name.clone()));
-                rows.into_iter().map(ComposerPickerItem::Skill).collect()
+                workflows
+                    .into_iter()
+                    .map(ComposerPickerItem::Workflow)
+                    .chain(rows.into_iter().map(ComposerPickerItem::Skill))
+                    .collect()
             }
             None => vec![],
         }
@@ -1647,6 +1691,10 @@ fn App() -> impl IntoView {
             },
             ComposerPickerItem::Project { id, name } => ComposerReferenceChip::Project { id, name },
             ComposerPickerItem::Skill(s) => ComposerReferenceChip::Skill { name: s.name },
+            ComposerPickerItem::Workflow(workflow) => ComposerReferenceChip::Workflow {
+                id: workflow.id,
+                name: workflow.name,
+            },
             ComposerPickerItem::Context { id, label } => {
                 ComposerReferenceChip::Context { id, label }
             }
@@ -1989,8 +2037,9 @@ fn App() -> impl IntoView {
                 });
                 if needs_response_time {
                     conversation_outlines_cb.update(|outlines| {
-                        if let Some(entry) =
-                            outlines.get_mut(&frame_id).and_then(|outline| outline.last_mut())
+                        if let Some(entry) = outlines
+                            .get_mut(&frame_id)
+                            .and_then(|outline| outline.last_mut())
                         {
                             entry.response_at = Some(now_secs());
                         }
@@ -2806,7 +2855,9 @@ fn App() -> impl IntoView {
         // running turn — editable/cancellable until the driver runs it — instead
         // of a dialog. Cut-in / interrupt-replace are explicit dropdown choices.
         if queued && action == ComposerSendAction::Normal {
-            let Some(session) = active.clone() else { return };
+            let Some(session) = active.clone() else {
+                return;
+            };
             let qid = queue_seq.get() + 1;
             queue_seq.set(qid);
             input.set(String::new());
@@ -3108,14 +3159,11 @@ fn App() -> impl IntoView {
             return;
         }
         let list = items.get();
-        let Some(user_ui_index) = list
-            .get(..assistant_ui_index)
-            .and_then(|prefix| {
-                prefix
-                    .iter()
-                    .rposition(|item| matches!(item, ChatItem::User(_)))
-            })
-        else {
+        let Some(user_ui_index) = list.get(..assistant_ui_index).and_then(|prefix| {
+            prefix
+                .iter()
+                .rposition(|item| matches!(item, ChatItem::User(_)))
+        }) else {
             return;
         };
         let Some(ChatItem::User(text)) = list.get(user_ui_index) else {
@@ -3138,24 +3186,22 @@ fn App() -> impl IntoView {
         spawn_local(async move {
             let args = to_value(&tauri_args::turn_undo(&session_id, user_index)).unwrap();
             match invoke_checked("preview_turn_undo", args).await {
-                Ok(value) => {
-                    match serde_wasm_bindgen::from_value::<TurnUndoPreview>(value) {
-                        Ok(preview)
-                            if active_session.get_untracked().as_deref()
-                                == Some(session_id.as_str()) =>
-                        {
-                            turn_undo_dialog.set(Some(TurnUndoDialog {
-                                session_id,
-                                user_index,
-                                user_ui_index,
-                                draft,
-                                preview,
-                            }));
-                        }
-                        Ok(_) => {}
-                        Err(error) => show_toast(&error.to_string()),
+                Ok(value) => match serde_wasm_bindgen::from_value::<TurnUndoPreview>(value) {
+                    Ok(preview)
+                        if active_session.get_untracked().as_deref()
+                            == Some(session_id.as_str()) =>
+                    {
+                        turn_undo_dialog.set(Some(TurnUndoDialog {
+                            session_id,
+                            user_index,
+                            user_ui_index,
+                            draft,
+                            preview,
+                        }));
                     }
-                }
+                    Ok(_) => {}
+                    Err(error) => show_toast(&error.to_string()),
+                },
                 Err(error) => show_toast(&localize_backend(
                     locale.get_untracked(),
                     &js_error_text(error),
@@ -3174,12 +3220,14 @@ fn App() -> impl IntoView {
         turn_undo_busy.set(true);
         turn_undo_error.set(None);
         spawn_local(async move {
-            let args =
-                to_value(&tauri_args::turn_undo(&dialog.session_id, dialog.user_index)).unwrap();
+            let args = to_value(&tauri_args::turn_undo(
+                &dialog.session_id,
+                dialog.user_index,
+            ))
+            .unwrap();
             match invoke_checked("undo_turn", args).await {
                 Ok(_) => {
-                    if active_session.get_untracked().as_deref()
-                        == Some(dialog.session_id.as_str())
+                    if active_session.get_untracked().as_deref() == Some(dialog.session_id.as_str())
                     {
                         let updated = items.with_untracked(|rows| {
                             rows.iter()
@@ -3204,9 +3252,7 @@ fn App() -> impl IntoView {
                             &serde_json::json!({ "sessionId": dialog.session_id.clone() }),
                         )
                         .unwrap();
-                        if let Ok(value) =
-                            invoke_checked("list_artifacts", artifact_args).await
-                        {
+                        if let Ok(value) = invoke_checked("list_artifacts", artifact_args).await {
                             if let Ok(rows) =
                                 serde_wasm_bindgen::from_value::<Vec<ArtifactInfo>>(value)
                             {
@@ -3357,10 +3403,9 @@ fn App() -> impl IntoView {
             QueueOp::MoveUp(id) | QueueOp::MoveDown(id) => {
                 let up = matches!(op, QueueOp::MoveUp(_));
                 route_items(active_session, items, transcripts, &sid, |rows| {
-                    let Some(i) = rows
-                        .iter()
-                        .position(|it| matches!(it, ChatItem::QueuedUser { id: qid, .. } if *qid == id))
-                    else {
+                    let Some(i) = rows.iter().position(
+                        |it| matches!(it, ChatItem::QueuedUser { id: qid, .. } if *qid == id),
+                    ) else {
                         return;
                     };
                     let target = if up {
@@ -3616,10 +3661,7 @@ fn App() -> impl IntoView {
                                 downloading: update.downloading,
                             }
                         };
-                        if matches!(
-                            modal.get_untracked(),
-                            Some(UpdateCheckModal::Checking)
-                        ) {
+                        if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
                             modal.set(Some(next));
                         }
                     }
@@ -3632,10 +3674,7 @@ fn App() -> impl IntoView {
                         );
                         msg.set(Some((true, text.clone())));
                         status_msg.set(text);
-                        if matches!(
-                            modal.get_untracked(),
-                            Some(UpdateCheckModal::Checking)
-                        ) {
+                        if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
                             modal.set(Some(UpdateCheckModal::UpToDate {
                                 version: update.current_version,
                             }));
@@ -3645,10 +3684,7 @@ fn App() -> impl IntoView {
                         let text = t(loc.get(), "status.update_check_complete").to_string();
                         msg.set(Some((true, text.clone())));
                         status_msg.set(text.clone());
-                        if matches!(
-                            modal.get_untracked(),
-                            Some(UpdateCheckModal::Checking)
-                        ) {
+                        if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
                             modal.set(Some(UpdateCheckModal::Failed {
                                 message: text,
                                 release_url: Some(
@@ -3662,10 +3698,7 @@ fn App() -> impl IntoView {
                     let text = localize_backend(loc.get(), &js_error_text(err));
                     msg.set(Some((false, text.clone())));
                     status_msg.set(text.clone());
-                    if matches!(
-                        modal.get_untracked(),
-                        Some(UpdateCheckModal::Checking)
-                    ) {
+                    if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
                         modal.set(Some(UpdateCheckModal::Failed {
                             message: text,
                             release_url: Some(
@@ -3922,6 +3955,14 @@ fn App() -> impl IntoView {
         match sec {
             "models" => refresh_models(),
             "specialists" => refresh_specialists(),
+            "quick-actions" => {
+                refresh_quick_actions();
+                refresh_workflow_templates();
+            }
+            "workflows" => {
+                refresh_workflow_templates();
+                refresh_agent_resources(workflow_studio_state, specialists);
+            }
             "memory" => refresh_memory(),
             "skills" => {
                 refresh_skills();
@@ -3950,6 +3991,8 @@ fn App() -> impl IntoView {
         refresh_conns();
         refresh_models();
         refresh_specialists();
+        refresh_quick_actions();
+        refresh_workflow_templates();
         refresh_memory();
         refresh_credentials();
         refresh_approval_grants();
@@ -4389,7 +4432,13 @@ fn App() -> impl IntoView {
     };
 
     let use_plugin = Callback::new(
-        move |(plugin_id, version, display_name, skill_names, enabled): (String, String, String, Vec<String>, bool)| {
+        move |(plugin_id, version, display_name, skill_names, enabled): (
+            String,
+            String,
+            String,
+            Vec<String>,
+            bool,
+        )| {
             let prompt = tf(
                 locale.get(),
                 if skill_names.is_empty() {
@@ -4717,11 +4766,7 @@ fn App() -> impl IntoView {
             let user_offset = transcript_pages
                 .with_untracked(|pages| pages.get(&id).copied())
                 .map_or(0, |page| page.user_offset);
-            if conversation_outline_target_is_loaded(
-                &items.get_untracked(),
-                user_offset,
-                target,
-            ) {
+            if conversation_outline_target_is_loaded(&items.get_untracked(), user_offset, target) {
                 transcript_pages.update(|pages| {
                     pages.entry(id).or_default().window_user_start =
                         target.saturating_sub(user_offset);
@@ -4757,9 +4802,7 @@ fn App() -> impl IntoView {
                 let chats = chats;
                 let loaded_turns = chats
                     .iter()
-                    .filter(|item| {
-                        matches!(item, ChatItem::User(_) | ChatItem::QueuedUser { .. })
-                    })
+                    .filter(|item| matches!(item, ChatItem::User(_) | ChatItem::QueuedUser { .. }))
                     .count();
                 if target < page.user_offset || target_local >= loaded_turns {
                     return;
@@ -4878,9 +4921,8 @@ fn App() -> impl IntoView {
         let Some(session_id) = active_session.get() else {
             return false;
         };
-        acp_session_modes.with(|all| {
-            acp_current_mode_id(all.get(&session_id)).is_some_and(is_plan_mode_id)
-        })
+        acp_session_modes
+            .with(|all| acp_current_mode_id(all.get(&session_id)).is_some_and(is_plan_mode_id))
     });
 
     // Agents without a plan mode still push plan updates — a Claude Code todo
@@ -4957,8 +4999,8 @@ fn App() -> impl IntoView {
     // message on the normal send path — the agent reads it next turn. ACP
     // source: resolve the bridge's pending request; the answer returns inside
     // the agent's still-running turn.
-    let on_question_answer =
-        Callback::new(move |(ui_index, request_id, answer): (usize, Option<String>, String)| {
+    let on_question_answer = Callback::new(
+        move |(ui_index, request_id, answer): (usize, Option<String>, String)| {
             let answer = answer.trim().to_string();
             if answer.is_empty() {
                 return;
@@ -4990,7 +5032,8 @@ fn App() -> impl IntoView {
                     }
                 }
             }
-        });
+        },
+    );
 
     let on_sidebar_resize_start = move |ev: web_sys::MouseEvent| {
         ev.prevent_default();
@@ -5309,6 +5352,65 @@ fn App() -> impl IntoView {
             }
         });
     });
+    let run_quick_action = {
+        let load_session = load_session.clone();
+        Callback::new(
+            move |(action_id, selection, source_path): (String, String, Option<String>)| {
+                selection_popup.set(None);
+                ctx_menu.set(None);
+                clear_selection();
+                let load_session = load_session.clone();
+                spawn_local(async move {
+                    let args = to_value(&serde_json::json!({
+                        "actionId": action_id,
+                        "input": {
+                            "selection": selection,
+                            "sourcePath": source_path,
+                        },
+                    }))
+                    .unwrap();
+                    match invoke_checked("run_quick_action", args).await {
+                        Ok(value) => {
+                            let Ok(run) = serde_wasm_bindgen::from_value::<QuickActionRun>(value)
+                            else {
+                                status.set(tf(
+                                    locale.get_untracked(),
+                                    "quick_action.failed",
+                                    &[("msg", "Invalid backend response")],
+                                ));
+                                return;
+                            };
+                            let name = quick_action_label(locale.get_untracked(), &run.action);
+                            load_session.call(run.session_id);
+                            delegation_enabled.set(true);
+                            ensure_right_tab(
+                                RightTab::Agents,
+                                show_right,
+                                open_right_tabs,
+                                right_tab,
+                            );
+                            refresh_agent_workflows(agent_panel);
+                            refresh_session_history();
+                            status.set(tf(
+                                locale.get_untracked(),
+                                if run.started {
+                                    "quick_action.started"
+                                } else {
+                                    "quick_action.created_draft"
+                                },
+                                &[("name", &name)],
+                            ));
+                        }
+                        Err(error) => {
+                            let loc = locale.get_untracked();
+                            let message = localize_backend(loc, &js_error_text(error));
+                            status.set(tf(loc, "quick_action.failed", &[("msg", &message)]));
+                        }
+                    }
+                });
+            },
+        )
+    };
     let save_agent_completion = Callback::new(move |next: AgentCompletionSettings| {
         let previous = agent_completion.get_untracked();
         let Some(session_id) = active_session.get_untracked() else {
@@ -5553,12 +5655,11 @@ fn App() -> impl IntoView {
 
     let close_terminal_session = Callback::new(move |session_id: String| {
         spawn_local(async move {
-            let arg =
-                to_value(&serde_json::json!({ "sessionId": session_id.clone() })).unwrap();
+            let arg = to_value(&serde_json::json!({ "sessionId": session_id.clone() })).unwrap();
             match invoke_checked("close_terminal", arg).await {
                 Ok(_) => {
-                    let closing_active = active_terminal_id.get_untracked().as_deref()
-                        == Some(session_id.as_str());
+                    let closing_active =
+                        active_terminal_id.get_untracked().as_deref() == Some(session_id.as_str());
                     let mut next_active = None;
                     let mut sessions_empty = false;
                     let mut removed = false;
@@ -5802,6 +5903,17 @@ fn App() -> impl IntoView {
                 ));
                 return;
             }
+            if action == "runQuickAction" {
+                let mut parts = payload.splitn(3, '\u{1e}');
+                let action_id = parts.next().unwrap_or_default().to_string();
+                let source = parts
+                    .next()
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                let selection = parts.next().unwrap_or_default().to_string();
+                run_quick_action.call((action_id, selection, source));
+                return;
+            }
             if action == "downloadFile" {
                 download_artifact(payload);
                 return;
@@ -5831,23 +5943,21 @@ fn App() -> impl IntoView {
                     }))
                     .unwrap();
                     match invoke_checked("register_artifact", arg).await {
-                        Ok(value) => {
-                            match serde_wasm_bindgen::from_value::<ArtifactInfo>(value) {
-                                Ok(artifact) => {
-                                    let name = artifact.name.clone();
-                                    db_artifacts.update(|items| {
-                                        items.retain(|item| item.id != artifact.id);
-                                        items.insert(0, artifact);
-                                    });
-                                    show_toast(&tf(
-                                        locale.get_untracked(),
-                                        "artifact.registered",
-                                        &[("name", &name)],
-                                    ));
-                                }
-                                Err(error) => show_warning_toast(&error.to_string()),
+                        Ok(value) => match serde_wasm_bindgen::from_value::<ArtifactInfo>(value) {
+                            Ok(artifact) => {
+                                let name = artifact.name.clone();
+                                db_artifacts.update(|items| {
+                                    items.retain(|item| item.id != artifact.id);
+                                    items.insert(0, artifact);
+                                });
+                                show_toast(&tf(
+                                    locale.get_untracked(),
+                                    "artifact.registered",
+                                    &[("name", &name)],
+                                ));
                             }
-                        }
+                            Err(error) => show_warning_toast(&error.to_string()),
+                        },
                         Err(error) => show_warning_toast(&localize_backend(
                             locale.get_untracked(),
                             &js_error_text(error),
@@ -6066,8 +6176,8 @@ fn App() -> impl IntoView {
                     }
                     context_menu::SessionAction::SetPinned { id, pinned } => {
                         spawn_local(async move {
-                            let arg =
-                                to_value(&serde_json::json!({ "id": id, "pinned": pinned })).unwrap();
+                            let arg = to_value(&serde_json::json!({ "id": id, "pinned": pinned }))
+                                .unwrap();
                             if invoke_checked("set_session_pinned", arg).await.is_ok() {
                                 refresh_session_history();
                             }
@@ -6084,9 +6194,13 @@ fn App() -> impl IntoView {
     let on_context_menu = move |ev: web_sys::MouseEvent| {
         let loc = locale.get();
         let center = center_file.get_untracked();
-        if let Some(menu) =
-            context_menu::build(&ev, loc, active_session.get().is_some(), center.as_deref())
-        {
+        if let Some(menu) = context_menu::build(
+            &ev,
+            loc,
+            active_session.get().is_some(),
+            center.as_deref(),
+            &quick_actions.get_untracked(),
+        ) {
             if !menu.items.is_empty() {
                 ev.prevent_default();
                 // The context menu supersedes the selection popup — never
@@ -6298,10 +6412,7 @@ fn App() -> impl IntoView {
             compose_menu_open.set(false);
             return;
         }
-        if reviewer_model_menu_open.get()
-            || compute_menu_open.get()
-            || specialist_menu_open.get()
-        {
+        if reviewer_model_menu_open.get() || compute_menu_open.get() || specialist_menu_open.get() {
             ev.prevent_default();
             reviewer_model_menu_open.set(false);
             compute_menu_open.set(false);
@@ -8295,6 +8406,8 @@ fn App() -> impl IntoView {
                 }
             })}
             {move || selection_popup.get().map(|(text, source, x, y)| {
+                let x = selection_popup_x(x);
+                let y = selection_popup_y(y);
                 let quote = text.clone();
                 let quote_source = source.clone();
                 let quote_source_for_click = quote_source.clone();
@@ -8303,6 +8416,8 @@ fn App() -> impl IntoView {
                 let explain = text.clone();
                 let annotate_text = text.clone();
                 let annotate_source = source.clone();
+                let action_selection = text.clone();
+                let action_source = source.clone();
                 // Only chat-transcript selections (no source path) can be saved
                 // as a highlight; file-preview selections have their own actions.
                 let star_text = source.is_none().then(|| text.clone());
@@ -8371,6 +8486,29 @@ fn App() -> impl IntoView {
                                 </button>
                             }
                         })}
+                        {quick_actions.get().into_iter()
+                            .filter(|action| action.enabled && action.context == "selection")
+                            .map(|action| {
+                            let action_id = action.id.clone();
+                            let selection = action_selection.clone();
+                            let source = action_source.clone();
+                            let label = quick_action_label(locale.get(), &action);
+                            view! {
+                                <button type="button" class="selection-popup-btn"
+                                    data-quick-action=action.id
+                                    title=action.description
+                                    on:click=move |_| {
+                                        run_quick_action.call((
+                                            action_id.clone(),
+                                            selection.clone(),
+                                            source.clone(),
+                                        ));
+                                    }>
+                                    {compose_icon(&action.icon)}
+                                    <span>{label}</span>
+                                </button>
+                            }
+                            }).collect_view()}
                         <button type="button" class="selection-popup-btn"
                             on:click=move |_| {
                                 composer_quotes.update(|items| items.push(
@@ -9215,7 +9353,7 @@ fn App() -> impl IntoView {
                             let title = match mode {
                                 ComposerPickerMode::Artifact => "composer.ref_artifacts",
                                 ComposerPickerMode::Session => "composer.ref_sessions",
-                                ComposerPickerMode::Skill => "composer.ref_skills",
+                                ComposerPickerMode::Skill => "composer.ref_slash",
                             };
                             view! {
                                 <div class="mention-backdrop" on:mousedown=move |_| picker_mode.set(None)></div>
@@ -9241,6 +9379,11 @@ fn App() -> impl IntoView {
                                                 "folder",
                                             ),
                                             ComposerPickerItem::Skill(s) => (s.name, s.description, "skill"),
+                                            ComposerPickerItem::Workflow(workflow) => (
+                                                workflow.name,
+                                                workflow.description,
+                                                "branch",
+                                            ),
                                             ComposerPickerItem::Context { id, label } => (label, id, "server"),
                                             ComposerPickerItem::Runtime { context_id, context_label, language } => (
                                                 format!("{} runtime", language_display(&language)),
@@ -12106,6 +12249,8 @@ fn App() -> impl IntoView {
                 conn_form, memory_selected, specialist_form, settings, bootstrap, settings_message,
                 settings_busy, model_form_open, model_form_key, models, model_form_msg, show_acp_agents,
                 acp_agents, active_acp_agent_id, acp_form, acp_form_msg, acp_infos, specialists,
+                quick_actions, workflow_templates, workflow_studio: workflow_studio_state,
+                selected_workflow_template,
                 specialist_form_open, memory_view, memory_editor, memory_msg, skills_list,
                 skill_filter_tag, skills_search, skills_msg, plugins_list, plugins_msg, plugin_install_open, cred_status, cred_inputs,
                 custom_credentials, cred_msg, approval_grants, conns_view, conn_form_open,

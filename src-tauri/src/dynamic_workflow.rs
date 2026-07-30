@@ -627,7 +627,7 @@ async fn specialist_snapshot(
     }))
 }
 
-fn validate_proposal(proposal: &DynamicAgentWorkflowProposal) -> Result<(), String> {
+pub(crate) fn validate_proposal(proposal: &DynamicAgentWorkflowProposal) -> Result<(), String> {
     let goal = proposal.goal.trim();
     if goal.is_empty() || goal.chars().count() > MAX_GOAL_CHARS {
         return Err(format!(

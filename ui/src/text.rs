@@ -1037,6 +1037,7 @@ pub(crate) struct UserMessagePresentation {
     pub(crate) sessions: Vec<String>,
     pub(crate) projects: Vec<String>,
     pub(crate) skills: Vec<String>,
+    pub(crate) workflows: Vec<String>,
 }
 
 /// Split the stable transcript suffixes from the text the user actually
@@ -1056,6 +1057,8 @@ pub(crate) fn user_message_presentation(text: &str) -> UserMessagePresentation {
             Some((&mut presentation.projects, value))
         } else if let Some(value) = block.strip_prefix("Selected skills: ") {
             Some((&mut presentation.skills, value))
+        } else if let Some(value) = block.strip_prefix("Selected workflows: ") {
+            Some((&mut presentation.workflows, value))
         } else if block.starts_with("AI source-edit instruction: ") {
             // This persisted, agent-facing hint turns a source selection into
             // an actionable edit target. It is transport metadata, not text
