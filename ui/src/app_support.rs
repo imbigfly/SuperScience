@@ -10237,7 +10237,10 @@ pub(super) fn ProjectsScreen(
     view! {
         <div class="projects-screen">
             <div class="projects-head">
-                <div class="projects-title">"Wisp Science"<span class="beta">"Beta"</span></div>
+                <div class="projects-brand">
+                    <span class="projects-brand-mark" aria-hidden="true"></span>
+                    <div class="projects-title">"Wisp Science"<span class="beta">"Beta"</span></div>
+                </div>
                 <div class="projects-actions">
                     <button type="button" class="projects-icon-btn"
                         title=move || t(locale.get(), "sidebar.library")

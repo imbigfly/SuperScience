@@ -308,7 +308,7 @@ fn kind_label_key(kind: &str) -> &'static str {
 fn empty_graph(locale: Locale) -> View {
     view! {
         <div class="rp-empty research-graph-empty">
-            <span class="rp-empty-icon"></span>
+            <span class="rp-empty-icon brand" aria-hidden="true"></span>
             <div class="rp-empty-title">{t(locale, "graph.empty.title")}</div>
             <p>{t(locale, "graph.empty.body")}</p>
         </div>

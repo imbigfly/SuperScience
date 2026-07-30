@@ -57,9 +57,27 @@
   --syntax-deletion: #b31d28;
   --syntax-deletion-bg: #ffeef0;
 
-  --radius: 16px;
-  --radius-sm: 10px;
-  --radius-xs: 8px; /* tabs, chips */
+  /* Three radius tiers. Map near-miss literals (6–9→xs, 10–14→sm, 16–22→lg).
+     Keep 999px pills, 50% circles, and asymmetric chat bubbles as literals. */
+  --radius: 16px; /* large surfaces / modals */
+  --radius-sm: 10px; /* cards / inputs */
+  --radius-xs: 8px; /* tabs / chips / icon buttons */
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 40px;
+
+  --text-xs: 11px;
+  --text-sm: 12.5px;
+  --text-md: 14px;
+  --text-lg: 17px;
+  --text-xl: 1.65rem;
+  --text-display: 34px;
+
   /* Shared active-tab accent: faint clay tint, resolves per-theme at use site. */
   --border-active: color-mix(in srgb, var(--clay) 24%, var(--border));
   --shadow: 0 16px 32px -12px var(--shadow-color);
@@ -356,7 +374,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 .window-menu-drop button {
   width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 24px;
-  background: transparent; border: 0; border-radius: 6px; padding: 6px 10px;
+  background: transparent; border: 0; border-radius: var(--radius-xs); padding: 6px 10px;
   font: inherit; font-size: 13px; color: var(--text); cursor: default; text-align: left;
 }
 .window-menu-drop button:hover { background: var(--bg-sunken); }

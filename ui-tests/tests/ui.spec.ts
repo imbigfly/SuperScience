@@ -2617,6 +2617,7 @@ test("project research graph opens from the sidebar in list and graph views", as
 
   await sidebar.getByRole("button", { name: "Research graph", exact: true }).click();
   await expect(modal).toBeVisible();
+  await expect(modal.locator(".research-graph-heading h2")).toHaveCSS("font-family", /Source Serif/);
   await expect(modal).toContainText("5 nodes · 3 relationships");
   await expect(modal.getByTestId("research-graph-list")).toBeVisible();
   await expect(modal.getByText("Use DESeq2 over edgeR")).toBeVisible();
@@ -5378,10 +5379,22 @@ test("projects landing stays centered on wide windows", async ({ page }) => {
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto("/");
   await expect(page.locator(".projects-head")).toBeVisible();
+  await expect(page.locator(".projects-brand-mark")).toBeVisible();
+  await expect(page.locator(".projects-title")).toContainText("Wisp Science");
   await expect.poll(async () => page.locator(".projects-head").evaluate((el) => {
     const rect = el.getBoundingClientRect();
     return Math.round(rect.width);
   })).toBeLessThanOrEqual(1200);
+});
+
+test("empty session shows the branded chat empty state", async ({ page }) => {
+  await enterApp(page);
+  await newSessionButton(page).click();
+  const empty = page.locator(".empty");
+  await expect(empty).toBeVisible();
+  await expect(empty.locator(".empty-logo")).toBeVisible();
+  await expect(empty.locator("h1")).not.toBeEmpty();
+  await expect(empty.locator("h1")).toHaveCSS("font-family", /Source Serif/);
 });
 
 test("Windows uses the integrated title bar without covering the project landing", async ({ browser }) => {

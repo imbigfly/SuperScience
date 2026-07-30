@@ -70,7 +70,7 @@
 .side-sort-opts { display: flex; flex-direction: column; gap: 1px; }
 .side-sort-opt {
   display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
-  background: transparent; border: none; border-radius: 8px; padding: 6px 8px;
+  background: transparent; border: none; border-radius: var(--radius-xs); padding: 6px 8px;
   font: inherit; font-size: 13px; color: var(--text); cursor: pointer; text-align: left;
 }
 .side-sort-opt:hover { background: var(--bg-sunken); }
@@ -94,7 +94,7 @@ button.side-item.ses { cursor: pointer; user-select: none; padding-right: 34px; 
   position: absolute; z-index: 1; top: 50%; right: 5px; transform: translateY(-50%);
   display: inline-flex; align-items: center; justify-content: center;
   width: 25px; height: 25px; padding: 0 0 4px;
-  border: 1px solid transparent; border-radius: 6px;
+  border: 1px solid transparent; border-radius: var(--radius-xs);
   background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
   color: var(--text-faint); font: inherit; font-size: 18px; line-height: 1;
   cursor: pointer; opacity: .58;
@@ -114,7 +114,7 @@ button.side-item.ses { cursor: pointer; user-select: none; padding-right: 34px; 
 .side-item.ses.attention .dot { background: var(--warn); animation: tool-pulse 1s ease-in-out infinite; }
 .ses-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .side-hint { font-size: 12px; color: var(--text-faint); padding: 6px 10px; }
-.side-load-more { width: 100%; margin-top: 6px; padding: 7px; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
+.side-load-more { width: 100%; margin-top: 6px; padding: 7px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
 .side-load-more:hover { background: var(--surface-hover); color: var(--text); }
 .side-load-more:disabled { cursor: default; opacity: .6; }
 
@@ -126,7 +126,7 @@ button.side-item.ses { cursor: pointer; user-select: none; padding-right: 34px; 
   width: 100%; text-align: left; margin: 0 0 6px;
   padding: 8px 10px; font: inherit; cursor: pointer;
   background: var(--clay-soft); color: var(--text);
-  border: 1px solid var(--border); border-radius: var(--radius-md, 10px);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
   transition: background .12s ease, border-color .12s ease;
 }
 .update-card:hover { background: var(--surface-hover); border-color: var(--clay); }

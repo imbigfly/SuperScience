@@ -8,20 +8,20 @@
 .fb-source:focus { outline: none; border-color: var(--clay); }
 .fb-crumb { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
 .fb-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.fb-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-input); color: var(--text-muted); font: inherit; font-size: 11.5px; cursor: pointer; }
+.fb-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-input); color: var(--text-muted); font: inherit; font-size: 11.5px; cursor: pointer; }
 .fb-actions button:hover, .fb-actions button:focus-visible { border-color: var(--clay); color: var(--text); }
 .fb-actions button .gi, .fb-actions button svg { width: 14px; height: 14px; }
 .fb-search { width: 100%; box-sizing: border-box; padding: 8px 12px; margin: 6px 0 2px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text); font: inherit; font-size: 13px; }
 .fb-search:focus { outline: none; border-color: var(--clay); }
-.fb-up { background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; cursor: pointer; font: inherit; color: var(--text); }
+.fb-up { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 4px 8px; cursor: pointer; font: inherit; color: var(--text); }
 .fb-path { font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fb-path-input { min-width: 0; flex: 1 1 auto; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); color: var(--text); }
+.fb-path-input { min-width: 0; flex: 1 1 auto; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-input); color: var(--text); }
 .fb-path-input:focus { outline: none; border-color: var(--clay); }
 .fb-list { display: flex; flex-direction: column; gap: 4px; max-height: 360px; overflow-y: auto; margin: 4px -2px; padding: 2px; }
 .fb-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; cursor: pointer; font: inherit; color: var(--text); transition: border-color .12s ease; }
 .fb-row:hover { border-color: var(--clay); }
 .fb-row.dir { background: var(--bg-sunken); }
-.fb-row-action { width: 26px; height: 26px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text-faint); cursor: pointer; }
+.fb-row-action { width: 26px; height: 26px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid transparent; border-radius: var(--radius-xs); background: transparent; color: var(--text-faint); cursor: pointer; }
 .fb-row-action:hover, .fb-row-action:focus-visible { border-color: var(--border-strong); background: var(--bg-sunken); color: var(--clay-strong); }
 .fb-row-action .gi, .fb-row-action svg { width: 15px; height: 15px; }
 .fb-icon { flex: 0 0 auto; font-size: 14px; }
@@ -40,7 +40,7 @@
 .rp-files-empty p { margin: 0; }
 .fb-remote-error { gap: 10px; }
 .fb-error-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
-.fb-retry { padding: 6px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-input); color: var(--text); cursor: pointer; }
+.fb-retry { padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-input); color: var(--text); cursor: pointer; }
 /* Filled look comes from shared button.primary in base.css. */
 
 /* Tiled/grid mode: lay file rows out as centered cards with a large icon */
@@ -105,7 +105,7 @@
 /* ---------- Skill Manager ---------- */
 .skill-tags-filter button {
   background: var(--bg-input); color: var(--text-muted);
-  border: 1px solid var(--border); border-radius: 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-xs);
   padding: 7px 10px; font: inherit; font-size: 12.5px; cursor: pointer;
 }
 .skill-tags-filter button:hover { color: var(--text); border-color: var(--border-strong); }
@@ -131,7 +131,7 @@
   font-size: 12px;
   padding: 6px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   background: var(--bg-input);
   color: var(--text);
   outline: none;

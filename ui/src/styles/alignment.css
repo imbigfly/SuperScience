@@ -7,7 +7,7 @@
 .sidebar-head { position: relative; display: flex; align-items: center; gap: 4px; padding: 4px 4px 6px; }
 .side-back {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 7px;
+  width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: var(--radius-xs);
   background: transparent; color: var(--text-faint); cursor: pointer;
   transition: background .12s ease, color .12s ease;
 }
@@ -39,7 +39,7 @@
 }
 .proj-menu-item {
   width: 100%; display: flex; align-items: center; gap: 8px;
-  background: transparent; border: none; border-radius: 8px;
+  background: transparent; border: none; border-radius: var(--radius-xs);
   padding: 8px 10px; font: inherit; font-size: 13px; color: var(--text);
   cursor: pointer; text-align: left;
 }
@@ -49,7 +49,7 @@
 .proj-menu-list { display: flex; flex-direction: column; gap: 1px; }
 .proj-menu-row {
   display: flex; align-items: center; gap: 8px; width: 100%;
-  background: transparent; border: none; border-radius: 8px;
+  background: transparent; border: none; border-radius: var(--radius-xs);
   padding: 7px 10px; font: inherit; color: var(--text); cursor: pointer; text-align: left;
 }
 .proj-menu-row:hover { background: var(--bg-sunken); }
@@ -68,7 +68,7 @@
 .proj-settings-modal .ps-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .proj-settings-modal .ps-close {
   flex: 0 0 auto; background: transparent; border: none; color: var(--text-faint);
-  font-size: 20px; line-height: 1; padding: 2px 6px; border-radius: 7px; cursor: pointer;
+  font-size: 20px; line-height: 1; padding: 2px 6px; border-radius: var(--radius-xs); cursor: pointer;
 }
 .proj-settings-modal .ps-close:hover { color: var(--text); background: var(--bg-sunken); }
 .proj-settings-modal .ps-hint { font-size: 11.5px; line-height: 1.4; font-weight: 400; color: var(--text-faint); }
@@ -89,11 +89,11 @@
 .side-group-title { font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--text-faint); padding: 12px 10px 4px; }
 .side-list .side-group-title:first-child { padding-top: 4px; }
 
-.side-folder-wrap { display: flex; flex-direction: column; gap: 1px; margin-bottom: 2px; border-radius: 8px; border: 1px solid transparent; }
+.side-folder-wrap { display: flex; flex-direction: column; gap: 1px; margin-bottom: 2px; border-radius: var(--radius-xs); border: 1px solid transparent; }
 .side-folder-wrap.drop-target { background: var(--clay-soft); border-color: var(--clay); }
 .side-folder-wrap.drop-target .side-folder { color: var(--text); }
 .side-folder {
-  display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px;
+  display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: var(--radius-xs);
   font-size: 13px; color: var(--text-muted); cursor: pointer; user-select: none;
   border: 1px solid transparent;
 }
@@ -109,7 +109,7 @@
 /* Branch sessions nested under the session they were forked from (#531). */
 .side-branch-group { display: flex; flex-direction: column; gap: 1px; }
 .side-branch-kids { display: flex; flex-direction: column; gap: 1px; margin-left: 12px; padding-left: 8px; border-left: 1px solid var(--border); }
-.side-ungrouped { display: flex; flex-direction: column; gap: 1px; min-height: 24px; border-radius: 8px; border: 1px solid transparent; }
+.side-ungrouped { display: flex; flex-direction: column; gap: 1px; min-height: 24px; border-radius: var(--radius-xs); border: 1px solid transparent; }
 .side-ungrouped.drop-target { background: var(--clay-soft); border-color: var(--clay); }
 .side-item.ses.dragging { opacity: .45; cursor: grabbing; }
 
@@ -150,7 +150,7 @@ details.step > summary .step-count { flex: 0 0 auto; font-size: 11.5px; color: v
 .finding { align-self: stretch; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--bg-elev); box-shadow: var(--shadow-sm); }
 .finding-head { display: flex; align-items: center; gap: 9px; padding: 11px 13px 9px; }
 .finding-avatar { font-size: 12px; color: var(--text-faint); font-weight: 600; }
-.finding-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 2px 8px; border-radius: 6px; display: inline-flex; align-items: center; gap: 5px; }
+.finding-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 2px 8px; border-radius: var(--radius-xs); display: inline-flex; align-items: center; gap: 5px; }
 .finding.warn .finding-tag { color: var(--warn); background: var(--warn-soft); }
 .finding.info .finding-tag { color: var(--info); background: var(--info-soft); }
 .finding.err .finding-tag { color: var(--err); background: color-mix(in srgb, var(--err) 12%, transparent); }

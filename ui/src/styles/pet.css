@@ -20,7 +20,7 @@
 
 .wisp-pet.is-visible { display: block; animation: pet-arrive .42s var(--motion-ease-emphasized); }
 .wisp-pet:hover { filter: drop-shadow(0 11px 15px rgba(22, 20, 16, .23)); }
-.wisp-pet:focus-visible { outline: 2px solid var(--clay); outline-offset: 4px; border-radius: 18px; }
+.wisp-pet:focus-visible { outline: 2px solid var(--clay); outline-offset: 4px; border-radius: var(--radius); }
 .wisp-pet-sprite { display: block; width: 96px; height: 104px; background-repeat: no-repeat; background-size: 800% 1100%; image-rendering: auto; }
 .wisp-pet-status { position: absolute; right: 4px; bottom: 3px; width: 8px; height: 8px; border: 2px solid var(--bg-app); border-radius: 50%; background: var(--text-faint); opacity: 0; transform: scale(.6); transition: opacity .2s ease, transform .2s ease, background .2s ease; }
 .wisp-pet[data-state="running"] .wisp-pet-status,

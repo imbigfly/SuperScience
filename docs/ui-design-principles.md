@@ -13,6 +13,18 @@
 - Toolbar rows that already own chrome (modal/settings `.row`, plugin toolbar, plan/approval actions, file retry) use `button.primary` for the filled clay look; do not redefine clay fills per surface.
 - Do not use bare `button.primary` for sidebar nav — `.side-btn.primary` is a soft affordance, not a filled CTA.
 
+## Spacing, type, and radius
+
+- Prefer `--space-1`…`--space-7`, `--text-xs`…`--text-display`, and the three radius tiers (`--radius-xs` / `--radius-sm` / `--radius`) from `base.css`.
+- Map near-miss radii onto those tiers (6–9→xs, 10–14→sm, 16–22→lg). Keep `999px` pills, `50%` circles, and asymmetric chat bubbles as literals.
+- Adopt the scale first on brand surfaces (projects landing, chat empty, research graph); avoid one-off px when extending those surfaces.
+
+## Brand surfaces
+
+- Projects landing keeps a serif hero title with the logo mark and a soft clay wash — not a dashboard of promo cards.
+- Chat empty and research-graph empty reuse the logo treatment (`.empty-logo` / `.rp-empty-icon.brand`) instead of dashed placeholders.
+- Research graph headings use Source Serif at `--text-lg`; list/canvas stay utilitarian.
+
 ## Composer attachments and references
 
 - Files, images, skills, artifacts, and conversation references must remain visually distinguishable before and after send.

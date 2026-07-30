@@ -12,7 +12,7 @@
 }
 .ctx-item {
   display: block; width: 100%; text-align: left;
-  background: transparent; border: none; border-radius: 6px;
+  background: transparent; border: none; border-radius: var(--radius-xs);
   padding: 8px 10px; font: inherit; font-size: 13px; color: var(--text);
   cursor: pointer;
 }
