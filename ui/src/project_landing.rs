@@ -25,6 +25,7 @@ pub(super) fn ProjectLanding(
     state: ProjectLandingState,
     open_project: Callback<String>,
     open_project_session: Callback<(String, String)>,
+    open_scratch: Callback<()>,
     open_settings: Callback<Option<String>>,
     open_library: Callback<()>,
 ) -> impl IntoView {
@@ -74,6 +75,7 @@ pub(super) fn ProjectLanding(
                     on_open_settings=on_open_settings
                     on_open_library=open_library
                     on_open_demo=on_open_demo
+                    on_open_scratch=open_scratch
                     on_search=Callback::new(move |_| command_palette_open.set(true))
                 />
             }

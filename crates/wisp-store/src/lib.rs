@@ -43,6 +43,7 @@ pub use library::{
 pub use models::*;
 pub use project_sync::ProjectSyncState;
 pub use project_transfer::ProjectTransferStats;
+pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
 pub use sessions::{SessionTokenUsage, SessionTranscriptPage};
 
 use anyhow::Result;

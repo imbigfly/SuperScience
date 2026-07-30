@@ -2,6 +2,13 @@ use super::Store;
 use anyhow::Result;
 use sqlx::Row;
 
+/// Ephemeral scratch-chat projects use this id prefix and never appear in user-facing lists.
+pub const SCRATCH_PROJECT_PREFIX: &str = "scratch:";
+
+pub fn is_scratch_project_id(id: &str) -> bool {
+    id.starts_with(SCRATCH_PROJECT_PREFIX)
+}
+
 impl Store {
     pub async fn create_project(&self, id: &str, name: &str, workspace_dir: &str) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
@@ -59,7 +66,9 @@ impl Store {
                     (SELECT COUNT(*) FROM frames f WHERE f.project_id = p.id AND f.parent_frame_id = f.id \
                        AND EXISTS (SELECT 1 FROM messages m WHERE m.frame_id = f.id AND m.role='user')) AS sessions, \
                     (SELECT COUNT(*) FROM artifacts a WHERE a.project_id = p.id) AS artifacts \
-             FROM projects p ORDER BY p.updated_at DESC, p.rowid DESC",
+             FROM projects p \
+             WHERE p.id NOT LIKE 'scratch:%' \
+             ORDER BY p.updated_at DESC, p.rowid DESC",
         )
         .fetch_all(&self.pool).await?;
         let mut out = vec![];
@@ -76,6 +85,18 @@ impl Store {
             ));
         }
         Ok(out)
+    }
+
+    /// All scratch projects still in the database (e.g. after a crash before close).
+    pub async fn list_scratch_projects(&self) -> Result<Vec<(String, String)>> {
+        let rows = sqlx::query(
+            "SELECT id, COALESCE(workspace_dir,'') AS ws FROM projects WHERE id LIKE 'scratch:%'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| Ok((r.try_get("id")?, r.try_get("ws")?)))
+            .collect()
     }
 
     /// Delete a project and everything under it. Explicit child deletes (SQLite

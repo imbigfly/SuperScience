@@ -3437,3 +3437,57 @@ async fn turn_undo_keeps_the_first_preimage_and_removes_owned_artifacts() {
     assert_eq!(remaining[0].0, "shared-artifact");
     let _ = std::fs::remove_file(&tmp);
 }
+
+#[tokio::test]
+async fn scratch_projects_hidden_from_user_lists() {
+    use crate::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
+
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_scratch_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store
+        .create_project("real", "Real", "/tmp/real")
+        .await
+        .unwrap();
+    let scratch_id = format!("{SCRATCH_PROJECT_PREFIX}temp");
+    store
+        .create_project(&scratch_id, "Scratch", "/tmp/scratch")
+        .await
+        .unwrap();
+    assert!(is_scratch_project_id(&scratch_id));
+
+    store
+        .create_frame("f-real", "real", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_message("f-real", 1, &Message::user("hello"))
+        .await
+        .unwrap();
+    store
+        .create_frame("f-scratch", &scratch_id, "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_message("f-scratch", 1, &Message::user("scratch"))
+        .await
+        .unwrap();
+
+    let projects = store.list_projects().await.unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].0, "real");
+
+    let recent = store.list_recent_sessions_detail(10).await.unwrap();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].project_id, "real");
+
+    let hits = store
+        .search_sessions(None, "hello", 10, None)
+        .await
+        .unwrap();
+    assert!(hits.iter().all(|h| h.project_id == "real"));
+
+    let _ = std::fs::remove_file(&tmp);
+}

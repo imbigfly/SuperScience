@@ -5335,6 +5335,17 @@ test("selecting preview text quotes it into chat and saves a review annotation",
   await expect(page.locator(".topbar .hint")).toContainText("reviews/");
 });
 
+test("scratch chat opens from landing and closes on Escape", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator(".projects-screen")).toBeVisible();
+  await page.getByRole("button", { name: "Scratch chat" }).click();
+  await expect(page.locator(".app.scratch-mode")).toBeVisible();
+  await expect(page.locator(".scratch-title")).toHaveText("Scratch chat");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".app.scratch-mode")).toHaveCount(0);
+  await expect(page.locator(".projects-screen")).toBeVisible();
+});
+
 test("projects landing stays centered on wide windows", async ({ page }) => {
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto("/");

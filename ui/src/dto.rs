@@ -1605,6 +1605,15 @@ pub(crate) struct FileSearchHit {
 }
 
 #[derive(Deserialize, Clone)]
+pub(crate) struct ScratchChatInfo {
+    #[serde(rename = "sessionId")]
+    pub(crate) session_id: String,
+    #[serde(rename = "projectId")]
+    #[allow(dead_code)]
+    pub(crate) project_id: String,
+}
+
+#[derive(Deserialize, Clone)]
 #[allow(dead_code)]
 pub(crate) struct ProjectInfo {
     #[serde(default)]

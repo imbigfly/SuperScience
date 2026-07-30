@@ -1,5 +1,19 @@
 /* ---------- Projects landing screen ---------- */
 .app-hidden { display: none; }
+.app.scratch-mode {
+  position: fixed; inset: 0; z-index: 95; background: var(--bg-app);
+  display: flex !important; flex-direction: column;
+}
+body:has(.window-titlebar) .app.scratch-mode { top: 38px; height: calc(100% - 38px); }
+.app.scratch-mode .sidebar { display: none; }
+.app.scratch-mode .scratch-topbar { display: flex; }
+.app.scratch-mode .topbar .center-tabs,
+.app.scratch-mode .topbar > .icon-btn { display: none; }
+.scratch-topbar {
+  display: none; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0;
+}
+.scratch-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.scratch-topbar .scratch-close { margin-left: auto; }
 .projects-screen { position: absolute; inset: 0; z-index: 20; background: var(--bg-app);
   overflow-y: auto; padding: 40px clamp(20px, 4vw, 48px); display: flex; flex-direction: column; align-items: center;
   animation: motion-fade-in var(--motion-duration-slow) var(--motion-ease-standard) both; }
