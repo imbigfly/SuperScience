@@ -8,7 +8,11 @@ body:has(.window-titlebar) .app.scratch-mode { top: 38px; height: calc(100% - 38
 .app.scratch-mode .sidebar { display: none; }
 .app.scratch-mode .scratch-topbar { display: flex; }
 .app.scratch-mode .topbar .center-tabs,
-.app.scratch-mode .topbar > .icon-btn { display: none; }
+.app.scratch-mode .topbar > .icon-btn,
+.app.scratch-mode .topbar-actions,
+.app.scratch-mode .topbar .hint,
+.app.scratch-mode .topbar .session-specialist,
+.app.scratch-mode .topbar > .spacer { display: none; }
 .scratch-topbar {
   display: none; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0;
 }

@@ -1314,7 +1314,11 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await expect(palette.locator(".project-search-row.active")).toBeVisible();
   await input.fill("");
 
-  await input.press("ArrowDown");
+  // Filter by command name so inserting a new action does not change which row Enter runs.
+  await input.fill("search projects");
+  await expect(palette.locator(".project-search-row.active")).toContainText(
+    "Search projects, artifacts, and sessions",
+  );
   await input.press("Enter");
   await expect(page.getByPlaceholder("Search this project…")).toBeVisible();
   await page.keyboard.press("Escape");
@@ -5370,6 +5374,9 @@ test("scratch chat opens from landing and closes on Escape", async ({ page }) =>
   await page.getByRole("button", { name: "Scratch chat" }).click();
   await expect(page.locator(".app.scratch-mode")).toBeVisible();
   await expect(page.locator(".scratch-title")).toHaveText("Scratch chat");
+  // Scratch chrome is title + close only — inbox/terminal/panel stay project-scoped.
+  await expect(page.locator(".topbar-actions")).toBeHidden();
+  await expect(page.locator(".scratch-close")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator(".app.scratch-mode")).toHaveCount(0);
   await expect(page.locator(".projects-screen")).toBeVisible();
