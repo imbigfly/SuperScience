@@ -6093,6 +6093,106 @@ test("manual dynamic drafts accept arbitrary tasks", async ({ page }) => {
   await expect(card.locator('[data-step-id$=":compare"] .agent-chip.dependency')).toHaveText("inspect");
 });
 
+test("roundtable template combines Specialist roles with ACP executors in a two-round DAG", async ({ page }) => {
+  await enterApp(page);
+  await enableDelegation(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
+  const panel = page.getByTestId("agent-workflows");
+
+  await panel.getByTestId("roundtable-template").locator("summary").click();
+  await expect(panel.getByTestId("roundtable-apply")).toBeDisabled();
+  await panel.getByTestId("agent-goal").fill("Choose a website architecture");
+  await expect(panel.getByTestId("roundtable-apply")).toBeEnabled();
+  await expect(panel.getByTestId("roundtable-participant-count")).toHaveValue("2");
+  const assignments = panel.getByTestId("roundtable-assignment");
+  await expect(assignments).toHaveCount(3);
+
+  const firstSeat = assignments.nth(0);
+  await firstSeat.getByTestId("roundtable-specialist").selectOption("reader");
+  await firstSeat.getByTestId("roundtable-executor").selectOption("acp:generic-acp");
+  await expect(firstSeat.getByTestId("roundtable-model")).toBeDisabled();
+
+  const secondSeat = assignments.nth(1);
+  await secondSeat.getByTestId("roundtable-specialist").selectOption("reviewer");
+  await secondSeat.getByTestId("roundtable-executor").selectOption("native");
+  await secondSeat.getByTestId("roundtable-model").selectOption("opus");
+
+  const chair = assignments.nth(2);
+  await chair.getByTestId("roundtable-executor").selectOption("acp:generic-acp");
+  await panel.getByTestId("roundtable-apply").click();
+
+  const tasks = panel.locator(".dynamic-agent-task");
+  await expect(tasks).toHaveCount(5);
+  const taskIds = [
+    "seat_1_opening",
+    "seat_2_opening",
+    "seat_1_review",
+    "seat_2_review",
+    "chair_synthesis",
+  ];
+  for (const [index, taskId] of taskIds.entries()) {
+    await expect(tasks.nth(index).getByTestId("dynamic-task-id")).toHaveValue(taskId);
+  }
+
+  for (const index of [0, 2]) {
+    await expect(tasks.nth(index).getByTestId("dynamic-task-specialist")).toHaveValue("reader");
+    await tasks.nth(index).locator("details.dynamic-agent-advanced > summary").click();
+    await expect(tasks.nth(index).getByTestId("dynamic-task-executor")).toHaveValue("acp:generic-acp");
+  }
+  for (const index of [1, 3]) {
+    await expect(tasks.nth(index).getByTestId("dynamic-task-specialist")).toHaveValue("reviewer");
+    await tasks.nth(index).locator("details.dynamic-agent-advanced > summary").click();
+    await expect(tasks.nth(index).getByTestId("dynamic-task-executor")).toHaveValue("native");
+    await expect(tasks.nth(index).getByTestId("dynamic-task-model")).toHaveValue("opus");
+  }
+
+  await panel.getByTestId("agent-create").click();
+  await expect.poll(() => lastInvokeArgs(page, "create_dynamic_agent_workflow")).toMatchObject({
+    proposal: {
+      goal: "Choose a website architecture",
+      tasks: [
+        {
+          id: "seat_1_opening",
+          depends_on: [],
+          specialist_id: "reader",
+          executor: { kind: "acp", profile_id: "generic-acp" },
+        },
+        {
+          id: "seat_2_opening",
+          depends_on: [],
+          specialist_id: "reviewer",
+          model_id: "opus",
+          executor: { kind: "native" },
+        },
+        {
+          id: "seat_1_review",
+          depends_on: ["seat_1_opening", "seat_2_opening"],
+          specialist_id: "reader",
+          executor: { kind: "acp", profile_id: "generic-acp" },
+        },
+        {
+          id: "seat_2_review",
+          depends_on: ["seat_1_opening", "seat_2_opening"],
+          specialist_id: "reviewer",
+          model_id: "opus",
+          executor: { kind: "native" },
+        },
+        {
+          id: "chair_synthesis",
+          depends_on: ["seat_1_review", "seat_2_review"],
+          executor: { kind: "acp", profile_id: "generic-acp" },
+        },
+      ],
+    },
+  });
+  const proposal = (await lastInvokeArgs(page, "create_dynamic_agent_workflow")).proposal;
+  expect(proposal.tasks.every((task: any) =>
+    task.instruction.includes("Choose a website architecture"))).toBe(true);
+  expect(proposal.tasks[1].capabilities).toContain("review");
+  expect(proposal.tasks[3].capabilities).toContain("review");
+});
+
 test("dynamic task removal uses a compact enabled control when multiple tasks exist", async ({ page }) => {
   await enterApp(page);
   await enableDelegation(page);
