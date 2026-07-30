@@ -1314,7 +1314,11 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await expect(palette.locator(".project-search-row.active")).toBeVisible();
   await input.fill("");
 
-  await input.press("ArrowDown");
+  // Filter by command name so inserting a new action does not change which row Enter runs.
+  await input.fill("search projects");
+  await expect(palette.locator(".project-search-row.active")).toContainText(
+    "Search projects, artifacts, and sessions",
+  );
   await input.press("Enter");
   await expect(page.getByPlaceholder("Search this project…")).toBeVisible();
   await page.keyboard.press("Escape");
