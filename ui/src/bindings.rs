@@ -40,6 +40,8 @@ extern "C" {
         callback: &js_sys::Function,
     ) -> Result<JsValue, JsValue>;
     pub(crate) async fn listen(event: &str, cb: &js_sys::Function) -> JsValue;
+    #[wasm_bindgen(js_name = listen_current_window)]
+    pub(crate) async fn listen_current_window(event: &str, cb: &js_sys::Function) -> JsValue;
     #[wasm_bindgen(js_name = listen_native_file_drop)]
     pub(crate) async fn listen_native_file_drop(cb: &js_sys::Function) -> JsValue;
     pub(crate) async fn mount_preview(kind: &str, el_id: &str, payload: &str) -> JsValue;

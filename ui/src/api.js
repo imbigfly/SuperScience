@@ -256,6 +256,19 @@ export async function listen(event, cb) {
   return bus.listen(event, (e) => cb(e.payload));
 }
 
+// Register navigation events against this exact native window. The top-level
+// event.listen API uses an application-wide target, so every open project
+// window would otherwise receive an emit_to("proj-*", "open-session", ...)
+// event and jump to the same completed conversation.
+export async function listen_current_window(event, cb) {
+  const current = window.__TAURI__?.window?.getCurrentWindow?.();
+  if (!current?.listen) {
+    console.error(new Error(`Tauri window event bridge is not available while listening for ${event}.`));
+    return () => {};
+  }
+  return current.listen(event, (e) => cb(e.payload));
+}
+
 function normalizeNativeDropPayload(event) {
   const payload = event?.payload ?? event ?? {};
   const position = payload.position ?? {};

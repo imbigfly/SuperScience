@@ -21,10 +21,11 @@ use agent_workflows::{
 use bindings::{
     attach_chat_autoscroll, clear_selection, close_mcp_app, download_app_update, force_chat_bottom,
     invoke, invoke_checked, invoke_timeout, is_mac, is_windows, jump_chat_to_item,
-    jump_chat_to_last_user, jump_chat_to_user, listen, listen_native_file_drop, mount_mcp_app,
-    mount_terminal, native_drop_in_composer, open_external_url, park_mcp_app, pasted_image_count,
-    preserve_chat_prepend_position, preview_selection, schedule_chat_follow, set_saved_marks,
-    set_terminal_active, unmount_terminal, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
+    listen_native_file_drop, mount_mcp_app, mount_terminal, native_drop_in_composer,
+    open_external_url, park_mcp_app, pasted_image_count, preserve_chat_prepend_position,
+    preview_selection, schedule_chat_follow, set_saved_marks, set_terminal_active,
+    unmount_terminal, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -6757,7 +6758,9 @@ fn App() -> impl IntoView {
         })
     };
     // Sent by the pet (to "main") and by `open_project_window` targeting a
-    // session in an already-open project window (#423).
+    // session in an already-open project window (#423). This listener must be
+    // window-scoped: the generic event listener is app-wide, so a targeted
+    // completion navigation would otherwise repoint every project window.
     let event_open_project = open_project_transition;
     let open_session_cb = Closure::wrap(Box::new(move |payload: JsValue| {
         let Ok(target) = serde_wasm_bindgen::from_value::<serde_json::Value>(payload) else {
@@ -6777,7 +6780,7 @@ fn App() -> impl IntoView {
         .clone();
     open_session_cb.forget();
     spawn_local(async move {
-        let _ = listen("open-session", &open_session_js).await;
+        let _ = listen_current_window("open-session", &open_session_js).await;
     });
     // Cross-project opens from inside a workspace go to the target project's
     // own window (#423). The landing (and a window with no project yet) keeps

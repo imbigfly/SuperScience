@@ -6054,6 +6054,12 @@ test("notification navigation opens the project and session that need the user (
   await expect.poll(() => page.evaluate(() =>
     (window as any).__tauriListenerReady("open-session"),
   )).toBe(true);
+  // `open-session` is emitted to one native window. Registering through the
+  // app-wide event bus makes every open project window consume that target and
+  // collapse onto the same project/session after task completion.
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).__tauriListenerScope("open-session"),
+  )).toBe("window");
   await page.evaluate(() => {
     (window as any).__tauriEmit("open-session", {
       projectId: "other",
