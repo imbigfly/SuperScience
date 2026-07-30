@@ -61,6 +61,7 @@ mod run_context;
 mod runtime_commands;
 mod runtime_config_tool;
 mod runtime_launcher;
+mod scratch_commands;
 mod seed;
 mod session_commands;
 mod session_context_tool;
@@ -1790,6 +1791,8 @@ struct AppState {
     /// Session ids with an in-flight manual or automatic review. Reviews in
     /// unrelated conversations remain independent.
     reviewing: Arc<StdMutex<HashSet<String>>>,
+    /// Per-window ephemeral scratch chat (restored on close).
+    scratch: std::sync::RwLock<HashMap<String, scratch_commands::ScratchWindow>>,
 }
 
 impl AppState {
@@ -6027,6 +6030,10 @@ pub fn run() {
             std::fs::create_dir_all(&app_data).expect("create app data dir");
             let db_path = app_data.join("wisp.sqlite");
             let store = tauri::async_runtime::block_on(Store::open(&db_path)).expect("open store");
+            tauri::async_runtime::block_on(scratch_commands::purge_orphan_scratch_projects(
+                &store,
+                &app_data,
+            ));
             tauri::async_runtime::block_on(models::load_custom_credentials(&store))
                 .expect("load custom credentials");
             let library = tauri::async_runtime::block_on(LibraryStore::open(
@@ -6164,6 +6171,7 @@ pub fn run() {
                 approval_grants,
                 bootstrap,
                 reviewing: Arc::new(StdMutex::new(HashSet::new())),
+                scratch: std::sync::RwLock::new(HashMap::new()),
             };
             #[cfg(target_os = "windows")]
             let pet_enabled = tauri::async_runtime::block_on(async {
@@ -6315,6 +6323,8 @@ pub fn run() {
             terminal_sessions::resize_terminal,
             terminal_sessions::close_terminal,
             session_commands::new_session,
+            scratch_commands::start_scratch_chat,
+            scratch_commands::close_scratch_chat,
             session_commands::branch_session,
             session_commands::list_sessions_page,
             runtime_commands::list_execution_contexts,

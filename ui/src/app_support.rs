@@ -9911,6 +9911,7 @@ pub(super) fn ProjectsScreen(
     on_open_settings: Callback<()>,
     on_open_library: Callback<()>,
     on_open_demo: Callback<()>,
+    on_open_scratch: Callback<()>,
     on_search: Callback<()>,
 ) -> impl IntoView {
     let projects = create_rw_signal(Vec::<ProjectSummary>::new());
@@ -10255,6 +10256,10 @@ pub(super) fn ProjectsScreen(
                         aria-label=move || t(locale.get(), "sidebar.settings")
                         on:click=move |_| on_open_settings.call(())>
                         <span class="gi gear"></span>
+                    </button>
+                    <button type="button" class="btn-ghost projects-scratch"
+                        on:click=move |_| on_open_scratch.call(())>
+                        {move || t(locale.get(), "scratch.open")}
                     </button>
                     <button type="button" class="btn-ghost projects-import"
                         disabled=move || importing.get()
@@ -10776,6 +10781,7 @@ pub(super) fn CommandPalette(
     on_open_artifact: Callback<(String, String, String)>,
     on_command: Callback<&'static str>,
     on_new_session: Callback<()>,
+    on_open_scratch: Callback<()>,
     on_project_settings: Callback<()>,
     on_manage_skills: Callback<()>,
     on_attach: Callback<ComposerReferenceChip>,
@@ -10862,6 +10868,7 @@ pub(super) fn CommandPalette(
             });
         }
         out.extend(ss.into_iter().map(CommandPaletteItem::Session));
+        out.push(CommandPaletteItem::Command("scratch"));
         out.push(CommandPaletteItem::Command("new"));
         out.push(CommandPaletteItem::Command("check-updates"));
         out.push(CommandPaletteItem::Command("star-us"));
@@ -10888,6 +10895,7 @@ pub(super) fn CommandPalette(
             CommandPaletteItem::Session(s) => {
                 on_open_session.call((s.project_id, s.id, new_window))
             }
+            CommandPaletteItem::Command("scratch") => on_open_scratch.call(()),
             CommandPaletteItem::Command("new") => on_new_session.call(()),
             CommandPaletteItem::Command("check-updates") => on_command.call("check-updates"),
             CommandPaletteItem::Command("star-us") => on_command.call("star-us"),
@@ -10966,6 +10974,7 @@ pub(super) fn CommandPalette(
                                 CommandPaletteItem::Project(p) => ("folder", p.name, p.description),
                                 CommandPaletteItem::Artifact(a) => ("doc", a.name, a.project_name.unwrap_or_default()),
                                 CommandPaletteItem::Session(s) => ("bubble", s.title, s.project_name),
+                                CommandPaletteItem::Command("scratch") => ("bubble", t(locale.get(), "command.scratch").to_string(), t(locale.get(), "command.category")),
                                 CommandPaletteItem::Command("new") => ("plus", t(locale.get(), "projects.new").to_string(), t(locale.get(), "command.category")),
                                 CommandPaletteItem::Command("check-updates") => ("gear", t(locale.get(), "command.check_updates").to_string(), t(locale.get(), "command.category")),
                                 CommandPaletteItem::Command("star-us") => ("star", t(locale.get(), "command.star_us").to_string(), t(locale.get(), "command.category")),
@@ -11035,6 +11044,13 @@ pub(super) fn ActionPalette(
         let navigate = t(loc, "command.group.navigate").to_string();
         let appearance = t(loc, "command.group.appearance").to_string();
         let entries = [
+            (
+                "scratch",
+                "bubble",
+                "command.scratch",
+                general.clone(),
+                "Ctrl/⌘ Shift N",
+            ),
             (
                 "new",
                 "plus",

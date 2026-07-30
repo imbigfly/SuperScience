@@ -197,6 +197,7 @@ impl Store {
                 (SELECT COALESCE(MAX(ts), f.updated_at) FROM messages m WHERE m.frame_id = f.id) > f.seen_at AS unseen \
              FROM frames f \
              WHERE f.parent_frame_id = f.id \
+               AND f.project_id NOT LIKE 'scratch:%' \
                AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role='user') \
              ORDER BY activity_at DESC, f.rowid DESC LIMIT ?",
         )
@@ -1293,6 +1294,7 @@ impl Store {
                     (SELECT COALESCE(MAX(ts), f.updated_at) FROM messages m WHERE m.frame_id=f.id) > f.seen_at AS unseen \
              FROM frames f JOIN projects p ON p.id=f.project_id \
              WHERE f.parent_frame_id=f.id \
+               AND f.project_id NOT LIKE 'scratch:%' \
                AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id=f.id AND mm.role='user') \
                AND (? IS NULL OR f.project_id=?) \
                AND (? IS NULL OR f.id=?) \
