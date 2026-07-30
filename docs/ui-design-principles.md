@@ -7,6 +7,12 @@
 - Text remains appropriate for labels, status values, scientific notation, and keyboard hints such as `↑↓` or `⌘K`.
 - Icon-only controls must retain an accessible `title` or `aria-label`.
 
+## Buttons
+
+- Standalone CTAs use `.btn-primary` / `.btn-ghost` from `ui/src/styles/base.css`.
+- Toolbar rows that already own chrome (modal/settings `.row`, plugin toolbar, plan/approval actions, file retry) use `button.primary` for the filled clay look; do not redefine clay fills per surface.
+- Do not use bare `button.primary` for sidebar nav — `.side-btn.primary` is a soft affordance, not a filled CTA.
+
 ## Composer attachments and references
 
 - Files, images, skills, artifacts, and conversation references must remain visually distinguishable before and after send.
@@ -14,6 +20,13 @@
 - Persisted transcript markers such as `Uploaded files:` and `Selected skills:` are transport metadata. The chat UI renders them as cards instead of exposing the raw marker text.
 - Long attachment names truncate inside the card; the full value remains available through the control's title.
 - Remove controls live inside the related card and retain an accessible label.
+
+## Topbar and inspector chrome
+
+- The conversation topbar keeps session tabs as the primary signal. Inbox, terminal, and inspector toggles live in `.topbar-actions`.
+- Status text appears only when non-empty (or when an API-key action is required) and truncates with a `title` for the full value.
+- Specialist labels stay quiet text, not status pills.
+- Artifact type badges are neutral mono labels; only tabular data keeps a clay accent. Prefer `--ok` / `--err` / `--clay` over one-off HSL pill colors.
 
 ## Responsive workspace layout
 

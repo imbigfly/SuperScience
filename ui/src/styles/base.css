@@ -381,6 +381,65 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 
 
+/* ---------- Shared button primitives ---------- */
+/* Prefer .btn-primary / .btn-ghost for standalone actions. Toolbar rows that
+   already style their chrome use button.primary for the filled clay look.
+   Do not use bare button.primary globally — .side-btn.primary is a soft nav
+   affordance, not a filled CTA. */
+.btn-primary,
+.modal .row button.primary,
+.settings-page .row button.primary,
+.acp-agents-pane .row button.primary,
+.plugin-toolbar > button.primary,
+.center-file-btn.primary,
+.plan-card-actions button.primary,
+.plan-question-freeform button.primary,
+.approval-actions button.primary,
+.plan-feedback-actions button.primary,
+.fb-retry.primary {
+  background: var(--clay);
+  color: var(--on-clay);
+  border-color: transparent;
+  font-weight: 650;
+}
+.btn-primary {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 9px 16px;
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.btn-primary:hover:not(:disabled),
+.modal .row button.primary:hover:not(:disabled),
+.settings-page .row button.primary:hover:not(:disabled),
+.acp-agents-pane .row button.primary:hover:not(:disabled),
+.plugin-toolbar > button.primary:hover:not(:disabled),
+.center-file-btn.primary:hover:not(:disabled),
+.plan-card-actions button.primary:hover:not(:disabled),
+.plan-question-freeform button.primary:hover:not(:disabled),
+.approval-actions button.primary:hover:not(:disabled),
+.plan-feedback-actions button.primary:hover:not(:disabled),
+.fb-retry.primary:hover:not(:disabled) {
+  background: var(--clay-strong);
+}
+.btn-primary:disabled { opacity: .5; cursor: default; }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.btn-ghost:hover:not(:disabled) { background: var(--bg-sunken); }
+.btn-ghost:disabled { opacity: .5; cursor: default; }
+
 /* ---------- Scrollbars ---------- */
 ::-webkit-scrollbar { width: var(--scrollbar-size); height: var(--scrollbar-size); }
 ::-webkit-scrollbar-track { background: transparent; }

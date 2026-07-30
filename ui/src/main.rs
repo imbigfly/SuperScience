@@ -7994,20 +7994,28 @@ fn App() -> impl IntoView {
                         }
                     />
                 </div>
-                {move || session_specialist.get().map(|s| view! { <span class="session-specialist">{s.name}</span> })}
-                {move || if needs_api_key.get() {
-                    view! {
-                        <span class="hint hint-action">
-                            {move || t(locale.get(), "err.no_api_key")}" "
-                            <button type="button" class="link-inline" on:click=move |_| open_settings_fn(Some("models".into()))>
-                                {move || t(locale.get(), "status.open_settings")}
-                            </button>
-                        </span>
-                    }.into_view()
-                } else {
-                    view! { <span class="hint">{move || status.get()}</span> }.into_view()
+                {move || session_specialist.get().map(|s| view! {
+                    <span class="session-specialist" title=s.name.clone()>{s.name}</span>
+                })}
+                {move || {
+                    if needs_api_key.get() {
+                        Some(view! {
+                            <span class="hint hint-action">
+                                {move || t(locale.get(), "err.no_api_key")}" "
+                                <button type="button" class="link-inline" on:click=move |_| open_settings_fn(Some("models".into()))>
+                                    {move || t(locale.get(), "status.open_settings")}
+                                </button>
+                            </span>
+                        }.into_view())
+                    } else {
+                        let s = status.get();
+                        (!s.is_empty()).then(|| {
+                            view! { <span class="hint" title=s.clone()>{s}</span> }.into_view()
+                        })
+                    }
                 }}
                 <div class="spacer"></div>
+                <div class="topbar-actions">
                 <div class="inbox-wrap">
                     <button class="icon-btn"
                         class:active=move || inbox_open.get()
@@ -8088,6 +8096,7 @@ fn App() -> impl IntoView {
                             }
                         });
                     }><span class="gi panel"></span></button>
+                </div>
             </div>
 
             {move || center_file.get().and_then(|path| {

@@ -1216,6 +1216,34 @@ test("the needs-you inbox opens cross-project sessions in their own window", asy
   await expect(page.locator(".inbox-drop")).not.toBeVisible();
 });
 
+test("topbar groups chrome actions and hides an empty status hint", async ({ page }) => {
+  await enterApp(page);
+  const actions = page.locator(".topbar-actions");
+  await expect(actions).toBeVisible();
+  await expect(actions.locator(".inbox-wrap")).toHaveCount(1);
+  await expect(actions.getByRole("button", { name: "Open terminal" })).toHaveCount(1);
+  await expect(actions.getByRole("button", { name: "Toggle panel" })).toHaveCount(1);
+  // Idle sessions leave the status slot empty so tabs keep the width.
+  await expect(page.locator(".topbar .hint")).toHaveCount(0);
+});
+
+test("artifact type badges stay neutral instead of rainbow pills", async ({ page }) => {
+  await enterApp(page);
+  await page
+    .locator("#composer-input")
+    .fill("show `figures/panel_I_heatmap_4genes_median.png/.pdf`");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+
+  const badge = page.locator('.rp-tile[data-artifact-name="panel_I_heatmap_4genes_median.png"] .rp-badge');
+  await expect(badge).toHaveText("image");
+  await expect(badge).toHaveCSS("border-radius", "8px");
+  // Neutral label: muted text on elevated surface, not a saturated type color.
+  const color = await badge.evaluate((el) => getComputedStyle(el).color);
+  expect(color).not.toMatch(/hsl\(\s*160/i);
+});
+
 test("Cmd+K opens search and the composer shows the macOS shortcut", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "userAgent", {

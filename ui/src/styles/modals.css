@@ -28,8 +28,7 @@
 .modal .row button { background: var(--bg-input); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 9px 16px; font: inherit; font-size: 13.5px; cursor: pointer; transition: background .12s ease, border-color .12s ease; }
 .modal .row button:hover { border-color: var(--text-faint); }
 .modal .row button:disabled { opacity: .55; cursor: not-allowed; }
-.modal .row button.primary { background: var(--clay); color: var(--on-clay); border-color: transparent; font-weight: 650; }
-.modal .row button.primary:hover { background: var(--clay-strong); }
+/* .primary fill comes from shared button primitives in base.css */
 .session-transfer-modal { max-width: 520px; }
 .session-transfer-modal .hint { color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
 .session-transfer-modal .session-transfer-error { color: var(--err); }
@@ -206,13 +205,7 @@ textarea.host-input { min-height:64px; resize:vertical; }
   transition: background .12s ease, border-color .12s ease;
 }
 .acp-agents-pane .row button:hover { border-color: var(--text-faint); }
-.acp-agents-pane .row button.primary {
-  background: var(--clay);
-  color: var(--on-clay);
-  border-color: transparent;
-  font-weight: 650;
-}
-.acp-agents-pane .row button.primary:hover { background: var(--clay-strong); }
+/* .primary fill comes from shared button primitives in base.css */
 
 .artifact-modal { max-width: min(880px, 94vw); width: 100%; gap: 10px; min-width: 0; }
 .artifact-modal:not(.html-preview) { overflow: hidden; }

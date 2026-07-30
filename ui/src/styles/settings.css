@@ -21,8 +21,7 @@ body:has(.settings-page) .projects-screen { display: none; }
 .settings-page .row button { background: var(--bg-input); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 9px 16px; font: inherit; font-size: 13.5px; cursor: pointer; transition: background .12s ease, border-color .12s ease; }
 .settings-page .row button:hover { border-color: var(--text-faint); }
 .settings-page .row button:disabled { opacity: .55; cursor: not-allowed; }
-.settings-page .row button.primary { background: var(--clay); color: var(--on-clay); border-color: transparent; font-weight: 650; }
-.settings-page .row button.primary:hover { background: var(--clay-strong); }
+/* .primary fill comes from shared button primitives in base.css */
 
 .settings-pane-list.model-settings-pane { overflow-y: auto; }
 .settings-pane-list.model-settings-pane > .settings-list { flex: none; min-height: auto; overflow: visible; }
@@ -312,8 +311,7 @@ body:has(.settings-page) .projects-screen { display: none; }
 .plugin-install-fields > button { justify-self: end; padding: 9px 15px; border: 1px solid transparent; border-radius: var(--radius-sm); background: var(--clay); color: var(--on-clay); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; }
 .plugin-install-fields > button:hover:not(:disabled) { background: var(--clay-strong); }
 .plugin-install-fields > button:disabled { opacity: .48; cursor: not-allowed; }
-.plugin-toolbar > button.primary { border-color: transparent; background: var(--clay); color: var(--on-clay); }
-.plugin-toolbar > button.primary:hover { border-color: transparent; background: var(--clay-strong); color: var(--on-clay); }
+/* .primary fill comes from shared button primitives in base.css */
 .settings-pane-list > .settings-toolbar.plugin-toolbar:not(.settings-toolbar-end) { grid-template-rows: auto; }
 .settings-pane-list > .settings-toolbar.plugin-toolbar:not(.settings-toolbar-end) > button { grid-row: 1; grid-column: 3; justify-self: end; }
 .plugin-state-line { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
@@ -358,11 +356,11 @@ body:has(.settings-page) .projects-screen { display: none; }
 .appearance-diff-column code { overflow: hidden; padding: 0 12px; color: var(--text-muted); white-space: pre; text-overflow: clip; }
 .appearance-diff-column code em { color: #7c3aed; font-style: normal; }
 .appearance-diff-column code i { color: #d97706; font-style: italic; }
-.appearance-diff-column code span { color: #15803d; }
+.appearance-diff-column code span { color: var(--ok); }
 .appearance-diff-column code strong { color: #ea580c; font-weight: 400; }
 .appearance-diff-column > div:nth-child(n+2):nth-child(-n+4) { background: color-mix(in srgb, var(--diff-color) 14%, transparent); }
-.appearance-diff-column.is-removed { --diff-color:#ef4444; box-shadow: inset 4px 0 0 #ef4444; }
-.appearance-diff-column.is-added { --diff-color:#22c55e; box-shadow: inset 4px 0 0 #22c55e; }
+.appearance-diff-column.is-removed { --diff-color: var(--err); box-shadow: inset 4px 0 0 var(--err); }
+.appearance-diff-column.is-added { --diff-color: var(--ok); box-shadow: inset 4px 0 0 var(--ok); }
 .appearance-config-card { overflow: hidden; padding: 0 24px; border: 1px solid var(--border); border-radius: 20px; background: color-mix(in srgb, var(--bg-elev) 82%, transparent); }
 .pet-settings-pane { gap: 22px; }
 .pet-settings-hero { display: flex; align-items: center; gap: 24px; min-height: 150px; padding: 18px 24px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--clay) 28%, var(--border)); border-radius: 22px; background: radial-gradient(circle at 16% 20%, color-mix(in srgb, var(--clay) 16%, transparent), transparent 36%), linear-gradient(135deg, color-mix(in srgb, var(--bg-elev) 90%, var(--clay-soft)), var(--bg-app)); }
