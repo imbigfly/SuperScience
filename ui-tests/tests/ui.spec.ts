@@ -5370,6 +5370,9 @@ test("scratch chat opens from landing and closes on Escape", async ({ page }) =>
   await page.getByRole("button", { name: "Scratch chat" }).click();
   await expect(page.locator(".app.scratch-mode")).toBeVisible();
   await expect(page.locator(".scratch-title")).toHaveText("Scratch chat");
+  // Scratch chrome is title + close only — inbox/terminal/panel stay project-scoped.
+  await expect(page.locator(".topbar-actions")).toBeHidden();
+  await expect(page.locator(".scratch-close")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator(".app.scratch-mode")).toHaveCount(0);
   await expect(page.locator(".projects-screen")).toBeVisible();
