@@ -5,6 +5,91 @@ run independent work in parallel, and synthesize their evidence either in the
 same turn or after durable background completion. Codex and ACP are optional
 executor choices; neither is part of the meaning of a code-capable Agent.
 
+## Quick Actions and Workflow templates
+
+Quick Actions are contextual entry points into reusable Workflow templates.
+They do not send a prompt asking the main Agent to invent a plan. Invoking one
+instantiates its stored task graph, persists the resolved authorization
+snapshot, and starts the same scheduler shown in the Agents panel.
+
+Manage these two layers in Settings:
+
+- **Quick Actions** controls the label, enabled state, selected-text trigger,
+  and bound Workflow. **Open Workflow** jumps directly to that graph.
+- **Workflows** opens the standalone Workflow Studio. A template stores its
+  goal, shared context, approval policy, Subagent tasks, dependencies,
+  capabilities, Specialist/executor/model choices, budgets, and output
+  schemas. Tasks without dependencies may run in parallel; dependencies define
+  the serial stages.
+
+The Studio uses the same editor and proposal type as the Agents panel.
+**Literature evidence review** and **Roundtable** are both read-only built-in
+Workflows in its library. The Roundtable generator is also available for
+custom variants: it expands two or three participants plus a chair into
+ordinary parallel opening, cross-review, and synthesis tasks. The generated
+nodes remain editable and can be saved as a reusable Workflow, then bound to
+one or more Quick Actions.
+
+The Subagent graph is the primary composition surface. It assigns every task
+to a topological stage: nodes in the same column are independent and may run
+in parallel, while arrows move left to right through dependent stages. Select
+a node to edit its complete task contract in the inspector. Use the output
+handle on one node and then choose a downstream node to create a dependency;
+remove incoming dependency chips to disconnect it. Nodes can also be added or
+deleted directly on the canvas. Every graph interaction updates the ordinary
+`depends_on` proposal fields immediately, and cycle-producing connections are
+rejected before save.
+
+Workflow Studio replaces the normal Settings chrome with a dedicated
+full-window editor. Its stable layout keeps the template library on the left,
+save and lifecycle controls in the top bar, the DAG canvas in the center, and
+the selected-node inspector on the right. Workflow-level fields live in a
+collapsible configuration strip so they do not permanently reduce the canvas.
+The canvas includes zoom controls, a reset-to-100% action, a dotted
+orientation grid, and a minimap; large graphs remain scrollable without
+shrinking the inspector.
+
+The composer `/` picker searches both enabled Skills and Workflow templates.
+Selecting a Workflow adds a typed Workflow chip instead of copying prose into
+the message. On send, Wisp resolves the template by stable ID, injects its
+exact DAG contract, and enables delegation for that native conversation so
+the main Agent can execute the graph through `delegate_tasks`. Skill and
+Workflow chips can be combined in the same turn; transcript cards retain both
+selections after reload. Removed or unavailable templates fail closed instead
+of silently falling back to an invented plan.
+
+The first built-in action is **Research literature**. Select text in a
+conversation or file preview, then choose the action from the floating
+selection toolbar or the right-click menu. Wisp creates a dedicated
+conversation and runs three temporary Agents:
+
+1. `supporting_evidence` searches for publications supporting the passage.
+2. `challenging_evidence` independently searches for contradictions, boundary
+   conditions, failed replications, and methodological critiques.
+3. `synthesize` waits for both searches, deduplicates papers, and produces a
+   balanced evidence review with caveats and gaps.
+
+The first two nodes run in parallel; the third is their serial dependency.
+Every node has a structured output contract. The action requires an enabled
+literature Skill or connector and grants only the `literature_search`
+capability to the search nodes. The explicit click authorizes this compiled,
+read-only graph, and its completion automatically resumes the dedicated
+conversation so the final synthesis appears without another message.
+
+Quick Action records are persisted separately from templates. Their label,
+enabled state, and menu ordering are user-controlled; the built-in action's
+context, template binding, and permissions stay pinned to compiled values.
+Built-in Workflow templates are read-only; saving an edited built-in creates a
+custom copy.
+
+Selected text and its source are appended to the template's shared context as
+explicitly untrusted content. A custom Workflow does not inherit the built-in
+approval exception: `review_all` creates a draft in its dedicated
+conversation, while `auto_safe` starts only when the resolved graph does not
+require confirmation. Write, execute, network, external-service, isolation,
+and elevated-budget requests therefore continue through the normal review
+boundary.
+
 ## Inline temporary Agents
 
 1. Open the composer Agent menu and enable **Delegation** for the current
@@ -51,12 +136,13 @@ automatically.
 
 ## Roundtable template
 
-The Agents panel can generate a structured Roundtable without introducing a
-second workflow or chat protocol. Expand **Roundtable template**, choose two or
-three discussion seats, and assign each seat an optional Specialist plus a
-Native or ACP executor. A Native seat may also select a Wisp model; an ACP
-seat's model and reasoning settings remain owned by that ACP Agent profile.
-Configure the chair separately, then apply the template.
+The Agents panel and Workflow Studio can generate a structured Roundtable
+without introducing a second workflow or chat protocol. Expand **Roundtable
+template**, choose two or three discussion seats, and assign each seat an
+optional Specialist plus a Native or ACP executor. A Native seat may also
+select a Wisp model; an ACP seat's model and reasoning settings remain owned by
+that ACP Agent profile. Configure the chair separately, then apply the
+template.
 
 The generated proposal uses the ordinary dynamic workflow contract:
 

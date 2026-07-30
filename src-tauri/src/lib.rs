@@ -54,6 +54,7 @@ mod project_commands;
 mod project_reader;
 mod project_sync;
 mod project_transfer;
+mod quick_actions;
 mod research_graph;
 mod resource_refs;
 mod review;
@@ -440,6 +441,9 @@ enum ComposerReferenceArg {
     },
     Skill {
         name: String,
+    },
+    Workflow {
+        id: String,
     },
     Context {
         id: String,
@@ -3869,6 +3873,7 @@ async fn resolve_composer_references(
     let mut seen = HashSet::new();
     let mut artifact_lines = Vec::new();
     let mut skill_blocks = Vec::new();
+    let mut workflow_blocks = Vec::new();
     let mut context_lines = Vec::new();
     let mut runtime_lines = Vec::new();
 
@@ -3919,6 +3924,12 @@ async fn resolve_composer_references(
                     format!("Selected skill '{name}' is unavailable or disabled.")
                 })?;
                 skill_blocks.push(wisp_skills::render_skill(skill));
+            }
+            ComposerReferenceArg::Workflow { id } => {
+                if !seen.insert(format!("workflow:{id}")) {
+                    continue;
+                }
+                workflow_blocks.push(quick_actions::render_workflow_reference(store, id).await?);
             }
             ComposerReferenceArg::Context { id } => {
                 if !seen.insert(format!("context:{id}")) {
@@ -3985,6 +3996,7 @@ async fn resolve_composer_references(
             skill_blocks.join("\n\n")
         ));
     }
+    injections.extend(workflow_blocks);
     Ok(injections)
 }
 
@@ -4380,6 +4392,14 @@ async fn send_message_inner(
     let session_profile_id = models::session_profile_id(&state.store, &frame_id).await;
     let model_label = models::session_label(&state.store, &frame_id).await;
     let specialist = specialists::session_specialist(&state.store, &frame_id).await;
+    if references.as_ref().is_some_and(|references| {
+        references
+            .iter()
+            .any(|reference| matches!(reference, ComposerReferenceArg::Workflow { .. }))
+    }) {
+        delegation_runtime::save_session_delegation_enabled(&state.store, &ap.id, &frame_id, true)
+            .await?;
+    }
     let delegation_enabled =
         delegation_runtime::session_delegation_enabled(&state.store, &frame_id).await;
     let plan_mode_enabled = plan_mode::session_plan_mode(&state.store, &frame_id).await;
@@ -6346,6 +6366,13 @@ pub fn run() {
             delegation_runtime::cancel_agent_workflow,
             delegation_runtime::discard_agent_workflow,
             delegation_runtime::retry_agent_workflow,
+            quick_actions::list_quick_actions,
+            quick_actions::list_workflow_templates,
+            quick_actions::save_quick_action,
+            quick_actions::remove_quick_action,
+            quick_actions::save_workflow_template,
+            quick_actions::remove_workflow_template,
+            quick_actions::run_quick_action,
             review_session,
             side_chat,
             context_probe::probe_execution_context,

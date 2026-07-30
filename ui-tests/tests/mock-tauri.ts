@@ -225,6 +225,139 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { id: "scientific_illustrator", name: "Scientific Illustrator", icon: "image", color: "clay", description: "Creates scientific figures", instructions: "illustrator rubric", model_id: "", skills: ["figure-composer", "figure-style"], connectors: [], builtin: true },
   ];
   let sessionSpecialists: Record<string, string> = {};
+  let mockQuickActions = [{
+    id: "literature_research",
+    name: "Research literature",
+    description: "Search supporting and challenging evidence in parallel, then synthesize the results.",
+    icon: "search",
+    context: "selection",
+    workflow_template_id: "literature_evidence_review",
+    enabled: true,
+    sort_order: 0,
+    builtin: true,
+  }];
+  let mockWorkflowTemplates: any[] = [{
+    id: "literature_evidence_review",
+    name: "Literature evidence review",
+    description: "Parallel evidence searches followed by synthesis.",
+    builtin: true,
+    proposal: {
+      goal: "Review the literature evidence for a selected passage",
+      context: "",
+      approval_policy: "auto_safe",
+      tasks: [
+        {
+          id: "supporting_evidence",
+          instruction: "Find supporting evidence",
+          depends_on: [],
+          capabilities: ["literature_search"],
+          specialist_id: null,
+          output_schema: null,
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: null,
+        },
+        {
+          id: "challenging_evidence",
+          instruction: "Find challenging evidence",
+          depends_on: [],
+          capabilities: ["literature_search"],
+          specialist_id: null,
+          output_schema: null,
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: null,
+        },
+        {
+          id: "synthesize",
+          instruction: "Synthesize the evidence",
+          depends_on: ["supporting_evidence", "challenging_evidence"],
+          capabilities: ["reasoning"],
+          specialist_id: null,
+          output_schema: null,
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: null,
+        },
+      ],
+    },
+  }, {
+    id: "roundtable",
+    name: "Roundtable",
+    description: "Two parallel perspectives cross-review each other before a neutral chair synthesis.",
+    builtin: true,
+    proposal: {
+      goal: "Run a two-perspective roundtable and chair synthesis",
+      context: "",
+      approval_policy: "auto_safe",
+      tasks: [
+        {
+          id: "seat_1_opening",
+          instruction: "Give an evidence-focused opening position",
+          depends_on: [],
+          capabilities: ["reasoning"],
+          specialist_id: null,
+          output_schema: null,
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: null,
+        },
+        {
+          id: "seat_2_opening",
+          instruction: "Give a critical opening position",
+          depends_on: [],
+          capabilities: ["reasoning"],
+          specialist_id: null,
+          output_schema: null,
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: null,
+        },
+        {
+          id: "seat_1_review",
+          instruction: "Cross-review both opening positions",
+          depends_on: ["seat_1_opening", "seat_2_opening"],
+          capabilities: ["reasoning"],
+          specialist_id: null,
+          output_schema: null,
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: null,
+        },
+        {
+          id: "seat_2_review",
+          instruction: "Cross-review both opening positions",
+          depends_on: ["seat_1_opening", "seat_2_opening"],
+          capabilities: ["reasoning"],
+          specialist_id: null,
+          output_schema: null,
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: null,
+        },
+        {
+          id: "chair_synthesis",
+          instruction: "Synthesize the reviews without erasing disagreement",
+          depends_on: ["seat_1_review", "seat_2_review"],
+          capabilities: ["reasoning"],
+          specialist_id: null,
+          output_schema: null,
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: null,
+        },
+      ],
+    },
+  }];
+  const quickActionSessions: Record<string, string> = {};
   let mockModels = [
     {
       id: "default",
@@ -876,6 +1009,18 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "load_demo":
             return demo;
           case "load_session":
+            if (quickActionSessions[String(arg("id") ?? "")]) {
+              return {
+                items: [{
+                  role: "user",
+                  text: quickActionSessions[String(arg("id"))],
+                  tool_name: null,
+                  ok: null,
+                }],
+                next_before_seq: null,
+                user_offset: 0,
+              };
+            }
             if (mockPlanFlow) {
               return {
                 items: [
@@ -1258,6 +1403,79 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return mockAcpAgents;
           case "get_dynamic_agent_options":
             return mockDynamicAgentOptions;
+          case "list_quick_actions":
+            return mockQuickActions;
+          case "list_workflow_templates":
+            return mockWorkflowTemplates;
+          case "save_quick_action": {
+            const next = plain(arg("action"));
+            if (!next?.id) next.id = `quick_action_${mockQuickActions.length}`;
+            const existing = mockQuickActions.findIndex((item) => item.id === next.id);
+            if (existing >= 0) mockQuickActions[existing] = next;
+            else mockQuickActions.push(next);
+            mockQuickActions.sort((left, right) => left.sort_order - right.sort_order);
+            return mockQuickActions;
+          }
+          case "remove_quick_action":
+            mockQuickActions = mockQuickActions.filter((item) => item.id !== arg("actionId"));
+            return mockQuickActions;
+          case "save_workflow_template": {
+            const next = plain(arg("template"));
+            if (!next?.id) next.id = `workflow_${mockWorkflowTemplates.length}`;
+            next.builtin = false;
+            const existing = mockWorkflowTemplates.findIndex((item) => item.id === next.id);
+            if (existing >= 0) mockWorkflowTemplates[existing] = next;
+            else mockWorkflowTemplates.push(next);
+            return next;
+          }
+          case "remove_workflow_template":
+            mockWorkflowTemplates = mockWorkflowTemplates.filter(
+              (item) => item.id !== arg("templateId"),
+            );
+            return mockWorkflowTemplates;
+          case "run_quick_action": {
+            const action = mockQuickActions.find((item) => item.id === arg("actionId"));
+            if (!action) throw new Error("Quick Action does not exist.");
+            const input = plain(arg("input")) ?? {};
+            const selection = String(input.selection ?? "").trim();
+            if (!selection) throw new Error("Select some text before running this Quick Action.");
+            const sessionId = `quick-action-${++mockAgentWorkflowCounter}`;
+            const source = input.sourcePath ? ` from \`${String(input.sourcePath)}\`` : "";
+            const displayMessage = `Run Quick Action “${action.name}” for the selected passage${source}:\n\n> ${selection}`;
+            quickActionSessions[sessionId] = displayMessage;
+            sessionDelegationEnabled[sessionId] = true;
+            sessionModels[sessionId] = activeHttpModelId();
+            lastDelegationSessionId = sessionId;
+            const snapshot = dynamicWorkflowSnapshot({
+              goal: "Review the literature evidence for a selected passage",
+              context: selection,
+              approval_policy: "auto_safe",
+              tasks: [
+                { id: "supporting_evidence", instruction: "Find supporting evidence", depends_on: [], capabilities: ["literature_search"], isolated: false },
+                { id: "challenging_evidence", instruction: "Find challenging evidence", depends_on: [], capabilities: ["literature_search"], isolated: false },
+                { id: "synthesize", instruction: "Synthesize the evidence", depends_on: ["supporting_evidence", "challenging_evidence"], capabilities: ["reasoning"], isolated: false },
+              ],
+            });
+            snapshot.workflow.status = "approved";
+            snapshot.workflow.requires_confirmation = false;
+            snapshot.workflow.version += 1;
+            snapshot.delegation_enabled = true;
+            mockAgentWorkflows = [snapshot, ...mockAgentWorkflows];
+            mockSessions.unshift({
+              id: sessionId,
+              title: action.name,
+              ts: Date.now(),
+              running: true,
+            });
+            void executeMockDynamicWorkflow(snapshot);
+            return {
+              action,
+              session_id: sessionId,
+              display_message: displayMessage,
+              workflow: snapshot,
+              started: true,
+            };
+          }
           case "list_agent_workflows": {
             const sessionId = String(arg("sessionId") ?? "");
             if (!sessionId) return [];

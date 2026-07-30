@@ -1073,6 +1073,12 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(page.locator(".mention-menu")).toContainText("alphafold2");
   await page.locator(".mention-menu .mention-item").first().click();
 
+  await composerInput.pressSequentially("/round");
+  const workflowItem = page.locator(".mention-menu .mention-item")
+    .filter({ hasText: "Roundtable" });
+  await expect(workflowItem).toContainText("neutral chair synthesis");
+  await workflowItem.click();
+
   await composerInput.fill("use the attached context");
   await page.getByRole("button", { name: "Send" }).click();
   await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
@@ -1081,14 +1087,16 @@ test("composer @ # and / add typed context references", async ({ page }) => {
       { kind: "session", id: "s-current" },
       { kind: "project", id: "default" },
       { kind: "skill", name: "alphafold2" },
+      { kind: "workflow", id: "roundtable" },
     ],
   });
   const sentContext = page.locator(".msg.user .user-context-card");
-  await expect(sentContext).toHaveCount(4);
+  await expect(sentContext).toHaveCount(5);
   await expect(page.locator('.msg.user [data-reference-kind="artifact"]')).toContainText("nif3.treefile");
   await expect(page.locator('.msg.user [data-reference-kind="session"]')).toContainText("Current analysis");
   await expect(page.locator('.msg.user [data-reference-kind="project"]')).toContainText("wisp-science");
   await expect(page.locator('.msg.user [data-reference-kind="skill"]')).toContainText("alphafold2");
+  await expect(page.locator('.msg.user [data-reference-kind="workflow"]')).toContainText("Roundtable");
   await expect(page.locator(".msg.user .body")).not.toContainText("Selected skills:");
 });
 
@@ -1652,6 +1660,268 @@ test("transcript selections add to the main composer without closing the right p
   await menu.getByRole("button", { name: "Add to chat" }).click();
   await expect(page.locator(".composer-reference-chips .quote")).toHaveCount(2);
   await expect(panel).toBeVisible();
+});
+
+test("a selection Quick Action launches a parallel literature workflow", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("STEPSDEMO");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText(/60,675 genes/)).toBeVisible({ timeout: 10_000 });
+
+  const selected = await selectAssistantReplyText(page);
+  const popup = page.locator(".selection-popup");
+  const action = popup.getByRole("button", { name: "Research literature" });
+  await expect(action).toBeVisible();
+  await action.click();
+
+  await expect.poll(() => lastInvokeArgs(page, "run_quick_action")).toMatchObject({
+    actionId: "literature_research",
+    input: { selection: selected },
+  });
+  await expect(page.locator(".selection-popup")).toHaveCount(0);
+  await expect(page.locator(".rightpane")).toBeVisible();
+  await expect(page.locator(".rightpane .agent-workflow-name"))
+    .toHaveText("Review the literature evidence for a selected passage");
+  await expect(page.locator(".msg.user")).toContainText("Run Quick Action");
+});
+
+test("selection Quick Actions are also available from the right-click menu", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("STEPSDEMO");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText(/60,675 genes/)).toBeVisible({ timeout: 10_000 });
+
+  const selected = await selectAssistantReplyText(page, "contextmenu");
+  const menu = page.locator(".ctx-menu");
+  await menu.getByRole("button", { name: "Research literature" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "run_quick_action")).toMatchObject({
+    actionId: "literature_research",
+    input: { selection: selected },
+  });
+  await expect(page.locator(".ctx-menu")).toHaveCount(0);
+});
+
+test("Quick Actions opens its bound graph in the standalone Workflow Studio", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Quick Actions");
+
+  const row = page.getByTestId("quick-action-row")
+    .filter({ hasText: "Research literature" });
+  await expect(row).toBeVisible();
+  await expect(row).toContainText("Literature evidence review");
+  await row.getByTestId("quick-action-open-workflow").click();
+
+  await expect(page.locator(".settings-page")).toHaveClass(/workflow-studio-mode/);
+  await expect(page.locator(".settings-nav")).toBeHidden();
+  const studio = page.getByTestId("workflow-studio");
+  await expect(studio).toBeVisible();
+  const studioBox = await studio.boundingBox();
+  const viewport = page.viewportSize()!;
+  expect(studioBox?.width ?? 0).toBeGreaterThan(viewport.width * 0.95);
+  expect(studioBox?.height ?? 0).toBeGreaterThan(viewport.height * 0.85);
+  await expect(studio.getByTestId("workflow-name"))
+    .toHaveValue("Literature evidence review");
+  const nodes = studio.getByTestId("workflow-graph-node");
+  await expect(nodes).toHaveCount(3);
+  await expect(nodes.nth(0)).toHaveAttribute("data-node-id", "supporting_evidence");
+  await expect(nodes.nth(1)).toHaveAttribute("data-node-id", "challenging_evidence");
+  await expect(nodes.nth(2)).toHaveAttribute("data-node-id", "synthesize");
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(2);
+  const positions = await nodes.evaluateAll((items) => items.map((item) => {
+    const box = item.getBoundingClientRect();
+    return { id: item.getAttribute("data-node-id"), x: box.x, y: box.y };
+  }));
+  const supporting = positions.find((item) => item.id === "supporting_evidence")!;
+  const challenging = positions.find((item) => item.id === "challenging_evidence")!;
+  const synthesize = positions.find((item) => item.id === "synthesize")!;
+  expect(Math.abs(supporting.x - challenging.x)).toBeLessThan(2);
+  expect(supporting.y).not.toBe(challenging.y);
+  expect(synthesize.x).toBeGreaterThan(supporting.x);
+
+  await nodes.filter({ hasText: "synthesize" })
+    .getByTestId("workflow-graph-node-select")
+    .click();
+  const inspector = studio.getByTestId("workflow-graph-inspector");
+  await expect(inspector.getByTestId("dynamic-task-id")).toHaveValue("synthesize");
+  await expect(inspector.getByTestId("workflow-graph-remove-edge")).toHaveCount(2);
+  await expect(studio.getByTestId("workflow-graph-minimap")).toBeVisible();
+  await studio.getByTestId("workflow-graph-zoom-in").click();
+  await expect(studio.getByTestId("workflow-graph-fit")).toHaveText("110%");
+  await studio.getByTestId("workflow-graph-fit").click();
+  await expect(studio.getByTestId("workflow-graph-fit")).toHaveText("100%");
+  await expect(studio.getByTestId("workflow-save")).toHaveText("Save as copy");
+  const typography = await studio.evaluate((root) => {
+    const save = root.querySelector('[data-testid="workflow-save"]')!;
+    const nodeId = root.querySelector(".workflow-graph-node-title strong")!;
+    return {
+      studio: getComputedStyle(root).fontFamily,
+      save: getComputedStyle(save).fontFamily,
+      saveWeight: Number(getComputedStyle(save).fontWeight),
+      node: getComputedStyle(nodeId).fontFamily,
+    };
+  });
+  expect(typography.save).toBe(typography.studio);
+  expect(typography.saveWeight).toBeLessThanOrEqual(600);
+  expect(typography.node).not.toBe(typography.studio);
+});
+
+test("Workflow library includes a built-in Roundtable DAG", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Workflows");
+  const studio = page.getByTestId("workflow-studio");
+  const roundtable = studio.getByTestId("workflow-template-card")
+    .filter({ hasText: "Roundtable" });
+  await expect(roundtable).toContainText("neutral chair synthesis");
+  await roundtable.click();
+
+  const nodes = studio.getByTestId("workflow-graph-node");
+  await expect(nodes).toHaveCount(5);
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(6);
+  const positions = await nodes.evaluateAll((items) => items.map((item) => {
+    const box = item.getBoundingClientRect();
+    return { id: item.getAttribute("data-node-id"), x: box.x };
+  }));
+  const opening = positions.filter((item) => item.id?.endsWith("_opening"));
+  const reviews = positions.filter((item) => item.id?.endsWith("_review"));
+  const chair = positions.find((item) => item.id === "chair_synthesis")!;
+  expect(opening).toHaveLength(2);
+  expect(reviews).toHaveLength(2);
+  expect(Math.abs(opening[0].x - opening[1].x)).toBeLessThan(2);
+  expect(Math.abs(reviews[0].x - reviews[1].x)).toBeLessThan(2);
+  expect(reviews[0].x).toBeGreaterThan(opening[0].x);
+  expect(chair.x).toBeGreaterThan(reviews[0].x);
+});
+
+test("Workflow Studio reuses the roundtable generator and saves a Quick Action binding", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Workflows");
+  const studio = page.getByTestId("workflow-studio");
+  await expect(studio).toBeVisible();
+
+  await studio.getByTestId("workflow-new").click();
+  await studio.getByTestId("workflow-studio-config").locator(":scope > summary").click();
+  await studio.getByTestId("workflow-name").fill("Architecture roundtable");
+  await studio.getByTestId("workflow-goal").fill("Choose a website architecture");
+  await studio.getByTestId("roundtable-template").locator("summary").click();
+  await studio.getByTestId("roundtable-apply").click();
+  await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(5);
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(6);
+  await studio.getByTestId("workflow-save").click();
+
+  await expect.poll(() => lastInvokeArgs(page, "save_workflow_template")).toMatchObject({
+    template: {
+      id: "",
+      name: "Architecture roundtable",
+      proposal: {
+        goal: "Choose a website architecture",
+        tasks: [
+          { id: "seat_1_opening", depends_on: [] },
+          { id: "seat_2_opening", depends_on: [] },
+          {
+            id: "seat_1_review",
+            depends_on: ["seat_1_opening", "seat_2_opening"],
+          },
+          {
+            id: "seat_2_review",
+            depends_on: ["seat_1_opening", "seat_2_opening"],
+          },
+          {
+            id: "chair_synthesis",
+            depends_on: ["seat_1_review", "seat_2_review"],
+          },
+        ],
+      },
+    },
+  });
+  await expect(studio.getByTestId("workflow-template-card")).toHaveCount(3);
+
+  await studio.getByTestId("workflow-studio-back").click();
+  await expect(page.locator(".settings-nav")).toBeVisible();
+  await page.getByTestId("quick-action-new").click();
+  await page.getByTestId("quick-action-name").fill("Discuss selection");
+  await page.getByTestId("quick-action-workflow").selectOption("workflow_2");
+  await page.getByTestId("quick-action-save").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_quick_action")).toMatchObject({
+    action: {
+      name: "Discuss selection",
+      workflow_template_id: "workflow_2",
+      context: "selection",
+      enabled: true,
+    },
+  });
+  await expect(page.getByTestId("quick-action-row")
+    .filter({ hasText: "Discuss selection" })).toContainText("Architecture roundtable");
+});
+
+test("Workflow graph edits nodes and dependencies directly on the canvas", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Workflows");
+  const studio = page.getByTestId("workflow-studio");
+  await studio.getByTestId("workflow-new").click();
+  await studio.getByTestId("workflow-studio-config").locator(":scope > summary").click();
+  await studio.getByTestId("workflow-name").fill("Graph pipeline");
+  await studio.getByTestId("workflow-goal").fill("Compare two branches");
+
+  const inspector = studio.getByTestId("workflow-graph-inspector");
+  await inspector.getByTestId("dynamic-task-id").fill("fetch_a");
+  await inspector.getByTestId("dynamic-task-instruction").fill("Fetch branch A");
+  await studio.getByTestId("workflow-graph-add-node").click();
+  await inspector.getByTestId("dynamic-task-id").fill("fetch_b");
+  await inspector.getByTestId("dynamic-task-instruction").fill("Fetch branch B");
+  await studio.getByTestId("workflow-graph-add-node").click();
+  await inspector.getByTestId("dynamic-task-id").fill("merge");
+  await inspector.getByTestId("dynamic-task-instruction").fill("Merge both branches");
+
+  const byId = (id: string) =>
+    studio.locator(`[data-testid="workflow-graph-node"][data-node-id="${id}"]`);
+
+  await byId("fetch_a").getByTestId("workflow-graph-connect").click();
+  await expect(studio.getByTestId("workflow-graph-connect-hint")).toContainText("fetch_a");
+  await byId("merge").getByTestId("workflow-graph-node-select").click();
+  await byId("fetch_b").getByTestId("workflow-graph-connect").click();
+  await byId("merge").getByTestId("workflow-graph-node-select").click();
+
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(2);
+  await expect(studio.locator(
+    '[data-testid="workflow-graph-edge"][data-source="fetch_a"][data-target="merge"]',
+  )).toHaveCount(1);
+  await expect(studio.locator(
+    '[data-testid="workflow-graph-edge"][data-source="fetch_b"][data-target="merge"]',
+  )).toHaveCount(1);
+  const positions = await studio.getByTestId("workflow-graph-node")
+    .evaluateAll((items) => Object.fromEntries(items.map((item) => {
+      const box = item.getBoundingClientRect();
+      return [item.getAttribute("data-node-id"), { x: box.x, y: box.y }];
+    })));
+  expect(Math.abs(positions.fetch_a.x - positions.fetch_b.x)).toBeLessThan(2);
+  expect(positions.merge.x).toBeGreaterThan(positions.fetch_a.x);
+
+  await inspector.getByTestId("workflow-graph-remove-edge")
+    .filter({ hasText: "fetch_a" })
+    .click();
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(1);
+
+  await byId("merge").getByTestId("workflow-graph-connect").click();
+  await byId("fetch_b").getByTestId("workflow-graph-node-select").click();
+  await expect(studio.getByTestId("workflow-studio-error")).toContainText("cycle");
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(1);
+
+  await byId("fetch_a").getByTestId("workflow-graph-delete-node").click();
+  await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(2);
+  await studio.getByTestId("workflow-save").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_workflow_template")).toMatchObject({
+    template: {
+      name: "Graph pipeline",
+      proposal: {
+        tasks: [
+          { id: "fetch_b", depends_on: [] },
+          { id: "merge", depends_on: ["fetch_b"] },
+        ],
+      },
+    },
+  });
+  expect(await byId("fetch_a").count()).toBe(0);
 });
 
 test("selected text can be staged as a removable side-chat quote", async ({ page }) => {
