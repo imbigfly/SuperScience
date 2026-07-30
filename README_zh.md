@@ -79,6 +79,18 @@ $env:WISP_MODEL     = "deepseek-v4-pro" # openai_responses: gpt-5.5；anthropic:
 cargo run -p wisp-cli
 ```
 
+也可以只运行一次提示词而不进入交互循环，或把事件按 JSONL 输出到标准输出
+（每行一个 JSON 对象）：
+
+```powershell
+cargo run -p wisp-cli -- run "总结这个项目中的文件"
+cargo run -p wisp-cli -- run --output jsonl "总结这个项目中的文件"
+```
+
+JSONL 包含 `start`、流式 `text`/`reasoning`、工具、用量，以及最终的 `done`
+或 `error` 事件。运行时初始化信息写入标准错误，标准输出可直接交给程序解析。
+若工具需要交互确认，JSONL 模式会拒绝该操作，而不会等待终端输入。
+
 CLI 会自动加载内置的 `skills/` 目录，并接入内置 Python 和可选的系统 R REPL。
 Python 首次运行时会在 `.wisp/python/.venv` 中创建 uv 虚拟环境；R 使用 PATH
 中的 `Rscript`，并要求该 R 环境已安装 `jsonlite`。在桌面应用中，可以通过

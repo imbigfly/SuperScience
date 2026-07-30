@@ -1,12 +1,94 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use wisp_core::{Agent, MemoryManager, Output};
 use wisp_llm::ProviderConfig;
 use wisp_skills::SkillIndex;
 
 const HELP: &str = "Built-in commands:\n  /q, /quit       Quit\n  /n, /new        Start a new session (old session is backed up)\n  /c, /compact    Compact the context (full history is archived to .wisp/history/ first)\n  /h, /help       Show this help";
+const USAGE: &str = "Usage:
+  wisp-science
+  wisp-science run [--output console|jsonl] <prompt>
+  wisp-science dev
+
+With no command, wisp-science starts the interactive terminal.";
+
+#[derive(Debug, PartialEq, Eq)]
+enum CliCommand {
+    Interactive,
+    Run {
+        prompt: String,
+        output: OutputFormat,
+    },
+    Dev,
+    Help,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum OutputFormat {
+    #[default]
+    Console,
+    Jsonl,
+}
+
+fn parse_output(value: &str) -> Result<OutputFormat> {
+    match value {
+        "console" => Ok(OutputFormat::Console),
+        "jsonl" => Ok(OutputFormat::Jsonl),
+        _ => bail!("unknown output format '{value}'; expected console or jsonl"),
+    }
+}
+
+fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliCommand> {
+    let mut args = args.into_iter();
+    let Some(command) = args.next() else {
+        return Ok(CliCommand::Interactive);
+    };
+
+    match command.as_str() {
+        "dev" => {
+            if args.next().is_some() {
+                bail!("dev does not accept arguments");
+            }
+            Ok(CliCommand::Dev)
+        }
+        "-h" | "--help" | "help" => Ok(CliCommand::Help),
+        "run" => {
+            let mut output = OutputFormat::Console;
+            let mut prompt = Vec::new();
+            let mut options = true;
+            while let Some(arg) = args.next() {
+                if options && arg == "--" {
+                    options = false;
+                } else if options && arg == "--output" {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--output requires a value"))?;
+                    output = parse_output(&value)?;
+                } else if options {
+                    if let Some(value) = arg.strip_prefix("--output=") {
+                        output = parse_output(value)?;
+                    } else if arg.starts_with('-') {
+                        bail!("unknown run option '{arg}'");
+                    } else {
+                        prompt.push(arg);
+                    }
+                } else {
+                    prompt.push(arg);
+                }
+            }
+            if prompt.is_empty() {
+                bail!("run requires a prompt");
+            }
+            Ok(CliCommand::Run {
+                prompt: prompt.join(" "),
+                output,
+            })
+        }
+        _ => bail!("unknown command '{command}'\n\n{USAGE}"),
+    }
+}
 
 struct CliOutput;
 impl CliOutput {
@@ -195,21 +277,180 @@ impl Output for CliOutput {
     }
 }
 
+struct JsonlOutput<W> {
+    writer: Mutex<W>,
+}
+
+impl<W: Write + Send> JsonlOutput<W> {
+    fn new(writer: W) -> Self {
+        Self {
+            writer: Mutex::new(writer),
+        }
+    }
+
+    fn emit(&self, event: serde_json::Value) {
+        let Ok(mut writer) = self.writer.lock() else {
+            return;
+        };
+        if serde_json::to_writer(&mut *writer, &event).is_ok() {
+            let _ = writer.write_all(b"\n");
+            let _ = writer.flush();
+        }
+    }
+
+    fn start(&self, prompt: &str, model: &str, root: &std::path::Path) {
+        self.emit(serde_json::json!({
+            "type": "start",
+            "prompt": prompt,
+            "model": model,
+            "root": root,
+        }));
+    }
+
+    fn done(&self) {
+        self.emit(serde_json::json!({"type": "done", "ok": true}));
+    }
+
+    fn error(&self, error: &anyhow::Error) {
+        self.emit(serde_json::json!({
+            "type": "error",
+            "message": error.to_string(),
+        }));
+    }
+
+    #[cfg(test)]
+    fn into_inner(self) -> W {
+        self.writer
+            .into_inner()
+            .expect("JSONL writer mutex poisoned")
+    }
+}
+
+impl<W: Write + Send> Output for JsonlOutput<W> {
+    fn assistant_text(&self, delta: &str) {
+        self.emit(serde_json::json!({"type": "text", "delta": delta}));
+    }
+
+    fn reasoning(&self, delta: &str) {
+        self.emit(serde_json::json!({"type": "reasoning", "delta": delta}));
+    }
+
+    fn tool_call(&self, name: &str, preview: &str) {
+        self.emit(serde_json::json!({
+            "type": "tool_call",
+            "name": name,
+            "preview": preview,
+        }));
+    }
+
+    fn tool_result(&self, name: &str, ok: bool, content: &str, duration_ms: u64) {
+        self.emit(serde_json::json!({
+            "type": "tool_result",
+            "name": name,
+            "ok": ok,
+            "content": content,
+            "duration_ms": duration_ms,
+        }));
+    }
+
+    fn usage(
+        &self,
+        round: usize,
+        input: u64,
+        output: u64,
+        reasoning: u64,
+        cached: u64,
+        ctx_tokens: usize,
+        max_context: usize,
+    ) {
+        self.emit(serde_json::json!({
+            "type": "usage",
+            "round": round,
+            "input_tokens": input,
+            "output_tokens": output,
+            "reasoning_tokens": reasoning,
+            "cached_tokens": cached,
+            "context_tokens": ctx_tokens,
+            "max_context_tokens": max_context,
+        }));
+    }
+
+    fn compaction(&self, before: usize, after: usize, strategy: &str) {
+        self.emit(serde_json::json!({
+            "type": "compaction",
+            "before_tokens": before,
+            "after_tokens": after,
+            "strategy": strategy,
+        }));
+    }
+
+    fn context_warning(&self, ctx_tokens: usize, max_context: usize) {
+        self.emit(serde_json::json!({
+            "type": "context_warning",
+            "context_tokens": ctx_tokens,
+            "max_context_tokens": max_context,
+        }));
+    }
+
+    fn diff(&self, path: &str, old: &str, new: &str) {
+        self.emit(serde_json::json!({
+            "type": "diff",
+            "path": path,
+            "old": old,
+            "new": new,
+        }));
+    }
+
+    fn file_changed(&self, path: &str) {
+        self.emit(serde_json::json!({"type": "file_changed", "path": path}));
+    }
+
+    fn stdout_chunk(&self, chunk: &str) {
+        self.emit(serde_json::json!({"type": "stdout", "chunk": chunk}));
+    }
+
+    fn tool_presentation(&self, kind: &str, payload: &serde_json::Value) {
+        self.emit(serde_json::json!({
+            "type": "tool_presentation",
+            "kind": kind,
+            "payload": payload,
+        }));
+    }
+
+    fn confirm(&self, message: &str) -> bool {
+        self.emit(serde_json::json!({
+            "type": "approval_required",
+            "message": message,
+            "approved": false,
+        }));
+        false
+    }
+}
+
 fn env(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
-async fn wire_mcp(agent: &mut Agent, command: &str, args: &[String]) {
+fn setup_message(jsonl: bool, message: std::fmt::Arguments<'_>) {
+    if jsonl {
+        eprintln!("{message}");
+    } else {
+        println!("{message}");
+    }
+}
+
+async fn wire_mcp(agent: &mut Agent, command: &str, args: &[String], jsonl: bool) {
     match wisp_mcp::McpClient::launch(command, args).await {
         Ok(client) => {
             register_mcp_tools(
                 agent,
                 std::sync::Arc::new(client),
                 &format!("{command} {}", args.join(" ")),
+                jsonl,
             )
             .await
         }
-        Err(e) => println!("mcp launch failed: {e}"),
+        Err(e) => setup_message(jsonl, format_args!("mcp launch failed: {e}")),
     }
 }
 
@@ -217,6 +458,7 @@ async fn register_mcp_tools(
     agent: &mut Agent,
     client: std::sync::Arc<wisp_mcp::McpClient>,
     label: &str,
+    jsonl: bool,
 ) {
     match client.tools_list().await {
         Ok(tools) => {
@@ -224,9 +466,12 @@ async fn register_mcp_tools(
             for t in tools {
                 agent.add_tool(Box::new(wisp_mcp::McpTool::new(t, client.clone())));
             }
-            println!("mcp wired: {n} tool(s) from '{label}'.");
+            setup_message(
+                jsonl,
+                format_args!("mcp wired: {n} tool(s) from '{label}'."),
+            );
         }
-        Err(e) => println!("mcp tools_list failed: {e}"),
+        Err(e) => setup_message(jsonl, format_args!("mcp tools_list failed: {e}")),
     }
 }
 
@@ -281,15 +526,39 @@ fn skill_paths(root: &std::path::Path) -> Vec<PathBuf> {
     paths
 }
 
+async fn run_prompt(agent: &mut Agent, prompt: &str, output: &dyn Output) -> Result<()> {
+    let stamped = format!(
+        "{}, Current date: {}",
+        prompt,
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    );
+    let result = agent.run(&stamped, output, None).await;
+    agent.ctx.clear_runtime_injections();
+    agent.save();
+    result
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let command = parse_command(std::env::args().skip(1))?;
+    if command == CliCommand::Help {
+        println!("{USAGE}");
+        return Ok(());
+    }
     // `cargo run dev` passes "dev" as argv[1]; forward to the desktop shell.
-    if std::env::args().nth(1).as_deref() == Some("dev") {
+    if command == CliCommand::Dev {
         let status = std::process::Command::new("cargo")
             .args(["tauri", "dev"])
             .status()?;
         std::process::exit(status.code().unwrap_or(1));
     }
+    let jsonl = matches!(
+        &command,
+        CliCommand::Run {
+            output: OutputFormat::Jsonl,
+            ..
+        }
+    );
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -297,8 +566,25 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let root = std::env::current_dir()?;
-    let cfg = provider_config()?;
+    let root = match std::env::current_dir() {
+        Ok(root) => root,
+        Err(error) => {
+            let error = anyhow::Error::from(error);
+            if jsonl {
+                JsonlOutput::new(std::io::stdout()).error(&error);
+            }
+            return Err(error);
+        }
+    };
+    let cfg = match provider_config() {
+        Ok(cfg) => cfg,
+        Err(error) => {
+            if jsonl {
+                JsonlOutput::new(std::io::stdout()).error(&error);
+            }
+            return Err(error);
+        }
+    };
     let max_context = env("WISP_MAX_CONTEXT", "1000000")
         .parse::<usize>()
         .unwrap_or(1_000_000);
@@ -349,12 +635,18 @@ async fn main() -> Result<()> {
                 runtime_manager.clone(),
                 root.to_string_lossy(),
             )));
-            println!("python repl wired ({worker}).");
+            setup_message(jsonl, format_args!("python repl wired ({worker})."));
         } else {
-            println!("python repl skipped: uv venv unavailable");
+            setup_message(
+                jsonl,
+                format_args!("python repl skipped: uv venv unavailable"),
+            );
         }
     } else {
-        println!("(kernel worker not found at {worker}; set WISP_KERNEL_WORKER=<path>)");
+        setup_message(
+            jsonl,
+            format_args!("(kernel worker not found at {worker}; set WISP_KERNEL_WORKER=<path>)"),
+        );
     }
 
     if r_worker_path.is_file() {
@@ -362,9 +654,12 @@ async fn main() -> Result<()> {
             runtime_manager.clone(),
             root.to_string_lossy(),
         )));
-        println!("r repl wired ({r_worker}).");
+        setup_message(jsonl, format_args!("r repl wired ({r_worker})."));
     } else {
-        println!("(R worker not found at {r_worker}; set WISP_R_KERNEL_WORKER=<path>)");
+        setup_message(
+            jsonl,
+            format_args!("(R worker not found at {r_worker}; set WISP_R_KERNEL_WORKER=<path>)"),
+        );
     }
 
     // MCP server: WISP_MCP_COMMAND overrides; otherwise WISP_MCP_PKG launches
@@ -384,7 +679,7 @@ async fn main() -> Result<()> {
             .collect();
         if parts.len() >= 2 {
             let args: Vec<String> = parts[1..].to_vec();
-            wire_mcp(&mut agent, &parts[0], &args).await;
+            wire_mcp(&mut agent, &parts[0], &args, jsonl).await;
         }
     } else if let Some(env) = &py_env {
         let pkg = std::env::var("WISP_MCP_PKG").unwrap_or_else(|_| "mcp_bio".into());
@@ -394,14 +689,40 @@ async fn main() -> Result<()> {
                     &mut agent,
                     std::sync::Arc::new(client),
                     &format!("bio-tools:{pkg}"),
+                    jsonl,
                 )
                 .await
             }
-            Err(e) => println!("mcp bio-tools:{pkg} launch failed: {e}"),
+            Err(e) => setup_message(
+                jsonl,
+                format_args!("mcp bio-tools:{pkg} launch failed: {e}"),
+            ),
         }
     }
 
     let out = CliOutput;
+    if let CliCommand::Run { prompt, output } = command {
+        let result = match output {
+            OutputFormat::Console => {
+                let result = run_prompt(&mut agent, &prompt, &out).await;
+                println!();
+                result
+            }
+            OutputFormat::Jsonl => {
+                let jsonl_out = JsonlOutput::new(std::io::stdout());
+                jsonl_out.start(&prompt, agent.provider.model(), &root);
+                let result = run_prompt(&mut agent, &prompt, &jsonl_out).await;
+                match &result {
+                    Ok(()) => jsonl_out.done(),
+                    Err(error) => jsonl_out.error(error),
+                }
+                result
+            }
+        };
+        runtime_manager.shutdown_all().await;
+        return result;
+    }
+
     println!(
         "{}wisp-science{} | {} | {}",
         out.bold(),
@@ -463,18 +784,99 @@ async fn main() -> Result<()> {
             _ => {}
         }
 
-        let stamped = format!(
-            "{}, Current date: {}",
-            input,
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-        );
-        if let Err(e) = agent.run(&stamped, &out, None).await {
+        if let Err(e) = run_prompt(&mut agent, &input, &out).await {
             eprintln!("{}Error: {}{}", out.red(), e, out.reset());
         }
         println!();
-        agent.ctx.clear_runtime_injections();
-        agent.save();
     }
     runtime_manager.shutdown_all().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command(args: &[&str]) -> Result<CliCommand> {
+        parse_command(args.iter().map(|arg| (*arg).to_string()))
+    }
+
+    #[test]
+    fn parses_interactive_and_dev_commands() {
+        assert_eq!(command(&[]).unwrap(), CliCommand::Interactive);
+        assert_eq!(command(&["dev"]).unwrap(), CliCommand::Dev);
+        assert_eq!(command(&["--help"]).unwrap(), CliCommand::Help);
+    }
+
+    #[test]
+    fn parses_one_shot_output_and_prompt() {
+        assert_eq!(
+            command(&["run", "summarize", "results"]).unwrap(),
+            CliCommand::Run {
+                prompt: "summarize results".into(),
+                output: OutputFormat::Console,
+            }
+        );
+        assert_eq!(
+            command(&["run", "--output=jsonl", "inspect", "--", "-data"]).unwrap(),
+            CliCommand::Run {
+                prompt: "inspect -data".into(),
+                output: OutputFormat::Jsonl,
+            }
+        );
+        assert_eq!(
+            command(&["run", "--output", "jsonl", "inspect"]).unwrap(),
+            CliCommand::Run {
+                prompt: "inspect".into(),
+                output: OutputFormat::Jsonl,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_one_shot_arguments() {
+        assert!(command(&["run"])
+            .unwrap_err()
+            .to_string()
+            .contains("prompt"));
+        assert!(command(&["run", "--output"])
+            .unwrap_err()
+            .to_string()
+            .contains("value"));
+        assert!(command(&["run", "--output", "xml", "inspect"])
+            .unwrap_err()
+            .to_string()
+            .contains("unknown output format"));
+        assert!(command(&["run", "--wat", "inspect"])
+            .unwrap_err()
+            .to_string()
+            .contains("unknown run option"));
+    }
+
+    #[test]
+    fn jsonl_output_emits_one_valid_object_per_line() {
+        let output = JsonlOutput::new(Vec::new());
+        output.start("inspect", "test-model", std::path::Path::new("project"));
+        output.assistant_text("hello\nworld");
+        output.tool_call("read", "README.md");
+        output.tool_result("read", true, "contents", 12);
+        output.usage(2, 10, 20, 3, 4, 30, 100);
+        assert!(!output.confirm("delete file?"));
+        output.done();
+
+        let bytes = output.into_inner();
+        let events: Vec<serde_json::Value> = String::from_utf8(bytes)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+
+        assert_eq!(events.len(), 7);
+        assert_eq!(events[0]["type"], "start");
+        assert_eq!(events[1]["delta"], "hello\nworld");
+        assert_eq!(events[3]["duration_ms"], 12);
+        assert_eq!(events[4]["input_tokens"], 10);
+        assert_eq!(events[5]["approved"], false);
+        assert_eq!(events[6], serde_json::json!({"type": "done", "ok": true}));
+    }
 }
