@@ -16,9 +16,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const xlsxBase64 = fixtures?.xlsxBase64 ?? "";
   const pptxBase64 = fixtures?.pptxBase64 ?? "";
   const listeners: Record<string, ((e: { payload: unknown }) => void) | undefined> = {};
+  const windowListeners: Record<string, ((e: { payload: unknown }) => void) | undefined> = {};
   const emit = (event: string, payload: unknown) => {
     try {
       listeners[event]?.({ payload });
+      windowListeners[event]?.({ payload });
     } catch {
       /* listener may not be registered yet */
     }
@@ -29,7 +31,14 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   // avoids arbitrary sleeps and preserves the real event bus semantics: an
   // event emitted before registration is not queued.
   (window as any).__tauriListenerReady = (event: string) =>
-    typeof listeners[String(event)] === "function";
+    typeof listeners[String(event)] === "function"
+      || typeof windowListeners[String(event)] === "function";
+  (window as any).__tauriListenerScope = (event: string) => {
+    const name = String(event);
+    if (typeof windowListeners[name] === "function") return "window";
+    if (typeof listeners[name] === "function") return "app";
+    return null;
+  };
 
   const demos = [
     { id: "manifest_crispr_screen", title: "Design a genome-wide CRISPR knockout screen targeting all kinases" },
@@ -2849,6 +2858,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     },
     window: {
       getCurrentWindow: () => ({
+        listen: async (event: string, cb: (e: { payload: unknown }) => void) => {
+          windowListeners[event] = cb;
+          return () => {
+            windowListeners[event] = undefined;
+          };
+        },
         startDragging: async () => {
           (window as any).__petDragStarted = true;
         },
@@ -2863,8 +2878,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
 // received a user turn so the sidebar can list them.
 export function parallelMock(): void {
   const listeners: Record<string, ((e: { payload: unknown }) => void) | undefined> = {};
+  const windowListeners: Record<string, ((e: { payload: unknown }) => void) | undefined> = {};
   const emit = (event: string, payload: unknown) => {
-    try { listeners[event]?.({ payload }); } catch { /* not registered yet */ }
+    try {
+      listeners[event]?.({ payload });
+      windowListeners[event]?.({ payload });
+    } catch { /* not registered yet */ }
   };
   const sessions: { id: string; title: string; ts: number }[] = [];
   const folders: { id: string; name: string }[] = [];
@@ -3047,6 +3066,14 @@ export function parallelMock(): void {
         listeners[event] = cb;
         return () => { listeners[event] = undefined; };
       },
+    },
+    window: {
+      getCurrentWindow: () => ({
+        listen: async (event: string, cb: (e: { payload: unknown }) => void) => {
+          windowListeners[event] = cb;
+          return () => { windowListeners[event] = undefined; };
+        },
+      }),
     },
   };
 }

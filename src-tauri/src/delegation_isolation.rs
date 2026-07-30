@@ -650,6 +650,12 @@ mod tests {
         let repo = base.join("Project With Spaces");
         fs::create_dir_all(&repo).unwrap();
         assert!(git(&repo, &["init"]).status.success());
+        // Keep fixture contents deterministic on Windows even when the machine
+        // Git config enables core.autocrlf. These tests assert merge semantics,
+        // not checkout line-ending conversion.
+        assert!(git(&repo, &["config", "core.autocrlf", "false"])
+            .status
+            .success());
         fs::write(repo.join("a.txt"), "base a\n").unwrap();
         fs::write(repo.join("b.txt"), "base b\n").unwrap();
         assert!(git(&repo, &["add", "."]).status.success());
