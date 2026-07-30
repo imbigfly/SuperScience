@@ -9,6 +9,7 @@ fn show_clickable_notification(
     title: String,
     body: String,
     target: Option<serde_json::Value>,
+    focus_fallback_armed: bool,
 ) -> Result<(), String> {
     use tauri_winrt_notification::Toast;
 
@@ -27,7 +28,7 @@ fn show_clickable_notification(
         .on_activated(move |_| {
             // The native callback identifies the notification exactly, so it
             // takes precedence over the latest-session focus fallback.
-            if claim_notify_activation(&callback_label, target.is_some()) {
+            if !focus_fallback_armed || claim_notify_activation(&callback_label, target.is_some()) {
                 desktop_lifecycle::activate_workspace_window(
                     &callback_app,
                     &callback_label,
@@ -47,6 +48,7 @@ fn show_clickable_notification(
     title: String,
     body: String,
     target: Option<serde_json::Value>,
+    focus_fallback_armed: bool,
 ) -> Result<(), String> {
     let application = if tauri::is_dev() {
         "com.apple.Terminal".to_string()
@@ -65,7 +67,8 @@ fn show_clickable_notification(
             .wait_for_click(true);
         match notification.send() {
             Ok(mac_notification_sys::NotificationResponse::Click) => {
-                if claim_notify_activation(&window_label, target.is_some()) {
+                if !focus_fallback_armed || claim_notify_activation(&window_label, target.is_some())
+                {
                     desktop_lifecycle::activate_workspace_window(&app, &window_label, target);
                 }
             }
@@ -85,6 +88,7 @@ fn show_clickable_notification(
     title: String,
     body: String,
     _target: Option<serde_json::Value>,
+    _focus_fallback_armed: bool,
 ) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
     app.notification()
@@ -120,19 +124,22 @@ pub(super) async fn notify_user(
         .await
         .ok()
         .flatten();
-    if state
-        .preferred_notification_window(&session_id, project_id.as_deref())
-        .as_deref()
-        != Some(window.label())
-    {
+    let Some(selection) = state.preferred_notification_window(&session_id, project_id.as_deref())
+    else {
+        return Ok(());
+    };
+    if selection.label != window.label() {
         return Ok(());
     }
-    // Arm click-to-open before showing: on this window's next focus it jumps to
-    // the session. Skipped if the session's project can't be resolved (the
-    // notification still shows, just without navigation).
+    // Keep the taskbar/Dock focus fallback only when this window still belongs
+    // to the session's project. A foreign-project fallback may show the native
+    // notification, but ordinary focus must not replace its current project;
+    // an explicit notification click can still navigate there.
     let target = project_id
         .map(|project_id| serde_json::json!({ "projectId": project_id, "sessionId": session_id }));
-    if let Some(target) = &target {
+    let focus_fallback_armed = selection.arm_focus_navigation && target.is_some();
+    if focus_fallback_armed {
+        let target = target.as_ref().expect("target checked above");
         pending_notify_targets()
             .lock()
             .unwrap()
@@ -144,6 +151,7 @@ pub(super) async fn notify_user(
         title,
         body,
         target,
+        focus_fallback_armed,
     )
 }
 
