@@ -16,7 +16,7 @@ use wisp_llm::{
 };
 use wisp_tools::{ImageData, Registry, ToolEnv};
 
-const RETRY_DELAYS: [u64; 3] = [1_000, 5_000, 10_000];
+const RETRY_DELAYS: [u64; 5] = [2_000, 10_000, 30_000, 60_000, 120_000];
 const TRUNCATED_OUTPUT_MESSAGE: &str = "模型输出在达到 max_tokens 上限时被截断，任务可能尚未完成——请在设置中调高该模型的 max_tokens，或直接继续对话让我接着做。(output truncated at max_tokens)";
 const STREAM_CUT_MESSAGE: &str = "模型响应流在中途被断开（未收到结束标记），已生成的部分内容不完整、不会计入上下文。常见原因：网络不稳定、代理/中转站切断连接，或同一 API key 的并发请求达到上限（例如多个会话同时使用同一模型）。可重发消息重试；需要并行会话时建议错开请求或使用不同的 API key。(stream cut mid-response, #437)";
 /// How many byte-identical tool-call batches within the recent window count as
@@ -505,6 +505,12 @@ mod tests {
     use std::sync::Mutex;
     use wisp_llm::{FunctionCall, ToolCall};
     use wisp_tools::{Registry, Tool, ToolEnv, ToolResult};
+
+    #[test]
+    fn retry_window_covers_sustained_provider_overload() {
+        assert!(RETRY_DELAYS.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(RETRY_DELAYS.iter().sum::<u64>() >= 180_000);
+    }
 
     #[test]
     fn truncation_detected_across_providers() {
