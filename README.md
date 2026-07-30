@@ -82,6 +82,19 @@ $env:WISP_MODEL     = "deepseek-v4-pro" # openai_responses: gpt-5.5; anthropic: 
 cargo run -p wisp-cli
 ```
 
+Run a single prompt without entering the interactive loop, or stream
+machine-readable events (one JSON object per stdout line):
+
+```powershell
+cargo run -p wisp-cli -- run "Summarize the files in this project"
+cargo run -p wisp-cli -- run --output jsonl "Summarize the files in this project"
+```
+
+JSONL output includes `start`, streamed `text`/`reasoning`, tool, usage, and
+terminal `done` or `error` events. Runtime setup diagnostics go to stderr so
+stdout remains parseable. A tool that requires interactive confirmation is
+denied in JSONL mode instead of blocking for input.
+
 The CLI auto-loads the bundled `skills/` catalog and wires the bundled Python
 and optional system-R REPLs. Python provisions a uv venv at
 `.wisp/python/.venv` on first run; R uses `Rscript` from PATH and requires
