@@ -1854,7 +1854,7 @@ impl AppState {
         &self,
         frame_id: &str,
         project_id: Option<&str>,
-    ) -> Option<String> {
+    ) -> Option<NotificationWindowSelection> {
         let active = self.active.read().unwrap();
         let active_projects = active
             .iter()
@@ -1872,33 +1872,56 @@ impl AppState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NotificationWindowSelection {
+    label: String,
+    /// Whether merely focusing this window may consume the queued target.
+    ///
+    /// A window that has switched to another project can still host the native
+    /// notification, but it must navigate only after an explicit notification
+    /// click. Otherwise the next ordinary focus would replace that unrelated
+    /// project's view with the completed session.
+    arm_focus_navigation: bool,
+}
+
 /// Pick one frontend window to own a session notification.
 ///
-/// The originating window wins even if it has since navigated elsewhere. If it
-/// was closed, prefer a surviving window already showing the session, then one
-/// window from the owning project. Sorting makes all concurrent `notify_user`
-/// calls reach the same answer.
+/// The originating window wins while it still belongs to the session's project.
+/// If it has switched projects, prefer a surviving window already showing the
+/// session, then one window from the owning project. A foreign-project fallback
+/// may show the native notification, but focusing it must not navigate until the
+/// user explicitly clicks that notification. Sorting makes all concurrent
+/// `notify_user` calls reach the same answer.
 fn select_notification_window(
     origin: Option<&str>,
     frame_id: &str,
     project_id: Option<&str>,
     active_projects: &HashMap<String, String>,
     active_frames: &HashMap<String, String>,
-) -> Option<String> {
-    if let Some(origin) = origin.filter(|label| active_projects.contains_key(*label)) {
-        return Some(origin.to_string());
+) -> Option<NotificationWindowSelection> {
+    let belongs_to_project = |label: &str| {
+        label != "pet"
+            && active_projects.get(label).is_some_and(|active_project| {
+                project_id.is_none_or(|project_id| active_project == project_id)
+            })
+    };
+    let selection = |label: String, arm_focus_navigation| NotificationWindowSelection {
+        label,
+        arm_focus_navigation,
+    };
+
+    if let Some(origin) = origin.filter(|label| belongs_to_project(label)) {
+        return Some(selection(origin.to_string(), true));
     }
 
     let mut viewing = active_frames
         .iter()
-        .filter(|(label, viewed)| {
-            viewed.as_str() == frame_id && active_projects.contains_key(label.as_str())
-        })
+        .filter(|(label, viewed)| viewed.as_str() == frame_id && belongs_to_project(label.as_str()))
         .map(|(label, _)| label.clone())
         .collect::<Vec<_>>();
     viewing.sort();
     if let Some(label) = viewing.into_iter().next() {
-        return Some(label);
+        return Some(selection(label, true));
     }
 
     let mut project_windows = active_projects
@@ -1910,11 +1933,31 @@ fn select_notification_window(
         .map(|(label, _)| label.clone())
         .collect::<Vec<_>>();
     project_windows.sort_by_key(|label| (label != "main", label.clone()));
-    project_windows.into_iter().next().or_else(|| {
-        active_projects
-            .contains_key("main")
-            .then(|| "main".to_string())
-    })
+    if let Some(label) = project_windows.into_iter().next() {
+        return Some(selection(label, true));
+    }
+
+    // Keep desktop notifications available when the owning project has no open
+    // window, but never arm a focus-triggered project switch on this fallback.
+    let fallback_origin = origin
+        .filter(|label| *label != "pet" && active_projects.contains_key(*label))
+        .map(str::to_string);
+    let fallback_main = active_projects
+        .contains_key("main")
+        .then(|| "main".to_string());
+    let fallback_any = {
+        let mut labels = active_projects
+            .keys()
+            .filter(|label| label.as_str() != "pet")
+            .cloned()
+            .collect::<Vec<_>>();
+        labels.sort();
+        labels.into_iter().next()
+    };
+    fallback_origin
+        .or(fallback_main)
+        .or(fallback_any)
+        .map(|label| selection(label, false))
 }
 
 #[tauri::command]

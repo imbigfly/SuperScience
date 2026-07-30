@@ -1315,8 +1315,8 @@ fn session_notification_stays_in_its_origin_window_with_same_project_peers() {
             &active_projects,
             &active_frames,
         )
-        .as_deref(),
-        Some("proj-workspace"),
+        .map(|selection| (selection.label, selection.arm_focus_navigation)),
+        Some(("proj-workspace".to_string(), true)),
     );
 }
 
@@ -1339,8 +1339,50 @@ fn session_notification_falls_back_to_the_window_viewing_the_session() {
             &active_projects,
             &active_frames,
         )
-        .as_deref(),
-        Some("proj-workspace"),
+        .map(|selection| (selection.label, selection.arm_focus_navigation)),
+        Some(("proj-workspace".to_string(), true)),
+    );
+}
+
+#[test]
+fn session_notification_ignores_an_origin_window_that_switched_projects() {
+    let active_projects = HashMap::from([
+        ("main".to_string(), "project-b".to_string()),
+        ("proj-a".to_string(), "project-a".to_string()),
+    ]);
+    let active_frames = HashMap::from([
+        ("main".to_string(), "session-b".to_string()),
+        ("proj-a".to_string(), "session-a".to_string()),
+    ]);
+
+    assert_eq!(
+        super::select_notification_window(
+            Some("main"),
+            "session-a",
+            Some("project-a"),
+            &active_projects,
+            &active_frames,
+        )
+        .map(|selection| (selection.label, selection.arm_focus_navigation)),
+        Some(("proj-a".to_string(), true)),
+    );
+}
+
+#[test]
+fn foreign_project_notification_fallback_never_arms_focus_navigation() {
+    let active_projects = HashMap::from([("main".to_string(), "project-b".to_string())]);
+    let active_frames = HashMap::from([("main".to_string(), "session-b".to_string())]);
+
+    assert_eq!(
+        super::select_notification_window(
+            Some("main"),
+            "session-a",
+            Some("project-a"),
+            &active_projects,
+            &active_frames,
+        )
+        .map(|selection| (selection.label, selection.arm_focus_navigation)),
+        Some(("main".to_string(), false)),
     );
 }
 
