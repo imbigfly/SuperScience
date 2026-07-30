@@ -49,6 +49,38 @@ choices rather than Specialist model bindings. The built-in Reviewer follows
 the same optional selection rule and is never appended to a dynamic plan
 automatically.
 
+## Roundtable template
+
+The Agents panel can generate a structured Roundtable without introducing a
+second workflow or chat protocol. Expand **Roundtable template**, choose two or
+three discussion seats, and assign each seat an optional Specialist plus a
+Native or ACP executor. A Native seat may also select a Wisp model; an ACP
+seat's model and reasoning settings remain owned by that ACP Agent profile.
+Configure the chair separately, then apply the template.
+
+The generated proposal uses the ordinary dynamic workflow contract:
+
+1. Every seat produces an independent opening position. These tasks have no
+   dependencies and may run in parallel.
+2. Every seat then reviews all opening positions, records agreements and
+   conflicts, and revises its recommendation.
+3. The chair receives all second-round reviews and synthesizes the shared
+   conclusions, unresolved disagreements, evidence gaps, risks, and next steps.
+
+The same Specialist, executor, and model assignment is copied into both rounds
+for each seat. Enter the overall goal before applying the template; Wisp embeds
+that goal into every generated task so detached children receive the actual
+discussion topic. Applying preserves the goal, shared context, and approval
+policy, and replaces only the task cards. Reapply after changing the goal.
+After generation, every task remains editable, including its capabilities,
+dependencies, budgets, and output schema.
+
+This is a bounded DAG, not a live multi-model group chat. Temporary children do
+not share hidden transcripts or freely message peers; dependency results are
+their explicit coordination channel. The normal resolver, approval screen,
+executor availability checks, persistence, cancellation, and audit records
+still apply.
+
 ## Background completion
 
 The composer Agent menu has a per-conversation **Completion** setting. Inline

@@ -111,6 +111,62 @@ impl DynamicTaskForm {
     }
 }
 
+const MIN_ROUNDTABLE_PARTICIPANTS: usize = 2;
+const MAX_ROUNDTABLE_PARTICIPANTS: usize = 3;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RoundtableAssignmentForm {
+    specialist_id: String,
+    model_id: String,
+    executor_key: String,
+}
+
+impl RoundtableAssignmentForm {
+    fn apply_to(&self, task: &mut DynamicTaskForm) {
+        task.specialist_id.clone_from(&self.specialist_id);
+        if self.specialist_id == "reviewer"
+            && !task.capabilities.iter().any(|capability| capability == "review")
+        {
+            task.capabilities.push("review".into());
+        }
+        task.executor_key.clone_from(&self.executor_key);
+        task.model_id = if self.executor_key.is_empty() || self.executor_key == "native" {
+            self.model_id.clone()
+        } else {
+            String::new()
+        };
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RoundtableTemplateForm {
+    participant_count: usize,
+    participants: Vec<RoundtableAssignmentForm>,
+    chair: RoundtableAssignmentForm,
+}
+
+impl Default for RoundtableTemplateForm {
+    fn default() -> Self {
+        Self {
+            participant_count: MIN_ROUNDTABLE_PARTICIPANTS,
+            participants: vec![
+                RoundtableAssignmentForm::default();
+                MAX_ROUNDTABLE_PARTICIPANTS
+            ],
+            chair: RoundtableAssignmentForm::default(),
+        }
+    }
+}
+
+impl RoundtableTemplateForm {
+    fn set_participant_count(&mut self, participant_count: usize) {
+        self.participant_count = participant_count.clamp(
+            MIN_ROUNDTABLE_PARTICIPANTS,
+            MAX_ROUNDTABLE_PARTICIPANTS,
+        );
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct DynamicWorkflowForm {
     goal: String,
@@ -205,6 +261,64 @@ impl DynamicWorkflowForm {
         };
         self.tasks.push(DynamicTaskForm::blank(key, id));
     }
+
+    fn apply_roundtable(&mut self, template: &RoundtableTemplateForm, locale: Locale) {
+        let participant_count = template.participant_count.clamp(
+            MIN_ROUNDTABLE_PARTICIPANTS,
+            MAX_ROUNDTABLE_PARTICIPANTS,
+        );
+        let opening_ids = (1..=participant_count)
+            .map(|seat| format!("seat_{seat}_opening"))
+            .collect::<Vec<_>>();
+        let review_ids = (1..=participant_count)
+            .map(|seat| format!("seat_{seat}_review"))
+            .collect::<Vec<_>>();
+        let mut tasks = Vec::with_capacity(participant_count * 2 + 1);
+        let mut next_key = 1;
+        let goal = self.goal.trim().to_string();
+        let opening_instruction = tf(
+            locale,
+            "agents.roundtable.opening_instruction",
+            &[("goal", &goal)],
+        );
+        let review_instruction = tf(
+            locale,
+            "agents.roundtable.review_instruction",
+            &[("goal", &goal)],
+        );
+        let chair_instruction = tf(
+            locale,
+            "agents.roundtable.chair_instruction",
+            &[("goal", &goal)],
+        );
+
+        for (index, id) in opening_ids.iter().enumerate() {
+            let mut task = DynamicTaskForm::blank(next_key, id.clone());
+            next_key += 1;
+            task.instruction.clone_from(&opening_instruction);
+            template.participants[index].apply_to(&mut task);
+            tasks.push(task);
+        }
+
+        for (index, id) in review_ids.iter().enumerate() {
+            let mut task = DynamicTaskForm::blank(next_key, id.clone());
+            next_key += 1;
+            task.instruction.clone_from(&review_instruction);
+            task.depends_on.clone_from(&opening_ids);
+            template.participants[index].apply_to(&mut task);
+            tasks.push(task);
+        }
+
+        let mut chair = DynamicTaskForm::blank(next_key, "chair_synthesis".into());
+        next_key += 1;
+        chair.instruction = chair_instruction;
+        chair.depends_on = review_ids;
+        template.chair.apply_to(&mut chair);
+        tasks.push(chair);
+
+        self.tasks = tasks;
+        self.next_task_key = next_key;
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -213,6 +327,7 @@ pub(super) struct AgentPanelState {
     pub(super) session_id: RwSignal<Option<String>>,
     pub(super) options: RwSignal<DynamicAgentEditorOptions>,
     pub(super) dynamic_form: RwSignal<DynamicWorkflowForm>,
+    roundtable_form: RwSignal<RoundtableTemplateForm>,
     pub(super) dynamic_editing: RwSignal<Option<String>>,
     pub(super) busy: RwSignal<bool>,
     pub(super) launching: RwSignal<Vec<String>>,
@@ -227,6 +342,7 @@ impl AgentPanelState {
             session_id,
             options: create_rw_signal(DynamicAgentEditorOptions::default()),
             dynamic_form: create_rw_signal(DynamicWorkflowForm::default()),
+            roundtable_form: create_rw_signal(RoundtableTemplateForm::default()),
             dynamic_editing: create_rw_signal(None),
             busy: create_rw_signal(false),
             launching: create_rw_signal(vec![]),
@@ -504,6 +620,276 @@ fn task_value(
             .map(get)
             .unwrap_or_default()
     })
+}
+
+#[derive(Clone, Copy)]
+enum RoundtableAssignment {
+    Participant(usize),
+    Chair,
+}
+
+fn update_roundtable_assignment(
+    form: RwSignal<RoundtableTemplateForm>,
+    assignment: RoundtableAssignment,
+    update: impl FnOnce(&mut RoundtableAssignmentForm),
+) {
+    form.update(|form| {
+        let target = match assignment {
+            RoundtableAssignment::Participant(index) => form.participants.get_mut(index),
+            RoundtableAssignment::Chair => Some(&mut form.chair),
+        };
+        if let Some(target) = target {
+            update(target);
+        }
+    });
+}
+
+fn roundtable_assignment_value(
+    form: RwSignal<RoundtableTemplateForm>,
+    assignment: RoundtableAssignment,
+    get: impl FnOnce(&RoundtableAssignmentForm) -> String,
+) -> String {
+    form.with(|form| {
+        let target = match assignment {
+            RoundtableAssignment::Participant(index) => form.participants.get(index),
+            RoundtableAssignment::Chair => Some(&form.chair),
+        };
+        target.map(get).unwrap_or_default()
+    })
+}
+
+fn roundtable_assignment_editor(
+    assignment: RoundtableAssignment,
+    state: AgentPanelState,
+    delegation_enabled: RwSignal<bool>,
+    specialists: RwSignal<Vec<Specialist>>,
+    models: RwSignal<Vec<ModelProfile>>,
+    locale: RwSignal<Locale>,
+) -> impl IntoView {
+    view! {
+        <div class="roundtable-assignment" data-testid="roundtable-assignment">
+            <strong>{move || match assignment {
+                RoundtableAssignment::Participant(index) => tf(
+                    locale.get(),
+                    "agents.roundtable.seat",
+                    &[("number", &(index + 1).to_string())],
+                ),
+                RoundtableAssignment::Chair => t(locale.get(), "agents.roundtable.chair"),
+            }}</strong>
+            <label>
+                <span>{move || t(locale.get(), "agents.task.specialist")}</span>
+                <select data-testid="roundtable-specialist"
+                    disabled=move || !delegation_enabled.get()
+                    on:change=move |event| update_roundtable_assignment(
+                        state.roundtable_form,
+                        assignment,
+                        |target| target.specialist_id = dom_value(&event),
+                    )>
+                    <option value="" prop:selected=move || roundtable_assignment_value(
+                        state.roundtable_form,
+                        assignment,
+                        |target| target.specialist_id.clone(),
+                    ).is_empty()>
+                        {move || t(locale.get(), "agents.task.temporary")}
+                    </option>
+                    <For each=move || specialists.get() key=|specialist| specialist.id.clone()
+                        children=move |specialist| {
+                            let id = specialist.id.clone();
+                            let selected_id = id.clone();
+                            view! {
+                                <option value=id prop:selected=move || {
+                                    roundtable_assignment_value(
+                                        state.roundtable_form,
+                                        assignment,
+                                        |target| target.specialist_id.clone(),
+                                    ) == selected_id
+                                }>{specialist.name}</option>
+                            }
+                        }
+                    />
+                </select>
+            </label>
+            <label>
+                <span>{move || t(locale.get(), "agents.task.executor")}</span>
+                <select data-testid="roundtable-executor"
+                    disabled=move || !delegation_enabled.get()
+                    on:change=move |event| update_roundtable_assignment(
+                        state.roundtable_form,
+                        assignment,
+                        |target| {
+                            target.executor_key = dom_value(&event);
+                            if !target.executor_key.is_empty() && target.executor_key != "native" {
+                                target.model_id.clear();
+                            }
+                        },
+                    )>
+                    <option value="" prop:selected=move || roundtable_assignment_value(
+                        state.roundtable_form,
+                        assignment,
+                        |target| target.executor_key.clone(),
+                    ).is_empty()>
+                        {move || t(locale.get(), "agents.task.auto")}
+                    </option>
+                    <For each=move || state.options.get().executors key=|executor| executor.id.clone()
+                        children=move |executor| {
+                            let key_value = executor.id.clone();
+                            let selected_key = key_value.clone();
+                            let label = if executor.kind == "native" {
+                                executor.display_name.clone()
+                            } else {
+                                format!("{} · {}", executor.kind, executor.display_name)
+                            };
+                            let label = if executor.available {
+                                label
+                            } else {
+                                format!(
+                                    "{label} · {}",
+                                    t(locale.get_untracked(), "runtime.unavailable"),
+                                )
+                            };
+                            let supported_features = executor.supported_features.join(", ");
+                            view! {
+                                <option value=key_value title=supported_features
+                                    disabled=!executor.available
+                                    prop:selected=move || roundtable_assignment_value(
+                                        state.roundtable_form,
+                                        assignment,
+                                        |target| target.executor_key.clone(),
+                                    ) == selected_key>
+                                    {label}
+                                </option>
+                            }
+                        }
+                    />
+                </select>
+            </label>
+            <label>
+                <span>{move || t(locale.get(), "agents.task.model")}</span>
+                <select data-testid="roundtable-model"
+                    disabled=move || {
+                        if !delegation_enabled.get() {
+                            return true;
+                        }
+                        let executor = roundtable_assignment_value(
+                            state.roundtable_form,
+                            assignment,
+                            |target| target.executor_key.clone(),
+                        );
+                        !executor.is_empty() && executor != "native"
+                    }
+                    on:change=move |event| update_roundtable_assignment(
+                        state.roundtable_form,
+                        assignment,
+                        |target| target.model_id = dom_value(&event),
+                    )>
+                    <option value="" prop:selected=move || roundtable_assignment_value(
+                        state.roundtable_form,
+                        assignment,
+                        |target| target.model_id.clone(),
+                    ).is_empty()>
+                        {move || t(locale.get(), "agents.task.auto")}
+                    </option>
+                    <For each=move || state.options.get().models key=|model| model.id.clone()
+                        children=move |model_option| {
+                            let id = model_option.id.clone();
+                            let selected_id = id.clone();
+                            let label = models.get().into_iter().find(|model| model.id == id)
+                                .map(|model| model.label).unwrap_or_else(|| id.clone());
+                            view! {
+                                <option value=id prop:selected=move || roundtable_assignment_value(
+                                    state.roundtable_form,
+                                    assignment,
+                                    |target| target.model_id.clone(),
+                                ) == selected_id>
+                                    {if model_option.external {
+                                        format!("{label} · external")
+                                    } else {
+                                        label
+                                    }}
+                                </option>
+                            }
+                        }
+                    />
+                </select>
+            </label>
+        </div>
+    }
+}
+
+fn roundtable_template_editor(
+    state: AgentPanelState,
+    delegation_enabled: RwSignal<bool>,
+    specialists: RwSignal<Vec<Specialist>>,
+    models: RwSignal<Vec<ModelProfile>>,
+    locale: RwSignal<Locale>,
+) -> impl IntoView {
+    view! {
+        <details class="dynamic-roundtable" data-testid="roundtable-template">
+            <summary>{move || t(locale.get(), "agents.roundtable.title")}</summary>
+            <p>{move || t(locale.get(), "agents.roundtable.help")}</p>
+            <div class="roundtable-count-row">
+                <label>
+                    <span>{move || t(locale.get(), "agents.roundtable.participants")}</span>
+                    <select data-testid="roundtable-participant-count"
+                        disabled=move || !delegation_enabled.get()
+                        on:change=move |event| state.roundtable_form.update(|form| {
+                            let count = dom_value(&event).parse::<usize>().unwrap_or(
+                                MIN_ROUNDTABLE_PARTICIPANTS,
+                            );
+                            form.set_participant_count(count);
+                        })>
+                        <option value="2" prop:selected=move || {
+                            state.roundtable_form.get().participant_count == 2
+                        }>{"2"}</option>
+                        <option value="3" prop:selected=move || {
+                            state.roundtable_form.get().participant_count == 3
+                        }>{"3"}</option>
+                    </select>
+                </label>
+                <span>{move || t(locale.get(), "agents.roundtable.profile_hint")}</span>
+            </div>
+            <div class="roundtable-assignment-list">
+                <For each=move || 0..state.roundtable_form.get().participant_count
+                    key=|index| *index
+                    children=move |index| roundtable_assignment_editor(
+                        RoundtableAssignment::Participant(index),
+                        state,
+                        delegation_enabled,
+                        specialists,
+                        models,
+                        locale,
+                    )
+                />
+                {roundtable_assignment_editor(
+                    RoundtableAssignment::Chair,
+                    state,
+                    delegation_enabled,
+                    specialists,
+                    models,
+                    locale,
+                )}
+            </div>
+            <div class="roundtable-template-actions">
+                <span>{move || t(locale.get(), "agents.roundtable.replace_hint")}</span>
+                <button type="button" class="agents-secondary"
+                    data-testid="roundtable-apply"
+                    disabled=move || {
+                        !delegation_enabled.get()
+                            || state.dynamic_form.get().goal.trim().is_empty()
+                    }
+                    on:click=move |_| {
+                        let template = state.roundtable_form.get_untracked();
+                        let selected_locale = locale.get_untracked();
+                        state.dynamic_form.update(|form| {
+                            form.apply_roundtable(&template, selected_locale);
+                        });
+                        state.error.set(None);
+                    }>
+                    {move || t(locale.get(), "agents.roundtable.apply")}
+                </button>
+            </div>
+        </details>
+    }
 }
 
 fn dynamic_task_editor(
@@ -951,6 +1337,13 @@ fn dynamic_editor(
                 on:input=move |event| state.dynamic_form.update(|form| {
                     form.goal = event_target_value(&event);
                 })></textarea>
+            {roundtable_template_editor(
+                state,
+                delegation_enabled,
+                specialists,
+                models,
+                locale,
+            )}
             <div class="dynamic-agent-policy-row">
                 <label>
                     <span>{move || t(locale.get(), "agents.approval_policy")}</span>
@@ -1514,6 +1907,108 @@ mod tests {
             .tasks
             .iter()
             .all(|task| task.specialist_id.is_none()));
+    }
+
+    #[test]
+    fn roundtable_template_builds_parallel_openings_cross_review_and_chair() {
+        let mut template = RoundtableTemplateForm::default();
+        template.participants[0] = RoundtableAssignmentForm {
+            specialist_id: "reader".into(),
+            model_id: "native-model-that-must-be-cleared".into(),
+            executor_key: "acp:codex".into(),
+        };
+        template.participants[1] = RoundtableAssignmentForm {
+            specialist_id: "reviewer".into(),
+            model_id: "opus".into(),
+            executor_key: "native".into(),
+        };
+        template.chair = RoundtableAssignmentForm {
+            specialist_id: String::new(),
+            model_id: String::new(),
+            executor_key: "acp:kimi".into(),
+        };
+
+        let mut form = DynamicWorkflowForm::default();
+        form.goal = "Choose a website architecture".into();
+        form.context = "Mobile and desktop must share the same information model.".into();
+        form.apply_roundtable(&template, Locale::En);
+        let proposal = form.proposal().expect("roundtable proposal is valid");
+
+        assert_eq!(proposal.tasks.len(), 5);
+        assert_eq!(
+            proposal
+                .tasks
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "seat_1_opening",
+                "seat_2_opening",
+                "seat_1_review",
+                "seat_2_review",
+                "chair_synthesis",
+            ]
+        );
+        assert!(proposal.tasks[..2]
+            .iter()
+            .all(|task| task.depends_on.is_empty()));
+        assert!(proposal
+            .tasks
+            .iter()
+            .all(|task| task.instruction.contains("Choose a website architecture")));
+        assert!(proposal.tasks[2..4].iter().all(|task| {
+            task.depends_on == ["seat_1_opening", "seat_2_opening"]
+        }));
+        assert_eq!(
+            proposal.tasks[4].depends_on,
+            ["seat_1_review", "seat_2_review"]
+        );
+
+        for task in [&proposal.tasks[0], &proposal.tasks[2]] {
+            assert_eq!(task.specialist_id.as_deref(), Some("reader"));
+            assert_eq!(task.executor.as_ref().unwrap().kind, "acp");
+            assert_eq!(
+                task.executor.as_ref().unwrap().profile_id.as_deref(),
+                Some("codex")
+            );
+            assert_eq!(task.model_id, None);
+        }
+        for task in [&proposal.tasks[1], &proposal.tasks[3]] {
+            assert_eq!(task.specialist_id.as_deref(), Some("reviewer"));
+            assert!(task
+                .capabilities
+                .iter()
+                .any(|capability| capability == "review"));
+            assert_eq!(task.executor.as_ref().unwrap().kind, "native");
+            assert_eq!(task.model_id.as_deref(), Some("opus"));
+        }
+        assert_eq!(
+            proposal.tasks[4]
+                .executor
+                .as_ref()
+                .unwrap()
+                .profile_id
+                .as_deref(),
+            Some("kimi")
+        );
+    }
+
+    #[test]
+    fn roundtable_template_caps_at_three_participants_and_seven_tasks() {
+        let mut template = RoundtableTemplateForm::default();
+        template.set_participant_count(99);
+        assert_eq!(template.participant_count, MAX_ROUNDTABLE_PARTICIPANTS);
+
+        let mut form = DynamicWorkflowForm::default();
+        form.goal = "Evaluate three independent positions".into();
+        form.apply_roundtable(&template, Locale::En);
+        let proposal = form.proposal().expect("three-seat roundtable is valid");
+
+        assert_eq!(proposal.tasks.len(), 7);
+        assert_eq!(
+            proposal.tasks.last().unwrap().depends_on,
+            ["seat_1_review", "seat_2_review", "seat_3_review"]
+        );
     }
 
     #[test]
