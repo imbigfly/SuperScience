@@ -122,6 +122,8 @@ impl SearchSkillsTool {
                     "name": skill.name,
                     "description": truncate_chars(&skill.description, MAX_DESCRIPTION_CHARS),
                     "tags": skill.tags,
+                    "scope": self.skills.source(&skill.name).map(|source| source.as_str()),
+                    "path": skill.dir,
                 })
             })
             .collect();
@@ -145,7 +147,7 @@ impl Tool for SearchSkillsTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "search_skills",
-            "Search installed skill names, descriptions, and tags without loading every skill body.",
+            "Search installed skill names, descriptions, tags, scopes, and source paths without loading every skill body.",
             json!({
                 "type": "object",
                 "properties": {
@@ -287,8 +289,25 @@ mod tests {
         assert!(result.success, "search failed: {}", result.content);
         let output: serde_json::Value = serde_json::from_str(&result.content).unwrap();
         assert_eq!(output["results"][0]["name"], "pubmed-review");
+        assert_eq!(output["results"][0]["scope"], "custom");
+        assert_eq!(
+            output["results"][0]["path"],
+            root.join("pubmed-review").to_string_lossy().as_ref()
+        );
         assert_eq!(output["results"].as_array().unwrap().len(), 1);
         assert!(!result.content.contains("publication-ready charts"));
+
+        let overrides = std::collections::BTreeMap::from([(
+            "pubmed-review".into(),
+            vec!["systematic-evidence".into()],
+        )]);
+        let overridden = SearchSkillsTool::new(Arc::new(
+            SkillIndex::load(&[root.clone()]).with_tag_overrides(&overrides),
+        ));
+        let result = overridden.search(&json!({ "query": "systematic-evidence" }));
+        let output: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(output["results"][0]["name"], "pubmed-review");
+        assert_eq!(output["results"][0]["tags"][0], "systematic-evidence");
 
         std::fs::remove_dir_all(root).ok();
     }

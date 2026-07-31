@@ -3501,6 +3501,7 @@ mod skill_filter_tests {
             name: name.into(),
             description: "Scientific workflow".into(),
             tags: tags.iter().map(|tag| (*tag).into()).collect(),
+            scope: "bundled".into(),
             enabled,
             builtin: true,
             managed: false,

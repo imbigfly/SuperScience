@@ -1,20 +1,16 @@
 use super::{
-    clear_idle_agents, effective_enabled_skill_names, load_enabled_skill_names, load_skill_tags,
-    normalize_tags, save_enabled_skill_names, save_skill_tags, skill_infos, skill_paths, AppState,
-    SkillInfo,
+    clear_idle_agents, effective_enabled_skill_names, load_enabled_skill_names, load_skill_index,
+    load_skill_tags, normalize_tags, save_enabled_skill_names, save_skill_tags, skill_infos,
+    AppState, SkillInfo,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
-use wisp_skills::SkillIndex;
+use wisp_skills::{SkillIndex, SkillSource};
 
-#[tauri::command]
-pub(super) async fn list_skills(
-    state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
-) -> Result<Vec<SkillInfo>, String> {
-    let ap = state.active(window.label());
+async fn list_skill_infos_for_project(state: &AppState, label: &str) -> Vec<SkillInfo> {
+    let ap = state.active(label);
     let tags = load_skill_tags(&state.store).await;
     let mut enabled = effective_enabled_skill_names(&state.store, &ap).await;
     let plugin_roots = crate::plugins::enabled_plugin_manifests(&state.store, &ap.id)
@@ -30,9 +26,9 @@ pub(super) async fn list_skills(
         .collect::<Vec<_>>();
     let plugin_paths = plugin_roots
         .iter()
-        .map(|(path, _)| path.clone())
+        .map(|(path, _)| (path.clone(), SkillSource::Plugin))
         .collect::<Vec<_>>();
-    let plugins = SkillIndex::load(&plugin_paths);
+    let plugins = SkillIndex::load_scoped(&plugin_paths);
     if let Some(names) = &mut enabled {
         names.extend(
             plugins
@@ -56,7 +52,61 @@ pub(super) async fn list_skills(
             info.managed_by = Some(display_name.clone());
         }
     }
-    Ok(infos)
+    infos
+}
+
+#[tauri::command]
+pub(super) async fn list_skills(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<SkillInfo>, String> {
+    Ok(list_skill_infos_for_project(&state, window.label()).await)
+}
+
+#[tauri::command]
+pub(super) async fn reload_skills(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<SkillInfo>, String> {
+    let label = window.label();
+    let mut project = state.active(label);
+    let previous_names = project
+        .skills
+        .all()
+        .iter()
+        .map(|skill| skill.name.clone())
+        .collect::<HashSet<_>>();
+    let mut enabled = effective_enabled_skill_names(&state.store, &project).await;
+    project.skills = Arc::new(load_skill_index(&project.root));
+
+    enabled = enabled_names_after_reload(
+        enabled,
+        &previous_names,
+        project.skills.all().iter().map(|skill| skill.name.as_str()),
+    );
+    if let Some(names) = &enabled {
+        save_enabled_skill_names(&state.store, &project.id, names).await?;
+    }
+
+    state.set_active(label, project);
+    clear_idle_agents(&state).await;
+    Ok(list_skill_infos_for_project(&state, label).await)
+}
+
+fn enabled_names_after_reload<'a>(
+    enabled: Option<HashSet<String>>,
+    previous_names: &HashSet<String>,
+    discovered_names: impl IntoIterator<Item = &'a str>,
+) -> Option<HashSet<String>> {
+    enabled.map(|mut names| {
+        names.extend(
+            discovered_names
+                .into_iter()
+                .filter(|name| !previous_names.contains(*name))
+                .map(str::to_string),
+        );
+        names
+    })
 }
 
 #[tauri::command]
@@ -72,7 +122,9 @@ pub(super) async fn set_skill_tags(
     } else {
         all_tags.insert(name, tags);
     }
-    save_skill_tags(&state.store, &all_tags).await
+    save_skill_tags(&state.store, &all_tags).await?;
+    clear_idle_agents(&state).await;
+    Ok(())
 }
 
 async fn update_skills_enabled(
@@ -209,7 +261,7 @@ pub(super) async fn install_skill(
             .map_err(|e| format!("{e}"))?
             .map_err(|e| format!("install skill: {e}"))?;
     }
-    reload_skills(&state, window.label());
+    reload_host_skill_index(&state, window.label());
     let ap = state.active(window.label());
     if let Some(mut enabled) = load_enabled_skill_names(&state.store, &ap.id).await {
         enabled.insert(skill.name.clone());
@@ -241,14 +293,14 @@ pub(super) async fn remove_skill(
     let mut tags = load_skill_tags(&state.store).await;
     tags.remove(&name);
     let _ = save_skill_tags(&state.store, &tags).await;
-    reload_skills(&state, window.label());
+    reload_host_skill_index(&state, window.label());
     clear_idle_agents(&state).await;
     Ok(())
 }
 
-fn reload_skills(state: &AppState, label: &str) {
+fn reload_host_skill_index(state: &AppState, label: &str) {
     let mut ap = state.active(label);
-    ap.skills = Arc::new(SkillIndex::load(&skill_paths(&ap.root)));
+    ap.skills = Arc::new(load_skill_index(&ap.root));
     state.set_active(label, ap);
 }
 
@@ -393,5 +445,22 @@ mod tests {
             std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
             "old instructions"
         );
+    }
+
+    #[test]
+    fn reload_enables_new_skills_without_reviving_disabled_existing_skills() {
+        let previous = HashSet::from(["enabled".into(), "disabled".into()]);
+        let enabled = Some(HashSet::from(["enabled".into()]));
+
+        let updated = enabled_names_after_reload(
+            enabled,
+            &previous,
+            ["enabled", "disabled", "new-project-skill"],
+        )
+        .unwrap();
+
+        assert!(updated.contains("enabled"));
+        assert!(!updated.contains("disabled"));
+        assert!(updated.contains("new-project-skill"));
     }
 }

@@ -260,6 +260,8 @@ visibility rules, verification contract, and isolation limits.
 
 Installable bundles of Skills, local MCP servers, and sandboxed MCP Apps are
 documented in [Feature plugins](docs/feature-plugins.md).
+Skill scopes, same-name precedence, and hot reload behavior are documented in
+[Skills](docs/skills.md).
 
 The experimental **StickS3 Device Bridge** is configured beside Feishu and
 WeChat under **Settings → Remote Access**. LAN mode uses authenticated HTTP

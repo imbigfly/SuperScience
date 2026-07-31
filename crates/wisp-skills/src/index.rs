@@ -5,7 +5,7 @@
 //! alongside `scripts/` and `references/` directories. This mirrors the
 //! convention used by mangopi-cli and the wisp-science `skills/` catalog.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Path to the skills catalog bundled with the app (`skills/`).
@@ -22,21 +22,59 @@ pub struct Skill {
     pub dir: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillSource {
+    Bundled,
+    Project,
+    Global,
+    Extra,
+    Plugin,
+    Custom,
+}
+
+impl SkillSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bundled => "bundled",
+            Self::Project => "project",
+            Self::Global => "global",
+            Self::Extra => "extra",
+            Self::Plugin => "plugin",
+            Self::Custom => "custom",
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct SkillIndex {
     skills: Vec<Skill>,
+    sources: HashMap<String, SkillSource>,
 }
 
 impl SkillIndex {
     /// Load every `*/SKILL.md` under the given base directories.
     pub fn load(base_paths: &[PathBuf]) -> Self {
+        let paths = base_paths
+            .iter()
+            .cloned()
+            .map(|path| (path, SkillSource::Custom))
+            .collect::<Vec<_>>();
+        Self::load_scoped(&paths)
+    }
+
+    /// Load skills with an explicit source for each base directory. When the
+    /// same public name occurs more than once, the first base directory wins.
+    pub fn load_scoped(base_paths: &[(PathBuf, SkillSource)]) -> Self {
         let mut skills = vec![];
-        for base in base_paths {
+        let mut sources = HashMap::new();
+        let mut names = HashSet::new();
+        for (base, source) in base_paths {
             if !base.is_dir() {
                 continue;
             }
             for entry in walkdir::WalkDir::new(base)
                 .max_depth(2)
+                .sort_by_file_name()
                 .into_iter()
                 .filter_map(|e| e.ok())
             {
@@ -48,12 +86,15 @@ impl SkillIndex {
                 }
                 let dir = entry.path().parent().map(PathBuf::from).unwrap_or_default();
                 if let Ok(skill) = parse_skill(entry.path(), dir.clone()) {
-                    skills.push(skill);
+                    if names.insert(skill.name.clone()) {
+                        sources.insert(skill.name.clone(), *source);
+                        skills.push(skill);
+                    }
                 }
             }
         }
         skills.sort_by(|a, b| a.name.cmp(&b.name));
-        Self { skills }
+        Self { skills, sources }
     }
 
     pub fn all(&self) -> &[Skill] {
@@ -72,9 +113,16 @@ impl SkillIndex {
                     .filter(|s| names.contains(&s.name))
                     .cloned()
                     .collect(),
+                sources: self
+                    .sources
+                    .iter()
+                    .filter(|(name, _)| names.contains(*name))
+                    .map(|(name, source)| (name.clone(), *source))
+                    .collect(),
             },
             None => Self {
                 skills: self.skills.clone(),
+                sources: self.sources.clone(),
             },
         }
     }
@@ -85,20 +133,45 @@ impl SkillIndex {
     /// silently replacing trusted instructions.
     pub fn merged_preserving_self(&self, other: &Self) -> Self {
         let mut skills = self.skills.clone();
+        let mut sources = self.sources.clone();
         let mut names: HashSet<String> = skills.iter().map(|skill| skill.name.clone()).collect();
-        skills.extend(
-            other
-                .skills
-                .iter()
-                .filter(|skill| names.insert(skill.name.clone()))
-                .cloned(),
-        );
+        for skill in &other.skills {
+            if names.insert(skill.name.clone()) {
+                if let Some(source) = other.source(&skill.name) {
+                    sources.insert(skill.name.clone(), source);
+                }
+                skills.push(skill.clone());
+            }
+        }
         skills.sort_by(|left, right| left.name.cmp(&right.name));
-        Self { skills }
+        Self { skills, sources }
     }
 
     pub fn get(&self, name: &str) -> Option<&Skill> {
         self.skills.iter().find(|s| s.name == name)
+    }
+
+    pub fn source(&self, name: &str) -> Option<SkillSource> {
+        self.sources.get(name).copied()
+    }
+
+    /// Return an index where user-managed tags replace the SKILL.md tags for
+    /// matching names. This keeps UI edits and Agent search behavior aligned.
+    pub fn with_tag_overrides(&self, overrides: &BTreeMap<String, Vec<String>>) -> Self {
+        Self {
+            skills: self
+                .skills
+                .iter()
+                .cloned()
+                .map(|mut skill| {
+                    if let Some(tags) = overrides.get(&skill.name) {
+                        skill.tags = tags.clone();
+                    }
+                    skill
+                })
+                .collect(),
+            sources: self.sources.clone(),
+        }
     }
 
     pub fn find(&self, keyword: &str) -> Vec<&Skill> {
@@ -121,6 +194,12 @@ impl SkillIndex {
                 .iter()
                 .filter(|s| !disabled.contains(&s.name))
                 .cloned()
+                .collect(),
+            sources: self
+                .sources
+                .iter()
+                .filter(|(name, _)| !disabled.contains(*name))
+                .map(|(name, source)| (name.clone(), *source))
                 .collect(),
         }
     }
@@ -268,6 +347,7 @@ mod tests {
     fn filtered_drops_disabled_skills() {
         let idx = SkillIndex {
             skills: vec![skill("a"), skill("b"), skill("c")],
+            sources: HashMap::new(),
         };
         let disabled: HashSet<String> = ["b".to_string()].into_iter().collect();
         let out = idx.filtered(&disabled);
@@ -281,6 +361,7 @@ mod tests {
     fn filters_skills_by_enabled_names() {
         let idx = SkillIndex {
             skills: vec![skill("a"), skill("b"), skill("c")],
+            sources: HashMap::new(),
         };
         let enabled: HashSet<String> = ["a".to_string(), "c".to_string()].into_iter().collect();
         let out = idx.filtered_by_names(Some(&enabled));
@@ -491,6 +572,7 @@ mod tests {
     fn merge_preserves_host_skill_on_name_collision() {
         let host = SkillIndex {
             skills: vec![skill("host"), skill("shared")],
+            sources: HashMap::new(),
         };
         let plugin = SkillIndex {
             skills: vec![
@@ -500,6 +582,7 @@ mod tests {
                     ..skill("shared")
                 },
             ],
+            sources: HashMap::new(),
         };
         let merged = host.merged_preserving_self(&plugin);
         let names: Vec<_> = merged
@@ -515,9 +598,11 @@ mod tests {
     fn plugin_enable_does_not_revive_a_disabled_host_collision() {
         let host = SkillIndex {
             skills: vec![skill("shared")],
+            sources: HashMap::new(),
         };
         let plugin = SkillIndex {
             skills: vec![skill("plugin"), skill("shared")],
+            sources: HashMap::new(),
         };
         let enabled = HashSet::from(["plugin".to_string()]);
         let filtered = host
@@ -525,5 +610,61 @@ mod tests {
             .filtered_by_names(Some(&enabled));
         assert!(filtered.get("shared").is_none());
         assert!(filtered.get("plugin").is_some());
+    }
+
+    #[test]
+    fn scoped_load_keeps_the_first_same_named_skill() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp-skill-precedence-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let project = root.join("project").join("shared");
+        let global = root.join("global").join("shared");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(
+            project.join("SKILL.md"),
+            "---\nname: shared\ndescription: project copy\n---\nproject",
+        )
+        .unwrap();
+        std::fs::write(
+            global.join("SKILL.md"),
+            "---\nname: shared\ndescription: global copy\n---\nglobal",
+        )
+        .unwrap();
+
+        let index = SkillIndex::load_scoped(&[
+            (root.join("project"), SkillSource::Project),
+            (root.join("global"), SkillSource::Global),
+        ]);
+        assert_eq!(index.all().len(), 1);
+        assert_eq!(index.get("shared").unwrap().description, "project copy");
+        assert_eq!(index.source("shared"), Some(SkillSource::Project));
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn tag_overrides_preserve_source_metadata() {
+        let mut index = SkillIndex {
+            skills: vec![skill("literature")],
+            sources: HashMap::from([("literature".into(), SkillSource::Project)]),
+        };
+        index.skills[0].tags = vec!["original".into()];
+        let overrides = BTreeMap::from([(
+            "literature".into(),
+            vec!["custom".into(), "中文别名".into()],
+        )]);
+
+        let updated = index.with_tag_overrides(&overrides);
+        assert_eq!(
+            updated.get("literature").unwrap().tags,
+            overrides["literature"]
+        );
+        assert_eq!(updated.source("literature"), Some(SkillSource::Project));
     }
 }

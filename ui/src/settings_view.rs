@@ -527,6 +527,7 @@ pub(super) fn SettingsView(
     start_specialist_chat: Callback<web_sys::MouseEvent>,
     refresh_conns: Callback<()>,
     refresh_skills: Callback<()>,
+    reload_skills: Callback<()>,
     refresh_approval_grants: Callback<()>,
     load_memory_file: Callback<String>,
     load_custom_conn_tools: Callback<ConnRow>,
@@ -3298,6 +3299,9 @@ pub(super) fn SettingsView(
                             <button type="button" on:click=move |_| set_visible_skills_enabled.call(false)>
                                 {move || t(locale.get(), "skills.disable_visible")}
                             </button>
+                            <button type="button" on:click=move |_| reload_skills.call(())>
+                                {move || t(locale.get(), "skills.reload")}
+                            </button>
                             <details class="settings-add-menu">
                                 <summary>{move || t(locale.get(), "skills.add")}</summary>
                                 <button type="button" on:click=move |_| {
@@ -3380,13 +3384,19 @@ pub(super) fn SettingsView(
                                     let builtin = s.builtin;
                                     let managed = s.managed;
                                     let managed_by = s.managed_by.clone();
+                                    let scope = s.scope.clone();
+                                    let scope_label = t(locale.get(), &format!("skills.scope.{scope}"));
+                                    let source_path = s.dir.clone();
                                     let tags_text = join_tags(&s.tags);
                                     let tags_input_text = tags_text.clone();
                                     let tags_cb = save_skill_tags.clone();
                                     view! {
                                         <div class="settings-list-row" data-skill-name=s.name.clone()>
                                             <div class="settings-list-main">
-                                                <span class="settings-list-title">{s.name.clone()}</span>
+                                                <span class="settings-list-title">
+                                                    {s.name.clone()}
+                                                    <span class="skill-scope-badge" title=source_path>{scope_label}</span>
+                                                </span>
                                                 {(!s.description.is_empty() && s.description != ">").then(|| {
                                                     let desc = s.description.clone();
                                                     view! { <span class="settings-list-sub">{desc}</span> }
@@ -3405,7 +3415,7 @@ pub(super) fn SettingsView(
                                                 })}
                                             </div>
                                             <div class="settings-list-actions">
-                                                {(!builtin).then(|| { let n = name_remove.clone(); view! {
+                                                {(scope == "global" && !builtin).then(|| { let n = name_remove.clone(); view! {
                                                     <button class="settings-skill-remove" type="button"
                                                         title=move || t(locale.get(), "skills.remove")
                                                         on:click=move |_| delete_confirm.set(Some(DeleteConfirm::Skill {

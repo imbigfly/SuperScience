@@ -3730,6 +3730,28 @@ fn App() -> impl IntoView {
         });
     };
 
+    let reload_skills = Callback::new(move |_: ()| {
+        spawn_local(async move {
+            match invoke_checked("reload_skills", JsValue::UNDEFINED).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<Vec<SkillRow>>(value) {
+                    Ok(rows) => {
+                        let total = rows.len().to_string();
+                        skills_list.set(rows);
+                        skills_msg.set(Some((
+                            true,
+                            tf(locale.get(), "skills.reloaded", &[("total", &total)]),
+                        )));
+                    }
+                    Err(error) => skills_msg.set(Some((false, error.to_string()))),
+                },
+                Err(error) => skills_msg.set(Some((
+                    false,
+                    localize_backend(locale.get(), &js_error_text(error)),
+                ))),
+            }
+        });
+    });
+
     let install_skill_from = move |path: String| {
         spawn_local(async move {
             let arg = to_value(&serde_json::json!({ "srcPath": path })).unwrap();
@@ -12368,6 +12390,7 @@ fn App() -> impl IntoView {
             start_specialist_chat=start_specialist_chat
             refresh_conns=Callback::new(move |_: ()| refresh_conns())
             refresh_skills=Callback::new(move |_: ()| refresh_skills())
+            reload_skills=reload_skills
             refresh_approval_grants=Callback::new(move |_: ()| refresh_approval_grants())
             load_memory_file=Callback::new(load_memory_file)
             load_custom_conn_tools=Callback::new(load_custom_conn_tools)

@@ -171,7 +171,7 @@ pub(super) async fn load_active_project(
         .map_err(|e| format!("{e}"))?
         .ok_or_else(|| "Project not found".to_string())?;
     let root = ensure_writable(PathBuf::from(&ws), &state.app_data);
-    let skills = Arc::new(SkillIndex::load(&skill_paths(&root)));
+    let skills = Arc::new(crate::load_skill_index(&root));
     let memory = Arc::new(MemoryManager::new(&root));
     Ok((
         ActiveProject {

@@ -4940,7 +4940,7 @@ test("skill manager filters by tag and batch disables visible skills", async ({ 
   await enterApp(page);
   await page.getByRole("button", { name: "Add to message" }).click();
   await page.getByRole("button", { name: "Manage skills" }).click();
-  await expect(page.getByRole("button", { name: "Skills" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Skills", exact: true })).toBeVisible();
   await expect(page.locator(".settings-search")).toHaveAttribute("type", "text");
   await expect(page.locator(".settings-search")).toHaveAttribute("inputmode", "search");
   await expect(page.locator(".settings-search")).toHaveAttribute("autocomplete", "off");
@@ -4966,6 +4966,23 @@ test("skill manager filters by tag and batch disables visible skills", async ({ 
     return args instanceof Map ? Object.fromEntries(args) : (args ?? null);
   })).toEqual({ names: ["remote-compute-modal"], enabled: false });
   await expect(page.locator('[data-skill-name="remote-compute-modal"] input[type="checkbox"]')).not.toBeChecked();
+});
+
+test("skill manager reloads manually copied skills and shows their scope", async ({ page }) => {
+  await enterApp(page, "/?mockSkillReload=1");
+  await openSettingsSection(page, "Skills");
+
+  await expect(page.locator('[data-skill-name="fresh-project-skill"]')).toHaveCount(0);
+  await expect(page.locator('[data-skill-name="paper-narrative"]')).toContainText("Global");
+  await page.getByRole("button", { name: "Reload skills" }).click();
+
+  const fresh = page.locator('[data-skill-name="fresh-project-skill"]');
+  await expect.poll(() => lastInvokeArgs(page, "reload_skills")).toEqual({});
+  await expect(fresh).toContainText("Newly copied project skill");
+  await expect(fresh).toContainText("Project");
+  await expect(fresh.locator('input[type="checkbox"]')).toBeChecked();
+  await expect(fresh.getByRole("button", { name: "Delete skill" })).toHaveCount(0);
+  await expect(page.getByText("Skills reloaded. 4 available.")).toBeVisible();
 });
 
 test("skill manager updates and deletes user-added skills", async ({ page }) => {

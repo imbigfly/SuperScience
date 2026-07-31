@@ -7,7 +7,8 @@
 
 use crate::{
     bio_domains, connect_mcp, load_disabled_connectors, load_disabled_skills,
-    load_enabled_skill_names, load_mcp_connections, run_context, skill_paths, ActiveProject,
+    load_enabled_skill_names, load_mcp_connections, load_skill_index, load_skill_tags, run_context,
+    ActiveProject,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -16,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use wisp_skills::{list_resources, SkillIndex};
+use wisp_skills::{list_resources, SkillIndex, SkillSource};
 use wisp_store::Store;
 use wisp_tools::{Approval, Tool, ToolEnv, ToolEvent, ToolResult};
 
@@ -95,7 +96,7 @@ impl BridgeServer {
                 vec![],
             ),
         ));
-        let host = SkillIndex::load(&skill_paths(&cfg.project_root));
+        let host = load_skill_index(&cfg.project_root);
         let plugin_paths = crate::plugins::enabled_plugin_manifests(&store, &cfg.project_id)
             .await
             .into_iter()
@@ -103,7 +104,11 @@ impl BridgeServer {
                 manifest.skill_paths(Path::new(&installation.install_root))
             })
             .collect::<Vec<_>>();
-        let plugins = SkillIndex::load(&plugin_paths);
+        let plugin_sources = plugin_paths
+            .into_iter()
+            .map(|path| (path, SkillSource::Plugin))
+            .collect::<Vec<_>>();
+        let plugins = SkillIndex::load_scoped(&plugin_sources);
         let always_enabled = plugins
             .all()
             .iter()
@@ -936,6 +941,8 @@ async fn filter_skills(
     raw: SkillIndex,
     always_enabled: &HashSet<String>,
 ) -> SkillIndex {
+    let tags = load_skill_tags(store).await;
+    let raw = raw.with_tag_overrides(&tags);
     let mut enabled = if let Some(enabled) = load_enabled_skill_names(store, project_id).await {
         enabled
     } else {
