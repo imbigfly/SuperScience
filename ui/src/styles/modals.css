@@ -28,6 +28,10 @@
 .modal .row button { background: var(--bg-input); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 9px 16px; font: inherit; font-size: 13.5px; cursor: pointer; transition: background .12s ease, border-color .12s ease; }
 .modal .row button:hover { border-color: var(--text-faint); }
 .modal .row button:disabled { opacity: .55; cursor: not-allowed; }
+.modal .row button.primary.danger {
+  background: var(--err); border-color: var(--err); color: #fff;
+}
+.modal .row button.primary.danger:hover { border-color: color-mix(in srgb, var(--err) 75%, #000); }
 .issue-report-modal { max-width: 720px; overflow: hidden; }
 .issue-report-fields { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; gap: 11px; overflow-y: auto; padding-right: 4px; }
 .issue-report-modal > .row { flex: 0 0 auto; }

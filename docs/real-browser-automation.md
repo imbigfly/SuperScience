@@ -98,9 +98,10 @@ These settings must be changed manually because internal settings pages such as
   fold. It needs a vision-capable model configured in
   **Settings → Models**, like `view_image`.
 
-Both tools always require at least one Wisp approval. The approval can be
+Both tools normally require at least one Wisp approval. The approval can be
 granted once, for the session, for the project, or globally through the existing
-approval card. Treat broad grants carefully: the extension has access to every
+approval card. A conversation with **Full Permission** enabled auto-approves the
+same request. Treat broad grants carefully: the extension has access to every
 HTTP(S) tab in that Chrome profile.
 
 ## Security and limits

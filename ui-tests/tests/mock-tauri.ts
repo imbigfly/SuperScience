@@ -209,6 +209,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   let autoReviewEnabled = false;
   const sessionDelegationEnabled: Record<string, boolean> = {};
   const sessionPlanMode: Record<string, boolean> = {};
+  const sessionFullPermission: Record<string, boolean> = {};
   const sessionAgentCompletion: Record<string, { policy: "inline" | "background"; auto_resume: boolean }> = {};
   let lastDelegationSessionId = "s-current";
   // Mutable workspace fixture lets live FileChanged events prove that open
@@ -2848,6 +2849,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             sessionPlanMode[sessionId] = Boolean(arg("enabled"));
             return sessionPlanMode[sessionId];
+          }
+          case "get_session_full_permission": {
+            const sessionId = String(arg("sessionId") ?? "");
+            return sessionFullPermission[sessionId] ?? false;
+          }
+          case "set_session_full_permission": {
+            const sessionId = String(arg("sessionId") ?? "");
+            sessionFullPermission[sessionId] = Boolean(arg("enabled"));
+            return sessionFullPermission[sessionId];
           }
           case "get_session_agent_completion": {
             const sessionId = String(arg("sessionId") ?? "");

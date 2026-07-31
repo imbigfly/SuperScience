@@ -106,6 +106,13 @@ pub trait ToolEnv: Send + Sync {
     async fn approval_mode(&self, _tool: &str) -> Approval {
         Approval::Allow
     }
+    /// Whether approval prompts should be bypassed for this conversation.
+    /// Explicit host `Deny` rules and hard safety boundaries still win. This is
+    /// stronger than returning [`Approval::Allow`]: it also suppresses a
+    /// tool's built-in minimum approval requirement.
+    fn approval_bypass(&self) -> bool {
+        false
+    }
     /// Whether this session is in plan mode: the agent researches and drafts a
     /// plan, so `Registry::run` refuses every tool outside
     /// [`crate::PLAN_MODE_READ_ONLY`]. Default `false`.

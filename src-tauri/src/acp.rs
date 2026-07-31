@@ -767,6 +767,24 @@ fn permission_event(frame_id: &str, request: &AcpPermissionRequest) -> Permissio
     }
 }
 
+/// Full Permission remains owned by Wisp, so prefer the protocol's one-shot
+/// allow option and auto-select it for every request. Falling back to
+/// `AllowAlways` is necessary for agents that do not offer a one-shot choice;
+/// requests without any allow option still surface to the user.
+fn full_permission_option(request: &AcpPermissionRequest) -> Option<String> {
+    request
+        .options
+        .iter()
+        .find(|option| option.kind == AcpPermissionKind::AllowOnce)
+        .or_else(|| {
+            request
+                .options
+                .iter()
+                .find(|option| option.kind == AcpPermissionKind::AllowAlways)
+        })
+        .map(|option| option.id.clone())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AcpTurnKind {
     User,
@@ -1080,6 +1098,17 @@ async fn run_acp_turn_inner(
                     }
                 }
                 Some(AcpSessionEvent::Permission(request)) => {
+                    if crate::approval_commands::session_full_permission(state, frame_id) {
+                        if let Some(option_id) = full_permission_option(&request) {
+                            if runtime
+                                .handle
+                                .respond_permission(request.request_id.clone(), Some(option_id))
+                                .is_ok()
+                            {
+                                continue;
+                            }
+                        }
+                    }
                     state.acp_permissions.lock().await.insert(request.request_id.clone(), frame_id.to_string());
                     state.awaiting_confirm.lock().unwrap().insert(frame_id.to_string());
                     state.device_hub.mark_needs_user(frame_id, Some(&project.id));
@@ -1565,6 +1594,38 @@ mod tests {
         assert!(event.get("requestId").is_some());
         assert!(event.get("frameId").is_some());
         assert!(event.get("toolCall").is_some());
+    }
+
+    #[test]
+    fn full_permission_prefers_one_shot_acp_allow() {
+        let request = AcpPermissionRequest {
+            request_id: "permission-1".into(),
+            session_id: "session-1".into(),
+            tool_call: serde_json::json!({}),
+            options: vec![
+                wisp_acp::AcpPermissionOption {
+                    id: "always".into(),
+                    name: "Always".into(),
+                    kind: AcpPermissionKind::AllowAlways,
+                },
+                wisp_acp::AcpPermissionOption {
+                    id: "once".into(),
+                    name: "Once".into(),
+                    kind: AcpPermissionKind::AllowOnce,
+                },
+            ],
+        };
+        assert_eq!(full_permission_option(&request).as_deref(), Some("once"));
+
+        let rejected_only = AcpPermissionRequest {
+            options: vec![wisp_acp::AcpPermissionOption {
+                id: "reject".into(),
+                name: "Reject".into(),
+                kind: AcpPermissionKind::RejectOnce,
+            }],
+            ..request
+        };
+        assert_eq!(full_permission_option(&rejected_only), None);
     }
 
     #[test]

@@ -48,6 +48,11 @@ pub trait Output: Send + Sync {
     fn approval_mode(&self, _tool: &str) -> wisp_tools::Approval {
         wisp_tools::Approval::Allow
     }
+    /// Whether this conversation bypasses approval prompts. Explicit blocks
+    /// and the tool registry's plan-mode gate remain authoritative.
+    fn approval_bypass(&self) -> bool {
+        false
+    }
     fn restrict_read_paths_to_project(&self) -> bool {
         false
     }
@@ -125,6 +130,9 @@ impl<'a> wisp_tools::ToolEnv for ToolEnvAdapter<'a> {
     }
     async fn approval_mode(&self, tool: &str) -> wisp_tools::Approval {
         self.out.approval_mode(tool)
+    }
+    fn approval_bypass(&self) -> bool {
+        self.out.approval_bypass()
     }
     fn danger_auto_approve(&self) -> bool {
         self.out.danger_auto_approve()
