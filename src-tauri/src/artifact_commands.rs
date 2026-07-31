@@ -25,6 +25,7 @@ fn decode_upload_data(data_base64: &str) -> Result<Vec<u8>, String> {
     }
     Ok(bytes)
 }
+#[cfg(test)]
 use uuid::Uuid;
 
 fn sanitize_upload_name(name: &str) -> Result<String, String> {
@@ -83,18 +84,53 @@ async fn register_artifact_at(
     origin: &'static str,
 ) -> Result<ArtifactInfo, String> {
     let real = existing_artifact_path(&ap.root, &path)?;
+    let snapshot_source = {
+        let source = std::path::PathBuf::from(&path);
+        if source.is_absolute() {
+            source
+        } else {
+            ap.root.join(source)
+        }
+    };
     let frame_id = ensure_active_frame(state, label, ap).await?;
-    let id = Uuid::new_v4().to_string();
     let filename = real
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("file")
         .to_string();
     let mime = content_type.unwrap_or_else(|| mime_for_path(&real).to_string());
-    let storage = real.to_string_lossy().into_owned();
+    let source_path = real
+        .strip_prefix(&ap.root)
+        .unwrap_or(&real)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let logical_key = format!("path:{source_path}");
+    let id = wisp_store::logical_artifact_id(&ap.id, &logical_key);
+    let captured = crate::snapshot_store::capture_file(
+        &ap.root,
+        &snapshot_source,
+        crate::snapshot_store::SnapshotPolicy::UpTo(crate::snapshot_store::DEFAULT_SNAPSHOT_LIMIT),
+    )?;
+    let size_bytes =
+        i64::try_from(captured.size_bytes).map_err(|_| "artifact is too large".to_string())?;
     state
         .store
-        .save_artifact(&id, &ap.id, &frame_id, &filename, &mime, &storage)
+        .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: id.clone(),
+            project_id: ap.id.clone(),
+            root_frame_id: frame_id.clone(),
+            filename: filename.clone(),
+            content_type: mime.clone(),
+            storage_path: captured.storage_path.clone(),
+            logical_key: Some(logical_key),
+            size_bytes: Some(size_bytes),
+            checksum: Some(captured.checksum),
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: captured.materialization,
+            capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+        })
         .await
         .map_err(|e| format!("{e}"))?;
     let ts = chrono::Utc::now().timestamp();
@@ -102,13 +138,13 @@ async fn register_artifact_at(
         id,
         name: filename,
         kind: mime,
-        path: storage,
+        path: captured.storage_path,
         ts,
         project_id: Some(ap.id.clone()),
         project_name: None,
         session_id: Some(frame_id),
         session_title: None,
-        size_bytes: None,
+        size_bytes: Some(size_bytes),
         origin: Some(origin.into()),
     })
 }

@@ -27,7 +27,8 @@ pub(super) fn resolve_input_paths(root: &Path, refs: &[String]) -> Result<Vec<Pa
             {
                 return Err(format!("SSH input must be project-relative: {value}"));
             }
-            let path = std::fs::canonicalize(canonical_root.join(relative))
+            let candidate = canonical_root.join(relative);
+            let path = std::fs::canonicalize(&candidate)
                 .map_err(|e| format!("cannot resolve SSH input {value}: {e}"))?;
             if !path.starts_with(&canonical_root) || !path.is_file() {
                 return Err(format!("SSH input is not a project file: {value}"));
@@ -48,7 +49,7 @@ pub(super) fn resolve_input_paths(root: &Path, refs: &[String]) -> Result<Vec<Pa
             if !names.insert(name.to_string()) {
                 return Err(format!("SSH inputs contain duplicate filename: {name}"));
             }
-            Ok(path)
+            Ok(candidate)
         })
         .collect()
 }

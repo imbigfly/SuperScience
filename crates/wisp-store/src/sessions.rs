@@ -61,11 +61,21 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
     sqlx::query(
         "DELETE FROM research_edges WHERE source_id IN (\
             SELECT id FROM research_nodes WHERE kind='artifact' AND ref_id IN (\
-                SELECT id FROM artifacts WHERE root_frame_id=?\
+                SELECT artifact.id FROM artifacts artifact WHERE artifact.root_frame_id=? \
+                AND NOT EXISTS (SELECT 1 FROM run_artifacts link WHERE link.artifact_id=artifact.id) \
+                AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
+                    ON input.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
+                AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
+                    ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
             )\
          ) OR target_id IN (\
             SELECT id FROM research_nodes WHERE kind='artifact' AND ref_id IN (\
-                SELECT id FROM artifacts WHERE root_frame_id=?\
+                SELECT artifact.id FROM artifacts artifact WHERE artifact.root_frame_id=? \
+                AND NOT EXISTS (SELECT 1 FROM run_artifacts link WHERE link.artifact_id=artifact.id) \
+                AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
+                    ON input.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
+                AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
+                    ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
             )\
          )",
     )
@@ -75,15 +85,12 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
     .await?;
     sqlx::query(
         "DELETE FROM research_nodes WHERE kind='artifact' AND ref_id IN (\
-            SELECT id FROM artifacts WHERE root_frame_id=?\
-         )",
-    )
-    .bind(frame_id)
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query(
-        "DELETE FROM run_artifacts WHERE artifact_id IN (\
-            SELECT id FROM artifacts WHERE root_frame_id=?\
+            SELECT artifact.id FROM artifacts artifact WHERE artifact.root_frame_id=? \
+            AND NOT EXISTS (SELECT 1 FROM run_artifacts link WHERE link.artifact_id=artifact.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
+                ON input.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
+                ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
          )",
     )
     .bind(frame_id)
@@ -92,10 +99,20 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
     sqlx::query(
         "DELETE FROM artifact_dependencies WHERE artifact_version_id IN (\
             SELECT av.id FROM artifact_versions av \
-            JOIN artifacts a ON a.id=av.artifact_id WHERE a.root_frame_id=?\
+            JOIN artifacts a ON a.id=av.artifact_id WHERE a.root_frame_id=? \
+            AND NOT EXISTS (SELECT 1 FROM run_artifacts link WHERE link.artifact_id=a.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
+                ON input.artifact_version_id=version.id WHERE version.artifact_id=a.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
+                ON output.artifact_version_id=version.id WHERE version.artifact_id=a.id)\
          ) OR depends_on_version_id IN (\
             SELECT av.id FROM artifact_versions av \
-            JOIN artifacts a ON a.id=av.artifact_id WHERE a.root_frame_id=?\
+            JOIN artifacts a ON a.id=av.artifact_id WHERE a.root_frame_id=? \
+            AND NOT EXISTS (SELECT 1 FROM run_artifacts link WHERE link.artifact_id=a.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
+                ON input.artifact_version_id=version.id WHERE version.artifact_id=a.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
+                ON output.artifact_version_id=version.id WHERE version.artifact_id=a.id)\
          )",
     )
     .bind(frame_id)
@@ -104,16 +121,28 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
     .await?;
     sqlx::query(
         "DELETE FROM artifact_versions WHERE artifact_id IN (\
-            SELECT id FROM artifacts WHERE root_frame_id=?\
+            SELECT artifact.id FROM artifacts artifact WHERE artifact.root_frame_id=? \
+            AND NOT EXISTS (SELECT 1 FROM run_artifacts link WHERE link.artifact_id=artifact.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
+                ON input.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
+                ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
          )",
     )
     .bind(frame_id)
     .execute(&mut **tx)
     .await?;
-    sqlx::query("DELETE FROM artifacts WHERE root_frame_id=?")
-        .bind(frame_id)
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query(
+        "DELETE FROM artifacts WHERE root_frame_id=? \
+         AND NOT EXISTS (SELECT 1 FROM run_artifacts link WHERE link.artifact_id=artifacts.id) \
+         AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
+             ON input.artifact_version_id=version.id WHERE version.artifact_id=artifacts.id) \
+         AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
+             ON output.artifact_version_id=version.id WHERE version.artifact_id=artifacts.id)",
+    )
+    .bind(frame_id)
+    .execute(&mut **tx)
+    .await?;
 
     for statement in [
         "DELETE FROM session_execution_contexts WHERE frame_id IN (SELECT id FROM frames WHERE root_frame_id=?)",
@@ -130,10 +159,34 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
             .execute(&mut **tx)
             .await?;
     }
-    sqlx::query("DELETE FROM frames WHERE root_frame_id=?")
+    // An Artifact promoted into Run lineage is project evidence, no longer
+    // disposable Session state. Keep its root frame as an invisible ownership
+    // tombstone because the legacy Artifact schema requires a frame FK. Session
+    // pickers only show roots with a user message, all of which were removed.
+    sqlx::query("DELETE FROM frames WHERE root_frame_id=? AND id<>?")
+        .bind(frame_id)
         .bind(frame_id)
         .execute(&mut **tx)
         .await?;
+    let retained: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM artifacts WHERE root_frame_id=?)")
+            .bind(frame_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    if retained {
+        sqlx::query(
+            "UPDATE frames SET status='deleted',folder_id=NULL,branched_from=NULL,pinned=0,\
+             title=NULL WHERE id=?",
+        )
+        .bind(frame_id)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        sqlx::query("DELETE FROM frames WHERE id=?")
+            .bind(frame_id)
+            .execute(&mut **tx)
+            .await?;
+    }
     Ok(())
 }
 

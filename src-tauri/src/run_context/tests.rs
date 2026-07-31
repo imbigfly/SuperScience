@@ -6,6 +6,19 @@ use std::path::PathBuf;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
+#[test]
+fn dirty_patch_secret_filter_rejects_high_signal_credentials() {
+    assert!(contains_obvious_secret(
+        "+-----BEGIN OPENSSH PRIVATE KEY-----\n+payload"
+    ));
+    assert!(contains_obvious_secret(
+        "+Authorization: Bearer publication-token"
+    ));
+    assert!(!contains_obvious_secret(
+        "+let api_key = std::env::var(\"API_KEY\")?;"
+    ));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn process_runner_keeps_only_bounded_output_tails() {
@@ -454,6 +467,74 @@ async fn submit_run_records_success() {
 }
 
 #[tokio::test]
+async fn local_run_binds_inputs_before_execution_and_snapshots_environment() {
+    let tmp = std::env::temp_dir().join(format!("wisp_local_run_inputs_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(tmp.join("data")).unwrap();
+    std::fs::write(tmp.join("data/input.csv"), b"x\n1\n").unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    let runner = FakeRunRunner {
+        output: Ok(RunCommandOutput {
+            exit_code: 0,
+            stdout: "ok".into(),
+            stderr: String::new(),
+        }),
+    };
+
+    let result = submit_run_with_runner(
+        &store,
+        "p",
+        Some("f"),
+        SubmitRunRequest {
+            context_id: "local".into(),
+            command: "python analysis.py".into(),
+            title: None,
+            timeout_secs: Some(5),
+            input_paths: Some(vec!["data/input.csv".into()]),
+            output_specs: None,
+        },
+        &runner,
+        Some(tmp.clone()),
+    )
+    .await
+    .unwrap();
+
+    let inputs = store.list_run_inputs(&result.run_id).await.unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].basis, wisp_store::LineageBasis::Declared);
+    assert_eq!(inputs[0].confidence, wisp_store::LineageConfidence::Exact);
+    let version = store
+        .get_artifact_version(inputs[0].artifact_version_id.as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        version.materialization,
+        wisp_store::ArtifactMaterialization::Snapshot
+    );
+    let snapshot = tmp.join(&version.storage_path);
+    std::fs::write(tmp.join("data/input.csv"), b"x\n2\n").unwrap();
+    assert_eq!(std::fs::read(snapshot).unwrap(), b"x\n1\n");
+    assert!(store
+        .get_run_environment_snapshot(&result.run_id)
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        store.list_run_code_snapshots(&result.run_id).await.unwrap()[0].source_text,
+        "python analysis.py"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
 async fn submit_run_records_failure() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_submit_run_fail_{}.sqlite",
@@ -534,6 +615,7 @@ async fn submit_run_harvests_output_specs_on_success() {
                 glob: "results/*.tsv".into(),
                 kind: "table".into(),
                 residency: crate::harvest::OutputResidency::Auto,
+                logical_key: None,
                 max_file_mb: Some(1),
                 max_total_mb: Some(1),
             }]),

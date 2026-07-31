@@ -82,9 +82,47 @@ CREATE TABLE IF NOT EXISTS artifacts (
     filename        TEXT NOT NULL,
     content_type    TEXT NOT NULL,
     storage_path    TEXT NOT NULL,
-    created_at      INTEGER NOT NULL
+    created_at      INTEGER NOT NULL,
+    latest_version_id TEXT,
+    logical_key     TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_artifacts_project ON artifacts(project_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_artifacts_project_logical_key
+    ON artifacts(project_id, logical_key) WHERE logical_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS artifact_versions (
+    id                  TEXT PRIMARY KEY,
+    artifact_id         TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    version_number      INTEGER NOT NULL,
+    content_type        TEXT NOT NULL,
+    storage_path        TEXT NOT NULL,
+    size_bytes          INTEGER,
+    checksum            TEXT,
+    parent_version_id   TEXT REFERENCES artifact_versions(id) ON DELETE SET NULL,
+    producing_run_id    TEXT REFERENCES runs(id) ON DELETE SET NULL,
+    env_snapshot_hash   TEXT REFERENCES env_snapshots(hash) ON DELETE SET NULL,
+    materialization     TEXT NOT NULL DEFAULT 'reference',
+    capture_timing      TEXT NOT NULL DEFAULT 'unknown',
+    created_at          INTEGER NOT NULL,
+    UNIQUE(artifact_id, version_number)
+);
+CREATE INDEX IF NOT EXISTS ix_artifact_versions_artifact
+    ON artifact_versions(artifact_id, version_number DESC);
+CREATE INDEX IF NOT EXISTS ix_artifact_versions_run
+    ON artifact_versions(producing_run_id);
+
+CREATE TABLE IF NOT EXISTS artifact_dependencies (
+    id                    TEXT PRIMARY KEY,
+    artifact_version_id   TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE CASCADE,
+    depends_on_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE CASCADE,
+    reference_name        TEXT,
+    basis                 TEXT NOT NULL DEFAULT 'inferred',
+    confidence            TEXT NOT NULL DEFAULT 'uncertain',
+    created_at            INTEGER NOT NULL,
+    UNIQUE(artifact_version_id, depends_on_version_id)
+);
+CREATE INDEX IF NOT EXISTS ix_artifact_dependencies_version
+    ON artifact_dependencies(artifact_version_id);
 
 -- Structured resource references discovered when a new assistant message is
 -- persisted. The transcript keeps the agent's original Markdown; rendering
@@ -290,6 +328,73 @@ CREATE TABLE IF NOT EXISTS run_artifacts (
     created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_run_artifacts_run ON run_artifacts(run_id);
+
+CREATE TABLE IF NOT EXISTS external_resources (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind                TEXT NOT NULL,
+    uri                 TEXT NOT NULL,
+    version             TEXT,
+    checksum            TEXT,
+    size_bytes          INTEGER,
+    license             TEXT,
+    visibility          TEXT NOT NULL DEFAULT 'restricted',
+    access_instructions TEXT,
+    accessed_at         INTEGER,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    UNIQUE(project_id, uri, version)
+);
+
+CREATE TABLE IF NOT EXISTS run_inputs (
+    id                   TEXT PRIMARY KEY,
+    run_id               TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    artifact_version_id  TEXT REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+    external_resource_id TEXT REFERENCES external_resources(id) ON DELETE RESTRICT,
+    source_ref           TEXT NOT NULL,
+    role                 TEXT NOT NULL,
+    required             INTEGER NOT NULL DEFAULT 1,
+    basis                TEXT NOT NULL,
+    confidence           TEXT NOT NULL,
+    created_at           INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_run_inputs_run ON run_inputs(run_id);
+CREATE INDEX IF NOT EXISTS ix_run_inputs_artifact_version
+    ON run_inputs(artifact_version_id);
+
+CREATE TABLE IF NOT EXISTS run_outputs (
+    id                  TEXT PRIMARY KEY,
+    run_id              TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    artifact_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+    role                TEXT NOT NULL,
+    logical_output_key  TEXT NOT NULL,
+    source_path         TEXT NOT NULL,
+    created_at          INTEGER NOT NULL,
+    UNIQUE(run_id, artifact_version_id, role)
+);
+CREATE INDEX IF NOT EXISTS ix_run_outputs_run ON run_outputs(run_id);
+CREATE INDEX IF NOT EXISTS ix_run_outputs_artifact_version
+    ON run_outputs(artifact_version_id);
+
+CREATE TABLE IF NOT EXISTS run_code_snapshots (
+    id           TEXT PRIMARY KEY,
+    run_id       TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    source_kind  TEXT NOT NULL,
+    source_path  TEXT,
+    source_text  TEXT NOT NULL,
+    checksum     TEXT NOT NULL,
+    storage_path TEXT,
+    git_commit   TEXT,
+    dirty_patch  TEXT,
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_run_code_snapshots_run
+    ON run_code_snapshots(run_id);
+
+CREATE TABLE IF NOT EXISTS run_environment_snapshots (
+    run_id            TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    env_snapshot_hash TEXT NOT NULL REFERENCES env_snapshots(hash) ON DELETE RESTRICT
+);
 
 CREATE TABLE IF NOT EXISTS research_nodes (
     id            TEXT PRIMARY KEY,

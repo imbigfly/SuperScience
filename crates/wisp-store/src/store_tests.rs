@@ -2084,9 +2084,78 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             TURN_FILE_UNDO_MIGRATION.to_string(),
             SESSION_BRANCH_LINEAGE_MIGRATION.to_string(),
             ASK_USER_REQUESTS_MIGRATION.to_string(),
+            RUN_ARTIFACT_LINEAGE_MIGRATION.to_string(),
         ]
     );
 
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn run_artifact_lineage_migration_repairs_partial_application() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_run_lineage_partial_migration_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    sqlx::query("DROP INDEX ux_artifacts_project_logical_key")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    for statement in [
+        "DROP TABLE run_environment_snapshots",
+        "DROP TABLE run_code_snapshots",
+        "DROP TABLE run_outputs",
+        "DROP TABLE run_inputs",
+        "DROP TABLE external_resources",
+        "ALTER TABLE artifacts DROP COLUMN logical_key",
+        "ALTER TABLE artifact_versions DROP COLUMN materialization",
+        "ALTER TABLE artifact_versions DROP COLUMN capture_timing",
+        "ALTER TABLE artifact_dependencies DROP COLUMN basis",
+        "ALTER TABLE artifact_dependencies DROP COLUMN confidence",
+        "ALTER TABLE env_snapshots DROP COLUMN snapshot_json",
+        "ALTER TABLE env_snapshots DROP COLUMN hash_algorithm",
+    ] {
+        sqlx::query(statement).execute(&store.pool).await.unwrap();
+    }
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+        .bind(RUN_ARTIFACT_LINEAGE_MIGRATION)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+
+    let repaired = Store::open(&tmp).await.unwrap();
+    for table in [
+        "external_resources",
+        "run_inputs",
+        "run_outputs",
+        "run_code_snapshots",
+        "run_environment_snapshots",
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+        )
+        .bind(table)
+        .fetch_one(&repaired.pool)
+        .await
+        .unwrap();
+        assert!(exists, "{table}");
+    }
+    for (table, column) in [
+        ("artifacts", "logical_key"),
+        ("artifact_versions", "materialization"),
+        ("artifact_versions", "capture_timing"),
+        ("artifact_dependencies", "basis"),
+        ("artifact_dependencies", "confidence"),
+        ("env_snapshots", "snapshot_json"),
+        ("env_snapshots", "hash_algorithm"),
+    ] {
+        assert!(Store::has_column(&repaired.pool, table, column)
+            .await
+            .unwrap());
+    }
+    repaired.pool.close().await;
     let _ = std::fs::remove_file(&tmp);
 }
 
@@ -3139,6 +3208,328 @@ async fn artifacts_keep_version_lineage() {
         .nodes
         .iter()
         .any(|node| node.id == "artifact:a" && node.ref_id.as_deref() == Some("a")));
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn runs_bind_exact_artifact_versions_code_and_environment() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_exact_run_lineage_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .create_run(&RunRecord::new("run", "p", "local", "Analysis", "command"))
+        .await
+        .unwrap();
+
+    let input_key = "path:data/input.csv";
+    let input_artifact = logical_artifact_id("p", input_key);
+    let input_version = store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: input_artifact,
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "input.csv".into(),
+            content_type: "text/csv".into(),
+            storage_path: ".wisp/artifacts/sha256/aa/input.csv".into(),
+            logical_key: Some(input_key.into()),
+            size_bytes: Some(4),
+            checksum: Some("a".repeat(64)),
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::Snapshot,
+            capture_timing: ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    store
+        .save_run_input(&RunInput {
+            id: "input".into(),
+            run_id: "run".into(),
+            artifact_version_id: Some(input_version.clone()),
+            external_resource_id: None,
+            source_ref: "data/input.csv".into(),
+            role: "counts".into(),
+            required: true,
+            basis: LineageBasis::Declared,
+            confidence: LineageConfidence::Exact,
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .save_external_resource(&ExternalResource {
+            id: "restricted-cohort".into(),
+            project_id: "p".into(),
+            kind: "dataset".into(),
+            uri: "s3://controlled/cohort-v3".into(),
+            version: Some("v3".into()),
+            checksum: Some("d".repeat(64)),
+            size_bytes: Some(1024),
+            license: Some("DUA-42".into()),
+            visibility: "restricted".into(),
+            access_instructions: Some("Request access from the data custodian".into()),
+            accessed_at: Some(1),
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .save_run_input(&RunInput {
+            id: "external-input".into(),
+            run_id: "run".into(),
+            artifact_version_id: None,
+            external_resource_id: Some("restricted-cohort".into()),
+            source_ref: "s3://controlled/cohort-v3".into(),
+            role: "controlled_cohort".into(),
+            required: true,
+            basis: LineageBasis::Declared,
+            confidence: LineageConfidence::Exact,
+            created_at: 2,
+        })
+        .await
+        .unwrap();
+
+    let first_env = serde_json::json!({"context": {"id": "local", "kind": "local"}, "schema": 1});
+    let reordered_env =
+        serde_json::json!({"schema": 1, "context": {"kind": "local", "id": "local"}});
+    assert_eq!(
+        canonical_json_sha256(&first_env),
+        canonical_json_sha256(&reordered_env)
+    );
+    let env_hash = store
+        .record_run_environment_snapshot("run", Some("local"), &first_env)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_run_environment_snapshot("run")
+            .await
+            .unwrap()
+            .unwrap()
+            .hash,
+        env_hash
+    );
+    store
+        .save_run_code_snapshot(&RunCodeSnapshot {
+            id: "code".into(),
+            run_id: "run".into(),
+            source_kind: "command".into(),
+            source_path: None,
+            source_text: "python analysis.py".into(),
+            checksum: "b".repeat(64),
+            storage_path: None,
+            git_commit: Some("deadbeef".into()),
+            dirty_patch: None,
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+
+    let output_key = "figure:t-cells";
+    let output_artifact = logical_artifact_id("p", output_key);
+    let output_version = store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: output_artifact,
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "figure.png".into(),
+            content_type: "image/png".into(),
+            storage_path: ".wisp/artifacts/sha256/cc/figure.png".into(),
+            logical_key: Some(output_key.into()),
+            size_bytes: Some(8),
+            checksum: Some("c".repeat(64)),
+            producing_run_id: Some("run".into()),
+            env_snapshot_hash: Some(env_hash),
+            materialization: ArtifactMaterialization::Snapshot,
+            capture_timing: ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    store
+        .save_run_output(&RunOutput {
+            id: "output".into(),
+            run_id: "run".into(),
+            artifact_version_id: output_version.clone(),
+            role: "figure".into(),
+            logical_output_key: output_key.into(),
+            source_path: "results/figure.png".into(),
+            created_at: 2,
+        })
+        .await
+        .unwrap();
+    store
+        .save_artifact_dependency(
+            "dependency",
+            &output_version,
+            &input_version,
+            Some("counts"),
+            LineageBasis::Declared,
+            LineageConfidence::Exact,
+        )
+        .await
+        .unwrap();
+    assert!(store
+        .save_artifact_dependency(
+            "cycle",
+            &input_version,
+            &output_version,
+            None,
+            LineageBasis::Inferred,
+            LineageConfidence::Uncertain,
+        )
+        .await
+        .is_err());
+
+    assert_eq!(store.list_run_inputs("run").await.unwrap().len(), 2);
+    assert_eq!(
+        store
+            .get_external_resource("restricted-cohort")
+            .await
+            .unwrap()
+            .unwrap()
+            .visibility,
+        "restricted"
+    );
+    assert_eq!(store.list_run_outputs("run").await.unwrap().len(), 1);
+    assert_eq!(
+        store
+            .get_run_output_version("run", output_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        output_version
+    );
+    let dependencies = store
+        .list_artifact_dependencies(&output_version)
+        .await
+        .unwrap();
+    assert_eq!(dependencies.len(), 1);
+    assert_eq!(dependencies[0].depends_on_version_id, input_version);
+    assert_eq!(dependencies[0].basis, LineageBasis::Declared);
+    assert_eq!(dependencies[0].confidence, LineageConfidence::Exact);
+    assert_eq!(
+        store.list_run_code_snapshots("run").await.unwrap()[0].source_text,
+        "python analysis.py"
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn artifact_versions_reject_cross_project_owners() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_artifact_owner_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    for (project, frame) in [("p1", "f1"), ("p2", "f2")] {
+        store.create_project(project, project, "").await.unwrap();
+        store
+            .create_frame(frame, project, "OPERON", "m")
+            .await
+            .unwrap();
+    }
+    store
+        .create_run(&RunRecord::new("run-p2", "p2", "local", "Other", "command"))
+        .await
+        .unwrap();
+    let draft = ArtifactVersionDraft {
+        version_id: None,
+        artifact_id: "artifact".into(),
+        project_id: "p1".into(),
+        root_frame_id: "f2".into(),
+        filename: "result.csv".into(),
+        content_type: "text/csv".into(),
+        storage_path: "result.csv".into(),
+        logical_key: Some("path:result.csv".into()),
+        size_bytes: Some(1),
+        checksum: Some("a".repeat(64)),
+        producing_run_id: None,
+        env_snapshot_hash: None,
+        materialization: ArtifactMaterialization::Snapshot,
+        capture_timing: ArtifactCaptureTiming::AtCreation,
+    };
+    assert!(store.save_artifact_version(&draft).await.is_err());
+
+    let mut draft = draft;
+    draft.root_frame_id = "f1".into();
+    draft.producing_run_id = Some("run-p2".into());
+    assert!(store.save_artifact_version(&draft).await.is_err());
+    assert!(store.get_artifact("artifact").await.unwrap().is_none());
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn deleting_a_session_keeps_artifact_versions_owned_by_run_lineage() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_run_retention_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    let mut run = RunRecord::new("run", "p", "local", "Analysis", "command");
+    run.frame_id = Some("f".into());
+    store.create_run(&run).await.unwrap();
+    let version_id = store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: "artifact".into(),
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "result.csv".into(),
+            content_type: "text/csv".into(),
+            storage_path: ".wisp/artifacts/sha256/aa/result.csv".into(),
+            logical_key: Some("path:results/result.csv".into()),
+            size_bytes: Some(4),
+            checksum: Some("a".repeat(64)),
+            producing_run_id: Some("run".into()),
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::Snapshot,
+            capture_timing: ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    store
+        .save_run_output(&RunOutput {
+            id: "output".into(),
+            run_id: "run".into(),
+            artifact_version_id: version_id.clone(),
+            role: "table".into(),
+            logical_output_key: "path:results/result.csv".into(),
+            source_path: "results/result.csv".into(),
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .save_run_artifact_link("compat", "run", "artifact", "table")
+        .await
+        .unwrap();
+
+    store.delete_session("f", "p").await.unwrap();
+
+    assert!(store.get_run("run").await.unwrap().is_some());
+    assert!(store
+        .get_artifact_version(&version_id)
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        store.list_run_outputs("run").await.unwrap()[0].artifact_version_id,
+        version_id
+    );
+    assert!(store.list_sessions("p").await.unwrap().is_empty());
 
     let _ = std::fs::remove_file(&tmp);
 }

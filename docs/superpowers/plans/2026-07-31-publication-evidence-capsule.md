@@ -29,37 +29,37 @@ Unrelated `.codex/` and `.playwright-mcp/` workspace files are never staged.
 
 ### Storage and Artifact identity
 
-- [ ] Add the reusable streaming SHA-256 snapshot service.
-- [ ] Replace message-resource in-memory snapshotting with the shared service.
-- [ ] Add `artifacts.logical_key` and exact version materialization/capture
+- [x] Add the reusable streaming SHA-256 snapshot service.
+- [x] Replace message-resource in-memory snapshotting with the shared service.
+- [x] Add `artifacts.logical_key` and exact version materialization/capture
   metadata through fresh and idempotent migrations.
-- [ ] Add an atomic Artifact version save API carrying checksum, size,
+- [x] Add an atomic Artifact version save API carrying checksum, size,
   producing Run, environment, logical key, and capture metadata.
-- [ ] Make manual registration and local Run harvest snapshot small files and
+- [x] Make manual registration and local Run harvest snapshot small files and
   checksum reference-only large files.
-- [ ] Add `OutputSpec.logical_key`; fall back to normalized project-relative
+- [x] Add `OutputSpec.logical_key`; fall back to normalized project-relative
   path, never filename alone.
 
 ### Exact Run lineage
 
-- [ ] Add `external_resources`, `run_inputs`, `run_outputs`,
+- [x] Add `external_resources`, `run_inputs`, `run_outputs`,
   `run_code_snapshots`, and `run_environment_snapshots`.
-- [ ] Add basis/confidence to dependency projections.
-- [ ] Capture declared local Run inputs before execution.
-- [ ] Store the exact ArtifactVersion for every harvested output.
-- [ ] Store a SHA-256 command/code snapshot and canonical SHA-256 environment
+- [x] Add basis/confidence to dependency projections.
+- [x] Capture declared local Run inputs before execution.
+- [x] Store the exact ArtifactVersion for every harvested output.
+- [x] Store a SHA-256 command/code snapshot and canonical SHA-256 environment
   snapshot for every new Run.
-- [ ] Preserve compatibility `run_artifacts` and Research Graph edges.
-- [ ] Add all new tables to project transfer, replacement deletion, and
+- [x] Preserve compatibility `run_artifacts` and Research Graph edges.
+- [x] Add all new tables to project transfer, replacement deletion, and
   portable database hashing.
 
 ### Gate
 
-- [ ] Focused wisp-store migration/lineage tests.
-- [ ] Harvest and Run-context tests with temporary files and fake runners.
-- [ ] Message-resource snapshot regression tests, including a streamed file.
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo test --workspace`
+- [x] Focused wisp-store migration/lineage tests.
+- [x] Harvest and Run-context tests with temporary files and fake runners.
+- [x] Message-resource snapshot regression tests, including a streamed file.
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo test --workspace`
 
 ## PR 1 — Publication domain model
 
@@ -212,4 +212,3 @@ Unrelated `.codex/` and `.playwright-mcp/` workspace files are never staged.
 - [ ] Document manual smoke steps, limitations, and follow-up work.
 - [ ] Confirm commit history contains one stage per commit and no unrelated
   workspace files.
-

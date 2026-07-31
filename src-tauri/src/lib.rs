@@ -69,6 +69,7 @@ mod session_context_tool;
 mod session_export;
 mod settings_commands;
 mod skill_commands;
+mod snapshot_store;
 mod specialist_tool;
 mod specialists;
 mod ssh_guard;

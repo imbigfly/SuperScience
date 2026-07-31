@@ -13,6 +13,7 @@ mod codex_imports;
 mod execution_contexts;
 mod external_session_cache;
 mod library;
+mod lineage;
 mod models;
 mod plugins;
 mod project_sync;
@@ -35,6 +36,7 @@ pub use agent_workflows::{
     AgentDelegationRootLimits, AgentWorkflow, AgentWorkflowStatus, AgentWorkflowStep,
     MAX_ROOT_AGENT_DEPTH, MAX_ROOT_AGENT_TASKS,
 };
+pub use artifacts::logical_artifact_id;
 pub use ask_user_requests::AskUserPoll;
 pub use external_session_cache::ExternalSessionCacheRecord;
 pub use library::{
@@ -44,6 +46,7 @@ pub use models::*;
 pub use project_sync::ProjectSyncState;
 pub use project_transfer::ProjectTransferStats;
 pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
+pub use provenance::{canonical_json, canonical_json_sha256};
 pub use sessions::{SessionTokenUsage, SessionTranscriptPage};
 
 use anyhow::Result;
@@ -91,6 +94,7 @@ const EXTERNAL_SESSION_CACHE_MIGRATION: &str = "0025_external_session_cache";
 const TURN_FILE_UNDO_MIGRATION: &str = "0026_turn_file_undo";
 const SESSION_BRANCH_LINEAGE_MIGRATION: &str = "0027_session_branch_lineage";
 const ASK_USER_REQUESTS_MIGRATION: &str = "0028_ask_user_requests";
+const RUN_ARTIFACT_LINEAGE_MIGRATION: &str = "0029_run_artifact_lineage";
 
 #[derive(Clone)]
 pub struct Store {
@@ -417,6 +421,126 @@ impl Store {
             .await?;
             Self::record_migration(pool, ASK_USER_REQUESTS_MIGRATION).await?;
         }
+        if !Self::migration_applied(pool, RUN_ARTIFACT_LINEAGE_MIGRATION).await? {
+            Self::apply_run_artifact_lineage(pool).await?;
+            Self::record_migration(pool, RUN_ARTIFACT_LINEAGE_MIGRATION).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_run_artifact_lineage(pool: &SqlitePool) -> Result<()> {
+        Self::add_columns_if_missing(pool, "artifacts", &[("logical_key", "TEXT")]).await?;
+        Self::add_columns_if_missing(
+            pool,
+            "artifact_versions",
+            &[
+                ("materialization", "TEXT NOT NULL DEFAULT 'reference'"),
+                ("capture_timing", "TEXT NOT NULL DEFAULT 'unknown'"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "artifact_dependencies",
+            &[
+                ("basis", "TEXT NOT NULL DEFAULT 'inferred'"),
+                ("confidence", "TEXT NOT NULL DEFAULT 'uncertain'"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "env_snapshots",
+            &[
+                ("snapshot_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("hash_algorithm", "TEXT NOT NULL DEFAULT 'legacy'"),
+            ],
+        )
+        .await?;
+        let artifacts_exist: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifacts')",
+        )
+        .fetch_one(pool)
+        .await?;
+        if artifacts_exist {
+            sqlx::query(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_artifacts_project_logical_key \
+                 ON artifacts(project_id,logical_key) WHERE logical_key IS NOT NULL",
+            )
+            .execute(pool)
+            .await?;
+        }
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS external_resources (\
+             id TEXT PRIMARY KEY, \
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, \
+             kind TEXT NOT NULL, uri TEXT NOT NULL, version TEXT, checksum TEXT, \
+             size_bytes INTEGER, license TEXT, visibility TEXT NOT NULL DEFAULT 'restricted', \
+             access_instructions TEXT, accessed_at INTEGER, \
+             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, \
+             UNIQUE(project_id,uri,version))",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS run_inputs (\
+             id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, \
+             artifact_version_id TEXT REFERENCES artifact_versions(id) ON DELETE RESTRICT, \
+             external_resource_id TEXT REFERENCES external_resources(id) ON DELETE RESTRICT, \
+             source_ref TEXT NOT NULL, role TEXT NOT NULL, required INTEGER NOT NULL DEFAULT 1, \
+             basis TEXT NOT NULL, confidence TEXT NOT NULL, created_at INTEGER NOT NULL)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS ix_run_inputs_run ON run_inputs(run_id)")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS ix_run_inputs_artifact_version \
+             ON run_inputs(artifact_version_id)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS run_outputs (\
+             id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, \
+             artifact_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT, \
+             role TEXT NOT NULL, logical_output_key TEXT NOT NULL, source_path TEXT NOT NULL, \
+             created_at INTEGER NOT NULL, UNIQUE(run_id,artifact_version_id,role))",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS ix_run_outputs_run ON run_outputs(run_id)")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS ix_run_outputs_artifact_version \
+             ON run_outputs(artifact_version_id)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS run_code_snapshots (\
+             id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, \
+             source_kind TEXT NOT NULL, source_path TEXT, source_text TEXT NOT NULL, \
+             checksum TEXT NOT NULL, storage_path TEXT, git_commit TEXT, dirty_patch TEXT, \
+             created_at INTEGER NOT NULL)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS ix_run_code_snapshots_run \
+             ON run_code_snapshots(run_id)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS run_environment_snapshots (\
+             run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, \
+             env_snapshot_hash TEXT NOT NULL REFERENCES env_snapshots(hash) ON DELETE RESTRICT)",
+        )
+        .execute(pool)
+        .await?;
         Ok(())
     }
 

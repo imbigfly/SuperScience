@@ -1,6 +1,36 @@
-use super::{ExecLog, Store};
+use super::{EnvironmentSnapshot, ExecLog, Store};
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 use sqlx::Row;
+
+pub fn canonical_json(value: &serde_json::Value) -> String {
+    fn sorted(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(object) => {
+                let mut keys = object.keys().collect::<Vec<_>>();
+                keys.sort_unstable();
+                let mut out = serde_json::Map::new();
+                for key in keys {
+                    out.insert(key.clone(), sorted(&object[key]));
+                }
+                serde_json::Value::Object(out)
+            }
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.iter().map(sorted).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
+    serde_json::to_string(&sorted(value)).expect("serializing serde_json::Value cannot fail")
+}
+
+pub fn canonical_json_sha256(value: &serde_json::Value) -> (String, String) {
+    let canonical = canonical_json(value);
+    let mut digest = Sha256::new();
+    digest.update(canonical.as_bytes());
+    (canonical, hex::encode(digest.finalize()))
+}
 
 impl Store {
     /// Next `cell_index` for a frame = count of existing rows.
@@ -62,6 +92,82 @@ impl Store {
                 .fetch_optional(&self.pool)
                 .await?;
         Ok(row)
+    }
+
+    pub async fn record_run_environment_snapshot(
+        &self,
+        run_id: &str,
+        env_name: Option<&str>,
+        snapshot: &serde_json::Value,
+    ) -> Result<String> {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE id=?)")
+            .bind(run_id)
+            .fetch_one(&self.pool)
+            .await?;
+        if !exists {
+            anyhow::bail!("Run does not exist");
+        }
+        let (snapshot_json, hash) = canonical_json_sha256(snapshot);
+        let packages_json = snapshot
+            .get("packages")
+            .map(canonical_json)
+            .unwrap_or_else(|| "[]".into());
+        let now = chrono::Utc::now().timestamp();
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT INTO env_snapshots(\
+               hash,env_name,packages_json,snapshot_json,hash_algorithm,created_at\
+             ) VALUES(?,?,?,?,?,?) \
+             ON CONFLICT(hash) DO UPDATE SET \
+               env_name=COALESCE(env_snapshots.env_name,excluded.env_name),\
+               snapshot_json=excluded.snapshot_json,hash_algorithm='sha256'",
+        )
+        .bind(&hash)
+        .bind(env_name)
+        .bind(packages_json)
+        .bind(snapshot_json)
+        .bind("sha256")
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO run_environment_snapshots(run_id,env_snapshot_hash) VALUES(?,?) \
+             ON CONFLICT(run_id) DO UPDATE SET env_snapshot_hash=excluded.env_snapshot_hash",
+        )
+        .bind(run_id)
+        .bind(&hash)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(hash)
+    }
+
+    pub async fn get_run_environment_snapshot(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<EnvironmentSnapshot>> {
+        let row = sqlx::query(
+            "SELECT environment.hash,environment.env_name,environment.packages_json,\
+                    environment.snapshot_json,environment.hash_algorithm,environment.created_at \
+             FROM run_environment_snapshots run_environment \
+             JOIN env_snapshots environment \
+               ON environment.hash=run_environment.env_snapshot_hash \
+             WHERE run_environment.run_id=?",
+        )
+        .bind(run_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(EnvironmentSnapshot {
+                hash: row.try_get("hash")?,
+                env_name: row.try_get("env_name")?,
+                packages_json: row.try_get("packages_json")?,
+                snapshot_json: row.try_get("snapshot_json")?,
+                hash_algorithm: row.try_get("hash_algorithm")?,
+                created_at: row.try_get("created_at")?,
+            })
+        })
+        .transpose()
     }
 
     /// Most-recent execution_log row in `frame_id` whose files_written contains `path`.

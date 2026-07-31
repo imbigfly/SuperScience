@@ -1645,6 +1645,197 @@ struct PreparedRun {
     owner_id: String,
 }
 
+fn resolve_declared_inputs(
+    root: &Path,
+    refs: &[String],
+    ssh_staging: bool,
+) -> Result<Vec<PathBuf>, String> {
+    if ssh_staging {
+        return resolve_input_paths(root, refs);
+    }
+    refs.iter()
+        .map(|reference| {
+            let relative = Path::new(reference);
+            if relative.as_os_str().is_empty()
+                || relative.is_absolute()
+                || relative.components().any(|component| {
+                    matches!(
+                        component,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                })
+            {
+                return Err(format!("Run input must be project-relative: {reference}"));
+            }
+            let path = wisp_tools::safety::validate_file_path(root, reference)?;
+            if !path.is_file() {
+                return Err(format!("Run input is not a project file: {reference}"));
+            }
+            Ok(root.join(relative))
+        })
+        .collect()
+}
+
+fn git_code_state(root: Option<&Path>) -> (Option<String>, Option<String>) {
+    const MAX_PATCH_BYTES: usize = 1024 * 1024;
+    let Some(root) = root else {
+        return (None, None);
+    };
+    let commit = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(root)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let dirty_patch = commit.as_ref().and_then(|_| {
+        std::process::Command::new("git")
+            .args(["diff", "--binary", "--no-ext-diff", "HEAD", "--", "."])
+            .current_dir(root)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .output()
+            .ok()
+            .filter(|output| output.status.success() && output.stdout.len() <= MAX_PATCH_BYTES)
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .filter(|value| !value.is_empty() && !contains_obvious_secret(value))
+    });
+    (commit, dirty_patch)
+}
+
+fn contains_obvious_secret(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    [
+        "-----begin private key-----",
+        "-----begin rsa private key-----",
+        "-----begin ec private key-----",
+        "-----begin openssh private key-----",
+        "authorization: bearer ",
+        "x-api-key:",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+async fn record_created_run_lineage(
+    store: &wisp_store::Store,
+    run: &wisp_store::RunRecord,
+    root: Option<&Path>,
+    input_refs: &[String],
+    input_paths: &[PathBuf],
+    environment: &serde_json::Value,
+) -> Result<(), String> {
+    store
+        .record_run_environment_snapshot(&run.id, Some(&run.context_id), environment)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let command = run.command.as_deref().unwrap_or_default();
+    let (git_commit, dirty_patch) = git_code_state(root);
+    store
+        .save_run_code_snapshot(&wisp_store::RunCodeSnapshot {
+            id: format!("run-code:{}:command", run.id),
+            run_id: run.id.clone(),
+            source_kind: "command".into(),
+            source_path: run.script_path.clone(),
+            source_text: command.to_string(),
+            checksum: wisp_sync::sha256_hex(command.as_bytes()),
+            storage_path: None,
+            git_commit,
+            dirty_patch,
+            created_at: chrono::Utc::now().timestamp(),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if input_refs.is_empty() {
+        return Ok(());
+    }
+    let root = root.ok_or_else(|| "Run inputs require a project root".to_string())?;
+    let frame_id = run
+        .frame_id
+        .as_deref()
+        .ok_or_else(|| "Run inputs require a source Session".to_string())?;
+    for (source_ref, path) in input_refs.iter().zip(input_paths) {
+        let source_ref = Path::new(source_ref)
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(part) => Some(part),
+                _ => None,
+            })
+            .collect::<PathBuf>()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let logical_key = format!("path:{source_ref}");
+        let artifact_id = wisp_store::logical_artifact_id(&run.project_id, &logical_key);
+        let captured = crate::snapshot_store::capture_file(
+            root,
+            path,
+            crate::snapshot_store::SnapshotPolicy::UpTo(
+                crate::snapshot_store::DEFAULT_SNAPSHOT_LIMIT,
+            ),
+        )?;
+        let current = store
+            .latest_artifact_version(&artifact_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let version_id = if let Some(version) = current.as_ref().filter(|version| {
+            version.checksum.as_deref() == Some(captured.checksum.as_str())
+                && (version.materialization == captured.materialization
+                    || version.materialization == wisp_store::ArtifactMaterialization::Snapshot)
+        }) {
+            version.id.clone()
+        } else {
+            let filename = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("input");
+            store
+                .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+                    version_id: None,
+                    artifact_id,
+                    project_id: run.project_id.clone(),
+                    root_frame_id: frame_id.to_string(),
+                    filename: filename.to_string(),
+                    content_type: crate::file_browser::mime_for_path(path).to_string(),
+                    storage_path: captured.storage_path,
+                    logical_key: Some(logical_key),
+                    size_bytes: Some(
+                        i64::try_from(captured.size_bytes)
+                            .map_err(|_| "Run input is too large".to_string())?,
+                    ),
+                    checksum: Some(captured.checksum),
+                    producing_run_id: None,
+                    env_snapshot_hash: None,
+                    materialization: captured.materialization,
+                    capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+                })
+                .await
+                .map_err(|error| error.to_string())?
+        };
+        store
+            .save_run_input(&wisp_store::RunInput {
+                id: uuid::Uuid::new_v4().to_string(),
+                run_id: run.id.clone(),
+                artifact_version_id: Some(version_id),
+                external_resource_id: None,
+                source_ref,
+                role: "input".into(),
+                required: true,
+                basis: wisp_store::LineageBasis::Declared,
+                confidence: wisp_store::LineageConfidence::Exact,
+                created_at: chrono::Utc::now().timestamp(),
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 async fn create_run_record(
     store: &wisp_store::Store,
     project_id: &str,
@@ -1686,6 +1877,18 @@ async fn create_run_record(
     let run_id = uuid::Uuid::new_v4().to_string();
     let output_specs = request.output_specs.unwrap_or_default();
     let input_refs = request.input_paths.unwrap_or_default();
+    let input_paths = if input_refs.is_empty() {
+        Vec::new()
+    } else {
+        let root = cwd
+            .as_deref()
+            .ok_or_else(|| "Run inputs require a project root".to_string())?;
+        resolve_declared_inputs(
+            root,
+            &input_refs,
+            ctx.kind == wisp_store::ExecutionContextKind::Ssh,
+        )?
+    };
     let timeout = match ctx.kind {
         wisp_store::ExecutionContextKind::Ssh => Duration::from_secs(
             request
@@ -1715,13 +1918,21 @@ async fn create_run_record(
     run.input_refs_json = serde_json::to_string(&input_refs).map_err(|e| e.to_string())?;
     run.output_specs_json = serde_json::to_string(&output_specs).map_err(|e| e.to_string())?;
     run.timeout_secs = Some(timeout.as_secs() as i64);
-    run.env_snapshot_json = serde_json::json!({
-        "context_id": ctx.id,
-        "config": serde_json::from_str::<serde_json::Value>(&ctx.config_json).unwrap_or_default(),
-        "capabilities": serde_json::from_str::<serde_json::Value>(&ctx.capabilities_json).unwrap_or_default(),
+    let environment = serde_json::json!({
+        "schema_version": 1,
+        "context": {
+            "id": ctx.id,
+            "kind": ctx.kind,
+            "config": serde_json::from_str::<serde_json::Value>(&ctx.config_json).unwrap_or_default(),
+            "capabilities": serde_json::from_str::<serde_json::Value>(&ctx.capabilities_json).unwrap_or_default(),
+        },
+        "wisp_host": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+        },
         "preflight": preflight,
-    })
-    .to_string();
+    });
+    run.env_snapshot_json = wisp_store::canonical_json(&environment);
 
     let remote = if ctx.kind == wisp_store::ExecutionContextKind::Ssh {
         if output_specs
@@ -1733,10 +1944,6 @@ async fn create_run_record(
                     .into(),
             );
         }
-        let root = cwd
-            .as_deref()
-            .ok_or_else(|| "SSH input staging requires a project root".to_string())?;
-        resolve_input_paths(root, &input_refs)?;
         let handle = RemoteRunHandle::SshDirect {
             connection: crate::ssh_hosts::SshConnection::from_execution_context(&ctx)?,
             workdir: format!(".wisp-science/runs/{run_id}"),
@@ -1759,12 +1966,18 @@ async fn create_run_record(
             handle,
         })
     } else {
-        if !input_refs.is_empty() {
-            return Err("input_paths is only supported for SSH execution contexts".into());
-        }
         None
     };
     store.create_run(&run).await.map_err(|e| e.to_string())?;
+    record_created_run_lineage(
+        store,
+        &run,
+        cwd.as_deref(),
+        &input_refs,
+        &input_paths,
+        &environment,
+    )
+    .await?;
     if !store
         .activate_run_lifecycle(&run_id, initial_status, owner_id, lease_secs)
         .await

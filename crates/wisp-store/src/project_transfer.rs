@@ -205,6 +205,150 @@ async fn copy_project_children(tx: &mut Transaction<'_, Sqlite>, project_id: &st
             .execute(&mut **tx)
             .await?;
     }
+    if attached_table_columns(tx, "artifacts")
+        .await?
+        .contains("logical_key")
+    {
+        sqlx::query(
+            "UPDATE artifacts SET logical_key=(\
+               SELECT source.logical_key FROM transfer.artifacts source \
+               WHERE source.id=artifacts.id\
+             ) WHERE project_id=?",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    let artifact_version_columns = attached_table_columns(tx, "artifact_versions").await?;
+    if artifact_version_columns.contains("materialization")
+        && artifact_version_columns.contains("capture_timing")
+    {
+        sqlx::query(
+            "UPDATE artifact_versions SET \
+               materialization=(SELECT source.materialization \
+                 FROM transfer.artifact_versions source WHERE source.id=artifact_versions.id),\
+               capture_timing=(SELECT source.capture_timing \
+                 FROM transfer.artifact_versions source WHERE source.id=artifact_versions.id) \
+             WHERE artifact_id IN (SELECT id FROM artifacts WHERE project_id=?)",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    let dependency_columns = attached_table_columns(tx, "artifact_dependencies").await?;
+    if dependency_columns.contains("basis") && dependency_columns.contains("confidence") {
+        sqlx::query(
+            "UPDATE artifact_dependencies SET \
+               basis=(SELECT source.basis FROM transfer.artifact_dependencies source \
+                 WHERE source.id=artifact_dependencies.id),\
+               confidence=(SELECT source.confidence FROM transfer.artifact_dependencies source \
+                 WHERE source.id=artifact_dependencies.id) \
+             WHERE artifact_version_id IN (\
+               SELECT version.id FROM artifact_versions version \
+               JOIN artifacts artifact ON artifact.id=version.artifact_id \
+               WHERE artifact.project_id=?\
+             )",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    let env_columns = attached_table_columns(tx, "env_snapshots").await?;
+    if env_columns.contains("snapshot_json") && env_columns.contains("hash_algorithm") {
+        sqlx::query(
+            "UPDATE env_snapshots SET \
+               snapshot_json=(SELECT source.snapshot_json FROM transfer.env_snapshots source \
+                 WHERE source.hash=env_snapshots.hash),\
+               hash_algorithm=(SELECT source.hash_algorithm FROM transfer.env_snapshots source \
+                 WHERE source.hash=env_snapshots.hash) \
+             WHERE hash IN (SELECT hash FROM transfer.env_snapshots)",
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+    if attached_table_exists(tx, "external_resources").await? {
+        sqlx::query(
+            "INSERT INTO external_resources(\
+               id,project_id,kind,uri,version,checksum,size_bytes,license,visibility,\
+               access_instructions,accessed_at,created_at,updated_at\
+             ) SELECT id,project_id,kind,uri,version,checksum,size_bytes,license,visibility,\
+                      access_instructions,accessed_at,created_at,updated_at \
+               FROM transfer.external_resources WHERE project_id=?",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    if attached_table_exists(tx, "run_inputs").await? {
+        sqlx::query(
+            "INSERT INTO run_inputs(\
+               id,run_id,artifact_version_id,external_resource_id,source_ref,role,required,\
+               basis,confidence,created_at\
+             ) SELECT input.id,input.run_id,input.artifact_version_id,\
+                      input.external_resource_id,input.source_ref,input.role,input.required,\
+                      input.basis,input.confidence,input.created_at \
+               FROM transfer.run_inputs input \
+               JOIN transfer.runs run ON run.id=input.run_id WHERE run.project_id=?",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    if attached_table_exists(tx, "run_outputs").await? {
+        sqlx::query(
+            "INSERT INTO run_outputs(\
+               id,run_id,artifact_version_id,role,logical_output_key,source_path,created_at\
+             ) SELECT output.id,output.run_id,output.artifact_version_id,output.role,\
+                      output.logical_output_key,output.source_path,output.created_at \
+               FROM transfer.run_outputs output \
+               JOIN transfer.runs run ON run.id=output.run_id WHERE run.project_id=?",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    if attached_table_exists(tx, "run_code_snapshots").await? {
+        sqlx::query(
+            "INSERT INTO run_code_snapshots(\
+               id,run_id,source_kind,source_path,source_text,checksum,storage_path,\
+               git_commit,dirty_patch,created_at\
+             ) SELECT code.id,code.run_id,code.source_kind,code.source_path,code.source_text,\
+                      code.checksum,code.storage_path,code.git_commit,code.dirty_patch,\
+                      code.created_at \
+               FROM transfer.run_code_snapshots code \
+               JOIN transfer.runs run ON run.id=code.run_id WHERE run.project_id=?",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    if attached_table_exists(tx, "run_environment_snapshots").await? {
+        sqlx::query(
+            "INSERT OR IGNORE INTO env_snapshots(\
+               hash,env_name,packages_json,snapshot_json,hash_algorithm,created_at\
+             ) SELECT environment.hash,environment.env_name,environment.packages_json,\
+                      environment.snapshot_json,environment.hash_algorithm,\
+                      environment.created_at \
+               FROM transfer.env_snapshots environment \
+               WHERE environment.hash IN (\
+                 SELECT link.env_snapshot_hash \
+                 FROM transfer.run_environment_snapshots link \
+                 JOIN transfer.runs run ON run.id=link.run_id WHERE run.project_id=?\
+               )",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO run_environment_snapshots(run_id,env_snapshot_hash) \
+             SELECT link.run_id,link.env_snapshot_hash \
+             FROM transfer.run_environment_snapshots link \
+             JOIN transfer.runs run ON run.id=link.run_id WHERE run.project_id=?",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
     if attached_table_exists(tx, "agent_workflow_attempts").await? {
         let attempt_columns = attached_table_columns(tx, "agent_workflow_attempts").await?;
         let has_lineage = [
@@ -308,6 +452,11 @@ pub(crate) async fn delete_project_children(
 ) -> Result<()> {
     const QUERIES: &[&str] = &[
         "UPDATE agent_workflows SET status='draft' WHERE project_id=?",
+        "DELETE FROM run_environment_snapshots WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
+        "DELETE FROM run_code_snapshots WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
+        "DELETE FROM run_outputs WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
+        "DELETE FROM run_inputs WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
+        "DELETE FROM run_artifacts WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
         "DELETE FROM artifact_dependencies WHERE artifact_version_id IN (SELECT av.id FROM artifact_versions av JOIN artifacts a ON a.id=av.artifact_id WHERE a.project_id=?)",
         "DELETE FROM agent_workflow_deliveries WHERE workflow_id IN (SELECT id FROM agent_workflows WHERE project_id=?)",
         "DELETE FROM agent_workflow_attempts WHERE workflow_id IN (SELECT id FROM agent_workflows WHERE project_id=?)",
@@ -316,7 +465,6 @@ pub(crate) async fn delete_project_children(
         "DELETE FROM message_resource_links WHERE frame_id IN (SELECT id FROM frames WHERE project_id=?)",
         "DELETE FROM session_execution_contexts WHERE frame_id IN (SELECT id FROM frames WHERE project_id=?)",
         "DELETE FROM artifact_versions WHERE artifact_id IN (SELECT id FROM artifacts WHERE project_id=?)",
-        "DELETE FROM run_artifacts WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
         "DELETE FROM session_reviews WHERE frame_id IN (SELECT id FROM frames WHERE project_id=?)",
         "DELETE FROM session_ui_events WHERE frame_id IN (SELECT id FROM frames WHERE project_id=?)",
         "DELETE FROM turn_file_undo WHERE frame_id IN (SELECT id FROM frames WHERE project_id=?)",
@@ -328,6 +476,7 @@ pub(crate) async fn delete_project_children(
         "DELETE FROM research_edges WHERE project_id=?",
         "DELETE FROM research_nodes WHERE project_id=?",
         "DELETE FROM artifacts WHERE project_id=?",
+        "DELETE FROM external_resources WHERE project_id=?",
         "DELETE FROM runs WHERE project_id=?",
         "DELETE FROM frames WHERE project_id=?",
         "DELETE FROM folders WHERE project_id=?",
@@ -586,6 +735,70 @@ async fn rewrite_export_paths(
         .execute(&mut **tx)
         .await?;
     }
+    let inputs = sqlx::query(
+        "SELECT input.id,input.source_ref FROM run_inputs input \
+         JOIN runs run ON run.id=input.run_id WHERE run.project_id=?",
+    )
+    .bind(project_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in inputs {
+        let id: String = row.try_get("id")?;
+        let value: String = row.try_get("source_ref")?;
+        let (portable, warned) = portable_project_path(source_root, &value);
+        warnings += i64::from(warned);
+        sqlx::query("UPDATE run_inputs SET source_ref=? WHERE id=?")
+            .bind(portable)
+            .bind(id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    let outputs = sqlx::query(
+        "SELECT output.id,output.source_path FROM run_outputs output \
+         JOIN runs run ON run.id=output.run_id WHERE run.project_id=?",
+    )
+    .bind(project_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in outputs {
+        let id: String = row.try_get("id")?;
+        let value: String = row.try_get("source_path")?;
+        let (portable, warned) = portable_project_path(source_root, &value);
+        warnings += i64::from(warned);
+        sqlx::query("UPDATE run_outputs SET source_path=? WHERE id=?")
+            .bind(portable)
+            .bind(id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    let code = sqlx::query(
+        "SELECT code.id,code.source_path,code.storage_path FROM run_code_snapshots code \
+         JOIN runs run ON run.id=code.run_id WHERE run.project_id=?",
+    )
+    .bind(project_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in code {
+        let id: String = row.try_get("id")?;
+        let source_path: Option<String> = row.try_get("source_path")?;
+        let storage_path: Option<String> = row.try_get("storage_path")?;
+        let source_path = source_path.map(|value| {
+            let (portable, warned) = portable_project_path(source_root, &value);
+            warnings += i64::from(warned);
+            portable
+        });
+        let storage_path = storage_path.map(|value| {
+            let (portable, warned) = portable_project_path(source_root, &value);
+            warnings += i64::from(warned);
+            portable
+        });
+        sqlx::query("UPDATE run_code_snapshots SET source_path=?,storage_path=? WHERE id=?")
+            .bind(source_path)
+            .bind(storage_path)
+            .bind(id)
+            .execute(&mut **tx)
+            .await?;
+    }
     Ok(warnings)
 }
 
@@ -685,6 +898,11 @@ impl Store {
             ("message_resource_links", "*", "id"),
             ("artifact_dependencies", "*", "id"),
             ("run_artifacts", "*", "id"),
+            ("external_resources", "*", "id"),
+            ("run_inputs", "*", "id"),
+            ("run_outputs", "*", "id"),
+            ("run_code_snapshots", "*", "id"),
+            ("run_environment_snapshots", "*", "run_id"),
             ("research_nodes", "*", "id"),
             ("research_edges", "*", "id"),
         ];
@@ -978,7 +1196,10 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{RunRecord, RunStatus};
+    use crate::{
+        ArtifactCaptureTiming, ArtifactMaterialization, ArtifactVersionDraft, LineageBasis,
+        LineageConfidence, RunCodeSnapshot, RunInput, RunOutput, RunRecord, RunStatus,
+    };
     use wisp_llm::Message;
 
     #[test]
@@ -1053,14 +1274,22 @@ mod tests {
             .await
             .unwrap();
         let artifact_version_id = source
-            .save_artifact(
-                "artifact-1",
-                "project-1",
-                "frame-1",
-                "plot.png",
-                "image/png",
-                r"C:\Users\Alice\Study\.wisp\artifacts\sha256\ab\abcdef.png",
-            )
+            .save_artifact_version(&ArtifactVersionDraft {
+                version_id: None,
+                artifact_id: "artifact-1".into(),
+                project_id: "project-1".into(),
+                root_frame_id: "frame-1".into(),
+                filename: "plot.png".into(),
+                content_type: "image/png".into(),
+                storage_path: r"C:\Users\Alice\Study\.wisp\artifacts\sha256\ab\abcdef.png".into(),
+                logical_key: Some("figure:qc".into()),
+                size_bytes: Some(6),
+                checksum: Some("a".repeat(64)),
+                producing_run_id: None,
+                env_snapshot_hash: None,
+                materialization: ArtifactMaterialization::Snapshot,
+                capture_timing: ArtifactCaptureTiming::AtCreation,
+            })
             .await
             .unwrap();
         source
@@ -1100,6 +1329,83 @@ mod tests {
         run.env_snapshot_json = r#"{"SSH_AUTH_SOCK":"/tmp/private-agent"}"#.into();
         run.status = RunStatus::Submitted;
         source.create_run(&run).await.unwrap();
+        let input_version_id = source
+            .save_artifact_version(&ArtifactVersionDraft {
+                version_id: None,
+                artifact_id: "input-artifact".into(),
+                project_id: "project-1".into(),
+                root_frame_id: "frame-1".into(),
+                filename: "counts.csv".into(),
+                content_type: "text/csv".into(),
+                storage_path: r"C:\Users\Alice\Study\.wisp\artifacts\sha256\cd\counts.csv".into(),
+                logical_key: Some("path:data/counts.csv".into()),
+                size_bytes: Some(4),
+                checksum: Some("c".repeat(64)),
+                producing_run_id: None,
+                env_snapshot_hash: None,
+                materialization: ArtifactMaterialization::Snapshot,
+                capture_timing: ArtifactCaptureTiming::AtCreation,
+            })
+            .await
+            .unwrap();
+        source
+            .save_run_input(&RunInput {
+                id: "input-1".into(),
+                run_id: "run-1".into(),
+                artifact_version_id: Some(input_version_id.clone()),
+                external_resource_id: None,
+                source_ref: r"C:\Users\Alice\Study\data\counts.csv".into(),
+                role: "counts".into(),
+                required: true,
+                basis: LineageBasis::Declared,
+                confidence: LineageConfidence::Exact,
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        let environment = serde_json::json!({"context": {"id": "local"}, "schema_version": 1});
+        let env_hash = source
+            .record_run_environment_snapshot("run-1", Some("local"), &environment)
+            .await
+            .unwrap();
+        source
+            .save_run_code_snapshot(&RunCodeSnapshot {
+                id: "code-1".into(),
+                run_id: "run-1".into(),
+                source_kind: "script".into(),
+                source_path: Some(r"C:\Users\Alice\Study\analysis\qc.py".into()),
+                source_text: "print('qc')".into(),
+                checksum: "b".repeat(64),
+                storage_path: None,
+                git_commit: Some("deadbeef".into()),
+                dirty_patch: None,
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        source
+            .save_run_output(&RunOutput {
+                id: "output-1".into(),
+                run_id: "run-1".into(),
+                artifact_version_id: artifact_version_id.clone(),
+                role: "figure".into(),
+                logical_output_key: "figure:qc".into(),
+                source_path: "results/plot.png".into(),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        source
+            .save_artifact_dependency(
+                "dependency-1",
+                &artifact_version_id,
+                &input_version_id,
+                Some("counts"),
+                LineageBasis::Declared,
+                LineageConfidence::Exact,
+            )
+            .await
+            .unwrap();
 
         let stats = source
             .export_project_database("project-1", &archive_path)
@@ -1107,7 +1413,7 @@ mod tests {
             .unwrap();
         assert_eq!(stats.frames, 1);
         assert_eq!(stats.messages, 1);
-        assert_eq!(stats.artifacts, 1);
+        assert_eq!(stats.artifacts, 2);
         assert_eq!(stats.runs, 1);
         assert_eq!(stats.path_warnings, 0);
         // The snapshot must be one standalone rollback-journal file: header
@@ -1158,13 +1464,52 @@ mod tests {
             "/Users/alice/Study/.wisp/artifacts/sha256/ab/abcdef.png"
         );
         assert_eq!(
+            {
+                let version = target
+                    .get_artifact_version(&artifact_version_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(version.materialization, ArtifactMaterialization::Snapshot);
+                assert_eq!(version.capture_timing, ArtifactCaptureTiming::AtCreation);
+                version.storage_path
+            },
+            "/Users/alice/Study/.wisp/artifacts/sha256/ab/abcdef.png"
+        );
+        assert_eq!(
+            target.list_run_outputs("run-1").await.unwrap()[0].artifact_version_id,
+            artifact_version_id
+        );
+        assert_eq!(
+            target.list_run_inputs("run-1").await.unwrap()[0]
+                .artifact_version_id
+                .as_deref(),
+            Some(input_version_id.as_str())
+        );
+        let dependencies = target
+            .list_artifact_dependencies(&artifact_version_id)
+            .await
+            .unwrap();
+        assert_eq!(dependencies[0].depends_on_version_id, input_version_id);
+        assert_eq!(dependencies[0].basis, LineageBasis::Declared);
+        assert_eq!(
             target
-                .get_artifact_version(&artifact_version_id)
+                .get_run_environment_snapshot("run-1")
                 .await
                 .unwrap()
                 .unwrap()
-                .storage_path,
-            "/Users/alice/Study/.wisp/artifacts/sha256/ab/abcdef.png"
+                .hash,
+            env_hash
+        );
+        assert_eq!(
+            target.list_run_code_snapshots("run-1").await.unwrap()[0].source_text,
+            "print('qc')"
+        );
+        assert_eq!(
+            target.list_run_code_snapshots("run-1").await.unwrap()[0]
+                .source_path
+                .as_deref(),
+            Some("analysis/qc.py")
         );
         let imported_run = target.get_run("run-1").await.unwrap().unwrap();
         assert_eq!(imported_run.status, RunStatus::Lost);

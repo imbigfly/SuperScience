@@ -47,6 +47,78 @@ pub struct ExecLog {
     pub env_hash: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactMaterialization {
+    Snapshot,
+    Reference,
+    External,
+}
+
+impl ArtifactMaterialization {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Reference => "reference",
+            Self::External => "external",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "snapshot" => Ok(Self::Snapshot),
+            "reference" => Ok(Self::Reference),
+            "external" => Ok(Self::External),
+            _ => anyhow::bail!("Unknown Artifact materialization '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactCaptureTiming {
+    AtCreation,
+    Late,
+    Unknown,
+}
+
+impl ArtifactCaptureTiming {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AtCreation => "at_creation",
+            Self::Late => "late",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "at_creation" => Ok(Self::AtCreation),
+            "late" => Ok(Self::Late),
+            "unknown" => Ok(Self::Unknown),
+            _ => anyhow::bail!("Unknown Artifact capture timing '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactVersionDraft {
+    pub version_id: Option<String>,
+    pub artifact_id: String,
+    pub project_id: String,
+    pub root_frame_id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub storage_path: String,
+    pub logical_key: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub checksum: Option<String>,
+    pub producing_run_id: Option<String>,
+    pub env_snapshot_hash: Option<String>,
+    pub materialization: ArtifactMaterialization,
+    pub capture_timing: ArtifactCaptureTiming,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactVersion {
     pub id: String,
@@ -59,7 +131,143 @@ pub struct ArtifactVersion {
     pub parent_version_id: Option<String>,
     pub producing_run_id: Option<String>,
     pub env_snapshot_hash: Option<String>,
+    pub materialization: ArtifactMaterialization,
+    pub capture_timing: ArtifactCaptureTiming,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineageBasis {
+    Declared,
+    Observed,
+    Inferred,
+    UserAsserted,
+}
+
+impl LineageBasis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Declared => "declared",
+            Self::Observed => "observed",
+            Self::Inferred => "inferred",
+            Self::UserAsserted => "user_asserted",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "declared" => Ok(Self::Declared),
+            "observed" => Ok(Self::Observed),
+            "inferred" => Ok(Self::Inferred),
+            "user_asserted" => Ok(Self::UserAsserted),
+            _ => anyhow::bail!("Unknown lineage basis '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineageConfidence {
+    Exact,
+    Likely,
+    Uncertain,
+}
+
+impl LineageConfidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Likely => "likely",
+            Self::Uncertain => "uncertain",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "exact" => Ok(Self::Exact),
+            "likely" => Ok(Self::Likely),
+            "uncertain" => Ok(Self::Uncertain),
+            _ => anyhow::bail!("Unknown lineage confidence '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunInput {
+    pub id: String,
+    pub run_id: String,
+    pub artifact_version_id: Option<String>,
+    pub external_resource_id: Option<String>,
+    pub source_ref: String,
+    pub role: String,
+    pub required: bool,
+    pub basis: LineageBasis,
+    pub confidence: LineageConfidence,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunOutput {
+    pub id: String,
+    pub run_id: String,
+    pub artifact_version_id: String,
+    pub role: String,
+    pub logical_output_key: String,
+    pub source_path: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactDependency {
+    pub id: String,
+    pub artifact_version_id: String,
+    pub depends_on_version_id: String,
+    pub reference_name: Option<String>,
+    pub basis: LineageBasis,
+    pub confidence: LineageConfidence,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunCodeSnapshot {
+    pub id: String,
+    pub run_id: String,
+    pub source_kind: String,
+    pub source_path: Option<String>,
+    pub source_text: String,
+    pub checksum: String,
+    pub storage_path: Option<String>,
+    pub git_commit: Option<String>,
+    pub dirty_patch: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentSnapshot {
+    pub hash: String,
+    pub env_name: Option<String>,
+    pub packages_json: String,
+    pub snapshot_json: String,
+    pub hash_algorithm: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalResource {
+    pub id: String,
+    pub project_id: String,
+    pub kind: String,
+    pub uri: String,
+    pub version: Option<String>,
+    pub checksum: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub license: Option<String>,
+    pub visibility: String,
+    pub access_instructions: Option<String>,
+    pub accessed_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -574,6 +782,8 @@ pub(crate) fn run_from_row(row: SqliteRow) -> Result<RunRecord> {
 }
 
 pub(crate) fn artifact_version_from_row(row: SqliteRow) -> Result<ArtifactVersion> {
+    let materialization: String = row.try_get("materialization")?;
+    let capture_timing: String = row.try_get("capture_timing")?;
     Ok(ArtifactVersion {
         id: row.try_get("id")?,
         artifact_id: row.try_get("artifact_id")?,
@@ -585,6 +795,8 @@ pub(crate) fn artifact_version_from_row(row: SqliteRow) -> Result<ArtifactVersio
         parent_version_id: row.try_get("parent_version_id")?,
         producing_run_id: row.try_get("producing_run_id")?,
         env_snapshot_hash: row.try_get("env_snapshot_hash")?,
+        materialization: ArtifactMaterialization::from_storage(&materialization)?,
+        capture_timing: ArtifactCaptureTiming::from_storage(&capture_timing)?,
         created_at: row.try_get("created_at")?,
     })
 }
