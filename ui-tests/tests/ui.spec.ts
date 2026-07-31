@@ -1921,8 +1921,15 @@ test("Workflow graph edits nodes and dependencies directly on the canvas", async
   await page.keyboard.press("Escape");
   await expect(studio.getByTestId("workflow-graph-connect-hint")).toHaveCount(0);
 
+  const nodeCountBeforeDblclick = await studio.getByTestId("workflow-graph-node").count();
+  // Top-left padding is empty of nodes (nodes start ~58px down); use element-relative dblclick.
+  await studio.getByTestId("workflow-graph-canvas").dblclick({ position: { x: 12, y: 12 } });
+  await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(nodeCountBeforeDblclick + 1);
+  await inspector.getByTestId("dynamic-task-id").fill("fetch_c");
+  await inspector.getByTestId("dynamic-task-instruction").fill("Fetch branch C");
+
   await byId("fetch_a").getByTestId("workflow-graph-delete-node").click();
-  await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(2);
+  await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(3);
   await studio.getByTestId("workflow-save").click();
   await expect.poll(() => lastInvokeArgs(page, "save_workflow_template")).toMatchObject({
     template: {
@@ -1931,6 +1938,7 @@ test("Workflow graph edits nodes and dependencies directly on the canvas", async
         tasks: [
           { id: "fetch_b", depends_on: [] },
           { id: "merge", depends_on: ["fetch_b"] },
+          { id: "fetch_c", depends_on: [] },
         ],
       },
     },

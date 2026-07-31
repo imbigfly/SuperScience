@@ -756,6 +756,16 @@ body:has(.settings-page) .projects-screen { display: none; }
   font-size: 8.5px;
   font-weight: 700;
 }
+@keyframes workflow-graph-node-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 .workflow-graph-node {
   position: absolute;
   z-index: 3;
@@ -765,9 +775,21 @@ body:has(.settings-page) .projects-screen { display: none; }
   box-shadow: var(--shadow-sm);
   transition: border-color .14s ease, box-shadow .14s ease, transform .14s ease;
 }
+.workflow-graph-node.entering {
+  animation: workflow-graph-node-enter var(--motion-duration-medium) var(--motion-ease-decelerate) both;
+}
 .workflow-graph-node:hover {
   border-color: color-mix(in srgb, var(--clay) 35%, var(--border-strong));
   transform: translateY(-1px);
+}
+.workflow-graph-node.entering:hover {
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .workflow-graph-node.entering {
+    animation: none;
+    pointer-events: auto;
+  }
 }
 .workflow-graph-node.selected {
   border-color: var(--clay);
@@ -917,6 +939,9 @@ button.workflow-graph-port.output {
   color: var(--clay-strong);
   cursor: pointer;
   box-shadow: var(--shadow-sm);
+}
+.workflow-graph-canvas.connecting .workflow-graph-add-next {
+  display: none;
 }
 .workflow-graph-add-next svg {
   width: 12px;

@@ -38,12 +38,13 @@ in parallel, while arrows move left to right through dependent stages. Select
 a node to edit its complete task contract in the inspector. Drag from an
 output handle to a downstream node (or click the handle then click the target)
 to create a dependency; use **Add after selected** to insert the next stage
-directly after the current node, or **Add parallel node** for same-stage
-peers. Click an arrow to select it, then click again or press Delete to
-remove the dependency; incoming dependency chips in the inspector still work
-too. Nodes can also be added or deleted directly on the canvas. Every graph
-interaction updates the ordinary `depends_on` proposal fields immediately, and
-cycle-producing connections are rejected before save.
+directly after the current node, or **Add parallel node** (toolbar or
+double-click empty canvas) for same-stage peers. Click an arrow to select it,
+then click again or press Delete to remove the dependency; incoming dependency
+chips in the inspector still work too. Nodes can also be added or deleted
+directly on the canvas. Every graph interaction updates the ordinary
+`depends_on` proposal fields immediately, and cycle-producing connections are
+rejected before save.
 
 Workflow Studio replaces the normal Settings chrome with a dedicated
 full-window editor. Its stable layout keeps the template library on the left,

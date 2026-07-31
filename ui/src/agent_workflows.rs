@@ -512,14 +512,39 @@ fn workflow_graph_canvas_point(
     )
 }
 
-fn workflow_graph_node_key_from_event(event: &web_sys::PointerEvent) -> Option<u32> {
-    let target = event.target()?.dyn_into::<web_sys::Element>().ok()?;
+fn workflow_graph_event_element(event: &web_sys::Event) -> Option<web_sys::Element> {
+    event.target()?.dyn_into().ok()
+}
+
+fn workflow_graph_target_is_graph_chrome(target: &web_sys::Element) -> bool {
+    [
+        "[data-testid=\"workflow-graph-node\"]",
+        "[data-testid=\"workflow-graph-edge-hit\"]",
+        "[data-testid=\"workflow-graph-edge-group\"]",
+        "[data-testid=\"workflow-graph-edge-delete\"]",
+    ]
+    .iter()
+    .any(|selector| target.closest(selector).ok().flatten().is_some())
+}
+
+fn workflow_graph_node_key_from_element(target: &web_sys::Element) -> Option<u32> {
     let node = target
         .closest("[data-testid=\"workflow-graph-node\"]")
         .ok()
         .flatten()?;
-    let id = node.get_attribute("data-node-key")?;
-    id.parse().ok()
+    node.get_attribute("data-node-key")?.parse().ok()
+}
+
+fn workflow_graph_node_key_from_event(event: &web_sys::PointerEvent) -> Option<u32> {
+    workflow_graph_node_key_from_element(&workflow_graph_event_element(event.as_ref())?)
+}
+
+/// Hit-test under the cursor. Needed because canvas pointer capture retargets
+/// `event.target()` away from the node the pointer is actually over.
+fn workflow_graph_node_key_at_client(client_x: i32, client_y: i32) -> Option<u32> {
+    let document = web_sys::window()?.document()?;
+    let element = document.element_from_point(client_x as f32, client_y as f32)?;
+    workflow_graph_node_key_from_element(&element)
 }
 
 fn workflow_graph_layout(tasks: &[DynamicTaskForm]) -> WorkflowGraphLayout {
@@ -1511,6 +1536,7 @@ fn workflow_graph_editor(
     let connect_origin = create_rw_signal::<Option<(f64, f64)>>(None);
     let connect_dragging = create_rw_signal(false);
     let selected_edge = create_rw_signal::<Option<(u32, u32)>>(None);
+    let entering_node_keys = create_rw_signal(HashSet::<u32>::new());
     let canvas_ref = create_node_ref::<leptos::html::Div>();
     let layout = create_memo(move |_| {
         state
@@ -1523,6 +1549,12 @@ fn workflow_graph_editor(
         connect_cursor.set(None);
         connect_origin.set(None);
         connect_dragging.set(false);
+    };
+
+    let mark_node_entering = move |key: u32| {
+        entering_node_keys.update(|keys| {
+            keys.insert(key);
+        });
     };
 
     let finish_connect = move |source_key: u32, target_key: u32| {
@@ -1618,6 +1650,9 @@ fn workflow_graph_editor(
         {
             selected_edge.set(None);
         }
+        entering_node_keys.update(|entering| {
+            entering.retain(|key| keys.contains(key));
+        });
     });
 
     window_capture_escape(move || {
@@ -1628,16 +1663,21 @@ fn workflow_graph_editor(
         false
     });
 
-    let add_node = move |_| {
+    let create_parallel_node = move || {
         let mut new_key = None;
         state.dynamic_form.update(|form| {
             new_key = Some(form.add_task());
         });
-        selected_task_key.set(new_key);
-        selected_edge.set(None);
-        cancel_connect();
-        state.error.set(None);
+        if let Some(key) = new_key {
+            mark_node_entering(key);
+            selected_task_key.set(Some(key));
+            selected_edge.set(None);
+            cancel_connect();
+            state.error.set(None);
+        }
     };
+
+    let add_node = move |_| create_parallel_node();
 
     let add_after_selected = move |_| {
         let Some(source_key) = selected_task_key.get_untracked() else {
@@ -1651,6 +1691,7 @@ fn workflow_graph_editor(
             created
         };
         if let Some(key) = new_key {
+            mark_node_entering(key);
             selected_task_key.set(Some(key));
             selected_edge.set(None);
             cancel_connect();
@@ -1750,6 +1791,7 @@ fn workflow_graph_editor(
                         }>
                         <div class="workflow-graph-canvas"
                             node_ref=canvas_ref
+                            data-testid="workflow-graph-canvas"
                             class:connecting=move || connect_from_key.get().is_some()
                             style=move || format!(
                                 "width:{}px;height:{}px;transform:scale({});",
@@ -1757,6 +1799,19 @@ fn workflow_graph_editor(
                                 layout.get().height,
                                 graph_zoom.get() as f64 / 100.0,
                             )
+                            aria-label=move || t(locale.get(), "workflow_studio.graph_dblclick_add")
+                            on:dblclick=move |event: web_sys::MouseEvent| {
+                                let Some(target) =
+                                    workflow_graph_event_element(event.as_ref())
+                                else {
+                                    return;
+                                };
+                                if workflow_graph_target_is_graph_chrome(&target) {
+                                    return;
+                                }
+                                event.prevent_default();
+                                create_parallel_node();
+                            }
                             on:pointermove=move |event: web_sys::PointerEvent| {
                                 if connect_from_key.get_untracked().is_none() {
                                     return;
@@ -1782,7 +1837,14 @@ fn workflow_graph_editor(
                                 let Some(source_key) = connect_from_key.get_untracked() else {
                                     return;
                                 };
-                                if let Some(target_key) = workflow_graph_node_key_from_event(&event) {
+                                // Prefer hit-testing: with pointer capture on the canvas,
+                                // event.target is the canvas even when released over a node.
+                                let target_key = workflow_graph_node_key_at_client(
+                                    event.client_x(),
+                                    event.client_y(),
+                                )
+                                .or_else(|| workflow_graph_node_key_from_event(&event));
+                                if let Some(target_key) = target_key {
                                     if target_key != source_key {
                                         finish_connect(source_key, target_key);
                                         return;
@@ -1855,6 +1917,8 @@ fn workflow_graph_editor(
                                 key=|edge| (
                                     edge.source_key,
                                     edge.target_key,
+                                    edge.source_id.clone(),
+                                    edge.target_id.clone(),
                                     edge.path.clone(),
                                 )
                                 children=move |edge| {
@@ -2009,10 +2073,23 @@ fn workflow_graph_editor(
                                         class:connect-target=move || {
                                             connect_from_key.get().is_some_and(|source| source != key)
                                         }
+                                        class:entering=move || {
+                                            entering_node_keys.with(|keys| keys.contains(&key))
+                                        }
                                         style=style
                                         data-testid="workflow-graph-node"
                                         data-node-id=node.id.clone()
-                                        data-node-key=key.to_string()>
+                                        data-node-key=key.to_string()
+                                        on:animationend=move |event: web_sys::AnimationEvent| {
+                                            if event.animation_name()
+                                                != "workflow-graph-node-enter"
+                                            {
+                                                return;
+                                            }
+                                            entering_node_keys.update(|keys| {
+                                                keys.remove(&key);
+                                            });
+                                        }>
                                         <button type="button" class="workflow-graph-port input"
                                             class:connect-target=move || {
                                                 connect_from_key.get().is_some_and(|source| source != key)
@@ -2132,6 +2209,7 @@ fn workflow_graph_editor(
                                                             new_key = form.add_task_after(source_key);
                                                         });
                                                         if let Some(key) = new_key {
+                                                            mark_node_entering(key);
                                                             selected_task_key.set(Some(key));
                                                             selected_edge.set(None);
                                                             cancel_connect();
