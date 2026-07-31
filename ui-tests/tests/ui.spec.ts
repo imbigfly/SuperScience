@@ -6338,21 +6338,21 @@ test("completed ACP commentary, reasoning, and tools share one summary", async (
   expect(reasoningY).toBeLessThan(toolY);
 });
 
-test("Delegation toggle gates the dynamic temporary-Agent editor", async ({ page }) => {
+test("Agents panel is activity-only and opens the standalone Workflow Studio", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Toggle panel" }).click();
   await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
   const panel = page.getByTestId("agent-workflows");
 
+  await expect(panel).toContainText("Agent workflow activity");
+  await expect(panel).toContainText("Create and edit reusable workflows in Workflow Studio");
   await expect(panel).toContainText("Delegation is off for this conversation");
-  await expect(panel.getByTestId("agent-goal")).toBeDisabled();
-  await expect(panel.getByTestId("agent-create")).toBeDisabled();
+  await expect(panel.getByTestId("dynamic-agent-editor")).toHaveCount(0);
+  await expect(panel.getByTestId("agent-create")).toHaveCount(0);
+  await panel.getByTestId("agent-open-workflows").click();
 
-  await enableDelegation(page);
-  await expect(panel.getByTestId("agent-goal")).toBeEnabled();
-  await panel.getByTestId("agent-goal").fill("analyze code");
-  await panel.getByTestId("dynamic-task-instruction").fill("Inspect the project and report findings");
-  await expect(panel.getByTestId("agent-create")).toBeEnabled();
+  await expect(page.locator(".settings-page")).toHaveClass(/workflow-studio-mode/);
+  await expect(page.getByTestId("workflow-studio")).toBeVisible();
 });
 
 test("main-Agent dynamic batches show parallel roots and pending dependencies", async ({ page }) => {
@@ -6393,279 +6393,6 @@ test("nested Agent workflows render under their root without independent control
   await expect(nested.locator('[data-step-id$="parent/leaf"]')).toBeVisible();
   await expect(nested.getByTestId("agent-retry")).toHaveCount(0);
   await expect(nested).not.toContainText("Delegation is off for this workflow");
-});
-
-test("manual dynamic drafts accept arbitrary tasks", async ({ page }) => {
-  await enterApp(page);
-  await enableDelegation(page);
-  await page.getByRole("button", { name: "Toggle panel" }).click();
-  await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
-  const panel = page.getByTestId("agent-workflows");
-
-  await panel.getByTestId("agent-goal").fill("Compare two independent analyses");
-  await panel.getByTestId("dynamic-task-id").fill("inspect");
-  await panel.getByTestId("dynamic-task-instruction").fill("Inspect the source evidence");
-  await panel.getByTestId("dynamic-add-task").click();
-  const second = panel.locator(".dynamic-agent-task").nth(1);
-  await second.getByTestId("dynamic-task-id").fill("compare");
-  await second.getByTestId("dynamic-task-instruction").fill("Compare the inspected evidence");
-  await second.locator("label.dynamic-agent-check", { hasText: "inspect" }).locator('input[type="checkbox"]').check();
-  await second.locator("label.dynamic-agent-check", { hasText: "Project read" }).locator('input[type="checkbox"]').check();
-  await panel.getByTestId("agent-create").click();
-
-  await expect.poll(() => lastInvokeArgs(page, "create_dynamic_agent_workflow")).toMatchObject({
-    proposal: {
-      goal: "Compare two independent analyses",
-      approval_policy: "review_all",
-      tasks: [
-        { id: "inspect", instruction: "Inspect the source evidence", depends_on: [] },
-        { id: "compare", instruction: "Compare the inspected evidence", depends_on: ["inspect"] },
-      ],
-    },
-  });
-  const card = panel.locator(".agent-workflow-card.dynamic").first();
-  await expect(card).toContainText("Dynamic");
-  await expect(card.locator('[data-step-id$=":compare"] .agent-chip.dependency')).toHaveText("inspect");
-});
-
-test("roundtable template combines Specialist roles with ACP executors in a two-round DAG", async ({ page }) => {
-  await enterApp(page);
-  await enableDelegation(page);
-  await page.getByRole("button", { name: "Toggle panel" }).click();
-  await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
-  const panel = page.getByTestId("agent-workflows");
-
-  await panel.getByTestId("roundtable-template").locator("summary").click();
-  await expect(panel.getByTestId("roundtable-apply")).toBeDisabled();
-  await panel.getByTestId("agent-goal").fill("Choose a website architecture");
-  await expect(panel.getByTestId("roundtable-apply")).toBeEnabled();
-  await expect(panel.getByTestId("roundtable-participant-count")).toHaveValue("2");
-  const assignments = panel.getByTestId("roundtable-assignment");
-  await expect(assignments).toHaveCount(3);
-
-  const firstSeat = assignments.nth(0);
-  await firstSeat.getByTestId("roundtable-specialist").selectOption("reader");
-  await firstSeat.getByTestId("roundtable-executor").selectOption("acp:generic-acp");
-  await expect(firstSeat.getByTestId("roundtable-model")).toBeDisabled();
-
-  const secondSeat = assignments.nth(1);
-  await secondSeat.getByTestId("roundtable-specialist").selectOption("reviewer");
-  await secondSeat.getByTestId("roundtable-executor").selectOption("native");
-  await secondSeat.getByTestId("roundtable-model").selectOption("opus");
-
-  const chair = assignments.nth(2);
-  await chair.getByTestId("roundtable-executor").selectOption("acp:generic-acp");
-  await panel.getByTestId("roundtable-apply").click();
-
-  const tasks = panel.locator(".dynamic-agent-task");
-  await expect(tasks).toHaveCount(5);
-  const taskIds = [
-    "seat_1_opening",
-    "seat_2_opening",
-    "seat_1_review",
-    "seat_2_review",
-    "chair_synthesis",
-  ];
-  for (const [index, taskId] of taskIds.entries()) {
-    await expect(tasks.nth(index).getByTestId("dynamic-task-id")).toHaveValue(taskId);
-  }
-
-  for (const index of [0, 2]) {
-    await expect(tasks.nth(index).getByTestId("dynamic-task-specialist")).toHaveValue("reader");
-    await tasks.nth(index).locator("details.dynamic-agent-advanced > summary").click();
-    await expect(tasks.nth(index).getByTestId("dynamic-task-executor")).toHaveValue("acp:generic-acp");
-  }
-  for (const index of [1, 3]) {
-    await expect(tasks.nth(index).getByTestId("dynamic-task-specialist")).toHaveValue("reviewer");
-    await tasks.nth(index).locator("details.dynamic-agent-advanced > summary").click();
-    await expect(tasks.nth(index).getByTestId("dynamic-task-executor")).toHaveValue("native");
-    await expect(tasks.nth(index).getByTestId("dynamic-task-model")).toHaveValue("opus");
-  }
-
-  await panel.getByTestId("agent-create").click();
-  await expect.poll(() => lastInvokeArgs(page, "create_dynamic_agent_workflow")).toMatchObject({
-    proposal: {
-      goal: "Choose a website architecture",
-      tasks: [
-        {
-          id: "seat_1_opening",
-          depends_on: [],
-          specialist_id: "reader",
-          executor: { kind: "acp", profile_id: "generic-acp" },
-        },
-        {
-          id: "seat_2_opening",
-          depends_on: [],
-          specialist_id: "reviewer",
-          model_id: "opus",
-          executor: { kind: "native" },
-        },
-        {
-          id: "seat_1_review",
-          depends_on: ["seat_1_opening", "seat_2_opening"],
-          specialist_id: "reader",
-          executor: { kind: "acp", profile_id: "generic-acp" },
-        },
-        {
-          id: "seat_2_review",
-          depends_on: ["seat_1_opening", "seat_2_opening"],
-          specialist_id: "reviewer",
-          model_id: "opus",
-          executor: { kind: "native" },
-        },
-        {
-          id: "chair_synthesis",
-          depends_on: ["seat_1_review", "seat_2_review"],
-          executor: { kind: "acp", profile_id: "generic-acp" },
-        },
-      ],
-    },
-  });
-  const proposal = (await lastInvokeArgs(page, "create_dynamic_agent_workflow")).proposal;
-  expect(proposal.tasks.every((task: any) =>
-    task.instruction.includes("Choose a website architecture"))).toBe(true);
-  expect(proposal.tasks[1].capabilities).toContain("review");
-  expect(proposal.tasks[3].capabilities).toContain("review");
-});
-
-test("dynamic task removal uses a compact enabled control when multiple tasks exist", async ({ page }) => {
-  await enterApp(page);
-  await enableDelegation(page);
-  await page.getByRole("button", { name: "Toggle panel" }).click();
-  await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
-  const panel = page.getByTestId("agent-workflows");
-
-  const firstRemove = panel.locator(".dynamic-agent-task").first()
-    .getByRole("button", { name: "Remove task" });
-  await expect(firstRemove).toBeDisabled();
-  await panel.getByTestId("dynamic-add-task").click();
-  await expect(firstRemove).toBeEnabled();
-  await expect(firstRemove).toHaveCSS("width", "27px");
-  await firstRemove.click();
-  await expect(panel.locator(".dynamic-agent-task")).toHaveCount(1);
-  await expect(firstRemove).toBeDisabled();
-});
-
-test("dynamic ACP selection uses a profile and clears the Native-only model", async ({ page }) => {
-  await enterApp(page);
-  await enableDelegation(page);
-  await page.getByRole("button", { name: "Toggle panel" }).click();
-  await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
-  const panel = page.getByTestId("agent-workflows");
-  const task = panel.locator(".dynamic-agent-task").first();
-
-  await panel.getByTestId("agent-goal").fill("Run with a configured ACP profile");
-  await task.getByTestId("dynamic-task-instruction").fill("Inspect the project");
-  await task.locator("details.dynamic-agent-advanced > summary").click();
-  const model = task.getByTestId("dynamic-task-model");
-  await model.selectOption("opus");
-  await task.getByTestId("dynamic-task-executor").selectOption("acp:generic-acp");
-  await expect(model).toBeDisabled();
-  await expect(model).toHaveValue("");
-  await panel.getByTestId("agent-create").click();
-
-  await expect.poll(() => lastInvokeArgs(page, "create_dynamic_agent_workflow")).toMatchObject({
-    proposal: {
-      tasks: [{
-        executor: { kind: "acp", profile_id: "generic-acp" },
-      }],
-    },
-  });
-  const args = await lastInvokeArgs(page, "create_dynamic_agent_workflow");
-  expect(args.proposal.tasks[0].model_id).toBeUndefined();
-});
-
-test("isolated task approval shows the conflict-checked cherry-pick policy", async ({ page }) => {
-  await enterApp(page);
-  await enableDelegation(page);
-  await page.getByRole("button", { name: "Toggle panel" }).click();
-  await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
-  const panel = page.getByTestId("agent-workflows");
-  const task = panel.locator(".dynamic-agent-task").first();
-
-  await panel.getByTestId("agent-goal").fill("Update two independent project files");
-  await task.getByTestId("dynamic-task-instruction").fill("Update the first project file");
-  await task.locator("label.dynamic-agent-check", { hasText: "Project write" })
-    .locator('input[type="checkbox"]').check();
-  await task.locator("details.dynamic-agent-advanced > summary").click();
-  await task.locator("label.dynamic-agent-inline-check", { hasText: "Use an isolated workspace" })
-    .locator('input[type="checkbox"]').check();
-  await panel.getByTestId("agent-create").click();
-
-  await expect.poll(() => lastInvokeArgs(page, "create_dynamic_agent_workflow")).toMatchObject({
-    proposal: { tasks: [{ isolated: true }] },
-  });
-  const card = panel.locator(".agent-workflow-card.dynamic").first();
-  await expect(card).toContainText("Conflict-check, then cherry-pick");
-  await expect(card).toContainText("temporary Git worktree");
-});
-
-test("dynamic tasks can select a newly saved custom Specialist", async ({ page }) => {
-  await enterApp(page);
-  await openSettingsSection(page, "Specialists");
-  await page.getByText("Add specialist").click();
-  await page.getByText("Write from scratch").click();
-  await page.getByLabel("Name").fill("Paper hunter");
-  await page.getByLabel("Instructions").fill("Prefer primary literature.");
-  await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText("Paper hunter")).toBeVisible();
-  await page.locator(".settings-head-close").click();
-
-  await enableDelegation(page);
-  await page.getByRole("button", { name: "Toggle panel" }).click();
-  await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
-  const panel = page.getByTestId("agent-workflows");
-  const task = panel.locator(".dynamic-agent-task").first();
-  await panel.getByTestId("agent-goal").fill("Find relevant evidence");
-  await task.getByTestId("dynamic-task-instruction").fill("Inspect the available evidence");
-  const specialistSelect = task.getByTestId("dynamic-task-specialist");
-  await specialistSelect.selectOption({ label: "Paper hunter" });
-  const specialistId = await specialistSelect.inputValue();
-  expect(specialistId).not.toBe("");
-  await panel.getByTestId("agent-create").click();
-
-  await expect.poll(() => lastInvokeArgs(page, "create_dynamic_agent_workflow")).toMatchObject({
-    proposal: {
-      tasks: [{ specialist_id: specialistId }],
-    },
-  });
-});
-
-test("risky dynamic drafts expose resolved authority and can be revised before approval", async ({ page }) => {
-  await enterApp(page);
-  await enableDelegation(page);
-  await page.getByRole("button", { name: "Toggle panel" }).click();
-  await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
-  const panel = page.getByTestId("agent-workflows");
-
-  await panel.getByTestId("agent-goal").fill("CANCEL DEMO update the analysis safely");
-  await panel.getByTestId("agent-approval-policy").selectOption("auto_safe");
-  await panel.getByTestId("dynamic-task-instruction").fill("Update the analysis file");
-  const firstTask = panel.locator(".dynamic-agent-task").first();
-  await firstTask.locator("label.dynamic-agent-check", { hasText: "Project write" }).locator('input[type="checkbox"]').check();
-  await panel.getByTestId("agent-create").click();
-
-  const card = panel.locator(".agent-workflow-card.dynamic").first();
-  await expect(card).toContainText("requires project write access");
-  await expect(card).toContainText("serialized_mutation");
-  await expect(card).toContainText("write");
-  await card.getByTestId("agent-edit").click();
-  await panel.getByTestId("dynamic-task-instruction").fill("Update and validate the analysis file");
-  await panel.locator(".dynamic-agent-task").first()
-    .locator("label.dynamic-agent-check", { hasText: "Code execution" })
-    .locator('input[type="checkbox"]').check();
-  await panel.getByTestId("agent-create").click();
-
-  await expect.poll(() => lastInvokeArgs(page, "revise_dynamic_agent_workflow")).toMatchObject({
-    workflowId: "workflow-1",
-    expectedVersion: 1,
-    proposal: { tasks: [{ instruction: "Update and validate the analysis file" }] },
-  });
-  await expect(card).toContainText("executes bounded project code");
-  await card.getByTestId("agent-approve").click();
-  await expect(card.locator(".agent-workflow-status")).toHaveText("Running", { timeout: 3_000 });
-  await card.getByTestId("agent-cancel").click();
-  await expect(card.locator(".agent-workflow-status")).toHaveText("Cancelled");
 });
 
 test("failed dynamic tasks and dependency-blocked tasks stay distinct", async ({ page }) => {
@@ -6714,7 +6441,8 @@ test("disabled delegation preserves running history and blocks new starts and re
 
   await expect(panel).toContainText("Delegation is off for this conversation");
   await expect(card).toContainText("Main Agent parallel research batch");
-  await expect(panel.getByTestId("agent-create")).toBeDisabled();
+  await expect(panel.getByTestId("agent-create")).toHaveCount(0);
+  await expect(card.getByTestId("agent-edit")).toHaveCount(0);
   await expect(card.getByTestId("agent-cancel")).toBeEnabled();
   await card.getByTestId("agent-cancel").click();
   await expect(card.locator(".agent-workflow-status")).toHaveText("Cancelled");

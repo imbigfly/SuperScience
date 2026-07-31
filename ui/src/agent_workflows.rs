@@ -1,4 +1,4 @@
-//! Dynamic Agent draft editor and persisted workflow activity surface.
+//! Workflow Studio editor and persisted Agent workflow activity surface.
 
 use crate::bindings::invoke_checked;
 use crate::app_support::compose_icon;
@@ -615,8 +615,6 @@ pub(super) struct AgentPanelState {
     pub(super) options: RwSignal<DynamicAgentEditorOptions>,
     pub(super) dynamic_form: RwSignal<DynamicWorkflowForm>,
     roundtable_form: RwSignal<RoundtableTemplateForm>,
-    pub(super) dynamic_editing: RwSignal<Option<String>>,
-    pub(super) busy: RwSignal<bool>,
     pub(super) launching: RwSignal<Vec<String>>,
     pub(super) error: RwSignal<Option<String>>,
     pub(super) result: RwSignal<Option<AgentWorkflowResultDetail>>,
@@ -630,8 +628,6 @@ impl AgentPanelState {
             options: create_rw_signal(DynamicAgentEditorOptions::default()),
             dynamic_form: create_rw_signal(DynamicWorkflowForm::default()),
             roundtable_form: create_rw_signal(RoundtableTemplateForm::default()),
-            dynamic_editing: create_rw_signal(None),
-            busy: create_rw_signal(false),
             launching: create_rw_signal(vec![]),
             error: create_rw_signal(None),
             result: create_rw_signal(None),
@@ -739,31 +735,6 @@ fn js_error_text(error: JsValue) -> String {
                 .and_then(|value| value.as_string())
         })
         .unwrap_or_else(|| "Unknown Agent workflow error".into())
-}
-
-fn dynamic_command_error(locale: Locale, error: JsValue) -> (String, bool) {
-    serde_wasm_bindgen::from_value::<DynamicWorkflowCommandError>(error.clone())
-        .map(|parsed| command_error_text(locale, parsed))
-        .unwrap_or_else(|_| (js_error_text(error), false))
-}
-
-/// Message plus "was this a version conflict?". The backend's own conflict
-/// message is version-free ("changed in another window") but it ships the two
-/// versions alongside — when they are there, name them.
-fn command_error_text(locale: Locale, error: DynamicWorkflowCommandError) -> (String, bool) {
-    let conflict = error.code == "version_conflict";
-    let message = match error.version_conflict.filter(|_| conflict) {
-        Some(versions) => tf(
-            locale,
-            "agents.error.version_conflict",
-            &[
-                ("expected", &versions.expected_version.to_string()),
-                ("actual", &versions.actual_version.to_string()),
-            ],
-        ),
-        None => error.message,
-    };
-    (message, conflict)
 }
 
 #[derive(Clone)]
@@ -1459,264 +1430,6 @@ fn dynamic_task_editor(
                 </div>
             </details>
         </fieldset>
-    }
-}
-
-fn dynamic_editor(
-    state: AgentPanelState,
-    delegation_enabled: RwSignal<bool>,
-    specialists: RwSignal<Vec<Specialist>>,
-    models: RwSignal<Vec<ModelProfile>>,
-    locale: RwSignal<Locale>,
-    send_to_chat: Callback<String>,
-) -> impl IntoView {
-    // Shared by export and model review: the validated form as pretty JSON.
-    let form_json = move || -> Option<String> {
-        match state.dynamic_form.get_untracked().proposal() {
-            Ok(proposal) => {
-                state.error.set(None);
-                serde_json::to_string_pretty(&proposal).ok()
-            }
-            Err(error) => {
-                state.error.set(Some(error));
-                None
-            }
-        }
-    };
-    let export_json = move |_| {
-        let Some(json) = form_json() else { return };
-        spawn_local(async move {
-            let args = serde_json::json!({
-                "defaultName": "agent-workflow.json",
-                "content": json,
-            });
-            if let Err(error) = invoke_checked("export_text_file", to_value(&args).unwrap()).await {
-                state.error.set(Some(js_error_text(error)));
-            }
-        });
-    };
-    let import_json = move |_| {
-        spawn_local(async move {
-            match invoke_checked("import_json_file", JsValue::UNDEFINED).await {
-                Ok(value) => {
-                    let Some(content) = value.as_string() else {
-                        return; // user cancelled
-                    };
-                    match serde_json::from_str::<DynamicAgentWorkflowProposal>(&content) {
-                        Ok(proposal) => {
-                            state
-                                .dynamic_form
-                                .set(DynamicWorkflowForm::from_proposal(proposal));
-                            state.dynamic_editing.set(None);
-                            state.error.set(None);
-                        }
-                        Err(error) => state.error.set(Some(format!(
-                            "{} {error}",
-                            t(locale.get_untracked(), "agents.import_invalid"),
-                        ))),
-                    }
-                }
-                Err(error) => state.error.set(Some(js_error_text(error))),
-            }
-        });
-    };
-    let review_config = move |_| {
-        let Some(json) = form_json() else { return };
-        send_to_chat.call(format!(
-            "{}\n\n```json\n{json}\n```",
-            t(locale.get_untracked(), "agents.review_prompt"),
-        ));
-    };
-
-    let submit = move |event: ev::SubmitEvent| {
-        event.prevent_default();
-        if !delegation_enabled.get_untracked() || state.busy.get_untracked() {
-            return;
-        }
-        let proposal = match state.dynamic_form.get_untracked().proposal() {
-            Ok(proposal) => proposal,
-            Err(error) => {
-                state.error.set(Some(error));
-                return;
-            }
-        };
-        let editing = state.dynamic_editing.get_untracked();
-        let expected_version = editing.as_ref().and_then(|workflow_id| {
-            state.workflows.with_untracked(|workflows| {
-                workflows
-                    .iter()
-                    .find(|snapshot| &snapshot.workflow.id == workflow_id)
-                    .map(|snapshot| snapshot.workflow.version)
-            })
-        });
-        if editing.is_some() && expected_version.is_none() {
-            state.error.set(Some(
-                "The draft is no longer available; refresh and try again.".into(),
-            ));
-            return;
-        }
-        state.busy.set(true);
-        spawn_local(async move {
-            let (command, args) = match (editing, expected_version) {
-                (Some(workflow_id), Some(expected_version)) => (
-                    "revise_dynamic_agent_workflow",
-                    serde_json::json!({
-                        "workflowId": workflow_id,
-                        "proposal": proposal,
-                        "expectedVersion": expected_version,
-                    }),
-                ),
-                _ => (
-                    "create_dynamic_agent_workflow",
-                    serde_json::json!({ "proposal": proposal }),
-                ),
-            };
-            match invoke_checked(command, to_value(&args).unwrap()).await {
-                Ok(_) => {
-                    state.dynamic_form.set(DynamicWorkflowForm::default());
-                    state.dynamic_editing.set(None);
-                    state.error.set(None);
-                    refresh_agent_workflows(state);
-                }
-                Err(error) => {
-                    let (message, conflict) = dynamic_command_error(locale.get_untracked(), error);
-                    if conflict {
-                        if let Ok(value) = invoke_checked(
-                            "list_agent_workflows",
-                            to_value(&serde_json::json!({
-                                "sessionId": state.session_id.get_untracked(),
-                            }))
-                            .unwrap(),
-                        )
-                        .await
-                        {
-                            if let Ok(items) =
-                                serde_wasm_bindgen::from_value::<Vec<AgentWorkflowSnapshot>>(value)
-                            {
-                                state.workflows.set(items);
-                            }
-                        }
-                    }
-                    state.error.set(Some(message));
-                }
-            }
-            state.busy.set(false);
-        });
-    };
-
-    view! {
-        <form class="agents-create dynamic-agent-editor" data-testid="dynamic-agent-editor" on:submit=submit>
-            <div class="dynamic-agent-editor-head">
-                <div>
-                    <strong>{move || if state.dynamic_editing.get().is_some() {
-                        t(locale.get(), "agents.editor.edit")
-                    } else {
-                        t(locale.get(), "agents.editor.new")
-                    }}</strong>
-                    <p>{move || t(locale.get(), "agents.editor.help")}</p>
-                </div>
-                <button type="button" class="icon-btn" title=move || t(locale.get(), "agents.refresh")
-                    aria-label=move || t(locale.get(), "agents.refresh")
-                    on:click=move |_| {
-                        refresh_agent_resources(state, specialists);
-                        refresh_agent_workflows(state);
-                    }>{"↻"}</button>
-            </div>
-            <label for="dynamic-agent-goal">{move || t(locale.get(), "agents.goal")}</label>
-            <textarea id="dynamic-agent-goal" data-testid="agent-goal"
-                prop:value=move || state.dynamic_form.get().goal
-                prop:placeholder=move || t(locale.get(), "agents.goal_ph")
-                disabled=move || !delegation_enabled.get()
-                on:input=move |event| state.dynamic_form.update(|form| {
-                    form.goal = event_target_value(&event);
-                })></textarea>
-            {roundtable_template_editor(
-                state,
-                delegation_enabled,
-                specialists,
-                models,
-                locale,
-            )}
-            <div class="dynamic-agent-policy-row">
-                <label>
-                    <span>{move || t(locale.get(), "agents.approval_policy")}</span>
-                    <select data-testid="agent-approval-policy"
-                        disabled=move || !delegation_enabled.get()
-                        on:change=move |event| state.dynamic_form.update(|form| {
-                            form.approval_policy = if dom_value(&event) == "auto_safe" {
-                                AgentApprovalPolicy::AutoSafe
-                            } else {
-                                AgentApprovalPolicy::ReviewAll
-                            };
-                        })>
-                        <option value="review_all" prop:selected=move || state.dynamic_form.get().approval_policy == AgentApprovalPolicy::ReviewAll>
-                            {move || t(locale.get(), "agents.approval.review_all")}
-                        </option>
-                        <option value="auto_safe" prop:selected=move || state.dynamic_form.get().approval_policy == AgentApprovalPolicy::AutoSafe>
-                            {move || t(locale.get(), "agents.approval.auto_safe")}
-                        </option>
-                    </select>
-                </label>
-                <span>{move || if state.dynamic_form.get().approval_policy == AgentApprovalPolicy::AutoSafe {
-                    t(locale.get(), "agents.approval.auto_safe_help")
-                } else {
-                    t(locale.get(), "agents.approval.review_all_help")
-                }}</span>
-            </div>
-            <details class="dynamic-agent-context">
-                <summary>{move || t(locale.get(), "agents.shared_context")}</summary>
-                <textarea prop:value=move || state.dynamic_form.get().context
-                    prop:placeholder=move || t(locale.get(), "agents.shared_context_ph")
-                    on:input=move |event| state.dynamic_form.update(|form| {
-                        form.context = event_target_value(&event);
-                    })></textarea>
-            </details>
-            <div class="dynamic-agent-task-list">
-                <For each=move || state.dynamic_form.get().tasks
-                    key=|task| task.key
-                    children=move |task| dynamic_task_editor(task, state, specialists, models, locale)
-                />
-            </div>
-            <button type="button" class="agents-secondary dynamic-task-add" data-testid="dynamic-add-task"
-                disabled=move || !delegation_enabled.get()
-                on:click=move |_| state.dynamic_form.update(|form| {
-                    form.add_task();
-                })>
-                {move || format!("+ {}", t(locale.get(), "agents.task.add"))}
-            </button>
-            <div class="agents-create-actions dynamic-agent-config-tools">
-                <button type="button" class="agents-secondary" data-testid="dynamic-import-json"
-                    on:click=import_json>{move || t(locale.get(), "agents.import_json")}</button>
-                <button type="button" class="agents-secondary" data-testid="dynamic-export-json"
-                    disabled=move || !state.dynamic_form.get().ready()
-                    on:click=export_json>{move || t(locale.get(), "agents.export_json")}</button>
-                <button type="button" class="agents-secondary" data-testid="dynamic-review-config"
-                    disabled=move || !state.dynamic_form.get().ready()
-                    on:click=review_config>{move || t(locale.get(), "agents.review_config")}</button>
-            </div>
-            <div class="agents-create-actions">
-                <button type="button" class="agents-secondary"
-                    on:click=move |_| {
-                        state.dynamic_form.set(DynamicWorkflowForm::default());
-                        state.dynamic_editing.set(None);
-                        state.error.set(None);
-                    }>{move || if state.dynamic_editing.get().is_some() {
-                        t(locale.get(), "agents.edit.cancel")
-                    } else {
-                        t(locale.get(), "agents.editor.reset")
-                    }}</button>
-                <button type="submit" class="agents-primary" data-testid="agent-create"
-                    disabled=move || !delegation_enabled.get() || state.busy.get() || !state.dynamic_form.get().ready()>
-                    {move || if state.busy.get() {
-                        t(locale.get(), "agents.saving")
-                    } else if state.dynamic_editing.get().is_some() {
-                        t(locale.get(), "agents.save_changes")
-                    } else {
-                        t(locale.get(), "agents.create_dynamic")
-                    }}
-                </button>
-            </div>
-        </form>
     }
 }
 
@@ -2652,20 +2365,12 @@ fn workflow_actions(
     let run_busy_id = workflow_id.clone();
     let cancel_id = workflow_id.clone();
     let retry_id = workflow_id.clone();
-    let edit_id = workflow_id.clone();
     let delegation_enabled = snapshot.delegation_enabled;
-    let dynamic_proposal = snapshot.dynamic.editable_proposal.clone();
     let automatic = snapshot.approval_policy == AgentApprovalPolicy::AutoSafe;
     view! {
         <div class="agent-workflow-actions">
             {(workflow.status == "draft").then(|| {
-                let proposal = dynamic_proposal.clone();
                 view! {
-                    <button type="button" class="agents-secondary" data-testid="agent-edit"
-                        disabled=!delegation_enabled on:click=move |_| {
-                            state.dynamic_form.set(DynamicWorkflowForm::from_proposal(proposal.clone()));
-                            state.dynamic_editing.set(Some(edit_id.clone()));
-                        }>{t(locale.get(), "agents.edit")}</button>
                     <button type="button" class="agents-primary" data-testid="agent-approve"
                         disabled=!delegation_enabled
                         on:click=move |_| invoke_workflow_action(
@@ -2931,25 +2636,28 @@ fn workflow_result_dialog(state: AgentPanelState, locale: RwSignal<Locale>) -> V
 
 pub(super) fn agent_workflows_panel(
     state: AgentPanelState,
-    specialists: RwSignal<Vec<Specialist>>,
-    models: RwSignal<Vec<ModelProfile>>,
     sessions: RwSignal<Vec<SessionInfo>>,
     delegation_enabled: RwSignal<bool>,
     locale: RwSignal<Locale>,
     load_session: Callback<String>,
     refresh_sessions: Callback<()>,
-    send_to_chat: Callback<String>,
+    open_workflows: Callback<()>,
 ) -> impl IntoView {
     view! {
         <div class="agents-pane dynamic-agents-panel" data-testid="agent-workflows" data-panel-version="2">
             <div class="agents-inline-notice">
                 <strong>{move || t(locale.get(), "agents.inline_notice_title")}</strong>
                 <span>{move || t(locale.get(), "agents.inline_notice")}</span>
+                <button type="button" class="agents-secondary agents-manage-workflows"
+                    data-testid="agent-open-workflows"
+                    on:click=move |_| open_workflows.call(())>
+                    {compose_icon("branch")}
+                    <span>{move || t(locale.get(), "agents.manage_workflows")}</span>
+                </button>
             </div>
             {move || (!delegation_enabled.get()).then(|| view! {
                 <div class="agents-disabled">{t(locale.get(), "agents.disabled")}</div>
             })}
-            {move || dynamic_editor(state, delegation_enabled, specialists, models, locale, send_to_chat).into_view()}
             {move || state.error.get().map(|message| view! {
                 <div class="agents-error" role="alert">{message}</div>
             })}
@@ -3002,43 +2710,6 @@ pub(super) fn agent_workflows_panel(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn version_conflict_message_names_both_versions() {
-        let (message, conflict) = command_error_text(
-            Locale::En,
-            DynamicWorkflowCommandError {
-                code: "version_conflict".into(),
-                message: "Agent plan changed in another window; refresh and try again.".into(),
-                version_conflict: Some(AgentWorkflowVersionConflict {
-                    workflow_id: "wf1".into(),
-                    expected_version: 3,
-                    actual_version: 5,
-                }),
-            },
-        );
-        assert!(conflict);
-        assert!(
-            message.contains("v3") && message.contains("v5"),
-            "{message}"
-        );
-        assert!(
-            !message.contains('{'),
-            "unsubstituted placeholder: {message}"
-        );
-
-        // Any other failure keeps the backend's own message.
-        let (message, conflict) = command_error_text(
-            Locale::En,
-            DynamicWorkflowCommandError {
-                code: "invalid_proposal".into(),
-                message: "task ids must be unique".into(),
-                version_conflict: None,
-            },
-        );
-        assert!(!conflict);
-        assert_eq!(message, "task ids must be unique");
-    }
 
     #[test]
     fn arbitrary_tasks_round_trip() {

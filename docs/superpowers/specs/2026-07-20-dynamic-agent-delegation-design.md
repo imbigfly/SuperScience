@@ -489,19 +489,19 @@ conversation:
   workflows;
 - task rows with dependency, capability, Specialist, model, executor, status,
   duration, usage, and current tool summaries;
-- dynamic draft editing for instruction, dependencies, capabilities, persona,
-  model/executor override, and isolation;
 - approve, deny with feedback, cancel, retry, inspect result, and take over a
   child conversation;
-- clear indication that results also return to the parent conversation.
+- clear indication that results also return to the parent conversation;
+- a direct link to the standalone Workflow Studio for workflow creation and
+  definition management.
 
 Temporary child conversations remain persisted for audit and takeover, but
 are linked beneath the dispatching conversation and are excluded from the
 top-level session history, recent-session views, and session search.
 
-The predefined role buttons disappear.
-Manual creation remains possible through an “Add task” editor using the same
-dynamic contract and resolver as automatic delegation.
+The predefined role buttons and inline draft editor disappear. Manual
+composition remains possible in Workflow Studio, using the same dynamic
+contract and resolver as automatic delegation.
 
 ## Security invariants
 
