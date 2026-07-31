@@ -143,6 +143,35 @@ pub struct RunOutputUpdate {
     pub chunk: Vec<u8>,
 }
 
+pub(crate) const PUBLICATION_REPRODUCTION_CONTEXT_ID: &str = "publication-reproduction";
+
+pub(crate) fn run_environment_snapshot(
+    context: &wisp_store::ExecutionContext,
+) -> serde_json::Value {
+    let process = ["LANG", "LC_ALL", "TZ"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok().map(|value| (name, value)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    serde_json::json!({
+        "schema_version": 2,
+        "context": {
+            "id": context.id,
+            "kind": context.kind,
+            "config": serde_json::from_str::<serde_json::Value>(&context.config_json)
+                .unwrap_or_default(),
+            "capabilities": serde_json::from_str::<serde_json::Value>(
+                &context.capabilities_json,
+            )
+            .unwrap_or_default(),
+        },
+        "process": process,
+        "wisp_host": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+        },
+    })
+}
+
 #[async_trait::async_trait]
 pub trait RunCommandRunner: Send + Sync {
     async fn run(&self, command: RunCommand, timeout: Duration)
@@ -339,6 +368,9 @@ async fn run_process(
         }
     }
     let mut cmd = Command::new(&command.program);
+    if command.context_id == PUBLICATION_REPRODUCTION_CONTEXT_ID {
+        cmd.env_clear();
+    }
     cmd.args(&command.args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1918,21 +1950,10 @@ async fn create_run_record(
     run.input_refs_json = serde_json::to_string(&input_refs).map_err(|e| e.to_string())?;
     run.output_specs_json = serde_json::to_string(&output_specs).map_err(|e| e.to_string())?;
     run.timeout_secs = Some(timeout.as_secs() as i64);
-    let environment = serde_json::json!({
-        "schema_version": 1,
-        "context": {
-            "id": ctx.id,
-            "kind": ctx.kind,
-            "config": serde_json::from_str::<serde_json::Value>(&ctx.config_json).unwrap_or_default(),
-            "capabilities": serde_json::from_str::<serde_json::Value>(&ctx.capabilities_json).unwrap_or_default(),
-        },
-        "wisp_host": {
-            "os": std::env::consts::OS,
-            "arch": std::env::consts::ARCH,
-        },
-        "preflight": preflight,
-    });
-    run.env_snapshot_json = wisp_store::canonical_json(&environment);
+    let environment = run_environment_snapshot(&ctx);
+    let mut persisted_environment = environment.clone();
+    persisted_environment["preflight"] = serde_json::to_value(preflight).unwrap_or_default();
+    run.env_snapshot_json = wisp_store::canonical_json(&persisted_environment);
 
     let remote = if ctx.kind == wisp_store::ExecutionContextKind::Ssh {
         if output_specs

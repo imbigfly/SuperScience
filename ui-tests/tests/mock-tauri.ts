@@ -939,6 +939,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       }]
     : [];
   let publicationCapsuleBuilds: any[] = [];
+  let publicationReproductionRuns: any[] = [];
+  let publicationReproductionResults: any[] = [];
   const publicationRevision = () => ({
     id: publicationRevisionId,
     publication_id: "publication-paper-1",
@@ -1027,6 +1029,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       environment_captured: true,
     })),
     capsule_builds: publicationCapsuleBuilds,
+    effective_capability_level: publicationReproductionRuns.length
+      ? "reproduced"
+      : publicationRevision().capability_level,
+    reproduction_runs: publicationReproductionRuns,
+    reproduction_results: publicationReproductionResults,
   });
 
   (window as any).__TAURI__ = {
@@ -1064,11 +1071,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "bind_publication_evidence": {
             const input = plain(arg("input") ?? {});
             const artifact = input.sourceKind === "artifact";
+            const sourceKind = artifact ? "artifact_version" : String(input.sourceKind ?? "run");
             publicationBindings = [...publicationBindings, {
               id: `publication-binding-${publicationBindings.length + 1}`,
               revision_id: String(input.revisionId ?? publicationRevisionId),
               item_id: input.itemId ?? null,
-              source_kind: artifact ? "artifact_version" : "run",
+              source_kind: sourceKind,
               source_id: artifact ? "artifact-version-v3" : String(input.sourceId ?? ""),
               purpose: String(input.purpose ?? ""),
               supported_claim_item_id: input.supportedClaimItemId ?? null,
@@ -1126,6 +1134,35 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             };
             publicationCapsuleBuilds = [build, ...publicationCapsuleBuilds];
             return build;
+          }
+          case "verify_publication_revision": {
+            const input = plain(arg("input") ?? {});
+            const reproductionId = `reproduction-${publicationReproductionRuns.length + 1}`;
+            publicationReproductionRuns = [{
+              id: reproductionId,
+              source_run_id: String(input.sourceRunId ?? "run-kinase-001"),
+              status: "completed",
+              capability_level: "reproduced",
+              expected_environment_hash: "d".repeat(64),
+              actual_environment_hash: "d".repeat(64),
+              environment_matched: true,
+              stdout_tail: "verification complete",
+              stderr_tail: null,
+              exit_code: 0,
+              error: null,
+              created_at: 1785480200,
+              completed_at: 1785480201,
+            }, ...publicationReproductionRuns];
+            publicationReproductionResults = [{
+              reproduction_run_id: reproductionId,
+              output_id: "run-output-1",
+              output_path: "results/figure2b.png",
+              comparator_kind: "sha256",
+              required: true,
+              passed: true,
+              report_json: "{}",
+            }, ...publicationReproductionResults];
+            return publicationWorkspace();
           }
           case "list_library_items":
             return libraryItems.map(({ base64: _base64, ...item }) => item);

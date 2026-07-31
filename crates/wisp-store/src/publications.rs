@@ -5,9 +5,11 @@ use super::{
     EvidenceVisibility, Publication, PublicationCapabilityLevel, PublicationEvidenceDrift,
     PublicationFreezeCommit, PublicationFreezePolicy, PublicationItem, PublicationItemKind,
     PublicationItemLink, PublicationReadinessReport, PublicationRevision, PublicationRevisionState,
-    PublicationWaiver, ResearchEdge, ResearchNode, ResearchNodeKind, Store,
+    PublicationWaiver, ReproductionResult, ReproductionRun, ReproductionRunCommit,
+    ReproductionRunStart, ResearchEdge, ResearchNode, ResearchNodeKind, Store,
 };
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, Sqlite, Transaction};
 use std::collections::HashMap;
@@ -91,6 +93,49 @@ fn capsule_build_from_row(row: sqlx::sqlite::SqliteRow) -> Result<CapsuleBuild> 
     })
 }
 
+fn reproduction_run_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ReproductionRun> {
+    let capability: String = row.try_get("capability_level")?;
+    Ok(ReproductionRun {
+        id: row.try_get("id")?,
+        revision_id: row.try_get("revision_id")?,
+        source_run_id: row.try_get("source_run_id")?,
+        status: row.try_get("status")?,
+        capability_level: PublicationCapabilityLevel::from_storage(&capability)?,
+        command_sha256: row.try_get("command_sha256")?,
+        expected_environment_hash: row.try_get("expected_environment_hash")?,
+        actual_environment_json: row.try_get("actual_environment_json")?,
+        actual_environment_hash: row.try_get("actual_environment_hash")?,
+        environment_matched: row.try_get::<i64, _>("environment_matched")? != 0,
+        workspace_manifest_json: row.try_get("workspace_manifest_json")?,
+        stdout_tail: row.try_get("stdout_tail")?,
+        stderr_tail: row.try_get("stderr_tail")?,
+        exit_code: row.try_get("exit_code")?,
+        error: row.try_get("error")?,
+        created_at: row.try_get("created_at")?,
+        started_at: row.try_get("started_at")?,
+        completed_at: row.try_get("completed_at")?,
+    })
+}
+
+fn reproduction_result_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ReproductionResult> {
+    let comparator: String = row.try_get("comparator_kind")?;
+    Ok(ReproductionResult {
+        id: row.try_get("id")?,
+        reproduction_run_id: row.try_get("reproduction_run_id")?,
+        output_id: row.try_get("output_id")?,
+        output_path: row.try_get("output_path")?,
+        expected_artifact_version_id: row.try_get("expected_artifact_version_id")?,
+        comparator_kind: super::ReproductionComparatorKind::from_storage(&comparator)?,
+        required: row.try_get::<i64, _>("required")? != 0,
+        expected_json: row.try_get("expected_json")?,
+        actual_json: row.try_get("actual_json")?,
+        tolerance_json: row.try_get("tolerance_json")?,
+        passed: row.try_get::<i64, _>("passed")? != 0,
+        report_json: row.try_get("report_json")?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
 fn evidence_binding_from_row(row: sqlx::sqlite::SqliteRow) -> Result<EvidenceBinding> {
     let source_kind: String = row.try_get("source_kind")?;
     let selection_state: String = row.try_get("selection_state")?;
@@ -154,6 +199,68 @@ struct ResolvedEvidenceSource {
     target_node_id: String,
     target_kind: ResearchNodeKind,
     target_title: String,
+}
+
+const MAX_INLINE_EVIDENCE_BYTES: usize = 1024 * 1024;
+const MAX_MESSAGE_SPAN_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MessageSpanLocator {
+    frame_id: String,
+    message_seq: i64,
+    byte_start: usize,
+    byte_end: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolCallLocator {
+    frame_id: String,
+    message_seq: i64,
+    tool_call_id: String,
+}
+
+fn parse_canonical_locator<T>(source_id: &str) -> Result<T>
+where
+    T: for<'de> Deserialize<'de> + Serialize,
+{
+    let locator: T = serde_json::from_str(source_id)
+        .map_err(|_| anyhow::anyhow!("Fine-grained evidence locator is invalid"))?;
+    if canonical_json(&serde_json::to_value(&locator)?) != source_id {
+        anyhow::bail!("Fine-grained evidence locator must use canonical JSON");
+    }
+    Ok(locator)
+}
+
+fn anchor_snapshot(anchor: serde_json::Value) -> String {
+    let (_, anchor_sha256) = canonical_json_sha256(&anchor);
+    canonical_json(&serde_json::json!({
+        "anchor": anchor,
+        "anchor_sha256": anchor_sha256,
+    }))
+}
+
+fn source_node_id(kind: EvidenceSourceKind, source_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(kind.as_str().as_bytes());
+    digest.update([0]);
+    digest.update(source_id.as_bytes());
+    format!(
+        "publication-source:{}:{}",
+        kind.as_str(),
+        hex::encode(digest.finalize())
+    )
+}
+
+fn checked_inline_evidence(label: &str, values: &[&str]) -> Result<()> {
+    let size = values
+        .iter()
+        .fold(0_usize, |size, value| size.saturating_add(value.len()));
+    if size > MAX_INLINE_EVIDENCE_BYTES {
+        anyhow::bail!("{label} is too large for inline evidence; capture it as an ArtifactVersion");
+    }
+    Ok(())
 }
 
 async fn resolve_evidence_source(
@@ -247,7 +354,255 @@ async fn resolve_evidence_source(
                 target_title: title,
             })
         }
-        _ => anyhow::bail!("Publication v0.30 accepts only exact ArtifactVersion and Run evidence"),
+        EvidenceSourceKind::ExecutionLog | EvidenceSourceKind::CodeCell => {
+            let row = sqlx::query(
+                "SELECT execution.id,execution.frame_id,execution.cell_index,execution.tool,\
+                        execution.language,execution.source,execution.stdout,execution.stderr,\
+                        execution.exit_status,execution.wall_s,execution.files_written,\
+                        execution.files_read,execution.env_hash,execution.created_at \
+                 FROM execution_log execution \
+                 JOIN frames frame ON frame.id=execution.frame_id \
+                 WHERE execution.id=? AND frame.project_id=?",
+            )
+            .bind(source_id)
+            .bind(project_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} evidence must belong to the Publication project",
+                    kind.as_str()
+                )
+            })?;
+            let source: String = row.try_get("source")?;
+            let stdout: String = row
+                .try_get::<Option<String>, _>("stdout")?
+                .unwrap_or_default();
+            let stderr: String = row
+                .try_get::<Option<String>, _>("stderr")?
+                .unwrap_or_default();
+            checked_inline_evidence(kind.as_str(), &[&source, &stdout, &stderr])?;
+            let frame_id: String = row.try_get("frame_id")?;
+            let cell_index: i64 = row.try_get("cell_index")?;
+            let language: String = row.try_get("language")?;
+            let anchor = if kind == EvidenceSourceKind::CodeCell {
+                serde_json::json!({
+                    "cell_index": cell_index,
+                    "execution_log_id": source_id,
+                    "frame_id": frame_id,
+                    "language": language,
+                    "source": source,
+                    "source_sha256": hex::encode(Sha256::digest(source.as_bytes())),
+                    "source_kind": kind.as_str(),
+                })
+            } else {
+                serde_json::json!({
+                    "cell_index": cell_index,
+                    "created_at": row.try_get::<i64, _>("created_at")?,
+                    "env_hash": row.try_get::<Option<String>, _>("env_hash")?,
+                    "execution_log_id": source_id,
+                    "exit_status": row.try_get::<String, _>("exit_status")?,
+                    "files_read": serde_json::from_str::<serde_json::Value>(
+                        &row.try_get::<String, _>("files_read")?,
+                    ).unwrap_or_else(|_| serde_json::json!([])),
+                    "files_written": serde_json::from_str::<serde_json::Value>(
+                        &row.try_get::<String, _>("files_written")?,
+                    ).unwrap_or_else(|_| serde_json::json!([])),
+                    "frame_id": frame_id,
+                    "language": language,
+                    "source": source,
+                    "source_sha256": hex::encode(Sha256::digest(source.as_bytes())),
+                    "source_kind": kind.as_str(),
+                    "stderr": stderr,
+                    "stderr_sha256": hex::encode(Sha256::digest(stderr.as_bytes())),
+                    "stdout": stdout,
+                    "stdout_sha256": hex::encode(Sha256::digest(stdout.as_bytes())),
+                    "tool": row.try_get::<String, _>("tool")?,
+                    "wall_s": row.try_get::<Option<f64>, _>("wall_s")?,
+                })
+            };
+            Ok(ResolvedEvidenceSource {
+                artifact_version_id: None,
+                run_id: None,
+                external_resource_id: None,
+                snapshot_json: anchor_snapshot(anchor),
+                target_node_id: source_node_id(kind, source_id),
+                target_kind: ResearchNodeKind::Run,
+                target_title: format!(
+                    "{} cell {}",
+                    if language.is_empty() {
+                        "Execution"
+                    } else {
+                        &language
+                    },
+                    cell_index
+                ),
+            })
+        }
+        EvidenceSourceKind::MessageSpan => {
+            let locator: MessageSpanLocator = parse_canonical_locator(source_id)?;
+            if locator.frame_id.trim().is_empty()
+                || locator.message_seq < 1
+                || locator.byte_start >= locator.byte_end
+                || locator.byte_end - locator.byte_start > MAX_MESSAGE_SPAN_BYTES
+            {
+                anyhow::bail!("MessageSpan locator has an invalid UTF-8 byte range");
+            }
+            let row = sqlx::query(
+                "SELECT message.role,message.content \
+                 FROM messages message \
+                 JOIN frames frame ON frame.id=message.frame_id \
+                 WHERE message.frame_id=? AND message.seq=? AND frame.project_id=?",
+            )
+            .bind(&locator.frame_id)
+            .bind(locator.message_seq)
+            .bind(project_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("MessageSpan evidence must belong to the Publication project")
+            })?;
+            let content_json: String = row.try_get("content")?;
+            let content = serde_json::from_str::<wisp_llm::Content>(&content_json)
+                .map_err(|_| anyhow::anyhow!("Message content is invalid"))?
+                .as_text();
+            if locator.byte_end > content.len()
+                || !content.is_char_boundary(locator.byte_start)
+                || !content.is_char_boundary(locator.byte_end)
+            {
+                anyhow::bail!("MessageSpan locator is not a valid UTF-8 byte range");
+            }
+            let text = &content[locator.byte_start..locator.byte_end];
+            let anchor = serde_json::json!({
+                "byte_end": locator.byte_end,
+                "byte_start": locator.byte_start,
+                "frame_id": locator.frame_id,
+                "message_content_sha256": hex::encode(Sha256::digest(content.as_bytes())),
+                "message_seq": locator.message_seq,
+                "role": row.try_get::<String, _>("role")?,
+                "source_kind": kind.as_str(),
+                "text_snapshot": text,
+                "text_snapshot_sha256": hex::encode(Sha256::digest(text.as_bytes())),
+            });
+            Ok(ResolvedEvidenceSource {
+                artifact_version_id: None,
+                run_id: None,
+                external_resource_id: None,
+                snapshot_json: anchor_snapshot(anchor),
+                target_node_id: source_node_id(kind, source_id),
+                target_kind: ResearchNodeKind::Artifact,
+                target_title: format!("Message {} excerpt", locator.message_seq),
+            })
+        }
+        EvidenceSourceKind::ToolCall => {
+            let locator: ToolCallLocator = parse_canonical_locator(source_id)?;
+            if locator.frame_id.trim().is_empty()
+                || locator.message_seq < 1
+                || locator.tool_call_id.trim().is_empty()
+            {
+                anyhow::bail!("ToolCall locator is invalid");
+            }
+            let row = sqlx::query(
+                "SELECT message.tool_calls \
+                 FROM messages message \
+                 JOIN frames frame ON frame.id=message.frame_id \
+                 WHERE message.frame_id=? AND message.seq=? AND frame.project_id=?",
+            )
+            .bind(&locator.frame_id)
+            .bind(locator.message_seq)
+            .bind(project_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("ToolCall evidence must belong to the Publication project")
+            })?;
+            let calls_json: Option<String> = row.try_get("tool_calls")?;
+            let calls = calls_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<Vec<wisp_llm::ToolCall>>(value).ok())
+                .unwrap_or_default();
+            let call = calls
+                .iter()
+                .find(|call| call.id == locator.tool_call_id)
+                .ok_or_else(|| anyhow::anyhow!("ToolCall was not found at the exact message"))?;
+            let result = sqlx::query(
+                "SELECT seq,content,tool_name FROM messages \
+                 WHERE frame_id=? AND seq>? AND tool_call_id=? ORDER BY seq LIMIT 1",
+            )
+            .bind(&locator.frame_id)
+            .bind(locator.message_seq)
+            .bind(&locator.tool_call_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("ToolCall has no exact persisted result"))?;
+            let result_json: String = result.try_get("content")?;
+            let result_text = serde_json::from_str::<wisp_llm::Content>(&result_json)
+                .map_err(|_| anyhow::anyhow!("ToolCall result content is invalid"))?
+                .as_text();
+            checked_inline_evidence("ToolCall", &[&call.function.arguments, &result_text])?;
+            let anchor = serde_json::json!({
+                "arguments": call.function.arguments,
+                "arguments_sha256": hex::encode(Sha256::digest(call.function.arguments.as_bytes())),
+                "frame_id": locator.frame_id,
+                "message_seq": locator.message_seq,
+                "name": call.function.name,
+                "result": result_text,
+                "result_message_seq": result.try_get::<i64, _>("seq")?,
+                "result_sha256": hex::encode(Sha256::digest(result_text.as_bytes())),
+                "source_kind": kind.as_str(),
+                "tool_call_id": locator.tool_call_id,
+                "tool_name": result.try_get::<Option<String>, _>("tool_name")?,
+            });
+            Ok(ResolvedEvidenceSource {
+                artifact_version_id: None,
+                run_id: None,
+                external_resource_id: None,
+                snapshot_json: anchor_snapshot(anchor),
+                target_node_id: source_node_id(kind, source_id),
+                target_kind: ResearchNodeKind::Artifact,
+                target_title: format!("Tool result: {}", call.function.name),
+            })
+        }
+        EvidenceSourceKind::ExternalResource => {
+            let row = sqlx::query(
+                "SELECT id,kind,uri,version,checksum,size_bytes,license,visibility,\
+                        access_instructions,accessed_at,created_at,updated_at \
+                 FROM external_resources WHERE id=? AND project_id=?",
+            )
+            .bind(source_id)
+            .bind(project_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("ExternalResource evidence must belong to the Publication project")
+            })?;
+            let uri: String = row.try_get("uri")?;
+            let resource_kind: String = row.try_get("kind")?;
+            let anchor = serde_json::json!({
+                "access_instructions": row.try_get::<Option<String>, _>("access_instructions")?,
+                "accessed_at": row.try_get::<Option<i64>, _>("accessed_at")?,
+                "checksum": row.try_get::<Option<String>, _>("checksum")?,
+                "created_at": row.try_get::<i64, _>("created_at")?,
+                "kind": resource_kind,
+                "license": row.try_get::<Option<String>, _>("license")?,
+                "size_bytes": row.try_get::<Option<i64>, _>("size_bytes")?,
+                "source_id": source_id,
+                "source_kind": kind.as_str(),
+                "updated_at": row.try_get::<i64, _>("updated_at")?,
+                "uri": uri,
+                "version": row.try_get::<Option<String>, _>("version")?,
+                "visibility": row.try_get::<String, _>("visibility")?,
+            });
+            Ok(ResolvedEvidenceSource {
+                artifact_version_id: None,
+                run_id: None,
+                external_resource_id: Some(source_id.to_string()),
+                snapshot_json: anchor_snapshot(anchor),
+                target_node_id: source_node_id(kind, source_id),
+                target_kind: ResearchNodeKind::DataAsset,
+                target_title: format!("{}: {}", resource_kind, uri),
+            })
+        }
     }
 }
 
@@ -265,6 +620,9 @@ async fn delete_revision_children(
     .await?;
     for statement in [
         "DELETE FROM publication_freeze_attempts WHERE revision_id=?",
+        "DELETE FROM reproduction_results WHERE reproduction_run_id IN \
+           (SELECT id FROM reproduction_runs WHERE revision_id=?)",
+        "DELETE FROM reproduction_runs WHERE revision_id=?",
         "DELETE FROM capsule_builds WHERE revision_id=?",
         "DELETE FROM publication_readiness_reports WHERE revision_id=?",
         "DELETE FROM publication_waivers WHERE revision_id=?",
@@ -1843,6 +2201,241 @@ impl Store {
         rows.into_iter().map(capsule_build_from_row).collect()
     }
 
+    pub async fn start_reproduction_run(
+        &self,
+        start: &ReproductionRunStart,
+    ) -> Result<ReproductionRun> {
+        let valid_hash = |value: &str| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        };
+        if start.id.trim().is_empty()
+            || start.revision_id.trim().is_empty()
+            || start.source_run_id.trim().is_empty()
+            || !valid_hash(&start.command_sha256)
+            || !valid_hash(&start.actual_environment_hash)
+            || start
+                .expected_environment_hash
+                .as_deref()
+                .is_some_and(|hash| !valid_hash(hash))
+        {
+            anyhow::bail!("Invalid reproduction run request");
+        }
+        let actual_environment: serde_json::Value =
+            serde_json::from_str(&start.actual_environment_json)?;
+        let (actual_json, actual_hash) = canonical_json_sha256(&actual_environment);
+        if actual_json != start.actual_environment_json
+            || actual_hash != start.actual_environment_hash
+        {
+            anyhow::bail!("Actual reproduction environment is not canonical or hash-valid");
+        }
+        let workspace: serde_json::Value = serde_json::from_str(&start.workspace_manifest_json)?;
+        if canonical_json(&workspace) != start.workspace_manifest_json {
+            anyhow::bail!("Reproduction workspace manifest must be canonical JSON");
+        }
+        let now = chrono::Utc::now().timestamp();
+        let inserted = sqlx::query(
+            "INSERT INTO reproduction_runs(\
+               id,revision_id,source_run_id,status,capability_level,command_sha256,\
+               expected_environment_hash,actual_environment_json,actual_environment_hash,\
+               environment_matched,workspace_manifest_json,stdout_tail,stderr_tail,exit_code,\
+               error,created_at,started_at,completed_at\
+             ) \
+             SELECT ?,revision.id,run.id,'running','re_executable',?,?,?,?,?, ?,\
+                    NULL,NULL,NULL,NULL,?,?,NULL \
+             FROM publication_revisions revision \
+             JOIN publications publication ON publication.id=revision.publication_id \
+             JOIN runs run ON run.id=? AND run.project_id=publication.project_id \
+             WHERE revision.id=? AND revision.state IN ('frozen','published') \
+               AND revision.manifest_json IS NOT NULL",
+        )
+        .bind(&start.id)
+        .bind(&start.command_sha256)
+        .bind(start.expected_environment_hash.as_deref())
+        .bind(&start.actual_environment_json)
+        .bind(&start.actual_environment_hash)
+        .bind(i64::from(start.environment_matched))
+        .bind(&start.workspace_manifest_json)
+        .bind(now)
+        .bind(now)
+        .bind(&start.source_run_id)
+        .bind(&start.revision_id)
+        .execute(&self.pool)
+        .await?;
+        if inserted.rows_affected() != 1 {
+            anyhow::bail!("Frozen Publication revision or source Run is unavailable");
+        }
+        self.get_reproduction_run(&start.id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Reproduction run was not persisted"))
+    }
+
+    pub async fn complete_reproduction_run(
+        &self,
+        commit: &ReproductionRunCommit,
+    ) -> Result<ReproductionRun> {
+        let now = chrono::Utc::now().timestamp();
+        let mut tx = self.begin_write().await?;
+        let environment_matched: Option<i64> = sqlx::query_scalar(
+            "SELECT environment_matched FROM reproduction_runs \
+             WHERE id=? AND status='running'",
+        )
+        .bind(&commit.run_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let environment_matched = environment_matched
+            .ok_or_else(|| anyhow::anyhow!("Reproduction run is no longer active"))?
+            != 0;
+        let mut output_ids = std::collections::HashSet::new();
+        for result in &commit.results {
+            if result.id.trim().is_empty()
+                || result.reproduction_run_id != commit.run_id
+                || result.output_id.trim().is_empty()
+                || result.output_path.trim().is_empty()
+                || result.expected_artifact_version_id.trim().is_empty()
+                || !output_ids.insert(result.output_id.as_str())
+            {
+                anyhow::bail!("Invalid or duplicate reproduction result");
+            }
+            for json in [
+                &result.expected_json,
+                &result.actual_json,
+                &result.tolerance_json,
+                &result.report_json,
+            ] {
+                serde_json::from_str::<serde_json::Value>(json)?;
+            }
+            sqlx::query(
+                "INSERT INTO reproduction_results(\
+                   id,reproduction_run_id,output_id,output_path,\
+                   expected_artifact_version_id,comparator_kind,required,expected_json,\
+                   actual_json,tolerance_json,passed,report_json,created_at\
+                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            )
+            .bind(&result.id)
+            .bind(&result.reproduction_run_id)
+            .bind(&result.output_id)
+            .bind(&result.output_path)
+            .bind(&result.expected_artifact_version_id)
+            .bind(result.comparator_kind.as_str())
+            .bind(i64::from(result.required))
+            .bind(&result.expected_json)
+            .bind(&result.actual_json)
+            .bind(&result.tolerance_json)
+            .bind(i64::from(result.passed))
+            .bind(&result.report_json)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let reproduced = environment_matched
+            && commit.exit_code == 0
+            && !commit.results.is_empty()
+            && commit
+                .results
+                .iter()
+                .filter(|result| result.required)
+                .all(|result| result.passed);
+        let updated = sqlx::query(
+            "UPDATE reproduction_runs SET status='completed',capability_level=?,\
+             stdout_tail=?,stderr_tail=?,exit_code=?,error=NULL,completed_at=? \
+             WHERE id=? AND status='running'",
+        )
+        .bind(if reproduced {
+            PublicationCapabilityLevel::Reproduced.as_str()
+        } else {
+            PublicationCapabilityLevel::ReExecutable.as_str()
+        })
+        .bind(
+            commit
+                .stdout_tail
+                .chars()
+                .take(64 * 1024)
+                .collect::<String>(),
+        )
+        .bind(
+            commit
+                .stderr_tail
+                .chars()
+                .take(64 * 1024)
+                .collect::<String>(),
+        )
+        .bind(commit.exit_code)
+        .bind(now)
+        .bind(&commit.run_id)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Reproduction run changed while completing");
+        }
+        tx.commit().await?;
+        self.get_reproduction_run(&commit.run_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Completed reproduction run was not found"))
+    }
+
+    pub async fn fail_reproduction_run(&self, id: &str, error: &str) -> Result<ReproductionRun> {
+        let now = chrono::Utc::now().timestamp();
+        let updated = sqlx::query(
+            "UPDATE reproduction_runs SET status='failed',capability_level='re_executable',\
+             error=?,completed_at=? WHERE id=? AND status='running'",
+        )
+        .bind(error.chars().take(2_000).collect::<String>())
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Reproduction run is no longer active");
+        }
+        self.get_reproduction_run(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Failed reproduction run was not found"))
+    }
+
+    pub async fn get_reproduction_run(&self, id: &str) -> Result<Option<ReproductionRun>> {
+        let row = sqlx::query(
+            "SELECT id,revision_id,source_run_id,status,capability_level,command_sha256,\
+                    expected_environment_hash,actual_environment_json,actual_environment_hash,\
+                    environment_matched,workspace_manifest_json,stdout_tail,stderr_tail,exit_code,\
+                    error,created_at,started_at,completed_at \
+             FROM reproduction_runs WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(reproduction_run_from_row).transpose()
+    }
+
+    pub async fn list_reproduction_runs(&self, revision_id: &str) -> Result<Vec<ReproductionRun>> {
+        let rows = sqlx::query(
+            "SELECT id,revision_id,source_run_id,status,capability_level,command_sha256,\
+                    expected_environment_hash,actual_environment_json,actual_environment_hash,\
+                    environment_matched,workspace_manifest_json,stdout_tail,stderr_tail,exit_code,\
+                    error,created_at,started_at,completed_at \
+             FROM reproduction_runs WHERE revision_id=? ORDER BY created_at DESC,id DESC",
+        )
+        .bind(revision_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(reproduction_run_from_row).collect()
+    }
+
+    pub async fn list_reproduction_results(&self, run_id: &str) -> Result<Vec<ReproductionResult>> {
+        let rows = sqlx::query(
+            "SELECT id,reproduction_run_id,output_id,output_path,\
+                    expected_artifact_version_id,comparator_kind,required,expected_json,\
+                    actual_json,tolerance_json,passed,report_json,created_at \
+             FROM reproduction_results WHERE reproduction_run_id=? ORDER BY output_id,id",
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(reproduction_result_from_row).collect()
+    }
+
     pub async fn clone_publication_revision(
         &self,
         source_revision_id: &str,
@@ -2187,7 +2780,67 @@ impl Store {
                     .fetch_one(&self.pool)
                     .await?,
             ),
-            _ => anyhow::bail!("Unsupported evidence projection source"),
+            EvidenceSourceKind::ExecutionLog | EvidenceSourceKind::CodeCell => {
+                let snapshot: serde_json::Value =
+                    serde_json::from_str(&binding.source_snapshot_json)?;
+                let language = snapshot
+                    .pointer("/anchor/language")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("Execution");
+                let cell = snapshot
+                    .pointer("/anchor/cell_index")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or_default();
+                (
+                    source_node_id(binding.source_kind, &binding.source_id),
+                    ResearchNodeKind::Run,
+                    format!("{language} cell {cell}"),
+                )
+            }
+            EvidenceSourceKind::MessageSpan => {
+                let snapshot: serde_json::Value =
+                    serde_json::from_str(&binding.source_snapshot_json)?;
+                let seq = snapshot
+                    .pointer("/anchor/message_seq")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or_default();
+                (
+                    source_node_id(binding.source_kind, &binding.source_id),
+                    ResearchNodeKind::Artifact,
+                    format!("Message {seq} excerpt"),
+                )
+            }
+            EvidenceSourceKind::ToolCall => {
+                let snapshot: serde_json::Value =
+                    serde_json::from_str(&binding.source_snapshot_json)?;
+                let name = snapshot
+                    .pointer("/anchor/name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("tool");
+                (
+                    source_node_id(binding.source_kind, &binding.source_id),
+                    ResearchNodeKind::Artifact,
+                    format!("Tool result: {name}"),
+                )
+            }
+            EvidenceSourceKind::ExternalResource => {
+                let snapshot: serde_json::Value =
+                    serde_json::from_str(&binding.source_snapshot_json)?;
+                let kind = snapshot
+                    .pointer("/anchor/kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("resource");
+                let uri = snapshot
+                    .pointer("/anchor/uri")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&binding.source_id);
+                (
+                    source_node_id(binding.source_kind, &binding.source_id),
+                    ResearchNodeKind::DataAsset,
+                    format!("{kind}: {uri}"),
+                )
+            }
         };
         self.sync_evidence_projection(
             &binding.id,

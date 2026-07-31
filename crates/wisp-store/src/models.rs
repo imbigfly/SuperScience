@@ -758,6 +758,97 @@ pub struct CapsuleBuild {
     pub completed_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReproductionComparatorKind {
+    Sha256,
+    Text,
+    Json,
+    Numeric,
+}
+
+impl ReproductionComparatorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sha256 => "sha256",
+            Self::Text => "text",
+            Self::Json => "json",
+            Self::Numeric => "numeric",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "sha256" => Ok(Self::Sha256),
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            "numeric" => Ok(Self::Numeric),
+            _ => anyhow::bail!("Unknown reproduction comparator '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReproductionRun {
+    pub id: String,
+    pub revision_id: String,
+    pub source_run_id: String,
+    pub status: String,
+    pub capability_level: PublicationCapabilityLevel,
+    pub command_sha256: String,
+    pub expected_environment_hash: Option<String>,
+    pub actual_environment_json: String,
+    pub actual_environment_hash: String,
+    pub environment_matched: bool,
+    pub workspace_manifest_json: String,
+    pub stdout_tail: Option<String>,
+    pub stderr_tail: Option<String>,
+    pub exit_code: Option<i64>,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub started_at: i64,
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReproductionResult {
+    pub id: String,
+    pub reproduction_run_id: String,
+    pub output_id: String,
+    pub output_path: String,
+    pub expected_artifact_version_id: String,
+    pub comparator_kind: ReproductionComparatorKind,
+    pub required: bool,
+    pub expected_json: String,
+    pub actual_json: String,
+    pub tolerance_json: String,
+    pub passed: bool,
+    pub report_json: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReproductionRunStart {
+    pub id: String,
+    pub revision_id: String,
+    pub source_run_id: String,
+    pub command_sha256: String,
+    pub expected_environment_hash: Option<String>,
+    pub actual_environment_json: String,
+    pub actual_environment_hash: String,
+    pub environment_matched: bool,
+    pub workspace_manifest_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReproductionRunCommit {
+    pub run_id: String,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+    pub exit_code: i64,
+    pub results: Vec<ReproductionResult>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageResourceLink {
     pub id: String,

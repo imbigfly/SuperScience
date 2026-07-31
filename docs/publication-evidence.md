@@ -71,9 +71,81 @@ Traversal paths, symlinks, credential-like content, missing snapshots, and
 checksum mismatches fail closed. Each attempt is recorded separately from the
 frozen revision, including its revision-manifest hash and archive hash.
 
-## Current scope
+## Precise evidence and clean verification
 
-The first release accepts exact ArtifactVersion and Run evidence. Message
-spans, tool calls, code cells, isolated reruns, and result comparators are later
-phases. Until a clean rerun passes, the feature is a Publication Evidence /
-Traceability Capsule and does not claim full reproducibility.
+Draft revisions expose **Add precise evidence**. It accepts an exact
+`MessageSpan`, `ToolCall`, `ExecutionLog`, `CodeCell`, or `ExternalResource`
+identity. Message and tool locators contain the frame, persisted message
+sequence, and UTF-8 byte range or tool-call ID. Execution and code anchors use
+the exact execution-log ID, never the most recent execution for a path. Wisp
+copies the selected text, arguments, result, code, log, or resource metadata
+into a hash-authenticated binding snapshot when it is selected. Later Session
+compaction or deletion cannot change that snapshot.
+
+A Frozen or Published evidence card with a producing Run exposes **Verify in
+clean workspace**. Verification:
+
+- creates a new temporary directory;
+- copies only exact input and code snapshots allowed by the frozen manifest;
+- clears the inherited process environment and restores a small
+  platform-required allowlist;
+- rejects non-local contexts, unsafe paths, credential-like commands, and
+  commands with explicit network access;
+- records the actual context capabilities, host OS/architecture, locale, and
+  timezone fingerprint;
+- compares every declared output against the frozen reference; and
+- stores an append-only reproduction run and per-output report without
+  changing the Frozen Revision.
+
+The backend supports byte-exact SHA-256, normalized UTF-8 text, semantic JSON,
+and numeric absolute/relative-tolerance comparators. The Workspace action uses
+SHA-256 by default and shows environment parity, comparator, output path, and
+pass/fail status.
+
+`reproduced` is an effective display capability, not a mutation of the frozen
+manifest. Wisp shows it only when every Run named by that manifest has a
+completed report with parity for every captured environment field, exit code
+zero, and all required comparisons passing. A failed or mismatched rerun
+remains `re_executable`.
+
+## Current scope and limitations
+
+Clean verification currently supports local Runs only. Its fresh directory,
+allowlist, cleared environment, path checks, and process cleanup prevent
+accidental access to ordinary project files, but this is process-level
+isolation rather than a hardened OS/container network sandbox. Do not use it
+to execute untrusted code. Commands that obtain network access indirectly
+through an interpreter or spawned child are outside this release's threat
+model.
+
+Structured text, JSON, and numeric comparisons are limited to 16 MiB; SHA-256
+comparison streams files of any supported size. The precise-evidence dialog
+currently requires persisted IDs and byte offsets; direct transcript
+highlighting and code-cell selection are follow-up interaction improvements.
+Interpreter, package, container, CUDA, and driver versions participate in
+parity only when the selected Execution Context captured them in its
+capabilities. A `reproduced` report therefore means the declared outputs were
+reproduced under the recorded fingerprint; it is not proof that an
+uncaptured dependency was identical.
+
+Wisp does not currently expose destructive garbage collection for
+content-addressed Artifact blobs. Frozen source records are protected from
+ordinary deletion; any future blob collector must treat Frozen and Published
+manifests as retention roots.
+
+Until a clean rerun satisfies the full contract, the product calls the result
+a Publication Evidence / Traceability Capsule rather than claiming full
+reproducibility.
+
+## Manual smoke check
+
+1. Open **Publication**, create a Draft revision and Methods/Figure item, then
+   add a persisted Run with exact inputs, outputs, code, and environment.
+2. Use **Add precise evidence** to bind a message excerpt or exact execution,
+   then press Escape immediately; only that dialog should close.
+3. Freeze the revision as Private or Restricted and inspect the readiness
+   report.
+4. On the frozen Run evidence card, choose **Verify in clean workspace**.
+5. Confirm the report lists environment parity and one result per output. A
+   changed output or environment must leave the capability at
+   `re_executable`.

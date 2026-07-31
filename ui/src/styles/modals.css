@@ -561,9 +561,11 @@ textarea.host-input { min-height:64px; resize:vertical; }
 .publication-toolbar-actions,
 .publication-pane-head,
 .publication-evidence-card header,
+.publication-anchor-dialog header,
 .publication-binding-dialog header,
 .publication-policy-dialog header,
 .publication-waiver-dialog header,
+.publication-anchor-dialog footer,
 .publication-binding-dialog footer,
 .publication-policy-dialog footer,
 .publication-waiver-dialog footer {
@@ -589,6 +591,7 @@ textarea.host-input { min-height:64px; resize:vertical; }
 .publication-toolbar label,
 .publication-create label,
 .publication-form-grid label,
+.publication-anchor-dialog > label,
 .publication-policy-dialog > label,
 .publication-waiver-dialog > label,
 .publication-binding-controls label {
@@ -708,11 +711,13 @@ textarea.host-input { min-height:64px; resize:vertical; }
 .publication-supersession span { display: block; margin-top: 3px; }
 .publication-binding-controls { display: flex; gap: 10px; margin-top: 9px; }
 .publication-binding-controls select { min-width: 125px; }
+.publication-verify-run { margin-top: 9px; }
 .publication-readiness { display: flex; flex-direction: column; gap: 10px; }
 .publication-readiness-summary { display: flex; flex-wrap: wrap; gap: 6px; color: var(--text-muted); font-size: 11px; }
 .publication-readiness-summary code { width: 100%; color: var(--text-faint); font-size: 10px; }
 .publication-findings h4,
 .publication-waiver-list h4,
+.publication-reproduction-runs h4,
 .publication-capsule-builds h4 { margin: 0 0 5px; font-size: 11px; }
 .publication-findings.blockers h4 { color: var(--err); }
 .publication-findings.warnings h4 { color: var(--warn); }
@@ -742,26 +747,56 @@ textarea.host-input { min-height:64px; resize:vertical; }
 .publication-capsule-path,
 .publication-capsule-error { font-size: 9px; overflow-wrap: anywhere; }
 .publication-capsule-error { color: var(--err); }
+.publication-reproduction-runs article {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 0;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 9px;
+}
+.publication-reproduction-runs article > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10px;
+}
+.publication-reproduction-runs .warning { color: var(--warn); }
+.publication-reproduction-result {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+}
+.publication-reproduction-result[data-passed="true"] > span:first-child { color: var(--ok); }
+.publication-reproduction-result[data-passed="false"] > span:first-child { color: var(--err); }
 .publication-empty { padding: 20px 10px; color: var(--text-faint); font-size: 12px; text-align: center; }
 .publication-create { display: grid; grid-template-columns: minmax(0, 520px); justify-content: center; gap: 12px; overflow-y: auto; padding: 34px; }
 .publication-create h3 { margin: 0; font: 600 18px var(--font-serif); }
 .publication-create textarea { min-height: 80px; resize: vertical; }
 .publication-nested-overlay { z-index: 124; }
 .publication-binding-dialog { width: min(620px, calc(100vw - 40px)); max-width: none; }
+.publication-anchor-dialog,
 .publication-policy-dialog,
 .publication-waiver-dialog { width: min(480px, calc(100vw - 40px)); max-width: none; }
+.publication-anchor-dialog header,
 .publication-binding-dialog header,
 .publication-policy-dialog header,
 .publication-waiver-dialog header { justify-content: space-between; }
+.publication-anchor-dialog h3,
+.publication-anchor-dialog p,
 .publication-binding-dialog h3,
 .publication-binding-dialog p,
 .publication-policy-dialog h3,
 .publication-waiver-dialog h3 { margin: 0; }
+.publication-anchor-dialog p { margin-top: 3px; color: var(--text-faint); font-size: 11px; }
 .publication-binding-dialog p { margin-top: 3px; color: var(--text-faint); font: 10px var(--font-mono); overflow-wrap: anywhere; }
 .publication-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .publication-form-grid .wide { grid-column: 1 / -1; }
 .publication-form-grid textarea,
 .publication-waiver-dialog textarea { min-height: 74px; resize: vertical; }
+.publication-anchor-dialog footer,
 .publication-binding-dialog footer,
 .publication-policy-dialog footer,
 .publication-waiver-dialog footer { justify-content: flex-end; }

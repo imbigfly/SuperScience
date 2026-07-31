@@ -102,6 +102,9 @@ const PUBLICATION_DOMAIN_MIGRATION_SQL: &str =
 const PUBLICATION_FREEZE_MIGRATION: &str = "0031_publication_freeze";
 const PUBLICATION_FREEZE_MIGRATION_SQL: &str =
     include_str!("../migrations/0031_publication_freeze.sql");
+const PUBLICATION_VERIFICATION_MIGRATION: &str = "0032_publication_verification";
+const PUBLICATION_VERIFICATION_MIGRATION_SQL: &str =
+    include_str!("../migrations/0032_publication_verification.sql");
 
 #[derive(Clone)]
 pub struct Store {
@@ -440,6 +443,10 @@ impl Store {
         if !Self::migration_applied(pool, PUBLICATION_FREEZE_MIGRATION).await? {
             Self::apply_publication_freeze(pool).await?;
             Self::record_migration(pool, PUBLICATION_FREEZE_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, PUBLICATION_VERIFICATION_MIGRATION).await? {
+            Self::execute_sql_script(pool, PUBLICATION_VERIFICATION_MIGRATION_SQL).await?;
+            Self::record_migration(pool, PUBLICATION_VERIFICATION_MIGRATION).await?;
         }
         Ok(())
     }

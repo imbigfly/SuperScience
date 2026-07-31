@@ -1,14 +1,19 @@
 //! Project-scoped Publication Workspace commands.
 
+use crate::publication_reproduction::{
+    effective_capability, verify_publication_revision as run_publication_verification,
+    ReproductionComparisonRequest,
+};
 use crate::AppState;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use wisp_store::{
-    ArtifactCaptureTiming, CapsuleBuild, EvidenceBinding, EvidenceBindingDraft, EvidenceReview,
-    EvidenceSelectionState, EvidenceSourceKind, EvidenceSupersession, EvidenceVisibility,
-    LineageBasis, LineageConfidence, Publication, PublicationEvidenceDrift, PublicationItem,
-    PublicationItemKind, PublicationItemLink, PublicationReadiness, PublicationReadinessFinding,
-    PublicationRevision, PublicationWaiver, Store,
+    canonical_json_sha256, ArtifactCaptureTiming, CapsuleBuild, EvidenceBinding,
+    EvidenceBindingDraft, EvidenceReview, EvidenceSelectionState, EvidenceSourceKind,
+    EvidenceSupersession, EvidenceVisibility, LineageBasis, LineageConfidence, Publication,
+    PublicationEvidenceDrift, PublicationItem, PublicationItemKind, PublicationItemLink,
+    PublicationReadiness, PublicationReadinessFinding, PublicationRevision, PublicationWaiver,
+    ReproductionResult, ReproductionRun, Store,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +49,9 @@ pub(crate) struct PublicationWorkspace {
     pub drift: Vec<PublicationEvidenceDrift>,
     pub lineage: Vec<PublicationLineageSummary>,
     pub capsule_builds: Vec<CapsuleBuild>,
+    pub effective_capability_level: Option<String>,
+    pub reproduction_runs: Vec<ReproductionRun>,
+    pub reproduction_results: Vec<ReproductionResult>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -51,6 +59,11 @@ pub(crate) struct PublicationWorkspace {
 pub(crate) enum WorkspaceSourceKind {
     Artifact,
     Run,
+    ExecutionLog,
+    MessageSpan,
+    ToolCall,
+    CodeCell,
+    ExternalResource,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -106,6 +119,15 @@ pub(crate) struct SavePublicationWaiverInput {
     reason: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct VerifyPublicationRevisionInput {
+    revision_id: String,
+    source_run_id: String,
+    #[serde(default)]
+    comparisons: Vec<ReproductionComparisonRequest>,
+}
+
 async fn revision_project(store: &Store, revision_id: &str) -> anyhow::Result<String> {
     let revision = store
         .get_publication_revision(revision_id)
@@ -159,6 +181,7 @@ async fn lineage_summary(
     let mut capture_timing = None;
     let mut producing_run_id = binding.run_id.clone();
     let mut environment = false;
+    let mut anchored = false;
 
     if let Some(version_id) = binding.artifact_version_id.as_deref() {
         if let Some(context) = store.get_artifact_version_context(version_id).await? {
@@ -170,13 +193,64 @@ async fn lineage_summary(
             producing_run_id = context.version.producing_run_id;
             environment = context.version.env_snapshot_hash.is_some();
         }
+    } else if matches!(
+        binding.source_kind,
+        EvidenceSourceKind::ExecutionLog
+            | EvidenceSourceKind::MessageSpan
+            | EvidenceSourceKind::ToolCall
+            | EvidenceSourceKind::CodeCell
+            | EvidenceSourceKind::ExternalResource
+    ) {
+        if let Ok(snapshot) =
+            serde_json::from_str::<serde_json::Value>(&binding.source_snapshot_json)
+        {
+            anchored = snapshot.get("anchor").is_some_and(|anchor| {
+                snapshot
+                    .get("anchor_sha256")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|hash| hash == canonical_json_sha256(anchor).1)
+            });
+            source_label = match binding.source_kind {
+                EvidenceSourceKind::MessageSpan => snapshot
+                    .pointer("/anchor/text_snapshot")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|text| text.chars().take(80).collect())
+                    .unwrap_or(source_label),
+                EvidenceSourceKind::ToolCall => snapshot
+                    .pointer("/anchor/name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|name| format!("Tool result: {name}"))
+                    .unwrap_or(source_label),
+                EvidenceSourceKind::ExecutionLog | EvidenceSourceKind::CodeCell => {
+                    let language = snapshot
+                        .pointer("/anchor/language")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Execution");
+                    let cell = snapshot
+                        .pointer("/anchor/cell_index")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or_default();
+                    format!("{language} cell {cell}")
+                }
+                EvidenceSourceKind::ExternalResource => snapshot
+                    .pointer("/anchor/uri")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or(source_label),
+                _ => source_label,
+            };
+        }
     }
 
     let mut bases = Vec::new();
     let mut run_input_count = 0;
     let mut run_output_count = 0;
     let mut code_snapshot_count = 0;
-    let mut quality = LineageConfidence::Uncertain;
+    let mut quality = if anchored {
+        LineageConfidence::Exact
+    } else {
+        LineageConfidence::Uncertain
+    };
     if let Some(run_id) = producing_run_id.as_deref() {
         if let Some(run) = store.get_run(run_id).await? {
             source_label = if binding.source_kind == EvidenceSourceKind::Run {
@@ -300,6 +374,9 @@ async fn publication_workspace(
             drift: Vec::new(),
             lineage: Vec::new(),
             capsule_builds: Vec::new(),
+            effective_capability_level: None,
+            reproduction_runs: Vec::new(),
+            reproduction_results: Vec::new(),
         });
     };
 
@@ -321,6 +398,20 @@ async fn publication_workspace(
         .transpose()?;
     let drift = store.list_publication_evidence_drift(&revision.id).await?;
     let capsule_builds = store.list_capsule_builds(&revision.id).await?;
+    let reproduction_runs = store.list_reproduction_runs(&revision.id).await?;
+    let mut reproduction_results = Vec::new();
+    for reproduction in &reproduction_runs {
+        reproduction_results.extend(store.list_reproduction_results(&reproduction.id).await?);
+    }
+    let effective_capability_level = Some(
+        effective_capability(
+            revision.capability_level,
+            revision.manifest_json.as_deref(),
+            &reproduction_runs,
+        )
+        .as_str()
+        .to_string(),
+    );
 
     Ok(PublicationWorkspace {
         publications,
@@ -337,6 +428,9 @@ async fn publication_workspace(
         drift,
         lineage,
         capsule_builds,
+        effective_capability_level,
+        reproduction_runs,
+        reproduction_results,
     })
 }
 
@@ -396,6 +490,18 @@ async fn bind_evidence(
             }
             (EvidenceSourceKind::Run, run.id)
         }
+        WorkspaceSourceKind::ExecutionLog => {
+            (EvidenceSourceKind::ExecutionLog, input.source_id.clone())
+        }
+        WorkspaceSourceKind::MessageSpan => {
+            (EvidenceSourceKind::MessageSpan, input.source_id.clone())
+        }
+        WorkspaceSourceKind::ToolCall => (EvidenceSourceKind::ToolCall, input.source_id.clone()),
+        WorkspaceSourceKind::CodeCell => (EvidenceSourceKind::CodeCell, input.source_id.clone()),
+        WorkspaceSourceKind::ExternalResource => (
+            EvidenceSourceKind::ExternalResource,
+            input.source_id.clone(),
+        ),
     };
     store
         .save_evidence_binding(&EvidenceBindingDraft {
@@ -586,6 +692,32 @@ pub(super) async fn save_publication_waiver(
         })
         .await
         .map_err(|error| error.to_string())?;
+    publication_workspace(&state.store, &project.id, None, Some(&input.revision_id))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(super) async fn verify_publication_revision(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    input: VerifyPublicationRevisionInput,
+) -> Result<PublicationWorkspace, String> {
+    let project = state.active(window.label());
+    if revision_project(&state.store, &input.revision_id)
+        .await
+        .map_err(|error| error.to_string())?
+        != project.id
+    {
+        return Err("Publication revision does not belong to the active project".into());
+    }
+    run_publication_verification(
+        &state.store,
+        &input.revision_id,
+        &input.source_run_id,
+        &input.comparisons,
+    )
+    .await?;
     publication_workspace(&state.store, &project.id, None, Some(&input.revision_id))
         .await
         .map_err(|error| error.to_string())

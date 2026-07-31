@@ -240,6 +240,83 @@ fn evidence_for_item(
     }
 }
 
+fn precise_evidence_source(
+    kind: &str,
+    frame_id: &str,
+    message_seq: &str,
+    byte_start: &str,
+    byte_end: &str,
+    tool_call_id: &str,
+    exact_id: &str,
+) -> Result<PublicationEvidenceSource, String> {
+    let exact_id = exact_id.trim();
+    match kind {
+        "execution_log" | "code_cell" | "external_resource" => {
+            if exact_id.is_empty() {
+                return Err("An exact source ID is required.".into());
+            }
+            let (kind, label) = match kind {
+                "execution_log" => ("execution_log", "Execution log"),
+                "code_cell" => ("code_cell", "Code cell"),
+                _ => ("external_resource", "External resource"),
+            };
+            Ok(PublicationEvidenceSource {
+                kind,
+                id: exact_id.into(),
+                label: format!("{label}: {exact_id}"),
+            })
+        }
+        "message_span" => {
+            let seq = message_seq
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| "Message sequence must be a positive integer.")?;
+            let start = byte_start
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| "Span start must be a byte offset.")?;
+            let end = byte_end
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| "Span end must be a byte offset.")?;
+            if frame_id.trim().is_empty() || seq < 1 || start >= end {
+                return Err("MessageSpan requires a frame, message sequence, and valid range.".into());
+            }
+            Ok(PublicationEvidenceSource {
+                kind: "message_span",
+                id: serde_json::to_string(&serde_json::json!({
+                    "byte_end": end,
+                    "byte_start": start,
+                    "frame_id": frame_id.trim(),
+                    "message_seq": seq,
+                }))
+                .map_err(|error| error.to_string())?,
+                label: format!("Message {seq} bytes {start}–{end}"),
+            })
+        }
+        "tool_call" => {
+            let seq = message_seq
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| "Message sequence must be a positive integer.")?;
+            if frame_id.trim().is_empty() || seq < 1 || tool_call_id.trim().is_empty() {
+                return Err("ToolCall requires a frame, message sequence, and call ID.".into());
+            }
+            Ok(PublicationEvidenceSource {
+                kind: "tool_call",
+                id: serde_json::to_string(&serde_json::json!({
+                    "frame_id": frame_id.trim(),
+                    "message_seq": seq,
+                    "tool_call_id": tool_call_id.trim(),
+                }))
+                .map_err(|error| error.to_string())?,
+                label: format!("Tool result: {}", tool_call_id.trim()),
+            })
+        }
+        _ => Err("Unsupported precise evidence kind.".into()),
+    }
+}
+
 #[component]
 pub(super) fn PublicationWorkspaceModal(
     locale: ReadSignal<Locale>,
@@ -264,6 +341,15 @@ pub(super) fn PublicationWorkspaceModal(
     let item_title = create_rw_signal(String::new());
     let item_parent = create_rw_signal(String::new());
 
+    let anchor_open = create_rw_signal(false);
+    let anchor_kind = create_rw_signal("message_span".to_string());
+    let anchor_frame = create_rw_signal(String::new());
+    let anchor_message_seq = create_rw_signal(String::new());
+    let anchor_byte_start = create_rw_signal(String::new());
+    let anchor_byte_end = create_rw_signal(String::new());
+    let anchor_tool_call = create_rw_signal(String::new());
+    let anchor_exact_id = create_rw_signal(String::new());
+
     let freeze_open = create_rw_signal(false);
     let freeze_visibility = create_rw_signal("public".to_string());
     let freeze_phi_reviewed = create_rw_signal(false);
@@ -283,7 +369,9 @@ pub(super) fn PublicationWorkspaceModal(
     let binding_visibility = create_rw_signal("public".to_string());
 
     window_capture_escape(move || {
-        if waiver_code.get_untracked().is_some() {
+        if anchor_open.get_untracked() {
+            anchor_open.set(false);
+        } else if waiver_code.get_untracked().is_some() {
             waiver_code.set(None);
             waiver_reason.set(String::new());
         } else if freeze_open.get_untracked() {
@@ -460,6 +548,9 @@ pub(super) fn PublicationWorkspaceModal(
                         let current_for_evidence = current.clone();
                         let current_for_readiness = current.clone();
                         let capsule_builds = current.capsule_builds.clone();
+                        let reproduction_runs = current.reproduction_runs.clone();
+                        let reproduction_results = current.reproduction_results.clone();
+                        let effective_capability = current.effective_capability_level.clone();
                         let items_for_editor = current.items.clone();
                         view! {
                             <div class="publication-toolbar">
@@ -506,7 +597,11 @@ pub(super) fn PublicationWorkspaceModal(
                                         {t(locale.get(), &format!("publication.state.{}", revision.state))}
                                     </span>
                                     <span class="publication-capability">
-                                        {t(locale.get(), &format!("publication.capability.{}", revision.capability_level))}
+                                        {t(locale.get(), &format!(
+                                            "publication.capability.{}",
+                                            effective_capability.clone()
+                                                .unwrap_or(revision.capability_level),
+                                        ))}
                                     </span>
                                 })}
                                 <div class="publication-toolbar-actions">
@@ -531,6 +626,11 @@ pub(super) fn PublicationWorkspaceModal(
                                         {t(locale.get(), "publication.clone")}
                                     </button>
                                     {draft.then(|| view! {
+                                        <button type="button" class="secondary"
+                                            data-testid="add-precise-publication-evidence"
+                                            on:click=move |_| anchor_open.set(true)>
+                                            {t(locale.get(), "publication.add_precise")}
+                                        </button>
                                         <button type="button" class="primary"
                                             on:click=move |_| freeze_open.set(true)>
                                             {t(locale.get(), "publication.freeze")}
@@ -712,6 +812,12 @@ pub(super) fn PublicationWorkspaceModal(
                                             let current_visibility = binding.visibility.clone();
                                             let binding_id_for_selection = binding.id.clone();
                                             let binding_id_for_visibility = binding.id.clone();
+                                            let reproduction_source_run = lineage.as_ref()
+                                                .and_then(|lineage| lineage.producing_run_id.clone())
+                                                .or_else(|| {
+                                                    (binding.source_kind == "run")
+                                                        .then(|| binding.source_id.clone())
+                                                });
                                             view! {
                                                 <article class="publication-evidence-card"
                                                     data-testid="publication-evidence-card"
@@ -836,6 +942,31 @@ pub(super) fn PublicationWorkspaceModal(
                                                                 )}</span>
                                                             }).collect_view()}
                                                         </div>
+                                                    })}
+                                                    {(capsule_ready).then(|| {
+                                                        reproduction_source_run.map(|source_run_id| {
+                                                            let revision = selected_revision_id.clone();
+                                                            view! {
+                                                                <button type="button"
+                                                                    class="secondary publication-verify-run"
+                                                                    data-testid="verify-publication-run"
+                                                                    disabled=move || busy.get()
+                                                                    on:click=move |_| {
+                                                                        invoke_workspace(
+                                                                            "verify_publication_revision",
+                                                                            serde_json::json!({ "input": {
+                                                                                "revisionId": revision,
+                                                                                "sourceRunId": source_run_id,
+                                                                                "comparisons": [],
+                                                                            }}),
+                                                                            workspace, publication_id, revision_id,
+                                                                            selected_item_id, busy, error, move |_| {},
+                                                                        );
+                                                                    }>
+                                                                    {t(locale.get(), "publication.verify_run")}
+                                                                </button>
+                                                            }
+                                                        })
                                                     })}
                                                     {draft.then(|| view! {
                                                         <div class="publication-binding-controls">
@@ -966,6 +1097,54 @@ pub(super) fn PublicationWorkspaceModal(
                                             <code>{hash}</code>
                                         </div>
                                     })}
+                                    {(!reproduction_runs.is_empty()).then(|| {
+                                        let all_results = reproduction_results.clone();
+                                        view! {
+                                            <section class="publication-reproduction-runs"
+                                                data-testid="publication-reproduction-runs">
+                                                <h4>{t(locale.get(), "publication.reproduction_runs")}</h4>
+                                                {reproduction_runs.into_iter().map(|run| {
+                                                    let results = all_results.iter()
+                                                        .filter(|result| result.reproduction_run_id == run.id)
+                                                        .cloned()
+                                                        .collect::<Vec<_>>();
+                                                    let environment = if run.environment_matched {
+                                                        t(locale.get(), "publication.environment_matched")
+                                                    } else {
+                                                        t(locale.get(), "publication.environment_mismatch")
+                                                    };
+                                                    view! {
+                                                        <article data-reproduction-run-id=run.id>
+                                                            <div>
+                                                                <strong>{t(locale.get(), &format!(
+                                                                    "publication.reproduction_status.{}", run.status,
+                                                                ))}</strong>
+                                                                <span>{t(locale.get(), &format!(
+                                                                    "publication.capability.{}", run.capability_level,
+                                                                ))}</span>
+                                                            </div>
+                                                            <code>{format!("run:{}", run.source_run_id)}</code>
+                                                            <span class:warning=!run.environment_matched>{environment}</span>
+                                                            {run.exit_code.map(|code| view! {
+                                                                <span>{format!("exit {code}")}</span>
+                                                            })}
+                                                            {results.into_iter().map(|result| view! {
+                                                                <div class="publication-reproduction-result"
+                                                                    data-passed=result.passed.to_string()>
+                                                                    <span>{if result.passed { "✓" } else { "✗" }}</span>
+                                                                    <code>{result.output_path}</code>
+                                                                    <span>{result.comparator_kind}</span>
+                                                                </div>
+                                                            }).collect_view()}
+                                                            {run.error.map(|message| view! {
+                                                                <span class="publication-capsule-error">{message}</span>
+                                                            })}
+                                                        </article>
+                                                    }
+                                                }).collect_view()}
+                                            </section>
+                                        }
+                                    })}
                                     {(!capsule_builds.is_empty()).then(|| view! {
                                         <section class="publication-capsule-builds"
                                             data-testid="publication-capsule-builds">
@@ -1004,6 +1183,135 @@ pub(super) fn PublicationWorkspaceModal(
                     }
                 }}
             </section>
+
+            {move || anchor_open.get().then(|| view! {
+                <div class="overlay publication-nested-overlay" role="presentation"
+                    on:click=move |_| anchor_open.set(false)>
+                    <section class="modal publication-anchor-dialog" role="dialog"
+                        aria-modal="true" aria-labelledby="publication-anchor-title"
+                        data-testid="publication-anchor-dialog"
+                        on:click=|event| event.stop_propagation()>
+                        <header>
+                            <div>
+                                <h3 id="publication-anchor-title">
+                                    {t(locale.get(), "publication.add_precise")}
+                                </h3>
+                                <p>{t(locale.get(), "publication.anchor_hint")}</p>
+                            </div>
+                            <button type="button" class="ps-close"
+                                aria-label=t(locale.get(), "publication.close")
+                                on:click=move |_| anchor_open.set(false)>"×"</button>
+                        </header>
+                        <label>
+                            <span>{t(locale.get(), "publication.anchor_kind")}</span>
+                            <select data-testid="publication-anchor-kind"
+                                prop:value=move || anchor_kind.get()
+                                on:change=move |event| {
+                                    anchor_kind.set(event_target_value(&event));
+                                    error.set(None);
+                                }>
+                                {[
+                                    "message_span",
+                                    "tool_call",
+                                    "execution_log",
+                                    "code_cell",
+                                    "external_resource",
+                                ].into_iter().map(|kind| view! {
+                                    <option value=kind>
+                                        {t(locale.get(), &format!("publication.source.{kind}"))}
+                                    </option>
+                                }).collect_view()}
+                            </select>
+                        </label>
+                        {move || match anchor_kind.get().as_str() {
+                            "message_span" => view! {
+                                <div class="publication-form-grid">
+                                    <label>
+                                        <span>{t(locale.get(), "publication.frame_id")}</span>
+                                        <input type="text" data-testid="publication-anchor-frame"
+                                            prop:value=move || anchor_frame.get()
+                                            on:input=move |event| anchor_frame.set(event_target_value(&event)) />
+                                    </label>
+                                    <label>
+                                        <span>{t(locale.get(), "publication.message_seq")}</span>
+                                        <input type="number" min="1"
+                                            prop:value=move || anchor_message_seq.get()
+                                            on:input=move |event| anchor_message_seq.set(event_target_value(&event)) />
+                                    </label>
+                                    <label>
+                                        <span>{t(locale.get(), "publication.byte_start")}</span>
+                                        <input type="number" min="0"
+                                            prop:value=move || anchor_byte_start.get()
+                                            on:input=move |event| anchor_byte_start.set(event_target_value(&event)) />
+                                    </label>
+                                    <label>
+                                        <span>{t(locale.get(), "publication.byte_end")}</span>
+                                        <input type="number" min="1"
+                                            prop:value=move || anchor_byte_end.get()
+                                            on:input=move |event| anchor_byte_end.set(event_target_value(&event)) />
+                                    </label>
+                                </div>
+                            }.into_view(),
+                            "tool_call" => view! {
+                                <div class="publication-form-grid">
+                                    <label>
+                                        <span>{t(locale.get(), "publication.frame_id")}</span>
+                                        <input type="text" prop:value=move || anchor_frame.get()
+                                            on:input=move |event| anchor_frame.set(event_target_value(&event)) />
+                                    </label>
+                                    <label>
+                                        <span>{t(locale.get(), "publication.message_seq")}</span>
+                                        <input type="number" min="1"
+                                            prop:value=move || anchor_message_seq.get()
+                                            on:input=move |event| anchor_message_seq.set(event_target_value(&event)) />
+                                    </label>
+                                    <label class="wide">
+                                        <span>{t(locale.get(), "publication.tool_call_id")}</span>
+                                        <input type="text" prop:value=move || anchor_tool_call.get()
+                                            on:input=move |event| anchor_tool_call.set(event_target_value(&event)) />
+                                    </label>
+                                </div>
+                            }.into_view(),
+                            _ => view! {
+                                <label>
+                                    <span>{t(locale.get(), "publication.exact_source")}</span>
+                                    <input type="text" data-testid="publication-anchor-exact-id"
+                                        prop:value=move || anchor_exact_id.get()
+                                        on:input=move |event| anchor_exact_id.set(event_target_value(&event)) />
+                                </label>
+                            }.into_view(),
+                        }}
+                        <footer>
+                            <button type="button" class="secondary"
+                                on:click=move |_| anchor_open.set(false)>
+                                {t(locale.get(), "publication.cancel")}
+                            </button>
+                            <button type="button" class="primary"
+                                data-testid="publication-anchor-continue"
+                                on:click=move |_| {
+                                    match precise_evidence_source(
+                                        &anchor_kind.get_untracked(),
+                                        &anchor_frame.get_untracked(),
+                                        &anchor_message_seq.get_untracked(),
+                                        &anchor_byte_start.get_untracked(),
+                                        &anchor_byte_end.get_untracked(),
+                                        &anchor_tool_call.get_untracked(),
+                                        &anchor_exact_id.get_untracked(),
+                                    ) {
+                                        Ok(source) => {
+                                            error.set(None);
+                                            anchor_open.set(false);
+                                            binding_source.set(Some(source));
+                                        }
+                                        Err(message) => error.set(Some(message)),
+                                    }
+                                }>
+                                {t(locale.get(), "publication.continue")}
+                            </button>
+                        </footer>
+                    </section>
+                </div>
+            })}
 
             {move || binding_source.get().map(|source| {
                 let current = workspace.get();
@@ -1395,6 +1703,25 @@ mod tests {
                 ("later", 0),
                 ("orphan", 0),
             ]
+        );
+    }
+
+    #[test]
+    fn message_span_source_uses_canonical_exact_locator() {
+        let source = precise_evidence_source(
+            "message_span",
+            "frame",
+            "8",
+            "2",
+            "11",
+            "",
+            "",
+        )
+        .unwrap();
+        assert_eq!(source.kind, "message_span");
+        assert_eq!(
+            source.id,
+            r#"{"byte_end":11,"byte_start":2,"frame_id":"frame","message_seq":8}"#
         );
     }
 }

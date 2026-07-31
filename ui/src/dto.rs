@@ -2220,6 +2220,34 @@ pub(crate) struct CapsuleBuildInfo {
     pub(crate) completed_at: Option<i64>,
 }
 
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReproductionRunInfo {
+    pub(crate) id: String,
+    pub(crate) source_run_id: String,
+    pub(crate) status: String,
+    pub(crate) capability_level: String,
+    pub(crate) expected_environment_hash: Option<String>,
+    pub(crate) actual_environment_hash: String,
+    pub(crate) environment_matched: bool,
+    pub(crate) stdout_tail: Option<String>,
+    pub(crate) stderr_tail: Option<String>,
+    pub(crate) exit_code: Option<i64>,
+    pub(crate) error: Option<String>,
+    pub(crate) created_at: i64,
+    pub(crate) completed_at: Option<i64>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReproductionResultInfo {
+    pub(crate) reproduction_run_id: String,
+    pub(crate) output_id: String,
+    pub(crate) output_path: String,
+    pub(crate) comparator_kind: String,
+    pub(crate) required: bool,
+    pub(crate) passed: bool,
+    pub(crate) report_json: String,
+}
+
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct PublicationWorkspaceInfo {
     #[serde(default)]
@@ -2247,6 +2275,11 @@ pub(crate) struct PublicationWorkspaceInfo {
     pub(crate) lineage: Vec<PublicationLineageInfo>,
     #[serde(default)]
     pub(crate) capsule_builds: Vec<CapsuleBuildInfo>,
+    pub(crate) effective_capability_level: Option<String>,
+    #[serde(default)]
+    pub(crate) reproduction_runs: Vec<ReproductionRunInfo>,
+    #[serde(default)]
+    pub(crate) reproduction_results: Vec<ReproductionResultInfo>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]

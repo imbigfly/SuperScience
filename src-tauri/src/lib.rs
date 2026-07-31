@@ -57,6 +57,7 @@ mod project_transfer;
 mod publication_capsule;
 mod publication_commands;
 mod publication_freeze;
+mod publication_reproduction;
 mod quick_actions;
 mod research_graph;
 mod resource_refs;
@@ -6511,6 +6512,7 @@ pub fn run() {
             publication_commands::update_publication_evidence_binding,
             publication_commands::clone_publication_revision,
             publication_commands::save_publication_waiver,
+            publication_commands::verify_publication_revision,
             publication_capsule::build_publication_capsule,
             publication_freeze::freeze_publication_revision,
             session_commands::load_session,

@@ -26,13 +26,13 @@ const CAPSULE_SCHEMA_VERSION: i64 = 1;
 const SECURITY_SCAN_OVERLAP: usize = 2_048;
 
 #[derive(Clone)]
-struct BlobSource {
-    path: PathBuf,
-    project_root: PathBuf,
-    expected_sha256: String,
-    expected_size: u64,
-    scan_as_text: bool,
-    public: bool,
+pub(crate) struct BlobSource {
+    pub(crate) path: PathBuf,
+    pub(crate) project_root: PathBuf,
+    pub(crate) expected_sha256: String,
+    pub(crate) expected_size: u64,
+    pub(crate) scan_as_text: bool,
+    pub(crate) public: bool,
 }
 
 enum EntryBody {
@@ -86,6 +86,7 @@ impl CapsuleEntry {
 }
 
 struct CapsulePlan {
+    manifest: Value,
     revision_manifest_sha256: String,
     visibility: EvidenceVisibility,
     entries: BTreeMap<String, CapsuleEntry>,
@@ -693,13 +694,14 @@ async fn prepare_capsule_plan(store: &Store, revision_id: &str) -> Result<Capsul
     )?;
 
     Ok(CapsulePlan {
+        manifest,
         revision_manifest_sha256: stored_sha256.into(),
         visibility,
         entries,
     })
 }
 
-fn validate_snapshot_file(source: &BlobSource) -> Result<(), String> {
+pub(crate) fn validate_snapshot_file(source: &BlobSource) -> Result<(), String> {
     let relative = source
         .path
         .strip_prefix(&source.project_root)
@@ -722,6 +724,23 @@ fn validate_snapshot_file(source: &BlobSource) -> Result<(), String> {
         return Err("Capsule snapshot size no longer matches the frozen manifest".into());
     }
     Ok(())
+}
+
+pub(crate) async fn frozen_reproduction_sources(
+    store: &Store,
+    revision_id: &str,
+) -> Result<(Value, BTreeMap<String, BlobSource>), String> {
+    let CapsulePlan {
+        manifest, entries, ..
+    } = prepare_capsule_plan(store, revision_id).await?;
+    let sources = entries
+        .into_values()
+        .filter_map(|entry| match entry.body {
+            EntryBody::Blob(source) => Some((entry.source_id, source)),
+            EntryBody::Generated(_) => None,
+        })
+        .collect();
+    Ok((manifest, sources))
 }
 
 fn scan_chunk(overlap: &mut Vec<u8>, chunk: &[u8], public: bool) -> Result<(), String> {

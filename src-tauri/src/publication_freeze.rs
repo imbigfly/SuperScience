@@ -323,6 +323,22 @@ fn visibility_allows(target: EvidenceVisibility, source: EvidenceVisibility) -> 
     visibility_rank(source) <= visibility_rank(target)
 }
 
+fn anchored_snapshot(snapshot_json: &str) -> Option<Value> {
+    let Ok(snapshot) = serde_json::from_str::<Value>(snapshot_json) else {
+        return None;
+    };
+    if canonical_json(&snapshot) != snapshot_json {
+        return None;
+    }
+    let anchor = snapshot.get("anchor")?;
+    let expected = snapshot.get("anchor_sha256").and_then(Value::as_str)?;
+    (canonical_json_sha256(anchor).1 == expected).then(|| anchor.clone())
+}
+
+fn valid_anchored_snapshot(snapshot_json: &str) -> bool {
+    anchored_snapshot(snapshot_json).is_some()
+}
+
 fn safe_component(value: &str) -> String {
     let mut result = value
         .chars()
@@ -993,6 +1009,7 @@ async fn prepare_publication_freeze(
 
     let mut artifact_queue = VecDeque::<String>::new();
     let mut run_queue = VecDeque::<String>::new();
+    let mut direct_external_bindings = BTreeMap::<String, Vec<&EvidenceBinding>>::new();
     let mut artifact_roles = BTreeMap::<String, BTreeSet<String>>::new();
     for binding in &selected {
         match binding.source_kind {
@@ -1008,13 +1025,40 @@ async fn prepare_publication_freeze(
                     .insert("evidence".into());
             }
             EvidenceSourceKind::Run => run_queue.push_back(binding.source_id.clone()),
-            _ => {
+            EvidenceSourceKind::ExternalResource => {
+                if valid_anchored_snapshot(&binding.source_snapshot_json) {
+                    direct_external_bindings
+                        .entry(binding.source_id.clone())
+                        .or_default()
+                        .push(binding);
+                } else {
+                    capability.traceable = false;
+                    capability.re_executable = false;
+                    findings.add(
+                        FindingBucket::Blocker,
+                        "evidence_anchor_hash_invalid",
+                        "ExternalResource evidence anchor is not canonical or hash-valid",
+                        Some(&binding.id),
+                        Some(binding.source_kind),
+                        Some(&binding.source_id),
+                        false,
+                        json!({}),
+                    );
+                }
+            }
+            EvidenceSourceKind::ExecutionLog
+            | EvidenceSourceKind::MessageSpan
+            | EvidenceSourceKind::ToolCall
+            | EvidenceSourceKind::CodeCell => {
+                if valid_anchored_snapshot(&binding.source_snapshot_json) {
+                    continue;
+                }
                 capability.traceable = false;
                 capability.re_executable = false;
                 findings.add(
                     FindingBucket::Blocker,
-                    "unsupported_evidence_source",
-                    "This release can freeze only ArtifactVersion and Run evidence",
+                    "evidence_anchor_hash_invalid",
+                    "Fine-grained evidence anchor is not canonical or hash-valid",
                     Some(&binding.id),
                     Some(binding.source_kind),
                     Some(&binding.source_id),
@@ -1031,6 +1075,145 @@ async fn prepare_publication_freeze(
     let mut code = BTreeMap::<String, RunCodeSnapshot>::new();
     let mut environments = BTreeMap::<String, wisp_store::EnvironmentSnapshot>::new();
     let mut external_resources = BTreeMap::<String, ExternalResource>::new();
+
+    for (resource_id, bindings) in direct_external_bindings {
+        let Some(resource) = store
+            .get_external_resource(&resource_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .filter(|resource| resource.project_id == publication.project_id)
+        else {
+            capability.traceable = false;
+            capability.re_executable = false;
+            findings.add(
+                FindingBucket::Blocker,
+                "external_resource_missing",
+                "Evidence refers to a missing or foreign ExternalResource",
+                None,
+                Some(EvidenceSourceKind::ExternalResource),
+                Some(&resource_id),
+                false,
+                json!({}),
+            );
+            continue;
+        };
+        let current_anchor = json!({
+            "access_instructions": resource.access_instructions.as_deref(),
+            "accessed_at": resource.accessed_at,
+            "checksum": resource.checksum.as_deref(),
+            "created_at": resource.created_at,
+            "kind": resource.kind.as_str(),
+            "license": resource.license.as_deref(),
+            "size_bytes": resource.size_bytes,
+            "source_id": resource.id.as_str(),
+            "source_kind": "external_resource",
+            "updated_at": resource.updated_at,
+            "uri": resource.uri.as_str(),
+            "version": resource.version.as_deref(),
+            "visibility": resource.visibility.as_str(),
+        });
+        for binding in bindings {
+            if anchored_snapshot(&binding.source_snapshot_json).as_ref() != Some(&current_anchor) {
+                capability.traceable = false;
+                capability.re_executable = false;
+                findings.add(
+                    FindingBucket::Blocker,
+                    "external_resource_anchor_drift",
+                    "ExternalResource metadata changed after it was selected",
+                    Some(&binding.id),
+                    Some(EvidenceSourceKind::ExternalResource),
+                    Some(&resource_id),
+                    false,
+                    json!({}),
+                );
+            }
+        }
+        if resource.checksum.is_none() || resource.version.is_none() {
+            capability.traceable = false;
+            capability.re_executable = false;
+            findings.add(
+                FindingBucket::Blocker,
+                "external_resource_identity_incomplete",
+                "ExternalResource requires version and checksum for exact evidence",
+                None,
+                Some(EvidenceSourceKind::ExternalResource),
+                Some(&resource_id),
+                true,
+                json!({}),
+            );
+        }
+        if resource.license.as_deref().is_none_or(str::is_empty) {
+            findings.add(
+                FindingBucket::Blocker,
+                "external_resource_license_missing",
+                "ExternalResource license is missing",
+                None,
+                Some(EvidenceSourceKind::ExternalResource),
+                Some(&resource_id),
+                true,
+                json!({}),
+            );
+        }
+        let resource_visibility = match resource.visibility.as_str() {
+            "public" => EvidenceVisibility::Public,
+            "restricted" => EvidenceVisibility::Restricted,
+            "private" => EvidenceVisibility::Private,
+            _ => {
+                capability.traceable = false;
+                capability.re_executable = false;
+                findings.add(
+                    FindingBucket::Blocker,
+                    "external_resource_visibility_invalid",
+                    "ExternalResource visibility is invalid",
+                    None,
+                    Some(EvidenceSourceKind::ExternalResource),
+                    Some(&resource_id),
+                    false,
+                    json!({}),
+                );
+                EvidenceVisibility::Private
+            }
+        };
+        if !visibility_allows(policy.target_visibility, resource_visibility) {
+            findings.add(
+                FindingBucket::Omission,
+                "visibility_dependency_omitted",
+                "Restricted ExternalResource bytes are omitted from this target",
+                None,
+                Some(EvidenceSourceKind::ExternalResource),
+                Some(&resource_id),
+                false,
+                json!({"visibility": resource.visibility}),
+            );
+            if resource
+                .access_instructions
+                .as_deref()
+                .is_none_or(str::is_empty)
+            {
+                findings.add(
+                    FindingBucket::Blocker,
+                    "restricted_dependency_access_missing",
+                    "Omitted ExternalResource lacks access instructions",
+                    None,
+                    Some(EvidenceSourceKind::ExternalResource),
+                    Some(&resource_id),
+                    true,
+                    json!({}),
+                );
+            }
+        }
+        let flags = scan_security(&resource.uri);
+        add_security_findings(
+            &mut findings,
+            &flags,
+            "ExternalResource URI",
+            None,
+            Some(EvidenceSourceKind::ExternalResource),
+            Some(&resource_id),
+            policy.target_visibility,
+        );
+        external_resources.insert(resource.id.clone(), resource);
+    }
 
     loop {
         if let Some(version_id) = artifact_queue.pop_front() {
@@ -2500,6 +2683,80 @@ mod tests {
             std::fs::read(root.join(&captured.storage_path)).unwrap(),
             b"legacy bytes\n"
         );
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn message_span_freezes_after_its_session_is_deleted() {
+        let (root, store) = fixture("message_anchor").await;
+        store
+            .append_message(
+                "frame",
+                1,
+                &wisp_llm::Message::user("prefix stable evidence suffix"),
+            )
+            .await
+            .unwrap();
+        publication_with_item(&store, PublicationItemKind::Methods).await;
+        let locator = canonical_json(&json!({
+            "byte_end": 22,
+            "byte_start": 7,
+            "frame_id": "frame",
+            "message_seq": 1,
+        }));
+        select_evidence(&store, EvidenceSourceKind::MessageSpan, &locator).await;
+        store.delete_session("frame", "project").await.unwrap();
+
+        let outcome = freeze_publication_revision_in_store(&store, "revision", public_policy())
+            .await
+            .unwrap();
+        assert!(outcome.frozen, "{:?}", outcome.readiness.blockers);
+        let manifest: Value = serde_json::from_str(&outcome.readiness.manifest_json).unwrap();
+        assert_eq!(
+            manifest["evidence"][0]["source_snapshot"]["anchor"]["text_snapshot"],
+            "stable evidence"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn changed_external_resource_cannot_reinterpret_selected_evidence() {
+        let (root, store) = fixture("external_anchor_drift").await;
+        let mut resource = ExternalResource {
+            id: "dataset".into(),
+            project_id: "project".into(),
+            kind: "dataset".into(),
+            uri: "doi:10.1234/example".into(),
+            version: Some("v1".into()),
+            checksum: Some("d".repeat(64)),
+            size_bytes: Some(1_000),
+            license: Some("CC-BY-4.0".into()),
+            visibility: "public".into(),
+            access_instructions: Some("Resolve the DOI".into()),
+            accessed_at: Some(1),
+            created_at: 1,
+            updated_at: 1,
+        };
+        store.save_external_resource(&resource).await.unwrap();
+        publication_with_item(&store, PublicationItemKind::Methods).await;
+        select_evidence(&store, EvidenceSourceKind::ExternalResource, "dataset").await;
+        resource.version = Some("v2".into());
+        resource.updated_at = 2;
+        store.save_external_resource(&resource).await.unwrap();
+
+        let outcome = freeze_publication_revision_in_store(&store, "revision", public_policy())
+            .await
+            .unwrap();
+        assert!(!outcome.frozen);
+        assert!(outcome
+            .readiness
+            .blockers
+            .iter()
+            .any(|finding| finding.code == "external_resource_anchor_drift"));
 
         drop(store);
         let _ = std::fs::remove_dir_all(root);

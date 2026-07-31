@@ -2087,6 +2087,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             RUN_ARTIFACT_LINEAGE_MIGRATION.to_string(),
             PUBLICATION_DOMAIN_MIGRATION.to_string(),
             PUBLICATION_FREEZE_MIGRATION.to_string(),
+            PUBLICATION_VERIFICATION_MIGRATION.to_string(),
         ]
     );
 
@@ -2265,6 +2266,51 @@ async fn publication_freeze_migration_repairs_partial_application() {
         ("trigger", "trg_publication_freeze_attempt_revision_insert"),
         ("trigger", "trg_publication_freezing_exit"),
         ("trigger", "trg_frozen_evidence_artifact_version_delete"),
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type=? AND name=?)",
+        )
+        .bind(kind)
+        .bind(name)
+        .fetch_one(&repaired.pool)
+        .await
+        .unwrap();
+        assert!(exists, "{kind} {name}");
+    }
+
+    repaired.pool.close().await;
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn publication_verification_migration_repairs_partial_application() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_publication_verification_partial_migration_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    sqlx::query("DROP TABLE reproduction_results")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP INDEX ix_reproduction_runs_source")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+        .bind(PUBLICATION_VERIFICATION_MIGRATION)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+
+    let repaired = Store::open(&tmp).await.unwrap();
+    for (kind, name) in [
+        ("table", "reproduction_runs"),
+        ("table", "reproduction_results"),
+        ("index", "ix_reproduction_runs_revision"),
+        ("index", "ix_reproduction_runs_source"),
+        ("index", "ix_reproduction_results_run"),
     ] {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type=? AND name=?)",
@@ -3887,6 +3933,203 @@ async fn publication_revisions_clone_exact_evidence_and_freeze_history() {
         .unwrap()
         .is_some());
 
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn fine_grained_publication_evidence_keeps_immutable_source_snapshots() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_publication_fine_evidence_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .append_message("f", 1, &Message::user("prefix evidence suffix"))
+        .await
+        .unwrap();
+    let mut assistant = Message::assistant("");
+    assistant.tool_calls.push(wisp_llm::ToolCall {
+        id: "call-1".into(),
+        kind: "function".into(),
+        function: wisp_llm::FunctionCall {
+            name: "read".into(),
+            arguments: r#"{"path":"result.txt"}"#.into(),
+        },
+    });
+    store.append_message("f", 2, &assistant).await.unwrap();
+    store
+        .append_message("f", 3, &Message::tool("call-1", "read", "stable result"))
+        .await
+        .unwrap();
+    store
+        .insert_execution_log(&ExecLog {
+            id: "execution-1".into(),
+            frame_id: "f".into(),
+            cell_index: 0,
+            tool: "python".into(),
+            language: "python".into(),
+            source: "print('stable')".into(),
+            stdout: "stable\n".into(),
+            stderr: String::new(),
+            exit_status: "ok".into(),
+            wall_s: Some(0.1),
+            files_written: vec!["result.txt".into()],
+            files_read: vec![],
+            env_hash: Some("environment".into()),
+        })
+        .await
+        .unwrap();
+    store
+        .save_external_resource(&ExternalResource {
+            id: "dataset-1".into(),
+            project_id: "p".into(),
+            kind: "dataset".into(),
+            uri: "doi:10.0000/example".into(),
+            version: Some("v1".into()),
+            checksum: Some("a".repeat(64)),
+            size_bytes: Some(42),
+            license: Some("CC-BY-4.0".into()),
+            visibility: "public".into(),
+            access_instructions: Some("Resolve the DOI".into()),
+            accessed_at: Some(1),
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_publication("publication", "p", "Paper", "")
+        .await
+        .unwrap();
+    store
+        .create_publication_revision("revision", "publication", None, "Submission")
+        .await
+        .unwrap();
+    store
+        .save_publication_item(&PublicationItem {
+            id: "item".into(),
+            revision_id: "revision".into(),
+            parent_item_id: None,
+            kind: PublicationItemKind::Methods,
+            title: "Methods".into(),
+            content: String::new(),
+            ordinal: 0,
+            metadata_json: "{}".into(),
+            created_at: 0,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+
+    let message_locator = canonical_json(&serde_json::json!({
+        "byte_end": 15,
+        "byte_start": 7,
+        "frame_id": "f",
+        "message_seq": 1,
+    }));
+    let tool_locator = canonical_json(&serde_json::json!({
+        "frame_id": "f",
+        "message_seq": 2,
+        "tool_call_id": "call-1",
+    }));
+    for (id, kind, source_id) in [
+        (
+            "message-binding",
+            EvidenceSourceKind::MessageSpan,
+            message_locator.as_str(),
+        ),
+        (
+            "tool-binding",
+            EvidenceSourceKind::ToolCall,
+            tool_locator.as_str(),
+        ),
+        (
+            "execution-binding",
+            EvidenceSourceKind::ExecutionLog,
+            "execution-1",
+        ),
+        ("code-binding", EvidenceSourceKind::CodeCell, "execution-1"),
+        (
+            "external-binding",
+            EvidenceSourceKind::ExternalResource,
+            "dataset-1",
+        ),
+    ] {
+        store
+            .save_evidence_binding(&EvidenceBindingDraft {
+                id: id.into(),
+                revision_id: "revision".into(),
+                item_id: Some("item".into()),
+                source_kind: kind,
+                source_id: source_id.into(),
+                purpose: "Exact source".into(),
+                supported_claim_item_id: None,
+                selection_state: EvidenceSelectionState::Selected,
+                visibility: EvidenceVisibility::Private,
+            })
+            .await
+            .unwrap();
+    }
+
+    let before = store
+        .list_evidence_bindings("revision")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|binding| (binding.id, binding.source_snapshot_json))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for snapshot in before.values() {
+        let value: serde_json::Value = serde_json::from_str(snapshot).unwrap();
+        let anchor = value.get("anchor").unwrap();
+        assert_eq!(
+            value["anchor_sha256"],
+            canonical_json_sha256(anchor).1.as_str()
+        );
+    }
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&before["message-binding"]).unwrap()["anchor"]
+            ["text_snapshot"],
+        "evidence"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&before["tool-binding"]).unwrap()["anchor"]
+            ["result"],
+        "stable result"
+    );
+
+    store.delete_session("f", "p").await.unwrap();
+    assert!(
+        !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM frames WHERE id='f')")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+    );
+    let after = store
+        .list_evidence_bindings("revision")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|binding| (binding.id, binding.source_snapshot_json))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(after, before);
+    assert!(store
+        .save_evidence_binding(&EvidenceBindingDraft {
+            id: "new-message-binding".into(),
+            revision_id: "revision".into(),
+            item_id: Some("item".into()),
+            source_kind: EvidenceSourceKind::MessageSpan,
+            source_id: message_locator,
+            purpose: String::new(),
+            supported_claim_item_id: None,
+            selection_state: EvidenceSelectionState::Selected,
+            visibility: EvidenceVisibility::Private,
+        })
+        .await
+        .is_err());
+
+    store.pool.close().await;
     let _ = std::fs::remove_file(&tmp);
 }
 

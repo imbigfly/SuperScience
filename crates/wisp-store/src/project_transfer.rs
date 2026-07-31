@@ -647,6 +647,57 @@ async fn copy_publication_children(
             .execute(&mut **tx)
             .await?;
     }
+    if attached_table_exists(tx, "reproduction_runs").await? {
+        sqlx::query(
+            "INSERT INTO reproduction_runs(\
+               id,revision_id,source_run_id,status,capability_level,command_sha256,\
+               expected_environment_hash,actual_environment_json,actual_environment_hash,\
+               environment_matched,workspace_manifest_json,stdout_tail,stderr_tail,exit_code,\
+               error,created_at,started_at,completed_at\
+             ) SELECT reproduction.id,reproduction.revision_id,reproduction.source_run_id,\
+                      CASE WHEN reproduction.status='running' THEN 'failed' ELSE reproduction.status END,\
+                      reproduction.capability_level,reproduction.command_sha256,\
+                      reproduction.expected_environment_hash,reproduction.actual_environment_json,\
+                      reproduction.actual_environment_hash,reproduction.environment_matched,\
+                      reproduction.workspace_manifest_json,reproduction.stdout_tail,\
+                      reproduction.stderr_tail,reproduction.exit_code,\
+                      CASE WHEN reproduction.status='running' THEN 'Interrupted by project transfer'\
+                           ELSE reproduction.error END,\
+                      reproduction.created_at,reproduction.started_at,\
+                      COALESCE(reproduction.completed_at,\
+                               CASE WHEN reproduction.status='running' THEN reproduction.created_at END) \
+               FROM transfer.reproduction_runs reproduction \
+               JOIN transfer.publication_revisions revision \
+                 ON revision.id=reproduction.revision_id \
+               JOIN transfer.publications publication ON publication.id=revision.publication_id \
+               WHERE publication.project_id=?",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    if attached_table_exists(tx, "reproduction_results").await? {
+        sqlx::query(
+            "INSERT INTO reproduction_results(\
+               id,reproduction_run_id,output_id,output_path,expected_artifact_version_id,\
+               comparator_kind,required,expected_json,actual_json,tolerance_json,passed,\
+               report_json,created_at\
+             ) SELECT result.id,result.reproduction_run_id,result.output_id,result.output_path,\
+                      result.expected_artifact_version_id,result.comparator_kind,result.required,\
+                      result.expected_json,result.actual_json,result.tolerance_json,result.passed,\
+                      result.report_json,result.created_at \
+               FROM transfer.reproduction_results result \
+               JOIN transfer.reproduction_runs reproduction \
+                 ON reproduction.id=result.reproduction_run_id \
+               JOIN transfer.publication_revisions revision \
+                 ON revision.id=reproduction.revision_id \
+               JOIN transfer.publications publication ON publication.id=revision.publication_id \
+               WHERE publication.project_id=?",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
     sqlx::query(
         "UPDATE publication_revisions SET \
            parent_revision_id=(SELECT source.parent_revision_id \
@@ -690,6 +741,8 @@ pub(crate) async fn delete_project_children(
         "UPDATE agent_workflows SET status='draft' WHERE project_id=?",
         "DELETE FROM publication_freeze_attempts WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
         "UPDATE publication_revisions SET state='deleting' WHERE publication_id IN (SELECT id FROM publications WHERE project_id=?)",
+        "DELETE FROM reproduction_results WHERE reproduction_run_id IN (SELECT reproduction.id FROM reproduction_runs reproduction JOIN publication_revisions revision ON revision.id=reproduction.revision_id JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
+        "DELETE FROM reproduction_runs WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
         "DELETE FROM capsule_builds WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
         "DELETE FROM publication_readiness_reports WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
         "DELETE FROM publication_waivers WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
@@ -1172,6 +1225,8 @@ impl Store {
             ("publication_readiness_reports", "*", "id"),
             ("publication_waivers", "*", "id"),
             ("capsule_builds", "*", "id"),
+            ("reproduction_runs", "*", "id"),
+            ("reproduction_results", "*", "id"),
             ("research_nodes", "*", "id"),
             ("research_edges", "*", "id"),
         ];
@@ -1469,8 +1524,9 @@ mod tests {
         ArtifactCaptureTiming, ArtifactMaterialization, ArtifactVersionDraft, EvidenceBindingDraft,
         EvidenceReview, EvidenceSelectionState, EvidenceSourceKind, EvidenceSupersession,
         EvidenceVisibility, LineageBasis, LineageConfidence, PublicationItem, PublicationItemKind,
-        PublicationRevisionState, PublicationWaiver, RunCodeSnapshot, RunInput, RunOutput,
-        RunRecord, RunStatus,
+        PublicationRevisionState, PublicationWaiver, ReproductionComparatorKind,
+        ReproductionResult, ReproductionRunCommit, ReproductionRunStart, RunCodeSnapshot, RunInput,
+        RunOutput, RunRecord, RunStatus,
     };
     use wisp_llm::Message;
 
@@ -1821,6 +1877,61 @@ mod tests {
         .execute(&source.pool)
         .await
         .unwrap();
+        let (actual_environment_json, actual_environment_hash) =
+            canonical_json_sha256(&serde_json::json!({"context": "transfer-test"}));
+        let workspace_manifest_json = canonical_json_sha256(&serde_json::json!({"files": []})).0;
+        source
+            .start_reproduction_run(&ReproductionRunStart {
+                id: "reproduction-complete".into(),
+                revision_id: "publication-revision-1".into(),
+                source_run_id: "run-1".into(),
+                command_sha256: "1".repeat(64),
+                expected_environment_hash: Some(actual_environment_hash.clone()),
+                actual_environment_json: actual_environment_json.clone(),
+                actual_environment_hash: actual_environment_hash.clone(),
+                environment_matched: true,
+                workspace_manifest_json: workspace_manifest_json.clone(),
+            })
+            .await
+            .unwrap();
+        source
+            .complete_reproduction_run(&ReproductionRunCommit {
+                run_id: "reproduction-complete".into(),
+                stdout_tail: "done".into(),
+                stderr_tail: String::new(),
+                exit_code: 0,
+                results: vec![ReproductionResult {
+                    id: "reproduction-result".into(),
+                    reproduction_run_id: "reproduction-complete".into(),
+                    output_id: "output-1".into(),
+                    output_path: "results/plot.png".into(),
+                    expected_artifact_version_id: artifact_version_id.clone(),
+                    comparator_kind: ReproductionComparatorKind::Sha256,
+                    required: true,
+                    expected_json: "{}".into(),
+                    actual_json: "{}".into(),
+                    tolerance_json: "{}".into(),
+                    passed: true,
+                    report_json: "{}".into(),
+                    created_at: 0,
+                }],
+            })
+            .await
+            .unwrap();
+        source
+            .start_reproduction_run(&ReproductionRunStart {
+                id: "reproduction-running".into(),
+                revision_id: "publication-revision-1".into(),
+                source_run_id: "run-1".into(),
+                command_sha256: "1".repeat(64),
+                expected_environment_hash: Some(actual_environment_hash.clone()),
+                actual_environment_json,
+                actual_environment_hash,
+                environment_matched: true,
+                workspace_manifest_json,
+            })
+            .await
+            .unwrap();
 
         let stats = source
             .export_project_database("project-1", &archive_path)
@@ -2023,6 +2134,37 @@ mod tests {
             Some("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
         );
         assert!(builds[0].output_path.is_none());
+        let reproduction_runs = target
+            .list_reproduction_runs("publication-revision-1")
+            .await
+            .unwrap();
+        assert_eq!(reproduction_runs.len(), 2);
+        let completed = reproduction_runs
+            .iter()
+            .find(|run| run.id == "reproduction-complete")
+            .unwrap();
+        assert_eq!(completed.status, "completed");
+        assert_eq!(
+            completed.capability_level,
+            crate::PublicationCapabilityLevel::Reproduced
+        );
+        assert_eq!(
+            target
+                .list_reproduction_results("reproduction-complete")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let interrupted = reproduction_runs
+            .iter()
+            .find(|run| run.id == "reproduction-running")
+            .unwrap();
+        assert_eq!(interrupted.status, "failed");
+        assert_eq!(
+            interrupted.error.as_deref(),
+            Some("Interrupted by project transfer")
+        );
         assert!(target
             .import_project_database(&archive_path, "project-1", workspace)
             .await

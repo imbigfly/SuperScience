@@ -177,38 +177,67 @@ Unrelated `.codex/` and `.playwright-mcp/` workspace files are never staged.
 
 **Commit:** `feat(publication): verify fine-grained evidence in isolation`
 
-- [ ] Add immutable MessageSpan, ToolCall, CodeCell, ExecutionLog, and
+- [x] Add immutable MessageSpan, ToolCall, CodeCell, ExecutionLog, and
   ExternalResource anchors.
-- [ ] Add selection entry points for a message span, tool result, and code
+- [x] Add selection entry points for a message span, tool result, and code
   cell.
-- [ ] Add comparator contracts: SHA-256, text, JSON, and numeric tolerance.
-- [ ] Add persisted reproduction runs/results and actual environment capture.
-- [ ] Materialize a fresh temporary workspace from capsule allowlisted inputs.
-- [ ] Execute through the structured runner with a fake-runner test boundary.
-- [ ] Compare produced outputs and update only the new reproduction report,
+- [x] Add comparator contracts: SHA-256, text, JSON, and numeric tolerance.
+- [x] Add persisted reproduction runs/results and actual environment capture.
+- [x] Materialize a fresh temporary workspace from capsule allowlisted inputs.
+- [x] Execute through the structured runner with a fake-runner test boundary.
+- [x] Compare produced outputs and update only the new reproduction report,
   never the frozen evidence.
-- [ ] Promote capability to `reproduced` only when the environment contract and
+- [x] Promote capability to `reproduced` only when the environment contract and
   every required comparator pass.
-- [ ] Surface reproduction details in Publication Workspace.
+- [x] Surface reproduction details in Publication Workspace.
+
+Implementation boundary: verification supports local Runs and prevents
+accidental project-file/environment leakage through a fresh allowlisted
+workspace. It is not a hardened container or OS/network sandbox for untrusted
+code. The first UI uses SHA-256 comparison by default; the backend contract
+also accepts text, semantic JSON, and numeric tolerance requests.
 
 ### Gate
 
-- [ ] Fine-grained anchors remain stable after message/file/tool changes.
-- [ ] Verification cannot read an undeclared project file.
-- [ ] Exact and tolerant comparisons cover pass/fail cases.
-- [ ] Missing environment parity prevents a false `reproduced` claim.
-- [ ] Automated tests require no network, SSH, WSL, GPU, scheduler, or API key.
-- [ ] `cd ui && cargo check --target wasm32-unknown-unknown`
-- [ ] `cd ui-tests && npm ci && npx playwright test`
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo test --workspace`
+- [x] Fine-grained anchors remain stable after message/file/tool changes.
+- [x] The verification workspace exposes no undeclared project file, and direct
+  path escapes are rejected before execution.
+- [x] Exact and tolerant comparisons cover pass/fail cases.
+- [x] Missing environment parity prevents a false `reproduced` claim.
+- [x] Automated tests require no network, SSH, WSL, GPU, scheduler, or API key.
+- [x] `cd ui && cargo check --target wasm32-unknown-unknown`
+- [x] `cd ui-tests && npm ci && npx playwright test`
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo test --workspace`
 
 ## Final completion audit
 
-- [ ] Inspect every issue requirement and all 13 design acceptance items
+- [x] Inspect every issue requirement and all 13 design acceptance items
   against authoritative schema, code, tests, transfer artifacts, and rendered
   UI.
-- [ ] Run the full Rust, WASM, and Playwright suites.
-- [ ] Document manual smoke steps, limitations, and follow-up work.
-- [ ] Confirm commit history contains one stage per commit and no unrelated
+- [x] Run the full Rust, WASM, and Playwright suites.
+- [x] Document manual smoke steps, limitations, and follow-up work.
+- [x] Confirm commit history contains one stage per commit and no unrelated
   workspace files.
+
+### Acceptance evidence
+
+| # | Completion evidence |
+|---|---|
+| 1 | `artifact_binding_resolves_latest_version_once` proves Artifact selection resolves once to an exact version; schema constraints and frozen-revision triggers reject dynamic or later mutation. |
+| 2 | `exact_snapshot_freezes_deterministically_and_reports_drift` and `frozen_capsules_are_byte_deterministic_and_ignore_live_file_changes` mutate live files without changing frozen evidence. |
+| 3 | The deterministic freeze/capsule tests compare repeated manifest hashes and normalized archive bytes. |
+| 4 | `runs_bind_exact_artifact_versions_code_and_environment` and harvest tests assert exact `run_outputs.artifact_version_id` values. |
+| 5 | Freeze emits Run/code/input/environment findings and waivers; `incomplete_environment_downgrades_run_to_traceable` plus the frozen-workspace Playwright test cover the missing and rendered states. |
+| 6 | `public_capsule_omits_restricted_bytes_and_never_reads_them` proves Restricted/Private bytes are excluded. |
+| 7 | SQLite immutability triggers and `publication_revisions_clone_exact_evidence_and_freeze_history` require a cloned revision for new results. |
+| 8 | The same clone test verifies supersession IDs are remapped only inside the new revision and the old revision is unchanged. |
+| 9 | Frozen source delete triggers, Run lineage foreign keys, and `publication_evidence_retains_message_artifacts_during_undo_and_session_delete` protect evidence; there is currently no destructive blob-GC path. |
+| 10 | `historical_live_file_is_late_captured_without_rewriting_history` proves historical content is labeled and materialized as a new late capture. |
+| 11 | Project-transfer roundtrip covers Publications, manifests, reproduction reports, and blobs; `import_rejects_a_corrupt_frozen_publication_manifest` fails closed. |
+| 12 | `fine_grained_publication_evidence_keeps_immutable_source_snapshots` and the deleted-Session MessageSpan freeze test prove anchor stability. |
+| 13 | `frozen_run_verifies_from_only_allowlisted_snapshots`, comparator pass/fail tests, and environment-parity tests exercise isolated verification without external infrastructure. |
+
+Final gates on 2026-07-31: Rust workspace tests passed; WASM check
+passed; Playwright passed 241 tests with one pre-existing real-MCP test
+skipped.
