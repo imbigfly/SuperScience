@@ -871,6 +871,43 @@ test("composer plan toggle routes ACP and built-in sessions separately", async (
   await expect(toggle).not.toBeChecked();
 });
 
+test("Full Permission requires a warning and stays scoped to the conversation", async ({ page }) => {
+  await enterApp(page);
+  const menu = await openAgentMenu(page);
+  const row = menu.locator("label.agent-menu-row", { hasText: "Full Permission" });
+  const toggle = row.getByTestId("full-permission-toggle");
+  await expect(toggle).not.toBeChecked();
+
+  await row.click();
+  await expect(page.getByRole("heading", { name: "Enable Full Permission?" })).toBeVisible();
+  expect(await invokeArgsList(page, "set_session_full_permission")).toHaveLength(0);
+
+  // The warning is the topmost surface: one immediate Escape closes only it,
+  // leaving its Agent options parent open.
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("heading", { name: "Enable Full Permission?" })).toHaveCount(0);
+  await expect(menu).toBeVisible();
+  await expect(toggle).not.toBeChecked();
+
+  await row.click();
+  await page.getByRole("button", { name: "Enable Full Permission" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_full_permission")).toMatchObject({
+    sessionId: expect.stringMatching(/^s-/),
+    enabled: true,
+  });
+  await expect(toggle).toBeChecked();
+  await expect(page.locator(".copy-toast")).toContainText(
+    "Full Permission enabled for this conversation",
+  );
+
+  await row.click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_full_permission")).toMatchObject({
+    enabled: false,
+  });
+  await expect(toggle).not.toBeChecked();
+  await expect(page.getByRole("heading", { name: "Enable Full Permission?" })).toHaveCount(0);
+});
+
 test("ACP turns retain explicitly selected Wisp skills", async ({ page }) => {
   await enterApp(page);
   await newSessionButton(page).click();

@@ -316,10 +316,19 @@ async fn run_registered_tool(tool: &dyn Tool, args: &Value, env: &dyn ToolEnv) -
     }
     // Per-tool approval gate. `Deny` blocks before the call card even shows;
     // `Ask` shows the card then routes through `confirm`; `Allow` runs as before.
-    let approval = match (env.approval_mode(name).await, tool.minimum_approval()) {
-        (env::Approval::Deny, _) => env::Approval::Deny,
-        (env::Approval::Ask, _) | (_, env::Approval::Ask) => env::Approval::Ask,
-        _ => env::Approval::Allow,
+    let host_approval = env.approval_mode(name).await;
+    let approval = if host_approval == env::Approval::Deny {
+        // An explicit block remains a hard policy even in Full Permission.
+        env::Approval::Deny
+    } else if env.approval_bypass() {
+        // Full Permission suppresses both host prompts and a tool's built-in
+        // minimum approval requirement. Plan mode already gated mutations
+        // above, before this branch.
+        env::Approval::Allow
+    } else if host_approval == env::Approval::Ask || tool.minimum_approval() == env::Approval::Ask {
+        env::Approval::Ask
+    } else {
+        env::Approval::Allow
     };
     if approval == env::Approval::Deny {
         return ToolResult::fail(format!("tool '{name}' is blocked by the approval policy"));
@@ -523,6 +532,7 @@ mod approval_tests {
         root: PathBuf,
         mode: Approval,
         confirm_ok: bool,
+        bypass: bool,
     }
     #[async_trait::async_trait]
     impl ToolEnv for PolicyEnv {
@@ -534,6 +544,9 @@ mod approval_tests {
         }
         async fn approval_mode(&self, _tool: &str) -> Approval {
             self.mode
+        }
+        fn approval_bypass(&self) -> bool {
+            self.bypass
         }
         async fn emit(&self, _event: ToolEvent) {}
     }
@@ -565,6 +578,7 @@ mod approval_tests {
             root: PathBuf::from("."),
             mode,
             confirm_ok,
+            bypass: false,
         };
         let res = reg.run("spy", &serde_json::json!({}), &env).await;
         (RAN.load(Ordering::SeqCst), res)
@@ -580,11 +594,45 @@ mod approval_tests {
             root: PathBuf::from("."),
             mode: Approval::Allow,
             confirm_ok: false,
+            bypass: false,
         };
         let result = registry
             .run("third_party", &serde_json::json!({}), &env)
             .await;
         assert!(!result.success);
+        assert!(!RAN.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn approval_bypass_skips_minimum_prompt_but_not_explicit_deny() {
+        static RAN: AtomicBool = AtomicBool::new(false);
+        let mut registry = Registry { tools: vec![] };
+        registry.add(Box::new(AskSpy(&RAN)));
+
+        RAN.store(false, Ordering::SeqCst);
+        let bypass = PolicyEnv {
+            root: PathBuf::from("."),
+            mode: Approval::Allow,
+            confirm_ok: false,
+            bypass: true,
+        };
+        let allowed = registry
+            .run("third_party", &serde_json::json!({}), &bypass)
+            .await;
+        assert!(allowed.success);
+        assert!(RAN.load(Ordering::SeqCst));
+
+        RAN.store(false, Ordering::SeqCst);
+        let denied = PolicyEnv {
+            root: PathBuf::from("."),
+            mode: Approval::Deny,
+            confirm_ok: true,
+            bypass: true,
+        };
+        let blocked = registry
+            .run("third_party", &serde_json::json!({}), &denied)
+            .await;
+        assert!(!blocked.success);
         assert!(!RAN.load(Ordering::SeqCst));
     }
 

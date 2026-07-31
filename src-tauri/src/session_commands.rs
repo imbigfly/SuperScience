@@ -299,6 +299,9 @@ pub(super) async fn transfer_session_to_project(
         }
         acp::close_frame(&state, &id).await;
         state.sessions.lock().await.remove(&id);
+        if let Ok(mut sessions) = state.full_permission_sessions.write() {
+            sessions.remove(&id);
+        }
         if state.active_frame(window.label()).as_deref() == Some(id.as_str()) {
             state.set_active_frame(window.label(), None);
         }
@@ -346,6 +349,9 @@ pub(super) async fn delete_session(
     };
     acp::close_frame(&state, &id).await;
     state.sessions.lock().await.remove(&id);
+    if let Ok(mut sessions) = state.full_permission_sessions.write() {
+        sessions.remove(&id);
+    }
     state.remove_notification_window(&id);
     if state.active_frame(window.label()).as_deref() == Some(id.as_str()) {
         state.set_active_frame(window.label(), None);

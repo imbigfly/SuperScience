@@ -2,6 +2,78 @@ use super::{save_approval_grants, AppState, ApprovalGrantKey};
 use serde::Serialize;
 use tauri::State;
 
+async fn ensure_project_frame(
+    state: &AppState,
+    project_id: &str,
+    frame_id: &str,
+) -> Result<(), String> {
+    match state
+        .store
+        .frame_project_id(frame_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_deref()
+    {
+        Some(owner) if owner == project_id => Ok(()),
+        Some(_) => Err("Conversation does not belong to the active project.".into()),
+        None => Err("Conversation does not exist.".into()),
+    }
+}
+
+pub(crate) fn session_full_permission(state: &AppState, session_id: &str) -> bool {
+    state
+        .full_permission_sessions
+        .read()
+        .map(|sessions| sessions.contains(session_id))
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+pub(super) async fn get_session_full_permission(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    session_id: String,
+) -> Result<bool, String> {
+    let project = state.active(window.label());
+    ensure_project_frame(&state, &project.id, &session_id).await?;
+    Ok(session_full_permission(&state, &session_id))
+}
+
+#[tauri::command]
+pub(super) async fn set_session_full_permission(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    session_id: String,
+    enabled: bool,
+) -> Result<bool, String> {
+    let project = state.active(window.label());
+    ensure_project_frame(&state, &project.id, &session_id).await?;
+    {
+        let mut sessions = state
+            .full_permission_sessions
+            .write()
+            .map_err(|_| "Full Permission state is unavailable.".to_string())?;
+        if enabled {
+            sessions.insert(session_id.clone());
+        } else {
+            sessions.remove(&session_id);
+        }
+    }
+
+    // If the user enables the mode while an ordinary approval is already
+    // waiting, settle that approval immediately. Later confirmation sites read
+    // the shared mode live and never enqueue a card.
+    if enabled {
+        let pending = state.confirms.lock().unwrap().remove(&session_id);
+        if let Some(pending) = pending {
+            let _ = pending.tx.send(wisp_tools::ConfirmDecision::Approved);
+            state.awaiting_confirm.lock().unwrap().remove(&session_id);
+            state.device_hub.resolve_needs_user(&session_id);
+        }
+    }
+    Ok(enabled)
+}
+
 #[tauri::command]
 pub(super) async fn confirm_response(
     state: State<'_, AppState>,

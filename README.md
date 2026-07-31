@@ -238,6 +238,12 @@ read transcripts, project data, API keys, environment variables, usernames,
 absolute paths, or screenshots. Copy stays local; opening a prefilled GitHub
 draft is disabled until the user explicitly reviews and confirms external
 sharing, and GitHub still requires manual submission.
+The composer **Agent options** menu includes a per-conversation **Full
+Permission** switch. Enabling it requires an explicit warning confirmation and
+then automatically approves ordinary tools, dangerous commands, and ACP
+permission requests for that conversation until it is turned off or the app is
+restarted. It does not remove project-path restrictions or override tools that
+the user explicitly blocked.
 **Conversations persist to that SQLite database** — each turn's
 messages are appended to the active session frame, so restarting the app
 restores the full history. The headless CLI keeps using `.wisp/session.json` for

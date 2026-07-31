@@ -1799,6 +1799,9 @@ struct AppState {
     approvals: Arc<StdRwLock<ApprovalPolicy>>,
     /// Scoped approvals granted from the inline confirmation card.
     approval_grants: Arc<StdMutex<ApprovalGrants>>,
+    /// Conversations whose approval prompts are bypassed for this app run.
+    /// Deliberately not persisted: a restart always returns to the safe default.
+    full_permission_sessions: Arc<StdRwLock<HashSet<String>>>,
     bootstrap: StdMutex<BootstrapStatus>,
     /// Last plugin MCP startup errors observed while building a normal Agent,
     /// grouped by project and plugin id so Settings can explain why an enabled
@@ -2043,6 +2046,9 @@ struct TauriOutput {
     /// frames never set it — their plan mode lives on the agent side.
     plan_mode: bool,
     approval_grants: Arc<StdMutex<ApprovalGrants>>,
+    /// Shared live set so enabling Full Permission can take effect during a
+    /// running turn, including while it is approaching an approval boundary.
+    full_permission_sessions: Arc<StdRwLock<HashSet<String>>>,
     /// Incremental-persistence sink: each message the turn produces is sent here
     /// and written to SQLite by a background task, so a crash or mid-turn "new
     /// session" no longer discards the whole turn. `None` disables it.
@@ -2057,6 +2063,13 @@ struct TauriOutput {
 }
 
 impl TauriOutput {
+    fn full_permission(&self) -> bool {
+        self.full_permission_sessions
+            .read()
+            .map(|sessions| sessions.contains(&self.frame_id))
+            .unwrap_or(false)
+    }
+
     fn emit(&self, event: AgentEvent) {
         self.device_hub
             .apply_agent_event(&event, Some(&self.project_id));
@@ -2204,6 +2217,9 @@ impl Output for TauriOutput {
         self.confirm_decision(message).approved()
     }
     fn confirm_decision(&self, message: &str) -> wisp_tools::ConfirmDecision {
+        if self.full_permission() {
+            return wisp_tools::ConfirmDecision::Approved;
+        }
         let (tool, preview) = parse_confirm_payload(message);
         let grant = approval_grant_key(message);
         if grant.as_ref().is_some_and(|key| {
@@ -2252,8 +2268,11 @@ impl Output for TauriOutput {
             .map(|p| p.mode_for(tool))
             .unwrap_or(wisp_tools::Approval::Allow)
     }
+    fn approval_bypass(&self) -> bool {
+        self.full_permission()
+    }
     fn danger_auto_approve(&self) -> bool {
-        self.approvals.read().map(|p| p.full()).unwrap_or(false)
+        self.full_permission() || self.approvals.read().map(|p| p.full()).unwrap_or(false)
     }
     fn plan_mode(&self) -> bool {
         self.plan_mode
@@ -5038,6 +5057,7 @@ async fn send_message_inner(
         approvals: state.approvals.clone(),
         plan_mode: plan_mode_enabled,
         approval_grants: state.approval_grants.clone(),
+        full_permission_sessions: state.full_permission_sessions.clone(),
         persist: Some(persist_tx),
         ui_events: Some(ui_event_tx),
         message_seq: std::sync::atomic::AtomicI64::new(start_seq),
@@ -6262,6 +6282,7 @@ pub fn run() {
             let approval_grants = Arc::new(StdMutex::new(tauri::async_runtime::block_on(
                 load_approval_grants(&store),
             )));
+            let full_permission_sessions = Arc::new(StdRwLock::new(HashSet::new()));
             let browser_extension_dir = wisp_paths::browser_extension_dir()
                 .unwrap_or_else(|| wisp_paths::resource_root().join("browser-extension"));
             let browser_bridge = tauri::async_runtime::block_on(
@@ -6310,6 +6331,7 @@ pub fn run() {
                 awaiting_confirm: Arc::new(StdMutex::new(HashSet::new())),
                 approvals,
                 approval_grants,
+                full_permission_sessions,
                 bootstrap,
                 plugin_runtime_errors: StdMutex::new(HashMap::new()),
                 reviewing: Arc::new(StdMutex::new(HashSet::new())),
@@ -6553,8 +6575,10 @@ pub fn run() {
             seed::load_demo_cmd,
             approval_commands::confirm_response,
             approval_commands::list_approval_grants,
+            approval_commands::get_session_full_permission,
             approval_commands::revoke_approval_grant,
             approval_commands::revoke_all_approval_grants,
+            approval_commands::set_session_full_permission,
             settings_commands::get_settings,
             settings_commands::set_settings,
             settings_commands::get_storage_usage,

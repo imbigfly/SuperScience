@@ -441,6 +441,7 @@ pub(super) struct SessionTransfer {
 
 #[derive(Clone)]
 pub(super) enum UiConfirm {
+    EnableFullPermission,
     DeleteFolder(String),
     DeleteSession(String),
     DeleteFileEntry { path: String, is_dir: bool },

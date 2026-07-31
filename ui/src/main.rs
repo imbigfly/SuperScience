@@ -5340,6 +5340,8 @@ fn App() -> impl IntoView {
     let file_entry_busy = create_rw_signal(false);
     let file_entry_error = create_rw_signal::<Option<String>>(None);
     let ui_confirm = create_rw_signal::<Option<UiConfirm>>(None);
+    let full_permission_enabled = create_rw_signal(false);
+    let full_permission_busy = create_rw_signal(false);
     let compose_menu_open = create_rw_signal(false);
     let agent_menu_open = create_rw_signal(false);
     let reviewer_model_menu_open = create_rw_signal(false);
@@ -5354,6 +5356,8 @@ fn App() -> impl IntoView {
     create_effect(move |_| {
         delegation_enabled.set(false);
         delegation_setting_busy.set(false);
+        full_permission_enabled.set(false);
+        full_permission_busy.set(false);
         plan_mode_busy.set(false);
         // Reset before the fetch: otherwise the previous session's flag shows
         // on the new one for as long as the round trip takes.
@@ -5373,6 +5377,10 @@ fn App() -> impl IntoView {
                 .await
                 .ok()
                 .map(|value| value.as_bool());
+            let full_permission = invoke_checked("get_session_full_permission", args.clone())
+                .await
+                .ok()
+                .and_then(|value| value.as_bool());
             let completion = invoke_checked("get_session_agent_completion", args)
                 .await
                 .ok()
@@ -5381,6 +5389,7 @@ fn App() -> impl IntoView {
                 });
             if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
                 delegation_enabled.set(enabled.unwrap_or(false));
+                full_permission_enabled.set(full_permission.unwrap_or(false));
                 local_plan_mode.set(plan.unwrap_or(None));
                 agent_completion.set(completion.unwrap_or_default());
             }
@@ -9702,6 +9711,57 @@ fn App() -> impl IntoView {
                                             </label>
                                         })
                                     }}
+                                    <label class="agent-menu-row"
+                                        title=move || t(locale.get(), "full_permission.confirm_body")>
+                                        <span>{move || t(locale.get(), "composer.full_permission")}</span>
+                                        <span class="toggle agent-menu-toggle">
+                                            <input type="checkbox"
+                                                data-testid="full-permission-toggle"
+                                                prop:checked=move || full_permission_enabled.get()
+                                                disabled=move || full_permission_busy.get()
+                                                on:change=move |event| {
+                                                    let enabled = event_target_checked(&event);
+                                                    if enabled {
+                                                        // The mode is not active until the warning
+                                                        // is confirmed. Keep the underlying input in
+                                                        // sync while the modal is open.
+                                                        if let Some(target) = event.target() {
+                                                            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                                                input.set_checked(false);
+                                                            }
+                                                        }
+                                                        ui_confirm.set(Some(UiConfirm::EnableFullPermission));
+                                                        return;
+                                                    }
+                                                    let Some(session_id) = active_session.get_untracked() else {
+                                                        full_permission_enabled.set(false);
+                                                        return;
+                                                    };
+                                                    full_permission_enabled.set(false);
+                                                    full_permission_busy.set(true);
+                                                    let loc = locale.get_untracked();
+                                                    spawn_local(async move {
+                                                        let args = to_value(&serde_json::json!({
+                                                            "sessionId": session_id.clone(),
+                                                            "enabled": false,
+                                                        })).unwrap();
+                                                        let disabled = invoke_checked("set_session_full_permission", args)
+                                                            .await
+                                                            .ok()
+                                                            .and_then(|value| value.as_bool())
+                                                            == Some(false);
+                                                        if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
+                                                            full_permission_enabled.set(!disabled);
+                                                        }
+                                                        full_permission_busy.set(false);
+                                                        if disabled {
+                                                            show_toast(&t(loc, "full_permission.disabled"));
+                                                        }
+                                                    });
+                                                } />
+                                            <span class="toggle-track" aria-hidden="true"></span>
+                                        </span>
+                                    </label>
                                     <label class="agent-menu-row">
                                         <span>{move || t(locale.get(), "composer.delegation")}</span>
                                         <span class="toggle agent-menu-toggle">
@@ -12138,7 +12198,14 @@ fn App() -> impl IntoView {
 
         {move || ui_confirm.get().map(|action| {
             let action_ok = action.clone();
+            let is_full_permission = matches!(&action, UiConfirm::EnableFullPermission);
+            let title_key = if is_full_permission {
+                "full_permission.confirm_title"
+            } else {
+                "confirm.title"
+            };
             let message = match &action {
+                UiConfirm::EnableFullPermission => t(locale.get(), "full_permission.confirm_body").to_string(),
                 UiConfirm::DeleteFolder(_) => t(locale.get(), "folder.delete_confirm").to_string(),
                 UiConfirm::DeleteSession(_) => t(locale.get(), "session.delete_confirm").to_string(),
                 UiConfirm::DeleteFileEntry { path, is_dir } => tf(
@@ -12148,6 +12215,7 @@ fn App() -> impl IntoView {
                 ),
             };
             let action_key = match &action {
+                UiConfirm::EnableFullPermission => "full_permission.confirm_action",
                 UiConfirm::DeleteFolder(_) => "ctx.delete_folder",
                 UiConfirm::DeleteSession(_) => "ctx.delete_session",
                 UiConfirm::DeleteFileEntry { is_dir: true, .. } => "files.delete_directory",
@@ -12156,13 +12224,50 @@ fn App() -> impl IntoView {
             view! {
             <div class="overlay">
                 <div class="modal confirm-modal">
-                    <h2>{move || t(locale.get(), "confirm.title")}</h2>
+                    <h2>{move || t(locale.get(), title_key)}</h2>
                     <div class="hint">{message}</div>
                     <div class="row">
                         <button on:click=move |_| ui_confirm.set(None)>{move || t(locale.get(), "settings.cancel")}</button>
-                        <button class="primary" on:click=move |_| {
+                        <button class="primary" class:danger=is_full_permission on:click=move |_| {
                             ui_confirm.set(None);
                             match action_ok.clone() {
+                                UiConfirm::EnableFullPermission => {
+                                    full_permission_busy.set(true);
+                                    let loc = locale.get_untracked();
+                                    spawn_local(async move {
+                                        let (session_id, created_session) = match active_session.get_untracked() {
+                                            Some(session_id) => (session_id, false),
+                                            None => {
+                                                let Some(session_id) = invoke("new_session", JsValue::UNDEFINED).await.as_string() else {
+                                                    full_permission_busy.set(false);
+                                                    return;
+                                                };
+                                                (session_id, true)
+                                            }
+                                        };
+                                        let args = to_value(&serde_json::json!({
+                                            "sessionId": session_id.clone(),
+                                            "enabled": true,
+                                        })).unwrap();
+                                        let enabled = invoke_checked("set_session_full_permission", args)
+                                            .await
+                                            .ok()
+                                            .and_then(|value| value.as_bool())
+                                            .unwrap_or(false);
+                                        if created_session && enabled {
+                                            active_session.set(Some(session_id.clone()));
+                                            items.set(vec![]);
+                                            refresh_session_history();
+                                        }
+                                        if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
+                                            full_permission_enabled.set(enabled);
+                                        }
+                                        full_permission_busy.set(false);
+                                        if enabled {
+                                            show_toast(&t(loc, "full_permission.enabled"));
+                                        }
+                                    });
+                                }
                                 UiConfirm::DeleteFolder(id) => {
                                     let folders = folders;
                                     spawn_local(async move {
