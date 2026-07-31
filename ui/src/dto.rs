@@ -2070,6 +2070,175 @@ pub(crate) struct ResearchGraph {
     pub(crate) edges: Vec<ResearchEdge>,
 }
 
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationInfo {
+    pub(crate) id: String,
+    pub(crate) project_id: String,
+    pub(crate) title: String,
+    pub(crate) description: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationRevisionInfo {
+    pub(crate) id: String,
+    pub(crate) publication_id: String,
+    pub(crate) parent_revision_id: Option<String>,
+    pub(crate) revision_number: i64,
+    pub(crate) label: String,
+    pub(crate) state: String,
+    pub(crate) capability_level: String,
+    pub(crate) manifest_sha256: Option<String>,
+    pub(crate) frozen_at: Option<i64>,
+    pub(crate) published_at: Option<i64>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationItemInfo {
+    pub(crate) id: String,
+    pub(crate) revision_id: String,
+    pub(crate) parent_item_id: Option<String>,
+    pub(crate) kind: String,
+    pub(crate) title: String,
+    pub(crate) content: String,
+    pub(crate) ordinal: i64,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationItemLinkInfo {
+    pub(crate) source_item_id: String,
+    pub(crate) target_item_id: String,
+    pub(crate) relation: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationEvidenceBinding {
+    pub(crate) id: String,
+    pub(crate) revision_id: String,
+    pub(crate) item_id: Option<String>,
+    pub(crate) source_kind: String,
+    pub(crate) source_id: String,
+    pub(crate) purpose: String,
+    pub(crate) supported_claim_item_id: Option<String>,
+    pub(crate) selection_state: String,
+    pub(crate) review_state: String,
+    pub(crate) reproduction_state: String,
+    pub(crate) visibility: String,
+    pub(crate) source_snapshot_json: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct PublicationEvidenceReview {
+    pub(crate) binding_id: String,
+    pub(crate) reviewer: String,
+    pub(crate) method: String,
+    pub(crate) verified_at: i64,
+    pub(crate) result: String,
+    pub(crate) report_json: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationEvidenceSupersession {
+    pub(crate) old_binding_id: String,
+    pub(crate) new_binding_id: String,
+    pub(crate) reason: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationWaiverInfo {
+    pub(crate) finding_code: String,
+    pub(crate) author: String,
+    pub(crate) reason: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct PublicationReadinessFinding {
+    pub(crate) code: String,
+    pub(crate) message: String,
+    pub(crate) binding_id: Option<String>,
+    pub(crate) source_id: Option<String>,
+    pub(crate) waivable: bool,
+    pub(crate) waived: bool,
+    pub(crate) waiver: Option<PublicationWaiverInfo>,
+    pub(crate) details: serde_json::Value,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct PublicationReadinessInfo {
+    pub(crate) revision_id: String,
+    pub(crate) target_visibility: String,
+    pub(crate) capability_level: String,
+    #[serde(default)]
+    pub(crate) blockers: Vec<PublicationReadinessFinding>,
+    #[serde(default)]
+    pub(crate) warnings: Vec<PublicationReadinessFinding>,
+    #[serde(default)]
+    pub(crate) omissions: Vec<PublicationReadinessFinding>,
+    pub(crate) manifest_sha256: String,
+    pub(crate) can_freeze: bool,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationEvidenceDriftInfo {
+    pub(crate) binding_id: String,
+    pub(crate) bound_version_id: String,
+    pub(crate) bound_version_number: i64,
+    pub(crate) latest_version_id: String,
+    pub(crate) latest_version_number: i64,
+    pub(crate) has_drift: bool,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationLineageInfo {
+    pub(crate) binding_id: String,
+    pub(crate) source_label: String,
+    pub(crate) quality: String,
+    #[serde(default)]
+    pub(crate) bases: Vec<String>,
+    pub(crate) exact_version_id: Option<String>,
+    pub(crate) version_number: Option<i64>,
+    pub(crate) checksum: Option<String>,
+    pub(crate) capture_timing: Option<String>,
+    pub(crate) producing_run_id: Option<String>,
+    pub(crate) run_input_count: usize,
+    pub(crate) run_output_count: usize,
+    pub(crate) code_snapshot_count: usize,
+    pub(crate) environment_captured: bool,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct PublicationWorkspaceInfo {
+    #[serde(default)]
+    pub(crate) publications: Vec<PublicationInfo>,
+    pub(crate) publication: Option<PublicationInfo>,
+    #[serde(default)]
+    pub(crate) revisions: Vec<PublicationRevisionInfo>,
+    pub(crate) revision: Option<PublicationRevisionInfo>,
+    #[serde(default)]
+    pub(crate) items: Vec<PublicationItemInfo>,
+    #[serde(default)]
+    pub(crate) item_links: Vec<PublicationItemLinkInfo>,
+    #[serde(default)]
+    pub(crate) bindings: Vec<PublicationEvidenceBinding>,
+    #[serde(default)]
+    pub(crate) reviews: Vec<PublicationEvidenceReview>,
+    #[serde(default)]
+    pub(crate) supersessions: Vec<PublicationEvidenceSupersession>,
+    #[serde(default)]
+    pub(crate) waivers: Vec<PublicationWaiverInfo>,
+    pub(crate) readiness: Option<PublicationReadinessInfo>,
+    #[serde(default)]
+    pub(crate) drift: Vec<PublicationEvidenceDriftInfo>,
+    #[serde(default)]
+    pub(crate) lineage: Vec<PublicationLineageInfo>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct PublicationFreezeOutcome {
+    pub(crate) frozen: bool,
+    pub(crate) revision: PublicationRevisionInfo,
+    pub(crate) readiness: PublicationReadinessInfo,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RightTab {
     Artifacts,

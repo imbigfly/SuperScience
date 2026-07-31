@@ -63,6 +63,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   };
   const query = new URLSearchParams(window.location.search);
   const mockPlanFlow = query.get("mockPlanFlow");
+  const mockPublication = query.get("mockPublication");
   const mockLongPages = Number(query.get("mockLongPages") ?? 0);
   const mockLongSession = query.get("mockLongSession") === "1" || mockLongPages > 0;
   const mockResourceSession = query.get("mockResourceSession") === "1";
@@ -71,6 +72,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockOnboarding = query.get("mockOnboarding") === "1";
   const mockSessions: any[] = mockPlanFlow
     ? [{ id: "s1", title: "Plan mode regression", ts: 2000, running: false }]
+    : mockPublication
+      ? [{ id: "publication-session", title: "Publication evidence", ts: 2000, running: false }]
     : query.get("mockManySessions") === "1"
     ? Array.from({ length: 101 }, (_, index) => ({
         id: `session-${String(index + 1).padStart(3, "0")}`,
@@ -885,6 +888,144 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       { source_id: "run:r1", target_id: "artifact:h1", relation: "produced", metadata_json: "{}" },
     ],
   };
+  let publicationRevisionId = "publication-revision-1";
+  let publicationRevisionState = mockPublication === "frozen" ? "frozen" : "draft";
+  const publicationItems = [
+    {
+      id: "publication-section-results",
+      revision_id: publicationRevisionId,
+      parent_item_id: null,
+      kind: "section",
+      title: "Results",
+      content: "",
+      ordinal: 0,
+    },
+    {
+      id: "publication-claim-1",
+      revision_id: publicationRevisionId,
+      parent_item_id: "publication-section-results",
+      kind: "claim",
+      title: "Exhausted T cells expand after treatment",
+      content: "",
+      ordinal: 0,
+    },
+    {
+      id: "publication-figure-2b",
+      revision_id: publicationRevisionId,
+      parent_item_id: "publication-section-results",
+      kind: "figure",
+      title: "Figure 2B",
+      content: "",
+      ordinal: 1,
+    },
+  ];
+  let publicationBindings: any[] = mockPublication === "frozen"
+    ? [{
+        id: "publication-binding-frozen",
+        revision_id: publicationRevisionId,
+        item_id: "publication-figure-2b",
+        source_kind: "artifact_version",
+        source_id: "artifact-version-late-v4",
+        purpose: "Figure 2B treatment comparison",
+        supported_claim_item_id: "publication-claim-1",
+        selection_state: "selected",
+        review_state: "reviewed",
+        reproduction_state: "not_run",
+        visibility: "public",
+        source_snapshot_json: JSON.stringify({
+          capture_timing: "late",
+          historical_content_unverified: true,
+        }),
+      }]
+    : [];
+  const publicationRevision = () => ({
+    id: publicationRevisionId,
+    publication_id: "publication-paper-1",
+    parent_revision_id: publicationRevisionId === "publication-revision-1" ? null : "publication-revision-1",
+    revision_number: publicationRevisionId === "publication-revision-1" ? 1 : 2,
+    label: publicationRevisionId === "publication-revision-1" ? "Submission" : "Revision 2",
+    state: publicationRevisionState,
+    capability_level: publicationRevisionState === "frozen" ? "traceable" : "archived",
+    manifest_sha256: publicationRevisionState === "frozen" ? "a".repeat(64) : null,
+    frozen_at: publicationRevisionState === "frozen" ? 1785480000 : null,
+    published_at: null,
+  });
+  const publicationReadiness = () => ({
+    revision_id: publicationRevisionId,
+    target_visibility: "public",
+    capability_level: "traceable",
+    blockers: [],
+    warnings: [{
+      code: "historical_content_unverified",
+      message: "Historical bytes were unavailable; evidence was captured at freeze time",
+      binding_id: "publication-binding-frozen",
+      source_id: "artifact-version-late-v4",
+      waivable: true,
+      waived: false,
+      waiver: null,
+      details: { original_source_id: "artifact-version-original-v3" },
+    }],
+    omissions: [],
+    manifest_sha256: "a".repeat(64),
+    can_freeze: true,
+  });
+  const publicationWorkspace = () => ({
+    publications: [{
+      id: "publication-paper-1",
+      project_id: "default",
+      title: "T-cell treatment response",
+      description: "Submission evidence",
+    }],
+    publication: {
+      id: "publication-paper-1",
+      project_id: "default",
+      title: "T-cell treatment response",
+      description: "Submission evidence",
+    },
+    revisions: [publicationRevision()],
+    revision: publicationRevision(),
+    items: publicationItems.map((item) => ({ ...item, revision_id: publicationRevisionId })),
+    item_links: [{
+      source_item_id: "publication-figure-2b",
+      target_item_id: "publication-claim-1",
+      relation: "supports",
+    }],
+    bindings: publicationBindings,
+    reviews: publicationBindings.length ? [{
+      binding_id: publicationBindings[0].id,
+      reviewer: "Scientist",
+      method: "traceability_check",
+      verified_at: 1785480000,
+      result: "passed",
+      report_json: "{}",
+    }] : [],
+    supersessions: [],
+    waivers: [],
+    readiness: publicationRevisionState === "frozen" ? publicationReadiness() : null,
+    drift: publicationBindings.length ? [{
+      binding_id: publicationBindings[0].id,
+      bound_version_id: "artifact-version-late-v4",
+      bound_version_number: 4,
+      latest_version_id: "artifact-version-v5",
+      latest_version_number: 5,
+      has_drift: true,
+    }] : [],
+    lineage: publicationBindings.map((binding) => ({
+      binding_id: binding.id,
+      source_label: binding.source_kind === "run" ? "Kinase screen QC" : "plddt_profile.png",
+      quality: "likely",
+      bases: ["declared", "observed"],
+      exact_version_id: binding.source_kind === "artifact_version" ? binding.source_id : null,
+      version_number: binding.source_kind === "artifact_version" ? 4 : null,
+      checksum: binding.source_kind === "artifact_version" ? "b".repeat(64) : null,
+      capture_timing: binding.source_kind === "artifact_version" ? "late" : null,
+      producing_run_id: binding.source_kind === "artifact_version" ? "run-kinase-001" : binding.source_id,
+      run_input_count: 2,
+      run_output_count: 1,
+      code_snapshot_count: 1,
+      environment_captured: true,
+    })),
+  });
 
   (window as any).__TAURI__ = {
     core: {
@@ -901,6 +1042,72 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
         switch (cmd) {
           case "get_research_graph":
             return researchGraph;
+          case "get_publication_workspace":
+            return publicationWorkspace();
+          case "create_publication_workspace":
+            return publicationWorkspace();
+          case "save_publication_item": {
+            const input = plain(arg("input") ?? {});
+            publicationItems.push({
+              id: `publication-item-${publicationItems.length + 1}`,
+              revision_id: publicationRevisionId,
+              parent_item_id: input.parentItemId ?? null,
+              kind: String(input.kind ?? "claim"),
+              title: String(input.title ?? "Untitled"),
+              content: String(input.content ?? ""),
+              ordinal: Number(input.ordinal ?? publicationItems.length),
+            });
+            return publicationWorkspace();
+          }
+          case "bind_publication_evidence": {
+            const input = plain(arg("input") ?? {});
+            const artifact = input.sourceKind === "artifact";
+            publicationBindings = [...publicationBindings, {
+              id: `publication-binding-${publicationBindings.length + 1}`,
+              revision_id: String(input.revisionId ?? publicationRevisionId),
+              item_id: input.itemId ?? null,
+              source_kind: artifact ? "artifact_version" : "run",
+              source_id: artifact ? "artifact-version-v3" : String(input.sourceId ?? ""),
+              purpose: String(input.purpose ?? ""),
+              supported_claim_item_id: input.supportedClaimItemId ?? null,
+              selection_state: String(input.selectionState ?? "selected"),
+              review_state: "unreviewed",
+              reproduction_state: "not_run",
+              visibility: String(input.visibility ?? "public"),
+              source_snapshot_json: "{}",
+            }];
+            return publicationWorkspace();
+          }
+          case "update_publication_evidence_binding": {
+            const input = plain(arg("input") ?? {});
+            publicationBindings = publicationBindings.map((binding) =>
+              binding.id === input.bindingId
+                ? {
+                    ...binding,
+                    selection_state: String(input.selectionState ?? binding.selection_state),
+                    visibility: String(input.visibility ?? binding.visibility),
+                  }
+                : binding
+            );
+            return publicationWorkspace();
+          }
+          case "clone_publication_revision":
+            publicationRevisionId = "publication-revision-2";
+            publicationRevisionState = "draft";
+            publicationBindings = publicationBindings.map((binding) => ({
+              ...binding,
+              revision_id: publicationRevisionId,
+            }));
+            return publicationWorkspace();
+          case "save_publication_waiver":
+            return publicationWorkspace();
+          case "freeze_publication_revision":
+            publicationRevisionState = "frozen";
+            return {
+              frozen: true,
+              revision: publicationRevision(),
+              readiness: publicationReadiness(),
+            };
           case "list_library_items":
             return libraryItems.map(({ base64: _base64, ...item }) => item);
           case "star_library_code": {
@@ -2615,7 +2822,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               conflicts: [],
             };
           case "list_artifacts":
-            return [];
+            return mockPublication ? [artifacts[1]] : [];
           case "side_chat": {
             const question = String(arg("question") ?? "");
             if (question === "SIDESCROLLTEST") {

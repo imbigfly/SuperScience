@@ -124,27 +124,27 @@ Unrelated `.codex/` and `.playwright-mcp/` workspace files are never staged.
 
 **Commit:** `feat(ui): add publication evidence workspace`
 
-- [ ] Add backend commands and typed DTOs for Publication workspace operations.
-- [ ] Add a project-level Publication Workspace entry.
-- [ ] Add **Use in publication** to Artifact and Run surfaces.
-- [ ] Add the binding dialog for revision, item, purpose/claim, selection, and
+- [x] Add backend commands and typed DTOs for Publication workspace operations.
+- [x] Add a project-level Publication Workspace entry.
+- [x] Add **Use in publication** to Artifact and Run surfaces.
+- [x] Add the binding dialog for revision, item, purpose/claim, selection, and
   visibility.
-- [ ] Render manuscript tree and evidence detail with exact version, lineage
+- [x] Render manuscript tree and evidence detail with exact version, lineage
   quality, review/reproduction state, readiness, drift, and supersession.
-- [ ] Add clone, freeze, waiver, and refresh actions.
-- [ ] Integrate all nested surfaces with the window Escape stack.
-- [ ] Add English and Chinese strings and user-facing documentation.
+- [x] Add clone, freeze, waiver, and refresh actions.
+- [x] Integrate all nested surfaces with the window Escape stack.
+- [x] Add English and Chinese strings and user-facing documentation.
 
 ### Gate
 
-- [ ] Playwright opens the binding dialog from an Artifact and a Run.
-- [ ] Immediate Escape closes only the topmost dialog while Workspace remains.
-- [ ] Frozen UI has no mutation controls and displays exact source IDs.
-- [ ] Readiness and late-capture warnings are visible.
-- [ ] `cd ui && cargo check --target wasm32-unknown-unknown`
-- [ ] `cd ui-tests && npm ci && npx playwright test`
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo test --workspace`
+- [x] Playwright opens the binding dialog from an Artifact and a Run.
+- [x] Immediate Escape closes only the topmost dialog while Workspace remains.
+- [x] Frozen UI has no mutation controls and displays exact source IDs.
+- [x] Readiness and late-capture warnings are visible.
+- [x] `cd ui && cargo check --target wasm32-unknown-unknown`
+- [x] `cd ui-tests && npm ci && npx playwright test`
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo test --workspace`
 
 ## PR 4 — selective deterministic Capsule
 

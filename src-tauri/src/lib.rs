@@ -54,6 +54,7 @@ mod project_commands;
 mod project_reader;
 mod project_sync;
 mod project_transfer;
+mod publication_commands;
 mod publication_freeze;
 mod quick_actions;
 mod research_graph;
@@ -6502,6 +6503,13 @@ pub fn run() {
             project_commands::delete_project,
             project_commands::get_project_settings,
             project_commands::update_project,
+            publication_commands::get_publication_workspace,
+            publication_commands::create_publication_workspace,
+            publication_commands::save_publication_item,
+            publication_commands::bind_publication_evidence,
+            publication_commands::update_publication_evidence_binding,
+            publication_commands::clone_publication_revision,
+            publication_commands::save_publication_waiver,
             publication_freeze::freeze_publication_revision,
             session_commands::load_session,
             session_commands::rewind_session,

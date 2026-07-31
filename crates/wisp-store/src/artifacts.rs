@@ -270,6 +270,22 @@ impl Store {
         .transpose()
     }
 
+    pub async fn get_latest_artifact_version_context(
+        &self,
+        artifact_id: &str,
+    ) -> Result<Option<ArtifactVersionContext>> {
+        let version_id: Option<String> =
+            sqlx::query_scalar("SELECT latest_version_id FROM artifacts WHERE id=?")
+                .bind(artifact_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+        match version_id {
+            Some(version_id) => self.get_artifact_version_context(&version_id).await,
+            None => Ok(None),
+        }
+    }
+
     pub async fn set_artifact_version_provenance(
         &self,
         version_id: &str,

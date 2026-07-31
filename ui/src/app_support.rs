@@ -8,6 +8,7 @@ use crate::bindings::{
 };
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, use_locale, Locale};
+use crate::publication::PublicationEvidenceSource;
 use crate::text::{
     code_lang, decode_href, dom_value, event_target_value, extract_href_from_tag, fasta_seq_count,
     fenced_blocks, file_kind, format_bytes, format_duration_ms, html_escape, ime_composing,
@@ -2487,6 +2488,7 @@ pub(super) fn ContextDetailsOverlay(
     object_states: RwSignal<HashMap<String, RuntimeObjectState>>,
     locale: RwSignal<Locale>,
     selection_popup: RwSignal<Option<(String, Option<String>, i32, i32)>>,
+    on_use_in_publication: Callback<PublicationEvidenceSource>,
 ) -> impl IntoView {
     // Run→artifact links live on the graph's `produced` edges, so the Runs view
     // needs a fresh graph each time it opens.
@@ -2669,11 +2671,22 @@ pub(super) fn ContextDetailsOverlay(
                                                 None => format!("{} · {}", run.context_id, run.kind),
                                             };
                                             let produced = run_artifact_links(&research_graph.get(), &run.id);
+                                            let publication_source = PublicationEvidenceSource {
+                                                kind: "run",
+                                                id: run.id.clone(),
+                                                label: title.clone(),
+                                            };
                                             view! {
                                                 <div class="run-card">
                                                     <div class="run-card-head">
                                                         <span class="run-title">{title}</span>
                                                         <span class=status_class>{run.status.clone()}</span>
+                                                        <button type="button" class="secondary run-use-publication"
+                                                            on:click=move |_| {
+                                                                on_use_in_publication.call(publication_source.clone());
+                                                            }>
+                                                            {t(locale.get(), "publication.use")}
+                                                        </button>
                                                         {cancellable.then(|| {
                                                             let run_id = cancel_id.clone();
                                                             view! {
