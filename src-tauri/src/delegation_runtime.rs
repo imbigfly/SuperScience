@@ -1775,7 +1775,7 @@ impl TauriDelegator {
     fn project_at(&self, root: PathBuf) -> ActiveProject {
         ActiveProject {
             id: self.native.project.id.clone(),
-            skills: Arc::new(wisp_skills::SkillIndex::load(&crate::skill_paths(&root))),
+            skills: Arc::new(crate::load_skill_index(&root)),
             memory: Arc::new(wisp_core::MemoryManager::new(&root)),
             root,
         }

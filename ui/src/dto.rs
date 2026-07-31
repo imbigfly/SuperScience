@@ -1820,13 +1820,14 @@ pub(crate) struct SkillRow {
     pub(crate) description: String,
     #[serde(default)]
     pub(crate) tags: Vec<String>,
+    #[serde(default)]
+    pub(crate) scope: String,
     pub(crate) enabled: bool,
     pub(crate) builtin: bool,
     #[serde(default)]
     pub(crate) managed: bool,
     #[serde(default)]
     pub(crate) managed_by: Option<String>,
-    #[allow(dead_code)]
     pub(crate) dir: String,
 }
 

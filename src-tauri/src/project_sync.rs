@@ -1308,9 +1308,7 @@ async fn clear_project_runtime_cache(state: &AppState, project_id: &str, frame_i
         .values_mut()
         .filter(|project| project.id == project_id)
     {
-        project.skills = Arc::new(wisp_skills::SkillIndex::load(&super::skill_paths(
-            &project.root,
-        )));
+        project.skills = Arc::new(super::load_skill_index(&project.root));
         project.memory = Arc::new(wisp_core::MemoryManager::new(&project.root));
     }
 }

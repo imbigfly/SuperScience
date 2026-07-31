@@ -178,9 +178,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     resolveMockOAuth = null;
   };
   let skills = [
-    { name: "remote-compute-modal", description: "Run jobs on Modal", tags: ["compute"], enabled: true, builtin: true, dir: "/skills/remote-compute-modal" },
-    { name: "alphafold2", description: "Predict protein structures", tags: ["protein", "structure"], enabled: true, builtin: true, dir: "/skills/alphafold2" },
-    { name: "paper-narrative", description: "Shape a paper story", tags: [], enabled: true, builtin: false, dir: "/home/me/.wisp/skills/paper-narrative" },
+    { name: "remote-compute-modal", description: "Run jobs on Modal", tags: ["compute"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/remote-compute-modal" },
+    { name: "alphafold2", description: "Predict protein structures", tags: ["protein", "structure"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/alphafold2" },
+    { name: "paper-narrative", description: "Shape a paper story", tags: [], scope: "global", enabled: true, builtin: false, dir: "/home/me/.wisp/skills/paper-narrative" },
   ];
   let plugins = [
     {
@@ -2040,6 +2040,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 name: "motif-for-claude-science",
                 description: "Open the Motif molecular-biology workbench",
                 tags: [],
+                scope: "plugin",
                 enabled: true,
                 builtin: true,
                 managed: true,
@@ -2047,6 +2048,33 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 dir: "/plugins/motif/skills/motif-for-claude-science",
               })),
             ];
+          case "reload_skills": {
+            if (query.get("mockSkillReload") === "1" && !skills.some((skill) => skill.name === "fresh-project-skill")) {
+              skills.push({
+                name: "fresh-project-skill",
+                description: "Newly copied project skill",
+                tags: ["fresh"],
+                scope: "project",
+                enabled: true,
+                builtin: false,
+                dir: "/mock/project/.wisp/skills/fresh-project-skill",
+              });
+            }
+            return [
+              ...skills,
+              ...plugins.filter((plugin) => plugin.enabled).map((plugin) => ({
+                name: "motif-for-claude-science",
+                description: "Open the Motif molecular-biology workbench",
+                tags: [],
+                scope: "plugin",
+                enabled: true,
+                builtin: true,
+                managed: true,
+                managed_by: plugin.display_name,
+                dir: "/plugins/motif/skills/motif-for-claude-science",
+              })),
+            ];
+          }
           case "pick_skill_source":
             return query.get("mockSkillImport") === "1"
               ? "/downloads/paper-narrative/SKILL.md"

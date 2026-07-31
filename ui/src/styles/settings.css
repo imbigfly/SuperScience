@@ -1572,6 +1572,17 @@ button.workflow-graph-port.output.active {
   color: var(--text-muted);
 }
 .skill-tags-summary:empty { display: none; }
+.skill-scope-badge {
+  display: inline-flex;
+  margin-left: 7px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 500;
+  vertical-align: 1px;
+}
 .skill-filter-empty {
   margin: 18px 0 6px;
   color: var(--text-faint);

@@ -14,7 +14,7 @@ use tauri::{ipc::Response, AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 use wisp_core::{Agent, MemoryManager, Output};
 use wisp_llm::{Message, ProviderConfig};
-use wisp_skills::SkillIndex;
+use wisp_skills::{SkillIndex, SkillSource};
 use wisp_store::{LibraryStore, Store};
 
 mod acp;
@@ -387,6 +387,7 @@ struct SkillInfo {
     name: String,
     description: String,
     tags: Vec<String>,
+    scope: String,
     enabled: bool,
     builtin: bool,
     managed: bool,
@@ -2994,7 +2995,12 @@ fn skill_infos(
             SkillInfo {
                 name: s.name.clone(),
                 description: s.description.clone(),
-                tags: tags.get(&s.name).cloned().unwrap_or_default(),
+                tags: tags.get(&s.name).cloned().unwrap_or_else(|| s.tags.clone()),
+                scope: skills
+                    .source(&s.name)
+                    .unwrap_or(SkillSource::Custom)
+                    .as_str()
+                    .to_string(),
                 enabled: enabled.is_none_or(|names| names.contains(&s.name)),
                 builtin,
                 managed: false,
@@ -3007,6 +3013,7 @@ fn skill_infos(
 
 async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex> {
     let mut enabled = effective_enabled_skill_names(store, ap).await;
+    let tags = load_skill_tags(store).await;
     let plugin_paths: Vec<PathBuf> = plugins::enabled_plugin_manifests(store, &ap.id)
         .await
         .into_iter()
@@ -3014,7 +3021,11 @@ async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex
             manifest.skill_paths(Path::new(&installation.install_root))
         })
         .collect();
-    let plugin = SkillIndex::load(&plugin_paths);
+    let plugin_sources = plugin_paths
+        .into_iter()
+        .map(|path| (path, SkillSource::Plugin))
+        .collect::<Vec<_>>();
+    let plugin = SkillIndex::load_scoped(&plugin_sources);
     if let Some(names) = &mut enabled {
         names.extend(
             plugin
@@ -3027,6 +3038,7 @@ async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex
     Arc::new(
         ap.skills
             .merged_preserving_self(&plugin)
+            .with_tag_overrides(&tags)
             .filtered_by_names(enabled.as_ref()),
     )
 }
@@ -3445,21 +3457,25 @@ fn effective_api_key(new_key: Option<String>, stored_key: String) -> String {
     }
 }
 
-fn skill_paths(root: &std::path::Path) -> Vec<PathBuf> {
+fn skill_sources(root: &std::path::Path) -> Vec<(PathBuf, SkillSource)> {
     let mut paths = vec![];
     if let Some(b) = wisp_skills::bundled_dir() {
-        paths.push(b);
+        paths.push((b, SkillSource::Bundled));
     }
-    paths.push(root.join(".wisp").join("skills"));
+    paths.push((root.join(".wisp").join("skills"), SkillSource::Project));
     if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".wisp").join("skills"));
+        paths.push((home.join(".wisp").join("skills"), SkillSource::Global));
     }
     if let Ok(extra) = std::env::var("WISP_SKILLS_PATH") {
         for p in extra.split([':', ';']).filter(|s| !s.is_empty()) {
-            paths.push(PathBuf::from(p));
+            paths.push((PathBuf::from(p), SkillSource::Extra));
         }
     }
     paths
+}
+
+fn load_skill_index(root: &std::path::Path) -> SkillIndex {
+    SkillIndex::load_scoped(&skill_sources(root))
 }
 
 fn kernel_worker_path() -> PathBuf {
@@ -6228,7 +6244,7 @@ pub fn run() {
                     .unwrap_or_default(),
             );
 
-            let skills = Arc::new(SkillIndex::load(&skill_paths(&root)));
+            let skills = Arc::new(load_skill_index(&root));
             let memory = Arc::new(MemoryManager::new(&root));
             let bootstrap = StdMutex::new(app_commands::initial_bootstrap(&root, skills.all().len()));
             let approvals = Arc::new(StdRwLock::new(tauri::async_runtime::block_on(
@@ -6501,6 +6517,7 @@ pub fn run() {
             turn_undo::preview_turn_undo,
             turn_undo::undo_turn,
             skill_commands::list_skills,
+            skill_commands::reload_skills,
             skill_commands::set_skill_tags,
             skill_commands::set_skills_enabled,
             skill_commands::set_skill_enabled,
