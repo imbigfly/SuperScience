@@ -332,6 +332,8 @@ mod tests {
         };
         let idx = SkillIndex::load(&[dir]);
         assert!(idx.get("agent-infini").is_some());
+        assert!(idx.get("analysis-workflow").is_some());
+        assert!(idx.get("figure-style").is_some());
         assert!(idx.get("journal-club-ppt").is_some());
     }
 

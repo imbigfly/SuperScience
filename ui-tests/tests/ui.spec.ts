@@ -2167,6 +2167,28 @@ test("workspace file context menu attaches its path to the composer", async ({ p
   await expect(composer(page)).toHaveValue("");
 });
 
+test("workspace Files panel navigates deeply nested analysis modules", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Files" }).click();
+
+  await page.locator('.fb-row[data-workspace-path="DEG"]').click();
+  await expect(page.locator(".fb-path")).toHaveText("DEG");
+  await expect(page.locator('.fb-row[data-workspace-path="DEG/scripts"]')).toBeVisible();
+  await expect(page.locator('.fb-row[data-workspace-path="DEG/output"]')).toBeVisible();
+
+  await page.locator('.fb-row[data-workspace-path="DEG/output"]').click();
+  await page.locator('.fb-row[data-workspace-path="DEG/output/figures"]').click();
+  await expect(page.locator(".fb-path")).toHaveText("DEG/output/figures");
+  await expect(
+    page.locator('.fb-row[data-workspace-path="DEG/output/figures/volcano.png"]'),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(
+    page.locator('.fb-row[data-workspace-path="DEG/output/figures/volcano.png"]'),
+  ).toBeVisible();
+});
+
 test("workspace file can be registered as an artifact", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Files" }).click();

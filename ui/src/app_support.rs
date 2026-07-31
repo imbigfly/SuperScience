@@ -352,9 +352,9 @@ impl ComposerReferenceChip {
 
     pub(super) fn label(&self) -> String {
         match self {
-            Self::Artifact { name, .. }
-            | Self::Skill { name }
-            | Self::Workflow { name, .. } => name.clone(),
+            Self::Artifact { name, .. } | Self::Skill { name } | Self::Workflow { name, .. } => {
+                name.clone()
+            }
             Self::Session {
                 title,
                 project_name,
@@ -9707,10 +9707,16 @@ pub(super) fn ToolBlock(
     }
 }
 
-/// Parse a rendered plan checklist line (`[x] text` / `[~] text` / `[ ] text`)
+/// Parse a rendered plan checklist line
+/// (`[x] text` / `[~] text` / `[ ] text` / `[-] text`)
 /// into (status_class, text). Mirrors `update_plan`'s render in wisp-tools.
 pub(super) fn plan_step_line(line: &str) -> Option<(&'static str, &str)> {
-    for (prefix, cls) in [("[x] ", "done"), ("[~] ", "running"), ("[ ] ", "pending")] {
+    for (prefix, cls) in [
+        ("[x] ", "done"),
+        ("[~] ", "running"),
+        ("[ ] ", "pending"),
+        ("[-] ", "cancelled"),
+    ] {
         if let Some(rest) = line.strip_prefix(prefix) {
             return Some((cls, rest));
         }

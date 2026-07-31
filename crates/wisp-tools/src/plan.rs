@@ -50,7 +50,7 @@ fn render_plan(args: &Value) -> Result<String, String> {
     if steps.is_empty() {
         return Err("update_plan error: 'steps' must not be empty".into());
     }
-    let (mut done, mut running, mut pending) = (0usize, 0usize, 0usize);
+    let (mut done, mut running, mut pending, mut cancelled) = (0usize, 0usize, 0usize, 0usize);
     let mut lines = Vec::with_capacity(steps.len());
     for (i, s) in steps.iter().enumerate() {
         let text = s
@@ -76,9 +76,13 @@ fn render_plan(args: &Value) -> Result<String, String> {
                 pending += 1;
                 "[ ]"
             }
+            "cancelled" => {
+                cancelled += 1;
+                "[-]"
+            }
             other => {
                 return Err(format!(
-                    "update_plan error: step {} has invalid status '{}' (use pending|in_progress|completed)",
+                    "update_plan error: step {} has invalid status '{}' (use pending|in_progress|completed|cancelled)",
                     i + 1,
                     other
                 ))
@@ -92,7 +96,7 @@ fn render_plan(args: &Value) -> Result<String, String> {
         ));
     }
     let header = format!(
-        "Plan ({} steps · {done} done · {running} in progress · {pending} pending):",
+        "Plan ({} steps · {done} done · {running} in progress · {pending} pending · {cancelled} cancelled):",
         steps.len()
     );
     Ok(format!("{header}\n{}", lines.join("\n")))
@@ -134,7 +138,8 @@ impl Tool for UpdatePlanTool {
              work is genuinely multi-stage (several analyses to sequence, long compute, a pipeline worth \
              showing the user); skip it for lookups, a single computation, or reading one file. Keep at \
              most one step 'in_progress' at a time. A failed or cancelled tool call does not complete its \
-             related step; keep that step in_progress/pending or revise the plan.",
+             related step; keep a failed step in_progress/pending, and mark work the user explicitly removes \
+             as 'cancelled'. Never restore a cancelled step unless the user asks for it again.",
             json!({
                 "type": "object",
                 "properties": {
@@ -147,7 +152,7 @@ impl Tool for UpdatePlanTool {
                                 "step": { "type": "string", "description": "Short imperative description of the step." },
                                 "status": {
                                     "type": "string",
-                                    "enum": ["pending", "in_progress", "completed"],
+                                    "enum": ["pending", "in_progress", "completed", "cancelled"],
                                     "description": "Defaults to 'pending' if omitted."
                                 }
                             },
@@ -359,6 +364,9 @@ mod tests {
         assert!(!is_fresh_proposal(
             &json!({"steps": [{"step": "a", "status": "completed"}]})
         ));
+        assert!(!is_fresh_proposal(
+            &json!({"steps": [{"step": "a", "status": "cancelled"}]})
+        ));
         assert!(
             !is_fresh_proposal(&json!({"steps": []})),
             "empty is not a proposal"
@@ -370,14 +378,19 @@ mod tests {
         let out = render_plan(&json!({"steps": [
             {"step": "Load counts", "status": "completed"},
             {"step": "Run DESeq2", "status": "in_progress"},
+            {"step": "Download every MSigDB collection", "status": "cancelled"},
             {"step": "Write report"}
         ]}))
         .unwrap();
         assert!(out.contains("[x] Load counts"), "{out}");
         assert!(out.contains("[~] Run DESeq2"), "{out}");
+        assert!(
+            out.contains("[-] Download every MSigDB collection"),
+            "{out}"
+        );
         assert!(out.contains("[ ] Write report"), "{out}"); // omitted status -> pending
         assert!(
-            out.contains("3 steps · 1 done · 1 in progress · 1 pending"),
+            out.contains("4 steps · 1 done · 1 in progress · 1 pending · 1 cancelled"),
             "{out}"
         );
     }

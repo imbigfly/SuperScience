@@ -542,7 +542,9 @@ button.tool-btn.card-copy { margin-left: auto; flex: 0 0 auto; padding: 2px 8px;
 .plan-step.done .plan-step-mark::after { content: "✓"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--on-clay); }
 .plan-step.running .plan-step-mark { border-color: var(--clay); }
 .plan-step.running .plan-step-mark::after { content: ""; position: absolute; inset: 3px; border-radius: 2px; background: var(--clay); }
+.plan-step.cancelled .plan-step-mark::after { content: "−"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-faint); }
 .plan-step.done .plan-step-text { color: var(--text-muted); text-decoration: line-through; text-decoration-color: var(--text-faint); }
+.plan-step.cancelled .plan-step-text { color: var(--text-faint); text-decoration: line-through; text-decoration-color: var(--text-faint); }
 .plan-step.pending .plan-step-text { color: var(--text-muted); }
 .plan-step-text { min-width: 0; }
 .plan-feedback { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }

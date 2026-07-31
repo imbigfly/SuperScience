@@ -214,6 +214,14 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   (window as any).__setMockWorkspaceR = (value: string) => { workspaceR = String(value); };
   let workspaceEntries = [
     { path: "data", is_dir: true, size: 0 },
+    { path: "DEG", is_dir: true, size: 0 },
+    { path: "DEG/scripts", is_dir: true, size: 0 },
+    { path: "DEG/scripts/04_limma_deg.R", is_dir: false, size: 512 },
+    { path: "DEG/output", is_dir: true, size: 0 },
+    { path: "DEG/output/figures", is_dir: true, size: 0 },
+    { path: "DEG/output/figures/volcano.png", is_dir: false, size: 4096 },
+    { path: "DEG/output/tables", is_dir: true, size: 0 },
+    { path: "DEG/output/tables/all_genes.tsv", is_dir: false, size: 8192 },
     { path: "report.csv", is_dir: false, size: 4096 },
     { path: "config.json", is_dir: false, size: 64 },
     { path: "model.pdb", is_dir: false, size: 256 },

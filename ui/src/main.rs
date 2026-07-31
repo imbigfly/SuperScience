@@ -10619,7 +10619,11 @@ fn App() -> impl IntoView {
                                 // resetting its scroll to the top (#25). Selection is
                                 // isolated to the `.active` class and the nested `.rp-view`
                                 // closure below, so the scroll container is preserved.
-                                let groups = group_artifact_indices(&arts);
+                                let project_root = project_info
+                                    .get()
+                                    .map(|project| project.root)
+                                    .unwrap_or_default();
+                                let groups = group_artifact_indices(&arts, &project_root);
                                 let tile_groups = groups.into_iter().map(|(key, indices)| {
                                     let label = artifact_group_label(&key, loc);
                                     let count = indices.len();
