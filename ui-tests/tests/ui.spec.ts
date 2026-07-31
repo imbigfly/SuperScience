@@ -1869,26 +1869,26 @@ test("Workflow graph edits nodes and dependencies directly on the canvas", async
   await studio.getByTestId("workflow-graph-add-node").click();
   await inspector.getByTestId("dynamic-task-id").fill("fetch_b");
   await inspector.getByTestId("dynamic-task-instruction").fill("Fetch branch B");
-  await studio.getByTestId("workflow-graph-add-node").click();
+  await studio.getByTestId("workflow-graph-add-after").click();
   await inspector.getByTestId("dynamic-task-id").fill("merge");
   await inspector.getByTestId("dynamic-task-instruction").fill("Merge both branches");
 
   const byId = (id: string) =>
     studio.locator(`[data-testid="workflow-graph-node"][data-node-id="${id}"]`);
 
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(1);
+  await expect(studio.locator(
+    '[data-testid="workflow-graph-edge"][data-source="fetch_b"][data-target="merge"]',
+  )).toHaveCount(1);
+
   await byId("fetch_a").getByTestId("workflow-graph-connect").click();
   await expect(studio.getByTestId("workflow-graph-connect-hint")).toContainText("fetch_a");
   await byId("merge").getByTestId("workflow-graph-node-select").click();
-  await byId("fetch_b").getByTestId("workflow-graph-connect").click();
-  await byId("merge").getByTestId("workflow-graph-node-select").click();
-
   await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(2);
   await expect(studio.locator(
     '[data-testid="workflow-graph-edge"][data-source="fetch_a"][data-target="merge"]',
   )).toHaveCount(1);
-  await expect(studio.locator(
-    '[data-testid="workflow-graph-edge"][data-source="fetch_b"][data-target="merge"]',
-  )).toHaveCount(1);
+
   const positions = await studio.getByTestId("workflow-graph-node")
     .evaluateAll((items) => Object.fromEntries(items.map((item) => {
       const box = item.getBoundingClientRect();
@@ -1897,15 +1897,29 @@ test("Workflow graph edits nodes and dependencies directly on the canvas", async
   expect(Math.abs(positions.fetch_a.x - positions.fetch_b.x)).toBeLessThan(2);
   expect(positions.merge.x).toBeGreaterThan(positions.fetch_a.x);
 
+  await studio.locator(
+    '[data-testid="workflow-graph-edge-group"][data-source="fetch_a"][data-target="merge"]',
+  ).getByTestId("workflow-graph-edge-delete").click({ force: true });
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(1);
+
   await inspector.getByTestId("workflow-graph-remove-edge")
-    .filter({ hasText: "fetch_a" })
+    .filter({ hasText: "fetch_b" })
     .click();
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(0);
+
+  await byId("fetch_b").getByTestId("workflow-graph-connect").click();
+  await byId("merge").getByTestId("workflow-graph-node-select").click();
   await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(1);
 
   await byId("merge").getByTestId("workflow-graph-connect").click();
   await byId("fetch_b").getByTestId("workflow-graph-node-select").click();
   await expect(studio.getByTestId("workflow-studio-error")).toContainText("cycle");
   await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(1);
+
+  await byId("fetch_a").getByTestId("workflow-graph-connect").click();
+  await expect(studio.getByTestId("workflow-graph-connect-hint")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(studio.getByTestId("workflow-graph-connect-hint")).toHaveCount(0);
 
   await byId("fetch_a").getByTestId("workflow-graph-delete-node").click();
   await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(2);

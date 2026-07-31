@@ -262,6 +262,22 @@ impl DynamicWorkflowForm {
         key
     }
 
+    fn add_task_after(&mut self, source_key: u32) -> Option<u32> {
+        let source_id = self
+            .tasks
+            .iter()
+            .find(|task| task.key == source_key)
+            .map(|task| task.id.trim().to_string())
+            .filter(|id| !id.is_empty())?;
+        let key = self.add_task();
+        self.tasks
+            .iter_mut()
+            .find(|task| task.key == key)?
+            .depends_on
+            .push(source_id);
+        Some(key)
+    }
+
     fn remove_task(&mut self, key: u32) {
         self.tasks.retain(|task| task.key != key);
         let ids = self
@@ -443,6 +459,8 @@ struct WorkflowGraphEdge {
     source_id: String,
     target_id: String,
     path: String,
+    mid_x: i32,
+    mid_y: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -459,6 +477,49 @@ struct WorkflowGraphLayout {
     nodes: Vec<WorkflowGraphNode>,
     edges: Vec<WorkflowGraphEdge>,
     stages: Vec<WorkflowGraphStage>,
+}
+
+fn workflow_graph_edge_path(x1: i32, y1: i32, x2: i32, y2: i32) -> String {
+    let bend = ((x2 - x1).abs() / 2).max(32);
+    format!(
+        "M {x1} {y1} C {} {y1}, {} {y2}, {x2} {y2}",
+        x1 + bend,
+        x2 - bend
+    )
+}
+
+fn workflow_graph_port_out(node: &WorkflowGraphNode) -> (i32, i32) {
+    (
+        node.x + WORKFLOW_GRAPH_NODE_WIDTH,
+        node.y + WORKFLOW_GRAPH_NODE_HEIGHT / 2,
+    )
+}
+
+fn workflow_graph_port_in(node: &WorkflowGraphNode) -> (i32, i32) {
+    (node.x, node.y + WORKFLOW_GRAPH_NODE_HEIGHT / 2)
+}
+
+fn workflow_graph_canvas_point(
+    event: &web_sys::PointerEvent,
+    canvas: &web_sys::Element,
+    zoom: i32,
+) -> (f64, f64) {
+    let rect = canvas.get_bounding_client_rect();
+    let scale = zoom as f64 / 100.0;
+    (
+        (event.client_x() as f64 - rect.left()) / scale,
+        (event.client_y() as f64 - rect.top()) / scale,
+    )
+}
+
+fn workflow_graph_node_key_from_event(event: &web_sys::PointerEvent) -> Option<u32> {
+    let target = event.target()?.dyn_into::<web_sys::Element>().ok()?;
+    let node = target
+        .closest("[data-testid=\"workflow-graph-node\"]")
+        .ok()
+        .flatten()?;
+    let id = node.get_attribute("data-node-key")?;
+    id.parse().ok()
 }
 
 fn workflow_graph_layout(tasks: &[DynamicTaskForm]) -> WorkflowGraphLayout {
@@ -581,21 +642,16 @@ fn workflow_graph_layout(tasks: &[DynamicTaskForm]) -> WorkflowGraphLayout {
             let Some(source) = node_by_id.get(dependency.as_str()) else {
                 continue;
             };
-            let x1 = source.x + WORKFLOW_GRAPH_NODE_WIDTH;
-            let y1 = source.y + WORKFLOW_GRAPH_NODE_HEIGHT / 2;
-            let x2 = target.x;
-            let y2 = target.y + WORKFLOW_GRAPH_NODE_HEIGHT / 2;
-            let bend = ((x2 - x1).abs() / 2).max(32);
+            let (x1, y1) = workflow_graph_port_out(source);
+            let (x2, y2) = workflow_graph_port_in(target);
             edges.push(WorkflowGraphEdge {
                 source_key: source.key,
                 target_key: target.key,
                 source_id: source.id.clone(),
                 target_id: target.id.clone(),
-                path: format!(
-                    "M {x1} {y1} C {} {y1}, {} {y2}, {x2} {y2}",
-                    x1 + bend,
-                    x2 - bend
-                ),
+                path: workflow_graph_edge_path(x1, y1, x2, y2),
+                mid_x: (x1 + x2) / 2,
+                mid_y: (y1 + y2) / 2,
             });
         }
     }
@@ -1451,11 +1507,94 @@ fn workflow_graph_editor(
     locale: RwSignal<Locale>,
 ) -> impl IntoView {
     let graph_zoom = create_rw_signal(100_i32);
+    let connect_cursor = create_rw_signal::<Option<(f64, f64)>>(None);
+    let connect_origin = create_rw_signal::<Option<(f64, f64)>>(None);
+    let connect_dragging = create_rw_signal(false);
+    let selected_edge = create_rw_signal::<Option<(u32, u32)>>(None);
+    let canvas_ref = create_node_ref::<leptos::html::Div>();
     let layout = create_memo(move |_| {
         state
             .dynamic_form
             .with(|form| workflow_graph_layout(&form.tasks))
     });
+
+    let cancel_connect = move || {
+        connect_from_key.set(None);
+        connect_cursor.set(None);
+        connect_origin.set(None);
+        connect_dragging.set(false);
+    };
+
+    let finish_connect = move |source_key: u32, target_key: u32| {
+        if source_key == target_key {
+            cancel_connect();
+            return;
+        }
+        let mut result = Ok(false);
+        state.dynamic_form.update(|form| {
+            result = form.add_dependency(source_key, target_key);
+        });
+        match result {
+            Ok(_) => {
+                selected_task_key.set(Some(target_key));
+                selected_edge.set(None);
+                cancel_connect();
+                state.error.set(None);
+            }
+            Err(error) => {
+                state.error.set(Some(graph_connection_message(
+                    locale.get_untracked(),
+                    error,
+                )));
+            }
+        }
+    };
+
+    {
+        let selected_edge_for_key = selected_edge;
+        let remove_selected_edge = move || {
+            let Some((source_key, target_key)) = selected_edge_for_key.get_untracked() else {
+                return false;
+            };
+            state.dynamic_form.update(|form| {
+                form.remove_dependency(source_key, target_key);
+            });
+            selected_edge_for_key.set(None);
+            state.error.set(None);
+            true
+        };
+        let listener = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::wrap(
+            Box::new(move |event: web_sys::KeyboardEvent| {
+                if event.default_prevented() || crate::text::ime_composing(&event) {
+                    return;
+                }
+                if !matches!(event.key().as_str(), "Delete" | "Backspace") {
+                    return;
+                }
+                if selected_edge_for_key.get_untracked().is_none() {
+                    return;
+                }
+                if remove_selected_edge() {
+                    event.prevent_default();
+                    event.stop_propagation();
+                }
+            }),
+        );
+        if let Some(window) = web_sys::window() {
+            let _ = window.add_event_listener_with_callback(
+                "keydown",
+                listener.as_ref().unchecked_ref(),
+            );
+        }
+        on_cleanup(move || {
+            if let Some(window) = web_sys::window() {
+                let _ = window.remove_event_listener_with_callback(
+                    "keydown",
+                    listener.as_ref().unchecked_ref(),
+                );
+            }
+        });
+    }
 
     create_effect(move |_| {
         let keys = state
@@ -1471,8 +1610,22 @@ fn workflow_graph_editor(
             .get_untracked()
             .is_some_and(|key| !keys.contains(&key))
         {
-            connect_from_key.set(None);
+            cancel_connect();
         }
+        if selected_edge
+            .get_untracked()
+            .is_some_and(|(source, target)| !keys.contains(&source) || !keys.contains(&target))
+        {
+            selected_edge.set(None);
+        }
+    });
+
+    window_capture_escape(move || {
+        if connect_from_key.get_untracked().is_some() {
+            cancel_connect();
+            return true;
+        }
+        false
     });
 
     let add_node = move |_| {
@@ -1481,8 +1634,28 @@ fn workflow_graph_editor(
             new_key = Some(form.add_task());
         });
         selected_task_key.set(new_key);
-        connect_from_key.set(None);
+        selected_edge.set(None);
+        cancel_connect();
         state.error.set(None);
+    };
+
+    let add_after_selected = move |_| {
+        let Some(source_key) = selected_task_key.get_untracked() else {
+            return;
+        };
+        let new_key = {
+            let mut created = None;
+            state.dynamic_form.update(|form| {
+                created = form.add_task_after(source_key);
+            });
+            created
+        };
+        if let Some(key) = new_key {
+            selected_task_key.set(Some(key));
+            selected_edge.set(None);
+            cancel_connect();
+            state.error.set(None);
+        }
     };
 
     view! {
@@ -1534,21 +1707,30 @@ fn workflow_graph_editor(
                                             data-testid="workflow-graph-connect-hint">
                                             {tf(
                                                 locale.get(),
-                                                "workflow_studio.graph_choose_target",
+                                                "workflow_studio.graph_connect_hint",
                                                 &[("node", &id)],
                                             )}
                                         </span>
                                         <button type="button" class="workflow-graph-tool-btn"
                                             data-testid="workflow-graph-connect-cancel"
-                                            on:click=move |_| connect_from_key.set(None)>
+                                            on:click=move |_| cancel_connect()>
                                             {move || t(locale.get(), "workflow_studio.graph_cancel_connect")}
                                         </button>
                                     }
                                 })
                             })
                         })}
+                        <button type="button" class="workflow-graph-tool-btn workflow-graph-add-after"
+                            data-testid="workflow-graph-add-after"
+                            disabled=move || selected_task_key.get().is_none()
+                            title=move || t(locale.get(), "workflow_studio.graph_add_after")
+                            on:click=add_after_selected>
+                            {compose_icon("plus")}
+                            <span>{move || t(locale.get(), "workflow_studio.graph_add_after")}</span>
+                        </button>
                         <button type="button" class="workflow-graph-tool-btn workflow-graph-add-node"
                             data-testid="workflow-graph-add-node"
+                            title=move || t(locale.get(), "workflow_studio.graph_add_parallel")
                             on:click=add_node>
                             {compose_icon("plus")}
                             <span>{move || t(locale.get(), "workflow_studio.graph_add_node")}</span>
@@ -1567,12 +1749,71 @@ fn workflow_graph_editor(
                             )
                         }>
                         <div class="workflow-graph-canvas"
+                            node_ref=canvas_ref
+                            class:connecting=move || connect_from_key.get().is_some()
                             style=move || format!(
                                 "width:{}px;height:{}px;transform:scale({});",
                                 layout.get().width,
                                 layout.get().height,
                                 graph_zoom.get() as f64 / 100.0,
-                            )>
+                            )
+                            on:pointermove=move |event: web_sys::PointerEvent| {
+                                if connect_from_key.get_untracked().is_none() {
+                                    return;
+                                }
+                                let Some(canvas) = canvas_ref.get() else {
+                                    return;
+                                };
+                                let point = workflow_graph_canvas_point(
+                                    &event,
+                                    &canvas,
+                                    graph_zoom.get_untracked(),
+                                );
+                                connect_cursor.set(Some(point));
+                                if let Some(origin) = connect_origin.get_untracked() {
+                                    let dx = point.0 - origin.0;
+                                    let dy = point.1 - origin.1;
+                                    if (dx * dx + dy * dy).sqrt() > 4.0 {
+                                        connect_dragging.set(true);
+                                    }
+                                }
+                            }
+                            on:pointerup=move |event: web_sys::PointerEvent| {
+                                let Some(source_key) = connect_from_key.get_untracked() else {
+                                    return;
+                                };
+                                if let Some(target_key) = workflow_graph_node_key_from_event(&event) {
+                                    if target_key != source_key {
+                                        finish_connect(source_key, target_key);
+                                        return;
+                                    }
+                                }
+                                if connect_dragging.get_untracked() {
+                                    cancel_connect();
+                                }
+                            }
+                            on:pointerdown=move |event: web_sys::PointerEvent| {
+                                if workflow_graph_node_key_from_event(&event).is_some() {
+                                    return;
+                                }
+                                if event
+                                    .target()
+                                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                                    .is_some_and(|target| {
+                                        target
+                                            .closest("[data-testid=\"workflow-graph-edge-hit\"]")
+                                            .ok()
+                                            .flatten()
+                                            .is_some()
+                                    })
+                                {
+                                    return;
+                                }
+                                if connect_from_key.get_untracked().is_some() {
+                                    cancel_connect();
+                                }
+                                selected_edge.set(None);
+                            }>
                         <svg class="workflow-graph-edges"
                             width=move || layout.get().width
                             height=move || layout.get().height
@@ -1589,19 +1830,108 @@ fn workflow_graph_editor(
                                     <path d="M 0 0 L 10 5 L 0 10 z"></path>
                                 </marker>
                             </defs>
+                            {move || {
+                                connect_from_key.get().and_then(|source_key| {
+                                    let cursor = connect_cursor.get()?;
+                                    let current = layout.get();
+                                    let source_node = current
+                                        .nodes
+                                        .iter()
+                                        .find(|node| node.key == source_key)?;
+                                    let (x1, y1) = workflow_graph_port_out(source_node);
+                                    Some(view! {
+                                        <path class="workflow-graph-edge-preview"
+                                            data-testid="workflow-graph-edge-preview"
+                                            d=workflow_graph_edge_path(
+                                                x1,
+                                                y1,
+                                                cursor.0.round() as i32,
+                                                cursor.1.round() as i32,
+                                            )></path>
+                                    })
+                                })
+                            }}
                             <For each=move || layout.get().edges
                                 key=|edge| (
                                     edge.source_key,
                                     edge.target_key,
                                     edge.path.clone(),
                                 )
-                                children=move |edge| view! {
-                                    <path class="workflow-graph-edge"
-                                        data-testid="workflow-graph-edge"
-                                        data-source=edge.source_id
-                                        data-target=edge.target_id
-                                        d=edge.path
-                                        marker-end="url(#workflow-graph-arrow)"></path>
+                                children=move |edge| {
+                                    let source_key = edge.source_key;
+                                    let target_key = edge.target_key;
+                                    let source_id = edge.source_id.clone();
+                                    let target_id = edge.target_id.clone();
+                                    let path = edge.path.clone();
+                                    let mid_x = edge.mid_x;
+                                    let mid_y = edge.mid_y;
+                                    view! {
+                                        <g class="workflow-graph-edge-group"
+                                            class:selected=move || {
+                                                selected_edge.get()
+                                                    == Some((source_key, target_key))
+                                            }
+                                            data-testid="workflow-graph-edge-group"
+                                            data-source=source_id.clone()
+                                            data-target=target_id.clone()>
+                                            <path class="workflow-graph-edge-hit"
+                                                data-testid="workflow-graph-edge-hit"
+                                                d=path.clone()
+                                                on:click=move |event: web_sys::MouseEvent| {
+                                                    event.stop_propagation();
+                                                    if selected_edge.get_untracked()
+                                                        == Some((source_key, target_key))
+                                                    {
+                                                        state.dynamic_form.update(|form| {
+                                                            form.remove_dependency(
+                                                                source_key,
+                                                                target_key,
+                                                            );
+                                                        });
+                                                        selected_edge.set(None);
+                                                        state.error.set(None);
+                                                        return;
+                                                    }
+                                                    selected_edge.set(Some((source_key, target_key)));
+                                                    selected_task_key.set(None);
+                                                    cancel_connect();
+                                                }></path>
+                                            <path class="workflow-graph-edge"
+                                                data-testid="workflow-graph-edge"
+                                                data-source=source_id
+                                                data-target=target_id
+                                                d=path
+                                                marker-end="url(#workflow-graph-arrow)"></path>
+                                            <foreignObject
+                                                class="workflow-graph-edge-delete-wrap"
+                                                x=mid_x - 11
+                                                y=mid_y - 11
+                                                width="22"
+                                                height="22">
+                                                <button type="button"
+                                                    xmlns="http://www.w3.org/1999/xhtml"
+                                                    class="workflow-graph-edge-delete"
+                                                    data-testid="workflow-graph-edge-delete"
+                                                    title=move || t(
+                                                        locale.get(),
+                                                        "workflow_studio.graph_remove_edge",
+                                                    )
+                                                    on:click=move |event: web_sys::MouseEvent| {
+                                                        event.stop_propagation();
+                                                        state.dynamic_form.update(|form| {
+                                                            form.remove_dependency(
+                                                                source_key,
+                                                                target_key,
+                                                            );
+                                                        });
+                                                        selected_edge.set(None);
+                                                        state.error.set(None);
+                                                    }>
+                                                    {"×"}
+                                                </button>
+                                            </foreignObject>
+                                        </g>
+                                    }
                                 }
                             />
                         </svg>
@@ -1681,7 +2011,41 @@ fn workflow_graph_editor(
                                         }
                                         style=style
                                         data-testid="workflow-graph-node"
-                                        data-node-id=node.id>
+                                        data-node-id=node.id.clone()
+                                        data-node-key=key.to_string()>
+                                        <button type="button" class="workflow-graph-port input"
+                                            class:connect-target=move || {
+                                                connect_from_key.get().is_some_and(|source| source != key)
+                                            }
+                                            data-testid="workflow-graph-connect-target"
+                                            title=move || t(
+                                                locale.get(),
+                                                "workflow_studio.graph_connect_target",
+                                            )
+                                            aria-label=move || t(
+                                                locale.get(),
+                                                "workflow_studio.graph_connect_target",
+                                            )
+                                            on:pointerup=move |event: web_sys::PointerEvent| {
+                                                event.stop_propagation();
+                                                if let Some(source_key) =
+                                                    connect_from_key.get_untracked()
+                                                {
+                                                    if source_key != key {
+                                                        finish_connect(source_key, key);
+                                                    }
+                                                }
+                                            }
+                                            on:click=move |event: web_sys::MouseEvent| {
+                                                event.stop_propagation();
+                                                if let Some(source_key) =
+                                                    connect_from_key.get_untracked()
+                                                {
+                                                    if source_key != key {
+                                                        finish_connect(source_key, key);
+                                                    }
+                                                }
+                                            }></button>
                                         <button type="button" class="workflow-graph-node-main"
                                             data-testid="workflow-graph-node-select"
                                             on:click=move |_| {
@@ -1689,31 +2053,13 @@ fn workflow_graph_editor(
                                                     connect_from_key.get_untracked()
                                                 {
                                                     if source_key == select_key {
-                                                        connect_from_key.set(None);
+                                                        cancel_connect();
                                                         return;
                                                     }
-                                                    let mut result = Ok(false);
-                                                    state.dynamic_form.update(|form| {
-                                                        result = form.add_dependency(
-                                                            source_key,
-                                                            select_key,
-                                                        );
-                                                    });
-                                                    match result {
-                                                        Ok(_) => {
-                                                            selected_task_key.set(Some(select_key));
-                                                            connect_from_key.set(None);
-                                                            state.error.set(None);
-                                                        }
-                                                        Err(error) => state.error.set(Some(
-                                                            graph_connection_message(
-                                                                locale.get_untracked(),
-                                                                error,
-                                                            ),
-                                                        )),
-                                                    }
+                                                    finish_connect(source_key, select_key);
                                                 } else {
                                                     selected_task_key.set(Some(select_key));
+                                                    selected_edge.set(None);
                                                 }
                                             }>
                                             <span class="workflow-graph-node-title">
@@ -1733,7 +2079,6 @@ fn workflow_graph_editor(
                                                 )}</code>
                                             </span>
                                         </button>
-                                        <span class="workflow-graph-port input" aria-hidden="true"></span>
                                         <button type="button" class="workflow-graph-port output"
                                             class:active=move || {
                                                 connect_from_key.get() == Some(connect_key)
@@ -1749,19 +2094,54 @@ fn workflow_graph_editor(
                                                 "workflow_studio.graph_connect_from",
                                                 &[("node", &connect_node_aria_id)],
                                             )
-                                            on:click=move |_| {
-                                                connect_from_key.set(
-                                                    (connect_from_key.get_untracked()
-                                                        != Some(connect_key))
-                                                        .then_some(connect_key),
-                                                );
+                                            on:pointerdown=move |event: web_sys::PointerEvent| {
+                                                event.stop_propagation();
+                                                connect_from_key.set(Some(connect_key));
                                                 selected_task_key.set(Some(connect_key));
+                                                selected_edge.set(None);
+                                                connect_dragging.set(false);
                                                 state.error.set(None);
-                                            }>
-                                            <span class="workflow-graph-port-plus" aria-hidden="true">
-                                                {compose_icon("plus")}
-                                            </span>
-                                        </button>
+                                                if let Some(canvas) = canvas_ref.get() {
+                                                    let point = workflow_graph_canvas_point(
+                                                        &event,
+                                                        &canvas,
+                                                        graph_zoom.get_untracked(),
+                                                    );
+                                                    connect_origin.set(Some(point));
+                                                    connect_cursor.set(Some(point));
+                                                    let _ = canvas.set_pointer_capture(event.pointer_id());
+                                                }
+                                            }
+                                            on:click=move |event: web_sys::MouseEvent| {
+                                                event.stop_propagation();
+                                            }></button>
+                                        {move || (selected_task_key.get() == Some(key)).then(|| {
+                                            let source_key = key;
+                                            view! {
+                                                <button type="button"
+                                                    class="workflow-graph-add-next"
+                                                    data-testid="workflow-graph-add-next"
+                                                    title=move || t(
+                                                        locale.get(),
+                                                        "workflow_studio.graph_add_after",
+                                                    )
+                                                    on:click=move |event: web_sys::MouseEvent| {
+                                                        event.stop_propagation();
+                                                        let mut new_key = None;
+                                                        state.dynamic_form.update(|form| {
+                                                            new_key = form.add_task_after(source_key);
+                                                        });
+                                                        if let Some(key) = new_key {
+                                                            selected_task_key.set(Some(key));
+                                                            selected_edge.set(None);
+                                                            cancel_connect();
+                                                            state.error.set(None);
+                                                        }
+                                                    }>
+                                                    {compose_icon("plus")}
+                                                </button>
+                                            }
+                                        })}
                                         <button type="button" class="workflow-graph-node-delete"
                                             data-testid="workflow-graph-delete-node"
                                             title=move || t(locale.get(), "agents.task.remove")
@@ -1776,7 +2156,7 @@ fn workflow_graph_editor(
                                                 if connect_from_key.get_untracked()
                                                     == Some(delete_key)
                                                 {
-                                                    connect_from_key.set(None);
+                                                    cancel_connect();
                                                 }
                                                 state.error.set(None);
                                             }>
@@ -2741,6 +3121,29 @@ mod tests {
             .tasks
             .iter()
             .all(|task| task.specialist_id.is_none()));
+    }
+
+    #[test]
+    fn add_task_after_places_node_in_next_stage() {
+        let mut form = DynamicWorkflowForm::default();
+        form.tasks[0].id = "fetch".into();
+        form.tasks[0].instruction = "Fetch data".into();
+        let source_key = form.tasks[0].key;
+        let next_key = form.add_task_after(source_key).expect("creates dependent task");
+        form.tasks
+            .iter()
+            .find(|task| task.key == next_key)
+            .map(|task| {
+                assert_eq!(task.depends_on, ["fetch"]);
+            })
+            .expect("created task exists");
+
+        let layout = workflow_graph_layout(&form.tasks);
+        let fetch = layout.nodes.iter().find(|node| node.id == "fetch").unwrap();
+        let next = layout.nodes.iter().find(|node| node.key == next_key).unwrap();
+        assert_eq!(fetch.level, 0);
+        assert_eq!(next.level, 1);
+        assert!(next.x > fetch.x);
     }
 
     #[test]
