@@ -938,6 +938,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
         }),
       }]
     : [];
+  let publicationCapsuleBuilds: any[] = [];
   const publicationRevision = () => ({
     id: publicationRevisionId,
     publication_id: "publication-paper-1",
@@ -1025,6 +1026,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       code_snapshot_count: 1,
       environment_captured: true,
     })),
+    capsule_builds: publicationCapsuleBuilds,
   });
 
   (window as any).__TAURI__ = {
@@ -1108,6 +1110,23 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               revision: publicationRevision(),
               readiness: publicationReadiness(),
             };
+          case "build_publication_capsule": {
+            const build = {
+              id: `capsule-build-${publicationCapsuleBuilds.length + 1}`,
+              revision_id: String(arg("revisionId") ?? publicationRevisionId),
+              format: "zip",
+              visibility: "public",
+              status: "succeeded",
+              output_path: "/exports/publication-capsule.zip",
+              revision_manifest_sha256: "a".repeat(64),
+              archive_sha256: "c".repeat(64),
+              error: null,
+              created_at: 1785480100,
+              completed_at: 1785480101,
+            };
+            publicationCapsuleBuilds = [build, ...publicationCapsuleBuilds];
+            return build;
+          }
           case "list_library_items":
             return libraryItems.map(({ base64: _base64, ...item }) => item);
           case "star_library_code": {

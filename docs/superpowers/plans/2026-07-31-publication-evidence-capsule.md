@@ -150,28 +150,28 @@ Unrelated `.codex/` and `.playwright-mcp/` workspace files are never staged.
 
 **Commit:** `feat(publication): build selective evidence capsules`
 
-- [ ] Build only from a Frozen/Published stored manifest.
-- [ ] Emit schema-v1 `capsule.json`, README, REPRODUCE, CITATION, checksums,
+- [x] Build only from a Frozen/Published stored manifest.
+- [x] Emit schema-v1 `capsule.json`, README, REPRODUCE, CITATION, checksums,
   data/access manifest, evidence, provenance, reference results, and
   verification report.
-- [ ] Include allowlisted Public immutable bytes only.
-- [ ] Emit Restricted/Private dependencies as omissions and access
+- [x] Include allowlisted Public immutable bytes only.
+- [x] Emit Restricted/Private dependencies as omissions and access
   instructions.
-- [ ] Verify each copied blob against its frozen SHA-256.
-- [ ] Normalize entry ordering, archive timestamps, permissions, and paths.
-- [ ] Record Capsule Build result separately from the revision manifest.
-- [ ] Reject traversal, symlinks, secrets, and live workspace fallbacks.
+- [x] Verify each copied blob against its frozen SHA-256.
+- [x] Normalize entry ordering, archive timestamps, permissions, and paths.
+- [x] Record Capsule Build result separately from the revision manifest.
+- [x] Reject traversal, symlinks, secrets, and live workspace fallbacks.
 
 ### Gate
 
-- [ ] Two builds of one revision have the same revision manifest hash and
+- [x] Two builds of one revision have the same revision manifest hash and
   normalized archive content.
-- [ ] Mutated live files do not affect the capsule.
-- [ ] No Restricted/Private bytes appear in a Public build.
-- [ ] Corrupt or missing immutable blobs fail closed.
-- [ ] Windows-style and macOS/POSIX paths remain portable.
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo test --workspace`
+- [x] Mutated live files do not affect the capsule.
+- [x] No Restricted/Private bytes appear in a Public build.
+- [x] Corrupt or missing immutable blobs fail closed.
+- [x] Windows-style and macOS/POSIX paths remain portable.
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo test --workspace`
 
 ## PR 5 — fine-grained anchors and isolated verification
 

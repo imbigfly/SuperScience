@@ -1,6 +1,6 @@
 use super::{
     artifact_node_id, canonical_json, canonical_json_sha256, run_node_id, ArtifactMaterialization,
-    EvidenceBinding, EvidenceBindingDraft, EvidenceReproductionState, EvidenceReview,
+    CapsuleBuild, EvidenceBinding, EvidenceBindingDraft, EvidenceReproductionState, EvidenceReview,
     EvidenceReviewState, EvidenceSelectionState, EvidenceSourceKind, EvidenceSupersession,
     EvidenceVisibility, Publication, PublicationCapabilityLevel, PublicationEvidenceDrift,
     PublicationFreezeCommit, PublicationFreezePolicy, PublicationItem, PublicationItemKind,
@@ -71,6 +71,23 @@ fn publication_item_link_from_row(row: sqlx::sqlite::SqliteRow) -> Result<Public
         target_item_id: row.try_get("target_item_id")?,
         relation: row.try_get("relation")?,
         created_at: row.try_get("created_at")?,
+    })
+}
+
+fn capsule_build_from_row(row: sqlx::sqlite::SqliteRow) -> Result<CapsuleBuild> {
+    let visibility: String = row.try_get("visibility")?;
+    Ok(CapsuleBuild {
+        id: row.try_get("id")?,
+        revision_id: row.try_get("revision_id")?,
+        format: row.try_get("format")?,
+        visibility: EvidenceVisibility::from_storage(&visibility)?,
+        status: row.try_get("status")?,
+        output_path: row.try_get("output_path")?,
+        revision_manifest_sha256: row.try_get("revision_manifest_sha256")?,
+        archive_sha256: row.try_get("archive_sha256")?,
+        error: row.try_get("error")?,
+        created_at: row.try_get("created_at")?,
+        completed_at: row.try_get("completed_at")?,
     })
 }
 
@@ -1698,6 +1715,132 @@ impl Store {
             anyhow::bail!("Frozen Publication revision not found");
         }
         Ok(())
+    }
+
+    pub async fn start_capsule_build(
+        &self,
+        id: &str,
+        revision_id: &str,
+        format: &str,
+        visibility: EvidenceVisibility,
+        output_path: &str,
+        revision_manifest_sha256: &str,
+    ) -> Result<CapsuleBuild> {
+        if id.trim().is_empty()
+            || format != "zip"
+            || output_path.trim().is_empty()
+            || revision_manifest_sha256.len() != 64
+            || !revision_manifest_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            anyhow::bail!("Invalid Capsule Build request");
+        }
+        let now = chrono::Utc::now().timestamp();
+        let inserted = sqlx::query(
+            "INSERT INTO capsule_builds(\
+               id,revision_id,format,visibility,status,output_path,revision_manifest_sha256,\
+               archive_sha256,error,created_at,completed_at\
+             ) \
+             SELECT ?,revision.id,?,?,'building',?,?,NULL,NULL,?,NULL \
+             FROM publication_revisions revision \
+             JOIN publication_readiness_reports report ON report.revision_id=revision.id \
+             WHERE revision.id=? AND revision.state IN ('frozen','published') \
+               AND revision.manifest_sha256=? AND report.manifest_sha256=? \
+               AND report.target_visibility=?",
+        )
+        .bind(id)
+        .bind(format)
+        .bind(visibility.as_str())
+        .bind(output_path)
+        .bind(revision_manifest_sha256)
+        .bind(now)
+        .bind(revision_id)
+        .bind(revision_manifest_sha256)
+        .bind(revision_manifest_sha256)
+        .bind(visibility.as_str())
+        .execute(&self.pool)
+        .await?;
+        if inserted.rows_affected() != 1 {
+            anyhow::bail!("Frozen Publication manifest is unavailable or changed");
+        }
+        self.get_capsule_build(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Capsule Build was not persisted"))
+    }
+
+    pub async fn complete_capsule_build(
+        &self,
+        id: &str,
+        archive_sha256: &str,
+    ) -> Result<CapsuleBuild> {
+        if archive_sha256.len() != 64
+            || !archive_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            anyhow::bail!("Capsule archive SHA-256 is invalid");
+        }
+        let now = chrono::Utc::now().timestamp();
+        let updated = sqlx::query(
+            "UPDATE capsule_builds \
+             SET status='succeeded',archive_sha256=?,error=NULL,completed_at=? \
+             WHERE id=? AND status='building'",
+        )
+        .bind(archive_sha256)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Capsule Build is no longer active");
+        }
+        self.get_capsule_build(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Completed Capsule Build was not found"))
+    }
+
+    pub async fn fail_capsule_build(&self, id: &str, error: &str) -> Result<CapsuleBuild> {
+        let now = chrono::Utc::now().timestamp();
+        let error = error.chars().take(2_000).collect::<String>();
+        let updated = sqlx::query(
+            "UPDATE capsule_builds \
+             SET status='failed',archive_sha256=NULL,error=?,completed_at=? \
+             WHERE id=? AND status='building'",
+        )
+        .bind(error)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Capsule Build is no longer active");
+        }
+        self.get_capsule_build(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Failed Capsule Build was not found"))
+    }
+
+    pub async fn get_capsule_build(&self, id: &str) -> Result<Option<CapsuleBuild>> {
+        let row = sqlx::query(
+            "SELECT id,revision_id,format,visibility,status,output_path,\
+                    revision_manifest_sha256,archive_sha256,error,created_at,completed_at \
+             FROM capsule_builds WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(capsule_build_from_row).transpose()
+    }
+
+    pub async fn list_capsule_builds(&self, revision_id: &str) -> Result<Vec<CapsuleBuild>> {
+        let rows = sqlx::query(
+            "SELECT id,revision_id,format,visibility,status,output_path,\
+                    revision_manifest_sha256,archive_sha256,error,created_at,completed_at \
+             FROM capsule_builds WHERE revision_id=? ORDER BY created_at DESC,id DESC",
+        )
+        .bind(revision_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(capsule_build_from_row).collect()
     }
 
     pub async fn clone_publication_revision(

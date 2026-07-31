@@ -2011,12 +2011,18 @@ mod tests {
         assert_eq!(readiness.target_visibility, EvidenceVisibility::Public);
         assert_eq!(readiness.policy_json, "{}");
         assert_eq!(readiness.manifest_sha256, publication_manifest_sha256);
-        let build_path: Option<String> =
-            sqlx::query_scalar("SELECT output_path FROM capsule_builds WHERE id='capsule'")
-                .fetch_one(&target.pool)
-                .await
-                .unwrap();
-        assert!(build_path.is_none());
+        let builds = target
+            .list_capsule_builds("publication-revision-1")
+            .await
+            .unwrap();
+        assert_eq!(builds.len(), 1);
+        assert_eq!(builds[0].id, "capsule");
+        assert_eq!(builds[0].status, "succeeded");
+        assert_eq!(
+            builds[0].archive_sha256.as_deref(),
+            Some("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+        );
+        assert!(builds[0].output_path.is_none());
         assert!(target
             .import_project_database(&archive_path, "project-1", workspace)
             .await

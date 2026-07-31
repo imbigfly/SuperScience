@@ -46,10 +46,34 @@ dependencies remain manifest references or omissions with access instructions.
 Frozen evidence and its manifest hash are retained independently of ordinary
 Artifact, Session, undo, and garbage-collection operations.
 
+## Building a Capsule
+
+Frozen and Published revisions expose **Build Capsule**. The save produces a
+deterministic ZIP derived only from the stored frozen manifest and exact
+content-addressed snapshots. It never falls back to a current workspace file.
+Every copied blob is streamed through SHA-256 verification before the archive
+is published.
+
+The schema-v1 archive contains:
+
+- `capsule.json`, `checksums.sha256`, `README.md`, `REPRODUCE.md`, and
+  `CITATION.cff`;
+- the exact frozen manifest and selected evidence under `evidence/`;
+- Run, input, output, code, and environment lineage under `provenance/`;
+- access instructions and reference-only dependencies under `data/`;
+- immutable reference results and the verification report.
+
+Entry names, ordering, timestamps, and permissions are normalized. Rebuilding
+the same revision from the same immutable blobs produces the same archive
+bytes and SHA-256. Public Capsules copy only Public allowlisted bytes;
+Restricted and Private dependencies remain metadata and access instructions.
+Traversal paths, symlinks, credential-like content, missing snapshots, and
+checksum mismatches fail closed. Each attempt is recorded separately from the
+frozen revision, including its revision-manifest hash and archive hash.
+
 ## Current scope
 
-The first release accepts exact ArtifactVersion and Run evidence. Message spans,
-tool calls, code cells, isolated reruns, result comparators, and deterministic
-Capsule archive construction are later phases. Until a clean rerun passes, the
-feature is a Publication Evidence / Traceability Capsule and does not claim
-full reproducibility.
+The first release accepts exact ArtifactVersion and Run evidence. Message
+spans, tool calls, code cells, isolated reruns, and result comparators are later
+phases. Until a clean rerun passes, the feature is a Publication Evidence /
+Traceability Capsule and does not claim full reproducibility.

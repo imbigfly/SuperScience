@@ -529,6 +529,11 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "publication.freeze") => Some("Freeze"),
         (Locale::En, "publication.freeze_title") => Some("Freeze revision"),
         (Locale::En, "publication.freeze_action") => Some("Run readiness and freeze"),
+        (Locale::En, "publication.build_capsule") => Some("Build Capsule"),
+        (Locale::En, "publication.capsule_builds") => Some("Capsule builds"),
+        (Locale::En, "publication.capsule_status.building") => Some("Building"),
+        (Locale::En, "publication.capsule_status.succeeded") => Some("Succeeded"),
+        (Locale::En, "publication.capsule_status.failed") => Some("Failed"),
         (Locale::En, "publication.target_visibility") => Some("Capsule visibility"),
         (Locale::En, "publication.phi_reviewed") => {
             Some("I reviewed the evidence for PHI and PII.")
@@ -2178,6 +2183,11 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "publication.freeze") => Some("冻结"),
         (Locale::Zh, "publication.freeze_title") => Some("冻结论文版本"),
         (Locale::Zh, "publication.freeze_action") => Some("执行就绪检查并冻结"),
+        (Locale::Zh, "publication.build_capsule") => Some("构建证据包"),
+        (Locale::Zh, "publication.capsule_builds") => Some("证据包构建记录"),
+        (Locale::Zh, "publication.capsule_status.building") => Some("构建中"),
+        (Locale::Zh, "publication.capsule_status.succeeded") => Some("构建成功"),
+        (Locale::Zh, "publication.capsule_status.failed") => Some("构建失败"),
         (Locale::Zh, "publication.target_visibility") => Some("证据包可见性"),
         (Locale::Zh, "publication.phi_reviewed") => {
             Some("我已检查证据中的医疗隐私和个人信息。")

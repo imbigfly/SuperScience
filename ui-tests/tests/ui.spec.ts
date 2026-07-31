@@ -3100,6 +3100,21 @@ test("Frozen Publication is read-only and exposes exact source plus late-capture
   expect(await invokeArgsList(page, "update_publication_evidence_binding")).toHaveLength(0);
 });
 
+test("Frozen Publication builds a selective Capsule and shows its immutable hashes", async ({ page }) => {
+  await enterApp(page, "/?mockPublication=frozen");
+  await page.locator(".sidebar").getByRole("button", { name: "Publication", exact: true }).click();
+
+  const workspace = page.getByTestId("publication-workspace");
+  await workspace.getByTestId("build-publication-capsule").click();
+  await expect.poll(() => lastInvokeArgs(page, "build_publication_capsule")).toEqual({
+    revisionId: "publication-revision-1",
+  });
+  const builds = workspace.getByTestId("publication-capsule-builds");
+  await expect(builds).toContainText("Succeeded");
+  await expect(builds).toContainText("sha256:cccccccccccc");
+  await expect(builds).toContainText("/exports/publication-capsule.zip");
+});
+
 test("right panel shows execution contexts and runs", async ({ page }) => {
   await enterApp(page);
   await selectRemoteContext(page);

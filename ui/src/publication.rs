@@ -437,6 +437,9 @@ pub(super) fn PublicationWorkspaceModal(
                         let current = current.expect("checked workspace");
                         let revision = current.revision.clone();
                         let draft = revision.as_ref().is_some_and(|revision| revision.state == "draft");
+                        let capsule_ready = revision.as_ref().is_some_and(|revision| {
+                            matches!(revision.state.as_str(), "frozen" | "published")
+                        });
                         let selected_item = selected_item_id.get();
                         let evidence = evidence_for_item(&current.bindings, selected_item.as_deref());
                         let readiness = transient_readiness.get().or_else(|| current.readiness.clone());
@@ -456,6 +459,7 @@ pub(super) fn PublicationWorkspaceModal(
                         let current_for_tree = current.clone();
                         let current_for_evidence = current.clone();
                         let current_for_readiness = current.clone();
+                        let capsule_builds = current.capsule_builds.clone();
                         let items_for_editor = current.items.clone();
                         view! {
                             <div class="publication-toolbar">
@@ -531,6 +535,36 @@ pub(super) fn PublicationWorkspaceModal(
                                             on:click=move |_| freeze_open.set(true)>
                                             {t(locale.get(), "publication.freeze")}
                                         </button>
+                                    })}
+                                    {capsule_ready.then(|| {
+                                        let selected_revision_id = selected_revision_id.clone();
+                                        view! {
+                                            <button type="button" class="primary"
+                                                data-testid="build-publication-capsule"
+                                                disabled=move || busy.get()
+                                                on:click=move |_| {
+                                                    busy.set(true);
+                                                    error.set(None);
+                                                    let selected_revision_id = selected_revision_id.clone();
+                                                    spawn_local(async move {
+                                                        match invoke_checked(
+                                                            "build_publication_capsule",
+                                                            to_value(&serde_json::json!({
+                                                                "revisionId": selected_revision_id,
+                                                            })).unwrap_or(JsValue::UNDEFINED),
+                                                        ).await {
+                                                            Ok(_) => refresh_workspace(
+                                                                workspace, publication_id, revision_id,
+                                                                selected_item_id, loading, error,
+                                                            ),
+                                                            Err(value) => error.set(Some(error_text(value))),
+                                                        }
+                                                        busy.set(false);
+                                                    });
+                                                }>
+                                                {t(locale.get(), "publication.build_capsule")}
+                                            </button>
+                                        }
                                     })}
                                 </div>
                             </div>
@@ -931,6 +965,38 @@ pub(super) fn PublicationWorkspaceModal(
                                             <span>{t(locale.get(), "publication.frozen_manifest")}</span>
                                             <code>{hash}</code>
                                         </div>
+                                    })}
+                                    {(!capsule_builds.is_empty()).then(|| view! {
+                                        <section class="publication-capsule-builds"
+                                            data-testid="publication-capsule-builds">
+                                            <h4>{t(locale.get(), "publication.capsule_builds")}</h4>
+                                            {capsule_builds.into_iter().map(|build| {
+                                                let status = t(
+                                                    locale.get(),
+                                                    &format!("publication.capsule_status.{}", build.status),
+                                                );
+                                                view! {
+                                                    <article data-capsule-build-id=build.id>
+                                                        <div>
+                                                            <strong>{status}</strong>
+                                                            <span>{format!("{} · {}", build.format, build.visibility)}</span>
+                                                        </div>
+                                                        {build.archive_sha256.map(|hash| view! {
+                                                            <code>{format!(
+                                                                "sha256:{}",
+                                                                &hash[..hash.len().min(12)],
+                                                            )}</code>
+                                                        })}
+                                                        {build.output_path.map(|path| view! {
+                                                            <span class="publication-capsule-path">{path}</span>
+                                                        })}
+                                                        {build.error.map(|message| view! {
+                                                            <span class="publication-capsule-error">{message}</span>
+                                                        })}
+                                                    </article>
+                                                }
+                                            }).collect_view()}
+                                        </section>
                                     })}
                                 </aside>
                             </div>

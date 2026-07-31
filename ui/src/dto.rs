@@ -2205,6 +2205,21 @@ pub(crate) struct PublicationLineageInfo {
     pub(crate) environment_captured: bool,
 }
 
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CapsuleBuildInfo {
+    pub(crate) id: String,
+    pub(crate) revision_id: String,
+    pub(crate) format: String,
+    pub(crate) visibility: String,
+    pub(crate) status: String,
+    pub(crate) output_path: Option<String>,
+    pub(crate) revision_manifest_sha256: String,
+    pub(crate) archive_sha256: Option<String>,
+    pub(crate) error: Option<String>,
+    pub(crate) created_at: i64,
+    pub(crate) completed_at: Option<i64>,
+}
+
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct PublicationWorkspaceInfo {
     #[serde(default)]
@@ -2230,6 +2245,8 @@ pub(crate) struct PublicationWorkspaceInfo {
     pub(crate) drift: Vec<PublicationEvidenceDriftInfo>,
     #[serde(default)]
     pub(crate) lineage: Vec<PublicationLineageInfo>,
+    #[serde(default)]
+    pub(crate) capsule_builds: Vec<CapsuleBuildInfo>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]

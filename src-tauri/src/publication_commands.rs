@@ -4,7 +4,7 @@ use crate::AppState;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use wisp_store::{
-    ArtifactCaptureTiming, EvidenceBinding, EvidenceBindingDraft, EvidenceReview,
+    ArtifactCaptureTiming, CapsuleBuild, EvidenceBinding, EvidenceBindingDraft, EvidenceReview,
     EvidenceSelectionState, EvidenceSourceKind, EvidenceSupersession, EvidenceVisibility,
     LineageBasis, LineageConfidence, Publication, PublicationEvidenceDrift, PublicationItem,
     PublicationItemKind, PublicationItemLink, PublicationReadiness, PublicationReadinessFinding,
@@ -43,6 +43,7 @@ pub(crate) struct PublicationWorkspace {
     pub readiness: Option<PublicationReadiness>,
     pub drift: Vec<PublicationEvidenceDrift>,
     pub lineage: Vec<PublicationLineageSummary>,
+    pub capsule_builds: Vec<CapsuleBuild>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -298,6 +299,7 @@ async fn publication_workspace(
             readiness: None,
             drift: Vec::new(),
             lineage: Vec::new(),
+            capsule_builds: Vec::new(),
         });
     };
 
@@ -318,6 +320,7 @@ async fn publication_workspace(
         .map(readiness_from_report)
         .transpose()?;
     let drift = store.list_publication_evidence_drift(&revision.id).await?;
+    let capsule_builds = store.list_capsule_builds(&revision.id).await?;
 
     Ok(PublicationWorkspace {
         publications,
@@ -333,6 +336,7 @@ async fn publication_workspace(
         readiness,
         drift,
         lineage,
+        capsule_builds,
     })
 }
 
