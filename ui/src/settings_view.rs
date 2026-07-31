@@ -2135,7 +2135,7 @@ pub(super) fn SettingsView(
                                 <h3>{move || t(locale.get(), "quick_actions.title")}</h3>
                                 <p>{move || t(locale.get(), "quick_actions.help")}</p>
                             </div>
-                            <button type="button" class="primary" data-testid="quick-action-new"
+                            <button type="button" class="settings-add-btn" data-testid="quick-action-new"
                                 disabled=move || workflow_templates.get().is_empty()
                                 on:click=move |_| {
                                     let workflow_template_id = workflow_templates
@@ -2309,7 +2309,8 @@ pub(super) fn SettingsView(
                                                         } />
                                                     <span class="toggle-track" aria-hidden="true"></span>
                                                 </label>
-                                                <button type="button" data-testid="quick-action-open-workflow"
+                                                <button type="button" class="settings-list-use"
+                                                    data-testid="quick-action-open-workflow"
                                                     on:click=move |_| {
                                                         selected_workflow_template
                                                             .set(Some(workflow_id.clone()));

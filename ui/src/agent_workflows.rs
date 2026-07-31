@@ -2339,7 +2339,7 @@ pub(super) fn workflow_studio(
                             &[("count", &templates.get().len().to_string())],
                         )}</span>
                     </div>
-                    <button type="button" class="primary" data-testid="workflow-new"
+                    <button type="button" class="settings-add-btn" data-testid="workflow-new"
                         on:click=start_new>
                         {move || format!("+ {}", t(locale.get(), "workflow_studio.new"))}
                     </button>
@@ -2440,7 +2440,7 @@ pub(super) fn workflow_studio(
                             on:click=start_new>
                             {move || t(locale.get(), "workflow_studio.reset")}
                         </button>
-                        <button type="submit" class="primary" data-testid="workflow-save"
+                        <button type="submit" class="agents-primary" data-testid="workflow-save"
                             disabled=move || {
                                 saving.get()
                                     || template_name.get().trim().is_empty()
