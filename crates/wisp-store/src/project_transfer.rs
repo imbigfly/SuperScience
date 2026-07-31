@@ -349,6 +349,7 @@ async fn copy_project_children(tx: &mut Transaction<'_, Sqlite>, project_id: &st
         .execute(&mut **tx)
         .await?;
     }
+    copy_publication_children(tx, project_id).await?;
     if attached_table_exists(tx, "agent_workflow_attempts").await? {
         let attempt_columns = attached_table_columns(tx, "agent_workflow_attempts").await?;
         let has_lineage = [
@@ -443,6 +444,170 @@ async fn attached_table_columns(
         .collect::<std::result::Result<HashSet<_>, _>>()?)
 }
 
+async fn copy_publication_children(
+    tx: &mut Transaction<'_, Sqlite>,
+    project_id: &str,
+) -> Result<()> {
+    if !attached_table_exists(tx, "publications").await? {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO publications(id,project_id,title,description,created_at,updated_at) \
+         SELECT id,project_id,title,description,created_at,updated_at \
+         FROM transfer.publications WHERE project_id=?",
+    )
+    .bind(project_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO publication_revisions(\
+           id,publication_id,parent_revision_id,revision_number,label,state,capability_level,\
+           manifest_json,manifest_sha256,frozen_at,published_at,created_at,updated_at\
+         ) SELECT revision.id,revision.publication_id,NULL,revision.revision_number,\
+                  revision.label,'draft','archived',NULL,NULL,NULL,NULL,\
+                  revision.created_at,revision.updated_at \
+           FROM transfer.publication_revisions revision \
+           JOIN transfer.publications publication ON publication.id=revision.publication_id \
+           WHERE publication.project_id=?",
+    )
+    .bind(project_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO publication_items(\
+           id,revision_id,parent_item_id,kind,title,content,ordinal,metadata_json,\
+           created_at,updated_at\
+         ) SELECT item.id,item.revision_id,NULL,item.kind,item.title,item.content,item.ordinal,\
+                  item.metadata_json,item.created_at,item.updated_at \
+           FROM transfer.publication_items item \
+           JOIN transfer.publication_revisions revision ON revision.id=item.revision_id \
+           JOIN transfer.publications publication ON publication.id=revision.publication_id \
+           WHERE publication.project_id=?",
+    )
+    .bind(project_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "UPDATE publication_items SET parent_item_id=(\
+           SELECT source.parent_item_id FROM transfer.publication_items source \
+           WHERE source.id=publication_items.id\
+         ) WHERE revision_id IN (\
+           SELECT revision.id FROM publication_revisions revision \
+           JOIN publications publication ON publication.id=revision.publication_id \
+           WHERE publication.project_id=?\
+         )",
+    )
+    .bind(project_id)
+    .execute(&mut **tx)
+    .await?;
+    for statement in [
+        "INSERT INTO publication_item_links(\
+           id,revision_id,source_item_id,target_item_id,relation,created_at\
+         ) SELECT link.id,link.revision_id,link.source_item_id,link.target_item_id,\
+                  link.relation,link.created_at \
+           FROM transfer.publication_item_links link \
+           JOIN transfer.publication_revisions revision ON revision.id=link.revision_id \
+           JOIN transfer.publications publication ON publication.id=revision.publication_id \
+           WHERE publication.project_id=?",
+        "INSERT INTO evidence_bindings(\
+           id,revision_id,item_id,source_kind,source_id,artifact_version_id,run_id,\
+           external_resource_id,purpose,supported_claim_item_id,selection_state,review_state,\
+           reproduction_state,visibility,source_snapshot_json,created_at,updated_at\
+         ) SELECT binding.id,binding.revision_id,binding.item_id,binding.source_kind,\
+                  binding.source_id,binding.artifact_version_id,binding.run_id,\
+                  binding.external_resource_id,binding.purpose,\
+                  binding.supported_claim_item_id,binding.selection_state,binding.review_state,\
+                  binding.reproduction_state,binding.visibility,binding.source_snapshot_json,\
+                  binding.created_at,binding.updated_at \
+           FROM transfer.evidence_bindings binding \
+           JOIN transfer.publication_revisions revision ON revision.id=binding.revision_id \
+           JOIN transfer.publications publication ON publication.id=revision.publication_id \
+           WHERE publication.project_id=?",
+        "INSERT INTO evidence_reviews(\
+           id,binding_id,reviewer,method,verified_at,environment_json,comparator_json,\
+           tolerance_json,result,report_json,created_at\
+         ) SELECT review.id,review.binding_id,review.reviewer,review.method,review.verified_at,\
+                  review.environment_json,review.comparator_json,review.tolerance_json,\
+                  review.result,review.report_json,review.created_at \
+           FROM transfer.evidence_reviews review \
+           JOIN transfer.evidence_bindings binding ON binding.id=review.binding_id \
+           JOIN transfer.publication_revisions revision ON revision.id=binding.revision_id \
+           JOIN transfer.publications publication ON publication.id=revision.publication_id \
+           WHERE publication.project_id=?",
+        "INSERT INTO evidence_supersessions(\
+           id,revision_id,old_binding_id,new_binding_id,reason,created_at\
+         ) SELECT supersession.id,supersession.revision_id,supersession.old_binding_id,\
+                  supersession.new_binding_id,supersession.reason,supersession.created_at \
+           FROM transfer.evidence_supersessions supersession \
+           JOIN transfer.publication_revisions revision \
+             ON revision.id=supersession.revision_id \
+           JOIN transfer.publications publication ON publication.id=revision.publication_id \
+           WHERE publication.project_id=?",
+        "INSERT INTO publication_readiness_reports(\
+           id,revision_id,capability_level,blockers_json,warnings_json,omissions_json,\
+           manifest_json,manifest_sha256,created_at\
+         ) SELECT report.id,report.revision_id,report.capability_level,report.blockers_json,\
+                  report.warnings_json,report.omissions_json,report.manifest_json,\
+                  report.manifest_sha256,report.created_at \
+           FROM transfer.publication_readiness_reports report \
+           JOIN transfer.publication_revisions revision ON revision.id=report.revision_id \
+           JOIN transfer.publications publication ON publication.id=revision.publication_id \
+           WHERE publication.project_id=?",
+        "INSERT INTO publication_waivers(\
+           id,revision_id,finding_code,author,reason,created_at\
+         ) SELECT waiver.id,waiver.revision_id,waiver.finding_code,waiver.author,\
+                  waiver.reason,waiver.created_at \
+           FROM transfer.publication_waivers waiver \
+           JOIN transfer.publication_revisions revision ON revision.id=waiver.revision_id \
+           JOIN transfer.publications publication ON publication.id=revision.publication_id \
+           WHERE publication.project_id=?",
+        "INSERT INTO capsule_builds(\
+           id,revision_id,format,visibility,status,output_path,revision_manifest_sha256,\
+           archive_sha256,error,created_at,completed_at\
+         ) SELECT build.id,build.revision_id,build.format,build.visibility,build.status,\
+                  build.output_path,build.revision_manifest_sha256,build.archive_sha256,\
+                  build.error,build.created_at,build.completed_at \
+           FROM transfer.capsule_builds build \
+           JOIN transfer.publication_revisions revision ON revision.id=build.revision_id \
+           JOIN transfer.publications publication ON publication.id=revision.publication_id \
+           WHERE publication.project_id=?",
+    ] {
+        sqlx::query(statement)
+            .bind(project_id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    sqlx::query(
+        "UPDATE publication_revisions SET \
+           parent_revision_id=(SELECT source.parent_revision_id \
+             FROM transfer.publication_revisions source \
+             WHERE source.id=publication_revisions.id),\
+           state=(SELECT CASE WHEN source.state='deleting' THEN 'draft' ELSE source.state END \
+             FROM transfer.publication_revisions source \
+             WHERE source.id=publication_revisions.id),\
+           capability_level=(SELECT source.capability_level \
+             FROM transfer.publication_revisions source \
+             WHERE source.id=publication_revisions.id),\
+           manifest_json=(SELECT source.manifest_json \
+             FROM transfer.publication_revisions source \
+             WHERE source.id=publication_revisions.id),\
+           manifest_sha256=(SELECT source.manifest_sha256 \
+             FROM transfer.publication_revisions source \
+             WHERE source.id=publication_revisions.id),\
+           frozen_at=(SELECT source.frozen_at \
+             FROM transfer.publication_revisions source \
+             WHERE source.id=publication_revisions.id),\
+           published_at=(SELECT source.published_at \
+             FROM transfer.publication_revisions source \
+             WHERE source.id=publication_revisions.id) \
+         WHERE publication_id IN (SELECT id FROM publications WHERE project_id=?)",
+    )
+    .bind(project_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Remove every row owned by a project while retaining the project itself.
 /// SQLite foreign keys are not enabled on legacy stores, so replacement must
 /// spell out the cascade in dependency order.
@@ -452,6 +617,17 @@ pub(crate) async fn delete_project_children(
 ) -> Result<()> {
     const QUERIES: &[&str] = &[
         "UPDATE agent_workflows SET status='draft' WHERE project_id=?",
+        "UPDATE publication_revisions SET state='deleting' WHERE publication_id IN (SELECT id FROM publications WHERE project_id=?)",
+        "DELETE FROM capsule_builds WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
+        "DELETE FROM publication_readiness_reports WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
+        "DELETE FROM publication_waivers WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
+        "DELETE FROM evidence_reviews WHERE binding_id IN (SELECT binding.id FROM evidence_bindings binding JOIN publication_revisions revision ON revision.id=binding.revision_id JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
+        "DELETE FROM evidence_supersessions WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
+        "DELETE FROM evidence_bindings WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
+        "DELETE FROM publication_item_links WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
+        "DELETE FROM publication_items WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
+        "DELETE FROM publication_revisions WHERE publication_id IN (SELECT id FROM publications WHERE project_id=?)",
+        "DELETE FROM publications WHERE project_id=?",
         "DELETE FROM run_environment_snapshots WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
         "DELETE FROM run_code_snapshots WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
         "DELETE FROM run_outputs WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
@@ -501,6 +677,17 @@ async fn sanitize_export_machine_state(
         "UPDATE runs SET remote_workdir=NULL,remote_handle_json=NULL,\
          lifecycle_owner=NULL,lifecycle_lease_until=NULL,progress_json='{}',env_snapshot_json='{}' \
          WHERE project_id=?",
+    )
+    .bind(project_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "UPDATE capsule_builds SET output_path=NULL \
+         WHERE revision_id IN (\
+           SELECT revision.id FROM publication_revisions revision \
+           JOIN publications publication ON publication.id=revision.publication_id \
+           WHERE publication.project_id=?\
+         )",
     )
     .bind(project_id)
     .execute(&mut **tx)
@@ -903,6 +1090,16 @@ impl Store {
             ("run_outputs", "*", "id"),
             ("run_code_snapshots", "*", "id"),
             ("run_environment_snapshots", "*", "run_id"),
+            ("publications", "*", "id"),
+            ("publication_revisions", "*", "id"),
+            ("publication_items", "*", "id"),
+            ("publication_item_links", "*", "id"),
+            ("evidence_bindings", "*", "id"),
+            ("evidence_reviews", "*", "id"),
+            ("evidence_supersessions", "*", "id"),
+            ("publication_readiness_reports", "*", "id"),
+            ("publication_waivers", "*", "id"),
+            ("capsule_builds", "*", "id"),
             ("research_nodes", "*", "id"),
             ("research_edges", "*", "id"),
         ];
@@ -1197,8 +1394,11 @@ impl Store {
 mod tests {
     use super::*;
     use crate::{
-        ArtifactCaptureTiming, ArtifactMaterialization, ArtifactVersionDraft, LineageBasis,
-        LineageConfidence, RunCodeSnapshot, RunInput, RunOutput, RunRecord, RunStatus,
+        ArtifactCaptureTiming, ArtifactMaterialization, ArtifactVersionDraft, EvidenceBindingDraft,
+        EvidenceReview, EvidenceSelectionState, EvidenceSourceKind, EvidenceSupersession,
+        EvidenceVisibility, LineageBasis, LineageConfidence, PublicationItem, PublicationItemKind,
+        PublicationRevisionState, PublicationWaiver, RunCodeSnapshot, RunInput, RunOutput,
+        RunRecord, RunStatus,
     };
     use wisp_llm::Message;
 
@@ -1406,6 +1606,148 @@ mod tests {
             )
             .await
             .unwrap();
+        source
+            .create_publication(
+                "publication-1",
+                "project-1",
+                "QC paper",
+                "Transfer evidence",
+            )
+            .await
+            .unwrap();
+        source
+            .create_publication_revision(
+                "publication-revision-1",
+                "publication-1",
+                None,
+                "Submission v1",
+            )
+            .await
+            .unwrap();
+        for (id, kind, title, ordinal) in [
+            (
+                "publication-figure",
+                PublicationItemKind::Figure,
+                "Figure 1",
+                0,
+            ),
+            (
+                "publication-methods",
+                PublicationItemKind::Methods,
+                "QC methods",
+                1,
+            ),
+        ] {
+            source
+                .save_publication_item(&PublicationItem {
+                    id: id.into(),
+                    revision_id: "publication-revision-1".into(),
+                    parent_item_id: None,
+                    kind,
+                    title: title.into(),
+                    content: String::new(),
+                    ordinal,
+                    metadata_json: "{}".into(),
+                    created_at: 1,
+                    updated_at: 1,
+                })
+                .await
+                .unwrap();
+        }
+        for binding in [
+            EvidenceBindingDraft {
+                id: "publication-binding-artifact".into(),
+                revision_id: "publication-revision-1".into(),
+                item_id: Some("publication-figure".into()),
+                source_kind: EvidenceSourceKind::ArtifactVersion,
+                source_id: artifact_version_id.clone(),
+                purpose: "Published figure".into(),
+                supported_claim_item_id: None,
+                selection_state: EvidenceSelectionState::Selected,
+                visibility: EvidenceVisibility::Public,
+            },
+            EvidenceBindingDraft {
+                id: "publication-binding-run".into(),
+                revision_id: "publication-revision-1".into(),
+                item_id: Some("publication-methods".into()),
+                source_kind: EvidenceSourceKind::Run,
+                source_id: "run-1".into(),
+                purpose: "Producing run".into(),
+                supported_claim_item_id: None,
+                selection_state: EvidenceSelectionState::Selected,
+                visibility: EvidenceVisibility::Restricted,
+            },
+        ] {
+            source.save_evidence_binding(&binding).await.unwrap();
+        }
+        source
+            .save_evidence_review(&EvidenceReview {
+                id: "publication-review".into(),
+                binding_id: "publication-binding-artifact".into(),
+                reviewer: "alice".into(),
+                method: "manual".into(),
+                verified_at: 1,
+                environment_json: "{}".into(),
+                comparator_json: "{}".into(),
+                tolerance_json: "{}".into(),
+                result: "passed".into(),
+                report_json: "{}".into(),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        source
+            .save_evidence_supersession(&EvidenceSupersession {
+                id: "publication-supersession".into(),
+                revision_id: "publication-revision-1".into(),
+                old_binding_id: "publication-binding-artifact".into(),
+                new_binding_id: "publication-binding-run".into(),
+                reason: "fixture".into(),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        source
+            .save_publication_waiver(&PublicationWaiver {
+                id: "publication-waiver".into(),
+                revision_id: "publication-revision-1".into(),
+                finding_code: "restricted-input".into(),
+                author: "alice".into(),
+                reason: "manifest only".into(),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO publication_readiness_reports(\
+               id,revision_id,capability_level,blockers_json,warnings_json,omissions_json,\
+               manifest_json,manifest_sha256,created_at\
+             ) VALUES('readiness','publication-revision-1','traceable','[]','[]','[]','{}',?,1)",
+        )
+        .bind("e".repeat(64))
+        .execute(&source.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO capsule_builds(\
+               id,revision_id,format,visibility,status,output_path,revision_manifest_sha256,\
+               archive_sha256,error,created_at,completed_at\
+             ) VALUES('capsule','publication-revision-1','zip','public','succeeded',?,? ,?,NULL,1,2)",
+        )
+        .bind(r"C:\Users\Alice\Study\exports\capsule.zip")
+        .bind("e".repeat(64))
+        .bind("f".repeat(64))
+        .execute(&source.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE publication_revisions SET state='frozen',capability_level='traceable',\
+             manifest_json='{}',manifest_sha256=?,frozen_at=1 WHERE id='publication-revision-1'",
+        )
+        .bind("e".repeat(64))
+        .execute(&source.pool)
+        .await
+        .unwrap();
 
         let stats = source
             .export_project_database("project-1", &archive_path)
@@ -1525,10 +1867,68 @@ mod tests {
         assert!(imported_run.remote_handle_json.is_none());
         assert_eq!(imported_run.progress_json, "{}");
         assert_eq!(imported_run.env_snapshot_json, "{}");
+        let imported_revision = target
+            .get_publication_revision("publication-revision-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(imported_revision.state, PublicationRevisionState::Frozen);
+        assert_eq!(
+            target
+                .list_publication_items("publication-revision-1")
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        let imported_bindings = target
+            .list_evidence_bindings("publication-revision-1")
+            .await
+            .unwrap();
+        assert_eq!(imported_bindings.len(), 2);
+        assert!(imported_bindings
+            .iter()
+            .any(|binding| binding.source_id == artifact_version_id));
+        assert_eq!(
+            target
+                .list_evidence_reviews("publication-binding-artifact")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            target
+                .list_evidence_supersessions("publication-revision-1")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            target
+                .list_publication_waivers("publication-revision-1")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let build_path: Option<String> =
+            sqlx::query_scalar("SELECT output_path FROM capsule_builds WHERE id='capsule'")
+                .fetch_one(&target.pool)
+                .await
+                .unwrap();
+        assert!(build_path.is_none());
         assert!(target
             .import_project_database(&archive_path, "project-1", workspace)
             .await
             .is_err());
+        target.delete_project("project-1").await.unwrap();
+        assert!(target
+            .get_publication("publication-1")
+            .await
+            .unwrap()
+            .is_none());
 
         source.pool.close().await;
         target.pool.close().await;

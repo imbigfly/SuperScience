@@ -65,31 +65,31 @@ Unrelated `.codex/` and `.playwright-mcp/` workspace files are never staged.
 
 **Commit:** `feat(publication): add immutable revision evidence model`
 
-- [ ] Add `publications`, `publication_revisions`, `publication_items`,
+- [x] Add `publications`, `publication_revisions`, `publication_items`,
   `publication_item_links`, `evidence_bindings`, `evidence_reviews`,
   `evidence_supersessions`, `publication_readiness_reports`,
   `publication_waivers`, and `capsule_builds`.
-- [ ] Validate all enums and ensure every source belongs to the Publication
+- [x] Validate all enums and ensure every source belongs to the Publication
   project.
-- [ ] Implement Publication and Draft revision CRUD.
-- [ ] Implement ordered item CRUD and semantic item links.
-- [ ] Bind exact ArtifactVersion and Run sources with separate selection,
+- [x] Implement Publication and Draft revision CRUD.
+- [x] Implement ordered item CRUD and semantic item links.
+- [x] Bind exact ArtifactVersion and Run sources with separate selection,
   review, reproduction, and visibility axes.
-- [ ] Implement full materialized revision clone, preserving internal
+- [x] Implement full materialized revision clone, preserving internal
   relationships with new IDs.
-- [ ] Add SQLite immutability and exact-source constraints for non-Draft
+- [x] Add SQLite immutability and exact-source constraints for non-Draft
   revisions.
-- [ ] Project Publication and evidence relations into Research Graph without
+- [x] Project Publication and evidence relations into Research Graph without
   making graph metadata authoritative.
-- [ ] Add tables to project transfer, deletion order, and portable hashing.
+- [x] Add tables to project transfer, deletion order, and portable hashing.
 
 ### Gate
 
-- [ ] Store tests cover clone completeness, exact IDs, cross-project
+- [x] Store tests cover clone completeness, exact IDs, cross-project
   rejection, supersession locality, and frozen write rejection.
-- [ ] Transfer roundtrip preserves the complete revision.
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo test --workspace`
+- [x] Transfer roundtrip preserves the complete revision.
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo test --workspace`
 
 ## PR 2 — atomic Freeze, Readiness, drift, and policy
 

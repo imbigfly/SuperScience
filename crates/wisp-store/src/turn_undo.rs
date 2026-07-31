@@ -102,6 +102,9 @@ impl Store {
                  WHERE input.artifact_version_id=owned.artifact_version_id) \
              AND NOT EXISTS (SELECT 1 FROM run_outputs output \
                  WHERE output.artifact_version_id=owned.artifact_version_id) \
+             AND NOT EXISTS (SELECT 1 FROM evidence_bindings binding \
+                 JOIN artifact_versions version ON version.id=binding.artifact_version_id \
+                 WHERE version.artifact_id=owned.artifact_id) \
              ORDER BY owned.display_name",
         )
         .bind(frame_id)
@@ -151,13 +154,17 @@ impl Store {
                     WHERE artifact_version_id=? OR depends_on_version_id=?) + \
                     (SELECT COUNT(*) FROM run_artifacts WHERE artifact_id=?) + \
                     (SELECT COUNT(*) FROM run_inputs WHERE artifact_version_id=?) + \
-                    (SELECT COUNT(*) FROM run_outputs WHERE artifact_version_id=?)",
+                    (SELECT COUNT(*) FROM run_outputs WHERE artifact_version_id=?) + \
+                    (SELECT COUNT(*) FROM evidence_bindings binding \
+                        JOIN artifact_versions version ON version.id=binding.artifact_version_id \
+                        WHERE version.artifact_id=?)",
             )
             .bind(&version_id)
             .bind(&version_id)
             .bind(&artifact_id)
             .bind(&version_id)
             .bind(&version_id)
+            .bind(&artifact_id)
             .fetch_one(&mut *tx)
             .await?;
             if remaining_links != 0 || external_refs != 0 {

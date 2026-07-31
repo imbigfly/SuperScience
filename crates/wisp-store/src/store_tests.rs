@@ -2085,6 +2085,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             SESSION_BRANCH_LINEAGE_MIGRATION.to_string(),
             ASK_USER_REQUESTS_MIGRATION.to_string(),
             RUN_ARTIFACT_LINEAGE_MIGRATION.to_string(),
+            PUBLICATION_DOMAIN_MIGRATION.to_string(),
         ]
     );
 
@@ -2102,6 +2103,15 @@ async fn run_artifact_lineage_migration_repairs_partial_application() {
         .execute(&store.pool)
         .await
         .unwrap();
+    for trigger in [
+        "trg_evidence_binding_source_project_insert",
+        "trg_evidence_binding_source_project_update",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER {trigger}"))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+    }
     for statement in [
         "DROP TABLE run_environment_snapshots",
         "DROP TABLE run_code_snapshots",
@@ -2155,6 +2165,50 @@ async fn run_artifact_lineage_migration_repairs_partial_application() {
             .await
             .unwrap());
     }
+    repaired.pool.close().await;
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn publication_domain_migration_repairs_partial_application() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_publication_partial_migration_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    sqlx::query("DROP TRIGGER trg_evidence_bindings_insert_draft")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE capsule_builds")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+        .bind(PUBLICATION_DOMAIN_MIGRATION)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+
+    let repaired = Store::open(&tmp).await.unwrap();
+    let table_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+         WHERE type='table' AND name='capsule_builds')",
+    )
+    .fetch_one(&repaired.pool)
+    .await
+    .unwrap();
+    let trigger_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+         WHERE type='trigger' AND name='trg_evidence_bindings_insert_draft')",
+    )
+    .fetch_one(&repaired.pool)
+    .await
+    .unwrap();
+    assert!(table_exists);
+    assert!(trigger_exists);
+
     repaired.pool.close().await;
     let _ = std::fs::remove_file(&tmp);
 }
@@ -3213,6 +3267,533 @@ async fn artifacts_keep_version_lineage() {
 }
 
 #[tokio::test]
+async fn publication_revisions_clone_exact_evidence_and_freeze_history() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_publication_domain_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    for (project, frame) in [("p", "f"), ("other", "other-frame")] {
+        store.create_project(project, project, "").await.unwrap();
+        store
+            .create_frame(frame, project, "OPERON", "m")
+            .await
+            .unwrap();
+    }
+    store
+        .create_run(&RunRecord::new("run", "p", "local", "Analysis", "command"))
+        .await
+        .unwrap();
+    store
+        .create_run(&RunRecord::new(
+            "other-run",
+            "other",
+            "local",
+            "Other",
+            "command",
+        ))
+        .await
+        .unwrap();
+
+    let artifact_id = logical_artifact_id("p", "figure:main");
+    let mut versions = Vec::new();
+    for (checksum, storage) in [
+        ("a".repeat(64), "snapshots/v1.png"),
+        ("b".repeat(64), "snapshots/v2.png"),
+    ] {
+        versions.push(
+            store
+                .save_artifact_version(&ArtifactVersionDraft {
+                    version_id: None,
+                    artifact_id: artifact_id.clone(),
+                    project_id: "p".into(),
+                    root_frame_id: "f".into(),
+                    filename: "main.png".into(),
+                    content_type: "image/png".into(),
+                    storage_path: storage.into(),
+                    logical_key: Some("figure:main".into()),
+                    size_bytes: Some(8),
+                    checksum: Some(checksum),
+                    producing_run_id: Some("run".into()),
+                    env_snapshot_hash: None,
+                    materialization: ArtifactMaterialization::Snapshot,
+                    capture_timing: ArtifactCaptureTiming::AtCreation,
+                })
+                .await
+                .unwrap(),
+        );
+    }
+    let other_version = store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: "other-artifact".into(),
+            project_id: "other".into(),
+            root_frame_id: "other-frame".into(),
+            filename: "other.png".into(),
+            content_type: "image/png".into(),
+            storage_path: "other.png".into(),
+            logical_key: Some("figure:other".into()),
+            size_bytes: Some(1),
+            checksum: Some("c".repeat(64)),
+            producing_run_id: Some("other-run".into()),
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::Snapshot,
+            capture_timing: ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+
+    store
+        .create_publication("publication", "p", "T cell paper", "Evidence test")
+        .await
+        .unwrap();
+    let revision = store
+        .create_publication_revision("revision-1", "publication", None, "Submission v1")
+        .await
+        .unwrap();
+    assert_eq!(revision.revision_number, 1);
+    for (id, parent, kind, title, ordinal) in [
+        ("section", None, PublicationItemKind::Section, "Results", 0),
+        (
+            "claim",
+            Some("section"),
+            PublicationItemKind::Claim,
+            "Exhaustion increases",
+            0,
+        ),
+        (
+            "figure",
+            Some("section"),
+            PublicationItemKind::Figure,
+            "Figure 2B",
+            1,
+        ),
+        (
+            "methods",
+            Some("section"),
+            PublicationItemKind::Methods,
+            "Differential analysis",
+            2,
+        ),
+    ] {
+        store
+            .save_publication_item(&PublicationItem {
+                id: id.into(),
+                revision_id: "revision-1".into(),
+                parent_item_id: parent.map(str::to_string),
+                kind,
+                title: title.into(),
+                content: String::new(),
+                ordinal,
+                metadata_json: "{}".into(),
+                created_at: 0,
+                updated_at: 0,
+            })
+            .await
+            .unwrap();
+    }
+    store
+        .save_publication_item_link(&PublicationItemLink {
+            id: "supports".into(),
+            revision_id: "revision-1".into(),
+            source_item_id: "figure".into(),
+            target_item_id: "claim".into(),
+            relation: "supports".into(),
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+    for binding in [
+        EvidenceBindingDraft {
+            id: "binding-old".into(),
+            revision_id: "revision-1".into(),
+            item_id: Some("figure".into()),
+            source_kind: EvidenceSourceKind::ArtifactVersion,
+            source_id: versions[0].clone(),
+            purpose: "Figure 2B".into(),
+            supported_claim_item_id: Some("claim".into()),
+            selection_state: EvidenceSelectionState::Selected,
+            visibility: EvidenceVisibility::Public,
+        },
+        EvidenceBindingDraft {
+            id: "binding-new".into(),
+            revision_id: "revision-1".into(),
+            item_id: Some("figure".into()),
+            source_kind: EvidenceSourceKind::ArtifactVersion,
+            source_id: versions[1].clone(),
+            purpose: "Updated Figure 2B".into(),
+            supported_claim_item_id: Some("claim".into()),
+            selection_state: EvidenceSelectionState::Candidate,
+            visibility: EvidenceVisibility::Public,
+        },
+        EvidenceBindingDraft {
+            id: "binding-run".into(),
+            revision_id: "revision-1".into(),
+            item_id: Some("methods".into()),
+            source_kind: EvidenceSourceKind::Run,
+            source_id: "run".into(),
+            purpose: "Methods execution".into(),
+            supported_claim_item_id: None,
+            selection_state: EvidenceSelectionState::Selected,
+            visibility: EvidenceVisibility::Restricted,
+        },
+    ] {
+        store.save_evidence_binding(&binding).await.unwrap();
+    }
+    assert!(store
+        .save_evidence_binding(&EvidenceBindingDraft {
+            id: "cross-project".into(),
+            revision_id: "revision-1".into(),
+            item_id: Some("figure".into()),
+            source_kind: EvidenceSourceKind::ArtifactVersion,
+            source_id: other_version.clone(),
+            purpose: String::new(),
+            supported_claim_item_id: None,
+            selection_state: EvidenceSelectionState::Candidate,
+            visibility: EvidenceVisibility::Private,
+        })
+        .await
+        .is_err());
+    assert!(sqlx::query(
+        "INSERT INTO evidence_bindings(\
+               id,revision_id,source_kind,source_id,artifact_version_id,purpose,\
+               source_snapshot_json,created_at,updated_at\
+             ) VALUES('raw-cross-project','revision-1','artifact_version',?,?,'','{}',1,1)",
+    )
+    .bind(&other_version)
+    .bind(&other_version)
+    .execute(&store.pool)
+    .await
+    .is_err());
+    store
+        .save_evidence_review(&EvidenceReview {
+            id: "review".into(),
+            binding_id: "binding-old".into(),
+            reviewer: "alice".into(),
+            method: "manual_traceability".into(),
+            verified_at: 10,
+            environment_json: "{}".into(),
+            comparator_json: r#"{"kind":"visual"}"#.into(),
+            tolerance_json: "{}".into(),
+            result: "passed".into(),
+            report_json: r#"{"note":"checked"}"#.into(),
+            created_at: 10,
+        })
+        .await
+        .unwrap();
+    store
+        .update_evidence_binding_selection(
+            "binding-old",
+            EvidenceSelectionState::Selected,
+            EvidenceVisibility::Public,
+        )
+        .await
+        .unwrap();
+    let reviewed_binding = store
+        .get_evidence_binding("binding-old")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reviewed_binding.review_state, EvidenceReviewState::Reviewed);
+    assert_eq!(
+        reviewed_binding.reproduction_state,
+        EvidenceReproductionState::NotRun
+    );
+    store
+        .save_evidence_supersession(&EvidenceSupersession {
+            id: "supersession".into(),
+            revision_id: "revision-1".into(),
+            old_binding_id: "binding-old".into(),
+            new_binding_id: "binding-new".into(),
+            reason: "Updated analysis".into(),
+            created_at: 11,
+        })
+        .await
+        .unwrap();
+    store
+        .save_publication_waiver(&PublicationWaiver {
+            id: "waiver".into(),
+            revision_id: "revision-1".into(),
+            finding_code: "restricted-input".into(),
+            author: "alice".into(),
+            reason: "DUA requires manifest-only disclosure".into(),
+            created_at: 12,
+        })
+        .await
+        .unwrap();
+
+    let clone = store
+        .clone_publication_revision("revision-1", "revision-2", "Revision v2")
+        .await
+        .unwrap();
+    assert_eq!(clone.parent_revision_id.as_deref(), Some("revision-1"));
+    assert_eq!(clone.state, PublicationRevisionState::Draft);
+    assert_eq!(
+        store
+            .list_publication_items("revision-2")
+            .await
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(
+        store
+            .list_publication_item_links("revision-2")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let cloned_bindings = store.list_evidence_bindings("revision-2").await.unwrap();
+    assert_eq!(cloned_bindings.len(), 3);
+    assert!(cloned_bindings.iter().all(|binding| {
+        binding.id != "binding-old" && binding.id != "binding-new" && binding.id != "binding-run"
+    }));
+    let cloned_old = cloned_bindings
+        .iter()
+        .find(|binding| binding.source_id == versions[0])
+        .unwrap();
+    let cloned_new = cloned_bindings
+        .iter()
+        .find(|binding| binding.source_id == versions[1])
+        .unwrap();
+    assert_eq!(
+        cloned_old.source_snapshot_json,
+        reviewed_binding.source_snapshot_json
+    );
+    assert_eq!(
+        store
+            .list_evidence_reviews(&cloned_old.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let cloned_supersession = store
+        .list_evidence_supersessions("revision-2")
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(cloned_supersession.old_binding_id, cloned_old.id);
+    assert_eq!(cloned_supersession.new_binding_id, cloned_new.id);
+    assert_eq!(
+        store
+            .list_publication_waivers("revision-2")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let third_version = store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: None,
+            artifact_id,
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "main.png".into(),
+            content_type: "image/png".into(),
+            storage_path: "snapshots/v3.png".into(),
+            logical_key: Some("figure:main".into()),
+            size_bytes: Some(8),
+            checksum: Some("d".repeat(64)),
+            producing_run_id: Some("run".into()),
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::Snapshot,
+            capture_timing: ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    let cloned_figure = store
+        .list_publication_items("revision-2")
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|item| item.kind == PublicationItemKind::Figure)
+        .unwrap();
+    let clone_third = store
+        .save_evidence_binding(&EvidenceBindingDraft {
+            id: "clone-third".into(),
+            revision_id: "revision-2".into(),
+            item_id: Some(cloned_figure.id.clone()),
+            source_kind: EvidenceSourceKind::ArtifactVersion,
+            source_id: third_version,
+            purpose: "Revision-only replacement".into(),
+            supported_claim_item_id: None,
+            selection_state: EvidenceSelectionState::Selected,
+            visibility: EvidenceVisibility::Public,
+        })
+        .await
+        .unwrap();
+    store
+        .save_evidence_supersession(&EvidenceSupersession {
+            id: "clone-supersession-update".into(),
+            revision_id: "revision-2".into(),
+            old_binding_id: cloned_old.id.clone(),
+            new_binding_id: clone_third.id,
+            reason: "Revision-only update".into(),
+            created_at: 13,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .list_evidence_supersessions("revision-1")
+            .await
+            .unwrap()[0]
+            .new_binding_id,
+        "binding-new"
+    );
+    assert_eq!(
+        store
+            .get_evidence_binding("binding-old")
+            .await
+            .unwrap()
+            .unwrap()
+            .source_id,
+        versions[0]
+    );
+
+    let cloned_link_id = store
+        .list_publication_item_links("revision-2")
+        .await
+        .unwrap()[0]
+        .id
+        .clone();
+    store
+        .delete_publication_item_link(&cloned_link_id)
+        .await
+        .unwrap();
+    assert!(store
+        .list_publication_item_links("revision-2")
+        .await
+        .unwrap()
+        .is_empty());
+    store
+        .save_publication_item(&PublicationItem {
+            id: "temporary-supplement".into(),
+            revision_id: "revision-2".into(),
+            parent_item_id: Some(cloned_figure.id),
+            kind: PublicationItemKind::Supplement,
+            title: "Temporary supplement".into(),
+            content: String::new(),
+            ordinal: 0,
+            metadata_json: "{}".into(),
+            created_at: 0,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+    store
+        .save_evidence_binding(&EvidenceBindingDraft {
+            id: "temporary-binding".into(),
+            revision_id: "revision-2".into(),
+            item_id: Some("temporary-supplement".into()),
+            source_kind: EvidenceSourceKind::ArtifactVersion,
+            source_id: versions[0].clone(),
+            purpose: "Temporary evidence".into(),
+            supported_claim_item_id: None,
+            selection_state: EvidenceSelectionState::Candidate,
+            visibility: EvidenceVisibility::Private,
+        })
+        .await
+        .unwrap();
+    assert!(store
+        .research_graph("p")
+        .await
+        .unwrap()
+        .edges
+        .iter()
+        .any(|edge| edge.id == "publication-evidence:temporary-binding"));
+    store
+        .delete_publication_item("temporary-supplement")
+        .await
+        .unwrap();
+    assert!(store
+        .get_evidence_binding("temporary-binding")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(!store
+        .research_graph("p")
+        .await
+        .unwrap()
+        .edges
+        .iter()
+        .any(|edge| edge.id == "publication-evidence:temporary-binding"));
+
+    sqlx::query("UPDATE publication_revisions SET state='freezing' WHERE id='revision-2'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert!(store
+        .clone_publication_revision("revision-2", "invalid-clone", "Invalid")
+        .await
+        .is_err());
+    sqlx::query("UPDATE publication_revisions SET state='draft' WHERE id='revision-2'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "UPDATE publication_revisions SET state='frozen',manifest_json='{}',\
+         manifest_sha256=?,frozen_at=20,updated_at=20 WHERE id='revision-1'",
+    )
+    .bind("e".repeat(64))
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    assert!(store
+        .update_draft_publication_revision("revision-1", "mutated")
+        .await
+        .is_err());
+    assert!(store
+        .update_evidence_binding_selection(
+            "binding-old",
+            EvidenceSelectionState::Rejected,
+            EvidenceVisibility::Private,
+        )
+        .await
+        .is_err());
+    assert!(
+        sqlx::query("UPDATE publication_items SET title='mutated' WHERE id='figure'")
+            .execute(&store.pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("DELETE FROM evidence_bindings WHERE id='binding-old'")
+            .execute(&store.pool)
+            .await
+            .is_err()
+    );
+    assert!(store
+        .delete_draft_publication_revision("revision-1")
+        .await
+        .is_err());
+    assert!(store.delete_publication("publication").await.is_err());
+
+    let graph = store.research_graph("p").await.unwrap();
+    assert!(graph
+        .nodes
+        .iter()
+        .any(|node| node.id == "publication:publication"));
+    assert!(graph
+        .edges
+        .iter()
+        .any(|edge| edge.id == "publication-evidence:binding-old"));
+    store.delete_session("f", "p").await.unwrap();
+    assert!(store
+        .get_artifact_version(&versions[0])
+        .await
+        .unwrap()
+        .is_some());
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
 async fn runs_bind_exact_artifact_versions_code_and_environment() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_exact_run_lineage_{}.sqlite",
@@ -3826,6 +4407,123 @@ async fn turn_undo_keeps_the_first_preimage_and_removes_owned_artifacts() {
     let remaining = store.list_artifacts("f").await.unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].0, "shared-artifact");
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn publication_evidence_retains_message_artifacts_during_undo_and_session_delete() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_publication_artifact_retention_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .append_message("f", 1, &Message::user("prepare the figure"))
+        .await
+        .unwrap();
+    store
+        .append_message("f", 2, &Message::assistant("[figure](figure.png)"))
+        .await
+        .unwrap();
+    let version_id = store
+        .save_artifact(
+            "figure-artifact",
+            "p",
+            "f",
+            "figure.png",
+            "image/png",
+            ".wisp/artifacts/figure.png",
+        )
+        .await
+        .unwrap();
+    store
+        .replace_message_resource_links(
+            "f",
+            2,
+            &[MessageResourceLink {
+                id: "figure-link".into(),
+                frame_id: "f".into(),
+                message_seq: 2,
+                ordinal: 0,
+                original_reference: "figure.png".into(),
+                artifact_id: Some("figure-artifact".into()),
+                artifact_version_id: Some(version_id.clone()),
+                display_name: "figure.png".into(),
+                resource_kind: "image".into(),
+                mime_type: "image/png".into(),
+                status: "ready".into(),
+                error: None,
+                created_artifact: true,
+                created_version: true,
+                created_at: 1,
+            }],
+        )
+        .await
+        .unwrap();
+    store
+        .create_publication("publication", "p", "Paper", "")
+        .await
+        .unwrap();
+    store
+        .create_publication_revision("revision", "publication", None, "Submission")
+        .await
+        .unwrap();
+    store
+        .save_publication_item(&PublicationItem {
+            id: "figure".into(),
+            revision_id: "revision".into(),
+            parent_item_id: None,
+            kind: PublicationItemKind::Figure,
+            title: "Figure 1".into(),
+            content: String::new(),
+            ordinal: 0,
+            metadata_json: "{}".into(),
+            created_at: 0,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+    store
+        .save_evidence_binding(&EvidenceBindingDraft {
+            id: "binding".into(),
+            revision_id: "revision".into(),
+            item_id: Some("figure".into()),
+            source_kind: EvidenceSourceKind::ArtifactVersion,
+            source_id: version_id.clone(),
+            purpose: "Figure 1".into(),
+            supported_claim_item_id: None,
+            selection_state: EvidenceSelectionState::Selected,
+            visibility: EvidenceVisibility::Private,
+        })
+        .await
+        .unwrap();
+
+    assert!(store
+        .list_owned_message_artifacts("f", 1)
+        .await
+        .unwrap()
+        .is_empty());
+    store.truncate_messages_for_undo("f", 1).await.unwrap();
+    assert!(store
+        .get_artifact_version(&version_id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(store
+        .get_evidence_binding("binding")
+        .await
+        .unwrap()
+        .is_some());
+
+    store.delete_session("f", "p").await.unwrap();
+    assert!(store
+        .get_artifact_version(&version_id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(store.list_sessions("p").await.unwrap().is_empty());
     let _ = std::fs::remove_file(&tmp);
 }
 

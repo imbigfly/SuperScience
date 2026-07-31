@@ -20,6 +20,7 @@ mod project_sync;
 mod project_transfer;
 mod projects;
 mod provenance;
+mod publications;
 mod research;
 mod resources;
 mod runs;
@@ -95,6 +96,9 @@ const TURN_FILE_UNDO_MIGRATION: &str = "0026_turn_file_undo";
 const SESSION_BRANCH_LINEAGE_MIGRATION: &str = "0027_session_branch_lineage";
 const ASK_USER_REQUESTS_MIGRATION: &str = "0028_ask_user_requests";
 const RUN_ARTIFACT_LINEAGE_MIGRATION: &str = "0029_run_artifact_lineage";
+const PUBLICATION_DOMAIN_MIGRATION: &str = "0030_publication_domain";
+const PUBLICATION_DOMAIN_MIGRATION_SQL: &str =
+    include_str!("../migrations/0030_publication_domain.sql");
 
 #[derive(Clone)]
 pub struct Store {
@@ -425,6 +429,11 @@ impl Store {
             Self::apply_run_artifact_lineage(pool).await?;
             Self::record_migration(pool, RUN_ARTIFACT_LINEAGE_MIGRATION).await?;
         }
+        if !Self::migration_applied(pool, PUBLICATION_DOMAIN_MIGRATION).await? {
+            Self::execute_sql_script(pool, PUBLICATION_DOMAIN_MIGRATION_SQL).await?;
+            Self::install_publication_triggers(pool).await?;
+            Self::record_migration(pool, PUBLICATION_DOMAIN_MIGRATION).await?;
+        }
         Ok(())
     }
 
@@ -541,6 +550,239 @@ impl Store {
         )
         .execute(pool)
         .await?;
+        Ok(())
+    }
+
+    async fn install_publication_triggers(pool: &SqlitePool) -> Result<()> {
+        for statement in [
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_revision_parent_insert \
+             BEFORE INSERT ON publication_revisions \
+             WHEN NEW.parent_revision_id=NEW.id \
+               OR (NEW.parent_revision_id IS NOT NULL AND NOT EXISTS(\
+               SELECT 1 FROM publication_revisions parent \
+               WHERE parent.id=NEW.parent_revision_id \
+                 AND parent.publication_id=NEW.publication_id)) \
+             BEGIN SELECT RAISE(ABORT,'Publication revision parent must belong to the same Publication'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_revision_parent_update \
+             BEFORE UPDATE OF parent_revision_id,publication_id ON publication_revisions \
+             WHEN NEW.parent_revision_id=NEW.id \
+               OR (NEW.parent_revision_id IS NOT NULL AND NOT EXISTS(\
+               SELECT 1 FROM publication_revisions parent \
+               WHERE parent.id=NEW.parent_revision_id \
+                 AND parent.publication_id=NEW.publication_id)) \
+             BEGIN SELECT RAISE(ABORT,'Publication revision parent must belong to the same Publication'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_revision_immutable_update \
+             BEFORE UPDATE ON publication_revisions \
+             WHEN OLD.state IN ('frozen','published') AND (\
+               NEW.publication_id IS NOT OLD.publication_id \
+               OR NEW.parent_revision_id IS NOT OLD.parent_revision_id \
+               OR NEW.revision_number IS NOT OLD.revision_number \
+               OR NEW.label IS NOT OLD.label \
+               OR NEW.capability_level IS NOT OLD.capability_level \
+               OR NEW.manifest_json IS NOT OLD.manifest_json \
+               OR NEW.manifest_sha256 IS NOT OLD.manifest_sha256 \
+               OR NEW.frozen_at IS NOT OLD.frozen_at \
+               OR NEW.created_at IS NOT OLD.created_at \
+               OR (NOT(OLD.state='frozen' AND NEW.state='published') \
+                   AND NEW.published_at IS NOT OLD.published_at) \
+               OR (OLD.state='frozen' AND NEW.state='published' \
+                   AND NEW.published_at IS NULL) \
+               OR (OLD.state='frozen' AND NEW.state NOT IN ('published','deleting')) \
+               OR (OLD.state='published' AND NEW.state<>'deleting')\
+             ) \
+             BEGIN SELECT RAISE(ABORT,'Publication revision is immutable'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_revision_immutable_delete \
+             BEFORE DELETE ON publication_revisions \
+             WHEN OLD.state NOT IN ('draft','deleting') \
+             BEGIN SELECT RAISE(ABORT,'Publication revision is immutable'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_item_parent_insert \
+             BEFORE INSERT ON publication_items \
+             WHEN NEW.parent_item_id IS NOT NULL AND NOT EXISTS(\
+               SELECT 1 FROM publication_items parent \
+               WHERE parent.id=NEW.parent_item_id AND parent.revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Publication item parent must belong to the same revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_item_parent_update \
+             BEFORE UPDATE OF parent_item_id,revision_id ON publication_items \
+             WHEN NEW.parent_item_id IS NOT NULL AND NOT EXISTS(\
+               SELECT 1 FROM publication_items parent \
+               WHERE parent.id=NEW.parent_item_id AND parent.revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Publication item parent must belong to the same revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_item_link_scope_insert \
+             BEFORE INSERT ON publication_item_links \
+             WHEN NOT EXISTS(SELECT 1 FROM publication_items \
+                             WHERE id=NEW.source_item_id AND revision_id=NEW.revision_id) \
+               OR NOT EXISTS(SELECT 1 FROM publication_items \
+                             WHERE id=NEW.target_item_id AND revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Publication item link must stay inside one revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_item_link_scope_update \
+             BEFORE UPDATE ON publication_item_links \
+             WHEN NOT EXISTS(SELECT 1 FROM publication_items \
+                             WHERE id=NEW.source_item_id AND revision_id=NEW.revision_id) \
+               OR NOT EXISTS(SELECT 1 FROM publication_items \
+                             WHERE id=NEW.target_item_id AND revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Publication item link must stay inside one revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_binding_scope_insert \
+             BEFORE INSERT ON evidence_bindings \
+             WHEN (NEW.item_id IS NOT NULL AND NOT EXISTS(\
+                     SELECT 1 FROM publication_items \
+                     WHERE id=NEW.item_id AND revision_id=NEW.revision_id)) \
+               OR (NEW.supported_claim_item_id IS NOT NULL AND NOT EXISTS(\
+                     SELECT 1 FROM publication_items \
+                     WHERE id=NEW.supported_claim_item_id \
+                       AND revision_id=NEW.revision_id AND kind='claim')) \
+             BEGIN SELECT RAISE(ABORT,'Evidence binding items must belong to the revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_binding_scope_update \
+             BEFORE UPDATE ON evidence_bindings \
+             WHEN (NEW.item_id IS NOT NULL AND NOT EXISTS(\
+                     SELECT 1 FROM publication_items \
+                     WHERE id=NEW.item_id AND revision_id=NEW.revision_id)) \
+               OR (NEW.supported_claim_item_id IS NOT NULL AND NOT EXISTS(\
+                     SELECT 1 FROM publication_items \
+                     WHERE id=NEW.supported_claim_item_id \
+                       AND revision_id=NEW.revision_id AND kind='claim')) \
+             BEGIN SELECT RAISE(ABORT,'Evidence binding items must belong to the revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_binding_source_project_insert \
+             BEFORE INSERT ON evidence_bindings \
+             WHEN (NEW.source_kind='artifact_version' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN artifact_versions version ON version.id=NEW.artifact_version_id \
+                     JOIN artifacts artifact ON artifact.id=version.artifact_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND artifact.project_id=publication.project_id)) \
+               OR (NEW.source_kind='run' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN runs run ON run.id=NEW.run_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND run.project_id=publication.project_id)) \
+               OR (NEW.source_kind='external_resource' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN external_resources resource ON resource.id=NEW.external_resource_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND resource.project_id=publication.project_id)) \
+             BEGIN SELECT RAISE(ABORT,'Evidence source must belong to the Publication project'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_binding_source_project_update \
+             BEFORE UPDATE ON evidence_bindings \
+             WHEN (NEW.source_kind='artifact_version' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN artifact_versions version ON version.id=NEW.artifact_version_id \
+                     JOIN artifacts artifact ON artifact.id=version.artifact_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND artifact.project_id=publication.project_id)) \
+               OR (NEW.source_kind='run' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN runs run ON run.id=NEW.run_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND run.project_id=publication.project_id)) \
+               OR (NEW.source_kind='external_resource' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN external_resources resource ON resource.id=NEW.external_resource_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND resource.project_id=publication.project_id)) \
+             BEGIN SELECT RAISE(ABORT,'Evidence source must belong to the Publication project'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_supersession_scope_insert \
+             BEFORE INSERT ON evidence_supersessions \
+             WHEN NOT EXISTS(SELECT 1 FROM evidence_bindings \
+                             WHERE id=NEW.old_binding_id AND revision_id=NEW.revision_id) \
+               OR NOT EXISTS(SELECT 1 FROM evidence_bindings \
+                             WHERE id=NEW.new_binding_id AND revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Evidence supersession must stay inside one revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_supersession_scope_update \
+             BEFORE UPDATE ON evidence_supersessions \
+             WHEN NOT EXISTS(SELECT 1 FROM evidence_bindings \
+                             WHERE id=NEW.old_binding_id AND revision_id=NEW.revision_id) \
+               OR NOT EXISTS(SELECT 1 FROM evidence_bindings \
+                             WHERE id=NEW.new_binding_id AND revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Evidence supersession must stay inside one revision'); END",
+        ] {
+            sqlx::query(statement).execute(pool).await?;
+        }
+
+        for table in [
+            "publication_items",
+            "publication_item_links",
+            "evidence_bindings",
+            "evidence_supersessions",
+            "publication_readiness_reports",
+            "publication_waivers",
+        ] {
+            for operation in ["insert", "update", "delete"] {
+                let state_check = match operation {
+                    "insert" => {
+                        "COALESCE((SELECT state FROM publication_revisions \
+                         WHERE id=NEW.revision_id),'missing') \
+                         NOT IN ('draft','freezing','deleting')"
+                    }
+                    "update" => {
+                        "COALESCE((SELECT state FROM publication_revisions \
+                         WHERE id=OLD.revision_id),'missing') \
+                         NOT IN ('draft','freezing','deleting') \
+                         OR COALESCE((SELECT state FROM publication_revisions \
+                         WHERE id=NEW.revision_id),'missing') \
+                         NOT IN ('draft','freezing','deleting')"
+                    }
+                    "delete" => {
+                        "COALESCE((SELECT state FROM publication_revisions \
+                         WHERE id=OLD.revision_id),'missing') \
+                         NOT IN ('draft','freezing','deleting')"
+                    }
+                    _ => unreachable!(),
+                };
+                let trigger = format!(
+                    "CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation}_draft \
+                     BEFORE {} ON {table} \
+                     WHEN {state_check} \
+                     BEGIN SELECT RAISE(ABORT,'Publication revision content is immutable'); END",
+                    operation.to_ascii_uppercase()
+                );
+                sqlx::query(&trigger).execute(pool).await?;
+            }
+        }
+
+        for operation in ["insert", "update", "delete"] {
+            let state_check = match operation {
+                "insert" => {
+                    "COALESCE((\
+                       SELECT revision.state FROM evidence_bindings binding \
+                       JOIN publication_revisions revision ON revision.id=binding.revision_id \
+                       WHERE binding.id=NEW.binding_id\
+                     ),'missing') NOT IN ('draft','freezing','deleting')"
+                }
+                "update" => {
+                    "COALESCE((\
+                       SELECT revision.state FROM evidence_bindings binding \
+                       JOIN publication_revisions revision ON revision.id=binding.revision_id \
+                       WHERE binding.id=OLD.binding_id\
+                     ),'missing') NOT IN ('draft','freezing','deleting') \
+                     OR COALESCE((\
+                       SELECT revision.state FROM evidence_bindings binding \
+                       JOIN publication_revisions revision ON revision.id=binding.revision_id \
+                       WHERE binding.id=NEW.binding_id\
+                     ),'missing') NOT IN ('draft','freezing','deleting')"
+                }
+                "delete" => {
+                    "COALESCE((\
+                       SELECT revision.state FROM evidence_bindings binding \
+                       JOIN publication_revisions revision ON revision.id=binding.revision_id \
+                       WHERE binding.id=OLD.binding_id\
+                     ),'missing') NOT IN ('draft','freezing','deleting')"
+                }
+                _ => unreachable!(),
+            };
+            let trigger = format!(
+                "CREATE TRIGGER IF NOT EXISTS trg_evidence_reviews_{operation}_draft \
+                 BEFORE {} ON evidence_reviews \
+                 WHEN {state_check} \
+                 BEGIN SELECT RAISE(ABORT,'Publication revision content is immutable'); END",
+                operation.to_ascii_uppercase()
+            );
+            sqlx::query(&trigger).execute(pool).await?;
+        }
         Ok(())
     }
 

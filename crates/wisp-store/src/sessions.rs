@@ -66,7 +66,9 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
                 AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
                     ON input.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
                 AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
-                    ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
+                    ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
+                AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN evidence_bindings binding \
+                    ON binding.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
             )\
          ) OR target_id IN (\
             SELECT id FROM research_nodes WHERE kind='artifact' AND ref_id IN (\
@@ -75,7 +77,9 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
                 AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
                     ON input.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
                 AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
-                    ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
+                    ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
+                AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN evidence_bindings binding \
+                    ON binding.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
             )\
          )",
     )
@@ -90,7 +94,9 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
             AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
                 ON input.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
             AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
-                ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
+                ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN evidence_bindings binding \
+                ON binding.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
          )",
     )
     .bind(frame_id)
@@ -104,7 +110,9 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
             AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
                 ON input.artifact_version_id=version.id WHERE version.artifact_id=a.id) \
             AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
-                ON output.artifact_version_id=version.id WHERE version.artifact_id=a.id)\
+                ON output.artifact_version_id=version.id WHERE version.artifact_id=a.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN evidence_bindings binding \
+                ON binding.artifact_version_id=version.id WHERE version.artifact_id=a.id)\
          ) OR depends_on_version_id IN (\
             SELECT av.id FROM artifact_versions av \
             JOIN artifacts a ON a.id=av.artifact_id WHERE a.root_frame_id=? \
@@ -112,7 +120,9 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
             AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
                 ON input.artifact_version_id=version.id WHERE version.artifact_id=a.id) \
             AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
-                ON output.artifact_version_id=version.id WHERE version.artifact_id=a.id)\
+                ON output.artifact_version_id=version.id WHERE version.artifact_id=a.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN evidence_bindings binding \
+                ON binding.artifact_version_id=version.id WHERE version.artifact_id=a.id)\
          )",
     )
     .bind(frame_id)
@@ -126,7 +136,9 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
             AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
                 ON input.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
             AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
-                ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
+                ON output.artifact_version_id=version.id WHERE version.artifact_id=artifact.id) \
+            AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN evidence_bindings binding \
+                ON binding.artifact_version_id=version.id WHERE version.artifact_id=artifact.id)\
          )",
     )
     .bind(frame_id)
@@ -138,7 +150,9 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
          AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_inputs input \
              ON input.artifact_version_id=version.id WHERE version.artifact_id=artifacts.id) \
          AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN run_outputs output \
-             ON output.artifact_version_id=version.id WHERE version.artifact_id=artifacts.id)",
+             ON output.artifact_version_id=version.id WHERE version.artifact_id=artifacts.id) \
+         AND NOT EXISTS (SELECT 1 FROM artifact_versions version JOIN evidence_bindings binding \
+             ON binding.artifact_version_id=version.id WHERE version.artifact_id=artifacts.id)",
     )
     .bind(frame_id)
     .execute(&mut **tx)
