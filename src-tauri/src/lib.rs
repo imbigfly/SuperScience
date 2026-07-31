@@ -1792,6 +1792,10 @@ struct AppState {
     /// Scoped approvals granted from the inline confirmation card.
     approval_grants: Arc<StdMutex<ApprovalGrants>>,
     bootstrap: StdMutex<BootstrapStatus>,
+    /// Last plugin MCP startup errors observed while building a normal Agent,
+    /// grouped by project and plugin id so Settings can explain why an enabled
+    /// plugin contributed no tools to a new session.
+    plugin_runtime_errors: StdMutex<HashMap<String, HashMap<String, Vec<String>>>>,
     /// Session ids with an in-flight manual or automatic review. Reviews in
     /// unrelated conversations remain independent.
     reviewing: Arc<StdMutex<HashSet<String>>>,
@@ -3478,6 +3482,10 @@ fn r_kernel_worker_path() -> PathBuf {
 struct ToolWiringResult {
     errors: Vec<String>,
     added_tools: Vec<String>,
+    /// Plugin ids attempted while building this Agent and any startup or
+    /// tools/list errors observed for each one. An empty list means the latest
+    /// attempt succeeded and clears an older diagnostic.
+    plugin_runtime_checks: HashMap<String, Vec<String>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3689,25 +3697,37 @@ async fn finish_custom_mcp_wiring(
     let mut set = tokio::task::JoinSet::new();
     let (plugin_launches, plugin_errors) =
         plugins::enabled_plugin_mcp_launches(store, project_id).await;
-    result.errors.extend(plugin_errors);
+    for error in plugin_errors {
+        result
+            .plugin_runtime_checks
+            .entry(error.plugin_id)
+            .or_default()
+            .push(error.message.clone());
+        result.errors.push(error.message);
+    }
     let mut next_index = 0usize;
     for launch in plugin_launches
         .into_iter()
         .filter(|launch| connector_allow.is_none_or(|allow| allow.contains(&launch.connector_id)))
     {
+        let plugin_id = launch.plugin_id.clone();
+        result
+            .plugin_runtime_checks
+            .entry(plugin_id.clone())
+            .or_default();
         let index = next_index;
         next_index += 1;
         set.spawn(async move {
             let name = launch.display_name.clone();
             let res = connect_plugin_mcp(&launch).await;
-            (index, name, true, res)
+            (index, name, Some(plugin_id), true, res)
         });
     }
     for (i, conn) in conns.into_iter().enumerate() {
         let index = next_index + i;
         set.spawn(async move {
             let res = connect_mcp(&conn).await;
-            (index, conn.name, false, res)
+            (index, conn.name, None, false, res)
         });
     }
     let mut results = Vec::new();
@@ -3716,8 +3736,8 @@ async fn finish_custom_mcp_wiring(
             results.push(r);
         }
     }
-    results.sort_by_key(|(i, _, _, _)| *i);
-    for (_, name, require_approval, res) in results {
+    results.sort_by_key(|(i, _, _, _, _)| *i);
+    for (_, name, plugin_id, require_approval, res) in results {
         match res {
             Ok(client) => match register_mcp_with_approval(
                 registry,
@@ -3727,9 +3747,29 @@ async fn finish_custom_mcp_wiring(
             .await
             {
                 Ok(names) => result.added_tools.extend(names),
-                Err(error) => result.errors.push(format!("MCP '{name}': {error}")),
+                Err(error) => {
+                    let message = format!("MCP '{name}': {error}");
+                    if let Some(plugin_id) = plugin_id {
+                        result
+                            .plugin_runtime_checks
+                            .entry(plugin_id)
+                            .or_default()
+                            .push(message.clone());
+                    }
+                    result.errors.push(message);
+                }
             },
-            Err(e) => result.errors.push(format!("MCP '{name}': {e}")),
+            Err(error) => {
+                let message = format!("MCP '{name}': {error}");
+                if let Some(plugin_id) = plugin_id {
+                    result
+                        .plugin_runtime_checks
+                        .entry(plugin_id)
+                        .or_default()
+                        .push(message.clone());
+                }
+                result.errors.push(message);
+            }
         }
     }
     result
@@ -4674,6 +4714,17 @@ async fn send_message_inner(
             connector_allow.as_ref(),
         )
         .await;
+        {
+            let mut observed = state.plugin_runtime_errors.lock().unwrap();
+            let project_errors = observed.entry(ap.id.clone()).or_default();
+            for (plugin_id, errors) in &wiring.plugin_runtime_checks {
+                if errors.is_empty() {
+                    project_errors.remove(plugin_id);
+                } else {
+                    project_errors.insert(plugin_id.clone(), errors.clone());
+                }
+            }
+        }
         if !wiring.errors.is_empty() {
             state.bootstrap.lock().unwrap().errors.extend(wiring.errors);
         }
@@ -6233,6 +6284,7 @@ pub fn run() {
                 approvals,
                 approval_grants,
                 bootstrap,
+                plugin_runtime_errors: StdMutex::new(HashMap::new()),
                 reviewing: Arc::new(StdMutex::new(HashSet::new())),
                 scratch: std::sync::RwLock::new(HashMap::new()),
             };

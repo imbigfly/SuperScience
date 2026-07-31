@@ -55,6 +55,7 @@ pub(crate) struct NormalizedPluginManifest {
 
 #[derive(Debug)]
 pub(crate) struct PluginMcpLaunch {
+    pub plugin_id: String,
     pub connector_id: String,
     pub display_name: String,
     pub command: PathBuf,
@@ -62,6 +63,12 @@ pub(crate) struct PluginMcpLaunch {
     pub env: BTreeMap<String, String>,
     pub cwd: PathBuf,
     pub install_root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PluginRuntimeError {
+    pub plugin_id: String,
+    pub message: String,
 }
 
 impl NormalizedPluginManifest {
@@ -764,6 +771,17 @@ fn plugin_view(
     })
 }
 
+fn apply_observed_runtime_errors(view: &mut PluginView, errors: &[String]) {
+    for error in errors {
+        if !view.runtime_errors.contains(error) {
+            view.runtime_errors.push(error.clone());
+        }
+    }
+    if !view.runtime_errors.is_empty() {
+        view.runtime_status = "unavailable".into();
+    }
+}
+
 pub(crate) async fn enabled_plugin_manifests(
     store: &wisp_store::Store,
     project_id: &str,
@@ -849,6 +867,7 @@ fn plugin_mcp_launch(
         install_root.clone()
     };
     Ok(PluginMcpLaunch {
+        plugin_id: manifest.id.clone(),
         connector_id: format!("plugin:{}:{}", manifest.id, server.id),
         display_name: format!("{} / {}", manifest.display_name, server.id),
         command,
@@ -862,17 +881,20 @@ fn plugin_mcp_launch(
 pub(crate) async fn enabled_plugin_mcp_launches(
     store: &wisp_store::Store,
     project_id: &str,
-) -> (Vec<PluginMcpLaunch>, Vec<String>) {
+) -> (Vec<PluginMcpLaunch>, Vec<PluginRuntimeError>) {
     let mut launches = Vec::new();
     let mut errors = Vec::new();
     for (installation, manifest) in enabled_plugin_manifests(store, project_id).await {
         for server in &manifest.mcp_servers {
             match plugin_mcp_launch(&installation, &manifest, server) {
                 Ok(launch) => launches.push(launch),
-                Err(error) => errors.push(format!(
-                    "Plugin '{}' MCP '{}': {error}",
-                    manifest.display_name, server.id
-                )),
+                Err(error) => errors.push(PluginRuntimeError {
+                    plugin_id: manifest.id.clone(),
+                    message: format!(
+                        "Plugin '{}' MCP '{}': {error}",
+                        manifest.display_name, server.id
+                    ),
+                }),
             }
         }
     }
@@ -895,6 +917,13 @@ pub(super) async fn list_plugins(
         .filter(|binding| binding.enabled)
         .map(|binding| (binding.plugin_id, binding.version))
         .collect();
+    let observed_errors = state
+        .plugin_runtime_errors
+        .lock()
+        .unwrap()
+        .get(&project.id)
+        .cloned()
+        .unwrap_or_default();
     state
         .store
         .list_plugin_installations()
@@ -904,7 +933,19 @@ pub(super) async fn list_plugins(
         .map(|installation| {
             let is_enabled =
                 enabled.contains(&(installation.plugin_id.clone(), installation.version.clone()));
-            plugin_view(installation, is_enabled)
+            let plugin_id = installation.plugin_id.clone();
+            plugin_view(installation, is_enabled).map(|mut view| {
+                if is_enabled {
+                    apply_observed_runtime_errors(
+                        &mut view,
+                        observed_errors
+                            .get(&plugin_id)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
+                    );
+                }
+                view
+            })
         })
         .collect()
 }
@@ -1118,6 +1159,13 @@ pub(super) async fn set_plugin_enabled(
             .await
             .map_err(|error| error.to_string())?;
     }
+    state
+        .plugin_runtime_errors
+        .lock()
+        .unwrap()
+        .entry(project.id.clone())
+        .or_default()
+        .remove(&plugin_id);
     clear_idle_agents(&state).await;
     Ok(())
 }
@@ -1178,6 +1226,9 @@ pub(super) async fn remove_plugin(
     }
     if let Some(parent) = installed_root.parent() {
         let _ = tokio::fs::remove_dir(parent).await;
+    }
+    for errors in state.plugin_runtime_errors.lock().unwrap().values_mut() {
+        errors.remove(&plugin_id);
     }
     Ok(())
 }
@@ -1314,6 +1365,41 @@ mod tests {
     }
 
     #[test]
+    fn plugin_view_includes_errors_observed_during_new_session_startup() {
+        let root =
+            std::env::temp_dir().join(format!("wisp-plugin-observed-{}", uuid::Uuid::new_v4()));
+        fixture(&root);
+        let manifest = parse_manifest(&root).unwrap();
+        let installation = wisp_store::PluginInstallation {
+            plugin_id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            display_name: manifest.display_name.clone(),
+            description: manifest.description.clone(),
+            author: manifest.author.clone(),
+            license: manifest.license.clone(),
+            source_uri: root.to_string_lossy().to_string(),
+            install_root: root.to_string_lossy().to_string(),
+            archive_sha256: "a".repeat(64),
+            manifest_json: serde_json::to_string(&manifest).unwrap(),
+            trust_state: "checksum_verified".into(),
+            installed_at: 0,
+            updated_at: 0,
+        };
+        let mut view = plugin_view(installation, true).unwrap();
+        assert_eq!(view.runtime_status, "ready");
+
+        apply_observed_runtime_errors(
+            &mut view,
+            &["Plugin 'Motif' MCP 'motif': process exited during tools/list".into()],
+        );
+
+        assert_eq!(view.runtime_status, "unavailable");
+        assert_eq!(view.runtime_errors.len(), 1);
+        assert!(view.runtime_errors[0].contains("tools/list"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn plugin_launch_expands_a_spawnable_canonical_root() {
         let root =
             std::env::temp_dir().join(format!("wisp-plugin-launch-{}", uuid::Uuid::new_v4()));
@@ -1339,6 +1425,7 @@ mod tests {
 
         let launch = plugin_mcp_launch(&installation, &manifest, &manifest.mcp_servers[0]).unwrap();
         let expected_root = dunce::canonicalize(&root).unwrap();
+        assert_eq!(launch.plugin_id, "motif");
         assert_eq!(launch.install_root, expected_root);
         assert_eq!(
             PathBuf::from(&launch.args[0]),

@@ -63,7 +63,8 @@ with the current platform's directory-listing command because the `read` tool ca
 **1. Think before coding.** State assumptions. If uncertain, ask rather than guess.\n\
 **2. Minimum code.** If 200 lines can be 50, rewrite. No features beyond what was asked.\n\
 **3. Surgical changes.** Touch only what you must. Don't 'improve' adjacent code or refactor things that aren't broken. Match existing style.\n\
-**4. Verify before completion.** Transform tasks into verifiable goals: 'Write tests for X, then make them pass.' For multi-step work, state a brief plan first.\n".into()
+**4. Verify before completion.** Transform tasks into verifiable goals: 'Write tests for X, then make them pass.' For multi-step work, state a brief plan first.\n\
+**5. Respect cancellations and course corrections.** When the user cancels or removes work, stop it, revise the active plan immediately, and mark the removed step `cancelled` when using `update_plan`. A cancelled step is terminal: never resume it merely because an older plan or message still lists it. Only restore it after a new explicit user request.\n".into()
     }
 
     fn tool_guidance() -> String {
@@ -83,6 +84,15 @@ Use the existing **python** tool for ordinary analysis; its variables and loaded
 Use the existing **r** tool when R is the appropriate analysis environment. It requires an existing `Rscript` and `jsonlite`; do not silently install R or packages. Interpreter paths belong to the selected execution context's persisted settings. When the user supplies or asks to change a Python/R path, use `set_runtime_interpreter` with the matching `context_id` if that tool is available; never try to change the Wisp host process environment from a shell tool.\n\
 When packages or a project-specific scientific stack are needed, call `use_skill` for `local-env-setup` first. For local bioinformatics/scientific package work, prefer a project-local **pixi** environment: `pixi init`, `pixi add ...`, then `pixi run python ...` from the project directory.\n\
 Before any `pip`, `uv`, `npm`, or `pixi add` download, consider the user's network. If mainland-China or corporate-mirror access is likely or requested, configure PyPI/uv and pixi conda/PyPI mirrors first; otherwise use defaults.\n".into()
+    }
+
+    fn scientific_deliverables_guidance() -> String {
+        "## Scientific Deliverables\n\n\
+Scientific figures and multi-stage analyses use the bundled reproducibility workflows by default, not only when the user happens to name a skill.\n\
+- Before creating or revising any scientific plot, search for and load `figure-style`; for a multi-panel figure also load `figure-composer`. Render the saved file, inspect it, and fix legibility or correctness defects before presenting it.\n\
+- Before a multi-stage analysis that produces scripts, tables, or figures, search for and load `analysis-workflow`. Organize outputs into self-contained analysis modules and update each module's README with exact inputs, methods, result-changing parameters, direct package/database versions, scripts, and outputs.\n\
+- Never invent environment or dependency versions. Read them from the runtime, lock file, or recorded session metadata; write `unavailable` when an exact value cannot be observed.\n\
+If a named workflow is disabled or unavailable, follow the same principles directly and state that the skill could not be loaded.\n".into()
     }
 
     fn skills_guidance(&self) -> String {
@@ -142,6 +152,7 @@ Before any `pip`, `uv`, `npm`, or `pixi add` download, consider the user's netwo
             Self::builtin_rules(),
             Self::tool_guidance(),
             Self::environment_guidance(),
+            Self::scientific_deliverables_guidance(),
             self.skills_guidance(),
         ];
         if let Some(hosts) = &self.compute_hosts {
@@ -246,6 +257,28 @@ mod tests {
         assert!(
             out.contains("nested-quote one-liners"),
             "ssh quoting guidance missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn prompt_makes_user_cancelled_plan_steps_terminal() {
+        let skills = SkillIndex::default();
+        let out = SystemPrompt::new(std::path::Path::new("/tmp"), &skills, None).assemble();
+        assert!(out.contains("mark the removed step `cancelled`"), "{out}");
+        assert!(out.contains("never resume it"), "{out}");
+        assert!(out.contains("new explicit user request"), "{out}");
+    }
+
+    #[test]
+    fn prompt_routes_scientific_outputs_through_reproducibility_skills() {
+        let skills = SkillIndex::default();
+        let out = SystemPrompt::new(std::path::Path::new("/tmp"), &skills, None).assemble();
+        assert!(out.contains("load `figure-style`"), "{out}");
+        assert!(out.contains("load `analysis-workflow`"), "{out}");
+        assert!(out.contains("self-contained analysis modules"), "{out}");
+        assert!(
+            out.contains("Never invent environment or dependency versions"),
+            "{out}"
         );
     }
 

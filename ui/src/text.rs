@@ -520,26 +520,76 @@ pub(crate) fn next_artifact_id(n: usize) -> String {
     format!("{:08x}", n + 1)
 }
 
-/// Group key for the artifacts panel: parent directory for files, `@kind` for inline artifacts.
-pub(crate) fn artifact_group_key(a: &crate::dto::Artifact) -> String {
+/// Return a workspace-relative spelling when `path` is inside `project_root`.
+/// Relative artifact paths are already workspace-relative. Absolute references
+/// outside the workspace and URI-backed artifacts keep the old last-directory
+/// grouping so the panel does not expose an unrelated full host path.
+fn artifact_workspace_path(path: &str, project_root: &str) -> String {
+    let normalized = path.trim().replace('\\', "/");
+    let normalized = normalized
+        .strip_prefix("./")
+        .unwrap_or(&normalized)
+        .trim_end_matches('/');
+    if normalized.contains("://") {
+        return normalized.to_string();
+    }
+
+    let root = project_root.trim().replace('\\', "/");
+    let root = root.trim_end_matches('/');
+    let windows_root = root.as_bytes().get(1) == Some(&b':');
+    let comparable_path = if windows_root {
+        normalized.to_ascii_lowercase()
+    } else {
+        normalized.to_string()
+    };
+    let comparable_root = if windows_root {
+        root.to_ascii_lowercase()
+    } else {
+        root.to_string()
+    };
+    let prefix = format!("{comparable_root}/");
+    if let Some(relative) = comparable_path.strip_prefix(&prefix) {
+        let offset = normalized.len().saturating_sub(relative.len());
+        return normalized[offset..].to_string();
+    }
+    normalized.to_string()
+}
+
+/// Group key for the artifacts panel: complete project-relative parent path for
+/// workspace files, `@kind` for inline artifacts.
+pub(crate) fn artifact_group_key(a: &crate::dto::Artifact, project_root: &str) -> String {
     use crate::dto::PreviewData;
     match &a.data {
-        PreviewData::File { path, .. } => path
-            .rsplit(['/', '\\'])
-            .nth(1)
-            .filter(|p| !p.is_empty())
-            .map(|p| format!("{p}/"))
-            .unwrap_or_else(|| ".".into()),
+        PreviewData::File { path, .. } => {
+            let relative = artifact_workspace_path(path, project_root);
+            let outside_workspace_absolute = relative == path.trim().replace('\\', "/")
+                && (relative.starts_with('/')
+                    || relative.as_bytes().get(1) == Some(&b':')
+                    || relative.contains("://"));
+            let parent = relative.rsplit_once('/').map(|(parent, _)| parent);
+            match parent.filter(|parent| !parent.is_empty()) {
+                Some(parent) if outside_workspace_absolute => parent
+                    .rsplit('/')
+                    .next()
+                    .map(|name| format!("{name}/"))
+                    .unwrap_or_else(|| ".".into()),
+                Some(parent) => format!("{parent}/"),
+                None => ".".into(),
+            }
+        }
         _ => format!("@{}", a.kind),
     }
 }
 
 /// Sorted artifact groups: directories first (alpha), then inline kinds.
-pub(crate) fn group_artifact_indices(arts: &[crate::dto::Artifact]) -> Vec<(String, Vec<usize>)> {
+pub(crate) fn group_artifact_indices(
+    arts: &[crate::dto::Artifact],
+    project_root: &str,
+) -> Vec<(String, Vec<usize>)> {
     use std::collections::BTreeMap;
     let mut map: BTreeMap<(u8, String), (String, Vec<usize>)> = BTreeMap::new();
     for (i, a) in arts.iter().enumerate() {
-        let key = artifact_group_key(a);
+        let key = artifact_group_key(a, project_root);
         let sort = if let Some(kind) = key.strip_prefix('@') {
             (1, kind.to_string())
         } else {
@@ -551,6 +601,68 @@ pub(crate) fn group_artifact_indices(arts: &[crate::dto::Artifact]) -> Vec<(Stri
             .push(i);
     }
     map.into_values().collect()
+}
+
+#[cfg(test)]
+mod artifact_group_tests {
+    use super::{artifact_group_key, group_artifact_indices};
+    use crate::dto::{Artifact, PreviewData};
+
+    fn file(path: &str) -> Artifact {
+        Artifact {
+            id: path.into(),
+            name: path.rsplit(['/', '\\']).next().unwrap_or(path).into(),
+            kind: "image",
+            data: PreviewData::File {
+                path: path.into(),
+                kind: "image".into(),
+            },
+            source_item: 0,
+            superseded: false,
+        }
+    }
+
+    #[test]
+    fn artifact_groups_keep_nested_workspace_paths() {
+        let relative = file("DEG/output/figures/volcano.png");
+        assert_eq!(
+            artifact_group_key(&relative, r"D:\project"),
+            "DEG/output/figures/"
+        );
+
+        let absolute = file(r"D:\project\GSEA\output\tables\hallmark.tsv");
+        assert_eq!(
+            artifact_group_key(&absolute, r"d:\PROJECT"),
+            "GSEA/output/tables/"
+        );
+    }
+
+    #[test]
+    fn artifact_groups_do_not_expose_unrelated_absolute_paths() {
+        let outside = file(r"C:\external\results\plot.png");
+        assert_eq!(artifact_group_key(&outside, r"D:\project"), "results/");
+        let remote = file("ssh://gpu/work/results/plot.png");
+        assert_eq!(artifact_group_key(&remote, r"D:\project"), "results/");
+    }
+
+    #[test]
+    fn nested_groups_remain_distinct() {
+        let artifacts = vec![
+            file("PCA/output/figures/plot.png"),
+            file("DEG/output/figures/plot.png"),
+        ];
+        let groups = group_artifact_indices(&artifacts, r"D:\project");
+        assert_eq!(
+            groups
+                .iter()
+                .map(|(key, indices)| (key.as_str(), indices.as_slice()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("DEG/output/figures/", &[1][..]),
+                ("PCA/output/figures/", &[0][..]),
+            ]
+        );
+    }
 }
 
 pub(crate) fn normalize_path(path: &str) -> String {

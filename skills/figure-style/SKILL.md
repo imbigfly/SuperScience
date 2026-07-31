@@ -328,6 +328,15 @@ smallest plotted element have a stroke or stub? Do any leaders cross? Could any
 series colour be mistaken for another? Does the legend sit beside what it keys?
 A perceptual defect that passes §9.1 is still a defect.
 
+**9.3 Reliable R export.** For ggplot objects, prefer an explicit
+`ggsave(filename, plot = p, dpi = 300, bg = "white", ...)` call over relying on
+the current graphics device. For base graphics or packages that draw only to an
+active device, open `png(..., bg = "white", res = 300)`, draw explicitly, and
+always call `dev.off()`. After either path, assert that the file exists and is
+non-empty, then inspect the saved image. A successful R call with a missing,
+zero-byte, transparent-on-transparent, or visually blank file is a failed
+render.
+
 ---
 *When in doubt: fewer hues, more direct labels, raw data over summary stats, and
 state what is being measured before showing the result.*
