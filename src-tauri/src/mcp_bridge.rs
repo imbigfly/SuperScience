@@ -1197,7 +1197,7 @@ fn list_execution_contexts_tool_schema() -> Value {
 fn run_in_context_tool_schema() -> Value {
     json!({
         "name": "wisp_run_in_context",
-        "description": "Submit a persisted background Wisp Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). Set wait_for_completion=true for direct model-free waiting, or call wisp_monitor_run exactly once with the returned id. Never poll with wisp_get_run. Dangerous commands require approval and are rejected in this non-interactive bridge.",
+        "description": "Submit a persisted background Wisp Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). For Python/R work, declare a safe preflight for interpreter, package, file, and syntax checks; it never installs packages or executes the requested command as a dry run. Set wait_for_completion=true for direct model-free waiting, or call wisp_monitor_run exactly once with the returned id. Never poll with wisp_get_run. Dangerous commands require approval and are rejected in this non-interactive bridge.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1206,6 +1206,37 @@ fn run_in_context_tool_schema() -> Value {
                 "title": { "type": "string", "description": "Short run title" },
                 "timeout_secs": { "type": "integer", "description": "Job wall timeout. SSH: 1s..7d (default 4h); local/WSL: 1s..300s" },
                 "wait_for_completion": { "type": "boolean", "description": "Suspend the tool until the Run is terminal without repeatedly calling wisp_get_run (default false)" },
+                "preflight": {
+                    "type": "object",
+                    "description": "Safe declarative Python/R checks performed before Run submission",
+                    "properties": {
+                        "language": { "type": "string", "enum": ["python", "r"] },
+                        "packages": {
+                            "type": "array",
+                            "description": "Explicit Python import module names or R package names; nothing is installed",
+                            "items": { "type": "string" },
+                            "maxItems": 32
+                        },
+                        "paths": {
+                            "type": "array",
+                            "description": "Project-relative files that must exist",
+                            "items": { "type": "string" },
+                            "maxItems": 32
+                        },
+                        "syntax_paths": {
+                            "type": "array",
+                            "description": "Project-relative .py/.R files to parse without executing",
+                            "items": { "type": "string" },
+                            "maxItems": 32
+                        },
+                        "allow_warnings": {
+                            "type": "boolean",
+                            "description": "Proceed after non-fatal warnings only after explicit user approval"
+                        }
+                    },
+                    "required": ["language"],
+                    "additionalProperties": false
+                },
                 "input_paths": {
                     "type": "array",
                     "description": "Optional project-relative files staged flat into an SSH Run workdir",

@@ -1549,6 +1549,8 @@ struct BootstrapStatus {
     sci_ok: bool,
     pixi_ok: bool,
     app_version: String,
+    os: String,
+    arch: String,
     workspace: String,
     errors: Vec<String>,
 }

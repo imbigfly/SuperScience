@@ -1,13 +1,13 @@
 use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanelState};
 use crate::app_support::{
     allow_drop, build_conn_json, close_details_ancestor, compose_icon, conn_form_from_row,
-    context_capability_summary, drag_session_id, focus_element_soon, format_relative_time,
-    join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form, quick_action_label,
-    reviewer_backend_key, reviewer_backend_label, reviewer_missing_acp_profile_id,
-    set_reviewer_backend, settings_section_label, settings_subpage_label, skill_matches_filter,
-    start_session_drag, CRED_GROUPS,
+    context_capability_summary, copy_text, drag_session_id, focus_element_soon,
+    format_relative_time, join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form,
+    quick_action_label, reviewer_backend_key, reviewer_backend_label,
+    reviewer_missing_acp_profile_id, set_reviewer_backend, settings_section_label,
+    settings_subpage_label, skill_matches_filter, start_session_drag, CRED_GROUPS,
 };
-use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
+use crate::bindings::{invoke, invoke_checked, is_mac, is_windows, open_external_url};
 use crate::dto::*;
 use crate::i18n::{localize_backend, set_document_lang, t, tf, Locale};
 use crate::text::{
@@ -362,6 +362,86 @@ fn appearance_palette_meta(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_issue_report_markdown(
+    locale: Locale,
+    problem: &str,
+    reproduction: &str,
+    expected: &str,
+    actual: &str,
+    reference: &str,
+    app_version: &str,
+    os: &str,
+    arch: &str,
+    model: &str,
+    context_kind: &str,
+    attach_screenshot: bool,
+) -> String {
+    let missing = if locale == Locale::Zh {
+        "_未填写_"
+    } else {
+        "_Not provided_"
+    };
+    let value = |value: &str| {
+        let value = value.trim();
+        if value.is_empty() {
+            missing.to_string()
+        } else {
+            value.to_string()
+        }
+    };
+    let screenshot = if locale == Locale::Zh {
+        if attach_screenshot {
+            "_用户选择稍后在 GitHub 手动附加截图；Wisp 未采集或上传图片。_"
+        } else {
+            "_未附加。Wisp 默认不采集截图。_"
+        }
+    } else if attach_screenshot {
+        "_The user opted to attach screenshots manually on GitHub; Wisp did not collect or upload an image._"
+    } else {
+        "_Not attached. Wisp does not collect screenshots by default._"
+    };
+    if locale == Locale::Zh {
+        format!(
+            "## 问题描述\n\n{}\n\n## 复现步骤\n\n{}\n\n## 预期行为\n\n{}\n\n## 实际行为\n\n{}\n\n## 相关错误或 Run ID\n\n{}\n\n## 截图\n\n{screenshot}\n\n## 环境\n\n- Wisp 版本：{}\n- OS / 架构：{} / {}\n- 模型配置：{}\n- Execution context 类型：{}\n\n<!-- 此草稿仅自动包含以上非敏感元数据；未读取 transcript、项目数据、API key、环境变量、用户名或绝对路径。 -->",
+            value(problem),
+            value(reproduction),
+            value(expected),
+            value(actual),
+            value(reference),
+            value(app_version),
+            value(os),
+            value(arch),
+            value(model),
+            value(context_kind),
+        )
+    } else {
+        format!(
+            "## Problem\n\n{}\n\n## Steps to reproduce\n\n{}\n\n## Expected behavior\n\n{}\n\n## Actual behavior\n\n{}\n\n## Related error or Run ID\n\n{}\n\n## Screenshots\n\n{screenshot}\n\n## Environment\n\n- Wisp version: {}\n- OS / architecture: {} / {}\n- Model profile: {}\n- Execution context type: {}\n\n<!-- This draft automatically includes only the non-sensitive metadata above. It did not read transcripts, project data, API keys, environment variables, usernames, or absolute paths. -->",
+            value(problem),
+            value(reproduction),
+            value(expected),
+            value(actual),
+            value(reference),
+            value(app_version),
+            value(os),
+            value(arch),
+            value(model),
+            value(context_kind),
+        )
+    }
+}
+
+fn github_issue_draft_url(title: &str, body: &str) -> String {
+    let title = js_sys::encode_uri_component(title)
+        .as_string()
+        .unwrap_or_default();
+    let body = js_sys::encode_uri_component(body)
+        .as_string()
+        .unwrap_or_default();
+    format!("https://github.com/xuzhougeng/wisp-science/issues/new?title={title}&body={body}")
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct SettingsViewState {
     pub(super) locale: RwSignal<Locale>,
@@ -566,9 +646,59 @@ pub(super) fn SettingsView(
     let quick_action_form = create_rw_signal(None::<QuickAction>);
     let quick_action_busy = create_rw_signal(false);
     let quick_action_error = create_rw_signal(None::<String>);
+    let issue_report_open = create_rw_signal(false);
+    let issue_report_title = create_rw_signal(String::new());
+    let issue_report_problem = create_rw_signal(String::new());
+    let issue_report_reproduction = create_rw_signal(String::new());
+    let issue_report_expected = create_rw_signal(String::new());
+    let issue_report_actual = create_rw_signal(String::new());
+    let issue_report_reference = create_rw_signal(String::new());
+    let issue_report_context = create_rw_signal("local".to_string());
+    let issue_report_screenshot = create_rw_signal(false);
+    let issue_report_markdown = create_rw_signal(String::new());
+    let issue_report_external_confirm = create_rw_signal(false);
+    let generate_issue_report = Callback::new(move |()| {
+        let bootstrap = bootstrap.get_untracked();
+        let app_version = bootstrap
+            .as_ref()
+            .map(|status| status.app_version.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or(env!("CARGO_PKG_VERSION"));
+        let os = bootstrap
+            .as_ref()
+            .map(|status| status.os.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown");
+        let arch = bootstrap
+            .as_ref()
+            .map(|status| status.arch.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown");
+        let model =
+            active_model_label(&models.get_untracked()).unwrap_or_else(|| "not configured".into());
+        issue_report_markdown.set(build_issue_report_markdown(
+            locale.get_untracked(),
+            &issue_report_problem.get_untracked(),
+            &issue_report_reproduction.get_untracked(),
+            &issue_report_expected.get_untracked(),
+            &issue_report_actual.get_untracked(),
+            &issue_report_reference.get_untracked(),
+            app_version,
+            os,
+            arch,
+            &model,
+            &issue_report_context.get_untracked(),
+            issue_report_screenshot.get_untracked(),
+        ));
+        issue_report_external_confirm.set(false);
+    });
     window_capture_escape(move || {
         if !show_settings.get_untracked() {
             return false;
+        }
+        if issue_report_open.get_untracked() {
+            issue_report_open.set(false);
+            return true;
         }
         if joining.get_untracked() {
             joining.set(false);
@@ -732,6 +862,14 @@ pub(super) fn SettingsView(
             quick_action_busy.set(false);
         });
     });
+    let generate_issue_report_open = generate_issue_report.clone();
+    let generate_issue_report_problem = generate_issue_report.clone();
+    let generate_issue_report_reproduction = generate_issue_report.clone();
+    let generate_issue_report_expected = generate_issue_report.clone();
+    let generate_issue_report_actual = generate_issue_report.clone();
+    let generate_issue_report_reference = generate_issue_report.clone();
+    let generate_issue_report_context = generate_issue_report.clone();
+    let generate_issue_report_screenshot = generate_issue_report.clone();
 
     move || {
         show_settings.get().then(|| view! {
@@ -945,6 +1083,30 @@ pub(super) fn SettingsView(
                                     } />
                                 <span class="toggle-track" aria-hidden="true"></span>
                             </label>
+                        </div>
+                        <div class="span-2 appearance-config-row" data-testid="report-problem-entry">
+                            <div>
+                                <strong>{move || t(locale.get(), "issue_report.entry_title")}</strong>
+                                <span>{move || t(locale.get(), "issue_report.entry_hint")}</span>
+                            </div>
+                            <button type="button" on:click={
+                                let generate = generate_issue_report_open.clone();
+                                move |_| {
+                                    issue_report_title.set(String::new());
+                                    issue_report_problem.set(String::new());
+                                    issue_report_reproduction.set(String::new());
+                                    issue_report_expected.set(String::new());
+                                    issue_report_actual.set(String::new());
+                                    issue_report_reference.set(String::new());
+                                    issue_report_context.set("local".into());
+                                    issue_report_screenshot.set(false);
+                                    issue_report_external_confirm.set(false);
+                                    generate.call(());
+                                    issue_report_open.set(true);
+                                }
+                            }>
+                                {move || t(locale.get(), "issue_report.open")}
+                            </button>
                         </div>
                         <div class="span-2 settings-sync-block">
                             <h3>{move || t(locale.get(), "settings.sync.title")}</h3>
@@ -4038,6 +4200,162 @@ pub(super) fn SettingsView(
                     }
                 })}
             </div>
+            {move || issue_report_open.get().then(|| {
+                view! {
+                    <div class="overlay" data-testid="issue-report-modal">
+                        <div class="modal issue-report-modal" role="dialog" aria-modal="true"
+                            aria-labelledby="issue-report-title">
+                            <h2 id="issue-report-title">{move || t(locale.get(), "issue_report.title")}</h2>
+                            <p class="hint issue-report-privacy">{move || t(locale.get(), "issue_report.privacy")}</p>
+                            <div class="issue-report-fields">
+                                <label>{move || t(locale.get(), "issue_report.issue_title")}
+                                    <input data-testid="issue-report-issue-title"
+                                        prop:value=move || issue_report_title.get()
+                                        on:input=move |event| {
+                                            issue_report_title.set(event_target_value(&event));
+                                            issue_report_external_confirm.set(false);
+                                        } />
+                                </label>
+                                <label>{move || t(locale.get(), "issue_report.problem")}
+                                    <textarea data-testid="issue-report-problem"
+                                        prop:value=move || issue_report_problem.get()
+                                        on:input={
+                                            let generate = generate_issue_report_problem.clone();
+                                            move |event| {
+                                                issue_report_problem.set(event_target_value(&event));
+                                                generate.call(());
+                                            }
+                                        }></textarea>
+                                </label>
+                                <label>{move || t(locale.get(), "issue_report.reproduction")}
+                                    <textarea data-testid="issue-report-reproduction"
+                                        prop:value=move || issue_report_reproduction.get()
+                                        on:input={
+                                            let generate = generate_issue_report_reproduction.clone();
+                                            move |event| {
+                                                issue_report_reproduction.set(event_target_value(&event));
+                                                generate.call(());
+                                            }
+                                        }></textarea>
+                                </label>
+                                <div class="issue-report-two-column">
+                                    <label>{move || t(locale.get(), "issue_report.expected")}
+                                        <textarea data-testid="issue-report-expected"
+                                            prop:value=move || issue_report_expected.get()
+                                            on:input={
+                                                let generate = generate_issue_report_expected.clone();
+                                                move |event| {
+                                                    issue_report_expected.set(event_target_value(&event));
+                                                    generate.call(());
+                                                }
+                                            }></textarea>
+                                    </label>
+                                    <label>{move || t(locale.get(), "issue_report.actual")}
+                                        <textarea data-testid="issue-report-actual"
+                                            prop:value=move || issue_report_actual.get()
+                                            on:input={
+                                                let generate = generate_issue_report_actual.clone();
+                                                move |event| {
+                                                    issue_report_actual.set(event_target_value(&event));
+                                                    generate.call(());
+                                                }
+                                            }></textarea>
+                                    </label>
+                                </div>
+                                <div class="issue-report-two-column">
+                                    <label>{move || t(locale.get(), "issue_report.reference")}
+                                        <input data-testid="issue-report-reference"
+                                            prop:value=move || issue_report_reference.get()
+                                            on:input={
+                                                let generate = generate_issue_report_reference.clone();
+                                                move |event| {
+                                                    issue_report_reference.set(event_target_value(&event));
+                                                    generate.call(());
+                                                }
+                                            } />
+                                    </label>
+                                    <label>{move || t(locale.get(), "issue_report.context")}
+                                        <select data-testid="issue-report-context"
+                                            prop:value=move || issue_report_context.get()
+                                            on:change={
+                                                let generate = generate_issue_report_context.clone();
+                                                move |event| {
+                                                    issue_report_context.set(event_target_value(&event));
+                                                    generate.call(());
+                                                }
+                                            }>
+                                            <option value="local">"local"</option>
+                                            <option value="ssh">"ssh"</option>
+                                            <option value="wsl">"wsl"</option>
+                                            <option value="not-applicable">{move || t(locale.get(), "issue_report.not_applicable")}</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <label class="settings-check issue-report-screenshot">
+                                    <input type="checkbox" data-testid="issue-report-screenshot"
+                                        prop:checked=move || issue_report_screenshot.get()
+                                        on:change={
+                                            let generate = generate_issue_report_screenshot.clone();
+                                            move |event| {
+                                                issue_report_screenshot.set(event_target_checked(&event));
+                                                generate.call(());
+                                            }
+                                        } />
+                                    <span>{move || t(locale.get(), "issue_report.screenshot")}</span>
+                                </label>
+                                <label>{move || t(locale.get(), "issue_report.preview")}
+                                    <textarea class="issue-report-preview" data-testid="issue-report-preview"
+                                        prop:value=move || issue_report_markdown.get()
+                                        on:input=move |event| {
+                                            issue_report_markdown.set(event_target_value(&event));
+                                            issue_report_external_confirm.set(false);
+                                        }></textarea>
+                                </label>
+                                <label class="settings-check issue-report-confirm">
+                                    <input type="checkbox" data-testid="issue-report-confirm"
+                                        prop:checked=move || issue_report_external_confirm.get()
+                                        on:change=move |event| {
+                                            issue_report_external_confirm.set(event_target_checked(&event));
+                                        } />
+                                    <span>{move || t(locale.get(), "issue_report.confirm_external")}</span>
+                                </label>
+                                <p class="hint">{move || t(locale.get(), "issue_report.github_hint")}</p>
+                            </div>
+                            <div class="row">
+                                <button type="button" on:click=move |_| issue_report_open.set(false)>
+                                    {move || t(locale.get(), "settings.cancel")}
+                                </button>
+                                <button type="button" data-testid="issue-report-copy"
+                                    disabled=move || issue_report_markdown.get().trim().is_empty()
+                                    on:click=move |_| {
+                                        let title = issue_report_title.get_untracked();
+                                        let body = issue_report_markdown.get_untracked();
+                                        copy_text(format!("# {}\n\n{body}", title.trim()));
+                                    }>
+                                    {move || t(locale.get(), "issue_report.copy")}
+                                </button>
+                                <button type="button" class="primary" data-testid="issue-report-github"
+                                    disabled=move || {
+                                        !issue_report_external_confirm.get()
+                                            || issue_report_title.get().trim().is_empty()
+                                            || issue_report_markdown.get().trim().is_empty()
+                                    }
+                                    on:click=move |_| {
+                                        issue_report_external_confirm.set(false);
+                                        let title = issue_report_title.get_untracked();
+                                        let body = issue_report_markdown.get_untracked();
+                                        open_external_url(github_issue_draft_url(
+                                            title.trim(),
+                                            &body,
+                                        ));
+                                    }>
+                                    {move || t(locale.get(), "issue_report.github")}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }
+            })}
             {move || delete_confirm.get().map(|target| {
                 let label = target.label().to_string();
                 let is_plugin = matches!(target, DeleteConfirm::Plugin { .. });

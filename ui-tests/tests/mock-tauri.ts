@@ -1372,6 +1372,23 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "open_project_window":
             return `proj-${arg("id")}`;
+          case "get_bootstrap_status":
+            return {
+              skills_loaded: 12,
+              python_ok: true,
+              python_initializing: false,
+              mcp_catalog: 8,
+              uv_ok: true,
+              node_ok: true,
+              npm_ok: true,
+              sci_ok: true,
+              pixi_ok: true,
+              app_version: "0.29.0",
+              os: "windows",
+              arch: "x86_64",
+              workspace: project.root,
+              errors: [],
+            };
           case "get_settings":
             return {
               provider: "",
@@ -3125,7 +3142,11 @@ export function parallelMock(): void {
         switch (cmd) {
           case "list_demos": return [];
           case "load_demo": return { id: "x", title: "x", request: "x", response: "x" };
-          case "load_session": return { items: [], next_before_seq: null, user_offset: 0 };
+          case "load_session": {
+            const delay = Number((window as any).__parallelLoadDelayMs ?? 0);
+            if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+            return { items: [], next_before_seq: null, user_offset: 0 };
+          }
           case "list_sessions_page": return {
             items: sessions.slice(),
             next_cursor: null,
@@ -3162,6 +3183,22 @@ export function parallelMock(): void {
           case "create_project":
             return { id: "default", name: project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
           case "delete_project": return null;
+          case "get_bootstrap_status": return {
+            skills_loaded: 12,
+            python_ok: true,
+            python_initializing: false,
+            mcp_catalog: 8,
+            uv_ok: true,
+            node_ok: true,
+            npm_ok: true,
+            sci_ok: true,
+            pixi_ok: true,
+            app_version: "0.29.0",
+            os: "windows",
+            arch: "x86_64",
+            workspace: project.root,
+            errors: [],
+          };
           case "get_settings": return {
             provider: "openai",
             api_url: "https://api.deepseek.com",

@@ -4551,13 +4551,21 @@ fn App() -> impl IntoView {
                 m.insert(old, items.get());
             });
         }
+        // Swap the visible transcript before changing the active id. Agent
+        // events are app-wide and route by `active_session`; publishing the new
+        // id while `items` still belongs to the old frame creates a transition
+        // window where the new frame can render over the old conversation
+        // (#595). A cached transcript gives running/recent sessions an
+        // immediate view; an uncached idle session intentionally shows empty
+        // until its persisted page arrives.
+        let cached = transcripts.with(|m| m.get(&id).cloned().unwrap_or_default());
+        items.set(cached);
         let is_running = running.get().contains(&id);
         active_session.set(Some(id.clone()));
         if is_running {
             // Mid-stream: render the cached transcript immediately, but still
             // reconcile the separately persisted Plan claim/status. This keeps
             // session switching and restart semantics identical.
-            items.set(transcripts.with(|m| m.get(&id).cloned().unwrap_or_default()));
             transcript_pages.update(|pages| {
                 pages.entry(id.clone()).or_default().window_user_start = usize::MAX;
             });
@@ -4589,6 +4597,12 @@ fn App() -> impl IntoView {
                 let mut chats: Vec<ChatItem> =
                     page.items.into_iter().map(LoadedItem::into_chat).collect();
                 settle_question_cards(&mut chats);
+                // The session may have started a turn while this idle-page
+                // request was in flight. Its live cache/items are newer than
+                // the page snapshot, so never replace them with the stale load.
+                if running.get_untracked().contains(&id) {
+                    return;
+                }
                 transcript_pages.update(|pages| {
                     pages.insert(
                         id.clone(),
@@ -8909,6 +8923,47 @@ fn App() -> impl IntoView {
                             }
                         }
                     />
+                    {move || {
+                        let Some(frame_id) = active_session.get() else {
+                            return Vec::<View>::new().into_view();
+                        };
+                        let monitored = items.with(|rows| {
+                            rows.iter()
+                                .filter_map(|item| match item {
+                                    ChatItem::Tool { name, input, .. } if is_run_monitor_tool(name) => {
+                                        Some(input.trim().to_string())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<HashSet<_>>()
+                        });
+                        let now = js_sys::Date::now() as i64 / 1000;
+                        run_records
+                            .get()
+                            .into_iter()
+                            .filter(|run| run.frame_id.as_deref() == Some(frame_id.as_str()))
+                            .filter(|run| !monitored.contains(&run.id))
+                            .filter(|run| {
+                                matches!(run.status.as_str(), "submitted" | "running" | "cancelling")
+                                    || run.ended_at.is_some_and(|ended| now.saturating_sub(ended) <= 60)
+                            })
+                            .map(|run| {
+                                let run_id = run.id;
+                                view! {
+                                    <div class="tool-wrap run-monitor-wrap auto-run-monitor"
+                                        data-testid="auto-run-monitor">
+                                        <RunMonitorCard
+                                            run_id=run_id
+                                            runs=run_records
+                                            tool_ok=None
+                                            tool_output=String::new()
+                                        />
+                                    </div>
+                                }
+                            })
+                            .collect_view()
+                            .into_view()
+                    }}
                     {move || (!busy.get()).then(|| active_session.get()).flatten().and_then(|id| {
                         transcript_pages.get().get(&id).copied().and_then(|page| {
                             let (_, start, total) = items.with(|rows| {
@@ -12996,6 +13051,14 @@ fn RunMonitorCard(
             let elapsed_value = transfer_duration(ended.saturating_sub(started) as u64);
             let elapsed = tf(locale.get(), "runs.elapsed", &[("time", &elapsed_value)]);
             let mut meta = format!("{} · {} · {elapsed}", run.context_id, run.kind);
+            if active {
+                if let Some(last_heartbeat) = run.last_polled_at {
+                    let age = (js_sys::Date::now() as i64 / 1000).saturating_sub(last_heartbeat);
+                    let age = transfer_duration(age as u64);
+                    meta.push_str(" · ");
+                    meta.push_str(&tf(locale.get(), "runs.heartbeat", &[("time", &age)]));
+                }
+            }
             // The wall limit only tells the user anything while the run can still
             // hit it, so finished runs keep the shorter line.
             if let Some(limit) = run.timeout_secs.filter(|_| active).filter(|secs| *secs > 0) {

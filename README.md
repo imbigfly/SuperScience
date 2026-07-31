@@ -149,6 +149,24 @@ current conversation.
 Each Python or R cell is limited to 1 MiB of source so a malformed request cannot
 exhaust the persistent worker before execution begins.
 
+`run_in_context` can perform an explicit preflight before launching Python or R
+work. The preflight checks the configured interpreter, requested packages or
+modules, project-relative paths, and script syntax without installing packages
+or executing an arbitrary dry run. Local syntax failures block submission;
+remote syntax checks are reported as warnings and require an explicit
+`allow_warnings` acknowledgement. The resulting report is stored with the Run's
+environment snapshot. Long-running local Runs stream bounded stdout/stderr tails
+into their persisted records, update once per second with a heartbeat, and appear
+automatically in their conversation while active and briefly after completion.
+The Run card shows elapsed time, heartbeat age, and the latest output without
+requiring a manual monitor call.
+
+Persistent Python/R worker failures retain a bounded stderr tail and child exit
+status. Startup and unexpected-EOF messages include that evidence plus the
+request ID, making protocol EOF, native crashes, out-of-memory exits, dependency
+conflicts, and interruptions distinguishable instead of collapsing them into a
+generic closed-stream error.
+
 Settings → Credentials includes built-in service fields and user-defined
 credentials. A custom entry maps a display name to the exact environment
 variable expected by a skill or client (for example `METASO_API_KEY`). Its
@@ -213,6 +231,13 @@ The desktop app stores API keys in the OS keyring and model profiles in
 providers. See [Model configuration](docs/model-configuration.md) for the
 provider fields. The per-turn model/tool loop limit is configurable under
 **Settings → General → Maximum agent iterations per turn** (default: 100; 0 disables the limit).
+**Settings → General → Report a problem** builds an editable local Markdown
+draft. Wisp adds only its version, OS/architecture, model profile label,
+execution-context type, and an error or Run ID entered by the user. It does not
+read transcripts, project data, API keys, environment variables, usernames,
+absolute paths, or screenshots. Copy stays local; opening a prefilled GitHub
+draft is disabled until the user explicitly reviews and confirms external
+sharing, and GitHub still requires manual submission.
 **Conversations persist to that SQLite database** — each turn's
 messages are appended to the active session frame, so restarting the app
 restores the full history. The headless CLI keeps using `.wisp/session.json` for
