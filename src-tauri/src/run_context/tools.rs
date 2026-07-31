@@ -1,4 +1,6 @@
-use super::{RunManager, SubmitRunRequest};
+use super::{
+    RunManager, RunPreflightReport, RunPreflightSpec, RunPreflightStatus, SubmitRunRequest,
+};
 use wisp_llm::ToolSchema;
 use wisp_tools::{Tool, ToolEnv, ToolResult};
 
@@ -34,7 +36,7 @@ impl Tool for RunInContextTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "run_in_context",
-            "Submit a persisted background Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). Set wait_for_completion=true for direct model-free waiting, or submit normally and call monitor_run exactly once with the returned Run id to show an inline live card. Never poll with get_run.",
+            "Submit a persisted background Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). For Python/R work, declare a preflight to check the interpreter, explicit import modules/packages, project-relative files, and syntax before submission. Preflight never installs packages or executes the requested command as a dry run. Set wait_for_completion=true for direct model-free waiting, or submit normally and call monitor_run exactly once with the returned Run id to show an inline live card. Never poll with get_run.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -43,6 +45,36 @@ impl Tool for RunInContextTool {
                     "title": { "type": "string", "description": "Short run title" },
                     "timeout_secs": { "type": "integer", "description": "Job wall timeout. SSH: 1s..7d (default 4h); local/WSL: 1s..300s" },
                     "wait_for_completion": { "type": "boolean", "description": "Suspend this tool until the Run reaches a terminal state, without consuming model tokens or repeatedly calling get_run (default false)" },
+                    "preflight": {
+                        "type": "object",
+                        "description": "Safe declarative Python/R environment checks performed before Run submission",
+                        "properties": {
+                            "language": { "type": "string", "enum": ["python", "r"] },
+                            "packages": {
+                                "type": "array",
+                                "description": "Explicit Python import module names or R package names; no packages are installed",
+                                "items": { "type": "string" },
+                                "maxItems": 32
+                            },
+                            "paths": {
+                                "type": "array",
+                                "description": "Project-relative files that must exist",
+                                "items": { "type": "string" },
+                                "maxItems": 32
+                            },
+                            "syntax_paths": {
+                                "type": "array",
+                                "description": "Project-relative .py/.R files to parse without executing",
+                                "items": { "type": "string" },
+                                "maxItems": 32
+                            },
+                            "allow_warnings": {
+                                "type": "boolean",
+                                "description": "Proceed after non-fatal preflight warnings only after the user has approved them (default false)"
+                            }
+                        },
+                        "required": ["language"]
+                    },
                     "input_paths": {
                         "type": "array",
                         "description": "Optional project-relative files staged flat into an SSH Run workdir",
@@ -109,31 +141,106 @@ impl Tool for RunInContextTool {
                 }
             }
         }
+        let mut preflight = match args.get("preflight") {
+            Some(value) => match serde_json::from_value::<RunPreflightSpec>(value.clone()) {
+                Ok(spec) => Some(spec),
+                Err(error) => {
+                    return ToolResult::fail(format!(
+                        "run_in_context preflight args error: {error}"
+                    ))
+                }
+            },
+            None => None,
+        };
+        if let (Some(spec), Some(input_paths)) = (&mut preflight, request.input_paths.as_ref()) {
+            for path in input_paths {
+                if !spec.paths.contains(path) && !spec.syntax_paths.contains(path) {
+                    spec.paths.push(path.clone());
+                }
+            }
+        }
+        let preflight_report = if let Some(spec) = preflight.as_ref() {
+            match self
+                .manager
+                .preflight(&self.store, &request.context_id, env.project_root(), spec)
+                .await
+            {
+                Ok(report) if report.status == RunPreflightStatus::Failed => {
+                    return ToolResult::fail(preflight_blocked_result(&report, false))
+                }
+                Ok(report)
+                    if report.status == RunPreflightStatus::Warning && !spec.allow_warnings =>
+                {
+                    return ToolResult::fail(preflight_blocked_result(&report, true));
+                }
+                Ok(report) => Some(report),
+                Err(error) => {
+                    return ToolResult::fail(format!("run_in_context preflight error: {error}"))
+                }
+            }
+        } else {
+            None
+        };
         let wait_for_completion = args
             .get("wait_for_completion")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-        match self
-            .manager
-            .submit(
-                self.store.clone(),
-                self.project_id.clone(),
-                self.frame_id.clone(),
-                request,
-                Some(env.project_root().to_path_buf()),
-            )
-            .await
-        {
+        let submission = match preflight_report.clone() {
+            Some(report) => {
+                self.manager
+                    .submit_preflighted(
+                        self.store.clone(),
+                        self.project_id.clone(),
+                        self.frame_id.clone(),
+                        request,
+                        Some(env.project_root().to_path_buf()),
+                        report,
+                    )
+                    .await
+            }
+            None => {
+                self.manager
+                    .submit(
+                        self.store.clone(),
+                        self.project_id.clone(),
+                        self.frame_id.clone(),
+                        request,
+                        Some(env.project_root().to_path_buf()),
+                    )
+                    .await
+            }
+        };
+        match submission {
             Ok(res) if wait_for_completion => {
                 match wait_for_terminal(&self.store, &res.run_id, env).await {
                     Ok((run, detached)) => run_wait_result(run, detached),
                     Err(error) => ToolResult::fail(format!("run_in_context wait error: {error}")),
                 }
             }
-            Ok(res) => ToolResult::ok(serde_json::to_string(&res).unwrap_or_default()),
+            Ok(res) => {
+                let mut value = serde_json::to_value(res).unwrap_or_default();
+                if let Some(report) = preflight_report {
+                    value["preflight"] = serde_json::to_value(report).unwrap_or_default();
+                }
+                ToolResult::ok(value.to_string())
+            }
             Err(e) => ToolResult::fail(format!("run_in_context error: {e}")),
         }
     }
+}
+
+fn preflight_blocked_result(report: &RunPreflightReport, requires_confirmation: bool) -> String {
+    serde_json::json!({
+        "run_submitted": false,
+        "preflight": report,
+        "requires_confirmation": requires_confirmation,
+        "next_action": if requires_confirmation {
+            "Show the warning to the user. Only after explicit approval, repeat with preflight.allow_warnings=true."
+        } else {
+            "Fix the failed preflight checks before submitting the Run."
+        }
+    })
+    .to_string()
 }
 
 pub struct GetRunTool {

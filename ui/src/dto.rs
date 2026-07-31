@@ -1996,6 +1996,10 @@ pub(crate) struct BootstrapStatus {
     pub(crate) sci_ok: bool,
     pub(crate) pixi_ok: bool,
     pub(crate) app_version: String,
+    #[serde(default)]
+    pub(crate) os: String,
+    #[serde(default)]
+    pub(crate) arch: String,
     pub(crate) workspace: String,
     pub(crate) errors: Vec<String>,
 }
@@ -2425,9 +2429,9 @@ pub(crate) struct RuntimeSlot {
 
 /// Mirrors `wisp_store::Run`, minus the columns only the backend acts on
 /// (`input_refs_json` / `output_specs_json` / `remote_handle_json` /
-/// `last_polled_at` / the always-NULL `script_path`). No blanket
-/// `allow(dead_code)`: an unread field here means the UI is dropping data
-/// again, and the warning is the whole point.
+/// the always-NULL `script_path`). No blanket `allow(dead_code)`: an unread
+/// field here means the UI is dropping data again, and the warning is the
+/// whole point.
 #[derive(Deserialize, Clone)]
 pub(crate) struct RunRecord {
     pub(crate) id: String,
@@ -2446,6 +2450,7 @@ pub(crate) struct RunRecord {
     #[serde(rename = "remote_workdir", alias = "remoteWorkdir")]
     pub(crate) remote_workdir: Option<String>,
     pub(crate) timeout_secs: Option<i64>,
+    pub(crate) last_polled_at: Option<i64>,
     #[serde(rename = "last_poll_error", alias = "lastPollError")]
     pub(crate) last_poll_error: Option<String>,
     #[serde(default)]

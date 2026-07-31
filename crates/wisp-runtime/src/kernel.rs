@@ -4,15 +4,20 @@ use crate::manager::{RuntimeKernel, RuntimeObject, RuntimeObjectList, RuntimeOut
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::{ffi::OsString, path::Path, time::Duration};
+use std::{ffi::OsString, path::Path, sync::Arc, time::Duration};
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, ChildStdout},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout},
+    sync::Mutex,
+    task::JoinHandle,
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_CODE_BYTES: usize = 1024 * 1024;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_WORKER_STDERR_BYTES: usize = 32 * 1024;
+
+type WorkerStderrTail = Arc<Mutex<Vec<u8>>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct KernelResp {
@@ -85,6 +90,8 @@ pub struct KernelClient {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    stderr_tail: WorkerStderrTail,
+    stderr_task: Option<JoinHandle<()>>,
     ready: KernelReady,
 }
 
@@ -132,7 +139,7 @@ impl KernelClient {
         );
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         wisp_tools::process::hide_console_async(&mut cmd);
         let mut child = cmd
@@ -146,19 +153,28 @@ impl KernelClient {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("no kernel stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("no kernel stderr"))?;
+        let (stderr_tail, stderr_task) = capture_worker_stderr(stderr);
         let mut stdout = BufReader::new(stdout);
         let ready = match read_ready(&mut stdout, expected_language, STARTUP_TIMEOUT).await {
             Ok(ready) => ready,
             Err(error) => {
                 let _ = child.kill().await;
-                let _ = child.wait().await;
-                return Err(error.context("kernel worker handshake"));
+                let status = child.wait().await.ok();
+                let _ = stderr_task.await;
+                let detail = worker_failure_detail(status.as_ref(), &stderr_tail).await;
+                return Err(anyhow!("kernel worker handshake: {error}; {detail}"));
             }
         };
         Ok(Self {
             child,
             stdin,
             stdout,
+            stderr_tail,
+            stderr_task: Some(stderr_task),
             ready,
         })
     }
@@ -177,24 +193,44 @@ impl KernelClient {
             bail!("runtime code exceeds {MAX_CODE_BYTES} byte limit");
         }
         if let Some(status) = self.child.try_wait()? {
-            bail!("kernel worker exited before execution ({status})");
+            self.finish_stderr_capture().await;
+            let detail = worker_failure_detail(Some(&status), &self.stderr_tail).await;
+            bail!("kernel worker exited before execution request '{id}'; {detail}");
         }
         let request = serde_json::json!({ "type": "execute", "id": id, "code": code });
         self.stdin.write_all(request.to_string().as_bytes()).await?;
         self.stdin.write_all(b"\n").await?;
         self.stdin.flush().await?;
-        read_response(&mut self.stdout, id, output).await
+        match read_response(&mut self.stdout, id, output).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                let detail = self
+                    .failure_detail(&format!("execution request '{id}'"))
+                    .await;
+                Err(anyhow!("{error}; {detail}"))
+            }
+        }
     }
 
     async fn inspect_objects(&mut self, id: &str) -> Result<RuntimeObjectList> {
         if let Some(status) = self.child.try_wait()? {
-            bail!("kernel worker exited before inspection ({status})");
+            self.finish_stderr_capture().await;
+            let detail = worker_failure_detail(Some(&status), &self.stderr_tail).await;
+            bail!("kernel worker exited before inspection request '{id}'; {detail}");
         }
         let request = serde_json::json!({ "type": "inspect", "id": id });
         self.stdin.write_all(request.to_string().as_bytes()).await?;
         self.stdin.write_all(b"\n").await?;
         self.stdin.flush().await?;
-        read_objects(&mut self.stdout, id).await
+        match read_objects(&mut self.stdout, id).await {
+            Ok(objects) => Ok(objects),
+            Err(error) => {
+                let detail = self
+                    .failure_detail(&format!("inspection request '{id}'"))
+                    .await;
+                Err(anyhow!("{error}; {detail}"))
+            }
+        }
     }
 
     async fn shutdown_worker(&mut self) -> Result<()> {
@@ -208,7 +244,76 @@ impl KernelClient {
                 let _ = self.child.wait().await?;
             }
         }
+        self.finish_stderr_capture().await;
         Ok(())
+    }
+
+    async fn failure_detail(&mut self, action: &str) -> String {
+        tokio::task::yield_now().await;
+        let status = self.child.try_wait().ok().flatten();
+        if status.is_some() {
+            self.finish_stderr_capture().await;
+        }
+        format!(
+            "worker failed during {action}; {}",
+            worker_failure_detail(status.as_ref(), &self.stderr_tail).await
+        )
+    }
+
+    async fn finish_stderr_capture(&mut self) {
+        if let Some(task) = self.stderr_task.take() {
+            let _ = task.await;
+        }
+    }
+}
+
+fn capture_worker_stderr(stderr: ChildStderr) -> (WorkerStderrTail, JoinHandle<()>) {
+    let tail = Arc::new(Mutex::new(Vec::with_capacity(MAX_WORKER_STDERR_BYTES)));
+    let task_tail = tail.clone();
+    let task = tokio::spawn(async move {
+        let mut stderr = stderr;
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let Ok(read) = stderr.read(&mut chunk).await else {
+                break;
+            };
+            if read == 0 {
+                break;
+            }
+            let mut tail = task_tail.lock().await;
+            append_bounded_tail(&mut tail, &chunk[..read]);
+        }
+    });
+    (tail, task)
+}
+
+fn append_bounded_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
+    if chunk.len() >= MAX_WORKER_STDERR_BYTES {
+        tail.clear();
+        tail.extend_from_slice(&chunk[chunk.len() - MAX_WORKER_STDERR_BYTES..]);
+        return;
+    }
+    let overflow = (tail.len() + chunk.len()).saturating_sub(MAX_WORKER_STDERR_BYTES);
+    if overflow > 0 {
+        tail.drain(..overflow);
+    }
+    tail.extend_from_slice(chunk);
+}
+
+async fn worker_failure_detail(
+    status: Option<&std::process::ExitStatus>,
+    stderr_tail: &WorkerStderrTail,
+) -> String {
+    let status = status
+        .map(|status| format!("exit status {status}"))
+        .unwrap_or_else(|| "exit status unavailable".into());
+    let stderr = String::from_utf8_lossy(&stderr_tail.lock().await)
+        .trim()
+        .to_string();
+    if stderr.is_empty() {
+        format!("{status}; worker stderr was empty")
+    } else {
+        format!("{status}; worker stderr tail: {stderr}")
     }
 }
 
@@ -467,6 +572,44 @@ mod tests {
         .await
         .unwrap_err();
         assert!(timeout.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn worker_handshake_failure_includes_bounded_stderr_and_exit_status() {
+        #[cfg(target_os = "windows")]
+        let (program, args) = (
+            Path::new("cmd.exe"),
+            vec![
+                OsString::from("/C"),
+                OsString::from("echo native runtime crash 1>&2 & exit /B 23"),
+            ],
+        );
+        #[cfg(not(target_os = "windows"))]
+        let (program, args) = (
+            Path::new("sh"),
+            vec![
+                OsString::from("-c"),
+                OsString::from("printf 'native runtime crash\\n' >&2; exit 23"),
+            ],
+        );
+
+        let error = match KernelClient::spawn_command(program, &args, &[], None, "python").await {
+            Ok(_) => panic!("crashing worker unexpectedly completed its handshake"),
+            Err(error) => error,
+        };
+        let detail = error.to_string();
+        assert!(detail.contains("closed protocol stdout"), "{detail}");
+        assert!(detail.contains("native runtime crash"), "{detail}");
+        assert!(detail.contains("23"), "{detail}");
+    }
+
+    #[test]
+    fn worker_stderr_tail_is_bounded_and_keeps_the_latest_bytes() {
+        let mut tail = Vec::new();
+        append_bounded_tail(&mut tail, &vec![b'x'; MAX_WORKER_STDERR_BYTES + 17]);
+        append_bounded_tail(&mut tail, b"CRASH_END");
+        assert_eq!(tail.len(), MAX_WORKER_STDERR_BYTES);
+        assert!(tail.ends_with(b"CRASH_END"));
     }
 
     #[tokio::test]

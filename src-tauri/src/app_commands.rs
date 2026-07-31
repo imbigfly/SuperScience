@@ -344,6 +344,8 @@ pub(super) fn initial_bootstrap(workspace: &std::path::Path, skills: usize) -> B
         sci_ok: wisp_runtime::PythonEnv::find_sci().is_some(),
         pixi_ok: wisp_runtime::PythonEnv::find_pixi().is_some(),
         app_version: env!("CARGO_PKG_VERSION").into(),
+        os: std::env::consts::OS.into(),
+        arch: std::env::consts::ARCH.into(),
         workspace: workspace.to_string_lossy().into_owned(),
         errors: vec![],
     };

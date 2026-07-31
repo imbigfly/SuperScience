@@ -507,11 +507,7 @@ pub(super) fn ChannelsPane(
     };
     let device_badge = move || {
         let s = status.get().unwrap_or_default().device;
-        let state = if s.enabled {
-            s.state
-        } else {
-            "stopped".into()
-        };
+        let state = if s.enabled { s.state } else { "stopped".into() };
         view! {
             <span class=format!("badge channel-state-{}", state_tone(&state)) data-testid="sticks3-state">
                 {state_label(locale.get(), &state)}

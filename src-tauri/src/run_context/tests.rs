@@ -188,6 +188,100 @@ async fn run_in_context_wait_reports_a_failed_run_as_a_failed_tool_call() {
 }
 
 #[tokio::test]
+async fn run_in_context_preflight_blocks_missing_packages_before_creating_a_run() {
+    use wisp_tools::Tool;
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_run_preflight_fail_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "project", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    let manager = RunManager::with_runner(Arc::new(FakeRunRunner {
+        output: Ok(RunCommandOutput {
+            exit_code: 9,
+            stdout: "3.12.4\n".into(),
+            stderr: "missing modules: decoupler".into(),
+        }),
+    }));
+    let tool = RunInContextTool::new(store.clone(), manager, "p".into(), None);
+
+    let result = tool
+        .run(
+            &serde_json::json!({
+                "context_id": "local",
+                "command": "python analysis.py",
+                "preflight": {
+                    "language": "python",
+                    "packages": ["decoupler"]
+                }
+            }),
+            &RunToolTestEnv(tmp.clone()),
+        )
+        .await;
+
+    assert!(!result.success);
+    assert!(result.content.contains("\"run_submitted\":false"));
+    assert!(result.content.contains("missing modules: decoupler"));
+    assert!(store.list_runs_by_project("p").await.unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn run_in_context_preflight_is_structured_and_persisted_with_the_run() {
+    use wisp_tools::Tool;
+    let tmp = std::env::temp_dir().join(format!("wisp_run_preflight_ok_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "project", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("3.12.4\n"),
+        ok_output("analysis complete\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+    let tool = RunInContextTool::new(store.clone(), manager, "p".into(), None);
+
+    let result = tool
+        .run(
+            &serde_json::json!({
+                "context_id": "local",
+                "command": "python analysis.py",
+                "wait_for_completion": true,
+                "preflight": {
+                    "language": "python",
+                    "packages": ["pandas"]
+                }
+            }),
+            &RunToolTestEnv(tmp.clone()),
+        )
+        .await;
+
+    assert!(result.success, "{}", result.content);
+    let run: wisp_store::RunRecord = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+    let snapshot: serde_json::Value = serde_json::from_str(&run.env_snapshot_json).unwrap();
+    assert_eq!(snapshot["preflight"]["status"], "passed");
+    assert_eq!(snapshot["preflight"]["language"], "python");
+    assert!(snapshot["preflight"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| check["name"] == "packages" && check["status"] == "passed"));
+    let commands = runner.commands.lock().unwrap();
+    assert_eq!(commands[0].script, "python interpreter/package preflight");
+    assert_eq!(commands[1].script, "python analysis.py");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
 async fn run_in_context_rejects_nested_ssh_transfer_commands() {
     use wisp_tools::Tool;
     let tmp = std::env::temp_dir().join(format!("wisp_run_ssh_guard_{}", uuid::Uuid::new_v4()));
@@ -1004,6 +1098,101 @@ fn remote_compute_skill_uses_the_real_wisp_run_contract() {
 
 struct FakeRunRunner {
     output: Result<RunCommandOutput, String>,
+}
+
+struct StreamingRunRunner;
+
+#[async_trait::async_trait]
+impl RunCommandRunner for StreamingRunRunner {
+    async fn run(
+        &self,
+        _command: RunCommand,
+        _timeout: Duration,
+    ) -> Result<RunCommandOutput, String> {
+        unreachable!("streaming lifecycle must call run_streaming")
+    }
+
+    async fn run_streaming(
+        &self,
+        _command: RunCommand,
+        _timeout: Duration,
+        updates: tokio::sync::mpsc::UnboundedSender<RunOutputUpdate>,
+    ) -> Result<RunCommandOutput, String> {
+        updates
+            .send(RunOutputUpdate {
+                stream: RunOutputStream::Stdout,
+                chunk: b"phase 1 complete\n".to_vec(),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        updates
+            .send(RunOutputUpdate {
+                stream: RunOutputStream::Stderr,
+                chunk: b"warning: slow API\n".to_vec(),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        Ok(RunCommandOutput {
+            exit_code: 0,
+            stdout: "phase 1 complete\n".into(),
+            stderr: "warning: slow API\n".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn local_run_streams_bounded_output_and_heartbeat_before_completion() {
+    let tmp = std::env::temp_dir().join(format!("wisp_run_stream_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "project", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    let run = wisp_store::RunRecord::new("streaming", "p", "local", "Streaming", "command");
+    store.create_run(&run).await.unwrap();
+    assert!(store
+        .activate_run_lifecycle(
+            "streaming",
+            wisp_store::RunStatus::Running,
+            "stream-owner",
+            60,
+        )
+        .await
+        .unwrap());
+
+    let task_store = store.clone();
+    let task = tokio::spawn(async move {
+        run_with_lifecycle_lease(
+            &task_store,
+            "streaming",
+            "stream-owner",
+            &StreamingRunRunner,
+            RunCommand {
+                context_id: "local".into(),
+                program: "unused".into(),
+                args: Vec::new(),
+                script: "stream test".into(),
+                cwd: None,
+                stdin: None,
+                envs: Vec::new(),
+            },
+            Duration::from_secs(10),
+        )
+        .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let live = store.get_run("streaming").await.unwrap().unwrap();
+    assert_eq!(live.status, wisp_store::RunStatus::Running);
+    assert_eq!(live.stdout_tail.as_deref(), Some("phase 1 complete\n"));
+    assert!(live.last_polled_at.is_some(), "heartbeat was not recorded");
+
+    let output = task.await.unwrap().unwrap();
+    assert_eq!(output.exit_code, 0);
+    let _ = std::fs::remove_dir_all(tmp);
 }
 
 #[async_trait::async_trait]

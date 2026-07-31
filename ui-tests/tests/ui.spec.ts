@@ -316,6 +316,68 @@ test("general settings can use Ctrl+Enter to send and Enter for newline", async 
   });
 });
 
+test("problem reports stay local until a reviewed Markdown draft is explicitly opened (#596)", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await enterApp(page);
+  await openSettingsSection(page, "General");
+
+  const entry = page.getByTestId("report-problem-entry");
+  await entry.getByRole("button", { name: "Create report" }).click();
+  const modal = page.getByTestId("issue-report-modal");
+  await expect(modal).toBeVisible();
+  await modal.getByTestId("issue-report-issue-title").fill("Runtime preflight failed");
+  const problem = modal.getByTestId("issue-report-problem");
+  await problem.fill("The analysis stops before producing a result.");
+  await expect(problem).toHaveValue("The analysis stops before producing a result.");
+  await modal.getByTestId("issue-report-reproduction").fill("1. Start the analysis\n2. Wait for preflight");
+  await modal.getByTestId("issue-report-expected").fill("The missing package is named.");
+  await modal.getByTestId("issue-report-actual").fill("A generic failure is shown.");
+  await modal.getByTestId("issue-report-reference").fill("run-safe-123");
+  await modal.getByTestId("issue-report-context").selectOption("ssh");
+  await modal.getByTestId("issue-report-screenshot").check();
+  await expect(modal.getByTestId("issue-report-context")).toHaveValue("ssh");
+  await expect(modal.getByTestId("issue-report-screenshot")).toBeChecked();
+
+  const preview = modal.getByTestId("issue-report-preview");
+  await expect(preview).toHaveValue(/The analysis stops before producing a result\./);
+  await expect(preview).toHaveValue(/Wisp version: 0\.29\.0/);
+  await expect(preview).toHaveValue(/OS \/ architecture: windows \/ x86_64/);
+  await expect(preview).toHaveValue(/Model profile: deepseek-v4-pro/);
+  await expect(preview).toHaveValue(/Execution context type: ssh/);
+  await expect(preview).toHaveValue(/Wisp did not collect or upload an image/);
+  await expect(preview).not.toHaveValue(/\/mock\/root/);
+
+  const github = modal.getByTestId("issue-report-github");
+  await expect(github).toBeDisabled();
+  await preview.fill(`${await preview.inputValue()}\n\nAdditional reviewed detail.`);
+  await modal.getByTestId("issue-report-copy").click();
+  await expect(page.locator(".copy-toast")).toHaveText("Copied");
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain("# Runtime preflight failed");
+  expect(copied).toContain("Additional reviewed detail.");
+
+  await modal.getByTestId("issue-report-confirm").check();
+  await expect(github).toBeEnabled();
+  await github.click();
+  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
+    url: expect.stringContaining("github.com/xuzhougeng/wisp-science/issues/new"),
+  });
+  const opened = String((await lastInvokeArgs(page, "open_external_url"))?.url ?? "");
+  expect(opened).toContain("github.com/xuzhougeng/wisp-science/issues/new");
+  expect(decodeURIComponent(opened)).toContain("title=Runtime preflight failed");
+  expect(decodeURIComponent(opened)).toContain("Additional reviewed detail.");
+});
+
+test("problem report consumes Escape before Settings (#596)", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "General");
+  await page.getByTestId("report-problem-entry").getByRole("button", { name: "Create report" }).click();
+  await expect(page.getByTestId("issue-report-modal")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("issue-report-modal")).toHaveCount(0);
+  await expect(page.locator(".settings-page")).toBeVisible();
+});
+
 test("background Agent completion appears in its owning conversation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("start background analysis");
@@ -3160,6 +3222,31 @@ test("monitor_run renders a live Run card inline without get_run polling", async
     runId: "run-local-002",
   });
   await expect(card).toContainText("Cancelled");
+});
+
+test("active session Runs appear automatically with elapsed time and heartbeat (#593)", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    const now = Math.floor(Date.now() / 1000);
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      frame_id: "s-complete",
+      title: "TF activity pipeline",
+      status: "running",
+      created_at: now - 95,
+      started_at: now - 90,
+      last_polled_at: now - 3,
+      stdout_tail: "Loading regulons\n2 of 3 stages complete",
+    });
+  });
+
+  await page.getByTestId("recent-session-card").nth(1).click();
+  const automatic = page.getByTestId("auto-run-monitor");
+  await expect(automatic).toBeVisible();
+  await expect(automatic).toContainText("TF activity pipeline");
+  await expect(automatic).toContainText("Elapsed 1m");
+  await expect(automatic).toContainText("Heartbeat");
+  await expect(automatic).toContainText("2 of 3 stages complete");
 });
 
 test("image generation shows a placeholder and replaces it with the PNG", async ({ page }) => {
@@ -6158,6 +6245,47 @@ test("a second conversation can run in parallel without interleaving transcripts
   await page.locator(".side-item.ses", { hasText: "alpha" }).click();
   await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText("echo:beta")).toHaveCount(0);
+});
+
+test("delayed session loads cannot expose or overwrite another live transcript (#595)", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await page.goto("/");
+  await page.locator(".proj-card-main").first().click();
+  await expect(newSessionButton(page)).toBeVisible();
+
+  // Keep A running, then create a short completed B so switching back to B
+  // takes the asynchronous idle-session load path.
+  await composer(page).fill("alpha");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+  await newSessionButton(page).click();
+  await composer(page).fill("actions-beta");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("echo:actions-beta")).toBeVisible();
+  await expect(page.locator(".side-item.ses", { hasText: "actions-beta" })).toBeVisible();
+
+  await page.locator(".side-item.ses", { hasText: "alpha" }).click();
+  await expect(page.getByText("echo:alpha")).toBeVisible();
+  await page.evaluate(() => { (window as any).__parallelLoadDelayMs = 800; });
+
+  // The target cache must be installed before active_session changes. Under the
+  // old ordering, A remained visible here until B's delayed load completed.
+  await page.locator(".side-item.ses", { hasText: "actions-beta" }).click();
+  await expect(page.getByText("echo:alpha")).toHaveCount(0);
+  await expect(page.getByText("echo:actions-beta")).toBeVisible();
+
+  // Start a live B turn while its old DB page is still loading. The late empty
+  // snapshot must not erase the streamed result.
+  await composer(page).fill("gamma");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("echo:gamma")).toBeVisible();
+  await page.waitForTimeout(1_000);
+  await expect(page.getByText("echo:gamma")).toBeVisible();
+  await expect(page.getByText("echo:alpha")).toHaveCount(0);
+
+  await page.locator(".side-item.ses", { hasText: "alpha" }).click();
+  await expect(page.getByText("echo:alpha")).toBeVisible();
+  await expect(page.getByText("echo:gamma")).toHaveCount(0);
 });
 
 test("a running conversation accepts another message for queueing", async ({ page }) => {

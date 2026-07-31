@@ -1,7 +1,7 @@
 //! Workflow Studio editor and persisted Agent workflow activity surface.
 
-use crate::bindings::invoke_checked;
 use crate::app_support::compose_icon;
+use crate::bindings::invoke_checked;
 use crate::dto::*;
 use crate::i18n::{t, tf, Locale};
 use crate::text::{dom_value, event_target_checked, event_target_value, pretty_json};
@@ -1613,10 +1613,8 @@ fn workflow_graph_editor(
             }),
         );
         if let Some(window) = web_sys::window() {
-            let _ = window.add_event_listener_with_callback(
-                "keydown",
-                listener.as_ref().unchecked_ref(),
-            );
+            let _ = window
+                .add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
         }
         on_cleanup(move || {
             if let Some(window) = web_sys::window() {
@@ -3207,7 +3205,9 @@ mod tests {
         form.tasks[0].id = "fetch".into();
         form.tasks[0].instruction = "Fetch data".into();
         let source_key = form.tasks[0].key;
-        let next_key = form.add_task_after(source_key).expect("creates dependent task");
+        let next_key = form
+            .add_task_after(source_key)
+            .expect("creates dependent task");
         form.tasks
             .iter()
             .find(|task| task.key == next_key)
@@ -3218,7 +3218,11 @@ mod tests {
 
         let layout = workflow_graph_layout(&form.tasks);
         let fetch = layout.nodes.iter().find(|node| node.id == "fetch").unwrap();
-        let next = layout.nodes.iter().find(|node| node.key == next_key).unwrap();
+        let next = layout
+            .nodes
+            .iter()
+            .find(|node| node.key == next_key)
+            .unwrap();
         assert_eq!(fetch.level, 0);
         assert_eq!(next.level, 1);
         assert!(next.x > fetch.x);

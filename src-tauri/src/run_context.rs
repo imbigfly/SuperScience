@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -51,6 +51,67 @@ pub struct SubmitRunResponse {
     pub remote_workdir: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPreflightStatus {
+    Passed,
+    Warning,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunPreflightCheck {
+    pub name: String,
+    pub status: RunPreflightStatus,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunPreflightReport {
+    pub status: RunPreflightStatus,
+    pub context_id: String,
+    pub language: String,
+    pub checks: Vec<RunPreflightCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunPreflightSpec {
+    pub language: String,
+    #[serde(default)]
+    pub packages: Vec<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub syntax_paths: Vec<String>,
+    #[serde(default)]
+    pub allow_warnings: bool,
+}
+
+impl RunPreflightReport {
+    fn new(context_id: &str, language: &str) -> Self {
+        Self {
+            status: RunPreflightStatus::Passed,
+            context_id: context_id.into(),
+            language: language.into(),
+            checks: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, name: impl Into<String>, status: RunPreflightStatus, detail: String) {
+        if status == RunPreflightStatus::Failed {
+            self.status = RunPreflightStatus::Failed;
+        } else if status == RunPreflightStatus::Warning && self.status == RunPreflightStatus::Passed
+        {
+            self.status = RunPreflightStatus::Warning;
+        }
+        self.checks.push(RunPreflightCheck {
+            name: name.into(),
+            status,
+            detail,
+        });
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCommand {
     pub context_id: String,
@@ -70,10 +131,31 @@ pub struct RunCommandOutput {
     pub stderr: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutputStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOutputUpdate {
+    pub stream: RunOutputStream,
+    pub chunk: Vec<u8>,
+}
+
 #[async_trait::async_trait]
 pub trait RunCommandRunner: Send + Sync {
     async fn run(&self, command: RunCommand, timeout: Duration)
         -> Result<RunCommandOutput, String>;
+
+    async fn run_streaming(
+        &self,
+        command: RunCommand,
+        timeout: Duration,
+        _updates: tokio::sync::mpsc::UnboundedSender<RunOutputUpdate>,
+    ) -> Result<RunCommandOutput, String> {
+        self.run(command, timeout).await
+    }
 }
 
 #[derive(Clone)]
@@ -120,7 +202,24 @@ fn transfer_progress(
     }
 }
 
-async fn read_tail<R: AsyncRead + Unpin>(mut reader: R) -> std::io::Result<Vec<u8>> {
+fn append_tail_bytes(tail: &mut Vec<u8>, chunk: &[u8]) {
+    if chunk.len() >= MAX_RUN_OUTPUT_BYTES {
+        tail.clear();
+        tail.extend_from_slice(&chunk[chunk.len() - MAX_RUN_OUTPUT_BYTES..]);
+        return;
+    }
+    let overflow = (tail.len() + chunk.len()).saturating_sub(MAX_RUN_OUTPUT_BYTES);
+    if overflow > 0 {
+        tail.drain(..overflow);
+    }
+    tail.extend_from_slice(chunk);
+}
+
+async fn read_tail<R: AsyncRead + Unpin>(
+    mut reader: R,
+    stream: RunOutputStream,
+    updates: Option<tokio::sync::mpsc::UnboundedSender<RunOutputUpdate>>,
+) -> std::io::Result<Vec<u8>> {
     let mut tail = Vec::with_capacity(MAX_RUN_OUTPUT_BYTES);
     let mut chunk = [0_u8; 8192];
     loop {
@@ -128,16 +227,13 @@ async fn read_tail<R: AsyncRead + Unpin>(mut reader: R) -> std::io::Result<Vec<u
         if read == 0 {
             return Ok(tail);
         }
-        if read >= MAX_RUN_OUTPUT_BYTES {
-            tail.clear();
-            tail.extend_from_slice(&chunk[read - MAX_RUN_OUTPUT_BYTES..read]);
-            continue;
+        append_tail_bytes(&mut tail, &chunk[..read]);
+        if let Some(updates) = &updates {
+            let _ = updates.send(RunOutputUpdate {
+                stream,
+                chunk: chunk[..read].to_vec(),
+            });
         }
-        let overflow = (tail.len() + read).saturating_sub(MAX_RUN_OUTPUT_BYTES);
-        if overflow > 0 {
-            tail.drain(..overflow);
-        }
-        tail.extend_from_slice(&chunk[..read]);
     }
 }
 
@@ -188,134 +284,151 @@ impl RunCommandRunner for ProcessRunRunner {
         command: RunCommand,
         timeout: Duration,
     ) -> Result<RunCommandOutput, String> {
-        // Process futures are dropped on Run cancellation. Keep password
-        // passfile cleanup RAII-based so cancellation cannot leave a secret.
-        let _auth_cleanup = SshAuthEnvCleanup(command.envs.clone());
-        let ssh_transport =
-            is_ssh_transport_program(&command.program) || command.context_id.starts_with("ssh:");
-        if ssh_transport {
-            crate::ssh_guard::assert_allowed(&command.context_id)?;
-            if let Some(path) = identity_file_from_args(&command.args) {
-                if let Err(error) = crate::ssh_hosts::ensure_identity_path_accessible(path) {
-                    crate::ssh_guard::record_failure(&command.context_id, &error);
-                    return Err(error);
-                }
-            }
-            if let Some(payload) = crate::ssh_master::eligible_payload(
-                &command.program,
-                &command.args,
-                command.stdin.as_deref(),
-            ) {
-                let ssh_args = command.args[..command.args.len() - 1].to_vec();
-                let result = crate::ssh_master::run(
-                    &command.context_id,
-                    ssh_args,
-                    &command.envs,
-                    payload,
-                    timeout,
-                )
-                .await
-                .map(|output| RunCommandOutput {
-                    exit_code: output.exit_code,
-                    stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                    stderr: output.stderr,
-                });
-                record_ssh_runner_outcome(&command.context_id, &result);
-                return result;
-            }
-        }
-        let mut cmd = Command::new(&command.program);
-        cmd.args(&command.args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        if !command.envs.is_empty() {
-            cmd.envs(command.envs.iter().cloned());
-        }
-        if command.stdin.is_some() {
-            cmd.stdin(Stdio::piped());
-        }
-        if let Some(cwd) = &command.cwd {
-            cmd.current_dir(cwd);
-        }
-        wisp_tools::process::hide_console_async(&mut cmd);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("failed to spawn {}: {e}", command.program))?;
-        let program = command.program.clone();
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| format!("failed to open {program} stdout"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| format!("failed to open {program} stderr"))?;
-        let mut stdout_task = tokio::spawn(read_tail(stdout));
-        let mut stderr_task = tokio::spawn(read_tail(stderr));
-        let input = command.stdin;
-        let operation = async {
-            if let Some(input) = input {
-                let mut stdin = child
-                    .stdin
-                    .take()
-                    .ok_or_else(|| format!("failed to open {program} stdin"))?;
-                stdin
-                    .write_all(input.as_bytes())
-                    .await
-                    .map_err(|e| format!("failed to write {program} stdin: {e}"))?;
-                stdin
-                    .shutdown()
-                    .await
-                    .map_err(|e| format!("failed to close {program} stdin: {e}"))?;
-            }
-            let status = child
-                .wait()
-                .await
-                .map_err(|e| format!("run_in_context wait failed: {e}"))?;
-            let stdout = (&mut stdout_task)
-                .await
-                .map_err(|e| format!("run_in_context stdout task failed: {e}"))?
-                .map_err(|e| format!("run_in_context stdout read failed: {e}"))?;
-            let stderr = (&mut stderr_task)
-                .await
-                .map_err(|e| format!("run_in_context stderr task failed: {e}"))?
-                .map_err(|e| format!("run_in_context stderr read failed: {e}"))?;
-            Ok::<_, String>((status, stdout, stderr))
-        };
-        let result = match tokio::time::timeout(timeout, operation).await {
-            Ok(Ok((status, stdout, stderr))) => Ok(RunCommandOutput {
-                exit_code: status.code().unwrap_or(-1) as i64,
-                stdout: String::from_utf8_lossy(&stdout).to_string(),
-                stderr: String::from_utf8_lossy(&stderr).to_string(),
-            }),
-            Ok(Err(error)) => {
-                stdout_task.abort();
-                stderr_task.abort();
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
-                Err(error)
-            }
-            Err(_) => {
-                stdout_task.abort();
-                stderr_task.abort();
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
-                Err(format!(
-                    "run_in_context timed out after {}s",
-                    timeout.as_secs()
-                ))
-            }
-        };
-        if ssh_transport {
-            record_ssh_runner_outcome(&command.context_id, &result);
-        }
-        result
+        run_process(command, timeout, None).await
     }
+
+    async fn run_streaming(
+        &self,
+        command: RunCommand,
+        timeout: Duration,
+        updates: tokio::sync::mpsc::UnboundedSender<RunOutputUpdate>,
+    ) -> Result<RunCommandOutput, String> {
+        run_process(command, timeout, Some(updates)).await
+    }
+}
+
+async fn run_process(
+    command: RunCommand,
+    timeout: Duration,
+    updates: Option<tokio::sync::mpsc::UnboundedSender<RunOutputUpdate>>,
+) -> Result<RunCommandOutput, String> {
+    // Process futures are dropped on Run cancellation. Keep password
+    // passfile cleanup RAII-based so cancellation cannot leave a secret.
+    let _auth_cleanup = SshAuthEnvCleanup(command.envs.clone());
+    let ssh_transport =
+        is_ssh_transport_program(&command.program) || command.context_id.starts_with("ssh:");
+    if ssh_transport {
+        crate::ssh_guard::assert_allowed(&command.context_id)?;
+        if let Some(path) = identity_file_from_args(&command.args) {
+            if let Err(error) = crate::ssh_hosts::ensure_identity_path_accessible(path) {
+                crate::ssh_guard::record_failure(&command.context_id, &error);
+                return Err(error);
+            }
+        }
+        if let Some(payload) = crate::ssh_master::eligible_payload(
+            &command.program,
+            &command.args,
+            command.stdin.as_deref(),
+        ) {
+            let ssh_args = command.args[..command.args.len() - 1].to_vec();
+            let result = crate::ssh_master::run(
+                &command.context_id,
+                ssh_args,
+                &command.envs,
+                payload,
+                timeout,
+            )
+            .await
+            .map(|output| RunCommandOutput {
+                exit_code: output.exit_code,
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: output.stderr,
+            });
+            record_ssh_runner_outcome(&command.context_id, &result);
+            return result;
+        }
+    }
+    let mut cmd = Command::new(&command.program);
+    cmd.args(&command.args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if !command.envs.is_empty() {
+        cmd.envs(command.envs.iter().cloned());
+    }
+    if command.stdin.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    if let Some(cwd) = &command.cwd {
+        cmd.current_dir(cwd);
+    }
+    wisp_tools::process::hide_console_async(&mut cmd);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn {}: {e}", command.program))?;
+    let program = command.program.clone();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("failed to open {program} stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| format!("failed to open {program} stderr"))?;
+    let mut stdout_task = tokio::spawn(read_tail(stdout, RunOutputStream::Stdout, updates.clone()));
+    let mut stderr_task = tokio::spawn(read_tail(stderr, RunOutputStream::Stderr, updates));
+    let input = command.stdin;
+    let operation = async {
+        if let Some(input) = input {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| format!("failed to open {program} stdin"))?;
+            stdin
+                .write_all(input.as_bytes())
+                .await
+                .map_err(|e| format!("failed to write {program} stdin: {e}"))?;
+            stdin
+                .shutdown()
+                .await
+                .map_err(|e| format!("failed to close {program} stdin: {e}"))?;
+        }
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| format!("run_in_context wait failed: {e}"))?;
+        let stdout = (&mut stdout_task)
+            .await
+            .map_err(|e| format!("run_in_context stdout task failed: {e}"))?
+            .map_err(|e| format!("run_in_context stdout read failed: {e}"))?;
+        let stderr = (&mut stderr_task)
+            .await
+            .map_err(|e| format!("run_in_context stderr task failed: {e}"))?
+            .map_err(|e| format!("run_in_context stderr read failed: {e}"))?;
+        Ok::<_, String>((status, stdout, stderr))
+    };
+    let result = match tokio::time::timeout(timeout, operation).await {
+        Ok(Ok((status, stdout, stderr))) => Ok(RunCommandOutput {
+            exit_code: status.code().unwrap_or(-1) as i64,
+            stdout: String::from_utf8_lossy(&stdout).to_string(),
+            stderr: String::from_utf8_lossy(&stderr).to_string(),
+        }),
+        Ok(Err(error)) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            Err(error)
+        }
+        Err(_) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            Err(format!(
+                "run_in_context timed out after {}s",
+                timeout.as_secs()
+            ))
+        }
+    };
+    if ssh_transport {
+        record_ssh_runner_outcome(&command.context_id, &result);
+    }
+    result
 }
 
 const REMOTE_RPC_TIMEOUT: Duration = Duration::from_secs(20);
@@ -424,6 +537,223 @@ impl RunManager {
             owner_id: uuid::Uuid::new_v4().to_string(),
             reconciler_started: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub(crate) async fn preflight(
+        &self,
+        store: &wisp_store::Store,
+        context_id: &str,
+        project_root: &Path,
+        spec: &RunPreflightSpec,
+    ) -> Result<RunPreflightReport, String> {
+        let language = spec.language.trim().to_ascii_lowercase();
+        let mut report = RunPreflightReport::new(context_id, &language);
+        if !matches!(language.as_str(), "python" | "r") {
+            report.push(
+                "language",
+                RunPreflightStatus::Failed,
+                "language must be 'python' or 'r'".into(),
+            );
+            return Ok(report);
+        }
+        if spec.packages.len() > 32 || spec.paths.len() > 32 || spec.syntax_paths.len() > 32 {
+            report.push(
+                "limits",
+                RunPreflightStatus::Failed,
+                "preflight accepts at most 32 packages, paths, and syntax paths".into(),
+            );
+            return Ok(report);
+        }
+
+        let Some(context) = store
+            .get_execution_context(context_id)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            report.push(
+                "context",
+                RunPreflightStatus::Failed,
+                format!("execution context not found: {context_id}"),
+            );
+            return Ok(report);
+        };
+        if context.kind == wisp_store::ExecutionContextKind::Ssh {
+            if let Err(error) = crate::ssh_hosts::require_managed_ssh_ready(&context) {
+                report.push("context", RunPreflightStatus::Failed, error);
+                return Ok(report);
+            }
+        }
+        match context.last_probe_status.as_deref() {
+            Some("error") => report.push(
+                "context",
+                RunPreflightStatus::Warning,
+                "the most recent context probe failed; the interpreter handshake will be retried"
+                    .into(),
+            ),
+            _ => report.push(
+                "context",
+                RunPreflightStatus::Passed,
+                format!(
+                    "{} context is available for preflight",
+                    context.kind.as_str()
+                ),
+            ),
+        }
+
+        let root = match std::fs::canonicalize(project_root) {
+            Ok(root) => root,
+            Err(error) => {
+                report.push(
+                    "working_directory",
+                    RunPreflightStatus::Failed,
+                    format!("cannot resolve the project working directory: {error}"),
+                );
+                return Ok(report);
+            }
+        };
+        report.push(
+            "working_directory",
+            RunPreflightStatus::Passed,
+            "project working directory resolved".into(),
+        );
+
+        let mut syntax_files = Vec::new();
+        for path in spec.paths.iter().chain(spec.syntax_paths.iter()) {
+            match resolve_preflight_path(&root, path) {
+                Ok(resolved) => {
+                    report.push(
+                        format!("path:{path}"),
+                        RunPreflightStatus::Passed,
+                        "project-relative file exists".into(),
+                    );
+                    if spec.syntax_paths.contains(path) {
+                        syntax_files.push(resolved);
+                    }
+                }
+                Err(error) => {
+                    report.push(format!("path:{path}"), RunPreflightStatus::Failed, error);
+                }
+            }
+        }
+        if report.status == RunPreflightStatus::Failed {
+            return Ok(report);
+        }
+
+        if let Some(package) = spec
+            .packages
+            .iter()
+            .find(|package| !valid_package_name(&language, package))
+        {
+            report.push(
+                "packages",
+                RunPreflightStatus::Failed,
+                format!("invalid {language} package/module name: {package}"),
+            );
+            return Ok(report);
+        }
+        let interpreter = match preflight_interpreter(&context, &language) {
+            Ok(interpreter) => interpreter,
+            Err(error) => {
+                report.push("interpreter", RunPreflightStatus::Failed, error);
+                return Ok(report);
+            }
+        };
+        let handshake = build_preflight_command(
+            &context,
+            &interpreter,
+            preflight_handshake_args(&language, &spec.packages),
+            Some(root.clone()),
+            format!("{language} interpreter/package preflight"),
+        )?;
+        match self.runner.run(handshake, Duration::from_secs(5)).await {
+            Ok(output) if output.exit_code == 0 => {
+                let version = output.stdout.trim();
+                report.push(
+                    "interpreter",
+                    RunPreflightStatus::Passed,
+                    if version.is_empty() {
+                        format!("{language} interpreter handshake passed")
+                    } else {
+                        format!(
+                            "{language} interpreter handshake passed ({})",
+                            tail(version)
+                        )
+                    },
+                );
+                if !spec.packages.is_empty() {
+                    report.push(
+                        "packages",
+                        RunPreflightStatus::Passed,
+                        format!("{} declared package(s) are available", spec.packages.len()),
+                    );
+                }
+            }
+            Ok(output) => {
+                let detail = command_failure_detail(&output);
+                report.push(
+                    if spec.packages.is_empty() {
+                        "interpreter"
+                    } else {
+                        "packages"
+                    },
+                    RunPreflightStatus::Failed,
+                    format!(
+                        "{language} preflight exited with code {}: {detail}",
+                        output.exit_code
+                    ),
+                );
+                return Ok(report);
+            }
+            Err(error) => {
+                report.push(
+                    "interpreter",
+                    RunPreflightStatus::Failed,
+                    format!("{language} interpreter preflight failed: {}", tail(&error)),
+                );
+                return Ok(report);
+            }
+        }
+
+        if !syntax_files.is_empty() {
+            if context.kind != wisp_store::ExecutionContextKind::Local {
+                report.push(
+                    "syntax",
+                    RunPreflightStatus::Warning,
+                    "syntax files are project-local and cannot be parsed in this remote context before staging"
+                        .into(),
+                );
+            } else {
+                let syntax = build_preflight_command(
+                    &context,
+                    &interpreter,
+                    preflight_syntax_args(&language, &syntax_files),
+                    Some(root),
+                    format!("{language} syntax preflight"),
+                )?;
+                match self.runner.run(syntax, Duration::from_secs(5)).await {
+                    Ok(output) if output.exit_code == 0 => report.push(
+                        "syntax",
+                        RunPreflightStatus::Passed,
+                        format!("{} file(s) parsed successfully", syntax_files.len()),
+                    ),
+                    Ok(output) => report.push(
+                        "syntax",
+                        RunPreflightStatus::Failed,
+                        format!(
+                            "{language} syntax check exited with code {}: {}",
+                            output.exit_code,
+                            command_failure_detail(&output)
+                        ),
+                    ),
+                    Err(error) => report.push(
+                        "syntax",
+                        RunPreflightStatus::Failed,
+                        format!("{language} syntax check failed: {}", tail(&error)),
+                    ),
+                }
+            }
+        }
+        Ok(report)
     }
 
     pub async fn download_ssh_file(
@@ -610,6 +940,32 @@ impl RunManager {
         request: SubmitRunRequest,
         cwd: Option<PathBuf>,
     ) -> Result<SubmitRunResponse, String> {
+        self.submit_inner(store, project_id, frame_id, request, cwd, None)
+            .await
+    }
+
+    pub(crate) async fn submit_preflighted(
+        &self,
+        store: wisp_store::Store,
+        project_id: String,
+        frame_id: Option<String>,
+        request: SubmitRunRequest,
+        cwd: Option<PathBuf>,
+        preflight: RunPreflightReport,
+    ) -> Result<SubmitRunResponse, String> {
+        self.submit_inner(store, project_id, frame_id, request, cwd, Some(preflight))
+            .await
+    }
+
+    async fn submit_inner(
+        &self,
+        store: wisp_store::Store,
+        project_id: String,
+        frame_id: Option<String>,
+        request: SubmitRunRequest,
+        cwd: Option<PathBuf>,
+        preflight: Option<RunPreflightReport>,
+    ) -> Result<SubmitRunResponse, String> {
         let prepared = create_run_record(
             &store,
             &project_id,
@@ -619,6 +975,7 @@ impl RunManager {
             wisp_store::RunStatus::Submitted,
             &self.owner_id,
             REMOTE_START_LEASE_SECS,
+            preflight.as_ref(),
         )
         .await?;
         if let Some(remote) = prepared.remote.clone() {
@@ -1008,6 +1365,195 @@ impl Default for RunManager {
     }
 }
 
+fn resolve_preflight_path(root: &Path, value: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(value);
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!("preflight path must be project-relative: {value}"));
+    }
+    let path = std::fs::canonicalize(root.join(relative))
+        .map_err(|error| format!("preflight file does not exist ({value}): {error}"))?;
+    if !path.starts_with(root) || !path.is_file() {
+        return Err(format!("preflight path is not a project file: {value}"));
+    }
+    Ok(path)
+}
+
+fn valid_package_name(language: &str, value: &str) -> bool {
+    if value.is_empty() || value.len() > 128 {
+        return false;
+    }
+    value.split('.').all(|part| {
+        let mut chars = part.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        let valid_first = if language == "python" {
+            first == '_' || first.is_ascii_alphabetic()
+        } else {
+            first.is_ascii_alphabetic()
+        };
+        valid_first
+            && chars
+                .all(|ch| ch == '_' || ch.is_ascii_alphanumeric() || language == "r" && ch == '-')
+    })
+}
+
+fn context_json_string(context: &wisp_store::ExecutionContext, keys: &[&str]) -> Option<String> {
+    [&context.config_json, &context.capabilities_json]
+        .into_iter()
+        .filter_map(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .find_map(|value| {
+            keys.iter().find_map(|key| {
+                value
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+        })
+}
+
+fn preflight_interpreter(
+    context: &wisp_store::ExecutionContext,
+    language: &str,
+) -> Result<String, String> {
+    let (keys, fallback) = match language {
+        "python" => (
+            &["python_executable", "python_path"][..],
+            if cfg!(target_os = "windows") {
+                "python"
+            } else {
+                "python3"
+            },
+        ),
+        "r" => (&["rscript_executable", "rscript_path"][..], "Rscript"),
+        _ => return Err(format!("unsupported preflight language: {language}")),
+    };
+    Ok(context_json_string(context, keys).unwrap_or_else(|| fallback.into()))
+}
+
+fn preflight_handshake_args(language: &str, packages: &[String]) -> Vec<String> {
+    if language == "python" {
+        let packages = serde_json::to_string(packages).unwrap_or_else(|_| "[]".into());
+        let code = format!(
+            "import importlib.util,sys; p={packages}; m=[x for x in p if importlib.util.find_spec(x) is None]; print(sys.version.split()[0]); sys.stderr.write('missing modules: '+', '.join(m) if m else ''); sys.exit(9 if m else 0)"
+        );
+        vec!["-c".into(), code]
+    } else {
+        let packages = packages
+            .iter()
+            .map(|package| format!("\"{package}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let code = format!(
+            "p <- c({packages}); m <- p[!vapply(p, requireNamespace, logical(1), quietly=TRUE)]; cat(R.version.string); if (length(m)) {{ cat(paste0('missing packages: ', paste(m, collapse=', ')), file=stderr()); quit(status=9) }}"
+        );
+        vec!["--vanilla".into(), "-e".into(), code]
+    }
+}
+
+fn preflight_syntax_args(language: &str, paths: &[PathBuf]) -> Vec<String> {
+    if language == "python" {
+        let mut args = vec!["-m".into(), "py_compile".into()];
+        args.extend(paths.iter().map(|path| path.to_string_lossy().into_owned()));
+        args
+    } else {
+        let mut args = vec![
+            "--vanilla".into(),
+            "-e".into(),
+            "invisible(lapply(commandArgs(TRUE), function(path) parse(file=path)))".into(),
+            "--args".into(),
+        ];
+        args.extend(paths.iter().map(|path| path.to_string_lossy().into_owned()));
+        args
+    }
+}
+
+fn posix_shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn build_preflight_command(
+    context: &wisp_store::ExecutionContext,
+    interpreter: &str,
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+    label: String,
+) -> Result<RunCommand, String> {
+    match context.kind {
+        wisp_store::ExecutionContextKind::Local => Ok(RunCommand {
+            context_id: context.id.clone(),
+            program: interpreter.into(),
+            args,
+            script: label,
+            cwd,
+            stdin: None,
+            envs: Vec::new(),
+        }),
+        wisp_store::ExecutionContextKind::Wsl => {
+            let config: serde_json::Value =
+                serde_json::from_str(&context.config_json).unwrap_or_default();
+            let distro = config
+                .get("distro")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| context.id.strip_prefix("wsl:").unwrap_or(&context.id));
+            let mut command_args =
+                vec!["-d".into(), distro.into(), "--".into(), interpreter.into()];
+            command_args.extend(args);
+            Ok(RunCommand {
+                context_id: context.id.clone(),
+                program: "wsl.exe".into(),
+                args: command_args,
+                script: label,
+                cwd: None,
+                stdin: None,
+                envs: Vec::new(),
+            })
+        }
+        wisp_store::ExecutionContextKind::Ssh => {
+            let connection = crate::ssh_hosts::SshConnection::from_execution_context(context)?;
+            let mut ssh_args = connection.ssh_args()?;
+            let command = std::iter::once(interpreter)
+                .chain(args.iter().map(String::as_str))
+                .map(posix_shell_quote)
+                .collect::<Vec<_>>()
+                .join(" ");
+            ssh_args.push(command);
+            Ok(RunCommand {
+                context_id: context.id.clone(),
+                program: "ssh".into(),
+                args: ssh_args,
+                script: label,
+                cwd: None,
+                stdin: None,
+                envs: crate::ssh_hosts::auth_envs_for_connection(&connection)?,
+            })
+        }
+    }
+}
+
+fn command_failure_detail(output: &RunCommandOutput) -> String {
+    let detail = if output.stderr.trim().is_empty() {
+        output.stdout.trim()
+    } else {
+        output.stderr.trim()
+    };
+    if detail.is_empty() {
+        "no diagnostic output".into()
+    } else {
+        tail(detail)
+    }
+}
+
 pub fn build_run_command(
     ctx: &wisp_store::ExecutionContext,
     script: &str,
@@ -1108,6 +1654,7 @@ async fn create_run_record(
     initial_status: wisp_store::RunStatus,
     owner_id: &str,
     lease_secs: i64,
+    preflight: Option<&RunPreflightReport>,
 ) -> Result<PreparedRun, String> {
     let command = request.command.trim().to_string();
     if command.is_empty() {
@@ -1172,6 +1719,7 @@ async fn create_run_record(
         "context_id": ctx.id,
         "config": serde_json::from_str::<serde_json::Value>(&ctx.config_json).unwrap_or_default(),
         "capabilities": serde_json::from_str::<serde_json::Value>(&ctx.capabilities_json).unwrap_or_default(),
+        "preflight": preflight,
     })
     .to_string();
 
@@ -1766,11 +2314,50 @@ async fn run_with_lifecycle_lease(
     command: RunCommand,
     timeout: Duration,
 ) -> Result<RunCommandOutput, String> {
-    let mut operation = Box::pin(runner.run(command, timeout));
+    let (updates_tx, mut updates_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut operation = Box::pin(runner.run_streaming(command, timeout, updates_tx));
     let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut output_flush = tokio::time::interval(Duration::from_secs(1));
+    output_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut stdout_tail = Vec::with_capacity(MAX_RUN_OUTPUT_BYTES);
+    let mut stderr_tail = Vec::with_capacity(MAX_RUN_OUTPUT_BYTES);
+    let mut output_dirty = false;
+    let mut updates_open = true;
     loop {
         tokio::select! {
             output = &mut operation => return output,
+            update = updates_rx.recv(), if updates_open => {
+                match update {
+                    Some(update) => {
+                        let target = match update.stream {
+                            RunOutputStream::Stdout => &mut stdout_tail,
+                            RunOutputStream::Stderr => &mut stderr_tail,
+                        };
+                        append_tail_bytes(target, &update.chunk);
+                        output_dirty = true;
+                    }
+                    None => updates_open = false,
+                }
+            }
+            _ = output_flush.tick(), if output_dirty => {
+                let stdout = String::from_utf8_lossy(&stdout_tail);
+                let stderr = String::from_utf8_lossy(&stderr_tail);
+                let owned = store
+                    .record_run_poll_owned(
+                        run_id,
+                        owner_id,
+                        (!stdout.is_empty()).then_some(stdout.as_ref()),
+                        (!stderr.is_empty()).then_some(stderr.as_ref()),
+                        None,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !owned {
+                    return Err("Run lifecycle lease was lost".into());
+                }
+                output_dirty = false;
+            }
             _ = heartbeat.tick() => {
                 let status = store
                     .get_run(run_id)
@@ -1782,6 +2369,13 @@ async fn run_with_lifecycle_lease(
                 }
                 let owned = store
                     .renew_run_lifecycle(run_id, owner_id, ACTIVE_LEASE_SECS)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !owned {
+                    return Err("Run lifecycle lease was lost".into());
+                }
+                let owned = store
+                    .record_run_poll_owned(run_id, owner_id, None, None, None)
                     .await
                     .map_err(|e| e.to_string())?;
                 if !owned {
@@ -1810,6 +2404,7 @@ pub async fn submit_run_with_runner(
         wisp_store::RunStatus::Running,
         "test-owner",
         ACTIVE_LEASE_SECS,
+        None,
     )
     .await?;
     let output = runner.run(prepared.command.clone(), prepared.timeout).await;
