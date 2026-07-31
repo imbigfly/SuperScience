@@ -2086,6 +2086,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             ASK_USER_REQUESTS_MIGRATION.to_string(),
             RUN_ARTIFACT_LINEAGE_MIGRATION.to_string(),
             PUBLICATION_DOMAIN_MIGRATION.to_string(),
+            PUBLICATION_FREEZE_MIGRATION.to_string(),
         ]
     );
 
@@ -2208,6 +2209,73 @@ async fn publication_domain_migration_repairs_partial_application() {
     .unwrap();
     assert!(table_exists);
     assert!(trigger_exists);
+
+    repaired.pool.close().await;
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn publication_freeze_migration_repairs_partial_application() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_publication_freeze_partial_migration_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    for trigger in [
+        "trg_publication_freeze_attempt_revision_insert",
+        "trg_publication_freezing_exit",
+        "trg_frozen_evidence_artifact_version_delete",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER {trigger}"))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+    }
+    for statement in [
+        "DROP TABLE publication_freeze_attempts",
+        "ALTER TABLE publication_readiness_reports DROP COLUMN target_visibility",
+        "ALTER TABLE publication_readiness_reports DROP COLUMN policy_json",
+    ] {
+        sqlx::query(statement).execute(&store.pool).await.unwrap();
+    }
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+        .bind(PUBLICATION_FREEZE_MIGRATION)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+
+    let repaired = Store::open(&tmp).await.unwrap();
+    assert!(Store::has_column(
+        &repaired.pool,
+        "publication_readiness_reports",
+        "target_visibility"
+    )
+    .await
+    .unwrap());
+    assert!(Store::has_column(
+        &repaired.pool,
+        "publication_readiness_reports",
+        "policy_json"
+    )
+    .await
+    .unwrap());
+    for (kind, name) in [
+        ("table", "publication_freeze_attempts"),
+        ("trigger", "trg_publication_freeze_attempt_revision_insert"),
+        ("trigger", "trg_publication_freezing_exit"),
+        ("trigger", "trg_frozen_evidence_artifact_version_delete"),
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type=? AND name=?)",
+        )
+        .bind(kind)
+        .bind(name)
+        .fetch_one(&repaired.pool)
+        .await
+        .unwrap();
+        assert!(exists, "{kind} {name}");
+    }
 
     repaired.pool.close().await;
     let _ = std::fs::remove_file(&tmp);
@@ -3618,7 +3686,7 @@ async fn publication_revisions_clone_exact_evidence_and_freeze_history() {
             revision_id: "revision-2".into(),
             item_id: Some(cloned_figure.id.clone()),
             source_kind: EvidenceSourceKind::ArtifactVersion,
-            source_id: third_version,
+            source_id: third_version.clone(),
             purpose: "Revision-only replacement".into(),
             supported_claim_item_id: None,
             selection_state: EvidenceSelectionState::Selected,
@@ -3783,6 +3851,35 @@ async fn publication_revisions_clone_exact_evidence_and_freeze_history() {
         .edges
         .iter()
         .any(|edge| edge.id == "publication-evidence:binding-old"));
+    let drift = store
+        .list_publication_evidence_drift("revision-1")
+        .await
+        .unwrap();
+    let old_binding_drift = drift
+        .iter()
+        .find(|entry| entry.binding_id == "binding-old")
+        .unwrap();
+    assert!(old_binding_drift.has_drift);
+    assert_eq!(old_binding_drift.bound_version_id, versions[0]);
+    assert_eq!(old_binding_drift.latest_version_id, third_version);
+    assert!(sqlx::query("DELETE FROM artifact_versions WHERE id=?")
+        .bind(&versions[0])
+        .execute(&store.pool)
+        .await
+        .is_err());
+    store
+        .publish_publication_revision("revision-1")
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_publication_revision("revision-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        PublicationRevisionState::Published
+    );
     store.delete_session("f", "p").await.unwrap();
     assert!(store
         .get_artifact_version(&versions[0])
@@ -3791,6 +3888,198 @@ async fn publication_revisions_clone_exact_evidence_and_freeze_history() {
         .is_some());
 
     let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn publication_freeze_commit_rolls_back_all_late_captures_on_failure() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_publication_freeze_atomic_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    let old_version_id = store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: Some("version-old".into()),
+            artifact_id: "artifact".into(),
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "result.txt".into(),
+            content_type: "text/plain".into(),
+            storage_path: "result.txt".into(),
+            logical_key: Some("result".into()),
+            size_bytes: None,
+            checksum: None,
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::Reference,
+            capture_timing: ArtifactCaptureTiming::Unknown,
+        })
+        .await
+        .unwrap();
+    store
+        .create_publication("publication", "p", "Paper", "")
+        .await
+        .unwrap();
+    store
+        .create_publication_revision("revision", "publication", None, "Submission")
+        .await
+        .unwrap();
+    store
+        .save_publication_item(&PublicationItem {
+            id: "supplement".into(),
+            revision_id: "revision".into(),
+            parent_item_id: None,
+            kind: PublicationItemKind::Supplement,
+            title: "Supplement".into(),
+            content: String::new(),
+            ordinal: 0,
+            metadata_json: "{}".into(),
+            created_at: 0,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+    store
+        .save_evidence_binding(&EvidenceBindingDraft {
+            id: "binding".into(),
+            revision_id: "revision".into(),
+            item_id: Some("supplement".into()),
+            source_kind: EvidenceSourceKind::ArtifactVersion,
+            source_id: old_version_id.clone(),
+            purpose: "Supplement bytes".into(),
+            supported_claim_item_id: None,
+            selection_state: EvidenceSelectionState::Selected,
+            visibility: EvidenceVisibility::Public,
+        })
+        .await
+        .unwrap();
+
+    let policy = PublicationFreezePolicy {
+        phi_pii_reviewed: true,
+        redistribution_reviewed: true,
+        ..PublicationFreezePolicy::default()
+    };
+    store
+        .begin_publication_freeze("revision", "attempt", &policy)
+        .await
+        .unwrap();
+    let policy_value = serde_json::to_value(&policy).unwrap();
+    let (manifest_json, manifest_sha256) = canonical_json_sha256(&serde_json::json!({
+        "blockers": [],
+        "capability_level": "archived",
+        "omissions": [],
+        "policy": policy_value.clone(),
+        "publication_revision_id": "revision",
+        "schema_version": 1,
+        "target_visibility": "public",
+        "warnings": [],
+    }));
+    let readiness = PublicationReadiness {
+        revision_id: "revision".into(),
+        target_visibility: EvidenceVisibility::Public,
+        capability_level: PublicationCapabilityLevel::Archived,
+        blockers: Vec::new(),
+        warnings: Vec::new(),
+        omissions: Vec::new(),
+        manifest_json,
+        manifest_sha256,
+        can_freeze: true,
+    };
+    let capture = |new_version_id: &str, checksum: &str| PublicationLateCapture {
+        binding_ids: vec!["binding".into()],
+        old_version_id: old_version_id.clone(),
+        new_version_id: new_version_id.into(),
+        artifact_id: "artifact".into(),
+        expected_latest_version_id: Some(old_version_id.clone()),
+        version_number: 2,
+        content_type: "text/plain".into(),
+        storage_path: format!(".wisp/artifacts/sha256/{checksum}"),
+        size_bytes: 4,
+        checksum: checksum.into(),
+        materialization: ArtifactMaterialization::Snapshot,
+        source_snapshot_json: canonical_json(&serde_json::json!({
+            "capture_timing": "late",
+            "historical_content_verified": false,
+            "sha256": checksum,
+        })),
+    };
+    let commit = PublicationFreezeCommit {
+        revision_id: "revision".into(),
+        attempt_id: "attempt".into(),
+        policy_json: canonical_json(&policy_value),
+        readiness,
+        late_captures: vec![
+            capture("version-capture-a", &"a".repeat(64)),
+            capture("version-capture-b", &"b".repeat(64)),
+        ],
+    };
+
+    assert!(store.commit_publication_freeze(&commit).await.is_err());
+    for version_id in ["version-capture-a", "version-capture-b"] {
+        assert!(store
+            .get_artifact_version(version_id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+    assert_eq!(
+        store
+            .get_evidence_binding("binding")
+            .await
+            .unwrap()
+            .unwrap()
+            .source_id,
+        old_version_id
+    );
+    assert_eq!(
+        store
+            .get_publication_revision("revision")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        PublicationRevisionState::Freezing
+    );
+    let attempts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM publication_freeze_attempts WHERE id='attempt'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(attempts, 1);
+    assert!(store
+        .get_publication_readiness_report("revision")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .abort_publication_freeze("revision", "attempt")
+        .await
+        .unwrap());
+    store
+        .begin_publication_freeze("revision", "interrupted", &policy)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .recover_stale_publication_freezes(i64::MAX)
+            .await
+            .unwrap(),
+        ["revision"]
+    );
+    assert_eq!(
+        store
+            .get_publication_revision("revision")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        PublicationRevisionState::Draft
+    );
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
 }
 
 #[tokio::test]

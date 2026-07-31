@@ -1,7 +1,7 @@
 use super::{
     artifact_node_id, artifact_version_from_row, session_display_title, ArtifactCaptureTiming,
-    ArtifactMaterialization, ArtifactSearchResult, ArtifactVersion, ArtifactVersionDraft,
-    ResearchNode, ResearchNodeKind, Store,
+    ArtifactMaterialization, ArtifactSearchResult, ArtifactVersion, ArtifactVersionContext,
+    ArtifactVersionDraft, ResearchNode, ResearchNodeKind, Store,
 };
 use anyhow::Result;
 use sha2::{Digest, Sha256};
@@ -232,6 +232,42 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         row.map(artifact_version_from_row).transpose()
+    }
+
+    pub async fn get_artifact_version_context(
+        &self,
+        version_id: &str,
+    ) -> Result<Option<ArtifactVersionContext>> {
+        let row = sqlx::query(
+            "SELECT version.id,version.artifact_id,version.version_number,\
+                    version.content_type,version.storage_path,version.size_bytes,version.checksum,\
+                    version.parent_version_id,version.producing_run_id,\
+                    version.env_snapshot_hash,version.materialization,version.capture_timing,\
+                    version.created_at,artifact.project_id,artifact.root_frame_id,\
+                    artifact.filename,artifact.logical_key,artifact.latest_version_id \
+             FROM artifact_versions version \
+             JOIN artifacts artifact ON artifact.id=version.artifact_id \
+             WHERE version.id=?",
+        )
+        .bind(version_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            let project_id = row.try_get("project_id")?;
+            let root_frame_id = row.try_get("root_frame_id")?;
+            let filename = row.try_get("filename")?;
+            let logical_key = row.try_get("logical_key")?;
+            let latest_version_id = row.try_get("latest_version_id")?;
+            Ok(ArtifactVersionContext {
+                version: artifact_version_from_row(row)?,
+                project_id,
+                root_frame_id,
+                filename,
+                logical_key,
+                latest_version_id,
+            })
+        })
+        .transpose()
     }
 
     pub async fn set_artifact_version_provenance(

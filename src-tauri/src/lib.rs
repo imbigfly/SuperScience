@@ -54,6 +54,7 @@ mod project_commands;
 mod project_reader;
 mod project_sync;
 mod project_transfer;
+mod publication_freeze;
 mod quick_actions;
 mod research_graph;
 mod resource_refs;
@@ -6147,6 +6148,10 @@ pub fn run() {
             std::fs::create_dir_all(&app_data).expect("create app data dir");
             let db_path = app_data.join("wisp.sqlite");
             let store = tauri::async_runtime::block_on(Store::open(&db_path)).expect("open store");
+            tauri::async_runtime::block_on(
+                store.recover_stale_publication_freezes(i64::MAX),
+            )
+            .expect("recover interrupted Publication freezes");
             tauri::async_runtime::block_on(scratch_commands::purge_orphan_scratch_projects(
                 &store,
                 &app_data,
@@ -6497,6 +6502,7 @@ pub fn run() {
             project_commands::delete_project,
             project_commands::get_project_settings,
             project_commands::update_project,
+            publication_freeze::freeze_publication_revision,
             session_commands::load_session,
             session_commands::rewind_session,
             turn_undo::preview_turn_undo,

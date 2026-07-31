@@ -95,30 +95,30 @@ Unrelated `.codex/` and `.playwright-mcp/` workspace files are never staged.
 
 **Commit:** `feat(publication): freeze evidence with readiness manifest`
 
-- [ ] Add Draft → internal Freezing → Frozen transaction protocol.
-- [ ] Validate existing snapshots and prepare immutable late-capture versions
+- [x] Add Draft → internal Freezing → Frozen transaction protocol.
+- [x] Validate existing snapshots and prepare immutable late-capture versions
   without rewriting historical versions.
-- [ ] Resolve selected evidence through exact Run inputs, outputs, code,
+- [x] Resolve selected evidence through exact Run inputs, outputs, code,
   environment, and external resources.
-- [ ] Generate structured blockers, warnings, waivers, basis/confidence, and
+- [x] Generate structured blockers, warnings, waivers, basis/confidence, and
   capability level.
-- [ ] Enforce Public/Restricted/Private dependency rules.
-- [ ] Add secret, absolute path, machine detail, internal network, symlink,
+- [x] Enforce Public/Restricted/Private dependency rules.
+- [x] Add secret, absolute path, machine detail, internal network, symlink,
   file-size/type, license, redistribution, and PHI/PII review checks.
-- [ ] Store canonical schema-v1 manifest and SHA-256 only in the final
+- [x] Store canonical schema-v1 manifest and SHA-256 only in the final
   transaction.
-- [ ] Implement drift/successor query without mutating a frozen revision.
-- [ ] Protect frozen versions from ordinary Artifact/Session deletion.
+- [x] Implement drift/successor query without mutating a frozen revision.
+- [x] Protect frozen versions from ordinary Artifact/Session deletion.
 
 ### Gate
 
-- [ ] Failure injection proves no partial Frozen revision.
-- [ ] Workspace mutation leaves frozen bytes and hash unchanged.
-- [ ] Historical missing-checksum evidence becomes `late_capture`.
-- [ ] Public readiness reports restricted dependencies as omissions.
-- [ ] Canonical manifest generation is deterministic.
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo test --workspace`
+- [x] Failure injection proves no partial Frozen revision.
+- [x] Workspace mutation leaves frozen bytes and hash unchanged.
+- [x] Historical missing-checksum evidence becomes `late_capture`.
+- [x] Public readiness reports restricted dependencies as omissions.
+- [x] Canonical manifest generation is deterministic.
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo test --workspace`
 
 ## PR 3 — Publication Workspace UI
 

@@ -136,6 +136,16 @@ pub struct ArtifactVersion {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactVersionContext {
+    pub version: ArtifactVersion,
+    pub project_id: String,
+    pub root_frame_id: String,
+    pub filename: String,
+    pub logical_key: Option<String>,
+    pub latest_version_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LineageBasis {
@@ -631,12 +641,96 @@ pub struct PublicationReadinessReport {
     pub id: String,
     pub revision_id: String,
     pub capability_level: PublicationCapabilityLevel,
+    pub target_visibility: EvidenceVisibility,
+    pub policy_json: String,
     pub blockers_json: String,
     pub warnings_json: String,
     pub omissions_json: String,
     pub manifest_json: String,
     pub manifest_sha256: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationFreezePolicy {
+    pub target_visibility: EvidenceVisibility,
+    pub phi_pii_reviewed: bool,
+    pub redistribution_reviewed: bool,
+    pub snapshot_restricted_bytes: bool,
+}
+
+impl Default for PublicationFreezePolicy {
+    fn default() -> Self {
+        Self {
+            target_visibility: EvidenceVisibility::Public,
+            phi_pii_reviewed: false,
+            redistribution_reviewed: false,
+            snapshot_restricted_bytes: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationReadinessFinding {
+    pub code: String,
+    pub message: String,
+    pub binding_id: Option<String>,
+    pub source_kind: Option<EvidenceSourceKind>,
+    pub source_id: Option<String>,
+    pub waivable: bool,
+    pub waived: bool,
+    pub waiver: Option<PublicationWaiver>,
+    pub details: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationReadiness {
+    pub revision_id: String,
+    pub target_visibility: EvidenceVisibility,
+    pub capability_level: PublicationCapabilityLevel,
+    pub blockers: Vec<PublicationReadinessFinding>,
+    pub warnings: Vec<PublicationReadinessFinding>,
+    pub omissions: Vec<PublicationReadinessFinding>,
+    pub manifest_json: String,
+    pub manifest_sha256: String,
+    pub can_freeze: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationLateCapture {
+    pub binding_ids: Vec<String>,
+    pub old_version_id: String,
+    pub new_version_id: String,
+    pub artifact_id: String,
+    pub expected_latest_version_id: Option<String>,
+    pub version_number: i64,
+    pub content_type: String,
+    pub storage_path: String,
+    pub size_bytes: i64,
+    pub checksum: String,
+    pub materialization: ArtifactMaterialization,
+    pub source_snapshot_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationFreezeCommit {
+    pub revision_id: String,
+    pub attempt_id: String,
+    pub policy_json: String,
+    pub readiness: PublicationReadiness,
+    pub late_captures: Vec<PublicationLateCapture>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationEvidenceDrift {
+    pub binding_id: String,
+    pub artifact_id: String,
+    pub logical_key: Option<String>,
+    pub bound_version_id: String,
+    pub bound_version_number: i64,
+    pub latest_version_id: String,
+    pub latest_version_number: i64,
+    pub has_drift: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

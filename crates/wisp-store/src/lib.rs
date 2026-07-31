@@ -99,6 +99,9 @@ const RUN_ARTIFACT_LINEAGE_MIGRATION: &str = "0029_run_artifact_lineage";
 const PUBLICATION_DOMAIN_MIGRATION: &str = "0030_publication_domain";
 const PUBLICATION_DOMAIN_MIGRATION_SQL: &str =
     include_str!("../migrations/0030_publication_domain.sql");
+const PUBLICATION_FREEZE_MIGRATION: &str = "0031_publication_freeze";
+const PUBLICATION_FREEZE_MIGRATION_SQL: &str =
+    include_str!("../migrations/0031_publication_freeze.sql");
 
 #[derive(Clone)]
 pub struct Store {
@@ -434,7 +437,28 @@ impl Store {
             Self::install_publication_triggers(pool).await?;
             Self::record_migration(pool, PUBLICATION_DOMAIN_MIGRATION).await?;
         }
+        if !Self::migration_applied(pool, PUBLICATION_FREEZE_MIGRATION).await? {
+            Self::apply_publication_freeze(pool).await?;
+            Self::record_migration(pool, PUBLICATION_FREEZE_MIGRATION).await?;
+        }
         Ok(())
+    }
+
+    async fn apply_publication_freeze(pool: &SqlitePool) -> Result<()> {
+        Self::add_columns_if_missing(
+            pool,
+            "publication_readiness_reports",
+            &[
+                (
+                    "target_visibility",
+                    "TEXT NOT NULL DEFAULT 'public' CHECK(target_visibility IN ('public','restricted','private'))",
+                ),
+                ("policy_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ],
+        )
+        .await?;
+        Self::execute_sql_script(pool, PUBLICATION_FREEZE_MIGRATION_SQL).await?;
+        Self::install_publication_freeze_triggers(pool).await
     }
 
     async fn apply_run_artifact_lineage(pool: &SqlitePool) -> Result<()> {
@@ -782,6 +806,82 @@ impl Store {
                 operation.to_ascii_uppercase()
             );
             sqlx::query(&trigger).execute(pool).await?;
+        }
+        Ok(())
+    }
+
+    async fn install_publication_freeze_triggers(pool: &SqlitePool) -> Result<()> {
+        for (base_table, statement) in [
+            (
+                None,
+                "CREATE TRIGGER IF NOT EXISTS trg_publication_freeze_attempt_revision_insert \
+             BEFORE INSERT ON publication_freeze_attempts \
+             WHEN NOT EXISTS(\
+               SELECT 1 FROM publication_revisions revision \
+               WHERE revision.id=NEW.revision_id AND revision.state='freezing'\
+             ) \
+             BEGIN SELECT RAISE(ABORT,'Publication freeze attempt requires a Freezing revision'); END",
+            ),
+            (
+                None,
+                "CREATE TRIGGER IF NOT EXISTS trg_publication_freezing_exit \
+             BEFORE UPDATE OF state ON publication_revisions \
+             WHEN OLD.state='freezing' AND NEW.state<>'freezing' \
+               AND EXISTS(\
+                 SELECT 1 FROM publication_freeze_attempts attempt \
+                 WHERE attempt.revision_id=OLD.id\
+               ) \
+             BEGIN SELECT RAISE(ABORT,'Publication freeze attempt must finish atomically'); END",
+            ),
+            (
+                Some("artifact_versions"),
+                "CREATE TRIGGER IF NOT EXISTS trg_frozen_evidence_artifact_version_delete \
+             BEFORE DELETE ON artifact_versions \
+             WHEN EXISTS(\
+               SELECT 1 FROM evidence_bindings binding \
+               JOIN publication_revisions revision ON revision.id=binding.revision_id \
+               WHERE binding.artifact_version_id=OLD.id \
+                 AND revision.state IN ('frozen','published')\
+               ) \
+             BEGIN SELECT RAISE(ABORT,'ArtifactVersion is retained by frozen Publication evidence'); END",
+            ),
+            (
+                Some("runs"),
+                "CREATE TRIGGER IF NOT EXISTS trg_frozen_evidence_run_delete \
+             BEFORE DELETE ON runs \
+             WHEN EXISTS(\
+               SELECT 1 FROM evidence_bindings binding \
+               JOIN publication_revisions revision ON revision.id=binding.revision_id \
+               WHERE binding.run_id=OLD.id \
+                 AND revision.state IN ('frozen','published')\
+               ) \
+             BEGIN SELECT RAISE(ABORT,'Run is retained by frozen Publication evidence'); END",
+            ),
+            (
+                Some("external_resources"),
+                "CREATE TRIGGER IF NOT EXISTS trg_frozen_evidence_external_resource_delete \
+             BEFORE DELETE ON external_resources \
+             WHEN EXISTS(\
+               SELECT 1 FROM evidence_bindings binding \
+               JOIN publication_revisions revision ON revision.id=binding.revision_id \
+               WHERE binding.external_resource_id=OLD.id \
+                 AND revision.state IN ('frozen','published')\
+               ) \
+             BEGIN SELECT RAISE(ABORT,'ExternalResource is retained by frozen Publication evidence'); END",
+            ),
+        ] {
+            if let Some(table) = base_table {
+                let exists: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+                )
+                .bind(table)
+                .fetch_one(pool)
+                .await?;
+                if !exists {
+                    continue;
+                }
+            }
+            sqlx::query(statement).execute(pool).await?;
         }
         Ok(())
     }

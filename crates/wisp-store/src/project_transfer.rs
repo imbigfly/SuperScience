@@ -1,4 +1,4 @@
-use super::{ProjectSyncState, Store};
+use super::{canonical_json_sha256, ProjectSyncState, Store};
 use anyhow::{Context, Result};
 use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
@@ -451,6 +451,56 @@ async fn copy_publication_children(
     if !attached_table_exists(tx, "publications").await? {
         return Ok(());
     }
+    let frozen_revisions = sqlx::query(
+        "SELECT revision.id,revision.manifest_json,revision.manifest_sha256 \
+         FROM transfer.publication_revisions revision \
+         JOIN transfer.publications publication ON publication.id=revision.publication_id \
+         WHERE publication.project_id=? AND revision.state IN ('frozen','published')",
+    )
+    .bind(project_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut frozen_hashes = std::collections::HashMap::new();
+    for row in frozen_revisions {
+        let revision_id: String = row.try_get("id")?;
+        let manifest_json: Option<String> = row.try_get("manifest_json")?;
+        let manifest_sha256: Option<String> = row.try_get("manifest_sha256")?;
+        let manifest_json = manifest_json
+            .ok_or_else(|| anyhow::anyhow!("Frozen Publication revision lacks a manifest"))?;
+        let manifest: serde_json::Value = serde_json::from_str(&manifest_json)
+            .context("Frozen Publication manifest is invalid JSON")?;
+        let (canonical, hash) = canonical_json_sha256(&manifest);
+        if canonical != manifest_json || manifest_sha256.as_deref() != Some(hash.as_str()) {
+            anyhow::bail!("Frozen Publication manifest hash is invalid");
+        }
+        frozen_hashes.insert(revision_id, hash);
+    }
+    if attached_table_exists(tx, "publication_readiness_reports").await? {
+        let reports = sqlx::query(
+            "SELECT report.revision_id,report.manifest_json,report.manifest_sha256 \
+             FROM transfer.publication_readiness_reports report \
+             JOIN transfer.publication_revisions revision ON revision.id=report.revision_id \
+             JOIN transfer.publications publication ON publication.id=revision.publication_id \
+             WHERE publication.project_id=? AND revision.state IN ('frozen','published')",
+        )
+        .bind(project_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        for row in reports {
+            let revision_id: String = row.try_get("revision_id")?;
+            let manifest_json: String = row.try_get("manifest_json")?;
+            let manifest_sha256: String = row.try_get("manifest_sha256")?;
+            let manifest: serde_json::Value = serde_json::from_str(&manifest_json)
+                .context("Publication readiness manifest is invalid JSON")?;
+            let (canonical, hash) = canonical_json_sha256(&manifest);
+            if canonical != manifest_json
+                || manifest_sha256 != hash
+                || frozen_hashes.get(&revision_id) != Some(&hash)
+            {
+                anyhow::bail!("Publication readiness manifest does not match its frozen revision");
+            }
+        }
+    }
     sqlx::query(
         "INSERT INTO publications(id,project_id,title,description,created_at,updated_at) \
          SELECT id,project_id,title,description,created_at,updated_at \
@@ -500,6 +550,36 @@ async fn copy_publication_children(
     .bind(project_id)
     .execute(&mut **tx)
     .await?;
+    if attached_table_exists(tx, "publication_readiness_reports").await? {
+        let columns = attached_table_columns(tx, "publication_readiness_reports").await?;
+        let target_visibility = if columns.contains("target_visibility") {
+            "report.target_visibility"
+        } else {
+            "'public'"
+        };
+        let policy_json = if columns.contains("policy_json") {
+            "report.policy_json"
+        } else {
+            "'{}'"
+        };
+        let statement = format!(
+            "INSERT INTO publication_readiness_reports(\
+               id,revision_id,capability_level,target_visibility,policy_json,blockers_json,\
+               warnings_json,omissions_json,manifest_json,manifest_sha256,created_at\
+             ) SELECT report.id,report.revision_id,report.capability_level,\
+                      {target_visibility},{policy_json},report.blockers_json,\
+                      report.warnings_json,report.omissions_json,report.manifest_json,\
+                      report.manifest_sha256,report.created_at \
+               FROM transfer.publication_readiness_reports report \
+               JOIN transfer.publication_revisions revision ON revision.id=report.revision_id \
+               JOIN transfer.publications publication ON publication.id=revision.publication_id \
+               WHERE publication.project_id=?"
+        );
+        sqlx::query(&statement)
+            .bind(project_id)
+            .execute(&mut **tx)
+            .await?;
+    }
     for statement in [
         "INSERT INTO publication_item_links(\
            id,revision_id,source_item_id,target_item_id,relation,created_at\
@@ -543,16 +623,6 @@ async fn copy_publication_children(
              ON revision.id=supersession.revision_id \
            JOIN transfer.publications publication ON publication.id=revision.publication_id \
            WHERE publication.project_id=?",
-        "INSERT INTO publication_readiness_reports(\
-           id,revision_id,capability_level,blockers_json,warnings_json,omissions_json,\
-           manifest_json,manifest_sha256,created_at\
-         ) SELECT report.id,report.revision_id,report.capability_level,report.blockers_json,\
-                  report.warnings_json,report.omissions_json,report.manifest_json,\
-                  report.manifest_sha256,report.created_at \
-           FROM transfer.publication_readiness_reports report \
-           JOIN transfer.publication_revisions revision ON revision.id=report.revision_id \
-           JOIN transfer.publications publication ON publication.id=revision.publication_id \
-           WHERE publication.project_id=?",
         "INSERT INTO publication_waivers(\
            id,revision_id,finding_code,author,reason,created_at\
          ) SELECT waiver.id,waiver.revision_id,waiver.finding_code,waiver.author,\
@@ -582,7 +652,8 @@ async fn copy_publication_children(
            parent_revision_id=(SELECT source.parent_revision_id \
              FROM transfer.publication_revisions source \
              WHERE source.id=publication_revisions.id),\
-           state=(SELECT CASE WHEN source.state='deleting' THEN 'draft' ELSE source.state END \
+           state=(SELECT CASE WHEN source.state IN ('deleting','freezing') \
+                              THEN 'draft' ELSE source.state END \
              FROM transfer.publication_revisions source \
              WHERE source.id=publication_revisions.id),\
            capability_level=(SELECT source.capability_level \
@@ -617,6 +688,7 @@ pub(crate) async fn delete_project_children(
 ) -> Result<()> {
     const QUERIES: &[&str] = &[
         "UPDATE agent_workflows SET status='draft' WHERE project_id=?",
+        "DELETE FROM publication_freeze_attempts WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
         "UPDATE publication_revisions SET state='deleting' WHERE publication_id IN (SELECT id FROM publications WHERE project_id=?)",
         "DELETE FROM capsule_builds WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
         "DELETE FROM publication_readiness_reports WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
@@ -1718,13 +1790,14 @@ mod tests {
             })
             .await
             .unwrap();
+        let (_, publication_manifest_sha256) = canonical_json_sha256(&serde_json::json!({}));
         sqlx::query(
             "INSERT INTO publication_readiness_reports(\
                id,revision_id,capability_level,blockers_json,warnings_json,omissions_json,\
                manifest_json,manifest_sha256,created_at\
              ) VALUES('readiness','publication-revision-1','traceable','[]','[]','[]','{}',?,1)",
         )
-        .bind("e".repeat(64))
+        .bind(&publication_manifest_sha256)
         .execute(&source.pool)
         .await
         .unwrap();
@@ -1735,7 +1808,7 @@ mod tests {
              ) VALUES('capsule','publication-revision-1','zip','public','succeeded',?,? ,?,NULL,1,2)",
         )
         .bind(r"C:\Users\Alice\Study\exports\capsule.zip")
-        .bind("e".repeat(64))
+        .bind(&publication_manifest_sha256)
         .bind("f".repeat(64))
         .execute(&source.pool)
         .await
@@ -1744,7 +1817,7 @@ mod tests {
             "UPDATE publication_revisions SET state='frozen',capability_level='traceable',\
              manifest_json='{}',manifest_sha256=?,frozen_at=1 WHERE id='publication-revision-1'",
         )
-        .bind("e".repeat(64))
+        .bind(&publication_manifest_sha256)
         .execute(&source.pool)
         .await
         .unwrap();
@@ -1763,6 +1836,23 @@ mod tests {
         let header = std::fs::read(&archive_path).unwrap();
         assert_eq!(&header[18..20], &[1, 1]);
         assert!(!archive_path.with_extension("sqlite-wal").exists());
+        let archive_options =
+            SqliteConnectOptions::from_str(&format!("sqlite://{}", archive_path.display()))
+                .unwrap();
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(archive_options)
+            .await
+            .unwrap();
+        for column in ["target_visibility", "policy_json"] {
+            sqlx::query(&format!(
+                "ALTER TABLE publication_readiness_reports DROP COLUMN {column}"
+            ))
+            .execute(&archive_pool)
+            .await
+            .unwrap();
+        }
+        archive_pool.close().await;
 
         let target = Store::open(&target_path).await.unwrap();
         let workspace = Path::new("/Users/alice/Study");
@@ -1913,6 +2003,14 @@ mod tests {
                 .len(),
             1
         );
+        let readiness = target
+            .get_publication_readiness_report("publication-revision-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(readiness.target_visibility, EvidenceVisibility::Public);
+        assert_eq!(readiness.policy_json, "{}");
+        assert_eq!(readiness.manifest_sha256, publication_manifest_sha256);
         let build_path: Option<String> =
             sqlx::query_scalar("SELECT output_path FROM capsule_builds WHERE id='capsule'")
                 .fetch_one(&target.pool)
@@ -1929,6 +2027,76 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+
+        source.pool.close().await;
+        target.pool.close().await;
+        for path in [source_path, archive_path, target_path] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[tokio::test]
+    async fn import_rejects_a_corrupt_frozen_publication_manifest() {
+        let token = uuid::Uuid::new_v4();
+        let source_path = std::env::temp_dir().join(format!("wisp_manifest_source_{token}.sqlite"));
+        let archive_path =
+            std::env::temp_dir().join(format!("wisp_manifest_archive_{token}.sqlite"));
+        let target_path = std::env::temp_dir().join(format!("wisp_manifest_target_{token}.sqlite"));
+        let source = Store::open(&source_path).await.unwrap();
+        source
+            .create_project("project", "Study", "/tmp/study")
+            .await
+            .unwrap();
+        source
+            .create_publication("publication", "project", "Paper", "")
+            .await
+            .unwrap();
+        source
+            .create_publication_revision("revision", "publication", None, "Submission")
+            .await
+            .unwrap();
+        let (manifest_json, manifest_sha256) =
+            canonical_json_sha256(&serde_json::json!({"schema_version": 1}));
+        sqlx::query(
+            "UPDATE publication_revisions SET state='frozen',manifest_json=?,\
+             manifest_sha256=?,frozen_at=1 WHERE id='revision'",
+        )
+        .bind(manifest_json)
+        .bind(manifest_sha256)
+        .execute(&source.pool)
+        .await
+        .unwrap();
+        source
+            .export_project_database("project", &archive_path)
+            .await
+            .unwrap();
+
+        let archive_options =
+            SqliteConnectOptions::from_str(&format!("sqlite://{}", archive_path.display()))
+                .unwrap();
+        let archive = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(archive_options)
+            .await
+            .unwrap();
+        sqlx::query("DROP TRIGGER trg_publication_revision_immutable_update")
+            .execute(&archive)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE publication_revisions SET manifest_sha256=? WHERE id='revision'")
+            .bind("0".repeat(64))
+            .execute(&archive)
+            .await
+            .unwrap();
+        archive.close().await;
+
+        let target = Store::open(&target_path).await.unwrap();
+        let error = target
+            .import_project_database(&archive_path, "project", Path::new("/tmp/imported"))
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("manifest hash"), "{error:#}");
+        assert!(target.get_project("project").await.unwrap().is_none());
 
         source.pool.close().await;
         target.pool.close().await;

@@ -1,10 +1,11 @@
 use super::{
-    artifact_node_id, canonical_json, run_node_id, EvidenceBinding, EvidenceBindingDraft,
-    EvidenceReproductionState, EvidenceReview, EvidenceReviewState, EvidenceSelectionState,
-    EvidenceSourceKind, EvidenceSupersession, EvidenceVisibility, Publication,
-    PublicationCapabilityLevel, PublicationItem, PublicationItemKind, PublicationItemLink,
-    PublicationRevision, PublicationRevisionState, PublicationWaiver, ResearchEdge, ResearchNode,
-    ResearchNodeKind, Store,
+    artifact_node_id, canonical_json, canonical_json_sha256, run_node_id, ArtifactMaterialization,
+    EvidenceBinding, EvidenceBindingDraft, EvidenceReproductionState, EvidenceReview,
+    EvidenceReviewState, EvidenceSelectionState, EvidenceSourceKind, EvidenceSupersession,
+    EvidenceVisibility, Publication, PublicationCapabilityLevel, PublicationEvidenceDrift,
+    PublicationFreezeCommit, PublicationFreezePolicy, PublicationItem, PublicationItemKind,
+    PublicationItemLink, PublicationReadinessReport, PublicationRevision, PublicationRevisionState,
+    PublicationWaiver, ResearchEdge, ResearchNode, ResearchNodeKind, Store,
 };
 use anyhow::Result;
 use sha2::{Digest, Sha256};
@@ -246,6 +247,7 @@ async fn delete_revision_children(
     .execute(&mut **tx)
     .await?;
     for statement in [
+        "DELETE FROM publication_freeze_attempts WHERE revision_id=?",
         "DELETE FROM capsule_builds WHERE revision_id=?",
         "DELETE FROM publication_readiness_reports WHERE revision_id=?",
         "DELETE FROM publication_waivers WHERE revision_id=?",
@@ -1238,6 +1240,464 @@ impl Store {
                 })
             })
             .collect()
+    }
+
+    pub async fn begin_publication_freeze(
+        &self,
+        revision_id: &str,
+        attempt_id: &str,
+        policy: &PublicationFreezePolicy,
+    ) -> Result<()> {
+        if revision_id.trim().is_empty() || attempt_id.trim().is_empty() {
+            anyhow::bail!("Publication freeze requires revision and attempt identities");
+        }
+        let policy_json = canonical_json(&serde_json::to_value(policy)?);
+        let now = chrono::Utc::now().timestamp();
+        let mut tx = self.begin_write().await?;
+        let updated = sqlx::query(
+            "UPDATE publication_revisions SET state='freezing',updated_at=? \
+             WHERE id=? AND state='draft'",
+        )
+        .bind(now)
+        .bind(revision_id)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Draft Publication revision not found or already being frozen");
+        }
+        sqlx::query(
+            "INSERT INTO publication_freeze_attempts(\
+               id,revision_id,target_visibility,policy_json,started_at\
+             ) VALUES(?,?,?,?,?)",
+        )
+        .bind(attempt_id)
+        .bind(revision_id)
+        .bind(policy.target_visibility.as_str())
+        .bind(policy_json)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn abort_publication_freeze(
+        &self,
+        revision_id: &str,
+        attempt_id: &str,
+    ) -> Result<bool> {
+        let now = chrono::Utc::now().timestamp();
+        let mut tx = self.begin_write().await?;
+        let removed =
+            sqlx::query("DELETE FROM publication_freeze_attempts WHERE id=? AND revision_id=?")
+                .bind(attempt_id)
+                .bind(revision_id)
+                .execute(&mut *tx)
+                .await?;
+        if removed.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let updated = sqlx::query(
+            "UPDATE publication_revisions SET state='draft',updated_at=? \
+             WHERE id=? AND state='freezing'",
+        )
+        .bind(now)
+        .bind(revision_id)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Publication freeze state changed before abort");
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    pub async fn recover_stale_publication_freezes(
+        &self,
+        started_before: i64,
+    ) -> Result<Vec<String>> {
+        let mut tx = self.begin_write().await?;
+        let revisions: Vec<String> = sqlx::query_scalar(
+            "SELECT revision_id FROM publication_freeze_attempts \
+             WHERE started_at<=? ORDER BY revision_id",
+        )
+        .bind(started_before)
+        .fetch_all(&mut *tx)
+        .await?;
+        for revision_id in &revisions {
+            sqlx::query("DELETE FROM publication_freeze_attempts WHERE revision_id=?")
+                .bind(revision_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                "UPDATE publication_revisions SET state='draft',updated_at=? \
+                 WHERE id=? AND state='freezing'",
+            )
+            .bind(chrono::Utc::now().timestamp())
+            .bind(revision_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(revisions)
+    }
+
+    pub async fn commit_publication_freeze(
+        &self,
+        commit: &PublicationFreezeCommit,
+    ) -> Result<PublicationRevision> {
+        if commit.revision_id != commit.readiness.revision_id
+            || !commit.readiness.can_freeze
+            || commit
+                .readiness
+                .blockers
+                .iter()
+                .any(|finding| !finding.waived || !finding.waivable)
+        {
+            anyhow::bail!("Publication readiness contains unresolved blockers");
+        }
+        let policy_value: serde_json::Value = serde_json::from_str(&commit.policy_json)
+            .map_err(|_| anyhow::anyhow!("Publication freeze policy must be valid JSON"))?;
+        let canonical_policy = canonical_json(&policy_value);
+        if canonical_policy != commit.policy_json {
+            anyhow::bail!("Publication freeze policy must be canonical JSON");
+        }
+        let manifest_value: serde_json::Value =
+            serde_json::from_str(&commit.readiness.manifest_json)
+                .map_err(|_| anyhow::anyhow!("Publication manifest must be valid JSON"))?;
+        let (canonical_manifest, manifest_sha256) = canonical_json_sha256(&manifest_value);
+        if canonical_manifest != commit.readiness.manifest_json
+            || manifest_sha256 != commit.readiness.manifest_sha256
+        {
+            anyhow::bail!("Publication manifest hash or canonical form is invalid");
+        }
+        if manifest_value
+            .get("schema_version")
+            .and_then(|value| value.as_i64())
+            != Some(1)
+            || manifest_value
+                .get("publication_revision_id")
+                .and_then(|value| value.as_str())
+                != Some(commit.revision_id.as_str())
+            || manifest_value
+                .get("target_visibility")
+                .and_then(|value| value.as_str())
+                != Some(commit.readiness.target_visibility.as_str())
+            || manifest_value
+                .get("capability_level")
+                .and_then(|value| value.as_str())
+                != Some(commit.readiness.capability_level.as_str())
+            || manifest_value.get("policy") != Some(&policy_value)
+            || manifest_value.get("blockers")
+                != Some(&serde_json::to_value(&commit.readiness.blockers)?)
+            || manifest_value.get("warnings")
+                != Some(&serde_json::to_value(&commit.readiness.warnings)?)
+            || manifest_value.get("omissions")
+                != Some(&serde_json::to_value(&commit.readiness.omissions)?)
+        {
+            anyhow::bail!("Publication manifest does not match its prepared readiness");
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let mut tx = self.begin_write().await?;
+        let attempt = sqlx::query(
+            "SELECT attempt.revision_id,attempt.target_visibility,attempt.policy_json,\
+                    publication.project_id \
+             FROM publication_freeze_attempts attempt \
+             JOIN publication_revisions revision ON revision.id=attempt.revision_id \
+             JOIN publications publication ON publication.id=revision.publication_id \
+             WHERE attempt.id=? AND revision.state='freezing'",
+        )
+        .bind(&commit.attempt_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Publication freeze attempt is no longer active"))?;
+        let attempt_revision: String = attempt.try_get("revision_id")?;
+        let target_visibility: String = attempt.try_get("target_visibility")?;
+        let stored_policy: String = attempt.try_get("policy_json")?;
+        let project_id: String = attempt.try_get("project_id")?;
+        if attempt_revision != commit.revision_id
+            || target_visibility != commit.readiness.target_visibility.as_str()
+            || stored_policy != canonical_policy
+        {
+            anyhow::bail!("Publication freeze attempt no longer matches its prepared policy");
+        }
+
+        let mut captures = commit.late_captures.clone();
+        captures.sort_by(|left, right| left.new_version_id.cmp(&right.new_version_id));
+        for capture in captures {
+            if capture.binding_ids.is_empty()
+                || capture.version_number <= 0
+                || capture.size_bytes < 0
+                || capture.checksum.len() != 64
+                || !capture
+                    .checksum
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                || matches!(capture.materialization, ArtifactMaterialization::External)
+            {
+                anyhow::bail!("Prepared late capture is invalid");
+            }
+            let snapshot_value: serde_json::Value =
+                serde_json::from_str(&capture.source_snapshot_json)
+                    .map_err(|_| anyhow::anyhow!("Late-capture source snapshot is invalid"))?;
+            if canonical_json(&snapshot_value) != capture.source_snapshot_json {
+                anyhow::bail!("Late-capture source snapshot must be canonical JSON");
+            }
+            let artifact =
+                sqlx::query("SELECT project_id,latest_version_id FROM artifacts WHERE id=?")
+                    .bind(&capture.artifact_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("Late-capture Artifact no longer exists"))?;
+            let artifact_project: String = artifact.try_get("project_id")?;
+            let latest_version_id: Option<String> = artifact.try_get("latest_version_id")?;
+            if artifact_project != project_id
+                || latest_version_id != capture.expected_latest_version_id
+            {
+                anyhow::bail!("Artifact changed while Publication freeze was prepared");
+            }
+            let expected_number: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(version_number),0)+1 FROM artifact_versions \
+                 WHERE artifact_id=?",
+            )
+            .bind(&capture.artifact_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if expected_number != capture.version_number {
+                anyhow::bail!("Artifact version sequence changed during Publication freeze");
+            }
+            for binding_id in &capture.binding_ids {
+                let exact_binding: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(\
+                       SELECT 1 FROM evidence_bindings binding \
+                       JOIN artifact_versions version \
+                         ON version.id=binding.artifact_version_id \
+                       WHERE binding.id=? AND binding.revision_id=? \
+                         AND binding.artifact_version_id=? AND version.artifact_id=?\
+                     )",
+                )
+                .bind(binding_id)
+                .bind(&commit.revision_id)
+                .bind(&capture.old_version_id)
+                .bind(&capture.artifact_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                if !exact_binding {
+                    anyhow::bail!("Evidence binding changed while Publication freeze was prepared");
+                }
+            }
+            sqlx::query(
+                "INSERT INTO artifact_versions(\
+                   id,artifact_id,version_number,content_type,storage_path,size_bytes,checksum,\
+                   parent_version_id,producing_run_id,env_snapshot_hash,materialization,\
+                   capture_timing,created_at\
+                 ) VALUES(?,?,?,?,?,?,?,?,NULL,NULL,?,'late',?)",
+            )
+            .bind(&capture.new_version_id)
+            .bind(&capture.artifact_id)
+            .bind(capture.version_number)
+            .bind(&capture.content_type)
+            .bind(&capture.storage_path)
+            .bind(capture.size_bytes)
+            .bind(&capture.checksum)
+            .bind(capture.expected_latest_version_id.as_deref())
+            .bind(capture.materialization.as_str())
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            let updated_artifact = sqlx::query(
+                "UPDATE artifacts SET latest_version_id=?,storage_path=?,content_type=? \
+                 WHERE id=? AND latest_version_id IS ?",
+            )
+            .bind(&capture.new_version_id)
+            .bind(&capture.storage_path)
+            .bind(&capture.content_type)
+            .bind(&capture.artifact_id)
+            .bind(capture.expected_latest_version_id.as_deref())
+            .execute(&mut *tx)
+            .await?;
+            if updated_artifact.rows_affected() != 1 {
+                anyhow::bail!("Artifact changed while Publication freeze was committed");
+            }
+            for binding_id in &capture.binding_ids {
+                let updated = sqlx::query(
+                    "UPDATE evidence_bindings SET source_id=?,artifact_version_id=?,\
+                       source_snapshot_json=?,updated_at=? \
+                     WHERE id=? AND revision_id=? AND artifact_version_id=?",
+                )
+                .bind(&capture.new_version_id)
+                .bind(&capture.new_version_id)
+                .bind(&capture.source_snapshot_json)
+                .bind(now)
+                .bind(binding_id)
+                .bind(&commit.revision_id)
+                .bind(&capture.old_version_id)
+                .execute(&mut *tx)
+                .await?;
+                if updated.rows_affected() != 1 {
+                    anyhow::bail!(
+                        "Evidence binding changed while Publication freeze was committed"
+                    );
+                }
+                let item_id: Option<String> =
+                    sqlx::query_scalar("SELECT item_id FROM evidence_bindings WHERE id=?")
+                        .bind(binding_id)
+                        .fetch_one(&mut *tx)
+                        .await?;
+                let metadata = canonical_json(&serde_json::json!({
+                    "binding_id": binding_id,
+                    "revision_id": commit.revision_id,
+                    "item_id": item_id,
+                    "source_kind": "artifact_version",
+                    "source_id": capture.new_version_id,
+                }));
+                sqlx::query("UPDATE research_edges SET metadata_json=? WHERE id=?")
+                    .bind(metadata)
+                    .bind(format!("publication-evidence:{binding_id}"))
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+
+        let blockers_json = canonical_json(&serde_json::to_value(&commit.readiness.blockers)?);
+        let warnings_json = canonical_json(&serde_json::to_value(&commit.readiness.warnings)?);
+        let omissions_json = canonical_json(&serde_json::to_value(&commit.readiness.omissions)?);
+        sqlx::query(
+            "INSERT INTO publication_readiness_reports(\
+               id,revision_id,capability_level,target_visibility,policy_json,blockers_json,\
+               warnings_json,omissions_json,manifest_json,manifest_sha256,created_at\
+             ) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(format!("publication-readiness:{}", commit.revision_id))
+        .bind(&commit.revision_id)
+        .bind(commit.readiness.capability_level.as_str())
+        .bind(commit.readiness.target_visibility.as_str())
+        .bind(&canonical_policy)
+        .bind(blockers_json)
+        .bind(warnings_json)
+        .bind(omissions_json)
+        .bind(&commit.readiness.manifest_json)
+        .bind(&commit.readiness.manifest_sha256)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        let removed_attempt = sqlx::query("DELETE FROM publication_freeze_attempts WHERE id=?")
+            .bind(&commit.attempt_id)
+            .execute(&mut *tx)
+            .await?;
+        if removed_attempt.rows_affected() != 1 {
+            anyhow::bail!("Publication freeze attempt disappeared before commit");
+        }
+        let frozen = sqlx::query(
+            "UPDATE publication_revisions SET \
+               state='frozen',capability_level=?,manifest_json=?,manifest_sha256=?,\
+               frozen_at=?,updated_at=? \
+             WHERE id=? AND state='freezing'",
+        )
+        .bind(commit.readiness.capability_level.as_str())
+        .bind(&commit.readiness.manifest_json)
+        .bind(&commit.readiness.manifest_sha256)
+        .bind(now)
+        .bind(now)
+        .bind(&commit.revision_id)
+        .execute(&mut *tx)
+        .await?;
+        if frozen.rows_affected() != 1 {
+            anyhow::bail!("Publication revision changed before freeze commit");
+        }
+        tx.commit().await?;
+        self.get_publication_revision(&commit.revision_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Frozen Publication revision was not persisted"))
+    }
+
+    pub async fn get_publication_readiness_report(
+        &self,
+        revision_id: &str,
+    ) -> Result<Option<PublicationReadinessReport>> {
+        let row = sqlx::query(
+            "SELECT id,revision_id,capability_level,target_visibility,policy_json,\
+                    blockers_json,warnings_json,omissions_json,manifest_json,manifest_sha256,\
+                    created_at \
+             FROM publication_readiness_reports WHERE revision_id=?",
+        )
+        .bind(revision_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            let capability: String = row.try_get("capability_level")?;
+            let visibility: String = row.try_get("target_visibility")?;
+            Ok(PublicationReadinessReport {
+                id: row.try_get("id")?,
+                revision_id: row.try_get("revision_id")?,
+                capability_level: PublicationCapabilityLevel::from_storage(&capability)?,
+                target_visibility: EvidenceVisibility::from_storage(&visibility)?,
+                policy_json: row.try_get("policy_json")?,
+                blockers_json: row.try_get("blockers_json")?,
+                warnings_json: row.try_get("warnings_json")?,
+                omissions_json: row.try_get("omissions_json")?,
+                manifest_json: row.try_get("manifest_json")?,
+                manifest_sha256: row.try_get("manifest_sha256")?,
+                created_at: row.try_get("created_at")?,
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn list_publication_evidence_drift(
+        &self,
+        revision_id: &str,
+    ) -> Result<Vec<PublicationEvidenceDrift>> {
+        let rows = sqlx::query(
+            "SELECT binding.id AS binding_id,artifact.id AS artifact_id,\
+                    artifact.logical_key AS logical_key,bound.id AS bound_version_id,\
+                    bound.version_number AS bound_version_number,\
+                    latest.id AS latest_version_id,latest.version_number AS latest_version_number \
+             FROM evidence_bindings binding \
+             JOIN artifact_versions bound ON bound.id=binding.artifact_version_id \
+             JOIN artifacts artifact ON artifact.id=bound.artifact_id \
+             JOIN artifact_versions latest ON latest.id=artifact.latest_version_id \
+             WHERE binding.revision_id=? AND binding.source_kind='artifact_version' \
+             ORDER BY binding.id",
+        )
+        .bind(revision_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let bound_version_id: String = row.try_get("bound_version_id")?;
+                let latest_version_id: String = row.try_get("latest_version_id")?;
+                Ok(PublicationEvidenceDrift {
+                    binding_id: row.try_get("binding_id")?,
+                    artifact_id: row.try_get("artifact_id")?,
+                    logical_key: row.try_get("logical_key")?,
+                    has_drift: bound_version_id != latest_version_id,
+                    bound_version_id,
+                    bound_version_number: row.try_get("bound_version_number")?,
+                    latest_version_id,
+                    latest_version_number: row.try_get("latest_version_number")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn publish_publication_revision(&self, revision_id: &str) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        let updated = sqlx::query(
+            "UPDATE publication_revisions SET state='published',published_at=?,updated_at=? \
+             WHERE id=? AND state='frozen'",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(revision_id)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Frozen Publication revision not found");
+        }
+        Ok(())
     }
 
     pub async fn clone_publication_revision(
