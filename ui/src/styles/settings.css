@@ -496,21 +496,23 @@ body:has(.settings-page) .projects-screen { display: none; }
   display: inline-flex;
   align-items: center;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-sunken);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-sm);
 }
 .workflow-graph-toolbar .workflow-graph-zoom button {
-  min-width: 28px;
-  height: 27px;
-  padding: 0 7px;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 8px;
   border: 0;
   border-right: 1px solid var(--border);
   border-radius: 0;
   background: transparent;
   color: var(--text-muted);
-  font: 600 10px/1 var(--font-mono);
+  font: 600 11px/1 var(--font-mono);
   cursor: pointer;
+  transition: background .12s ease, color .12s ease;
 }
 .workflow-graph-toolbar .workflow-graph-zoom button:last-child { border-right: 0; }
 .workflow-graph-toolbar .workflow-graph-zoom button:hover:not(:disabled) {
@@ -518,6 +520,46 @@ body:has(.settings-page) .projects-screen { display: none; }
   color: var(--text);
 }
 .workflow-graph-toolbar .workflow-graph-zoom button:disabled { opacity: .35; cursor: default; }
+.workflow-graph-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--bg-elev);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 550;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: border-color .12s ease, background .12s ease, color .12s ease, box-shadow .12s ease;
+}
+.workflow-graph-tool-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--clay) 40%, var(--border-strong));
+  background: var(--bg-input);
+  color: var(--text);
+}
+.workflow-graph-tool-btn svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+.workflow-graph-add-node {
+  border-color: color-mix(in srgb, var(--clay) 34%, var(--border-strong));
+  background: color-mix(in srgb, var(--clay-soft) 70%, var(--bg-elev));
+  color: var(--clay-strong);
+  font-weight: 600;
+}
+.workflow-graph-add-node:hover:not(:disabled) {
+  border-color: var(--clay);
+  background: var(--clay-soft);
+  color: var(--clay-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--clay) 12%, transparent);
+}
 .workflow-graph-legend-item {
   display: inline-flex;
   align-items: center;
@@ -542,13 +584,16 @@ body:has(.settings-page) .projects-screen { display: none; }
 .workflow-graph-connect-hint {
   max-width: 260px;
   overflow: hidden;
-  color: var(--clay);
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--clay) 28%, var(--border));
+  border-radius: 999px;
+  background: var(--clay-soft);
+  color: var(--clay-strong);
   font-size: 10px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.workflow-graph-toolbar button { padding: 5px 8px; font-size: 10.5px; }
 .workflow-graph-viewport {
   flex: 1;
   min-width: 0;
@@ -723,73 +768,105 @@ body:has(.settings-page) .projects-screen { display: none; }
 .workflow-graph-node-meta {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
   margin-top: auto;
 }
 .workflow-graph-node-meta code {
-  max-width: 72px;
+  max-width: 78px;
   overflow: hidden;
-  padding: 2px 5px;
-  border-radius: 5px;
-  background: var(--bg-sunken);
-  color: var(--text-faint);
-  font-size: 8.5px;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-sunken) 88%, var(--bg-elev));
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 550;
+  letter-spacing: .01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .workflow-graph-port {
   position: absolute;
   z-index: 5;
-  top: calc(50% - 6px);
+  top: calc(50% - 5px);
   box-sizing: border-box;
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border: 2px solid var(--bg-elev);
   border-radius: 50%;
-  background: var(--text-faint);
+  background: color-mix(in srgb, var(--text-faint) 72%, var(--bg-elev));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-strong) 70%, transparent);
 }
-.workflow-graph-port.input { left: -7px; pointer-events: none; }
+.workflow-graph-port.input { left: -6px; pointer-events: none; }
 button.workflow-graph-port.output {
-  right: -8px;
+  top: calc(50% - 9px);
+  right: -9px;
   display: grid;
   place-items: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 2px solid var(--bg-elev);
-  background: var(--clay);
+  background: color-mix(in srgb, var(--clay) 88%, var(--bg-elev));
   color: var(--on-clay);
-  font: 700 11px/1 sans-serif;
   cursor: crosshair;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--clay) 45%, transparent),
+    0 1px 2px color-mix(in srgb, var(--clay) 22%, transparent);
+  transition: transform .14s ease, background .14s ease, box-shadow .14s ease, color .14s ease;
+}
+.workflow-graph-port-plus {
+  display: grid;
+  place-items: center;
+  line-height: 0;
+}
+.workflow-graph-port-plus svg {
+  width: 11px;
+  height: 11px;
+  stroke-width: 2.4;
 }
 button.workflow-graph-port.output:hover,
 button.workflow-graph-port.output.active {
-  transform: scale(1.18);
+  transform: scale(1.12);
   background: var(--clay-strong);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--clay) 18%, transparent),
+    0 2px 6px color-mix(in srgb, var(--clay) 28%, transparent);
+}
+button.workflow-graph-port.output.active {
+  background: var(--clay-strong);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--clay) 22%, transparent),
+    0 2px 8px color-mix(in srgb, var(--clay) 30%, transparent);
 }
 .workflow-graph-node-delete {
   position: absolute;
   z-index: 6;
-  top: 5px;
-  right: 5px;
+  top: 6px;
+  right: 6px;
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
   color: var(--text-faint);
-  font: 600 13px/1 sans-serif;
   cursor: pointer;
   opacity: 0;
+  transition: opacity .12s ease, background .12s ease, color .12s ease, border-color .12s ease;
+}
+.workflow-graph-node-delete svg {
+  width: 12px;
+  height: 12px;
 }
 .workflow-graph-node:hover .workflow-graph-node-delete,
 .workflow-graph-node.selected .workflow-graph-node-delete,
 .workflow-graph-node-delete:focus-visible { opacity: 1; }
 .workflow-graph-node-delete:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--err) 28%, var(--border));
   background: color-mix(in srgb, var(--err) 10%, var(--bg-elev));
   color: var(--err);
 }
@@ -850,17 +927,27 @@ button.workflow-graph-port.output.active {
 .workflow-graph-incoming button {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   max-width: 100%;
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
   background: var(--bg-elev);
   color: var(--text-muted);
   cursor: pointer;
+  transition: border-color .12s ease, background .12s ease, color .12s ease;
 }
-.workflow-graph-incoming button:hover { border-color: var(--err); color: var(--err); }
-.workflow-graph-incoming code { overflow: hidden; font-size: 9px; text-overflow: ellipsis; }
+.workflow-graph-incoming button:hover {
+  border-color: color-mix(in srgb, var(--err) 35%, var(--border));
+  background: color-mix(in srgb, var(--err) 8%, var(--bg-elev));
+  color: var(--err);
+}
+.workflow-graph-incoming code {
+  overflow: hidden;
+  font-size: 9.5px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+}
 .workflow-graph-inspector .dynamic-agent-task {
   padding: 0;
   border: 0;

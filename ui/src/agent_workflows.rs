@@ -1825,7 +1825,7 @@ fn workflow_graph_editor(
                                                 &[("node", &id)],
                                             )}
                                         </span>
-                                        <button type="button" class="agents-secondary"
+                                        <button type="button" class="workflow-graph-tool-btn"
                                             data-testid="workflow-graph-connect-cancel"
                                             on:click=move |_| connect_from_key.set(None)>
                                             {move || t(locale.get(), "workflow_studio.graph_cancel_connect")}
@@ -1834,10 +1834,11 @@ fn workflow_graph_editor(
                                 })
                             })
                         })}
-                        <button type="button" class="agents-secondary"
+                        <button type="button" class="workflow-graph-tool-btn workflow-graph-add-node"
                             data-testid="workflow-graph-add-node"
                             on:click=add_node>
-                            {move || format!("+ {}", t(locale.get(), "workflow_studio.graph_add_node"))}
+                            {compose_icon("plus")}
+                            <span>{move || t(locale.get(), "workflow_studio.graph_add_node")}</span>
                         </button>
                     </div>
                 </div>
@@ -2044,7 +2045,9 @@ fn workflow_graph_editor(
                                                 selected_task_key.set(Some(connect_key));
                                                 state.error.set(None);
                                             }>
-                                            <span aria-hidden="true">{"+"}</span>
+                                            <span class="workflow-graph-port-plus" aria-hidden="true">
+                                                {compose_icon("plus")}
+                                            </span>
                                         </button>
                                         <button type="button" class="workflow-graph-node-delete"
                                             data-testid="workflow-graph-delete-node"
@@ -2064,7 +2067,7 @@ fn workflow_graph_editor(
                                                 }
                                                 state.error.set(None);
                                             }>
-                                            {"×"}
+                                            {compose_icon("close")}
                                         </button>
                                     </div>
                                 }
