@@ -1,0 +1,215 @@
+# Publication Evidence Capsule — Execution Plan
+
+**Issue:** #576  
+**Design:** `docs/superpowers/specs/2026-07-31-publication-evidence-capsule-design.md`
+
+## Delivery rule
+
+Each stage below is one reviewable commit and represents one PR-sized phase.
+The stage owns its migrations, compatibility code, tests, docs, and transfer
+support. Do not mix work from a later stage into an earlier commit merely to
+make the UI look complete.
+
+Unrelated `.codex/` and `.playwright-mcp/` workspace files are never staged.
+
+## Stage D — executable design baseline
+
+**Commit:** `docs: define publication evidence capsule execution plan`
+
+- [x] Reconcile issue #576 with current ArtifactVersion, Run, provenance,
+  Session export, project transfer, and Research Graph behavior.
+- [x] Define authoritative lineage, immutable evidence, late capture, state
+  axes, freeze transaction, visibility policy, manifest, retention, and
+  capability levels.
+- [x] Map every requested phase to one commit and list its verification gate.
+
+## PR 0 — Artifact and Run lineage hardening
+
+**Commit:** `feat(lineage): bind runs to immutable artifact versions`
+
+### Storage and Artifact identity
+
+- [ ] Add the reusable streaming SHA-256 snapshot service.
+- [ ] Replace message-resource in-memory snapshotting with the shared service.
+- [ ] Add `artifacts.logical_key` and exact version materialization/capture
+  metadata through fresh and idempotent migrations.
+- [ ] Add an atomic Artifact version save API carrying checksum, size,
+  producing Run, environment, logical key, and capture metadata.
+- [ ] Make manual registration and local Run harvest snapshot small files and
+  checksum reference-only large files.
+- [ ] Add `OutputSpec.logical_key`; fall back to normalized project-relative
+  path, never filename alone.
+
+### Exact Run lineage
+
+- [ ] Add `external_resources`, `run_inputs`, `run_outputs`,
+  `run_code_snapshots`, and `run_environment_snapshots`.
+- [ ] Add basis/confidence to dependency projections.
+- [ ] Capture declared local Run inputs before execution.
+- [ ] Store the exact ArtifactVersion for every harvested output.
+- [ ] Store a SHA-256 command/code snapshot and canonical SHA-256 environment
+  snapshot for every new Run.
+- [ ] Preserve compatibility `run_artifacts` and Research Graph edges.
+- [ ] Add all new tables to project transfer, replacement deletion, and
+  portable database hashing.
+
+### Gate
+
+- [ ] Focused wisp-store migration/lineage tests.
+- [ ] Harvest and Run-context tests with temporary files and fake runners.
+- [ ] Message-resource snapshot regression tests, including a streamed file.
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo test --workspace`
+
+## PR 1 — Publication domain model
+
+**Commit:** `feat(publication): add immutable revision evidence model`
+
+- [ ] Add `publications`, `publication_revisions`, `publication_items`,
+  `publication_item_links`, `evidence_bindings`, `evidence_reviews`,
+  `evidence_supersessions`, `publication_readiness_reports`,
+  `publication_waivers`, and `capsule_builds`.
+- [ ] Validate all enums and ensure every source belongs to the Publication
+  project.
+- [ ] Implement Publication and Draft revision CRUD.
+- [ ] Implement ordered item CRUD and semantic item links.
+- [ ] Bind exact ArtifactVersion and Run sources with separate selection,
+  review, reproduction, and visibility axes.
+- [ ] Implement full materialized revision clone, preserving internal
+  relationships with new IDs.
+- [ ] Add SQLite immutability and exact-source constraints for non-Draft
+  revisions.
+- [ ] Project Publication and evidence relations into Research Graph without
+  making graph metadata authoritative.
+- [ ] Add tables to project transfer, deletion order, and portable hashing.
+
+### Gate
+
+- [ ] Store tests cover clone completeness, exact IDs, cross-project
+  rejection, supersession locality, and frozen write rejection.
+- [ ] Transfer roundtrip preserves the complete revision.
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo test --workspace`
+
+## PR 2 — atomic Freeze, Readiness, drift, and policy
+
+**Commit:** `feat(publication): freeze evidence with readiness manifest`
+
+- [ ] Add Draft → internal Freezing → Frozen transaction protocol.
+- [ ] Validate existing snapshots and prepare immutable late-capture versions
+  without rewriting historical versions.
+- [ ] Resolve selected evidence through exact Run inputs, outputs, code,
+  environment, and external resources.
+- [ ] Generate structured blockers, warnings, waivers, basis/confidence, and
+  capability level.
+- [ ] Enforce Public/Restricted/Private dependency rules.
+- [ ] Add secret, absolute path, machine detail, internal network, symlink,
+  file-size/type, license, redistribution, and PHI/PII review checks.
+- [ ] Store canonical schema-v1 manifest and SHA-256 only in the final
+  transaction.
+- [ ] Implement drift/successor query without mutating a frozen revision.
+- [ ] Protect frozen versions from ordinary Artifact/Session deletion.
+
+### Gate
+
+- [ ] Failure injection proves no partial Frozen revision.
+- [ ] Workspace mutation leaves frozen bytes and hash unchanged.
+- [ ] Historical missing-checksum evidence becomes `late_capture`.
+- [ ] Public readiness reports restricted dependencies as omissions.
+- [ ] Canonical manifest generation is deterministic.
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo test --workspace`
+
+## PR 3 — Publication Workspace UI
+
+**Commit:** `feat(ui): add publication evidence workspace`
+
+- [ ] Add backend commands and typed DTOs for Publication workspace operations.
+- [ ] Add a project-level Publication Workspace entry.
+- [ ] Add **Use in publication** to Artifact and Run surfaces.
+- [ ] Add the binding dialog for revision, item, purpose/claim, selection, and
+  visibility.
+- [ ] Render manuscript tree and evidence detail with exact version, lineage
+  quality, review/reproduction state, readiness, drift, and supersession.
+- [ ] Add clone, freeze, waiver, and refresh actions.
+- [ ] Integrate all nested surfaces with the window Escape stack.
+- [ ] Add English and Chinese strings and user-facing documentation.
+
+### Gate
+
+- [ ] Playwright opens the binding dialog from an Artifact and a Run.
+- [ ] Immediate Escape closes only the topmost dialog while Workspace remains.
+- [ ] Frozen UI has no mutation controls and displays exact source IDs.
+- [ ] Readiness and late-capture warnings are visible.
+- [ ] `cd ui && cargo check --target wasm32-unknown-unknown`
+- [ ] `cd ui-tests && npm ci && npx playwright test`
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo test --workspace`
+
+## PR 4 — selective deterministic Capsule
+
+**Commit:** `feat(publication): build selective evidence capsules`
+
+- [ ] Build only from a Frozen/Published stored manifest.
+- [ ] Emit schema-v1 `capsule.json`, README, REPRODUCE, CITATION, checksums,
+  data/access manifest, evidence, provenance, reference results, and
+  verification report.
+- [ ] Include allowlisted Public immutable bytes only.
+- [ ] Emit Restricted/Private dependencies as omissions and access
+  instructions.
+- [ ] Verify each copied blob against its frozen SHA-256.
+- [ ] Normalize entry ordering, archive timestamps, permissions, and paths.
+- [ ] Record Capsule Build result separately from the revision manifest.
+- [ ] Reject traversal, symlinks, secrets, and live workspace fallbacks.
+
+### Gate
+
+- [ ] Two builds of one revision have the same revision manifest hash and
+  normalized archive content.
+- [ ] Mutated live files do not affect the capsule.
+- [ ] No Restricted/Private bytes appear in a Public build.
+- [ ] Corrupt or missing immutable blobs fail closed.
+- [ ] Windows-style and macOS/POSIX paths remain portable.
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo test --workspace`
+
+## PR 5 — fine-grained anchors and isolated verification
+
+**Commit:** `feat(publication): verify fine-grained evidence in isolation`
+
+- [ ] Add immutable MessageSpan, ToolCall, CodeCell, ExecutionLog, and
+  ExternalResource anchors.
+- [ ] Add selection entry points for a message span, tool result, and code
+  cell.
+- [ ] Add comparator contracts: SHA-256, text, JSON, and numeric tolerance.
+- [ ] Add persisted reproduction runs/results and actual environment capture.
+- [ ] Materialize a fresh temporary workspace from capsule allowlisted inputs.
+- [ ] Execute through the structured runner with a fake-runner test boundary.
+- [ ] Compare produced outputs and update only the new reproduction report,
+  never the frozen evidence.
+- [ ] Promote capability to `reproduced` only when the environment contract and
+  every required comparator pass.
+- [ ] Surface reproduction details in Publication Workspace.
+
+### Gate
+
+- [ ] Fine-grained anchors remain stable after message/file/tool changes.
+- [ ] Verification cannot read an undeclared project file.
+- [ ] Exact and tolerant comparisons cover pass/fail cases.
+- [ ] Missing environment parity prevents a false `reproduced` claim.
+- [ ] Automated tests require no network, SSH, WSL, GPU, scheduler, or API key.
+- [ ] `cd ui && cargo check --target wasm32-unknown-unknown`
+- [ ] `cd ui-tests && npm ci && npx playwright test`
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo test --workspace`
+
+## Final completion audit
+
+- [ ] Inspect every issue requirement and all 13 design acceptance items
+  against authoritative schema, code, tests, transfer artifacts, and rendered
+  UI.
+- [ ] Run the full Rust, WASM, and Playwright suites.
+- [ ] Document manual smoke steps, limitations, and follow-up work.
+- [ ] Confirm commit history contains one stage per commit and no unrelated
+  workspace files.
+
