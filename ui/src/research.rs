@@ -146,8 +146,7 @@ fn layout_graph(graph: &ResearchGraph) -> GraphLayout {
         .filter(|(kind, _)| graph.nodes.iter().any(|node| node.kind == *kind))
         .collect::<Vec<_>>();
     let column_count = visible_kinds.len().max(1) as i32;
-    let used_width =
-        column_count * GRAPH_NODE_WIDTH + (column_count - 1) * GRAPH_COLUMN_GAP;
+    let used_width = column_count * GRAPH_NODE_WIDTH + (column_count - 1) * GRAPH_COLUMN_GAP;
     let width = (used_width + 80).max(720);
     let first_x = (width - used_width) / 2;
     let max_rows = visible_kinds

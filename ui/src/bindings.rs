@@ -134,10 +134,7 @@ pub(crate) fn preserve_chat_prepend_position() {
 
 /// Jump to a user turn and pause bottom-follow until the user returns there.
 pub(crate) fn jump_chat_to_user(index: usize) {
-    jump_chat_scroll(
-        CHAT_SCROLLER_ID,
-        &format!("[data-user-index=\"{index}\"]"),
-    );
+    jump_chat_scroll(CHAT_SCROLLER_ID, &format!("[data-user-index=\"{index}\"]"));
 }
 
 /// Jump to one rendered transcript item by its UI row index.
