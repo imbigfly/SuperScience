@@ -539,8 +539,11 @@ valuable suggestions:
   <a href="https://github.com/xiaowen621"><img src="https://avatars.githubusercontent.com/u/241900839?v=4&amp;s=96" width="64" height="64" alt="@xiaowen621" title="@xiaowen621"></a>
 </p>
 
-- **Claude Science (Operon)** is referenced in product comparison and
-  compatibility research.
+- We first looked at closed scientific-agent products such as Claude Science,
+  then chose to build openly after finding them closed and unfriendly to users
+  in some regions. Early work learned from their Skills and MCP tool selection;
+  the agent architecture, workbench features, and roadmap are developed
+  independently by the open-source community.
 - Real-browser automation is inspired by
   [GenericAgent's GA Web / TMWebDriver](https://github.com/lsdefine/GenericAgent)
   architecture (MIT, Copyright 2025 lsdefine). Wisp's Rust bridge and Manifest

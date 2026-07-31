@@ -1,10 +1,18 @@
-# Claude Science — reproduction spec
+# Early reference notes (historical)
 
-Reproduction notes for aligning wisp-science with the upstream **Claude Science**
-(Operon) desktop app. Captured from a live instance running locally on macOS
-(data dir `/Users/xuzhougeng/.claude-science`) plus the compiled `web-dist`
-bundle and the product walkthrough video. Labels/copy are transcribed verbatim —
-they matter for parity.
+> **Status:** archival. Wisp Science is an independent open-source project
+> (AGPL-3.0). We studied closed scientific-agent products early on, learned
+> from their Skills/MCP selection and a few UI patterns, then built our own
+> stack because those products were closed and unfriendly to users in some
+> regions. This file only preserves bootstrap observations — not product
+> identity.
+
+Field notes from early bootstrap, when a few screens and interaction patterns
+were compared for learning. Captured from a live instance running locally on
+macOS (data dir `/Users/xuzhougeng/.claude-science`) plus the compiled
+`web-dist` bundle and the product walkthrough video. Labels/copy are
+transcribed verbatim — they document what was observed, not Wisp's current
+product identity.
 
 Design system: `data-theme="claude" data-color-version="v2"`, brand clay
 `#d97757`, Anthropic Sans/Serif/Mono (wisp uses open substitutes on purpose).
