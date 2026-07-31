@@ -1,8 +1,9 @@
 use super::{
-    artifact_node_id, run_from_row, run_node_id, ResearchEdge, ResearchNode, ResearchNodeKind,
-    RunRecord, RunStatus, Store,
+    artifact_node_id, canonical_json, canonical_json_sha256, run_from_row, run_node_id,
+    ResearchEdge, ResearchNode, ResearchNodeKind, RunRecord, RunStatus, Store,
 };
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 
 impl Store {
     pub async fn project_has_active_runs(&self, project_id: &str) -> Result<bool> {
@@ -18,6 +19,14 @@ impl Store {
 
     pub async fn create_run(&self, run: &RunRecord) -> Result<()> {
         run.validate()?;
+        let environment = serde_json::from_str::<serde_json::Value>(&run.env_snapshot_json)
+            .unwrap_or_else(|_| serde_json::json!({}));
+        let (environment_json, environment_hash) = canonical_json_sha256(&environment);
+        let packages_json = environment
+            .get("packages")
+            .map(canonical_json)
+            .unwrap_or_else(|| "[]".into());
+        let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT INTO runs(\
                 id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
@@ -50,8 +59,50 @@ impl Store {
         .bind(run.last_poll_error.as_deref())
         .bind(&run.progress_json)
         .bind(&run.env_snapshot_json)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        let command = run.command.as_deref().unwrap_or_default();
+        let mut digest = Sha256::new();
+        digest.update(command.as_bytes());
+        sqlx::query(
+            "INSERT INTO run_code_snapshots(\
+               id,run_id,source_kind,source_path,source_text,checksum,storage_path,\
+               git_commit,dirty_patch,created_at\
+             ) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(format!("run-code:{}:command", run.id))
+        .bind(&run.id)
+        .bind("command")
+        .bind(run.script_path.as_deref())
+        .bind(command)
+        .bind(hex::encode(digest.finalize()))
+        .bind(Option::<&str>::None)
+        .bind(Option::<&str>::None)
+        .bind(Option::<&str>::None)
+        .bind(run.created_at)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO env_snapshots(\
+               hash,env_name,packages_json,snapshot_json,hash_algorithm,created_at\
+             ) VALUES(?,?,?,?,?,?) \
+             ON CONFLICT(hash) DO UPDATE SET \
+               snapshot_json=excluded.snapshot_json,hash_algorithm='sha256'",
+        )
+        .bind(&environment_hash)
+        .bind(&run.context_id)
+        .bind(packages_json)
+        .bind(environment_json)
+        .bind("sha256")
+        .bind(run.created_at)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("INSERT INTO run_environment_snapshots(run_id,env_snapshot_hash) VALUES(?,?)")
+            .bind(&run.id)
+            .bind(environment_hash)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         let mut node = ResearchNode::new(
             run_node_id(&run.id),
             &run.project_id,

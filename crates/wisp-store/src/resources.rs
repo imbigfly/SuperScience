@@ -93,7 +93,8 @@ impl Store {
     ) -> Result<Option<ArtifactVersion>> {
         let row = sqlx::query(
             "SELECT id,artifact_id,version_number,content_type,storage_path,size_bytes,checksum,\
-             parent_version_id,producing_run_id,env_snapshot_hash,created_at \
+             parent_version_id,producing_run_id,env_snapshot_hash,materialization,\
+             capture_timing,created_at \
              FROM artifact_versions WHERE artifact_id=? ORDER BY version_number DESC LIMIT 1",
         )
         .bind(artifact_id)

@@ -249,6 +249,15 @@ project** on the other computer. The importer asks for a parent folder and
 creates a new project directory there; Windows drive letters are never reused.
 See [Project transfer](docs/project-transfer.md) for contents and limitations.
 
+The project sidebar also opens a **Publication Workspace** for selecting exact
+Artifact versions and Runs, freezing immutable manuscript revisions, and
+reviewing readiness findings without exporting the whole project. Frozen
+revisions can produce deterministic, visibility-filtered Evidence Capsule
+ZIPs directly from immutable snapshots, bind precise message/tool/execution
+anchors, and verify local Runs in a fresh allowlisted workspace. See
+[Publication evidence](docs/publication-evidence.md) for the workflow,
+visibility rules, verification contract, and isolation limits.
+
 Installable bundles of Skills, local MCP servers, and sandboxed MCP Apps are
 documented in [Feature plugins](docs/feature-plugins.md).
 

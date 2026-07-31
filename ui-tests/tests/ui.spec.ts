@@ -2987,7 +2987,8 @@ test("project research graph opens from the sidebar in list and graph views", as
 
   const sidebar = page.locator(".sidebar");
   const navLabels = await sidebar.locator(".nav > .side-btn").allTextContents();
-  expect(navLabels.indexOf("Research graph")).toBe(navLabels.indexOf("Library") - 1);
+  expect(navLabels.indexOf("Research graph")).toBe(navLabels.indexOf("Publication") - 1);
+  expect(navLabels.indexOf("Publication")).toBe(navLabels.indexOf("Library") - 1);
 
   await sidebar.getByRole("button", { name: "Research graph", exact: true }).click();
   const modal = page.getByTestId("research-graph-modal");
@@ -3035,6 +3036,140 @@ test("project research graph opens from the sidebar in list and graph views", as
   await rightPanel.getByRole("button", { name: "Add panel" }).click();
   await expect(rightPanel.locator(".rp-tab-add-menu")
     .getByRole("button", { name: /Research graph/ })).toHaveCount(0);
+});
+
+test("registered Artifact opens publication binding and Escape keeps Workspace open", async ({ page }) => {
+  await enterApp(page, "/?mockPublication=draft");
+  await page.locator('[data-session-id="publication-session"]').click();
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+
+  const artifact = page.locator('.rp-tile[data-artifact-name="plddt_profile.png"]');
+  await expect(artifact).toBeVisible();
+  await artifact.getByRole("button", { name: "More" }).click();
+  await page.locator(".rp-tile-menu").getByRole("button", { name: "Use in publication" }).click();
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("publication-binding-dialog")).toHaveCount(0);
+  await expect(page.getByTestId("publication-workspace")).toBeVisible();
+  await expect(page.getByTestId("publication-manuscript-tree")).toContainText("Figure 2B");
+});
+
+test("Run surface binds an exact publication evidence source", async ({ page }) => {
+  await enterApp(page, "/?mockPublication=draft");
+  await selectRemoteContext(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "View runs" }).click();
+
+  const run = page.locator(".run-card", { hasText: "Kinase screen QC" });
+  await run.getByRole("button", { name: "Use in publication" }).click();
+  const dialog = page.getByTestId("publication-binding-dialog");
+  await expect(dialog).toContainText("run-kinase-001");
+  await dialog.locator("textarea").fill("Methods parameters and QC evidence");
+  await dialog.getByRole("button", { name: "Bind exact evidence" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "bind_publication_evidence")).toMatchObject({
+    input: {
+      sourceKind: "run",
+      sourceId: "run-kinase-001",
+      purpose: "Methods parameters and QC evidence",
+      selectionState: "selected",
+      visibility: "public",
+    },
+  });
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId("publication-workspace")).toContainText("run-kinase-001");
+});
+
+test("precise message evidence uses a stable locator and Escape closes only the top layer", async ({ page }) => {
+  await enterApp(page, "/?mockPublication=draft");
+  await page.locator(".sidebar").getByRole("button", { name: "Publication", exact: true }).click();
+
+  const workspace = page.getByTestId("publication-workspace");
+  await workspace.getByTestId("add-precise-publication-evidence").click();
+  await expect(page.getByTestId("publication-anchor-dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("publication-anchor-dialog")).toHaveCount(0);
+  await expect(workspace).toBeVisible();
+
+  await workspace.getByTestId("add-precise-publication-evidence").click();
+  const anchor = page.getByTestId("publication-anchor-dialog");
+  await anchor.getByTestId("publication-anchor-frame").fill("publication-session");
+  await anchor.getByLabel("Message sequence").fill("7");
+  await anchor.getByLabel("UTF-8 byte start").fill("4");
+  await anchor.getByLabel("UTF-8 byte end").fill("19");
+  await anchor.getByTestId("publication-anchor-continue").click();
+
+  const binding = page.getByTestId("publication-binding-dialog");
+  await binding.locator("textarea").fill("Exact sentence supporting the main claim");
+  await binding.getByRole("button", { name: "Bind exact evidence" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "bind_publication_evidence")).toMatchObject({
+    input: {
+      sourceKind: "message_span",
+      purpose: "Exact sentence supporting the main claim",
+    },
+  });
+  const args = await lastInvokeArgs(page, "bind_publication_evidence");
+  expect(JSON.parse(args.input.sourceId)).toEqual({
+    byte_end: 19,
+    byte_start: 4,
+    frame_id: "publication-session",
+    message_seq: 7,
+  });
+});
+
+test("Frozen Publication is read-only and exposes exact source plus late-capture readiness", async ({ page }) => {
+  await enterApp(page, "/?mockPublication=frozen");
+  await page.locator(".sidebar").getByRole("button", { name: "Publication", exact: true }).click();
+
+  const workspace = page.getByTestId("publication-workspace");
+  await expect(workspace).toBeVisible();
+  await expect(workspace.getByTestId("publication-exact-source"))
+    .toHaveText("artifact-version-late-v4");
+  await expect(workspace).toContainText("historical_content_unverified");
+  await expect(workspace).toContainText("Historical bytes were unavailable");
+  await expect(workspace).toContainText("Late capture");
+  await expect(workspace).toContainText("A newer result exists");
+  await expect(workspace.getByRole("button", { name: "Freeze", exact: true })).toHaveCount(0);
+  await expect(workspace.getByRole("button", { name: "Add item", exact: true })).toHaveCount(0);
+  await expect(workspace.locator(".publication-binding-controls")).toHaveCount(0);
+  expect(await invokeArgsList(page, "update_publication_evidence_binding")).toHaveLength(0);
+});
+
+test("Frozen Publication verifies a Run and surfaces environment plus comparator results", async ({ page }) => {
+  await enterApp(page, "/?mockPublication=frozen");
+  await page.locator(".sidebar").getByRole("button", { name: "Publication", exact: true }).click();
+
+  const workspace = page.getByTestId("publication-workspace");
+  await workspace.getByTestId("verify-publication-run").click();
+  await expect.poll(() => lastInvokeArgs(page, "verify_publication_revision")).toMatchObject({
+    input: {
+      revisionId: "publication-revision-1",
+      sourceRunId: "run-kinase-001",
+      comparisons: [],
+    },
+  });
+  const reports = workspace.getByTestId("publication-reproduction-runs");
+  await expect(reports).toContainText("Environment matched");
+  await expect(reports).toContainText("results/figure2b.png");
+  await expect(reports).toContainText("sha256");
+  await expect(workspace.locator(".publication-capability")).toContainText("Reproduced");
+});
+
+test("Frozen Publication builds a selective Capsule and shows its immutable hashes", async ({ page }) => {
+  await enterApp(page, "/?mockPublication=frozen");
+  await page.locator(".sidebar").getByRole("button", { name: "Publication", exact: true }).click();
+
+  const workspace = page.getByTestId("publication-workspace");
+  await workspace.getByTestId("build-publication-capsule").click();
+  await expect.poll(() => lastInvokeArgs(page, "build_publication_capsule")).toEqual({
+    revisionId: "publication-revision-1",
+  });
+  const builds = workspace.getByTestId("publication-capsule-builds");
+  await expect(builds).toContainText("Succeeded");
+  await expect(builds).toContainText("sha256:cccccccccccc");
+  await expect(builds).toContainText("/exports/publication-capsule.zip");
 });
 
 test("right panel shows execution contexts and runs", async ({ page }) => {

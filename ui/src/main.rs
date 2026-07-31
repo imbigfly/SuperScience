@@ -9,6 +9,7 @@ mod notebook;
 mod overlays;
 mod pet;
 mod project_landing;
+mod publication;
 mod research;
 mod settings_view;
 mod sidebar;
@@ -40,6 +41,7 @@ use notebook::{collect_notebook_cells, NotebookCache, NotebookView};
 use overlays::{AddHostOverlay, CapabilitiesOverlay, OnboardingOverlay, RuntimeInterpreterOverlay};
 use pet::{PetDesktop, PetOverlay};
 use project_landing::{ProjectLanding, ProjectLandingState};
+use publication::{PublicationEvidenceSource, PublicationWorkspaceModal};
 use research::{refresh_research_graph, ResearchGraphModal};
 use serde_wasm_bindgen::to_value;
 use settings_view::{DeleteConfirm, SettingsView, SettingsViewState};
@@ -1277,6 +1279,9 @@ fn App() -> impl IntoView {
     // sidebar modal is opened rather than kept live.
     let research_graph = create_rw_signal(ResearchGraph::default());
     let show_research_graph = create_rw_signal(false);
+    let show_publication_workspace = create_rw_signal(false);
+    let publication_binding_source =
+        create_rw_signal::<Option<PublicationEvidenceSource>>(None);
     create_effect(move |_| {
         side_chat_items.with(|items| items.len());
         if !show_right.get() || right_tab.get() != RightTab::SideChat {
@@ -6319,6 +6324,12 @@ fn App() -> impl IntoView {
             modal_artifact.set(None);
             return;
         }
+        if show_publication_workspace.get() {
+            ev.prevent_default();
+            show_publication_workspace.set(false);
+            publication_binding_source.set(None);
+            return;
+        }
         if show_research_graph.get() {
             ev.prevent_default();
             show_research_graph.set(false);
@@ -7441,6 +7452,16 @@ fn App() -> impl IntoView {
                 on_close=Callback::new(move |_| show_research_graph.set(false))
             />
         })}
+        {move || show_publication_workspace.get().then(|| view! {
+            <PublicationWorkspaceModal
+                locale=locale.read_only()
+                binding_source=publication_binding_source
+                on_close=Callback::new(move |_| {
+                    publication_binding_source.set(None);
+                    show_publication_workspace.set(false);
+                })
+            />
+        })}
         {move || ssh_connectivity_modal.get().map(|modal| {
             let host = modal.label.clone();
             let raw_detail = modal.detail.clone();
@@ -8005,6 +8026,10 @@ fn App() -> impl IntoView {
             open_research_graph=Callback::new(move |_| {
                 show_research_graph.set(true);
                 refresh_research_graph(research_graph);
+            })
+            open_publication_workspace=Callback::new(move |_| {
+                publication_binding_source.set(None);
+                show_publication_workspace.set(true);
             })
             open_library=Callback::new(move |_| show_library.set(true))
             load_demo=Callback::new(load_demo)
@@ -10698,8 +10723,16 @@ fn App() -> impl IntoView {
                                         let file_click = file.clone();
                                         let context_path = file.as_ref().map(|(path, _)| path.clone()).unwrap_or_default();
                                         let name_click = name.clone();
+                                        let publication_source = db_artifacts.get().iter()
+                                            .find(|artifact| artifact.id == a.id)
+                                            .map(|artifact| PublicationEvidenceSource {
+                                                kind: "artifact",
+                                                id: artifact.id.clone(),
+                                                label: artifact.name.clone(),
+                                            });
                                         let tools = file.map(|(path, fkind)| {
                                         let (dl, vn) = (path.clone(), name.clone());
+                                        let publication_source = publication_source.clone();
                                         view! {
                                             <div class="rp-tile-tools">
                                                 <button type="button" class="rp-tile-tool"
@@ -10756,6 +10789,16 @@ fn App() -> impl IntoView {
                                                                 );
                                                             }>
                                                             {move || t(locale.get(), "artifact.provenance")}</button>
+                                                        {publication_source.clone().map(|source| view! {
+                                                            <button type="button" class="rp-tile-menu-item"
+                                                                on:click=move |_| {
+                                                                    artifact_menu.set(None);
+                                                                    publication_binding_source.set(Some(source.clone()));
+                                                                    show_publication_workspace.set(true);
+                                                                }>
+                                                                {move || t(locale.get(), "publication.use")}
+                                                            </button>
+                                                        })}
                                                         <button type="button" class="rp-tile-menu-item"
                                                             on:click=move |_| { artifact_menu.set(None); download_artifact(dw.clone()); }>
                                                             {move || t(locale.get(), "artifact.download")}</button>
@@ -12481,6 +12524,10 @@ fn App() -> impl IntoView {
             active_project=project_info projects=proj_list
             runtime_interpreter_form=runtime_interpreter_form object_states=runtime_object_states
             locale=locale selection_popup=selection_popup
+            on_use_in_publication=Callback::new(move |source| {
+                publication_binding_source.set(Some(source));
+                show_publication_workspace.set(true);
+            })
         />
         {move || runtime_environment_pinned.get().then(|| view! {
             <RuntimeEnvironmentPanel selected=runtime_environment pinned=runtime_environment_pinned

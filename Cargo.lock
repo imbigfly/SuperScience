@@ -6673,6 +6673,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "glob",
+ "hex",
  "image",
  "mac-notification-sys",
  "portable-pty",

@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use wisp_store::{MessageResourceLink, Store};
+use wisp_store::{
+    ArtifactCaptureTiming, ArtifactMaterialization, ArtifactVersionDraft, MessageResourceLink,
+    Store,
+};
 
 const MAX_SNAPSHOT_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -24,6 +27,7 @@ struct MarkdownResource {
 #[derive(Clone, Debug)]
 struct ResolvedFile {
     real: PathBuf,
+    snapshot_source: PathBuf,
     display_name: String,
     kind: String,
     mime_type: String,
@@ -288,6 +292,11 @@ fn resolve_reference(
     }
     let mut last_error = None;
     for candidate in candidates {
+        let snapshot_source = if candidate.is_absolute() {
+            candidate.clone()
+        } else {
+            root.join(&candidate)
+        };
         let candidate_text = candidate.to_string_lossy();
         match wisp_tools::safety::validate_file_path(root, &candidate_text) {
             Ok(real) => {
@@ -307,6 +316,7 @@ fn resolve_reference(
                     .to_string();
                 return Ok(ResolvedFile {
                     real,
+                    snapshot_source,
                     display_name,
                     kind,
                     mime_type,
@@ -318,21 +328,13 @@ fn resolve_reference(
     Err(last_error.unwrap_or_else(|| "resource path could not be resolved".into()))
 }
 
-fn snapshot_path(root: &Path, checksum: &str, source: &Path) -> PathBuf {
-    let extension = source
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| format!(".{extension}"))
-        .unwrap_or_default();
-    root.join(".wisp")
-        .join("artifacts")
-        .join("sha256")
-        .join(&checksum[..2])
-        .join(format!("{checksum}{extension}"))
-}
-
-fn source_artifact_identity(path: &Path) -> String {
-    let normalized = path.to_string_lossy().replace('\\', "/");
+fn source_artifact_identity(root: &Path, path: &Path) -> String {
+    let canonical_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let normalized = path
+        .strip_prefix(&canonical_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
     #[cfg(windows)]
     {
         normalized.to_ascii_lowercase()
@@ -351,23 +353,21 @@ async fn bind_resolved(
     resource: &MarkdownResource,
     resolved: ResolvedFile,
 ) -> Result<MessageResourceLink, String> {
-    let bytes = std::fs::read(&resolved.real).map_err(|error| error.to_string())?;
-    let checksum = wisp_sync::sha256_hex(&bytes);
-    let snapshot = snapshot_path(root, &checksum, &resolved.real);
-    if !snapshot.exists() {
-        if let Some(parent) = snapshot.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        std::fs::write(&snapshot, &bytes).map_err(|error| error.to_string())?;
+    let captured = crate::snapshot_store::capture_file(
+        root,
+        &resolved.snapshot_source,
+        crate::snapshot_store::SnapshotPolicy::UpTo(MAX_SNAPSHOT_BYTES),
+    )?;
+    if captured.materialization != ArtifactMaterialization::Snapshot {
+        return Err(format!(
+            "resource exceeds {} byte preview snapshot limit",
+            MAX_SNAPSHOT_BYTES
+        ));
     }
-    let source_identity = source_artifact_identity(&resolved.real);
+    let checksum = captured.checksum;
+    let source_identity = source_artifact_identity(root, &resolved.real);
     let artifact_key = wisp_sync::sha256_hex(format!("{project_id}\0{source_identity}").as_bytes());
     let artifact_id = format!("resource-{}", &artifact_key[..32]);
-    let relative_snapshot = snapshot
-        .strip_prefix(root)
-        .unwrap_or(&snapshot)
-        .to_string_lossy()
-        .replace('\\', "/");
     let current = store
         .latest_artifact_version(&artifact_id)
         .await
@@ -380,18 +380,22 @@ async fn bind_resolved(
         (version.id.clone(), false)
     } else {
         let version_id = store
-            .save_artifact(
-                &artifact_id,
-                project_id,
-                frame_id,
-                &resolved.display_name,
-                &resolved.mime_type,
-                &relative_snapshot,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        store
-            .set_artifact_version_file_metadata(&version_id, bytes.len() as i64, &checksum)
+            .save_artifact_version(&ArtifactVersionDraft {
+                version_id: None,
+                artifact_id: artifact_id.clone(),
+                project_id: project_id.to_string(),
+                root_frame_id: frame_id.to_string(),
+                filename: resolved.display_name.clone(),
+                content_type: resolved.mime_type.clone(),
+                storage_path: captured.storage_path,
+                logical_key: Some(format!("source:{source_identity}")),
+                size_bytes: Some(captured.size_bytes as i64),
+                checksum: Some(checksum.clone()),
+                producing_run_id: None,
+                env_snapshot_hash: None,
+                materialization: ArtifactMaterialization::Snapshot,
+                capture_timing: ArtifactCaptureTiming::AtCreation,
+            })
             .await
             .map_err(|error| error.to_string())?;
         (version_id, true)
@@ -661,6 +665,8 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].status, "ready");
         let artifact_id = first[0].artifact_id.clone().unwrap();
+        let expected_key = wisp_sync::sha256_hex(b"project\0figures/plot.png");
+        assert_eq!(artifact_id, format!("resource-{}", &expected_key[..32]));
         let first_version = first[0].artifact_version_id.clone().unwrap();
         let version = store
             .latest_artifact_version(&artifact_id)
@@ -739,5 +745,44 @@ mod tests {
                 .unwrap();
             assert!(root.join(version.storage_path).is_file());
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn message_resources_reject_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root =
+            std::env::temp_dir().join(format!("wisp_resource_link_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("figures")).unwrap();
+        std::fs::write(root.join("figures/private.png"), b"private").unwrap();
+        symlink(
+            root.join("figures/private.png"),
+            root.join("figures/link.png"),
+        )
+        .unwrap();
+        let store = Store::open(&root.join("store.sqlite")).await.unwrap();
+        store
+            .create_project("project", "Project", &root.to_string_lossy())
+            .await
+            .unwrap();
+        store
+            .create_frame("frame", "project", "OPERON", "model")
+            .await
+            .unwrap();
+
+        let links = bind_new_message_resources(
+            &store,
+            &root,
+            "project",
+            "frame",
+            1,
+            "![plot](figures/link.png)",
+        )
+        .await;
+        assert_eq!(links[0].status, "unresolved");
+        assert!(links[0].error.as_deref().unwrap().contains("symlink"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

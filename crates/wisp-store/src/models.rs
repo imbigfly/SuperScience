@@ -47,6 +47,78 @@ pub struct ExecLog {
     pub env_hash: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactMaterialization {
+    Snapshot,
+    Reference,
+    External,
+}
+
+impl ArtifactMaterialization {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Reference => "reference",
+            Self::External => "external",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "snapshot" => Ok(Self::Snapshot),
+            "reference" => Ok(Self::Reference),
+            "external" => Ok(Self::External),
+            _ => anyhow::bail!("Unknown Artifact materialization '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactCaptureTiming {
+    AtCreation,
+    Late,
+    Unknown,
+}
+
+impl ArtifactCaptureTiming {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AtCreation => "at_creation",
+            Self::Late => "late",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "at_creation" => Ok(Self::AtCreation),
+            "late" => Ok(Self::Late),
+            "unknown" => Ok(Self::Unknown),
+            _ => anyhow::bail!("Unknown Artifact capture timing '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactVersionDraft {
+    pub version_id: Option<String>,
+    pub artifact_id: String,
+    pub project_id: String,
+    pub root_frame_id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub storage_path: String,
+    pub logical_key: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub checksum: Option<String>,
+    pub producing_run_id: Option<String>,
+    pub env_snapshot_hash: Option<String>,
+    pub materialization: ArtifactMaterialization,
+    pub capture_timing: ArtifactCaptureTiming,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactVersion {
     pub id: String,
@@ -59,7 +131,722 @@ pub struct ArtifactVersion {
     pub parent_version_id: Option<String>,
     pub producing_run_id: Option<String>,
     pub env_snapshot_hash: Option<String>,
+    pub materialization: ArtifactMaterialization,
+    pub capture_timing: ArtifactCaptureTiming,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactVersionContext {
+    pub version: ArtifactVersion,
+    pub project_id: String,
+    pub root_frame_id: String,
+    pub filename: String,
+    pub logical_key: Option<String>,
+    pub latest_version_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineageBasis {
+    Declared,
+    Observed,
+    Inferred,
+    UserAsserted,
+}
+
+impl LineageBasis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Declared => "declared",
+            Self::Observed => "observed",
+            Self::Inferred => "inferred",
+            Self::UserAsserted => "user_asserted",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "declared" => Ok(Self::Declared),
+            "observed" => Ok(Self::Observed),
+            "inferred" => Ok(Self::Inferred),
+            "user_asserted" => Ok(Self::UserAsserted),
+            _ => anyhow::bail!("Unknown lineage basis '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineageConfidence {
+    Exact,
+    Likely,
+    Uncertain,
+}
+
+impl LineageConfidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Likely => "likely",
+            Self::Uncertain => "uncertain",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "exact" => Ok(Self::Exact),
+            "likely" => Ok(Self::Likely),
+            "uncertain" => Ok(Self::Uncertain),
+            _ => anyhow::bail!("Unknown lineage confidence '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunInput {
+    pub id: String,
+    pub run_id: String,
+    pub artifact_version_id: Option<String>,
+    pub external_resource_id: Option<String>,
+    pub source_ref: String,
+    pub role: String,
+    pub required: bool,
+    pub basis: LineageBasis,
+    pub confidence: LineageConfidence,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunOutput {
+    pub id: String,
+    pub run_id: String,
+    pub artifact_version_id: String,
+    pub role: String,
+    pub logical_output_key: String,
+    pub source_path: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactDependency {
+    pub id: String,
+    pub artifact_version_id: String,
+    pub depends_on_version_id: String,
+    pub reference_name: Option<String>,
+    pub basis: LineageBasis,
+    pub confidence: LineageConfidence,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunCodeSnapshot {
+    pub id: String,
+    pub run_id: String,
+    pub source_kind: String,
+    pub source_path: Option<String>,
+    pub source_text: String,
+    pub checksum: String,
+    pub storage_path: Option<String>,
+    pub git_commit: Option<String>,
+    pub dirty_patch: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentSnapshot {
+    pub hash: String,
+    pub env_name: Option<String>,
+    pub packages_json: String,
+    pub snapshot_json: String,
+    pub hash_algorithm: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalResource {
+    pub id: String,
+    pub project_id: String,
+    pub kind: String,
+    pub uri: String,
+    pub version: Option<String>,
+    pub checksum: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub license: Option<String>,
+    pub visibility: String,
+    pub access_instructions: Option<String>,
+    pub accessed_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationRevisionState {
+    Draft,
+    Freezing,
+    Frozen,
+    Published,
+    Deleting,
+}
+
+impl PublicationRevisionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Freezing => "freezing",
+            Self::Frozen => "frozen",
+            Self::Published => "published",
+            Self::Deleting => "deleting",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "draft" => Ok(Self::Draft),
+            "freezing" => Ok(Self::Freezing),
+            "frozen" => Ok(Self::Frozen),
+            "published" => Ok(Self::Published),
+            "deleting" => Ok(Self::Deleting),
+            _ => anyhow::bail!("Unknown Publication revision state '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationCapabilityLevel {
+    Archived,
+    Traceable,
+    ReExecutable,
+    Reproduced,
+}
+
+impl PublicationCapabilityLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Archived => "archived",
+            Self::Traceable => "traceable",
+            Self::ReExecutable => "re_executable",
+            Self::Reproduced => "reproduced",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "archived" => Ok(Self::Archived),
+            "traceable" => Ok(Self::Traceable),
+            "re_executable" => Ok(Self::ReExecutable),
+            "reproduced" => Ok(Self::Reproduced),
+            _ => anyhow::bail!("Unknown Publication capability level '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationItemKind {
+    Section,
+    Claim,
+    Figure,
+    Table,
+    Methods,
+    Supplement,
+}
+
+impl PublicationItemKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Section => "section",
+            Self::Claim => "claim",
+            Self::Figure => "figure",
+            Self::Table => "table",
+            Self::Methods => "methods",
+            Self::Supplement => "supplement",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "section" => Ok(Self::Section),
+            "claim" => Ok(Self::Claim),
+            "figure" => Ok(Self::Figure),
+            "table" => Ok(Self::Table),
+            "methods" => Ok(Self::Methods),
+            "supplement" => Ok(Self::Supplement),
+            _ => anyhow::bail!("Unknown Publication item kind '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceSourceKind {
+    ArtifactVersion,
+    Run,
+    ExecutionLog,
+    MessageSpan,
+    ToolCall,
+    CodeCell,
+    ExternalResource,
+}
+
+impl EvidenceSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ArtifactVersion => "artifact_version",
+            Self::Run => "run",
+            Self::ExecutionLog => "execution_log",
+            Self::MessageSpan => "message_span",
+            Self::ToolCall => "tool_call",
+            Self::CodeCell => "code_cell",
+            Self::ExternalResource => "external_resource",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "artifact_version" => Ok(Self::ArtifactVersion),
+            "run" => Ok(Self::Run),
+            "execution_log" => Ok(Self::ExecutionLog),
+            "message_span" => Ok(Self::MessageSpan),
+            "tool_call" => Ok(Self::ToolCall),
+            "code_cell" => Ok(Self::CodeCell),
+            "external_resource" => Ok(Self::ExternalResource),
+            _ => anyhow::bail!("Unknown evidence source kind '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceSelectionState {
+    Candidate,
+    Selected,
+    Rejected,
+}
+
+impl EvidenceSelectionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Candidate => "candidate",
+            Self::Selected => "selected",
+            Self::Rejected => "rejected",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "candidate" => Ok(Self::Candidate),
+            "selected" => Ok(Self::Selected),
+            "rejected" => Ok(Self::Rejected),
+            _ => anyhow::bail!("Unknown evidence selection state '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceReviewState {
+    Unreviewed,
+    Reviewed,
+}
+
+impl EvidenceReviewState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unreviewed => "unreviewed",
+            Self::Reviewed => "reviewed",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "unreviewed" => Ok(Self::Unreviewed),
+            "reviewed" => Ok(Self::Reviewed),
+            _ => anyhow::bail!("Unknown evidence review state '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceReproductionState {
+    NotRun,
+    Passed,
+    Failed,
+    NotApplicable,
+}
+
+impl EvidenceReproductionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRun => "not_run",
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::NotApplicable => "not_applicable",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "not_run" => Ok(Self::NotRun),
+            "passed" => Ok(Self::Passed),
+            "failed" => Ok(Self::Failed),
+            "not_applicable" => Ok(Self::NotApplicable),
+            _ => anyhow::bail!("Unknown evidence reproduction state '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceVisibility {
+    Public,
+    Restricted,
+    Private,
+}
+
+impl EvidenceVisibility {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Restricted => "restricted",
+            Self::Private => "private",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "public" => Ok(Self::Public),
+            "restricted" => Ok(Self::Restricted),
+            "private" => Ok(Self::Private),
+            _ => anyhow::bail!("Unknown evidence visibility '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Publication {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub description: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationRevision {
+    pub id: String,
+    pub publication_id: String,
+    pub parent_revision_id: Option<String>,
+    pub revision_number: i64,
+    pub label: String,
+    pub state: PublicationRevisionState,
+    pub capability_level: PublicationCapabilityLevel,
+    pub manifest_json: Option<String>,
+    pub manifest_sha256: Option<String>,
+    pub frozen_at: Option<i64>,
+    pub published_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationItem {
+    pub id: String,
+    pub revision_id: String,
+    pub parent_item_id: Option<String>,
+    pub kind: PublicationItemKind,
+    pub title: String,
+    pub content: String,
+    pub ordinal: i64,
+    pub metadata_json: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationItemLink {
+    pub id: String,
+    pub revision_id: String,
+    pub source_item_id: String,
+    pub target_item_id: String,
+    pub relation: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceBindingDraft {
+    pub id: String,
+    pub revision_id: String,
+    pub item_id: Option<String>,
+    pub source_kind: EvidenceSourceKind,
+    pub source_id: String,
+    pub purpose: String,
+    pub supported_claim_item_id: Option<String>,
+    pub selection_state: EvidenceSelectionState,
+    pub visibility: EvidenceVisibility,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceBinding {
+    pub id: String,
+    pub revision_id: String,
+    pub item_id: Option<String>,
+    pub source_kind: EvidenceSourceKind,
+    pub source_id: String,
+    pub artifact_version_id: Option<String>,
+    pub run_id: Option<String>,
+    pub external_resource_id: Option<String>,
+    pub purpose: String,
+    pub supported_claim_item_id: Option<String>,
+    pub selection_state: EvidenceSelectionState,
+    pub review_state: EvidenceReviewState,
+    pub reproduction_state: EvidenceReproductionState,
+    pub visibility: EvidenceVisibility,
+    pub source_snapshot_json: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvidenceReview {
+    pub id: String,
+    pub binding_id: String,
+    pub reviewer: String,
+    pub method: String,
+    pub verified_at: i64,
+    pub environment_json: String,
+    pub comparator_json: String,
+    pub tolerance_json: String,
+    pub result: String,
+    pub report_json: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceSupersession {
+    pub id: String,
+    pub revision_id: String,
+    pub old_binding_id: String,
+    pub new_binding_id: String,
+    pub reason: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationReadinessReport {
+    pub id: String,
+    pub revision_id: String,
+    pub capability_level: PublicationCapabilityLevel,
+    pub target_visibility: EvidenceVisibility,
+    pub policy_json: String,
+    pub blockers_json: String,
+    pub warnings_json: String,
+    pub omissions_json: String,
+    pub manifest_json: String,
+    pub manifest_sha256: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationFreezePolicy {
+    pub target_visibility: EvidenceVisibility,
+    pub phi_pii_reviewed: bool,
+    pub redistribution_reviewed: bool,
+    pub snapshot_restricted_bytes: bool,
+}
+
+impl Default for PublicationFreezePolicy {
+    fn default() -> Self {
+        Self {
+            target_visibility: EvidenceVisibility::Public,
+            phi_pii_reviewed: false,
+            redistribution_reviewed: false,
+            snapshot_restricted_bytes: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationReadinessFinding {
+    pub code: String,
+    pub message: String,
+    pub binding_id: Option<String>,
+    pub source_kind: Option<EvidenceSourceKind>,
+    pub source_id: Option<String>,
+    pub waivable: bool,
+    pub waived: bool,
+    pub waiver: Option<PublicationWaiver>,
+    pub details: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationReadiness {
+    pub revision_id: String,
+    pub target_visibility: EvidenceVisibility,
+    pub capability_level: PublicationCapabilityLevel,
+    pub blockers: Vec<PublicationReadinessFinding>,
+    pub warnings: Vec<PublicationReadinessFinding>,
+    pub omissions: Vec<PublicationReadinessFinding>,
+    pub manifest_json: String,
+    pub manifest_sha256: String,
+    pub can_freeze: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationLateCapture {
+    pub binding_ids: Vec<String>,
+    pub old_version_id: String,
+    pub new_version_id: String,
+    pub artifact_id: String,
+    pub expected_latest_version_id: Option<String>,
+    pub version_number: i64,
+    pub content_type: String,
+    pub storage_path: String,
+    pub size_bytes: i64,
+    pub checksum: String,
+    pub materialization: ArtifactMaterialization,
+    pub source_snapshot_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationFreezeCommit {
+    pub revision_id: String,
+    pub attempt_id: String,
+    pub policy_json: String,
+    pub readiness: PublicationReadiness,
+    pub late_captures: Vec<PublicationLateCapture>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationEvidenceDrift {
+    pub binding_id: String,
+    pub artifact_id: String,
+    pub logical_key: Option<String>,
+    pub bound_version_id: String,
+    pub bound_version_number: i64,
+    pub latest_version_id: String,
+    pub latest_version_number: i64,
+    pub has_drift: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationWaiver {
+    pub id: String,
+    pub revision_id: String,
+    pub finding_code: String,
+    pub author: String,
+    pub reason: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapsuleBuild {
+    pub id: String,
+    pub revision_id: String,
+    pub format: String,
+    pub visibility: EvidenceVisibility,
+    pub status: String,
+    pub output_path: Option<String>,
+    pub revision_manifest_sha256: String,
+    pub archive_sha256: Option<String>,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReproductionComparatorKind {
+    Sha256,
+    Text,
+    Json,
+    Numeric,
+}
+
+impl ReproductionComparatorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sha256 => "sha256",
+            Self::Text => "text",
+            Self::Json => "json",
+            Self::Numeric => "numeric",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "sha256" => Ok(Self::Sha256),
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            "numeric" => Ok(Self::Numeric),
+            _ => anyhow::bail!("Unknown reproduction comparator '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReproductionRun {
+    pub id: String,
+    pub revision_id: String,
+    pub source_run_id: String,
+    pub status: String,
+    pub capability_level: PublicationCapabilityLevel,
+    pub command_sha256: String,
+    pub expected_environment_hash: Option<String>,
+    pub actual_environment_json: String,
+    pub actual_environment_hash: String,
+    pub environment_matched: bool,
+    pub workspace_manifest_json: String,
+    pub stdout_tail: Option<String>,
+    pub stderr_tail: Option<String>,
+    pub exit_code: Option<i64>,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub started_at: i64,
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReproductionResult {
+    pub id: String,
+    pub reproduction_run_id: String,
+    pub output_id: String,
+    pub output_path: String,
+    pub expected_artifact_version_id: String,
+    pub comparator_kind: ReproductionComparatorKind,
+    pub required: bool,
+    pub expected_json: String,
+    pub actual_json: String,
+    pub tolerance_json: String,
+    pub passed: bool,
+    pub report_json: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReproductionRunStart {
+    pub id: String,
+    pub revision_id: String,
+    pub source_run_id: String,
+    pub command_sha256: String,
+    pub expected_environment_hash: Option<String>,
+    pub actual_environment_json: String,
+    pub actual_environment_hash: String,
+    pub environment_matched: bool,
+    pub workspace_manifest_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReproductionRunCommit {
+    pub run_id: String,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+    pub exit_code: i64,
+    pub results: Vec<ReproductionResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -574,6 +1361,8 @@ pub(crate) fn run_from_row(row: SqliteRow) -> Result<RunRecord> {
 }
 
 pub(crate) fn artifact_version_from_row(row: SqliteRow) -> Result<ArtifactVersion> {
+    let materialization: String = row.try_get("materialization")?;
+    let capture_timing: String = row.try_get("capture_timing")?;
     Ok(ArtifactVersion {
         id: row.try_get("id")?,
         artifact_id: row.try_get("artifact_id")?,
@@ -585,6 +1374,8 @@ pub(crate) fn artifact_version_from_row(row: SqliteRow) -> Result<ArtifactVersio
         parent_version_id: row.try_get("parent_version_id")?,
         producing_run_id: row.try_get("producing_run_id")?,
         env_snapshot_hash: row.try_get("env_snapshot_hash")?,
+        materialization: ArtifactMaterialization::from_storage(&materialization)?,
+        capture_timing: ArtifactCaptureTiming::from_storage(&capture_timing)?,
         created_at: row.try_get("created_at")?,
     })
 }

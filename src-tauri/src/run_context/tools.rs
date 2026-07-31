@@ -77,7 +77,7 @@ impl Tool for RunInContextTool {
                     },
                     "input_paths": {
                         "type": "array",
-                        "description": "Optional project-relative files staged flat into an SSH Run workdir",
+                        "description": "Optional project-relative files bound as exact Run inputs; SSH also stages them flat into the remote workdir",
                         "items": { "type": "string" }
                     },
                     "output_specs": {
@@ -89,6 +89,7 @@ impl Tool for RunInContextTool {
                                 "glob": { "type": "string" },
                                 "kind": { "type": "string" },
                                 "residency": { "type": "string", "enum": ["local", "remote", "auto"] },
+                                "logical_key": { "type": "string", "description": "Stable logical output identity; defaults to the matched project-relative path" },
                                 "max_file_mb": { "type": "integer" },
                                 "max_total_mb": { "type": "integer" }
                             },

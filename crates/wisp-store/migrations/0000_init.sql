@@ -82,9 +82,47 @@ CREATE TABLE IF NOT EXISTS artifacts (
     filename        TEXT NOT NULL,
     content_type    TEXT NOT NULL,
     storage_path    TEXT NOT NULL,
-    created_at      INTEGER NOT NULL
+    created_at      INTEGER NOT NULL,
+    latest_version_id TEXT,
+    logical_key     TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_artifacts_project ON artifacts(project_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_artifacts_project_logical_key
+    ON artifacts(project_id, logical_key) WHERE logical_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS artifact_versions (
+    id                  TEXT PRIMARY KEY,
+    artifact_id         TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    version_number      INTEGER NOT NULL,
+    content_type        TEXT NOT NULL,
+    storage_path        TEXT NOT NULL,
+    size_bytes          INTEGER,
+    checksum            TEXT,
+    parent_version_id   TEXT REFERENCES artifact_versions(id) ON DELETE SET NULL,
+    producing_run_id    TEXT REFERENCES runs(id) ON DELETE SET NULL,
+    env_snapshot_hash   TEXT REFERENCES env_snapshots(hash) ON DELETE SET NULL,
+    materialization     TEXT NOT NULL DEFAULT 'reference',
+    capture_timing      TEXT NOT NULL DEFAULT 'unknown',
+    created_at          INTEGER NOT NULL,
+    UNIQUE(artifact_id, version_number)
+);
+CREATE INDEX IF NOT EXISTS ix_artifact_versions_artifact
+    ON artifact_versions(artifact_id, version_number DESC);
+CREATE INDEX IF NOT EXISTS ix_artifact_versions_run
+    ON artifact_versions(producing_run_id);
+
+CREATE TABLE IF NOT EXISTS artifact_dependencies (
+    id                    TEXT PRIMARY KEY,
+    artifact_version_id   TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE CASCADE,
+    depends_on_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE CASCADE,
+    reference_name        TEXT,
+    basis                 TEXT NOT NULL DEFAULT 'inferred',
+    confidence            TEXT NOT NULL DEFAULT 'uncertain',
+    created_at            INTEGER NOT NULL,
+    UNIQUE(artifact_version_id, depends_on_version_id)
+);
+CREATE INDEX IF NOT EXISTS ix_artifact_dependencies_version
+    ON artifact_dependencies(artifact_version_id);
 
 -- Structured resource references discovered when a new assistant message is
 -- persisted. The transcript keeps the agent's original Markdown; rendering
@@ -290,6 +328,330 @@ CREATE TABLE IF NOT EXISTS run_artifacts (
     created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_run_artifacts_run ON run_artifacts(run_id);
+
+CREATE TABLE IF NOT EXISTS external_resources (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind                TEXT NOT NULL,
+    uri                 TEXT NOT NULL,
+    version             TEXT,
+    checksum            TEXT,
+    size_bytes          INTEGER,
+    license             TEXT,
+    visibility          TEXT NOT NULL DEFAULT 'restricted',
+    access_instructions TEXT,
+    accessed_at         INTEGER,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    UNIQUE(project_id, uri, version)
+);
+
+CREATE TABLE IF NOT EXISTS run_inputs (
+    id                   TEXT PRIMARY KEY,
+    run_id               TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    artifact_version_id  TEXT REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+    external_resource_id TEXT REFERENCES external_resources(id) ON DELETE RESTRICT,
+    source_ref           TEXT NOT NULL,
+    role                 TEXT NOT NULL,
+    required             INTEGER NOT NULL DEFAULT 1,
+    basis                TEXT NOT NULL,
+    confidence           TEXT NOT NULL,
+    created_at           INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_run_inputs_run ON run_inputs(run_id);
+CREATE INDEX IF NOT EXISTS ix_run_inputs_artifact_version
+    ON run_inputs(artifact_version_id);
+
+CREATE TABLE IF NOT EXISTS run_outputs (
+    id                  TEXT PRIMARY KEY,
+    run_id              TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    artifact_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+    role                TEXT NOT NULL,
+    logical_output_key  TEXT NOT NULL,
+    source_path         TEXT NOT NULL,
+    created_at          INTEGER NOT NULL,
+    UNIQUE(run_id, artifact_version_id, role)
+);
+CREATE INDEX IF NOT EXISTS ix_run_outputs_run ON run_outputs(run_id);
+CREATE INDEX IF NOT EXISTS ix_run_outputs_artifact_version
+    ON run_outputs(artifact_version_id);
+
+CREATE TABLE IF NOT EXISTS run_code_snapshots (
+    id           TEXT PRIMARY KEY,
+    run_id       TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    source_kind  TEXT NOT NULL,
+    source_path  TEXT,
+    source_text  TEXT NOT NULL,
+    checksum     TEXT NOT NULL,
+    storage_path TEXT,
+    git_commit   TEXT,
+    dirty_patch  TEXT,
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_run_code_snapshots_run
+    ON run_code_snapshots(run_id);
+
+CREATE TABLE IF NOT EXISTS run_environment_snapshots (
+    run_id            TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    env_snapshot_hash TEXT NOT NULL REFERENCES env_snapshots(hash) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS publications (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_publications_project
+    ON publications(project_id, updated_at DESC, id);
+
+CREATE TABLE IF NOT EXISTS publication_revisions (
+    id                  TEXT PRIMARY KEY,
+    publication_id      TEXT NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+    parent_revision_id  TEXT REFERENCES publication_revisions(id) ON DELETE SET NULL,
+    revision_number     INTEGER NOT NULL CHECK(revision_number > 0),
+    label               TEXT NOT NULL,
+    state               TEXT NOT NULL DEFAULT 'draft'
+                            CHECK(state IN ('draft','freezing','frozen','published','deleting')),
+    capability_level    TEXT NOT NULL DEFAULT 'archived'
+                            CHECK(capability_level IN
+                                  ('archived','traceable','re_executable','reproduced')),
+    manifest_json       TEXT,
+    manifest_sha256     TEXT,
+    frozen_at           INTEGER,
+    published_at        INTEGER,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    CHECK(state NOT IN ('frozen','published')
+          OR (manifest_json IS NOT NULL AND length(manifest_sha256)=64 AND frozen_at IS NOT NULL)),
+    CHECK(state <> 'published' OR published_at IS NOT NULL),
+    UNIQUE(publication_id, revision_number)
+);
+CREATE INDEX IF NOT EXISTS ix_publication_revisions_publication
+    ON publication_revisions(publication_id, revision_number DESC);
+
+CREATE TABLE IF NOT EXISTS publication_items (
+    id             TEXT PRIMARY KEY,
+    revision_id    TEXT NOT NULL REFERENCES publication_revisions(id) ON DELETE CASCADE,
+    parent_item_id TEXT REFERENCES publication_items(id) ON DELETE CASCADE,
+    kind           TEXT NOT NULL
+                       CHECK(kind IN ('section','claim','figure','table','methods','supplement')),
+    title          TEXT NOT NULL,
+    content        TEXT NOT NULL DEFAULT '',
+    ordinal        INTEGER NOT NULL,
+    metadata_json  TEXT NOT NULL DEFAULT '{}',
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_publication_items_revision_order
+    ON publication_items(revision_id, parent_item_id, ordinal, id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_publication_items_sibling_order
+    ON publication_items(revision_id, COALESCE(parent_item_id,''), ordinal);
+
+CREATE TABLE IF NOT EXISTS publication_item_links (
+    id             TEXT PRIMARY KEY,
+    revision_id    TEXT NOT NULL REFERENCES publication_revisions(id) ON DELETE CASCADE,
+    source_item_id TEXT NOT NULL REFERENCES publication_items(id) ON DELETE CASCADE,
+    target_item_id TEXT NOT NULL REFERENCES publication_items(id) ON DELETE CASCADE,
+    relation       TEXT NOT NULL,
+    created_at     INTEGER NOT NULL,
+    CHECK(source_item_id <> target_item_id),
+    UNIQUE(revision_id, source_item_id, target_item_id, relation)
+);
+CREATE INDEX IF NOT EXISTS ix_publication_item_links_revision
+    ON publication_item_links(revision_id, source_item_id, target_item_id);
+
+CREATE TABLE IF NOT EXISTS evidence_bindings (
+    id                      TEXT PRIMARY KEY,
+    revision_id             TEXT NOT NULL REFERENCES publication_revisions(id) ON DELETE CASCADE,
+    item_id                 TEXT REFERENCES publication_items(id) ON DELETE CASCADE,
+    source_kind             TEXT NOT NULL
+                                CHECK(source_kind IN
+                                      ('artifact_version','run','execution_log','message_span',
+                                       'tool_call','code_cell','external_resource')),
+    source_id               TEXT NOT NULL,
+    artifact_version_id     TEXT REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+    run_id                  TEXT REFERENCES runs(id) ON DELETE RESTRICT,
+    external_resource_id    TEXT REFERENCES external_resources(id) ON DELETE RESTRICT,
+    purpose                 TEXT NOT NULL DEFAULT '',
+    supported_claim_item_id TEXT REFERENCES publication_items(id) ON DELETE SET NULL,
+    selection_state         TEXT NOT NULL DEFAULT 'candidate'
+                                CHECK(selection_state IN ('candidate','selected','rejected')),
+    review_state            TEXT NOT NULL DEFAULT 'unreviewed'
+                                CHECK(review_state IN ('unreviewed','reviewed')),
+    reproduction_state      TEXT NOT NULL DEFAULT 'not_run'
+                                CHECK(reproduction_state IN
+                                      ('not_run','passed','failed','not_applicable')),
+    visibility              TEXT NOT NULL DEFAULT 'private'
+                                CHECK(visibility IN ('public','restricted','private')),
+    source_snapshot_json    TEXT NOT NULL,
+    created_at              INTEGER NOT NULL,
+    updated_at              INTEGER NOT NULL,
+    CHECK(
+        (source_kind='artifact_version'
+         AND artifact_version_id IS NOT NULL AND source_id=artifact_version_id
+         AND run_id IS NULL AND external_resource_id IS NULL)
+        OR
+        (source_kind='run'
+         AND run_id IS NOT NULL AND source_id=run_id
+         AND artifact_version_id IS NULL AND external_resource_id IS NULL)
+        OR
+        (source_kind='external_resource'
+         AND external_resource_id IS NOT NULL AND source_id=external_resource_id
+         AND artifact_version_id IS NULL AND run_id IS NULL)
+        OR
+        (source_kind IN ('execution_log','message_span','tool_call','code_cell')
+         AND artifact_version_id IS NULL AND run_id IS NULL AND external_resource_id IS NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS ix_evidence_bindings_revision
+    ON evidence_bindings(revision_id, item_id, selection_state, id);
+CREATE INDEX IF NOT EXISTS ix_evidence_bindings_artifact_version
+    ON evidence_bindings(artifact_version_id);
+CREATE INDEX IF NOT EXISTS ix_evidence_bindings_run
+    ON evidence_bindings(run_id);
+
+CREATE TABLE IF NOT EXISTS evidence_reviews (
+    id               TEXT PRIMARY KEY,
+    binding_id       TEXT NOT NULL REFERENCES evidence_bindings(id) ON DELETE CASCADE,
+    reviewer         TEXT NOT NULL,
+    method           TEXT NOT NULL,
+    verified_at      INTEGER NOT NULL,
+    environment_json TEXT NOT NULL DEFAULT '{}',
+    comparator_json  TEXT NOT NULL DEFAULT '{}',
+    tolerance_json   TEXT NOT NULL DEFAULT '{}',
+    result           TEXT NOT NULL,
+    report_json      TEXT NOT NULL DEFAULT '{}',
+    created_at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_evidence_reviews_binding
+    ON evidence_reviews(binding_id, verified_at, id);
+
+CREATE TABLE IF NOT EXISTS evidence_supersessions (
+    id             TEXT PRIMARY KEY,
+    revision_id    TEXT NOT NULL REFERENCES publication_revisions(id) ON DELETE CASCADE,
+    old_binding_id TEXT NOT NULL REFERENCES evidence_bindings(id) ON DELETE CASCADE,
+    new_binding_id TEXT NOT NULL REFERENCES evidence_bindings(id) ON DELETE CASCADE,
+    reason         TEXT NOT NULL DEFAULT '',
+    created_at     INTEGER NOT NULL,
+    CHECK(old_binding_id <> new_binding_id),
+    UNIQUE(revision_id, old_binding_id)
+);
+CREATE INDEX IF NOT EXISTS ix_evidence_supersessions_revision
+    ON evidence_supersessions(revision_id, old_binding_id);
+
+CREATE TABLE IF NOT EXISTS publication_readiness_reports (
+    id                TEXT PRIMARY KEY,
+    revision_id       TEXT NOT NULL UNIQUE
+                          REFERENCES publication_revisions(id) ON DELETE CASCADE,
+    capability_level  TEXT NOT NULL
+                          CHECK(capability_level IN
+                                ('archived','traceable','re_executable','reproduced')),
+    target_visibility TEXT NOT NULL DEFAULT 'public'
+                          CHECK(target_visibility IN ('public','restricted','private')),
+    policy_json       TEXT NOT NULL DEFAULT '{}',
+    blockers_json     TEXT NOT NULL DEFAULT '[]',
+    warnings_json     TEXT NOT NULL DEFAULT '[]',
+    omissions_json    TEXT NOT NULL DEFAULT '[]',
+    manifest_json     TEXT NOT NULL,
+    manifest_sha256   TEXT NOT NULL,
+    created_at        INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS publication_waivers (
+    id           TEXT PRIMARY KEY,
+    revision_id  TEXT NOT NULL REFERENCES publication_revisions(id) ON DELETE CASCADE,
+    finding_code TEXT NOT NULL,
+    author       TEXT NOT NULL,
+    reason       TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    UNIQUE(revision_id, finding_code)
+);
+CREATE INDEX IF NOT EXISTS ix_publication_waivers_revision
+    ON publication_waivers(revision_id, finding_code);
+
+CREATE TABLE IF NOT EXISTS publication_freeze_attempts (
+    id                TEXT PRIMARY KEY,
+    revision_id       TEXT NOT NULL UNIQUE
+                          REFERENCES publication_revisions(id) ON DELETE CASCADE,
+    target_visibility TEXT NOT NULL
+                          CHECK(target_visibility IN ('public','restricted','private')),
+    policy_json       TEXT NOT NULL,
+    started_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_publication_freeze_attempts_started
+    ON publication_freeze_attempts(started_at, revision_id);
+
+CREATE TABLE IF NOT EXISTS capsule_builds (
+    id                       TEXT PRIMARY KEY,
+    revision_id              TEXT NOT NULL
+                                 REFERENCES publication_revisions(id) ON DELETE CASCADE,
+    format                   TEXT NOT NULL,
+    visibility               TEXT NOT NULL
+                                 CHECK(visibility IN ('public','restricted','private')),
+    status                   TEXT NOT NULL,
+    output_path              TEXT,
+    revision_manifest_sha256 TEXT NOT NULL,
+    archive_sha256           TEXT,
+    error                    TEXT,
+    created_at               INTEGER NOT NULL,
+    completed_at             INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_capsule_builds_revision
+    ON capsule_builds(revision_id, created_at DESC, id);
+
+CREATE TABLE IF NOT EXISTS reproduction_runs (
+    id                        TEXT PRIMARY KEY,
+    revision_id               TEXT NOT NULL
+                                      REFERENCES publication_revisions(id) ON DELETE CASCADE,
+    source_run_id             TEXT NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+    status                    TEXT NOT NULL
+                                      CHECK(status IN ('running','completed','failed')),
+    capability_level          TEXT NOT NULL
+                                      CHECK(capability_level IN ('re_executable','reproduced')),
+    command_sha256            TEXT NOT NULL,
+    expected_environment_hash TEXT,
+    actual_environment_json   TEXT NOT NULL,
+    actual_environment_hash   TEXT NOT NULL,
+    environment_matched       INTEGER NOT NULL DEFAULT 0,
+    workspace_manifest_json   TEXT NOT NULL,
+    stdout_tail               TEXT,
+    stderr_tail               TEXT,
+    exit_code                 INTEGER,
+    error                     TEXT,
+    created_at                INTEGER NOT NULL,
+    started_at                INTEGER NOT NULL,
+    completed_at              INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_reproduction_runs_revision
+    ON reproduction_runs(revision_id, created_at DESC, id);
+CREATE INDEX IF NOT EXISTS ix_reproduction_runs_source
+    ON reproduction_runs(source_run_id, created_at DESC, id);
+
+CREATE TABLE IF NOT EXISTS reproduction_results (
+    id                           TEXT PRIMARY KEY,
+    reproduction_run_id          TEXT NOT NULL
+                                         REFERENCES reproduction_runs(id) ON DELETE CASCADE,
+    output_id                    TEXT NOT NULL,
+    output_path                  TEXT NOT NULL,
+    expected_artifact_version_id TEXT NOT NULL
+                                         REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+    comparator_kind              TEXT NOT NULL
+                                         CHECK(comparator_kind IN
+                                               ('sha256','text','json','numeric')),
+    required                     INTEGER NOT NULL DEFAULT 1,
+    expected_json                TEXT NOT NULL,
+    actual_json                  TEXT NOT NULL,
+    tolerance_json               TEXT NOT NULL DEFAULT '{}',
+    passed                       INTEGER NOT NULL,
+    report_json                  TEXT NOT NULL DEFAULT '{}',
+    created_at                   INTEGER NOT NULL,
+    UNIQUE(reproduction_run_id, output_id)
+);
+CREATE INDEX IF NOT EXISTS ix_reproduction_results_run
+    ON reproduction_results(reproduction_run_id, output_id);
 
 CREATE TABLE IF NOT EXISTS research_nodes (
     id            TEXT PRIMARY KEY,

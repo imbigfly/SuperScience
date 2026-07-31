@@ -13,12 +13,14 @@ mod codex_imports;
 mod execution_contexts;
 mod external_session_cache;
 mod library;
+mod lineage;
 mod models;
 mod plugins;
 mod project_sync;
 mod project_transfer;
 mod projects;
 mod provenance;
+mod publications;
 mod research;
 mod resources;
 mod runs;
@@ -35,6 +37,7 @@ pub use agent_workflows::{
     AgentDelegationRootLimits, AgentWorkflow, AgentWorkflowStatus, AgentWorkflowStep,
     MAX_ROOT_AGENT_DEPTH, MAX_ROOT_AGENT_TASKS,
 };
+pub use artifacts::logical_artifact_id;
 pub use ask_user_requests::AskUserPoll;
 pub use external_session_cache::ExternalSessionCacheRecord;
 pub use library::{
@@ -44,6 +47,7 @@ pub use models::*;
 pub use project_sync::ProjectSyncState;
 pub use project_transfer::ProjectTransferStats;
 pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
+pub use provenance::{canonical_json, canonical_json_sha256};
 pub use sessions::{SessionTokenUsage, SessionTranscriptPage};
 
 use anyhow::Result;
@@ -91,6 +95,16 @@ const EXTERNAL_SESSION_CACHE_MIGRATION: &str = "0025_external_session_cache";
 const TURN_FILE_UNDO_MIGRATION: &str = "0026_turn_file_undo";
 const SESSION_BRANCH_LINEAGE_MIGRATION: &str = "0027_session_branch_lineage";
 const ASK_USER_REQUESTS_MIGRATION: &str = "0028_ask_user_requests";
+const RUN_ARTIFACT_LINEAGE_MIGRATION: &str = "0029_run_artifact_lineage";
+const PUBLICATION_DOMAIN_MIGRATION: &str = "0030_publication_domain";
+const PUBLICATION_DOMAIN_MIGRATION_SQL: &str =
+    include_str!("../migrations/0030_publication_domain.sql");
+const PUBLICATION_FREEZE_MIGRATION: &str = "0031_publication_freeze";
+const PUBLICATION_FREEZE_MIGRATION_SQL: &str =
+    include_str!("../migrations/0031_publication_freeze.sql");
+const PUBLICATION_VERIFICATION_MIGRATION: &str = "0032_publication_verification";
+const PUBLICATION_VERIFICATION_MIGRATION_SQL: &str =
+    include_str!("../migrations/0032_publication_verification.sql");
 
 #[derive(Clone)]
 pub struct Store {
@@ -416,6 +430,465 @@ impl Store {
             .execute(pool)
             .await?;
             Self::record_migration(pool, ASK_USER_REQUESTS_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, RUN_ARTIFACT_LINEAGE_MIGRATION).await? {
+            Self::apply_run_artifact_lineage(pool).await?;
+            Self::record_migration(pool, RUN_ARTIFACT_LINEAGE_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, PUBLICATION_DOMAIN_MIGRATION).await? {
+            Self::execute_sql_script(pool, PUBLICATION_DOMAIN_MIGRATION_SQL).await?;
+            Self::install_publication_triggers(pool).await?;
+            Self::record_migration(pool, PUBLICATION_DOMAIN_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, PUBLICATION_FREEZE_MIGRATION).await? {
+            Self::apply_publication_freeze(pool).await?;
+            Self::record_migration(pool, PUBLICATION_FREEZE_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, PUBLICATION_VERIFICATION_MIGRATION).await? {
+            Self::execute_sql_script(pool, PUBLICATION_VERIFICATION_MIGRATION_SQL).await?;
+            Self::record_migration(pool, PUBLICATION_VERIFICATION_MIGRATION).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_publication_freeze(pool: &SqlitePool) -> Result<()> {
+        Self::add_columns_if_missing(
+            pool,
+            "publication_readiness_reports",
+            &[
+                (
+                    "target_visibility",
+                    "TEXT NOT NULL DEFAULT 'public' CHECK(target_visibility IN ('public','restricted','private'))",
+                ),
+                ("policy_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ],
+        )
+        .await?;
+        Self::execute_sql_script(pool, PUBLICATION_FREEZE_MIGRATION_SQL).await?;
+        Self::install_publication_freeze_triggers(pool).await
+    }
+
+    async fn apply_run_artifact_lineage(pool: &SqlitePool) -> Result<()> {
+        Self::add_columns_if_missing(pool, "artifacts", &[("logical_key", "TEXT")]).await?;
+        Self::add_columns_if_missing(
+            pool,
+            "artifact_versions",
+            &[
+                ("materialization", "TEXT NOT NULL DEFAULT 'reference'"),
+                ("capture_timing", "TEXT NOT NULL DEFAULT 'unknown'"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "artifact_dependencies",
+            &[
+                ("basis", "TEXT NOT NULL DEFAULT 'inferred'"),
+                ("confidence", "TEXT NOT NULL DEFAULT 'uncertain'"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "env_snapshots",
+            &[
+                ("snapshot_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("hash_algorithm", "TEXT NOT NULL DEFAULT 'legacy'"),
+            ],
+        )
+        .await?;
+        let artifacts_exist: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifacts')",
+        )
+        .fetch_one(pool)
+        .await?;
+        if artifacts_exist {
+            sqlx::query(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_artifacts_project_logical_key \
+                 ON artifacts(project_id,logical_key) WHERE logical_key IS NOT NULL",
+            )
+            .execute(pool)
+            .await?;
+        }
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS external_resources (\
+             id TEXT PRIMARY KEY, \
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, \
+             kind TEXT NOT NULL, uri TEXT NOT NULL, version TEXT, checksum TEXT, \
+             size_bytes INTEGER, license TEXT, visibility TEXT NOT NULL DEFAULT 'restricted', \
+             access_instructions TEXT, accessed_at INTEGER, \
+             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, \
+             UNIQUE(project_id,uri,version))",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS run_inputs (\
+             id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, \
+             artifact_version_id TEXT REFERENCES artifact_versions(id) ON DELETE RESTRICT, \
+             external_resource_id TEXT REFERENCES external_resources(id) ON DELETE RESTRICT, \
+             source_ref TEXT NOT NULL, role TEXT NOT NULL, required INTEGER NOT NULL DEFAULT 1, \
+             basis TEXT NOT NULL, confidence TEXT NOT NULL, created_at INTEGER NOT NULL)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS ix_run_inputs_run ON run_inputs(run_id)")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS ix_run_inputs_artifact_version \
+             ON run_inputs(artifact_version_id)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS run_outputs (\
+             id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, \
+             artifact_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT, \
+             role TEXT NOT NULL, logical_output_key TEXT NOT NULL, source_path TEXT NOT NULL, \
+             created_at INTEGER NOT NULL, UNIQUE(run_id,artifact_version_id,role))",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS ix_run_outputs_run ON run_outputs(run_id)")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS ix_run_outputs_artifact_version \
+             ON run_outputs(artifact_version_id)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS run_code_snapshots (\
+             id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, \
+             source_kind TEXT NOT NULL, source_path TEXT, source_text TEXT NOT NULL, \
+             checksum TEXT NOT NULL, storage_path TEXT, git_commit TEXT, dirty_patch TEXT, \
+             created_at INTEGER NOT NULL)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS ix_run_code_snapshots_run \
+             ON run_code_snapshots(run_id)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS run_environment_snapshots (\
+             run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, \
+             env_snapshot_hash TEXT NOT NULL REFERENCES env_snapshots(hash) ON DELETE RESTRICT)",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn install_publication_triggers(pool: &SqlitePool) -> Result<()> {
+        for statement in [
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_revision_parent_insert \
+             BEFORE INSERT ON publication_revisions \
+             WHEN NEW.parent_revision_id=NEW.id \
+               OR (NEW.parent_revision_id IS NOT NULL AND NOT EXISTS(\
+               SELECT 1 FROM publication_revisions parent \
+               WHERE parent.id=NEW.parent_revision_id \
+                 AND parent.publication_id=NEW.publication_id)) \
+             BEGIN SELECT RAISE(ABORT,'Publication revision parent must belong to the same Publication'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_revision_parent_update \
+             BEFORE UPDATE OF parent_revision_id,publication_id ON publication_revisions \
+             WHEN NEW.parent_revision_id=NEW.id \
+               OR (NEW.parent_revision_id IS NOT NULL AND NOT EXISTS(\
+               SELECT 1 FROM publication_revisions parent \
+               WHERE parent.id=NEW.parent_revision_id \
+                 AND parent.publication_id=NEW.publication_id)) \
+             BEGIN SELECT RAISE(ABORT,'Publication revision parent must belong to the same Publication'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_revision_immutable_update \
+             BEFORE UPDATE ON publication_revisions \
+             WHEN OLD.state IN ('frozen','published') AND (\
+               NEW.publication_id IS NOT OLD.publication_id \
+               OR NEW.parent_revision_id IS NOT OLD.parent_revision_id \
+               OR NEW.revision_number IS NOT OLD.revision_number \
+               OR NEW.label IS NOT OLD.label \
+               OR NEW.capability_level IS NOT OLD.capability_level \
+               OR NEW.manifest_json IS NOT OLD.manifest_json \
+               OR NEW.manifest_sha256 IS NOT OLD.manifest_sha256 \
+               OR NEW.frozen_at IS NOT OLD.frozen_at \
+               OR NEW.created_at IS NOT OLD.created_at \
+               OR (NOT(OLD.state='frozen' AND NEW.state='published') \
+                   AND NEW.published_at IS NOT OLD.published_at) \
+               OR (OLD.state='frozen' AND NEW.state='published' \
+                   AND NEW.published_at IS NULL) \
+               OR (OLD.state='frozen' AND NEW.state NOT IN ('published','deleting')) \
+               OR (OLD.state='published' AND NEW.state<>'deleting')\
+             ) \
+             BEGIN SELECT RAISE(ABORT,'Publication revision is immutable'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_revision_immutable_delete \
+             BEFORE DELETE ON publication_revisions \
+             WHEN OLD.state NOT IN ('draft','deleting') \
+             BEGIN SELECT RAISE(ABORT,'Publication revision is immutable'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_item_parent_insert \
+             BEFORE INSERT ON publication_items \
+             WHEN NEW.parent_item_id IS NOT NULL AND NOT EXISTS(\
+               SELECT 1 FROM publication_items parent \
+               WHERE parent.id=NEW.parent_item_id AND parent.revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Publication item parent must belong to the same revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_item_parent_update \
+             BEFORE UPDATE OF parent_item_id,revision_id ON publication_items \
+             WHEN NEW.parent_item_id IS NOT NULL AND NOT EXISTS(\
+               SELECT 1 FROM publication_items parent \
+               WHERE parent.id=NEW.parent_item_id AND parent.revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Publication item parent must belong to the same revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_item_link_scope_insert \
+             BEFORE INSERT ON publication_item_links \
+             WHEN NOT EXISTS(SELECT 1 FROM publication_items \
+                             WHERE id=NEW.source_item_id AND revision_id=NEW.revision_id) \
+               OR NOT EXISTS(SELECT 1 FROM publication_items \
+                             WHERE id=NEW.target_item_id AND revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Publication item link must stay inside one revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_publication_item_link_scope_update \
+             BEFORE UPDATE ON publication_item_links \
+             WHEN NOT EXISTS(SELECT 1 FROM publication_items \
+                             WHERE id=NEW.source_item_id AND revision_id=NEW.revision_id) \
+               OR NOT EXISTS(SELECT 1 FROM publication_items \
+                             WHERE id=NEW.target_item_id AND revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Publication item link must stay inside one revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_binding_scope_insert \
+             BEFORE INSERT ON evidence_bindings \
+             WHEN (NEW.item_id IS NOT NULL AND NOT EXISTS(\
+                     SELECT 1 FROM publication_items \
+                     WHERE id=NEW.item_id AND revision_id=NEW.revision_id)) \
+               OR (NEW.supported_claim_item_id IS NOT NULL AND NOT EXISTS(\
+                     SELECT 1 FROM publication_items \
+                     WHERE id=NEW.supported_claim_item_id \
+                       AND revision_id=NEW.revision_id AND kind='claim')) \
+             BEGIN SELECT RAISE(ABORT,'Evidence binding items must belong to the revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_binding_scope_update \
+             BEFORE UPDATE ON evidence_bindings \
+             WHEN (NEW.item_id IS NOT NULL AND NOT EXISTS(\
+                     SELECT 1 FROM publication_items \
+                     WHERE id=NEW.item_id AND revision_id=NEW.revision_id)) \
+               OR (NEW.supported_claim_item_id IS NOT NULL AND NOT EXISTS(\
+                     SELECT 1 FROM publication_items \
+                     WHERE id=NEW.supported_claim_item_id \
+                       AND revision_id=NEW.revision_id AND kind='claim')) \
+             BEGIN SELECT RAISE(ABORT,'Evidence binding items must belong to the revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_binding_source_project_insert \
+             BEFORE INSERT ON evidence_bindings \
+             WHEN (NEW.source_kind='artifact_version' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN artifact_versions version ON version.id=NEW.artifact_version_id \
+                     JOIN artifacts artifact ON artifact.id=version.artifact_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND artifact.project_id=publication.project_id)) \
+               OR (NEW.source_kind='run' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN runs run ON run.id=NEW.run_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND run.project_id=publication.project_id)) \
+               OR (NEW.source_kind='external_resource' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN external_resources resource ON resource.id=NEW.external_resource_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND resource.project_id=publication.project_id)) \
+             BEGIN SELECT RAISE(ABORT,'Evidence source must belong to the Publication project'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_binding_source_project_update \
+             BEFORE UPDATE ON evidence_bindings \
+             WHEN (NEW.source_kind='artifact_version' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN artifact_versions version ON version.id=NEW.artifact_version_id \
+                     JOIN artifacts artifact ON artifact.id=version.artifact_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND artifact.project_id=publication.project_id)) \
+               OR (NEW.source_kind='run' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN runs run ON run.id=NEW.run_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND run.project_id=publication.project_id)) \
+               OR (NEW.source_kind='external_resource' AND NOT EXISTS(\
+                     SELECT 1 FROM publication_revisions revision \
+                     JOIN publications publication ON publication.id=revision.publication_id \
+                     JOIN external_resources resource ON resource.id=NEW.external_resource_id \
+                     WHERE revision.id=NEW.revision_id \
+                       AND resource.project_id=publication.project_id)) \
+             BEGIN SELECT RAISE(ABORT,'Evidence source must belong to the Publication project'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_supersession_scope_insert \
+             BEFORE INSERT ON evidence_supersessions \
+             WHEN NOT EXISTS(SELECT 1 FROM evidence_bindings \
+                             WHERE id=NEW.old_binding_id AND revision_id=NEW.revision_id) \
+               OR NOT EXISTS(SELECT 1 FROM evidence_bindings \
+                             WHERE id=NEW.new_binding_id AND revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Evidence supersession must stay inside one revision'); END",
+            "CREATE TRIGGER IF NOT EXISTS trg_evidence_supersession_scope_update \
+             BEFORE UPDATE ON evidence_supersessions \
+             WHEN NOT EXISTS(SELECT 1 FROM evidence_bindings \
+                             WHERE id=NEW.old_binding_id AND revision_id=NEW.revision_id) \
+               OR NOT EXISTS(SELECT 1 FROM evidence_bindings \
+                             WHERE id=NEW.new_binding_id AND revision_id=NEW.revision_id) \
+             BEGIN SELECT RAISE(ABORT,'Evidence supersession must stay inside one revision'); END",
+        ] {
+            sqlx::query(statement).execute(pool).await?;
+        }
+
+        for table in [
+            "publication_items",
+            "publication_item_links",
+            "evidence_bindings",
+            "evidence_supersessions",
+            "publication_readiness_reports",
+            "publication_waivers",
+        ] {
+            for operation in ["insert", "update", "delete"] {
+                let state_check = match operation {
+                    "insert" => {
+                        "COALESCE((SELECT state FROM publication_revisions \
+                         WHERE id=NEW.revision_id),'missing') \
+                         NOT IN ('draft','freezing','deleting')"
+                    }
+                    "update" => {
+                        "COALESCE((SELECT state FROM publication_revisions \
+                         WHERE id=OLD.revision_id),'missing') \
+                         NOT IN ('draft','freezing','deleting') \
+                         OR COALESCE((SELECT state FROM publication_revisions \
+                         WHERE id=NEW.revision_id),'missing') \
+                         NOT IN ('draft','freezing','deleting')"
+                    }
+                    "delete" => {
+                        "COALESCE((SELECT state FROM publication_revisions \
+                         WHERE id=OLD.revision_id),'missing') \
+                         NOT IN ('draft','freezing','deleting')"
+                    }
+                    _ => unreachable!(),
+                };
+                let trigger = format!(
+                    "CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation}_draft \
+                     BEFORE {} ON {table} \
+                     WHEN {state_check} \
+                     BEGIN SELECT RAISE(ABORT,'Publication revision content is immutable'); END",
+                    operation.to_ascii_uppercase()
+                );
+                sqlx::query(&trigger).execute(pool).await?;
+            }
+        }
+
+        for operation in ["insert", "update", "delete"] {
+            let state_check = match operation {
+                "insert" => {
+                    "COALESCE((\
+                       SELECT revision.state FROM evidence_bindings binding \
+                       JOIN publication_revisions revision ON revision.id=binding.revision_id \
+                       WHERE binding.id=NEW.binding_id\
+                     ),'missing') NOT IN ('draft','freezing','deleting')"
+                }
+                "update" => {
+                    "COALESCE((\
+                       SELECT revision.state FROM evidence_bindings binding \
+                       JOIN publication_revisions revision ON revision.id=binding.revision_id \
+                       WHERE binding.id=OLD.binding_id\
+                     ),'missing') NOT IN ('draft','freezing','deleting') \
+                     OR COALESCE((\
+                       SELECT revision.state FROM evidence_bindings binding \
+                       JOIN publication_revisions revision ON revision.id=binding.revision_id \
+                       WHERE binding.id=NEW.binding_id\
+                     ),'missing') NOT IN ('draft','freezing','deleting')"
+                }
+                "delete" => {
+                    "COALESCE((\
+                       SELECT revision.state FROM evidence_bindings binding \
+                       JOIN publication_revisions revision ON revision.id=binding.revision_id \
+                       WHERE binding.id=OLD.binding_id\
+                     ),'missing') NOT IN ('draft','freezing','deleting')"
+                }
+                _ => unreachable!(),
+            };
+            let trigger = format!(
+                "CREATE TRIGGER IF NOT EXISTS trg_evidence_reviews_{operation}_draft \
+                 BEFORE {} ON evidence_reviews \
+                 WHEN {state_check} \
+                 BEGIN SELECT RAISE(ABORT,'Publication revision content is immutable'); END",
+                operation.to_ascii_uppercase()
+            );
+            sqlx::query(&trigger).execute(pool).await?;
+        }
+        Ok(())
+    }
+
+    async fn install_publication_freeze_triggers(pool: &SqlitePool) -> Result<()> {
+        for (base_table, statement) in [
+            (
+                None,
+                "CREATE TRIGGER IF NOT EXISTS trg_publication_freeze_attempt_revision_insert \
+             BEFORE INSERT ON publication_freeze_attempts \
+             WHEN NOT EXISTS(\
+               SELECT 1 FROM publication_revisions revision \
+               WHERE revision.id=NEW.revision_id AND revision.state='freezing'\
+             ) \
+             BEGIN SELECT RAISE(ABORT,'Publication freeze attempt requires a Freezing revision'); END",
+            ),
+            (
+                None,
+                "CREATE TRIGGER IF NOT EXISTS trg_publication_freezing_exit \
+             BEFORE UPDATE OF state ON publication_revisions \
+             WHEN OLD.state='freezing' AND NEW.state<>'freezing' \
+               AND EXISTS(\
+                 SELECT 1 FROM publication_freeze_attempts attempt \
+                 WHERE attempt.revision_id=OLD.id\
+               ) \
+             BEGIN SELECT RAISE(ABORT,'Publication freeze attempt must finish atomically'); END",
+            ),
+            (
+                Some("artifact_versions"),
+                "CREATE TRIGGER IF NOT EXISTS trg_frozen_evidence_artifact_version_delete \
+             BEFORE DELETE ON artifact_versions \
+             WHEN EXISTS(\
+               SELECT 1 FROM evidence_bindings binding \
+               JOIN publication_revisions revision ON revision.id=binding.revision_id \
+               WHERE binding.artifact_version_id=OLD.id \
+                 AND revision.state IN ('frozen','published')\
+               ) \
+             BEGIN SELECT RAISE(ABORT,'ArtifactVersion is retained by frozen Publication evidence'); END",
+            ),
+            (
+                Some("runs"),
+                "CREATE TRIGGER IF NOT EXISTS trg_frozen_evidence_run_delete \
+             BEFORE DELETE ON runs \
+             WHEN EXISTS(\
+               SELECT 1 FROM evidence_bindings binding \
+               JOIN publication_revisions revision ON revision.id=binding.revision_id \
+               WHERE binding.run_id=OLD.id \
+                 AND revision.state IN ('frozen','published')\
+               ) \
+             BEGIN SELECT RAISE(ABORT,'Run is retained by frozen Publication evidence'); END",
+            ),
+            (
+                Some("external_resources"),
+                "CREATE TRIGGER IF NOT EXISTS trg_frozen_evidence_external_resource_delete \
+             BEFORE DELETE ON external_resources \
+             WHEN EXISTS(\
+               SELECT 1 FROM evidence_bindings binding \
+               JOIN publication_revisions revision ON revision.id=binding.revision_id \
+               WHERE binding.external_resource_id=OLD.id \
+                 AND revision.state IN ('frozen','published')\
+               ) \
+             BEGIN SELECT RAISE(ABORT,'ExternalResource is retained by frozen Publication evidence'); END",
+            ),
+        ] {
+            if let Some(table) = base_table {
+                let exists: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+                )
+                .bind(table)
+                .fetch_one(pool)
+                .await?;
+                if !exists {
+                    continue;
+                }
+            }
+            sqlx::query(statement).execute(pool).await?;
         }
         Ok(())
     }
