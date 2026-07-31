@@ -33,12 +33,15 @@ one or more Quick Actions.
 The Subagent graph is the primary composition surface. It assigns every task
 to a topological stage: nodes in the same column are independent and may run
 in parallel, while arrows move left to right through dependent stages. Select
-a node to edit its complete task contract in the inspector. Use the output
-handle on one node and then choose a downstream node to create a dependency;
-remove incoming dependency chips to disconnect it. Nodes can also be added or
-deleted directly on the canvas. Every graph interaction updates the ordinary
-`depends_on` proposal fields immediately, and cycle-producing connections are
-rejected before save.
+a node to edit its complete task contract in the inspector. Drag from an
+output handle to a downstream node (or click the handle then click the target)
+to create a dependency; use **Add after selected** to insert the next stage
+directly after the current node, or **Add parallel node** for same-stage
+peers. Click an arrow to select it, then click again or press Delete to
+remove the dependency; incoming dependency chips in the inspector still work
+too. Nodes can also be added or deleted directly on the canvas. Every graph
+interaction updates the ordinary `depends_on` proposal fields immediately, and
+cycle-producing connections are rejected before save.
 
 Workflow Studio replaces the normal Settings chrome with a dedicated
 full-window editor. Its stable layout keeps the template library on the left,
