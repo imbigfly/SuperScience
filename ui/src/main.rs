@@ -1301,7 +1301,6 @@ fn App() -> impl IntoView {
         }
     });
     let agent_panel = AgentPanelState::new(active_session);
-    refresh_agent_resources(agent_panel, specialists);
     let workflow_studio_state = AgentPanelState::new(active_session);
     refresh_agent_resources(workflow_studio_state, specialists);
     let file_source = create_rw_signal("local".to_string());
@@ -4632,13 +4631,6 @@ fn App() -> impl IntoView {
     let takeover_session = Callback::new(move |id: String| {
         load_session.call(id);
         right_tab.set(RightTab::Agents);
-    });
-
-    // "Ask model to review" in the Agents panel drops the serialized workflow
-    // config into the composer so the user can send it to the current chat.
-    let agent_config_to_chat = Callback::new(move |text: String| {
-        input.set(text);
-        focus_composer();
     });
 
     let load_earlier_messages = Callback::new(move |_: ()| {
@@ -10806,14 +10798,15 @@ fn App() -> impl IntoView {
                         }
                         RightTab::Agents => agent_workflows_panel(
                             agent_panel,
-                            specialists,
-                            models,
                             sessions,
                             delegation_enabled,
                             locale,
                             takeover_session.clone(),
                             refresh_agent_sessions.clone(),
-                            agent_config_to_chat.clone(),
+                            Callback::new(move |_: ()| {
+                                open_settings_fn(Some("workflows".into()));
+                                refresh_agent_resources(workflow_studio_state, specialists);
+                            }),
                         ).into_view(),
                         RightTab::Notebook => {
                             view! {

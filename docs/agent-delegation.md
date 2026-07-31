@@ -22,7 +22,9 @@ Manage these two layers in Settings:
   schemas. Tasks without dependencies may run in parallel; dependencies define
   the serial stages.
 
-The Studio uses the same editor and proposal type as the Agents panel.
+The Studio uses the same task contract and proposal type as runtime delegation.
+The right-panel Agents view is intentionally an activity surface rather than a
+second workflow editor.
 **Literature evidence review** and **Roundtable** are both read-only built-in
 Workflows in its library. The Roundtable generator is also available for
 custom variants: it expands two or three participants plus a chair into
@@ -136,13 +138,12 @@ automatically.
 
 ## Roundtable template
 
-The Agents panel and Workflow Studio can generate a structured Roundtable
-without introducing a second workflow or chat protocol. Expand **Roundtable
-template**, choose two or three discussion seats, and assign each seat an
-optional Specialist plus a Native or ACP executor. A Native seat may also
-select a Wisp model; an ACP seat's model and reasoning settings remain owned by
-that ACP Agent profile. Configure the chair separately, then apply the
-template.
+Workflow Studio can generate a structured Roundtable without introducing a
+second workflow or chat protocol. Expand **Roundtable template**, choose two or
+three discussion seats, and assign each seat an optional Specialist plus a
+Native or ACP executor. A Native seat may also select a Wisp model; an ACP
+seat's model and reasoning settings remain owned by that ACP Agent profile.
+Configure the chair separately, then apply the template.
 
 The generated proposal uses the ordinary dynamic workflow contract:
 
@@ -175,10 +176,9 @@ a workflow handle as soon as the approved batch is scheduled, allowing the
 parent turn and the rest of the app to continue. The main Agent must not poll
 that handle.
 
-Workflows started directly from the Agents panel are already detached from a
-parent model turn, so they always use the durable background delivery path.
-The conversation's auto-resume setting still decides whether their parent is
-automatically synthesized.
+Workflows started outside a parent model turn, such as Quick Actions, use the
+durable background delivery path. The conversation's auto-resume setting still
+decides whether their parent is automatically synthesized.
 
 Each background execution reserves a persisted generation before any child
 starts. When the workflow reaches succeeded, failed, or cancelled, Wisp stores
@@ -367,13 +367,14 @@ the coordination paths.
 
 ## Dynamic Agents panel
 
-The right-panel Agents view is the control and audit surface for both inline
-and manually drafted work. It shows only workflows owned by the active
+The right-panel Agents view shows workflow activity owned by the active
 conversation. Switching conversations switches the panel context; work in
-other conversations keeps running in the background.
+other conversations keeps running in the background. Workflow definitions are
+created and edited only in **Settings → Workflows**; the panel links directly
+to that standalone Studio and does not embed a second editor.
 Nested workflows appear indented beneath the root workflow with their depth
 and namespaced task IDs. They are execution records rather than independent
-drafts, so edit, approve, run, and retry controls remain on the root only.
+drafts, so lifecycle controls remain on the root only.
 Each dynamic task shows dependencies, requested capabilities, optional
 Specialist, resolved model and executor, workspace/tool authority, approval
 reasons, status, duration, usage, summary, and whether a full result is
@@ -382,14 +383,12 @@ over** opens that task's child conversation. Child conversations remain linked
 to their dispatching conversation and do not appear as top-level sessions in
 the sidebar, recent-session views, or session search.
 
-The editor creates arbitrary temporary tasks instead of assembling a fixed
-team. Add up to eight bounded tasks, connect them with dependencies, and
-choose capabilities from the live policy registry. Advanced controls can
-request a Specialist persona, model, eligible executor, isolation, budgets,
-and a JSON output schema. UI-authored drafts pass through the same resolver as
-main-Agent-authored batches, so the form never grants raw tools or authority.
-Turning Delegation off disables new drafts, approvals, runs, and retries while
-leaving supported dynamic history and cancellation available.
+Workflow Studio creates arbitrary task graphs instead of assembling a fixed
+team. Add bounded tasks, connect them with dependencies, and choose
+capabilities, Specialist persona, model, eligible executor, isolation,
+budgets, and output schemas there. Turning Delegation off disables approvals,
+runs, and retries while leaving supported dynamic history and cancellation
+available in the activity panel.
 
 Only schema-version-2 dynamic plans are part of the product surface. Earlier
 fixed-plan records are not migrated or deleted, but the Agents panel does not
@@ -405,10 +404,11 @@ response contains one synthesized comparison. Switch **Completion** to
 running handle followed later by exactly one completion card in the same
 conversation. Enable **Auto-resume parent** and verify an idle conversation
 adds one synthesized assistant update; start another parent turn and verify a
-completion waits behind it. Then create an equivalent draft with **Add task**
-and confirm no predefined team is required. Repeat with a write capability:
-Wisp should show the exact resolved authority and start zero children if
-approval is denied.
+completion waits behind it. Then create an equivalent graph in
+**Settings → Workflows**, attach it from the composer, and confirm the Agents
+panel shows the run without showing workflow editing fields. Repeat with a
+write capability: Wisp should show the exact resolved authority and start zero
+children if approval is denied.
 Finally, add the **Nested delegation** capability to one root task and let it
 create two independent leaf tasks. Confirm that both leaves appear under the
 same root card at depth 2, their IDs are prefixed by the parent task, their
