@@ -125,8 +125,11 @@ environment table beside the runtime cards with bounded object names, types,
 values/shapes, and sizes. Pinning that table moves it onto the conversation as a
 draggable window, where it remains available after the runtime dialog closes.
 The composer's agent-options menu groups Auto-review, Reviewer model, Memory,
-Specialist, and Compute controls in one place. Local compute is always available;
-the searchable Compute menu only lists configured remote servers. A server must
+Specialist, and Compute controls in one place. The Capabilities panel's
+**Memory files** card opens Settings → Memory, where
+project memory notes can be added, opened, edited, saved, and deleted.
+Local compute is always available; the searchable Compute menu only lists
+configured remote servers. A server must
 be explicitly selected for the current conversation before the agent can use it,
 and selected servers are preferred for suitable work. The selection is isolated
 per conversation. Settings → Environments always shows local compute and owns

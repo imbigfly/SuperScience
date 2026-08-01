@@ -206,7 +206,6 @@ mod memory_category_tests {
     fn f(name: &str) -> MemoryFile {
         MemoryFile {
             name: name.into(),
-            preview: String::new(),
             bytes: 0,
         }
     }

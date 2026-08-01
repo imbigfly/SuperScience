@@ -1972,7 +1972,6 @@ fn default_model_context_window() -> u64 {
 #[derive(Deserialize, Clone)]
 pub(crate) struct MemoryFile {
     pub(crate) name: String,
-    pub(crate) preview: String,
     pub(crate) bytes: u64,
 }
 
