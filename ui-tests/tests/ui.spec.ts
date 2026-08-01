@@ -4961,7 +4961,7 @@ test("credentials settings add, replace, clear, and remove a custom credential",
     .toMatchObject({ id: "custom-1" });
 });
 
-test("capability counts open skills, connections, and current-project memory", async ({ page }) => {
+test("capability counts open skills, connections, and editable project memory", async ({ page }) => {
   await enterApp(page);
 
   await page.getByRole("button", { name: "Capabilities" }).click();
@@ -4979,16 +4979,28 @@ test("capability counts open skills, connections, and current-project memory", a
   await page.getByRole("button", { name: "Capabilities" }).click();
   capabilities = page.getByRole("dialog", { name: "Capabilities" });
   await capabilities.getByRole("button", { name: "1 Memory files" }).click();
+  await expect(page.locator(".settings-nav button.active")).toHaveText("Memory");
+  await expect(page.getByText("2026-07-01.md", { exact: true })).toBeVisible();
 
-  const memory = page.getByRole("dialog", { name: "Memory files" });
-  await expect(memory).toBeVisible();
-  await expect(memory).toContainText("Current project: wisp-science");
-  await expect(memory).toContainText("2026-07-01.md");
-  await expect(memory).toContainText("User prefers DeepSeek.");
+  await page.getByRole("button", { name: "Add note" }).click();
+  const editor = page.locator(".memory-editor-text");
+  await expect(editor).toHaveValue("");
+  await editor.fill("Prefer reproducible local workflows.");
+  await page.getByRole("button", { name: "Save note" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "write_memory_file")).toMatchObject({
+    name: "2026-07-04.md",
+    content: "Prefer reproducible local workflows.",
+  });
 
-  await page.keyboard.press("Escape");
-  await expect(memory).toHaveCount(0);
-  await expect(capabilities).toBeVisible();
+  await page.locator(".settings-head-back").click();
+  await page.getByText("2026-07-04.md", { exact: true }).click();
+  await expect(editor).toHaveValue("Prefer reproducible local workflows.");
+  await editor.fill("Prefer editable, reproducible local workflows.");
+  await page.getByRole("button", { name: "Save note" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "write_memory_file")).toMatchObject({
+    name: "2026-07-04.md",
+    content: "Prefer editable, reproducible local workflows.",
+  });
 });
 
 test("skill manager filters by tag and batch disables visible skills", async ({ page }) => {

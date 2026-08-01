@@ -4,7 +4,7 @@ use crate::app_support::{
 use crate::bindings::{invoke_checked, open_external_url};
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, Locale};
-use crate::text::{dom_value, event_target_value, format_bytes};
+use crate::text::{dom_value, event_target_value};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 
@@ -292,7 +292,6 @@ pub(super) fn RuntimeInterpreterOverlay(
 pub(super) fn CapabilitiesOverlay(
     locale: RwSignal<Locale>,
     show_capabilities: RwSignal<bool>,
-    show_memory_files: RwSignal<bool>,
     bootstrap: RwSignal<Option<BootstrapStatus>>,
     caps: RwSignal<Option<Capabilities>>,
     busy: RwSignal<bool>,
@@ -300,17 +299,14 @@ pub(super) fn CapabilitiesOverlay(
     start_env_setup: Callback<web_sys::MouseEvent>,
 ) -> impl IntoView {
     move || {
-        let capabilities = show_capabilities.get().then(|| view! {
+        show_capabilities.get().then(|| view! {
     <div class="overlay">
         <div class="modal modal-wide" role="dialog" aria-modal="true"
             aria-labelledby="capabilities-title">
             <div class="fb-head">
                 <h2 id="capabilities-title">{move || t(locale.get(), "caps.title")}</h2>
                 <button class="icon-btn" aria-label=move || t(locale.get(), "caps.close")
-                    on:click=move |_| {
-                        show_memory_files.set(false);
-                        show_capabilities.set(false);
-                    }>{compose_icon("close")}</button>
+                    on:click=move |_| show_capabilities.set(false)>{compose_icon("close")}</button>
             </div>
             {move || bootstrap.get().map(|b| {
                 let loc = locale.get();
@@ -358,17 +354,19 @@ pub(super) fn CapabilitiesOverlay(
                         <span class="cap-label">{move || t(locale.get(), "caps.mcp_servers")}</span>
                     </button>
                     <button type="button" class="cap-stat"
-                        on:click=move |_| show_memory_files.set(true)>
+                        on:click=move |_| {
+                            show_capabilities.set(false);
+                            open_settings_section.call("memory".into());
+                        }>
                         <span class="cap-num">{c.memory_files.len()}</span>
                         <span class="cap-label">{move || t(locale.get(), "caps.memory_files")}</span>
                     </button>
                 </div>
             })}
             <div class="row">
-                <button on:click=move |_| {
-                    show_memory_files.set(false);
-                    show_capabilities.set(false);
-                }>{move || t(locale.get(), "caps.close")}</button>
+                <button on:click=move |_| show_capabilities.set(false)>
+                    {move || t(locale.get(), "caps.close")}
+                </button>
                 {move || bootstrap.get().filter(|b| !b.python_initializing && (!b.python_ok || !b.uv_ok || !b.node_ok || !b.sci_ok || !b.pixi_ok)).map(|_| view! {
                     <button class="primary" disabled=move || busy.get() on:click=move |ev| start_env_setup.call(ev)>
                         {move || t(locale.get(), "caps.setup_env")}
@@ -377,60 +375,7 @@ pub(super) fn CapabilitiesOverlay(
             </div>
         </div>
     </div>
-}.into_view());
-        let memory_files = show_memory_files.get().then(|| {
-            let (project, files) = caps.get()
-                .map(|value| (value.project.name, value.memory_files))
-                .unwrap_or_default();
-            view! {
-                <div class="overlay cap-memory-overlay">
-                    <div class="modal modal-wide cap-memory-modal" role="dialog" aria-modal="true"
-                        aria-labelledby="cap-memory-title">
-                        <div class="fb-head">
-                            <div class="cap-memory-heading">
-                                <h2 id="cap-memory-title">{move || t(locale.get(), "caps.memory_files")}</h2>
-                                <p>{tf(locale.get(), "caps.memory_project", &[("project", &project)])}</p>
-                            </div>
-                            <button class="icon-btn" aria-label=move || t(locale.get(), "caps.close")
-                                on:click=move |_| show_memory_files.set(false)>
-                                {compose_icon("close")}
-                            </button>
-                        </div>
-                        {if files.is_empty() {
-                            view! {
-                                <div class="cap-memory-empty">
-                                    {move || t(locale.get(), "caps.memory_empty")}
-                                </div>
-                            }.into_view()
-                        } else {
-                            view! {
-                                <div class="cap-memory-list">
-                                    <For each=move || files.clone() key=|file| file.name.clone() let:file>
-                                        <article class="cap-memory-file">
-                                            <div class="cap-memory-file-head">
-                                                <span class="cap-memory-file-name">{file.name}</span>
-                                                <span class="cap-memory-file-size">{format_bytes(file.bytes)}</span>
-                                            </div>
-                                            <pre>{if file.preview.trim().is_empty() {
-                                                t(locale.get_untracked(), "caps.memory_no_preview").into()
-                                            } else {
-                                                file.preview
-                                            }}</pre>
-                                        </article>
-                                    </For>
-                                </div>
-                            }.into_view()
-                        }}
-                        <div class="row">
-                            <button on:click=move |_| show_memory_files.set(false)>
-                                {move || t(locale.get(), "caps.close")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            }.into_view()
-        });
-        (capabilities, memory_files).into_view()
+})
     }
 }
 

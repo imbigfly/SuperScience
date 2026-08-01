@@ -103,7 +103,7 @@ Agent 创建路径(lib.rs:573/581):seed 前用 `disabled_skills` 过滤 `ap.skil
 
 - Skills 跳转到 Settings → Skills。
 - MCP servers 跳转到 Settings → Connections。
-- Memory files 不离开当前页面，叠加只读 modal，列出当前项目的记忆文件、大小与内容预览。
+- Memory files 跳转到 Settings → Memory，可添加、查看、编辑和删除当前项目的记忆文件。
 
 生效提示:Skills / Connections 分区顶部一行小字"改动对新会话生效",旁边复用现有"New session"入口。
 

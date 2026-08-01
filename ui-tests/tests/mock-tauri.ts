@@ -2296,7 +2296,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return {
               skills,
               mcp_servers: ["mcp_bio", "mcp_chem"],
-              memory_files: [{ name: "2026-07-01.md", preview: "User prefers DeepSeek.", bytes: 128 }],
+              memory_files: memoryFiles,
               project,
             };
           case "list_skills":
@@ -2875,12 +2875,26 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             sessionAgentCompletion[sessionId] = value;
             return value;
           }
-          case "write_memory_file":
+          case "write_memory_file": {
+            const name = String(arg("name") ?? "");
+            const content = String(arg("content") ?? "");
+            const existing = memoryFiles.find((file) => file.name === name);
+            if (existing) {
+              existing.preview = content.slice(0, 240);
+              existing.bytes = content.length;
+            } else if (name) {
+              memoryFiles.push({ name, preview: content.slice(0, 240), bytes: content.length });
+            }
+            return memoryFiles;
+          }
           case "delete_memory_file":
+            memoryFiles = memoryFiles.filter((file) => file.name !== arg("name"));
+            return memoryFiles;
           case "clear_memory":
+            memoryFiles = [];
             return memoryFiles;
           case "read_memory_file":
-            return "User prefers DeepSeek.\n";
+            return memoryFiles.find((file) => file.name === arg("name"))?.preview ?? "";
           case "new_session": {
             const id = `s-${Math.random().toString(36).slice(2)}`;
             sessionModels[id] = activeHttpModelId();
