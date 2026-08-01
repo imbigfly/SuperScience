@@ -302,16 +302,50 @@ pub(super) async fn get_capabilities(
     window: tauri::WebviewWindow,
 ) -> Result<Capabilities, String> {
     let ap = state.active(window.label());
-    let project = build_project_info(&state, window.label()).await;
     let tags = load_skill_tags(&state.store).await;
-    let enabled = effective_enabled_skill_names(&state.store, &ap).await;
-    let skills = skill_infos(&ap.skills, &tags, enabled.as_ref());
+    let (catalog, enabled) = project_skill_catalog(&state.store, &ap).await;
+    let skills = skill_infos(&catalog, &tags, enabled.as_ref());
+    let skill_counts = capability_skill_counts(&skills);
+    let mcp_counts = capability_mcp_counts(&state.store, &ap).await;
+    let mut project = build_project_info(&state, window.label()).await;
+    project.skill_count = skill_counts.total();
+    project.mcp_server_count = mcp_counts.total();
     Ok(Capabilities {
         skills,
         mcp_servers: list_mcp_servers(&ap.root),
         memory_files: list_memory_files(&ap.memory),
         project,
+        skill_counts,
+        mcp_counts,
     })
+}
+
+pub(super) fn capability_skill_counts(skills: &[SkillInfo]) -> CapabilitySourceCounts {
+    let mut counts = CapabilitySourceCounts::default();
+    for skill in skills.iter().filter(|skill| skill.enabled) {
+        if skill.scope == SkillSource::Bundled.as_str() {
+            counts.bundled += 1;
+        } else {
+            counts.project += 1;
+        }
+    }
+    counts
+}
+
+async fn capability_mcp_counts(store: &Store, project: &ActiveProject) -> CapabilitySourceCounts {
+    let custom = load_mcp_connections(store)
+        .await
+        .into_iter()
+        .filter(|connection| connection.enabled)
+        .count();
+    let (plugin_launches, plugin_errors) =
+        plugins::enabled_plugin_mcp_launches(store, &project.id).await;
+    CapabilitySourceCounts {
+        bundled: list_mcp_servers(&project.root).len(),
+        // Invalid plugin launch configurations are still configured project
+        // MCP services and remain visible as unavailable in Settings.
+        project: custom + plugin_launches.len() + plugin_errors.len(),
+    }
 }
 
 #[tauri::command]

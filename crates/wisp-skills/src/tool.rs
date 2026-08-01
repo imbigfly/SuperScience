@@ -135,6 +135,8 @@ impl SearchSkillsTool {
             serde_json::to_string_pretty(&json!({
                 "results": results,
                 "matched_skills": matched_skills,
+                "current_configured_enabled_count": self.skills.all().len(),
+                "current_configured_enabled_by_source": self.skills.skill_counts_by_source(),
                 "searchable_enabled_count": self.skills.all().len(),
                 "catalog_counts": self.skills.catalog_audit(),
                 "next": "Call 'use_skill' with the exact name of the relevant skill. Use query '*' to browse.",
@@ -196,6 +198,8 @@ impl ListSkillCatalogTool {
                 "records": page,
                 "next_cursor": next_cursor,
                 "audit": self.skills.catalog_audit(),
+                "current_configured_enabled_count": self.skills.all().len(),
+                "current_configured_enabled_by_source": self.skills.skill_counts_by_source(),
                 "searchable_enabled_count": self.skills.all().len(),
             }))
             .unwrap_or_default(),
@@ -212,7 +216,7 @@ impl Tool for ListSkillCatalogTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "list_skill_catalog",
-            "Page through the complete discovered or effective Skill catalog, including shadowed and parse-error audit records. Counts distinguish discovered, effective, and currently searchable enabled Skills.",
+            "Read the authoritative current configured/enabled Skill count and page through the complete discovered or effective catalog, including source counts, shadowed records, and parse errors.",
             json!({
                 "type": "object",
                 "properties": {
@@ -436,10 +440,45 @@ mod tests {
         assert_eq!(first["records"].as_array().unwrap().len(), 2);
         assert_eq!(first["next_cursor"], "offset:2");
         assert_eq!(first["audit"]["discovered_count"], 3);
+        assert_eq!(first["current_configured_enabled_count"], 3);
+        assert_eq!(first["current_configured_enabled_by_source"]["custom"], 3);
         let second = tool.list(&json!({"limit": 2, "cursor": "offset:2"}));
         let second: serde_json::Value = serde_json::from_str(&second.content).unwrap();
         assert_eq!(second["records"].as_array().unwrap().len(), 1);
         assert!(second["next_cursor"].is_null());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn inventory_count_stays_authoritative_when_catalog_contains_disabled_skills() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp-skill-inventory-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for name in ["enabled", "disabled"] {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name}\n---\nbody"),
+            )
+            .unwrap();
+        }
+        let enabled = std::collections::HashSet::from(["enabled".to_string()]);
+        let filtered = SkillIndex::load(&[root.clone()]).filtered_by_names(Some(&enabled));
+        let search = SearchSkillsTool::new(Arc::new(filtered));
+
+        let result = search.search(&json!({ "query": "*" }));
+        let output: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(output["current_configured_enabled_count"], 1);
+        assert_eq!(output["current_configured_enabled_by_source"]["custom"], 1);
+        assert_eq!(output["catalog_counts"]["effective_count"], 2);
+        assert_eq!(output["results"].as_array().unwrap().len(), 1);
+
         std::fs::remove_dir_all(root).ok();
     }
 }

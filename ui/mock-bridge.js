@@ -443,6 +443,8 @@
               mcp_servers: ["mcp_pubmed"],
               memory_files: [],
               project,
+              skill_counts: { bundled: 1, project: 0 },
+              mcp_counts: { bundled: 1, project: 0 },
             };
           case "search_artifacts": {
             const q = String(args?.query ?? "").toLowerCase();

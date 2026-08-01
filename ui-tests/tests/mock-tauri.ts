@@ -2330,6 +2330,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               mcp_servers: ["mcp_bio", "mcp_chem"],
               memory_files: memoryFiles,
               project,
+              skill_counts: { bundled: 2, project: 1 },
+              mcp_counts: { bundled: 2, project: 1 },
             };
           case "list_skills":
             return [

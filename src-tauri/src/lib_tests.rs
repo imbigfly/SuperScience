@@ -10,7 +10,7 @@ use super::{
     resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
     should_hide_app_on_macos_close, should_persist_ui_event, side_chat_prompt, user_message_start,
     AgentEvent, ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem,
-    SessionRuntime, MAX_PENDING_UI_EVENT_BYTES,
+    SessionRuntime, SkillInfo, MAX_PENDING_UI_EVENT_BYTES,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -1242,6 +1242,34 @@ fn python_bootstrap_failure_is_reported_after_initialization() {
         .errors
         .iter()
         .any(|error| error == "Python environment: download failed"));
+}
+
+#[test]
+fn capability_skill_counts_use_enabled_bundled_vs_project_added_inventory() {
+    let skill = |name: &str, scope: &str, enabled: bool| SkillInfo {
+        name: name.into(),
+        description: String::new(),
+        tags: vec![],
+        scope: scope.into(),
+        enabled,
+        builtin: scope == "bundled",
+        managed: false,
+        managed_by: None,
+        dir: format!("/{scope}/{name}"),
+    };
+    let skills = vec![
+        skill("bundled-on", "bundled", true),
+        skill("bundled-off", "bundled", false),
+        skill("project", "project", true),
+        skill("global", "global", true),
+        skill("plugin", "plugin", true),
+    ];
+
+    let counts = crate::app_commands::capability_skill_counts(&skills);
+
+    assert_eq!(counts.bundled, 1);
+    assert_eq!(counts.project, 3);
+    assert_eq!(counts.total(), 4);
 }
 
 #[test]

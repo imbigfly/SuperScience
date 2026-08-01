@@ -232,6 +232,22 @@ impl SkillIndex {
         audit
     }
 
+    /// Count the effective Skills present in this index by their winning
+    /// source. When the index has been filtered to the current enabled set,
+    /// these are the exact Skills the Agent can search and load.
+    pub fn skill_counts_by_source(&self) -> BTreeMap<String, usize> {
+        let mut counts = BTreeMap::new();
+        for skill in &self.skills {
+            let source = self
+                .source(&skill.name)
+                .unwrap_or(SkillSource::Custom)
+                .as_str()
+                .to_string();
+            *counts.entry(source).or_default() += 1;
+        }
+        counts
+    }
+
     pub fn effective_record(&self, name: &str) -> Option<&SkillCatalogRecord> {
         self.records
             .iter()

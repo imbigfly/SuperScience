@@ -112,9 +112,10 @@ If a named workflow is disabled or unavailable, follow the same principles direc
         let availability = if count == 1 { "skill is" } else { "skills are" };
         format!(
             "## Skills Selection Guidelines\n\n\
-{count} installed {availability} available. Their catalog and bodies are not preloaded.\n\n\
+{count} {availability} currently configured, enabled, and searchable for this project/session. Their catalog and bodies are not preloaded.\n\n\
 - When a task may match an installed workflow, call `search_skills` with concise task or domain keywords.\n\
-- When the user asks how many Skills are configured, enabled, effective, shadowed, or broken, use `list_skill_catalog`; do not infer inventory counts from search results.\n\
+- When the user asks how many Skills are configured, enabled, effective, shadowed, or broken, use `list_skill_catalog` and read its explicitly named count fields.\n\
+- Treat `current_configured_enabled_count` as authoritative for this Agent snapshot. If the user cites a different UI or remembered count, report the discrepancy; do not accept, relabel, or explain the user's number without supporting inventory data.\n\
 - Then call `use_skill` with the exact returned name before proceeding.\n\
 - If the user already attached a selected skill's guidance to the turn, follow that content without loading it again.\n"
         )
@@ -321,8 +322,12 @@ mod tests {
         let skills = SkillIndex::load(&[root.clone()]);
 
         let out = SystemPrompt::new(std::path::Path::new("/tmp"), &skills, None).assemble();
-        assert!(out.contains("1 installed skill is available"), "{out}");
+        assert!(
+            out.contains("1 skill is currently configured, enabled, and searchable"),
+            "{out}"
+        );
         assert!(out.contains("`search_skills`"), "{out}");
+        assert!(out.contains("do not accept, relabel, or explain"), "{out}");
         assert!(!out.contains("secret-skill"), "{out}");
         assert!(!out.contains("SHOULD_NOT_BE_IN_SYSTEM_PROMPT"), "{out}");
 

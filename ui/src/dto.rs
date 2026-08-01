@@ -2030,9 +2030,17 @@ pub(crate) enum UpdateDownloadEvent {
 
 #[derive(Deserialize, Clone)]
 pub(crate) struct Capabilities {
-    pub(crate) mcp_servers: Vec<String>,
     pub(crate) memory_files: Vec<MemoryFile>,
-    pub(crate) project: ProjectInfo,
+    #[serde(default)]
+    pub(crate) skill_counts: CapabilitySourceCounts,
+    #[serde(default)]
+    pub(crate) mcp_counts: CapabilitySourceCounts,
+}
+
+#[derive(Deserialize, Clone, Copy, Default)]
+pub(crate) struct CapabilitySourceCounts {
+    pub(crate) bundled: usize,
+    pub(crate) project: usize,
 }
 
 #[derive(Deserialize, Clone)]

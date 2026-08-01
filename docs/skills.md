@@ -6,7 +6,11 @@ the Agent's `search_skills` result includes the same `scope` and `path` fields.
 For inventory questions, `list_skill_catalog` pages through the complete
 discovered or effective view and reports separate discovered, effective,
 shadowed, parse-error, and currently searchable enabled counts. Search result
-counts must not be interpreted as the configured Skill inventory.
+counts must not be interpreted as the configured Skill inventory. The
+`current_configured_enabled_count` field is the authoritative count for the
+current Agent snapshot. If a user-provided or remembered UI count differs, the
+Agent reports the discrepancy instead of inventing an installed/enabled
+distinction.
 
 Skills may declare an optional `wisp` YAML mapping with `schema_version: 1`
 and controlled `domains`, `research_stages`, `roles`, `evidence_types`,
@@ -39,3 +43,8 @@ directory. Plugin Skills are managed from their plugin card.
 Tags declared in `SKILL.md` appear automatically. Tags edited in Settings are a
 user override and are also applied to Agent `search_skills` queries after the
 next idle-Agent rebuild.
+
+The **Capabilities** summary uses the same current enabled Skill inventory and
+splits it into bundled and project-added counts. Project-added includes project,
+global, extra-path, and project-enabled plugin Skills. MCP counts are split into
+bundled packages and enabled custom/plugin services available to the project.

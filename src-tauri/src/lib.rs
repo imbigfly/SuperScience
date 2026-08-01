@@ -713,6 +713,23 @@ struct Capabilities {
     mcp_servers: Vec<String>,
     memory_files: Vec<MemoryFile>,
     project: ProjectInfo,
+    skill_counts: CapabilitySourceCounts,
+    mcp_counts: CapabilitySourceCounts,
+}
+
+/// Current enabled capability inventory. `project` intentionally groups every
+/// non-bundled source available to this project (project/global/extra/plugin)
+/// so the read-only summary has a stable two-way bundled vs added split.
+#[derive(Serialize, Clone, Copy, Default)]
+struct CapabilitySourceCounts {
+    bundled: usize,
+    project: usize,
+}
+
+impl CapabilitySourceCounts {
+    fn total(self) -> usize {
+        self.bundled + self.project
+    }
 }
 
 #[derive(Serialize, Clone)]

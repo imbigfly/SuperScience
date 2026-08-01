@@ -342,16 +342,32 @@ pub(super) fn CapabilitiesOverlay(
                             show_capabilities.set(false);
                             open_settings_section.call("skills".into());
                         }>
-                        <span class="cap-num">{c.project.skill_count}</span>
-                        <span class="cap-label">{move || t(locale.get(), "caps.skills")}</span>
+                        <span class="cap-num">{c.skill_counts.bundled}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.bundled_skills")}</span>
+                    </button>
+                    <button type="button" class="cap-stat"
+                        on:click=move |_| {
+                            show_capabilities.set(false);
+                            open_settings_section.call("skills".into());
+                        }>
+                        <span class="cap-num">{c.skill_counts.project}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.project_skills")}</span>
                     </button>
                     <button type="button" class="cap-stat"
                         on:click=move |_| {
                             show_capabilities.set(false);
                             open_settings_section.call("connections".into());
                         }>
-                        <span class="cap-num">{c.mcp_servers.len()}</span>
-                        <span class="cap-label">{move || t(locale.get(), "caps.mcp_servers")}</span>
+                        <span class="cap-num">{c.mcp_counts.bundled}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.bundled_mcp_servers")}</span>
+                    </button>
+                    <button type="button" class="cap-stat"
+                        on:click=move |_| {
+                            show_capabilities.set(false);
+                            open_settings_section.call("connections".into());
+                        }>
+                        <span class="cap-num">{c.mcp_counts.project}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.project_mcp_servers")}</span>
                     </button>
                     <button type="button" class="cap-stat"
                         on:click=move |_| {

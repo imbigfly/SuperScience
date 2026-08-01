@@ -4991,13 +4991,15 @@ test("capability counts open skills, connections, and editable project memory", 
 
   await page.getByRole("button", { name: "Capabilities" }).click();
   let capabilities = page.getByRole("dialog", { name: "Capabilities" });
-  await capabilities.getByRole("button", { name: "12 Skills" }).click();
+  await expect(capabilities.getByRole("button", { name: "2 Bundled Skills" })).toBeVisible();
+  await capabilities.getByRole("button", { name: "1 Project Skills" }).click();
   await expect(page.locator(".settings-nav button.active")).toHaveText("Skills");
 
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Capabilities" }).click();
   capabilities = page.getByRole("dialog", { name: "Capabilities" });
-  await capabilities.getByRole("button", { name: "2 MCP servers" }).click();
+  await expect(capabilities.getByRole("button", { name: "2 Bundled MCP" })).toBeVisible();
+  await capabilities.getByRole("button", { name: "1 Project MCP" }).click();
   await expect(page.locator(".settings-nav button.active")).toHaveText("Connections");
 
   await page.keyboard.press("Escape");
