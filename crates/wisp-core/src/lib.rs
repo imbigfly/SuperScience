@@ -37,7 +37,7 @@ pub use orchestration::{
     DelegationMode, DelegationPlan, DelegationPlanStep, DYNAMIC_DELEGATION_SCHEMA_VERSION,
     MAX_DELEGATION_TASKS,
 };
-pub use output::{NullOutput, Output, StreamSinkAdapter, ToolEnvAdapter};
+pub use output::{NullOutput, Output, OutputFuture, StreamSinkAdapter, ToolEnvAdapter};
 pub use provenance::ProvenanceRecord;
 pub use subagent::ExploreTool;
 pub use system_prompt::SystemPrompt;

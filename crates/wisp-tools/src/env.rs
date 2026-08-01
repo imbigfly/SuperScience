@@ -155,6 +155,18 @@ pub struct ToolResult {
     pub success: bool,
     pub content: String,
     pub image: Option<ImageData>,
+    /// Code-level control flow for the agent loop. This keeps user-decision
+    /// boundaries out of prompt wording: stale sibling calls can be skipped,
+    /// and tools such as `ask_user` can end the turn outright.
+    pub control: ToolControl,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolControl {
+    #[default]
+    Continue,
+    StopBatch,
+    StopTurn,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +183,7 @@ impl ToolResult {
             success: true,
             content: content.into(),
             image: None,
+            control: ToolControl::Continue,
         }
     }
     pub fn fail(content: impl Into<String>) -> Self {
@@ -178,6 +191,7 @@ impl ToolResult {
             success: false,
             content: content.into(),
             image: None,
+            control: ToolControl::Continue,
         }
     }
     pub fn image(img: ImageData) -> Self {
@@ -186,6 +200,19 @@ impl ToolResult {
             success: true,
             content: label,
             image: Some(img),
+            control: ToolControl::Continue,
         }
+    }
+    /// Skip tool calls that the model placed later in the same batch, then let
+    /// the model react to this result in a fresh iteration.
+    pub fn stop_batch(mut self) -> Self {
+        self.control = ToolControl::StopBatch;
+        self
+    }
+    /// Skip later calls in the batch and return control to the user without
+    /// issuing another model request.
+    pub fn stop_turn(mut self) -> Self {
+        self.control = ToolControl::StopTurn;
+        self
     }
 }

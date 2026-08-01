@@ -5296,6 +5296,28 @@ test("inline approval card keeps its buttons reachable with a long preview (#63)
   await expect(allow).toBeInViewport();
 });
 
+test("native approval remains clickable while the agent turn is blocked", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("BLOCKINGCONFIRM");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const allow = page.getByRole("button", { name: "Allow once" });
+  await expect(allow).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() =>
+    Object.values((window as any).__nativeConfirmPending ?? {}).some(Boolean)
+  )).toBe(true);
+
+  await allow.click();
+
+  await expect.poll(() => lastInvokeArgs(page, "confirm_response")).toMatchObject({
+    approved: true,
+    scope: "once",
+  });
+  await expect.poll(() => page.evaluate(() =>
+    Object.values((window as any).__nativeConfirmPending ?? {}).some(Boolean)
+  )).toBe(false);
+});
+
 test("Escape closes plan feedback before rejecting the plan", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("NEEDPLAN");

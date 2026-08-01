@@ -12,7 +12,7 @@ use tauri::menu::{
 };
 use tauri::{ipc::Response, AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
-use wisp_core::{Agent, MemoryManager, Output};
+use wisp_core::{Agent, MemoryManager, Output, OutputFuture};
 use wisp_llm::{Message, ProviderConfig};
 use wisp_skills::{SkillIndex, SkillSource};
 use wisp_store::{LibraryStore, Store};
@@ -225,7 +225,14 @@ struct ConfirmRequest {
     preview: String,
 }
 
-type ConfirmSender = std::sync::mpsc::Sender<wisp_tools::ConfirmDecision>;
+type ConfirmSender = tokio::sync::oneshot::Sender<wisp_tools::ConfirmDecision>;
+type ConfirmReceiver = tokio::sync::oneshot::Receiver<wisp_tools::ConfirmDecision>;
+
+async fn receive_confirm_decision(receiver: ConfirmReceiver) -> wisp_tools::ConfirmDecision {
+    receiver
+        .await
+        .unwrap_or(wisp_tools::ConfirmDecision::Denied { feedback: None })
+}
 
 struct PendingConfirm {
     tx: ConfirmSender,
@@ -2030,9 +2037,10 @@ fn ensure_writable(dir: PathBuf, app_data: &std::path::Path) -> PathBuf {
     }
 }
 
-/// `wisp_core::Output` backed by Tauri events. `confirm` blocks on a std
-/// channel satisfied by the `confirm_response` command. `frame_id` is the
-/// session frame id (carried on every event so the UI can route by session).
+/// `wisp_core::Output` backed by Tauri events. Confirmation awaits a Tokio
+/// oneshot satisfied by the `confirm_response` command, yielding the runtime
+/// so that command remains clickable. `frame_id` is the session frame id
+/// (carried on every event so the UI can route by session).
 struct TauriOutput {
     app: AppHandle,
     frame_id: String,
@@ -2213,54 +2221,68 @@ impl Output for TauriOutput {
             chunk: chunk.into(),
         });
     }
-    fn confirm(&self, message: &str) -> bool {
-        self.confirm_decision(message).approved()
+    // Desktop approval must use the async hooks below. Fail closed if a future
+    // caller accidentally reaches the legacy synchronous compatibility path.
+    fn confirm(&self, _message: &str) -> bool {
+        false
     }
-    fn confirm_decision(&self, message: &str) -> wisp_tools::ConfirmDecision {
-        if self.full_permission() {
-            return wisp_tools::ConfirmDecision::Approved;
-        }
-        let (tool, preview) = parse_confirm_payload(message);
-        let grant = approval_grant_key(message);
-        if grant.as_ref().is_some_and(|key| {
-            self.approval_grants
+    fn confirm_decision(&self, _message: &str) -> wisp_tools::ConfirmDecision {
+        wisp_tools::ConfirmDecision::Denied { feedback: None }
+    }
+    fn confirm_async<'a>(&'a self, message: &'a str) -> OutputFuture<'a, bool> {
+        Box::pin(async move { self.confirm_decision_async(message).await.approved() })
+    }
+    fn confirm_decision_async<'a>(
+        &'a self,
+        message: &'a str,
+    ) -> OutputFuture<'a, wisp_tools::ConfirmDecision> {
+        Box::pin(async move {
+            if self.full_permission() {
+                return wisp_tools::ConfirmDecision::Approved;
+            }
+            let (tool, preview) = parse_confirm_payload(message);
+            let grant = approval_grant_key(message);
+            if grant.as_ref().is_some_and(|key| {
+                self.approval_grants
+                    .lock()
+                    .map(|grants| grants.allows(&self.frame_id, &self.project_id, key))
+                    .unwrap_or(false)
+            }) {
+                return wisp_tools::ConfirmDecision::Approved;
+            }
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.confirms.lock().unwrap().insert(
+                self.frame_id.clone(),
+                PendingConfirm {
+                    tx,
+                    grant,
+                    project_id: self.project_id.clone(),
+                },
+            );
+            self.awaiting_confirm
                 .lock()
-                .map(|grants| grants.allows(&self.frame_id, &self.project_id, key))
-                .unwrap_or(false)
-        }) {
-            return wisp_tools::ConfirmDecision::Approved;
-        }
-        let (tx, rx) = std::sync::mpsc::channel::<wisp_tools::ConfirmDecision>();
-        self.confirms.lock().unwrap().insert(
-            self.frame_id.clone(),
-            PendingConfirm {
-                tx,
-                grant,
-                project_id: self.project_id.clone(),
-            },
-        );
-        self.awaiting_confirm
-            .lock()
-            .unwrap()
-            .insert(self.frame_id.clone());
-        self.device_hub
-            .mark_needs_user(&self.frame_id, Some(&self.project_id));
-        let _ = self.app.emit(
-            "confirm-request",
-            ConfirmRequest {
-                frame_id: self.frame_id.clone(),
-                message: message.into(),
-                tool,
-                preview,
-            },
-        );
-        let decision = rx
-            .recv_timeout(std::time::Duration::from_secs(180))
-            .unwrap_or(wisp_tools::ConfirmDecision::Denied { feedback: None });
-        self.confirms.lock().unwrap().remove(&self.frame_id);
-        self.awaiting_confirm.lock().unwrap().remove(&self.frame_id);
-        self.device_hub.resolve_needs_user(&self.frame_id);
-        decision
+                .unwrap()
+                .insert(self.frame_id.clone());
+            self.device_hub
+                .mark_needs_user(&self.frame_id, Some(&self.project_id));
+            let _ = self.app.emit(
+                "confirm-request",
+                ConfirmRequest {
+                    frame_id: self.frame_id.clone(),
+                    message: message.into(),
+                    tool,
+                    preview,
+                },
+            );
+
+            // There is deliberately no timeout: lack of approval must never be
+            // converted into a denial that lets the same agent turn continue.
+            let decision = receive_confirm_decision(rx).await;
+            self.confirms.lock().unwrap().remove(&self.frame_id);
+            self.awaiting_confirm.lock().unwrap().remove(&self.frame_id);
+            self.device_hub.resolve_needs_user(&self.frame_id);
+            decision
+        })
     }
     fn approval_mode(&self, tool: &str) -> wisp_tools::Approval {
         self.approvals
@@ -5331,19 +5353,31 @@ fn message_uses_resource_bindings(message: &Message) -> bool {
 #[tauri::command]
 async fn stop_agent(state: State<'_, AppState>, session_id: Option<String>) -> Result<(), String> {
     // Cancel only the named session's turn; other conversations keep running.
-    let targets: Vec<Arc<SessionRuntime>> = match session_id.as_deref().filter(|s| !s.is_empty()) {
-        Some(id) => state
-            .sessions
-            .lock()
-            .await
-            .get(id)
-            .cloned()
-            .into_iter()
-            .collect(),
-        None => state.sessions.lock().await.values().cloned().collect(),
-    };
-    for rt in targets {
+    let targets: Vec<(String, Arc<SessionRuntime>)> =
+        match session_id.as_deref().filter(|s| !s.is_empty()) {
+            Some(id) => state
+                .sessions
+                .lock()
+                .await
+                .get(id)
+                .cloned()
+                .map(|runtime| (id.to_string(), runtime))
+                .into_iter()
+                .collect(),
+            None => state
+                .sessions
+                .lock()
+                .await
+                .iter()
+                .map(|(id, runtime)| (id.clone(), runtime.clone()))
+                .collect(),
+        };
+    for (id, rt) in targets {
         rt.cancel.store(true, Ordering::Relaxed);
+        // Wake an agent suspended on the async approval receiver. The loop
+        // observes the cancel flag after the denied tool result and exits
+        // instead of leaving the Stop button waiting forever.
+        approval_commands::cancel_pending_confirmation(&state, &id);
     }
     if let Some(id) = session_id.as_deref().filter(|id| !id.is_empty()) {
         acp::cancel_frame(&state, id).await;

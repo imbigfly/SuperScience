@@ -20,7 +20,7 @@ pub mod shell;
 pub mod tool;
 pub mod write;
 
-pub use env::{Approval, ConfirmDecision, ImageData, ToolEnv, ToolEvent, ToolResult};
+pub use env::{Approval, ConfirmDecision, ImageData, ToolControl, ToolEnv, ToolEvent, ToolResult};
 pub use tool::Tool;
 
 use serde_json::Value;
@@ -217,7 +217,8 @@ impl Registry {
                 .await
         {
             env.emit(ToolEvent::Result { ok: false }).await;
-            return ToolResult::fail(format!("tool '{SEARCH_MCP_TOOLS}' was denied by the user"));
+            return ToolResult::fail(format!("tool '{SEARCH_MCP_TOOLS}' was denied by the user"))
+                .stop_batch();
         }
         let result = self.search_mcp_tools(args);
         env.emit(ToolEvent::Result { ok: result.success }).await;
@@ -346,7 +347,7 @@ async fn run_registered_tool(tool: &dyn Tool, args: &Value, env: &dyn ToolEnv) -
     .await;
     if approval == env::Approval::Ask && !env.confirm(&format!("Run tool '{name}'?")).await {
         env.emit(ToolEvent::Result { ok: false }).await;
-        return ToolResult::fail(format!("tool '{name}' was denied by the user"));
+        return ToolResult::fail(format!("tool '{name}' was denied by the user")).stop_batch();
     }
     tool.before(args, env).await;
     let result = tool.run(args, env).await;
@@ -600,6 +601,7 @@ mod approval_tests {
             .run("third_party", &serde_json::json!({}), &env)
             .await;
         assert!(!result.success);
+        assert_eq!(result.control, ToolControl::StopBatch);
         assert!(!RAN.load(Ordering::SeqCst));
     }
 
@@ -641,9 +643,11 @@ mod approval_tests {
         // Deny: never runs, fails.
         let (ran, res) = run_with(Approval::Deny, true).await;
         assert!(!ran && !res.success, "deny must block the tool");
+        assert_eq!(res.control, ToolControl::Continue);
         // Ask + confirm no: never runs, fails.
         let (ran, res) = run_with(Approval::Ask, false).await;
         assert!(!ran && !res.success, "ask+deny must block the tool");
+        assert_eq!(res.control, ToolControl::StopBatch);
         // Ask + confirm yes: runs.
         let (ran, res) = run_with(Approval::Ask, true).await;
         assert!(ran && res.success, "ask+approve must run the tool");

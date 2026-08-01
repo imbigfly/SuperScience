@@ -450,9 +450,17 @@ impl Tool for DelegateTasksTool {
 
     async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
         match self.run_batch(args, env).await {
-            Ok(value) => ToolResult::ok(serde_json::to_string(&value).unwrap_or_else(|_| {
-                r#"{"status":"failed","error":"result serialization failed"}"#.into()
-            })),
+            Ok(value) => {
+                let denied = value.get("status").and_then(Value::as_str) == Some("denied");
+                let result = ToolResult::ok(serde_json::to_string(&value).unwrap_or_else(|_| {
+                    r#"{"status":"failed","error":"result serialization failed"}"#.into()
+                }));
+                if denied {
+                    result.stop_batch()
+                } else {
+                    result
+                }
+            }
             Err(error) => ToolResult::fail(format!("delegate_tasks error: {error}")),
         }
     }
@@ -1980,6 +1988,7 @@ mod tests {
         assert_eq!(value["status"], "denied");
         assert_eq!(value["feedback"], "keep this read-only");
         assert!(value["results"].as_array().unwrap().is_empty());
+        assert_eq!(result.control, wisp_tools::ToolControl::StopBatch);
         assert!(delegator.calls().is_empty());
         {
             let prompts = env.prompts.lock().unwrap();

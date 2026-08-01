@@ -677,6 +677,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const acpPermissionFrames: Record<string, string> = {};
   const askUserFrames: Record<string, string> = {};
   const acpLongResolvers: Record<string, (value: string) => void> = {};
+  const nativeConfirmResolvers: Record<string, (value: string) => void> = {};
+  (window as any).__nativeConfirmPending = {};
   let mockCredentials: Record<string, boolean> = {
     openalex_api_key: false,
     infinisynapse_api_key: false,
@@ -2927,7 +2929,24 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             return `Side answer: ${question}`;
           }
-          case "confirm_response":
+          case "confirm_response": {
+            const frameId = String(arg("sessionId") ?? "");
+            const resolve = nativeConfirmResolvers[frameId];
+            if (resolve) {
+              delete nativeConfirmResolvers[frameId];
+              (window as any).__nativeConfirmPending[frameId] = false;
+              emit("agent", {
+                kind: "ToolResult",
+                frame_id: frameId,
+                name: "shell",
+                ok: Boolean(arg("approved")),
+                content: arg("approved") ? "approved" : "denied",
+              });
+              emit("agent", { kind: "Done", frame_id: frameId, stop_reason: "end_turn" });
+              resolve(frameId);
+            }
+            return null;
+          }
           case "dismiss_onboarding":
             return null;
           case "stop_session":
@@ -3061,6 +3080,22 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 50,
               );
               return fid;
+            }
+            if (String(arg("message") ?? "").includes("BLOCKINGCONFIRM")) {
+              setTimeout(
+                () =>
+                  emit("confirm-request", {
+                    frame_id: fid,
+                    message: "Dangerous command detected:\nRemove generated files?",
+                    tool: "shell",
+                    preview: "Remove-Item generated.tmp",
+                  }),
+                50,
+              );
+              (window as any).__nativeConfirmPending[fid] = true;
+              return await new Promise<string>((resolve) => {
+                nativeConfirmResolvers[fid] = resolve;
+              });
             }
             if (String(arg("message") ?? "").includes("NEEDCONFIRM")) {
               const longBody = Array.from({ length: 120 }, (_, i) => `rm -rf /mock/path/line-${i}`).join("\n");

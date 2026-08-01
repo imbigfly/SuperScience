@@ -6,6 +6,13 @@
 //! (confirmation prompts) is guarded with interior mutability in impls.
 
 use serde_json::Value;
+use std::future::Future;
+use std::pin::Pin;
+
+/// Object-safe async hook used by interactive outputs. Most headless outputs
+/// keep the synchronous defaults below; desktop outputs return a future that
+/// yields while the UI sends its decision back.
+pub type OutputFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait Output: Send + Sync {
     fn assistant_text(&self, _delta: &str) {}
@@ -42,6 +49,19 @@ pub trait Output: Send + Sync {
         } else {
             wisp_tools::ConfirmDecision::Denied { feedback: None }
         }
+    }
+    /// Async confirmation path used by [`ToolEnvAdapter`]. The default bridges
+    /// existing CLI/test outputs to their synchronous implementation; GUI
+    /// hosts should override it so waiting never blocks their command runtime.
+    fn confirm_async<'a>(&'a self, message: &'a str) -> OutputFuture<'a, bool> {
+        Box::pin(async move { self.confirm(message) })
+    }
+    /// Async variant carrying rejection feedback.
+    fn confirm_decision_async<'a>(
+        &'a self,
+        message: &'a str,
+    ) -> OutputFuture<'a, wisp_tools::ConfirmDecision> {
+        Box::pin(async move { self.confirm_decision(message) })
     }
     /// Approval mode for a tool about to run. Default `Allow` preserves the old
     /// auto-run behaviour; the Tauri host overrides it from its saved policy.
@@ -123,10 +143,10 @@ impl<'a> wisp_tools::ToolEnv for ToolEnvAdapter<'a> {
         self.out.restrict_read_paths_to_project()
     }
     async fn confirm(&self, message: &str) -> bool {
-        self.out.confirm(message)
+        self.out.confirm_async(message).await
     }
     async fn confirm_decision(&self, message: &str) -> wisp_tools::ConfirmDecision {
-        self.out.confirm_decision(message)
+        self.out.confirm_decision_async(message).await
     }
     async fn approval_mode(&self, tool: &str) -> wisp_tools::Approval {
         self.out.approval_mode(tool)
@@ -206,6 +226,7 @@ impl<'a> wisp_llm::StreamSink for StreamSinkAdapter<'a> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
     use wisp_llm::StreamSink;
 
     // The streaming loops break on `sink.is_cancelled()`; this proves the Stop
@@ -224,5 +245,54 @@ mod tests {
         );
         // A sink built without a cancel flag never reports cancelled.
         assert!(!StreamSinkAdapter::new(&out).is_cancelled());
+    }
+
+    struct AsyncConfirmOutput {
+        receiver: Mutex<Option<tokio::sync::oneshot::Receiver<wisp_tools::ConfirmDecision>>>,
+        sync_called: AtomicBool,
+    }
+
+    impl Output for AsyncConfirmOutput {
+        fn confirm_decision(&self, _message: &str) -> wisp_tools::ConfirmDecision {
+            self.sync_called.store(true, Ordering::SeqCst);
+            wisp_tools::ConfirmDecision::Denied { feedback: None }
+        }
+
+        fn confirm_decision_async<'a>(
+            &'a self,
+            _message: &'a str,
+        ) -> OutputFuture<'a, wisp_tools::ConfirmDecision> {
+            let receiver = self.receiver.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                receiver
+                    .await
+                    .unwrap_or(wisp_tools::ConfirmDecision::Denied { feedback: None })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_env_yields_while_async_confirmation_is_pending() {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let output = AsyncConfirmOutput {
+            receiver: Mutex::new(Some(receiver)),
+            sync_called: AtomicBool::new(false),
+        };
+        let env = ToolEnvAdapter::new(std::path::PathBuf::from("."), &output);
+        let decision = wisp_tools::ToolEnv::confirm_decision(&env, "Run tool?");
+        tokio::pin!(decision);
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut decision)
+                .await
+                .is_err(),
+            "a pending UI decision must keep the tool call suspended"
+        );
+        sender.send(wisp_tools::ConfirmDecision::Approved).unwrap();
+        assert_eq!(decision.await, wisp_tools::ConfirmDecision::Approved);
+        assert!(
+            !output.sync_called.load(Ordering::SeqCst),
+            "the adapter must not fall back to the runtime-blocking sync hook"
+        );
     }
 }
