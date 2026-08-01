@@ -336,6 +336,8 @@ mod tests {
             tags: vec![],
             body: "body".into(),
             dir: root.clone(),
+            declared_version: None,
+            wisp: None,
         };
         let rendered = render_skill(&skill);
         assert!(rendered.contains("## Python Kernel Sidecar"));

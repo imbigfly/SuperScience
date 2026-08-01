@@ -2,6 +2,14 @@
 name: analysis-workflow
 description: "Organize multi-step scientific analyses into reproducible, self-contained modules. Use for workflows such as QC→PCA→DEG→GSEA that produce scripts, inputs, figures, tables, and methods. Creates a stable module layout, records exact inputs/parameters/package and database versions in each module README, keeps large data as references instead of copies, and verifies outputs before completion."
 license: Apache-2.0
+wisp:
+  schema_version: 1
+  domains: [bioinformatics]
+  research_stages: [observation, analysis, validation]
+  roles: [analyst, validator]
+  evidence_types: [project-data, omics, computational]
+  outputs: [analysis-module]
+  side_effects: code_execution
 ---
 
 # Reproducible Analysis Modules

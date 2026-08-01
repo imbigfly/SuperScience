@@ -8,6 +8,12 @@ discovered or effective view and reports separate discovered, effective,
 shadowed, parse-error, and currently searchable enabled counts. Search result
 counts must not be interpreted as the configured Skill inventory.
 
+Skills may declare an optional `wisp` YAML mapping with `schema_version: 1`
+and controlled `domains`, `research_stages`, `roles`, `evidence_types`,
+`outputs`, and `side_effects`. Legacy frontmatter remains valid. Invalid Wisp
+semantics are retained as catalog parse-error records instead of silently
+entering the effective catalog.
+
 Discovery uses this precedence when two packages declare the same public name:
 
 1. `bundled` — the read-only catalog shipped with Wisp.

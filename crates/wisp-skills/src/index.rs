@@ -5,6 +5,7 @@
 //! alongside `scripts/` and `references/` directories. This mirrors the
 //! convention used by mangopi-cli and the wisp-science `skills/` catalog.
 
+use crate::manifest::{parse_skill_document, WispSkillMetadata};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -22,6 +23,8 @@ pub struct Skill {
     pub tags: Vec<String>,
     pub body: String,
     pub dir: PathBuf,
+    pub declared_version: Option<String>,
+    pub wisp: Option<WispSkillMetadata>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -137,7 +140,7 @@ impl SkillIndex {
                 let hash = sha256_file(&path).ok();
                 let dir = path.parent().map(PathBuf::from).unwrap_or_default();
                 match parse_skill(&path, dir) {
-                    Ok((skill, declared_version)) => {
+                    Ok(skill) => {
                         let record_id = record_id(*source, &path, hash.as_deref(), None);
                         let shadowed_by = winners.get(&skill.name).cloned();
                         let effective = shadowed_by.is_none();
@@ -153,7 +156,7 @@ impl SkillIndex {
                             path,
                             effective,
                             shadowed_by,
-                            declared_version,
+                            declared_version: skill.declared_version.clone(),
                             skill_md_sha256: hash,
                             parse_error: None,
                             package_id: None,
@@ -419,109 +422,26 @@ fn mark_effective_records(records: &mut [SkillCatalogRecord], skills: &[Skill]) 
 /// the Tauri `install_skill` command validating a picked file/folder).
 pub fn parse_skill_file(md: &Path) -> Result<Skill, String> {
     let dir = md.parent().map(PathBuf::from).unwrap_or_default();
-    parse_skill(md, dir).map(|(skill, _)| skill)
+    parse_skill(md, dir)
 }
 
-/// A YAML block-scalar header: `>` or `|`, optionally with a chomping/indent
-/// indicator (`>-`, `|+`, `>2`, …). Everything else is a plain scalar.
-fn is_block_scalar(val: &str) -> bool {
-    let indicator = val.trim_end_matches(|c: char| c == '-' || c == '+' || c.is_ascii_digit());
-    indicator == ">" || indicator == "|"
-}
-
-fn parse_skill(path: &Path, dir: PathBuf) -> Result<(Skill, Option<String>), String> {
+fn parse_skill(path: &Path, dir: PathBuf) -> Result<Skill, String> {
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("could not read SKILL.md: {e}"))?;
-    let body_start = text
-        .find("---")
-        .ok_or_else(|| "SKILL.md has no frontmatter (--- block)".to_string())?;
-    let rest = &text[body_start + 3..];
-    let end = rest
-        .find("---")
-        .ok_or_else(|| "SKILL.md frontmatter is not closed with ---".to_string())?;
-    let yaml = &rest[..end];
-    let body = rest[end + 3..].trim().to_string();
-
-    let mut name = dir
+    let fallback_name = dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let mut description = String::new();
-    let mut tags: Vec<String> = vec![];
-    let mut declared_version = None;
-
-    let lines: Vec<&str> = yaml.lines().collect();
-    let mut i = 0;
-    while i < lines.len() {
-        let raw = lines[i];
-        i += 1;
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        // Skip nested mapping/list lines (indented under a parent key).
-        if raw.starts_with(char::is_whitespace) || line.starts_with('-') {
-            continue;
-        }
-        let (key, val) = match line.split_once(':') {
-            Some(kv) => kv,
-            None => continue,
-        };
-        let key = key.trim();
-        let mut val = val
-            .trim()
-            .trim_matches(|c: char| c == '"' || c == '\'')
-            .to_string();
-        // YAML block scalar (`description: >` / `|`): fold the following
-        // more-indented lines into the value. ponytail: folds every
-        // continuation line with spaces — enough for one-line skill
-        // descriptions, not full literal/fold chomping semantics.
-        if is_block_scalar(&val) {
-            let mut parts: Vec<String> = vec![];
-            while i < lines.len() {
-                let cont = lines[i];
-                if cont.trim().is_empty() {
-                    i += 1;
-                    continue;
-                }
-                if !cont.starts_with(char::is_whitespace) {
-                    break;
-                }
-                parts.push(cont.trim().to_string());
-                i += 1;
-            }
-            val = parts.join(" ");
-        }
-        match key {
-            "name" => {
-                if !val.is_empty() {
-                    name = val;
-                }
-            }
-            "description" => description = val,
-            "tags" => {
-                tags = val
-                    .trim_matches(|c: char| c == '[' || c == ']')
-                    .split(',')
-                    .map(|s| s.trim().trim_matches('"').to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            }
-            "version" => declared_version = (!val.is_empty()).then_some(val),
-            _ => {}
-        }
-    }
-
-    Ok((
-        Skill {
-            name,
-            description,
-            tags,
-            body,
-            dir,
-        },
-        declared_version,
-    ))
+    let (manifest, body) = parse_skill_document(&text, fallback_name)?;
+    Ok(Skill {
+        name: manifest.name.unwrap_or_default(),
+        description: manifest.description,
+        tags: manifest.tags.0,
+        body,
+        dir,
+        declared_version: manifest.version,
+        wisp: manifest.wisp,
+    })
 }
 
 /// List file paths under a skill's `scripts/` and `references/` subdirs.
@@ -554,6 +474,8 @@ mod tests {
             tags: vec![],
             body: String::new(),
             dir: PathBuf::new(),
+            declared_version: None,
+            wisp: None,
         }
     }
 

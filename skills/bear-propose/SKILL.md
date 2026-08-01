@@ -7,6 +7,14 @@ description: >
   **以下情况请主动触发本技能**：用户想"开题前评估一下"、"这个 idea 值不值得做"、"立项前做个全面的文献调研"、"帮我评估这个研究方向"——即使没有说"bear-propose"，只要意图是**在正式投入一个研究方向之前做综合评估**，就使用本技能。
 
   不适用于：只查撞车（用 bear-scoop）、只找支持（用 bear-support）、只找反对（用 bear-counter）、概念地图（用 bear-map）、溯源演化史（用 bear-trace）。
+wisp:
+  schema_version: 1
+  domains: [scientific-literature]
+  research_stages: [retrieval, hypothesis, validation, synthesis]
+  roles: [planner, critic, synthesizer]
+  evidence_types: [literature]
+  outputs: [research-design, evidence-matrix, risk-map]
+  side_effects: network
 ---
 
 # bear-propose · 研究立项前评估
