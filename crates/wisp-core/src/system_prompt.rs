@@ -47,7 +47,16 @@ with the current platform's directory-listing command because the `read` tool ca
     }
 
     fn safety() -> String {
-        "## Safety\n\nDestructive commands and any access outside the project root require explicit user confirmation.\n".into()
+        "## Safety\n\n\
+Destructive commands and any access outside the project root require explicit user confirmation.\n\
+Before deleting scientific data, run directories, intermediate files, or inputs—even when the \
+user supplied the deletion command—first perform a read-only inventory of the exact targets and \
+check whether active or incomplete work still depends on them and whether a verified recovery copy \
+exists. If deletion could make the requested outcome incomplete or unrecoverable, stop and explain \
+the concrete impact before asking for confirmation. After a destructive action, report retained \
+temporary and derived files precisely; never claim everything was deleted when items remain, and \
+never reduce the promised samples or scientific objective without the user's explicit agreement.\n"
+            .into()
     }
 
     fn shell_name() -> &'static str {
@@ -218,6 +227,15 @@ mod tests {
             "- Shell: POSIX sh"
         };
         assert!(out.contains(expected), "shell environment mismatch:\n{out}");
+    }
+
+    #[test]
+    fn safety_requires_dependency_inventory_before_scientific_cleanup() {
+        let skills = SkillIndex::default();
+        let out = SystemPrompt::new(std::path::Path::new("/tmp"), &skills, None).assemble();
+        assert!(out.contains("even when the user supplied the deletion command"));
+        assert!(out.contains("active or incomplete work still depends on them"));
+        assert!(out.contains("never reduce the promised samples or scientific objective"));
     }
 
     #[test]

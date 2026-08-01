@@ -173,16 +173,16 @@ impl Tool for TransferBetweenContextsTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             self.name(),
-            "Transfer one exact file or directory from a selected SSH context to another selected SSH context or to `local` as a persisted Run. SSH-to-SSH `auto` uses a verified direct edge when available (rsync with scp fallback), otherwise it relays through a private local temporary directory. SSH-to-local downloads with the source context's configured credentials to an exact new absolute local path and never overwrites an existing item. Never use shell ssh/scp/rsync for this.",
+            "Transfer one exact file or directory between `local` and a selected SSH context, or between two selected SSH contexts, as a persisted Run. SSH-to-SSH `auto` uses a verified direct edge when available (rsync with scp fallback), otherwise it relays through a private local temporary directory. Local transfers use the SSH context's configured credentials and never overwrite an existing destination. Never use shell ssh/scp/rsync for this.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "source_context_id": { "type": "string", "description": "Selected SSH context id" },
-                    "source_path": { "type": "string", "description": "Exact absolute or ~/ source path; globs are rejected" },
+                    "source_context_id": { "type": "string", "description": "Selected SSH context id, or `local` for an upload" },
+                    "source_path": { "type": "string", "description": "SSH: exact absolute or ~/ path. Local: exact absolute file/directory path. Globs are rejected." },
                     "destination_context_id": { "type": "string", "description": "Selected SSH context id, or `local` for a download" },
                     "destination_path": { "type": "string", "description": "SSH: exact absolute or ~/ path. Local: exact new absolute file/directory path; do not guess it—ask the user when unspecified. Globs are rejected." },
-                    "route": { "type": "string", "enum": ["auto", "direct", "relay"], "default": "auto", "description": "direct/relay apply to SSH-to-SSH; local accepts auto or relay" },
-                    "transport": { "type": "string", "enum": ["auto", "rsync", "scp"], "default": "auto", "description": "SSH-to-local accepts auto or scp" },
+                    "route": { "type": "string", "enum": ["auto", "direct", "relay"], "default": "auto", "description": "direct/relay apply to SSH-to-SSH; transfers involving local accept auto or relay" },
+                    "transport": { "type": "string", "enum": ["auto", "rsync", "scp"], "default": "auto", "description": "Transfers involving local currently accept auto or scp" },
                     "timeout_secs": { "type": "integer", "description": "Wall timeout, 1 second to 7 days" }
                 },
                 "required": ["source_context_id", "source_path", "destination_context_id", "destination_path"]
@@ -704,6 +704,30 @@ fn validate_local_destination(path: &str) -> Result<PathBuf, String> {
     Ok(destination)
 }
 
+fn validate_local_source(path: &str) -> Result<PathBuf, String> {
+    if path.is_empty()
+        || path.contains(['\0', '\n', '\r'])
+        || path.contains(['*', '?', '[', ']', '{', '}'])
+    {
+        return Err(
+            "source_path must be one exact local path without control characters or globs".into(),
+        );
+    }
+    let source = PathBuf::from(path);
+    if !source.is_absolute() || source.file_name().is_none() {
+        return Err("local source_path must be an absolute non-root path".into());
+    }
+    let metadata = std::fs::symlink_metadata(&source)
+        .map_err(|error| format!("local source_path is unavailable: {error}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("local source_path may not be a symbolic link".into());
+    }
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err("local source_path must be a regular file or directory".into());
+    }
+    Ok(source)
+}
+
 fn remote_item_name(path: &str) -> Result<&str, String> {
     let name = path
         .trim_end_matches('/')
@@ -722,18 +746,54 @@ async fn submit_transfer(
     project_root: &Path,
     request: TransferRequest,
 ) -> Result<serde_json::Value, String> {
-    validate_remote_path("source_path", &request.source_path)?;
     if !matches!(request.route.as_str(), "auto" | "direct" | "relay") {
         return Err("route must be 'auto', 'direct', or 'relay'".into());
     }
     if !matches!(request.transport.as_str(), "auto" | "rsync" | "scp") {
         return Err("transport must be 'auto', 'rsync', or 'scp'".into());
     }
-    let source = selected_ssh_context(store, frame_id, &request.source_context_id).await?;
     let timeout_secs = request
         .timeout_secs
         .unwrap_or(4 * 60 * 60)
         .clamp(1, 7 * 24 * 60 * 60);
+
+    if request.source_context_id == "local" {
+        if request.destination_context_id == "local" {
+            return Err("Source and destination contexts cannot both be local".into());
+        }
+        if request.route == "direct" {
+            return Err("Local-to-SSH transfers use route=auto or route=relay".into());
+        }
+        if request.transport == "rsync" {
+            return Err("Local-to-SSH transfers use transport=auto or transport=scp".into());
+        }
+        let source_path = validate_local_source(&request.source_path)?;
+        validate_remote_path("destination_path", &request.destination_path)?;
+        let destination =
+            selected_ssh_context(store, frame_id, &request.destination_context_id).await?;
+        let response = manager
+            .submit_local_upload_to_ssh(
+                store.clone(),
+                project_id,
+                frame_id,
+                &source_path,
+                &destination,
+                &request.destination_path,
+                Duration::from_secs(timeout_secs),
+            )
+            .await?;
+        return Ok(serde_json::json!({
+            "run_id": response.run_id,
+            "status": response.status,
+            "route": "local",
+            "transport": "scp",
+            "source_path": source_path,
+            "next_action": "Call monitor_run exactly once to wait for completion."
+        }));
+    }
+
+    validate_remote_path("source_path", &request.source_path)?;
+    let source = selected_ssh_context(store, frame_id, &request.source_context_id).await?;
 
     if request.destination_context_id == "local" {
         if request.route == "direct" {
@@ -941,6 +1001,122 @@ fi
 }
 
 impl RunManager {
+    #[allow(clippy::too_many_arguments)]
+    async fn submit_local_upload_to_ssh(
+        &self,
+        store: wisp_store::Store,
+        project_id: &str,
+        frame_id: Option<&str>,
+        source_path: &Path,
+        destination: &wisp_store::ExecutionContext,
+        destination_path: &str,
+        timeout: Duration,
+    ) -> Result<SubmitRunResponse, String> {
+        let destination_connection =
+            crate::ssh_hosts::SshConnection::from_execution_context(destination)?;
+        let item_name = source_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "local source_path has no portable item name".to_string())?
+            .to_string();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let started = Instant::now();
+        let mut run = wisp_store::RunRecord::new(
+            &run_id,
+            project_id,
+            &destination.id,
+            format!("Upload {item_name} to {}", destination.label),
+            "file_transfer",
+        );
+        run.frame_id = frame_id.map(Into::into);
+        run.command = Some(format!(
+            "upload local:{} -> {}:{}",
+            source_path.display(),
+            destination.id,
+            destination_path
+        ));
+        run.timeout_secs = Some(timeout.as_secs() as i64);
+        run.progress_json = serde_json::to_string(&transfer_progress(
+            "upload",
+            "uploading",
+            0,
+            0,
+            0,
+            0,
+            Some(item_name),
+            started,
+        ))
+        .map_err(|error| error.to_string())?;
+        run.env_snapshot_json = serde_json::json!({
+            "route": "local",
+            "transport": "scp",
+            "source_context_id": "local",
+            "destination_context_id": destination.id,
+            "source_path": source_path,
+            "destination_path": destination_path
+        })
+        .to_string();
+        store
+            .create_run(&run)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !store
+            .activate_run_lifecycle(
+                &run_id,
+                wisp_store::RunStatus::Submitted,
+                &self.owner_id,
+                ACTIVE_LEASE_SECS,
+            )
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return Err("Upload Run changed state before it could start".into());
+        }
+
+        let runner = self.runner.clone();
+        let owner_id = self.owner_id.clone();
+        let active = self.active.clone();
+        let cleanup_id = run_id.clone();
+        let task_run_id = run_id.clone();
+        let source_path = source_path.to_path_buf();
+        let destination_path = destination_path.to_string();
+        let task_store = store.clone();
+        let task = tokio::spawn(async move {
+            let result = local_upload_lifecycle(
+                &task_store,
+                &owner_id,
+                &task_run_id,
+                runner,
+                source_path,
+                destination_connection,
+                destination_path,
+                timeout,
+                started,
+            )
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(run_id = %task_run_id, "local upload lifecycle failed: {error}");
+            }
+        });
+        let abort = task.abort_handle();
+        self.active
+            .lock()
+            .await
+            .insert(run_id.clone(), ActiveRun { abort });
+        tokio::spawn(async move {
+            let _ = task.await;
+            active.lock().await.remove(&cleanup_id);
+        });
+        Ok(SubmitRunResponse {
+            run_id,
+            status: wisp_store::RunStatus::Submitted,
+            exit_code: None,
+            stdout_tail: None,
+            stderr_tail: None,
+            remote_workdir: None,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn submit_ssh_download_to_local(
         &self,
@@ -1248,6 +1424,135 @@ async fn download_remote_item(
     let local_item = single_relay_item(staging_dir)?;
     let (total_bytes, files_total) = relay_item_stats(&local_item)?;
     Ok((download, local_item, total_bytes, files_total))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn local_upload_lifecycle(
+    store: &wisp_store::Store,
+    owner_id: &str,
+    run_id: &str,
+    runner: Arc<dyn super::RunCommandRunner>,
+    source_path: PathBuf,
+    destination: crate::ssh_hosts::SshConnection,
+    destination_path: String,
+    timeout: Duration,
+    started: Instant,
+) -> Result<(), String> {
+    if !store
+        .transition_run_to_running_owned(run_id, owner_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(());
+    }
+    let result = async {
+        let (total_bytes, files_total) = relay_item_stats(&source_path)?;
+        let destination_check = format!(
+            "set -eu\n{}\n[ ! -e \"$dst\" ] || {{ echo 'remote destination_path already exists' >&2; exit 73; }}\n",
+            remote_path_assignment("dst", &destination_path)
+        );
+        checked_output(
+            "Check upload destination",
+            run_with_lifecycle_lease(
+                store,
+                run_id,
+                owner_id,
+                runner.as_ref(),
+                ssh_script_command(
+                    &destination,
+                    "check local upload destination",
+                    destination_check,
+                )?,
+                timeout,
+            )
+            .await,
+        )?;
+        let remaining = timeout
+            .checked_sub(started.elapsed())
+            .ok_or_else(|| format!("run_in_context timed out after {}s", timeout.as_secs()))?;
+        let mut upload_args = destination.scp_option_args()?;
+        if source_path.is_dir() {
+            upload_args.push("-r".into());
+        }
+        upload_args.push(scp_local_path(&source_path));
+        upload_args.push(format!("{}:{destination_path}", destination.target()?));
+        let upload = checked_output(
+            "SSH upload",
+            run_with_lifecycle_lease(
+                store,
+                run_id,
+                owner_id,
+                runner.as_ref(),
+                RunCommand {
+                    context_id: format!("ssh:{}", destination.alias),
+                    program: "scp".into(),
+                    args: upload_args,
+                    script: "local upload".into(),
+                    cwd: source_path.parent().map(Path::to_path_buf),
+                    stdin: None,
+                    envs: crate::ssh_hosts::auth_envs_for_connection(&destination)?,
+                },
+                remaining,
+            )
+            .await,
+        )?;
+        Ok::<_, String>((upload, total_bytes, files_total))
+    }
+    .await;
+
+    let (status, exit_code, stdout, stderr, progress) = match result {
+        Ok((upload, total_bytes, files_total)) => (
+            wisp_store::RunStatus::Succeeded,
+            Some(0),
+            upload.stdout,
+            upload.stderr,
+            transfer_progress(
+                "upload",
+                "uploaded",
+                total_bytes,
+                total_bytes,
+                files_total,
+                files_total,
+                source_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(Into::into),
+                started,
+            ),
+        ),
+        Err(error) if error == "run_in_context cancelled" => (
+            wisp_store::RunStatus::Cancelled,
+            None,
+            String::new(),
+            error,
+            transfer_progress("upload", "cancelled", 0, 0, 0, 0, None, started),
+        ),
+        Err(error) if error.starts_with("run_in_context timed out after ") => (
+            wisp_store::RunStatus::TimedOut,
+            Some(124),
+            String::new(),
+            error,
+            transfer_progress("upload", "failed", 0, 0, 0, 0, None, started),
+        ),
+        Err(error) => (
+            wisp_store::RunStatus::Failed,
+            Some(-1),
+            String::new(),
+            error,
+            transfer_progress("upload", "failed", 0, 0, 0, 0, None, started),
+        ),
+    };
+    let _ = store
+        .update_run_progress_owned(run_id, owner_id, &progress)
+        .await;
+    let _ = store
+        .update_run_output_owned(run_id, owner_id, Some(&tail(&stdout)), Some(&tail(&stderr)))
+        .await;
+    let _ = store
+        .finish_active_run_owned(run_id, owner_id, status, exit_code)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1601,6 +1906,12 @@ mod tests {
         let existing = root.join("existing.bam");
         std::fs::write(&existing, b"keep").unwrap();
         assert!(validate_local_destination(&existing.to_string_lossy()).is_err());
+        assert_eq!(
+            validate_local_source(&existing.to_string_lossy()).unwrap(),
+            existing
+        );
+        assert!(validate_local_source("relative.bam").is_err());
+        assert!(validate_local_source(&root.join("missing.bam").to_string_lossy()).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1919,6 +2230,64 @@ mod tests {
             .args
             .iter()
             .any(|arg| arg == "bob@b.example:/results/"));
+        drop(commands);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn local_source_uploads_to_selected_ssh_without_shell_transfer() {
+        let (root, store) = test_store().await;
+        let source = root.join("sample data.bam");
+        std::fs::write(&source, b"bam bytes").unwrap();
+        let runner = Arc::new(RelayRunner {
+            commands: StdMutex::new(Vec::new()),
+        });
+        let manager = RunManager::with_runner(runner.clone());
+        let response = submit_transfer(
+            &store,
+            &manager,
+            "p",
+            Some("f"),
+            &root,
+            TransferRequest {
+                source_context_id: "local".into(),
+                source_path: source.to_string_lossy().into_owned(),
+                destination_context_id: "ssh:a".into(),
+                destination_path: "/results/sample data.bam".into(),
+                route: "auto".into(),
+                transport: "auto".into(),
+                timeout_secs: Some(30),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response["route"], "local");
+        let run_id = response["run_id"].as_str().unwrap();
+        let run = loop {
+            let run = store.get_run(run_id).await.unwrap().unwrap();
+            if run.status.is_terminal() {
+                break run;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+        assert_eq!(run.kind, "file_transfer");
+        let progress: wisp_store::RunProgress = serde_json::from_str(&run.progress_json).unwrap();
+        assert_eq!(progress.phase, "uploaded");
+        assert_eq!(progress.completed_bytes, 9);
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].script, "check local upload destination");
+        assert_eq!(commands[1].program, "scp");
+        assert_eq!(commands[1].script, "local upload");
+        assert!(commands[1]
+            .args
+            .iter()
+            .any(|arg| arg == "alice@a.example:/results/sample data.bam"));
+        assert!(commands[1]
+            .args
+            .iter()
+            .any(|arg| arg.contains("sample data.bam")));
         drop(commands);
         let _ = std::fs::remove_dir_all(root);
     }
