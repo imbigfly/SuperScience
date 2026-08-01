@@ -3057,9 +3057,11 @@ fn skill_infos(
         .collect()
 }
 
-async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex> {
+async fn project_skill_catalog(
+    store: &Store,
+    ap: &ActiveProject,
+) -> (SkillIndex, Option<HashSet<String>>) {
     let mut enabled = effective_enabled_skill_names(store, ap).await;
-    let tags = load_skill_tags(store).await;
     let plugin_paths: Vec<PathBuf> = plugins::enabled_plugin_manifests(store, &ap.id)
         .await
         .into_iter()
@@ -3081,12 +3083,17 @@ async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex
                 .map(|skill| skill.name.clone()),
         );
     }
-    Arc::new(
+    (
         ap.skills
             .merged_preserving_self(&plugin)
-            .with_tag_overrides(&tags)
-            .filtered_by_names(enabled.as_ref()),
+            .with_tag_overrides(&load_skill_tags(store).await),
+        enabled,
     )
+}
+
+async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex> {
+    let (catalog, enabled) = project_skill_catalog(store, ap).await;
+    Arc::new(catalog.filtered_by_names(enabled.as_ref()))
 }
 
 /// Identity section appended after the base system prompt when a session has

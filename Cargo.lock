@@ -6613,7 +6613,10 @@ name = "wisp-skills"
 version = "0.30.0"
 dependencies = [
  "async-trait",
+ "hex",
+ "serde",
  "serde_json",
+ "sha2",
  "walkdir",
  "wisp-llm",
  "wisp-paths",

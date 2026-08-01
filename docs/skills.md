@@ -3,6 +3,10 @@
 Wisp discovers `SKILL.md` packages from several scopes. The Skills settings
 page shows the scope and absolute source path for every discovered skill, and
 the Agent's `search_skills` result includes the same `scope` and `path` fields.
+For inventory questions, `list_skill_catalog` pages through the complete
+discovered or effective view and reports separate discovered, effective,
+shadowed, parse-error, and currently searchable enabled counts. Search result
+counts must not be interpreted as the configured Skill inventory.
 
 Discovery uses this precedence when two packages declare the same public name:
 

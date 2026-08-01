@@ -57,6 +57,9 @@ pub fn build_registry(
     memory_enabled: bool,
 ) -> Registry {
     let mut reg = Registry::builtins();
+    reg.add(Box::new(wisp_skills::ListSkillCatalogTool::new(
+        skills.clone(),
+    )));
     reg.add(Box::new(wisp_skills::SearchSkillsTool::new(skills.clone())));
     reg.add(Box::new(wisp_skills::UseSkillTool::new(skills)));
     if memory_enabled {

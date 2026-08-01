@@ -15,6 +15,10 @@ pub struct SearchSkillsTool {
     skills: Arc<SkillIndex>,
 }
 
+pub struct ListSkillCatalogTool {
+    skills: Arc<SkillIndex>,
+}
+
 pub struct UseSkillTool {
     skills: Arc<SkillIndex>,
 }
@@ -131,11 +135,104 @@ impl SearchSkillsTool {
             serde_json::to_string_pretty(&json!({
                 "results": results,
                 "matched_skills": matched_skills,
-                "total_skills": self.skills.all().len(),
+                "searchable_enabled_count": self.skills.all().len(),
+                "catalog_counts": self.skills.catalog_audit(),
                 "next": "Call 'use_skill' with the exact name of the relevant skill. Use query '*' to browse.",
             }))
             .unwrap_or_default(),
         )
+    }
+}
+
+impl ListSkillCatalogTool {
+    pub fn new(skills: Arc<SkillIndex>) -> Self {
+        Self { skills }
+    }
+
+    fn list(&self, args: &serde_json::Value) -> ToolResult {
+        let view = args
+            .get("view")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("discovered");
+        if !matches!(view, "discovered" | "effective") {
+            return ToolResult::fail("view must be 'discovered' or 'effective'");
+        }
+        let offset = match args.get("cursor").and_then(serde_json::Value::as_str) {
+            Some(cursor) => match cursor
+                .strip_prefix("offset:")
+                .and_then(|raw| raw.parse().ok())
+            {
+                Some(offset) => offset,
+                None => return ToolResult::fail("invalid catalog cursor"),
+            },
+            None => 0,
+        };
+        let limit = args
+            .get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .map(|limit| limit as usize)
+            .unwrap_or(50)
+            .clamp(1, 100);
+        let records = self
+            .skills
+            .catalog_records()
+            .iter()
+            .filter(|record| view == "discovered" || record.effective)
+            .collect::<Vec<_>>();
+        if offset > records.len() {
+            return ToolResult::fail("catalog cursor is past the end of this snapshot");
+        }
+        let page = records
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .copied()
+            .collect::<Vec<_>>();
+        let next_offset = offset.saturating_add(page.len());
+        let next_cursor = (next_offset < records.len()).then(|| format!("offset:{next_offset}"));
+        ToolResult::ok(
+            serde_json::to_string_pretty(&json!({
+                "view": view,
+                "records": page,
+                "next_cursor": next_cursor,
+                "audit": self.skills.catalog_audit(),
+                "searchable_enabled_count": self.skills.all().len(),
+            }))
+            .unwrap_or_default(),
+        )
+    }
+}
+
+#[async_trait]
+impl Tool for ListSkillCatalogTool {
+    fn name(&self) -> &str {
+        "list_skill_catalog"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "list_skill_catalog",
+            "Page through the complete discovered or effective Skill catalog, including shadowed and parse-error audit records. Counts distinguish discovered, effective, and currently searchable enabled Skills.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "view": { "type": "string", "enum": ["discovered", "effective"], "default": "discovered" },
+                    "cursor": { "type": "string", "description": "Opaque cursor returned by the previous page" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
+                }
+            }),
+        )
+    }
+
+    fn preview(&self, args: &serde_json::Value) -> String {
+        args.get("view")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("discovered")
+            .to_string()
+    }
+
+    async fn run(&self, args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+        self.list(args)
     }
 }
 
@@ -309,6 +406,38 @@ mod tests {
         assert_eq!(output["results"][0]["name"], "pubmed-review");
         assert_eq!(output["results"][0]["tags"][0], "systematic-evidence");
 
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn catalog_listing_pages_without_losing_records() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp-skill-listing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for name in ["alpha", "beta", "gamma"] {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name}\n---\nbody"),
+            )
+            .unwrap();
+        }
+        let tool = ListSkillCatalogTool::new(Arc::new(SkillIndex::load(&[root.clone()])));
+        let first = tool.list(&json!({"limit": 2}));
+        let first: serde_json::Value = serde_json::from_str(&first.content).unwrap();
+        assert_eq!(first["records"].as_array().unwrap().len(), 2);
+        assert_eq!(first["next_cursor"], "offset:2");
+        assert_eq!(first["audit"]["discovered_count"], 3);
+        let second = tool.list(&json!({"limit": 2, "cursor": "offset:2"}));
+        let second: serde_json::Value = serde_json::from_str(&second.content).unwrap();
+        assert_eq!(second["records"].as_array().unwrap().len(), 1);
+        assert!(second["next_cursor"].is_null());
         std::fs::remove_dir_all(root).ok();
     }
 }
