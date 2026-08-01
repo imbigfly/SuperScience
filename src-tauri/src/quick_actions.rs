@@ -144,7 +144,10 @@ fn literature_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
     let search_rules = "Use the enabled scholarly-search Skills or literature connectors. \
         Search for real publications, verify titles and identifiers against tool results, and \
         never invent a paper. Do not write to the project. Prefer primary research and systematic \
-        reviews; state when evidence is indirect or unavailable.";
+        reviews; state when evidence is indirect or unavailable. Keep at most 8 of the most \
+        relevant papers. Search narrowly, discard verbose tool excerpts after extracting the \
+        citation and finding, and return the required JSON as soon as the evidence is sufficient; \
+        do not spend the remaining budget on exhaustive searching.";
     dynamic_workflow::DynamicAgentWorkflowProposal {
         goal: "Review the literature evidence for a selected passage".into(),
         context: String::new(),
@@ -163,7 +166,11 @@ fn literature_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                 isolated: false,
                 model_id: None,
                 executor: None,
-                budget: None,
+                budget: Some(dynamic_workflow::AgentBudgetProposal {
+                    max_tokens: Some(32_000),
+                    max_tool_calls: Some(8),
+                    max_cost_microunits: None,
+                }),
             },
             dynamic_workflow::DynamicAgentTaskProposal {
                 id: "challenging_evidence".into(),
@@ -179,7 +186,11 @@ fn literature_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                 isolated: false,
                 model_id: None,
                 executor: None,
-                budget: None,
+                budget: Some(dynamic_workflow::AgentBudgetProposal {
+                    max_tokens: Some(32_000),
+                    max_tool_calls: Some(8),
+                    max_cost_microunits: None,
+                }),
             },
             dynamic_workflow::DynamicAgentTaskProposal {
                 id: "synthesize".into(),
@@ -196,7 +207,11 @@ fn literature_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                 isolated: false,
                 model_id: None,
                 executor: None,
-                budget: None,
+                budget: Some(dynamic_workflow::AgentBudgetProposal {
+                    max_tokens: Some(16_000),
+                    max_tool_calls: Some(2),
+                    max_cost_microunits: None,
+                }),
             },
         ],
     }
@@ -829,6 +844,16 @@ mod tests {
             ["literature_search".to_string()]
         );
         assert_eq!(proposal.tasks[2].capabilities, ["reasoning".to_string()]);
+        for task in &proposal.tasks[..2] {
+            let budget = task.budget.as_ref().expect("search budget");
+            assert_eq!(budget.max_tokens, Some(32_000));
+            assert_eq!(budget.max_tool_calls, Some(8));
+            assert!(task.instruction.contains("at most 8"));
+            assert!(task.instruction.contains("return the required JSON"));
+        }
+        let synthesis_budget = proposal.tasks[2].budget.as_ref().expect("synthesis budget");
+        assert_eq!(synthesis_budget.max_tokens, Some(16_000));
+        assert_eq!(synthesis_budget.max_tool_calls, Some(2));
         assert!(proposal.context.contains("notes/claim.md"));
         assert!(proposal.context.contains("A testable biological claim."));
     }

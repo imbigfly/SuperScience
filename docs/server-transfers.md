@@ -1,7 +1,8 @@
-# Transfers from SSH contexts
+# Transfers between local and SSH contexts
 
 Wisp transfers one exact file or directory from a registered, probed SSH
-execution context either to another SSH context or to the local machine.
+execution context either to another SSH context or to the local machine, and
+uploads one exact local file or directory to a selected SSH context.
 Agent-generated free-form `ssh`, `scp`, and `rsync -e ssh` commands remain
 disabled.
 
@@ -33,6 +34,18 @@ download, it renames the staged item to the requested path. Existing
 destinations are rejected and partial downloads are removed after failure,
 cancellation, or timeout.
 
+## Upload from the local machine
+
+Set `source_context_id` to `local`, provide an exact existing absolute local
+path, and select an SSH destination. Local uploads accept `route=auto|relay`
+and `transport=auto|scp`. Globs, roots, missing paths, symbolic links, and
+special files are rejected.
+
+Before uploading, Wisp checks through the configured SSH connection that the
+exact remote destination does not exist. It then uploads with scp as a
+persisted `file_transfer` Run, preserving cancellation, timeout, progress, and
+audit records. Existing remote destinations are never silently overwritten.
+
 ## User-approved trust
 
 `configure_ssh_trust` always requires approval.
@@ -56,6 +69,7 @@ themselves; it does not generate or copy a key.
 
 - Direct rsync is resumable at rsync's file-transfer level; scp relay is not.
 - SSH-to-local downloads use scp and are not resumable yet.
+- Local-to-SSH uploads use scp and are not resumable yet.
 - Relay temporarily needs local free space approximately equal to the source.
 - scp recursive copies follow symlinks according to the installed OpenSSH
   implementation.

@@ -95,11 +95,16 @@ For a small result that must become local, wait until the Run is terminal,
 then transfer it as a separate quick operation and register the local file.
 Large outputs should remain remote references.
 
-## Transfers from SSH contexts
+## Transfers between local and SSH contexts
 
 Use `transfer_between_contexts` for one exact remote file or directory. The
 destination may be another selected SSH context or `local`. Never compose
 nested `ssh`, `scp`, or `rsync -e ssh` inside `run_in_context`.
+
+For a local upload, set `source_context_id` to `local`, provide the exact
+existing absolute local file or directory, and select an SSH destination.
+Wisp rejects globs, symlinks, special files, and existing remote destinations.
+Call `monitor_run` once with the returned Run id.
 
 For a local download, set `destination_context_id` to `local` and provide the
 exact new absolute local path. Ask the user when that path is unspecified.
