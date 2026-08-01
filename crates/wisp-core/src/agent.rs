@@ -14,7 +14,7 @@ use std::time::Duration;
 use wisp_llm::{
     is_retriable, Completion, Content, LlmError, Message, Part, Provider, ToolCall, ToolSchema,
 };
-use wisp_tools::{ImageData, Registry, ToolEnv};
+use wisp_tools::{ask_user::ASK_USER, ImageData, Registry, ToolEnv};
 
 const RETRY_DELAYS: [u64; 5] = [2_000, 10_000, 30_000, 60_000, 120_000];
 const TRUNCATED_OUTPUT_MESSAGE: &str = "模型输出在达到 max_tokens 上限时被截断，任务可能尚未完成——请在设置中调高该模型的 max_tokens，或直接继续对话让我接着做。(output truncated at max_tokens)";
@@ -302,6 +302,7 @@ async fn agent_loop_inner(
         }
 
         let mut completed = false;
+        let mut waiting_for_user = false;
         for tc in &comp.tool_calls {
             let name = tc.function.name.clone();
             let args = tc.args_value();
@@ -385,12 +386,19 @@ async fn agent_loop_inner(
             if let Some(m) = ctx.messages.last() {
                 output.on_message(m);
             }
+            // `ask_user` is a turn boundary, not merely advice to the model.
+            // Finish the current tool-call batch so every call has a matching
+            // result, then stop before another model request. The user's
+            // answer starts the next turn as a normal user message.
+            if name == ASK_USER && ok {
+                waiting_for_user = true;
+            }
             if name == "attempt_completion" {
                 completed = true;
                 break;
             }
         }
-        if completed {
+        if completed || waiting_for_user {
             break;
         }
         if iteration_limit_reached(iteration, max_iter) {
@@ -501,7 +509,7 @@ mod tests {
     use super::*;
     use crate::output::NullOutput;
     use async_trait::async_trait;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
     use wisp_llm::{FunctionCall, ToolCall};
     use wisp_tools::{Registry, Tool, ToolEnv, ToolResult};
@@ -558,6 +566,109 @@ mod tests {
         ) -> wisp_llm::Result<Completion> {
             Ok(self.completion.clone())
         }
+    }
+
+    struct SequenceProvider {
+        completions: Mutex<VecDeque<Completion>>,
+        stream_calls: AtomicUsize,
+    }
+
+    impl SequenceProvider {
+        fn new(completions: impl IntoIterator<Item = Completion>) -> Self {
+            Self {
+                completions: Mutex::new(completions.into_iter().collect()),
+                stream_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn next(&self) -> wisp_llm::Result<Completion> {
+            self.completions
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| LlmError::Incomplete)
+        }
+    }
+
+    #[async_trait]
+    impl Provider for SequenceProvider {
+        fn name(&self) -> &str {
+            "sequence"
+        }
+
+        fn model(&self) -> &str {
+            "sequence"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            self.next()
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            self.next()
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_ask_user_ends_turn_before_another_model_call() {
+        let provider = SequenceProvider::new([
+            Completion {
+                tool_calls: vec![ToolCall {
+                    id: "ask-1".into(),
+                    kind: "function".into(),
+                    function: FunctionCall {
+                        name: ASK_USER.into(),
+                        arguments: serde_json::json!({
+                            "question": "Which reference genome?",
+                            "options": [{ "label": "GRCh38" }]
+                        })
+                        .to_string(),
+                    },
+                }],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            },
+            Completion {
+                content: "continued without waiting".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(wisp_tools::ask_user::AskUserTool));
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &NullOutput,
+            "prepare the analysis",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            provider.stream_calls.load(Ordering::SeqCst),
+            1,
+            "the loop must wait for the user's next message after ask_user"
+        );
+        assert_eq!(ctx.messages.len(), 3, "user, assistant call, tool result");
+        assert_eq!(ctx.messages[2].tool_name.as_deref(), Some(ASK_USER));
     }
 
     struct RecordingProvider {
