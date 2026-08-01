@@ -9316,7 +9316,10 @@ pub(super) fn UserMessage(
     let has_context = !presentation.artifacts.is_empty()
         || !presentation.sessions.is_empty()
         || !presentation.projects.is_empty()
-        || !presentation.skills.is_empty();
+        || !presentation.skills.is_empty()
+        || !presentation.workflows.is_empty()
+        || !presentation.contexts.is_empty()
+        || !presentation.runtimes.is_empty();
     let has_body = !body.is_empty();
     // 长消息先折叠，"展开全部"再看全文
     let is_long = body.lines().count() > 12 || body.chars().count() > 600;
@@ -9379,13 +9382,15 @@ pub(super) fn UserMessage(
             "attachment.workflow",
             presentation.workflows,
         ),
+        ("context", "attachment.context", presentation.contexts),
+        ("runtime", "attachment.runtime", presentation.runtimes),
     ]
     .into_iter()
     .flat_map(|(kind, label_key, items)| {
         items.into_iter().map(move |label| {
             view! {
                 <span class=format!("user-context-card {kind}") data-reference-kind=kind>
-                    <span class="user-context-icon">{compose_icon(if kind == "skill" { "skill" } else if kind == "workflow" { "branch" } else if kind == "session" { "chat" } else if kind == "project" { "folder" } else { "doc" })}</span>
+                    <span class="user-context-icon">{compose_icon(if kind == "skill" { "skill" } else if kind == "workflow" { "branch" } else if kind == "session" { "chat" } else if kind == "project" { "folder" } else if kind == "context" { "server" } else if kind == "runtime" { "terminal" } else { "doc" })}</span>
                     <span class="user-context-copy">
                         <span class="user-context-label">{label}</span>
                         <span class="user-context-meta">{move || t(locale.get(), label_key)}</span>
