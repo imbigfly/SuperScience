@@ -243,7 +243,12 @@ Permission** switch. Enabling it requires an explicit warning confirmation and
 then automatically approves ordinary tools, dangerous commands, and ACP
 permission requests for that conversation until it is turned off or the app is
 restarted. It does not remove project-path restrictions or override tools that
-the user explicitly blocked.
+the user explicitly blocked. Without Full Permission, a pending approval keeps
+the agent turn suspended until the user explicitly approves, rejects, or stops
+it; it never times out into an implicit rejection. Rejecting an action also
+skips any later tool calls the model placed in the same batch. `ask_user` and
+plan submission are hard turn boundaries: later batched calls do not run while
+the agent is waiting for the user's next message.
 **Conversations persist to that SQLite database** — each turn's
 messages are appended to the active session frame, so restarting the app
 restores the full history. The headless CLI keeps using `.wisp/session.json` for

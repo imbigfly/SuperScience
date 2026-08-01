@@ -14,7 +14,7 @@ use std::time::Duration;
 use wisp_llm::{
     is_retriable, Completion, Content, LlmError, Message, Part, Provider, ToolCall, ToolSchema,
 };
-use wisp_tools::{ask_user::ASK_USER, ImageData, Registry, ToolEnv};
+use wisp_tools::{ImageData, Registry, ToolControl, ToolEnv};
 
 const RETRY_DELAYS: [u64; 5] = [2_000, 10_000, 30_000, 60_000, 120_000];
 const TRUNCATED_OUTPUT_MESSAGE: &str = "模型输出在达到 max_tokens 上限时被截断，任务可能尚未完成——请在设置中调高该模型的 max_tokens，或直接继续对话让我接着做。(output truncated at max_tokens)";
@@ -301,9 +301,8 @@ async fn agent_loop_inner(
             anyhow::bail!(STUCK_LOOP_MESSAGE);
         }
 
-        let mut completed = false;
-        let mut waiting_for_user = false;
-        for tc in &comp.tool_calls {
+        let mut batch_control = ToolControl::Continue;
+        for (index, tc) in comp.tool_calls.iter().enumerate() {
             let name = tc.function.name.clone();
             let args = tc.args_value();
             let producing = provenance::is_producing(&name);
@@ -329,6 +328,7 @@ async fn agent_loop_inner(
             };
             let t0 = std::time::Instant::now();
             let result = tools.run(&name, &args, &env).await;
+            let control = result.control;
             let duration_ms = t0.elapsed().as_millis() as u64;
             if let Some(root) = &root {
                 let root2 = root.clone();
@@ -386,19 +386,25 @@ async fn agent_loop_inner(
             if let Some(m) = ctx.messages.last() {
                 output.on_message(m);
             }
-            // `ask_user` is a turn boundary, not merely advice to the model.
-            // Finish the current tool-call batch so every call has a matching
-            // result, then stop before another model request. The user's
-            // answer starts the next turn as a normal user message.
-            if name == ASK_USER && ok {
-                waiting_for_user = true;
-            }
-            if name == "attempt_completion" {
-                completed = true;
+
+            if control != ToolControl::Continue {
+                // A user decision invalidates calls the model optimistically
+                // placed later in the same batch. Do not execute them, but do
+                // persist a synthetic result for each one: providers require
+                // every assistant tool call to have a matching tool message.
+                append_skipped_tool_results(
+                    ctx,
+                    tools,
+                    output,
+                    &comp.tool_calls[index + 1..],
+                    &name,
+                    control,
+                );
+                batch_control = control;
                 break;
             }
         }
-        if completed || waiting_for_user {
+        if batch_control == ToolControl::StopTurn {
             break;
         }
         if iteration_limit_reached(iteration, max_iter) {
@@ -409,6 +415,36 @@ async fn agent_loop_inner(
         }
     }
     Ok(())
+}
+
+fn append_skipped_tool_results(
+    ctx: &mut ContextManager,
+    tools: &Registry,
+    output: &dyn Output,
+    skipped: &[ToolCall],
+    boundary_name: &str,
+    control: ToolControl,
+) {
+    let reason = match control {
+        ToolControl::StopBatch => format!(
+            "Skipped because the user's decision on '{boundary_name}' invalidated later calls from the same model batch."
+        ),
+        ToolControl::StopTurn => format!(
+            "Skipped because '{boundary_name}' ended the turn before this call. Wait for the user's next message."
+        ),
+        ToolControl::Continue => return,
+    };
+    for tc in skipped {
+        let name = &tc.function.name;
+        let args = tc.args_value();
+        let event_name = tools.event_name(name, &args);
+        output.tool_call(&event_name, &reason);
+        output.tool_result(&event_name, false, &reason, 0);
+        ctx.append_tool(&tc.id, name, Content::text(reason.clone()));
+        if let Some(message) = ctx.messages.last() {
+            output.on_message(message);
+        }
+    }
 }
 
 fn iteration_limit_reached(iteration: usize, max_iter: usize) -> bool {
@@ -510,9 +546,10 @@ mod tests {
     use crate::output::NullOutput;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use wisp_llm::{FunctionCall, ToolCall};
-    use wisp_tools::{Registry, Tool, ToolEnv, ToolResult};
+    use wisp_tools::ask_user::ASK_USER;
+    use wisp_tools::{Approval, Registry, Tool, ToolEnv, ToolResult};
 
     #[test]
     fn retry_window_covers_sustained_provider_overload() {
@@ -619,22 +656,65 @@ mod tests {
         }
     }
 
+    struct CountingTool {
+        name: &'static str,
+        runs: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Tool for CountingTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                self.name,
+                "count executions",
+                serde_json::json!({"type": "object"}),
+            )
+        }
+
+        async fn run(&self, _args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            ToolResult::ok("ran")
+        }
+    }
+
+    fn call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: name.into(),
+                arguments: arguments.to_string(),
+            },
+        }
+    }
+
+    fn tool_result_ids(ctx: &ContextManager) -> Vec<&str> {
+        ctx.messages
+            .iter()
+            .filter_map(|message| message.tool_call_id.as_deref())
+            .collect()
+    }
+
     #[tokio::test]
-    async fn successful_ask_user_ends_turn_before_another_model_call() {
+    async fn successful_ask_user_skips_later_calls_and_ends_the_turn() {
+        let later_runs = Arc::new(AtomicUsize::new(0));
         let provider = SequenceProvider::new([
             Completion {
-                tool_calls: vec![ToolCall {
-                    id: "ask-1".into(),
-                    kind: "function".into(),
-                    function: FunctionCall {
-                        name: ASK_USER.into(),
-                        arguments: serde_json::json!({
+                tool_calls: vec![
+                    call(
+                        "ask-1",
+                        ASK_USER,
+                        serde_json::json!({
                             "question": "Which reference genome?",
                             "options": [{ "label": "GRCh38" }]
-                        })
-                        .to_string(),
-                    },
-                }],
+                        }),
+                    ),
+                    call("later-1", "later", serde_json::json!({})),
+                ],
                 finish_reason: Some("tool_calls".into()),
                 ..Completion::default()
             },
@@ -646,6 +726,10 @@ mod tests {
         ]);
         let mut tools = Registry::builtins();
         tools.add(Box::new(wisp_tools::ask_user::AskUserTool));
+        tools.add(Box::new(CountingTool {
+            name: "later",
+            runs: later_runs.clone(),
+        }));
         let mut ctx = ContextManager::new(100_000);
 
         agent_loop(
@@ -667,8 +751,177 @@ mod tests {
             1,
             "the loop must wait for the user's next message after ask_user"
         );
-        assert_eq!(ctx.messages.len(), 3, "user, assistant call, tool result");
+        assert_eq!(
+            later_runs.load(Ordering::SeqCst),
+            0,
+            "a sibling call after ask_user must not execute"
+        );
+        assert_eq!(ctx.messages.len(), 4);
         assert_eq!(ctx.messages[2].tool_name.as_deref(), Some(ASK_USER));
+        assert_eq!(tool_result_ids(&ctx), vec!["ask-1", "later-1"]);
+        assert!(ctx.messages[3].content.as_text().contains("ended the turn"));
+    }
+
+    #[tokio::test]
+    async fn successful_propose_plan_skips_later_calls_and_ends_the_turn() {
+        let later_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([
+            Completion {
+                tool_calls: vec![
+                    call(
+                        "plan-1",
+                        wisp_tools::plan::PROPOSE_PLAN,
+                        serde_json::json!({
+                            "entries": [{ "content": "Implement the fix" }]
+                        }),
+                    ),
+                    call("later-1", "later", serde_json::json!({})),
+                ],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            },
+            Completion {
+                content: "continued without plan approval".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(wisp_tools::plan::ProposePlanTool));
+        tools.add(Box::new(CountingTool {
+            name: "later",
+            runs: later_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &NullOutput,
+            "plan the change",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(later_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(tool_result_ids(&ctx), vec!["plan-1", "later-1"]);
+    }
+
+    struct DenyApprovalOutput;
+
+    impl Output for DenyApprovalOutput {
+        fn confirm(&self, _message: &str) -> bool {
+            false
+        }
+
+        fn approval_mode(&self, tool: &str) -> Approval {
+            if tool == "approval_tool" {
+                Approval::Ask
+            } else {
+                Approval::Allow
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn denied_approval_skips_stale_siblings_before_the_model_reacts() {
+        let approved_tool_runs = Arc::new(AtomicUsize::new(0));
+        let later_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([
+            Completion {
+                tool_calls: vec![
+                    call("approval-1", "approval_tool", serde_json::json!({})),
+                    call("later-1", "later", serde_json::json!({})),
+                ],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            },
+            Completion {
+                content: "I will respect the denial.".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(CountingTool {
+            name: "approval_tool",
+            runs: approved_tool_runs.clone(),
+        }));
+        tools.add(Box::new(CountingTool {
+            name: "later",
+            runs: later_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &DenyApprovalOutput,
+            "perform approved work",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(approved_tool_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(later_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(tool_result_ids(&ctx), vec!["approval-1", "later-1"]);
+        assert!(ctx.messages[3]
+            .content
+            .as_text()
+            .contains("invalidated later calls"));
+    }
+
+    #[tokio::test]
+    async fn successful_completion_skips_later_sibling_calls() {
+        let later_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([Completion {
+            tool_calls: vec![
+                call(
+                    "complete-1",
+                    "attempt_completion",
+                    serde_json::json!({"result": "done"}),
+                ),
+                call("later-1", "later", serde_json::json!({})),
+            ],
+            finish_reason: Some("tool_calls".into()),
+            ..Completion::default()
+        }]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(CountingTool {
+            name: "later",
+            runs: later_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &NullOutput,
+            "finish",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(later_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(tool_result_ids(&ctx), vec!["complete-1", "later-1"]);
     }
 
     struct RecordingProvider {

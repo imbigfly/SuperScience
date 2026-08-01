@@ -138,7 +138,7 @@ impl Tool for RunInContextTool {
                     request.command
                 );
                 if !env.confirm(&msg).await {
-                    return ToolResult::fail("error: User denied action");
+                    return ToolResult::fail("error: User denied action").stop_batch();
                 }
             }
         }

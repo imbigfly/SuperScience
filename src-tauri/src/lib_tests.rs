@@ -6,8 +6,8 @@ use super::{
     branch_title, copy_dir_recursive, enable_referenced_contexts, events_to_items,
     merge_pending_ui_event, message_uses_resource_bindings, messages_to_items,
     parse_disabled_skills, parse_enabled_skill_names, parse_skill_tags, persist_ui_events,
-    resolve_acp_artifact_references, resolve_composer_references, resolve_reader_references,
-    resolve_review_backend, resolve_workspace, session_runtime_status,
+    receive_confirm_decision, resolve_acp_artifact_references, resolve_composer_references,
+    resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
     should_hide_app_on_macos_close, should_persist_ui_event, side_chat_prompt, user_message_start,
     AgentEvent, ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem,
     SessionRuntime, MAX_PENDING_UI_EVENT_BYTES,
@@ -15,6 +15,22 @@ use super::{
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
+
+#[tokio::test]
+async fn native_confirmation_waits_for_an_explicit_response() {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let decision = receive_confirm_decision(receiver);
+    tokio::pin!(decision);
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut decision)
+            .await
+            .is_err(),
+        "an unanswered permission request must remain blocked"
+    );
+    sender.send(wisp_tools::ConfirmDecision::Approved).unwrap();
+    assert_eq!(decision.await, wisp_tools::ConfirmDecision::Approved);
+}
 
 #[test]
 fn mcp_app_context_is_latest_only_and_session_scoped() {

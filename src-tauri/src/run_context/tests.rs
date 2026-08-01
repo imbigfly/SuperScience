@@ -125,6 +125,47 @@ impl wisp_tools::ToolEnv for RunToolTestEnv {
     async fn emit(&self, _event: wisp_tools::ToolEvent) {}
 }
 
+struct DenyRunToolEnv(PathBuf);
+
+#[async_trait::async_trait]
+impl wisp_tools::ToolEnv for DenyRunToolEnv {
+    fn project_root(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    async fn confirm(&self, _message: &str) -> bool {
+        false
+    }
+
+    async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+}
+
+#[tokio::test]
+async fn denied_dangerous_run_stops_the_model_batch() {
+    use wisp_tools::{Tool, ToolControl};
+    let tmp = std::env::temp_dir().join(format!("wisp_run_deny_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    let tool = RunInContextTool::new(store, RunManager::new(), "p".into(), None);
+
+    let result = tool
+        .run(
+            &serde_json::json!({
+                "context_id": "local",
+                "command": "rm -rf generated-output"
+            }),
+            &DenyRunToolEnv(tmp.clone()),
+        )
+        .await;
+
+    assert!(!result.success);
+    assert_eq!(result.control, ToolControl::StopBatch);
+    drop(tool);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
 #[tokio::test]
 async fn run_in_context_can_suspend_until_terminal_without_get_run_calls() {
     use wisp_tools::Tool;
