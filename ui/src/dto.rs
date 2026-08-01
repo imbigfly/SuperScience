@@ -2447,6 +2447,58 @@ pub(crate) struct DynamicAgentWorkflowProposal {
     pub(crate) tasks: Vec<DynamicAgentTaskProposal>,
 }
 
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResearchIntentRequest {
+    pub(crate) request: String,
+    pub(crate) domains: Vec<String>,
+    pub(crate) research_stages: Vec<String>,
+    pub(crate) roles: Vec<String>,
+    pub(crate) evidence_types: Vec<String>,
+    pub(crate) outputs: Vec<String>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PortfolioConfigRequest {
+    pub(crate) tier: String,
+    pub(crate) total_token_budget: u32,
+    pub(crate) synthesis_reserve: u32,
+    pub(crate) node_output_tokens: u32,
+    pub(crate) user_parallel_limit: usize,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PortfolioSelectionSummary {
+    pub(crate) skill_id: String,
+    pub(crate) name: String,
+    pub(crate) scope: String,
+    pub(crate) reasons: Vec<String>,
+    pub(crate) node_budget: u32,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PortfolioDeferralSummary {
+    pub(crate) name: String,
+    pub(crate) reason: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PortfolioPlanSummary {
+    pub(crate) selected: Vec<PortfolioSelectionSummary>,
+    pub(crate) deferred: Vec<PortfolioDeferralSummary>,
+    pub(crate) total_token_budget: u32,
+    pub(crate) selected_node_budget: u32,
+    pub(crate) synthesis_reserve: u32,
+    pub(crate) max_parallel: usize,
+    pub(crate) estimated_batches: usize,
+    pub(crate) requires_confirmation: bool,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SkillPortfolioDraft {
+    pub(crate) plan: PortfolioPlanSummary,
+    pub(crate) proposal: DynamicAgentWorkflowProposal,
+}
+
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AgentExecutorSummary {
     pub(crate) kind: String,

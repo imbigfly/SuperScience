@@ -2389,6 +2389,64 @@ pub(super) fn workflow_studio(
     let saving = create_rw_signal(false);
     let selected_task_key = create_rw_signal::<Option<u32>>(None);
     let connect_from_key = create_rw_signal::<Option<u32>>(None);
+    let portfolio_open = create_rw_signal(false);
+    let portfolio_request = create_rw_signal(String::new());
+    let portfolio_tier = create_rw_signal("standard".to_string());
+    let portfolio_total = create_rw_signal("16000".to_string());
+    let portfolio_reserve = create_rw_signal("4000".to_string());
+    let portfolio_draft = create_rw_signal::<Option<SkillPortfolioDraft>>(None);
+    let portfolio_loading = create_rw_signal(false);
+
+    window_capture_escape(move || {
+        if !portfolio_open.get_untracked() {
+            return false;
+        }
+        portfolio_open.set(false);
+        true
+    });
+
+    let generate_portfolio = move |_| {
+        let request_text = portfolio_request.get_untracked().trim().to_string();
+        let total = portfolio_total.get_untracked().parse::<u32>().unwrap_or(0);
+        let reserve = portfolio_reserve.get_untracked().parse::<u32>().unwrap_or(0);
+        if request_text.is_empty() || total == 0 || reserve == 0 {
+            state.error.set(Some("Research request and positive budgets are required.".into()));
+            return;
+        }
+        portfolio_loading.set(true);
+        let args = serde_json::json!({
+            "request": {
+                "intent": ResearchIntentRequest {
+                    request: request_text,
+                    domains: vec![],
+                    research_stages: vec![],
+                    roles: vec![],
+                    evidence_types: vec![],
+                    outputs: vec![],
+                },
+                "config": PortfolioConfigRequest {
+                    tier: portfolio_tier.get_untracked(),
+                    total_token_budget: total,
+                    synthesis_reserve: reserve,
+                    node_output_tokens: 2_000,
+                    user_parallel_limit: 2,
+                }
+            }
+        });
+        spawn_local(async move {
+            match invoke_checked("plan_skill_portfolio", to_value(&args).unwrap()).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<SkillPortfolioDraft>(value) {
+                    Ok(draft) => {
+                        portfolio_draft.set(Some(draft));
+                        state.error.set(None);
+                    }
+                    Err(error) => state.error.set(Some(error.to_string())),
+                },
+                Err(error) => state.error.set(Some(js_error_text(error))),
+            }
+            portfolio_loading.set(false);
+        });
+    };
 
     create_effect(move |_| {
         let items = templates.get();
@@ -2554,6 +2612,13 @@ pub(super) fn workflow_studio(
                     <button type="button" class="settings-add-btn" data-testid="workflow-new"
                         on:click=start_new>
                         {move || format!("+ {}", t(locale.get(), "workflow_studio.new"))}
+                    </button>
+                    <button type="button" class="settings-add-btn" data-testid="portfolio-planner-open"
+                        on:click=move |_| {
+                            portfolio_draft.set(None);
+                            portfolio_open.set(true);
+                        }>
+                        {"Plan from Skills"}
                     </button>
                 </div>
                 <div class="workflow-studio-template-list">
@@ -2787,6 +2852,77 @@ pub(super) fn workflow_studio(
                     <div class="agents-error" data-testid="workflow-studio-error">{error}</div>
                 })}
             </form>
+            {move || portfolio_open.get().then(|| view! {
+                <div class="overlay" role="presentation" data-testid="portfolio-planner-overlay"
+                    on:click=move |_| portfolio_open.set(false)>
+                    <div class="modal agents-create" role="dialog" aria-modal="true"
+                        aria-label="Skill Portfolio Planner"
+                        on:click=move |event| event.stop_propagation()>
+                        <div class="modal-header">
+                            <div>
+                                <strong>{"Skill Portfolio Planner"}</strong>
+                                <span>{"Build an explainable, budgeted workflow from the effective catalog."}</span>
+                            </div>
+                            <button type="button" aria-label="Close" on:click=move |_| portfolio_open.set(false)>{"×"}</button>
+                        </div>
+                        <label>
+                            <span>{"Research request"}</span>
+                            <textarea data-testid="portfolio-request"
+                                prop:value=move || portfolio_request.get()
+                                on:input=move |event| portfolio_request.set(event_target_value(&event))></textarea>
+                        </label>
+                        <div class="dynamic-agent-policy-row">
+                            <label><span>{"Plan depth"}</span>
+                                <select data-testid="portfolio-tier" on:change=move |event| portfolio_tier.set(dom_value(&event))>
+                                    <option value="compact">{"Compact"}</option>
+                                    <option value="standard" selected>{"Standard"}</option>
+                                    <option value="deep">{"Deep"}</option>
+                                </select>
+                            </label>
+                            <label><span>{"Total tokens"}</span><input data-testid="portfolio-total" type="number"
+                                prop:value=move || portfolio_total.get()
+                                on:input=move |event| portfolio_total.set(event_target_value(&event)) /></label>
+                            <label><span>{"Synthesis reserve"}</span><input data-testid="portfolio-reserve" type="number"
+                                prop:value=move || portfolio_reserve.get()
+                                on:input=move |event| portfolio_reserve.set(event_target_value(&event)) /></label>
+                        </div>
+                        <button type="button" class="agents-primary" data-testid="portfolio-generate"
+                            disabled=move || portfolio_loading.get() on:click=generate_portfolio>
+                            {move || if portfolio_loading.get() { "Planning…" } else { "Generate plan" }}
+                        </button>
+                        {move || portfolio_draft.get().map(|draft| {
+                            let plan = draft.plan.clone();
+                            let proposal = draft.proposal.clone();
+                            view! {
+                                <section data-testid="portfolio-plan-card">
+                                    <strong>{format!("{} Skills · {} batches · max {} parallel", plan.selected.len(), plan.estimated_batches, plan.max_parallel)}</strong>
+                                    <p>{format!("{} total · {} node tokens · {} synthesis reserve", plan.total_token_budget, plan.selected_node_budget, plan.synthesis_reserve)}</p>
+                                    <ul>{plan.selected.into_iter().map(|item| view! {
+                                        <li><code>{format!("{}:{}", item.scope, item.skill_id)}</code>
+                                            {format!(" · {} tokens · {}", item.node_budget, item.reasons.join("; "))}</li>
+                                    }).collect_view()}</ul>
+                                    {(!plan.deferred.is_empty()).then(|| view! {
+                                        <p data-testid="portfolio-deferred">{format!("Deferred: {}", plan.deferred.into_iter().map(|item| format!("{} ({})", item.name, item.reason)).collect::<Vec<_>>().join(", "))}</p>
+                                    })}
+                                    <p>{if plan.requires_confirmation { "Review required before execution." } else { "Eligible for safe automatic execution." }}</p>
+                                    <button type="button" class="agents-primary" data-testid="portfolio-edit-studio"
+                                        on:click=move |_| {
+                                            let form = DynamicWorkflowForm::from_proposal(proposal.clone());
+                                            selected_task_key.set(form.tasks.first().map(|task| task.key));
+                                            state.dynamic_form.set(form);
+                                            template_name.set("Skill Portfolio".into());
+                                            template_description.set("Generated from the effective Skill Catalog".into());
+                                            creating.set(true);
+                                            loaded_id.set(None);
+                                            selected_template_id.set(None);
+                                            portfolio_open.set(false);
+                                        }>{"Edit in Workflow Studio"}</button>
+                                </section>
+                            }
+                        })}
+                    </div>
+                </div>
+            })}
         </div>
     }
 }

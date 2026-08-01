@@ -1707,6 +1707,34 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return mockAcpAgents;
           case "get_dynamic_agent_options":
             return mockDynamicAgentOptions;
+          case "plan_skill_portfolio":
+            return {
+              plan: {
+                selected: [
+                  { skill_id: "analysis-workflow", name: "Analysis workflow", scope: "bundled", reasons: ["stage: analysis"], node_budget: 3200 },
+                  { skill_id: "literature-review", name: "Literature review", scope: "bundled", reasons: ["evidence: literature"], node_budget: 3200 },
+                  { skill_id: "hypothesis-generation", name: "Hypothesis generation", scope: "bundled", reasons: ["stage: hypothesis"], node_budget: 3200 },
+                ],
+                deferred: [{ name: "Optional validator", reason: "insufficient_token_budget" }],
+                total_token_budget: 16000,
+                selected_node_budget: 9600,
+                synthesis_reserve: 4000,
+                max_parallel: 2,
+                estimated_batches: 3,
+                requires_confirmation: true,
+              },
+              proposal: {
+                goal: "Skill portfolio: design an oncology study",
+                context: "Research intent",
+                approval_policy: "review_all",
+                tasks: [
+                  { id: "skill-1", instruction: "Analyze", depends_on: [], capabilities: ["reasoning"], skill_ids: ["analysis-workflow"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 3200, max_tool_calls: 12, max_cost_microunits: null } },
+                  { id: "skill-2", instruction: "Review", depends_on: [], capabilities: ["reasoning"], skill_ids: ["literature-review"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 3200, max_tool_calls: 12, max_cost_microunits: null } },
+                  { id: "skill-3", instruction: "Hypothesize", depends_on: [], capabilities: ["reasoning"], skill_ids: ["hypothesis-generation"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 3200, max_tool_calls: 12, max_cost_microunits: null } },
+                  { id: "synthesis", instruction: "Synthesize", depends_on: ["skill-1", "skill-2", "skill-3"], capabilities: ["reasoning"], skill_ids: [], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 4000, max_tool_calls: 4, max_cost_microunits: null } },
+                ],
+              },
+            };
           case "list_quick_actions":
             return mockQuickActions;
           case "list_workflow_templates":

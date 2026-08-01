@@ -370,6 +370,21 @@ the coordination paths.
   structured results, artifacts, evidence, usage, child conversation IDs, and
   backend session IDs remain auditable in SQLite. Secrets stay in the existing
   credential stores.
+
+## Skill Portfolio Planner
+
+Workflow Studio can generate a draft from the current effective Skill Catalog. The planner
+normalizes the research request, applies deterministic lexical and `wisp` metadata scoring, and
+selects a compact, standard, or deep complementary portfolio. Its preflight uses the rendered
+Skill instruction plus request and node output allowance; it reserves synthesis tokens before
+selecting child nodes and defers lower-ranked optional candidates when the remaining child budget
+is insufficient.
+
+The confirmation card shows exact Skill sources and reasons, selected and deferred nodes, node and
+total budgets, the synthesis reserve, the runtime maximum of two parallel Agents, and estimated DAG
+batches. Applying the card opens the generated nodes in Workflow Studio for editing. Network,
+execution, write, external-service, multi-Skill, deferred, standard, and deep plans require review;
+only a compact, low-cost, read-only plan can remain auto-safe.
 - Turning Delegation off prevents the main conversation and its MCP bridge from
   listing or invoking delegation tools. It does not erase workflow history or
   implicitly cancel a workflow that is already running.

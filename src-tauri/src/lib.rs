@@ -73,6 +73,7 @@ mod session_context_tool;
 mod session_export;
 mod settings_commands;
 mod skill_commands;
+mod skill_portfolio;
 mod snapshot_store;
 mod specialist_tool;
 mod specialists;
@@ -6515,6 +6516,7 @@ pub fn run() {
             quick_actions::save_workflow_template,
             quick_actions::remove_workflow_template,
             quick_actions::run_quick_action,
+            skill_portfolio::plan_skill_portfolio,
             review_session,
             side_chat,
             context_probe::probe_execution_context,
