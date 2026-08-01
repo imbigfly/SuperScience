@@ -1178,6 +1178,18 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(workflowItem).toContainText("neutral chair synthesis");
   await workflowItem.click();
 
+  await composerInput.pressSequentially("@gpu");
+  const environmentItem = page.locator(".mention-menu .mention-item").filter({
+    has: page.locator(".mention-item-name", { hasText: /^gpu-server$/ }),
+  });
+  await expect(environmentItem).toContainText("ssh:gpu-server");
+  await environmentItem.click();
+  const composerEnvironment = page.locator(
+    '.composer-reference-card[data-reference-kind="context"]',
+  );
+  await expect(composerEnvironment).toContainText("gpu-server");
+  await expect(composerEnvironment).toContainText("Environment");
+
   await composerInput.fill("use the attached context");
   await page.getByRole("button", { name: "Send" }).click();
   await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
@@ -1187,16 +1199,22 @@ test("composer @ # and / add typed context references", async ({ page }) => {
       { kind: "project", id: "default" },
       { kind: "skill", name: "alphafold2" },
       { kind: "workflow", id: "roundtable" },
+      { kind: "context", id: "ssh:gpu-server" },
     ],
   });
   const sentContext = page.locator(".msg.user .user-context-card");
-  await expect(sentContext).toHaveCount(5);
+  await expect(sentContext).toHaveCount(6);
   await expect(page.locator('.msg.user [data-reference-kind="artifact"]')).toContainText("nif3.treefile");
   await expect(page.locator('.msg.user [data-reference-kind="session"]')).toContainText("Current analysis");
   await expect(page.locator('.msg.user [data-reference-kind="project"]')).toContainText("wisp-science");
   await expect(page.locator('.msg.user [data-reference-kind="skill"]')).toContainText("alphafold2");
   await expect(page.locator('.msg.user [data-reference-kind="workflow"]')).toContainText("Roundtable");
+  const sentEnvironment = page.locator('.msg.user [data-reference-kind="context"]');
+  await expect(sentEnvironment).toContainText("gpu-server");
+  await expect(sentEnvironment).toContainText("Environment");
+  await expect(sentEnvironment.locator("svg")).toBeVisible();
   await expect(page.locator(".msg.user .body")).not.toContainText("Selected skills:");
+  await expect(page.locator(".msg.user .body")).not.toContainText("Target environments:");
 });
 
 test("composer picker follows manual caret insertions and ignores pasted text", async ({ page }) => {

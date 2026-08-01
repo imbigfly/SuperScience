@@ -27,7 +27,7 @@
 
 ## Composer attachments and references
 
-- Files, images, skills, artifacts, and conversation references must remain visually distinguishable before and after send.
+- Files, images, skills, artifacts, conversations, execution environments, and runtime references must remain visually distinguishable before and after send.
 - Image attachments use a real thumbnail when the project file is readable. Other files use a document card with a filename and type label.
 - Persisted transcript markers such as `Uploaded files:` and `Selected skills:` are transport metadata. The chat UI renders them as cards instead of exposing the raw marker text.
 - Long attachment names truncate inside the card; the full value remains available through the control's title.

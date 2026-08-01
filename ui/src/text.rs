@@ -1150,6 +1150,8 @@ pub(crate) struct UserMessagePresentation {
     pub(crate) projects: Vec<String>,
     pub(crate) skills: Vec<String>,
     pub(crate) workflows: Vec<String>,
+    pub(crate) contexts: Vec<String>,
+    pub(crate) runtimes: Vec<String>,
 }
 
 /// Split the stable transcript suffixes from the text the user actually
@@ -1171,6 +1173,10 @@ pub(crate) fn user_message_presentation(text: &str) -> UserMessagePresentation {
             Some((&mut presentation.skills, value))
         } else if let Some(value) = block.strip_prefix("Selected workflows: ") {
             Some((&mut presentation.workflows, value))
+        } else if let Some(value) = block.strip_prefix("Target environments: ") {
+            Some((&mut presentation.contexts, value))
+        } else if let Some(value) = block.strip_prefix("Target runtimes: ") {
+            Some((&mut presentation.runtimes, value))
         } else if block.starts_with("AI source-edit instruction: ") {
             // This persisted, agent-facing hint turns a source selection into
             // an actionable edit target. It is transport metadata, not text
@@ -1544,13 +1550,16 @@ mod md_catalog_tests {
     #[test]
     fn presents_persisted_user_context_as_structured_sections() {
         let parsed = user_message_presentation(
-            "Inspect this\n\nUploaded files: uploads/plot.png, data.csv\n\nAttached artifacts: counts.csv\n\nProject context: Atlas\n\nSelected skills: bear-review\n\nAI source-edit instruction: hidden",
+            "Inspect this\n\nUploaded files: uploads/plot.png, data.csv\n\nAttached artifacts: counts.csv\n\nProject context: Atlas\n\nSelected skills: bear-review\n\nSelected workflows: Roundtable\n\nTarget environments: CPU, GPU\n\nTarget runtimes: Python · GPU\n\nAI source-edit instruction: hidden",
         );
         assert_eq!(parsed.body, "Inspect this");
         assert_eq!(parsed.attachments, ["uploads/plot.png", "data.csv"]);
         assert_eq!(parsed.artifacts, ["counts.csv"]);
         assert_eq!(parsed.projects, ["Atlas"]);
         assert_eq!(parsed.skills, ["bear-review"]);
+        assert_eq!(parsed.workflows, ["Roundtable"]);
+        assert_eq!(parsed.contexts, ["CPU", "GPU"]);
+        assert_eq!(parsed.runtimes, ["Python · GPU"]);
         assert!(parsed.sessions.is_empty());
     }
 

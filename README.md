@@ -345,6 +345,10 @@ local path and are never copied automatically. The same references work with
 ACP Agents: selected skills and Reader evidence are sent as ACP text blocks,
 while artifacts are sent as file links.
 
+After send, execution-context and runtime references remain visible as cards
+with server or terminal icons in the user message. Their internal transcript
+markers are not exposed as plain text in the chat bubble.
+
 Session references are retrieved by the built-in, read-only **Reader** instead
 of copying complete transcripts into the main model context. Reader first
 fans out one task per session. If one session exceeds Reader's configured model
