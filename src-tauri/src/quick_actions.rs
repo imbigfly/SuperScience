@@ -16,6 +16,7 @@ const WORKFLOW_TEMPLATES_KEY: &str = "workflow_templates";
 const LITERATURE_ACTION_ID: &str = "literature_research";
 const LITERATURE_TEMPLATE_ID: &str = "literature_evidence_review";
 const ROUNDTABLE_TEMPLATE_ID: &str = "roundtable";
+const RESEARCH_DESIGN_TEMPLATE_ID: &str = "data_driven_research_design";
 const MAX_ACTION_NAME_CHARS: usize = 80;
 const MAX_TEMPLATE_NAME_CHARS: usize = 100;
 const MAX_TEMPLATE_DESCRIPTION_CHARS: usize = 500;
@@ -331,6 +332,109 @@ fn builtin_roundtable_template() -> WorkflowTemplate {
     }
 }
 
+fn research_design_schema() -> Value {
+    let section = || json!({ "type": "array", "items": { "type": "string" } });
+    json!({
+        "type": "object",
+        "required": [
+            "data_observations_and_robustness",
+            "literature_consensus_conflicts_and_gaps",
+            "candidate_hypotheses_and_alternatives",
+            "deductive_predictions",
+            "discriminating_experiments_and_rescue",
+            "failure_driven_hypothesis_iteration",
+            "translation_feasibility_and_risks",
+            "evidence_claim_matrix_and_priorities"
+        ],
+        "properties": {
+            "data_observations_and_robustness": section(),
+            "literature_consensus_conflicts_and_gaps": section(),
+            "candidate_hypotheses_and_alternatives": section(),
+            "deductive_predictions": section(),
+            "discriminating_experiments_and_rescue": section(),
+            "failure_driven_hypothesis_iteration": section(),
+            "translation_feasibility_and_risks": section(),
+            "evidence_claim_matrix_and_priorities": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["claim", "evidence", "skill_sources", "priority"],
+                    "properties": {
+                        "claim": { "type": "string" },
+                        "evidence": { "type": "string" },
+                        "skill_sources": { "type": "array", "items": { "type": "string" } },
+                        "priority": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn research_design_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal {
+    let task = |id: &str, instruction: &str, capability: &str, skill_id: &str| {
+        dynamic_workflow::DynamicAgentTaskProposal {
+            id: id.into(),
+            instruction: instruction.into(),
+            depends_on: vec![],
+            capabilities: vec![capability.into()],
+            skill_ids: vec![skill_id.into()],
+            specialist_id: None,
+            output_schema: None,
+            isolated: false,
+            model_id: None,
+            executor: None,
+            budget: Some(dynamic_workflow::AgentBudgetProposal {
+                max_tokens: Some(12_000),
+                max_tool_calls: Some(12),
+                max_cost_microunits: None,
+            }),
+        }
+    };
+    dynamic_workflow::DynamicAgentWorkflowProposal {
+        goal: "Create a data-driven research design from project observations and literature".into(),
+        context: String::new(),
+        approval_policy: dynamic_workflow::AgentApprovalPolicy::ReviewAll,
+        tasks: vec![
+            task(
+                "data_analysis",
+                "Assess the supplied omics observations, robustness, confounders, reproducibility requirements, and analyses needed to distinguish signal from artifact. Return an evidence module marked [bundled:analysis-workflow].",
+                "code_run",
+                "analysis-workflow",
+            ),
+            task(
+                "literature_landscape",
+                "Find verified consensus, contradictions, gaps, and alternative explanations relevant to the proposed mechanism. Never invent citations. Return an evidence module marked [bundled:literature-review].",
+                "literature_search",
+                "literature-review",
+            ),
+            dynamic_workflow::DynamicAgentTaskProposal {
+                id: "research_design".into(),
+                instruction: "Synthesize the evidence modules into the required eight-part research design. Preserve Skill source markers, avoid duplicate methodology, distinguish evidence from inference, and include falsification, rescue, and failure-driven iteration.".into(),
+                depends_on: vec!["data_analysis".into(), "literature_landscape".into()],
+                capabilities: vec!["reasoning".into()],
+                skill_ids: vec![],
+                specialist_id: None,
+                output_schema: Some(research_design_schema()),
+                isolated: false,
+                model_id: None,
+                executor: None,
+                budget: Some(dynamic_workflow::AgentBudgetProposal { max_tokens: Some(12_000), max_tool_calls: Some(3), max_cost_microunits: None }),
+            },
+        ],
+    }
+}
+
+fn builtin_research_design_template() -> WorkflowTemplate {
+    WorkflowTemplate {
+        id: RESEARCH_DESIGN_TEMPLATE_ID.into(),
+        name: "Data-driven research design".into(),
+        description: "Parallel data and literature assessment followed by an eight-part, source-marked research design.".into(),
+        proposal: research_design_base_proposal(),
+        builtin: true,
+    }
+}
+
 async fn load_raw_templates(store: &Store) -> Vec<WorkflowTemplate> {
     store
         .get_setting(WORKFLOW_TEMPLATES_KEY)
@@ -354,11 +458,13 @@ pub(crate) async fn ensure_templates(store: &Store) -> Vec<WorkflowTemplate> {
     templates.retain(|template| {
         template.id != LITERATURE_TEMPLATE_ID
             && template.id != ROUNDTABLE_TEMPLATE_ID
+            && template.id != RESEARCH_DESIGN_TEMPLATE_ID
             && !template.builtin
             && validate_template(template).is_ok()
     });
     templates.push(builtin_literature_template());
     templates.push(builtin_roundtable_template());
+    templates.push(builtin_research_design_template());
     templates.sort_by(|left, right| {
         right
             .builtin
@@ -428,11 +534,14 @@ async fn upsert_template(
     validate_template(&template)?;
     let mut templates = load_raw_templates(store).await;
     templates.retain(|item| {
-        item.id != LITERATURE_TEMPLATE_ID && item.id != ROUNDTABLE_TEMPLATE_ID && !item.builtin
+        item.id != LITERATURE_TEMPLATE_ID
+            && item.id != ROUNDTABLE_TEMPLATE_ID
+            && item.id != RESEARCH_DESIGN_TEMPLATE_ID
+            && !item.builtin
     });
     if matches!(
         template.id.as_str(),
-        LITERATURE_TEMPLATE_ID | ROUNDTABLE_TEMPLATE_ID
+        LITERATURE_TEMPLATE_ID | ROUNDTABLE_TEMPLATE_ID | RESEARCH_DESIGN_TEMPLATE_ID
     ) || template.builtin
     {
         return Err("Built-in Workflows are read-only. Duplicate one to customize it.".into());
@@ -596,7 +705,7 @@ pub(crate) async fn remove_workflow_template(
 ) -> Result<Vec<WorkflowTemplate>, String> {
     if matches!(
         template_id.as_str(),
-        LITERATURE_TEMPLATE_ID | ROUNDTABLE_TEMPLATE_ID
+        LITERATURE_TEMPLATE_ID | ROUNDTABLE_TEMPLATE_ID | RESEARCH_DESIGN_TEMPLATE_ID
     ) {
         return Err("Built-in Workflows cannot be removed.".into());
     }
@@ -888,6 +997,30 @@ mod tests {
     }
 
     #[test]
+    fn research_design_template_has_eight_part_source_marked_synthesis() {
+        let proposal = research_design_base_proposal();
+        assert_eq!(proposal.tasks.len(), 3);
+        assert_eq!(proposal.tasks[0].skill_ids, ["analysis-workflow"]);
+        assert_eq!(proposal.tasks[1].skill_ids, ["literature-review"]);
+        assert_eq!(
+            proposal.tasks[2].depends_on,
+            ["data_analysis", "literature_landscape"]
+        );
+        let schema = proposal.tasks[2].output_schema.as_ref().unwrap();
+        assert_eq!(schema["required"].as_array().unwrap().len(), 8);
+        assert!(
+            schema["properties"]["evidence_claim_matrix_and_priorities"]["items"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "skill_sources")
+        );
+        assert!(proposal.tasks[2]
+            .instruction
+            .contains("Skill source markers"));
+    }
+
+    #[test]
     fn selection_validation_is_bounded() {
         let mut empty = QuickActionInput {
             selection: " \n ".into(),
@@ -928,7 +1061,7 @@ mod tests {
         let saved = upsert_template(&store, custom_template()).await.unwrap();
         assert_eq!(saved.id, "workflow_1");
         let templates = ensure_templates(&store).await;
-        assert_eq!(templates.len(), 3);
+        assert_eq!(templates.len(), 4);
         let action = QuickAction {
             id: String::new(),
             name: "Compare".into(),

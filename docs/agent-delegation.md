@@ -385,6 +385,14 @@ total budgets, the synthesis reserve, the runtime maximum of two parallel Agents
 batches. Applying the card opens the generated nodes in Workflow Studio for editing. Network,
 execution, write, external-service, multi-Skill, deferred, standard, and deep plans require review;
 only a compact, low-cost, read-only plan can remain auto-safe.
+
+The built-in **Data-driven research design** Workflow is the first validation template. It keeps
+the general planner domain-neutral while giving the final synthesis a strict eight-part schema:
+data observations and robustness; literature consensus, conflicts, and gaps; hypotheses and
+alternatives; deductive predictions; discriminating experiments plus rescue/falsification;
+failure-driven iteration; translation, feasibility, and risk; and a source-marked evidence–claim
+matrix with priorities. Its data and literature nodes run independently before synthesis and each
+binds only its declared Skill.
 - Turning Delegation off prevents the main conversation and its MCP bridge from
   listing or invoking delegation tools. It does not erase workflow history or
   implicitly cancel a workflow that is already running.
