@@ -467,7 +467,8 @@ pub(crate) async fn get_dynamic_agent_options(
         &state.app_data,
     )
     .await?;
-    let mut options = dynamic_workflow::editor_options(&policy.registry, &policy.host);
+    let mut options =
+        dynamic_workflow::editor_options(&policy.registry, &policy.host, &policy.resources);
     let profiles = acp::profiles(&state.store).await;
     for executor in &mut options.executors {
         if executor.kind == "acp" {
@@ -2244,6 +2245,7 @@ impl AgentDelegator for NativeDelegator {
         self.resources
             .validate_task(
                 &request.spec.capabilities,
+                &request.spec.skill_bindings,
                 specialist_from_request(&request),
             )
             .map_err(anyhow::Error::msg)?;
@@ -2313,6 +2315,7 @@ impl AgentDelegator for NativeDelegator {
         };
         system.push_str(&resource_grant.prompt_section());
         let project_skills = crate::active_skill_index(&self.store, &self.project).await;
+        system.push_str(&bound_skill_prompt(&request.spec, &project_skills)?);
         let skill_allow = resource_grant
             .skills
             .iter()
@@ -2742,6 +2745,7 @@ impl AgentDelegator for AcpDelegator {
         self.resources
             .validate_task(
                 &request.spec.capabilities,
+                &request.spec.skill_bindings,
                 specialist_from_request(&request),
             )
             .map_err(anyhow::Error::msg)?;
@@ -2797,10 +2801,12 @@ impl AgentDelegator for AcpDelegator {
                 .await?;
         }
         sync_child_execution_contexts(&self.store, Some(&parent_frame_id), &child_frame_id).await?;
+        let project_skills = crate::active_skill_index(&self.store, &self.project).await;
         let prompt_text = format!(
-            "{}{}",
+            "{}{}{}",
             delegation_prompt(&request)?,
-            resource_grant.prompt_section()
+            resource_grant.prompt_section(),
+            bound_skill_prompt(&request.spec, &project_skills)?,
         );
         let next_seq = self.store.load_messages(&child_frame_id).await?.len() as i64 + 1;
         self.store
@@ -3879,6 +3885,41 @@ fn delegation_task_prompt(
     ))
 }
 
+fn bound_skill_prompt(
+    spec: &wisp_core::AgentSpec,
+    skills: &wisp_skills::SkillIndex,
+) -> anyhow::Result<String> {
+    if spec.skill_bindings.is_empty() {
+        return Ok(String::new());
+    }
+    let mut rendered = String::new();
+    for binding in &spec.skill_bindings {
+        let record = skills.effective_record(&binding.name).ok_or_else(|| {
+            anyhow::anyhow!("Bound Skill '{}' is no longer effective", binding.id)
+        })?;
+        if record.scope.as_str() != binding.scope
+            || record.path.to_string_lossy() != binding.path
+            || record.skill_md_sha256.as_deref() != Some(binding.skill_md_sha256.as_str())
+        {
+            anyhow::bail!(
+                "Bound Skill '{}' changed after planning; regenerate the workflow",
+                binding.id
+            );
+        }
+        let skill = skills
+            .get(&binding.name)
+            .ok_or_else(|| anyhow::anyhow!("Bound Skill '{}' is disabled", binding.id))?;
+        rendered.push_str(&format!(
+            "\n\n<bound_skill id={} scope={} sha256={}>\n{}\n</bound_skill>",
+            serde_json::to_string(&binding.id)?,
+            serde_json::to_string(&binding.scope)?,
+            serde_json::to_string(&binding.skill_md_sha256)?,
+            wisp_skills::render_skill(skill),
+        ));
+    }
+    Ok(rendered)
+}
+
 fn delegation_prompt(request: &AgentDelegationRequest) -> anyhow::Result<String> {
     Ok(format!(
         "{}\n\n{}",
@@ -4112,7 +4153,9 @@ mod tests {
         DynamicAgentWorkflowProposal,
     };
     use std::{process::Command, sync::atomic::AtomicUsize};
-    use wisp_core::{AgentSpec, ValidatedAgentDelegationRequest};
+    use wisp_core::{
+        AgentSkillBinding, AgentSpec, DelegatedTaskProposal, ValidatedAgentDelegationRequest,
+    };
     use wisp_store::AgentWorkflow;
 
     #[test]
@@ -4453,6 +4496,7 @@ mod tests {
             instruction: format!("Complete task {id}"),
             depends_on: dependencies.iter().map(|value| (*value).into()).collect(),
             capabilities: vec!["reasoning".into()],
+            skill_ids: vec![],
             specialist_id: None,
             output_schema: None,
             isolated: false,
@@ -6521,5 +6565,72 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn bound_skill_prompt_rejects_catalog_drift() {
+        let root = std::env::temp_dir().join(format!("wisp-bound-skill-{}", uuid::Uuid::new_v4()));
+        let dir = root.join("demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+        std::fs::write(
+            &path,
+            "---\nname: demo\ndescription: demo\n---\nFollow exact guidance.",
+        )
+        .unwrap();
+        let index = wisp_skills::SkillIndex::load_scoped(&[(
+            root.clone(),
+            wisp_skills::SkillSource::Custom,
+        )]);
+        let record = index.effective_record("demo").unwrap();
+        let binding = AgentSkillBinding {
+            id: "demo".into(),
+            name: "demo".into(),
+            scope: record.scope.as_str().into(),
+            path: record.path.to_string_lossy().into(),
+            declared_version: None,
+            skill_md_sha256: record.skill_md_sha256.clone().unwrap(),
+            package_id: None,
+            package_version: None,
+            package_source: None,
+        };
+        let (registry, host) = test_dynamic_policy();
+        let resolved = registry
+            .resolve_task(
+                DelegatedTaskProposal {
+                    id: "demo".into(),
+                    instruction: "Use demo".into(),
+                    context_summary: String::new(),
+                    depends_on: vec![],
+                    capabilities: vec!["reasoning".into()],
+                    skill_bindings: vec![binding],
+                    specialist: None,
+                    output_schema: None,
+                    isolated: false,
+                    model_id: None,
+                    executor: None,
+                    budget: None,
+                    input: json!({}),
+                },
+                &host,
+            )
+            .unwrap();
+        let prompt = bound_skill_prompt(resolved.spec(), &index).unwrap();
+        assert!(prompt.contains("Follow exact guidance."));
+
+        std::fs::write(
+            &path,
+            "---\nname: demo\ndescription: demo\n---\nChanged guidance.",
+        )
+        .unwrap();
+        let changed = wisp_skills::SkillIndex::load_scoped(&[(
+            root.clone(),
+            wisp_skills::SkillSource::Custom,
+        )]);
+        assert!(bound_skill_prompt(resolved.spec(), &changed)
+            .unwrap_err()
+            .to_string()
+            .contains("changed after planning"));
+        std::fs::remove_dir_all(root).ok();
     }
 }

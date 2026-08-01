@@ -42,6 +42,8 @@ struct DelegateTaskInput {
     depends_on: Vec<String>,
     capabilities: Vec<String>,
     #[serde(default)]
+    skill_ids: Vec<String>,
+    #[serde(default)]
     specialist_id: Option<String>,
     #[serde(default)]
     output_schema: Option<Value>,
@@ -291,6 +293,12 @@ fn build_delegate_tasks_schema(
                                 "items": {"type": "string", "enum": capabilities},
                                 "description": capability_help
                             },
+                            "skill_ids": {
+                                "type": "array",
+                                "uniqueItems": true,
+                                "items": {"type": "string"},
+                                "description": "Exact effective and enabled Skill names to load for this node. Use search_skills first; omit for no Skill guidance."
+                            },
                             "specialist_id": {
                                 "type": "string",
                                 "enum": specialist_ids,
@@ -508,6 +516,7 @@ impl DelegateTasksTool {
                     instruction: task.instruction,
                     depends_on: task.depends_on,
                     capabilities: task.capabilities,
+                    skill_ids: task.skill_ids,
                     specialist_id: task.specialist_id,
                     output_schema: task.output_schema,
                     isolated: task.isolated,

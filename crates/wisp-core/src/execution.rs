@@ -237,6 +237,7 @@ impl DelegationExecutor {
                     &mut request.input,
                     &request.spec.dependencies,
                     &responses,
+                    &requests,
                 );
                 let request = self.validate_request(request)?;
                 self.observer.step_started(request.as_request()).await?;
@@ -403,6 +404,7 @@ fn attach_dependency_results(
     input: &mut Value,
     dependencies: &[String],
     responses: &HashMap<String, AgentDelegationResponse>,
+    requests: &HashMap<String, AgentDelegationRequest>,
 ) {
     if dependencies.is_empty() {
         return;
@@ -421,6 +423,22 @@ fn attach_dependency_results(
     input.insert(
         "dependency_results".into(),
         Value::Object(dependency_results),
+    );
+    let dependency_skill_sources = dependencies
+        .iter()
+        .filter_map(|dependency| {
+            requests.get(dependency).map(|request| {
+                (
+                    dependency.clone(),
+                    serde_json::to_value(&request.spec.skill_bindings)
+                        .unwrap_or_else(|_| Value::Array(vec![])),
+                )
+            })
+        })
+        .collect::<Map<_, _>>();
+    input.insert(
+        "dependency_skill_sources".into(),
+        Value::Object(dependency_skill_sources),
     );
 }
 
@@ -579,6 +597,7 @@ mod tests {
                     context_summary: String::new(),
                     depends_on: vec![],
                     capabilities: vec!["reasoning".into()],
+                    skill_bindings: vec![],
                     specialist: None,
                     output_schema: None,
                     isolated: false,
@@ -607,6 +626,7 @@ mod tests {
             context_summary: String::new(),
             depends_on,
             capabilities: vec!["reasoning".into()],
+            skill_bindings: vec![],
             specialist: None,
             output_schema: None,
             isolated: false,
@@ -654,6 +674,7 @@ mod tests {
                 context_summary: String::new(),
                 depends_on: vec![],
                 capabilities: vec!["project_write".into()],
+                skill_bindings: vec![],
                 specialist: None,
                 output_schema: None,
                 isolated,

@@ -19,9 +19,10 @@ pub use delegation::{
     AgentArtifact, AgentAuthorizationSnapshot, AgentBackend, AgentBudget, AgentDelegationLineage,
     AgentDelegationRequest, AgentDelegationResponse, AgentDelegator, AgentEvidence,
     AgentExecutorRef, AgentOrigin, AgentOutputSchemaSource, AgentRequestPreferences, AgentRole,
-    AgentSessionPolicy, AgentSpec, AgentUsage, AgentWorkspacePolicy, CapabilityRevision,
-    ContextPolicy, DelegationStatus, PermissionSet, SpecialistSnapshot, UnconfiguredAgentDelegator,
-    ValidatedAgentDelegationRequest, MAX_AGENT_DELEGATION_DEPTH, MAX_AGENT_OUTPUT_SCHEMA_BYTES,
+    AgentSessionPolicy, AgentSkillBinding, AgentSpec, AgentUsage, AgentWorkspacePolicy,
+    CapabilityRevision, ContextPolicy, DelegationStatus, PermissionSet, SpecialistSnapshot,
+    UnconfiguredAgentDelegator, ValidatedAgentDelegationRequest, MAX_AGENT_DELEGATION_DEPTH,
+    MAX_AGENT_OUTPUT_SCHEMA_BYTES,
 };
 pub use delegation_policy::{
     CapabilityDefinition, CapabilityRegistry, CapabilityRisk, DelegatedTaskProposal,

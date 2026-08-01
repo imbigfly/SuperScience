@@ -358,6 +358,11 @@ the coordination paths.
 - Children receive only their instruction, bounded shared context, applicable
   project instructions, explicit inputs, and direct dependency results. They
   do not receive the full parent transcript.
+- Dynamic tasks bind Skill guidance with explicit `skill_ids`, independently
+  from capability permissions. Resolution snapshots each effective Skill's
+  scope, path, declared version, package origin, and SHA-256. Native and ACP
+  children receive only those rendered instructions; a disabled, shadowed, or
+  changed Skill fails closed and requires the draft to be regenerated.
 - Delegated Agents receive `delegate_tasks` only from an approved `delegation`
   capability and only while root-wide depth, task, concurrency, token, tool,
   cost, cancellation, and time checks still have capacity.

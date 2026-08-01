@@ -155,6 +155,7 @@ mod tests {
                 allow_delegation: false,
                 origin: AgentOrigin::Temporary,
                 capabilities: vec!["project_read".into()],
+                skill_bindings: vec![],
                 executor: Some(AgentExecutorRef::Native),
                 request_preferences: None,
                 workspace_policy: Some(AgentWorkspacePolicy::SharedReadOnly),

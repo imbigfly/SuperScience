@@ -18,6 +18,7 @@ struct DynamicTaskForm {
     instruction: String,
     depends_on: Vec<String>,
     capabilities: Vec<String>,
+    skill_ids: Vec<String>,
     specialist_id: String,
     output_schema: String,
     isolated: bool,
@@ -36,6 +37,7 @@ impl DynamicTaskForm {
             instruction: String::new(),
             depends_on: vec![],
             capabilities: vec!["reasoning".into()],
+            skill_ids: vec![],
             specialist_id: String::new(),
             output_schema: String::new(),
             isolated: false,
@@ -55,6 +57,7 @@ impl DynamicTaskForm {
             instruction: task.instruction,
             depends_on: task.depends_on,
             capabilities: task.capabilities,
+            skill_ids: task.skill_ids,
             specialist_id: task.specialist_id.unwrap_or_default(),
             output_schema: task
                 .output_schema
@@ -102,6 +105,7 @@ impl DynamicTaskForm {
             instruction: self.instruction.trim().into(),
             depends_on: self.depends_on.clone(),
             capabilities: self.capabilities.clone(),
+            skill_ids: self.skill_ids.clone(),
             specialist_id: nonempty(&self.specialist_id),
             output_schema,
             isolated: self.isolated,
@@ -1374,6 +1378,42 @@ fn dynamic_task_editor(
                             }).collect_view()
                         }
                     }}
+                </div>
+            </fieldset>
+            <fieldset class="dynamic-agent-choice-group">
+                <legend>{"Skills"}</legend>
+                <div class="dynamic-agent-checks" data-testid="dynamic-task-skills">
+                    <For each=move || state.options.get().skills
+                        key=|skill| skill.id.clone()
+                        children=move |skill| {
+                            let id = skill.id.clone();
+                            let checked_id = id.clone();
+                            let update_id = id.clone();
+                            let label = format!("{} · {}", skill.name, skill.scope);
+                            view! {
+                                <label class="dynamic-agent-check">
+                                    <input type="checkbox"
+                                        prop:checked=move || state.dynamic_form.with(|form| {
+                                            form.tasks.iter().find(|task| task.key == key)
+                                                .is_some_and(|task| task.skill_ids.contains(&checked_id))
+                                        })
+                                        on:change=move |event| {
+                                            let checked = event_target_checked(&event);
+                                            update_task(state.dynamic_form, key, |task| {
+                                                if checked {
+                                                    if !task.skill_ids.contains(&update_id) {
+                                                        task.skill_ids.push(update_id.clone());
+                                                    }
+                                                } else {
+                                                    task.skill_ids.retain(|id| id != &update_id);
+                                                }
+                                            });
+                                        } />
+                                    <span>{label}</span>
+                                </label>
+                            }
+                        }
+                    />
                 </div>
             </fieldset>
             <label>
@@ -2995,6 +3035,16 @@ fn dynamic_workflow_card(
                                     <span class="agent-chip capability">{capability}</span>
                                 }).collect_view()}
                             </div>
+                            {(!task.skill_bindings.is_empty()).then(|| view! {
+                                <div class="agent-chip-row" aria-label="Skills">
+                                    <span class="agent-chip-label">{"Skills"}</span>
+                                    {task.skill_bindings.into_iter().map(|binding| view! {
+                                        <span class="agent-chip skill" title=format!("{} · {}", binding.path, binding.skill_md_sha256)>
+                                            {format!("{} · {}", binding.name, binding.scope)}
+                                        </span>
+                                    }).collect_view()}
+                                </div>
+                            })}
                             <div class="agent-resolved-authority">
                                 <div><span>{t(locale.get(), "agents.task.workspace")}</span><strong>{task.workspace_policy}</strong></div>
                                 <div><span>{t(locale.get(), "agents.task.merge")}</span><strong>{merge_policy_label(locale.get(), &task.merge_policy)}</strong></div>

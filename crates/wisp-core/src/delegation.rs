@@ -240,6 +240,23 @@ pub struct AgentAuthorizationSnapshot {
     pub integrity_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSkillBinding {
+    pub id: String,
+    pub name: String,
+    pub scope: String,
+    pub path: String,
+    #[serde(default)]
+    pub declared_version: Option<String>,
+    pub skill_md_sha256: String,
+    #[serde(default)]
+    pub package_id: Option<String>,
+    #[serde(default)]
+    pub package_version: Option<String>,
+    #[serde(default)]
+    pub package_source: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "specialist", rename_all = "snake_case")]
 pub enum AgentOrigin {
@@ -327,6 +344,8 @@ pub struct AgentSpec {
     pub origin: AgentOrigin,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub skill_bindings: Vec<AgentSkillBinding>,
     #[serde(default)]
     pub executor: Option<AgentExecutorRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -417,6 +436,24 @@ impl AgentSpec {
             }
             if !seen.insert(capability) {
                 anyhow::bail!("dynamic agent capabilities must be unique");
+            }
+        }
+        let mut seen_skills = std::collections::HashSet::new();
+        for binding in &self.skill_bindings {
+            if binding.id.trim().is_empty()
+                || binding.name.trim().is_empty()
+                || binding.scope.trim().is_empty()
+                || binding.path.trim().is_empty()
+                || binding.skill_md_sha256.len() != 64
+                || !binding
+                    .skill_md_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                anyhow::bail!("dynamic agent has an invalid Skill binding snapshot");
+            }
+            if !seen_skills.insert(binding.id.as_str()) {
+                anyhow::bail!("dynamic agent Skill bindings must be unique");
             }
         }
         let executor = self
@@ -960,6 +997,7 @@ mod tests {
             allow_delegation: false,
             origin: AgentOrigin::Temporary,
             capabilities: vec![],
+            skill_bindings: vec![],
             executor: None,
             request_preferences: None,
             workspace_policy: None,

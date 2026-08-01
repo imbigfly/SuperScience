@@ -1924,6 +1924,10 @@ test("Workflow Studio reuses the roundtable generator and saves a Quick Action b
   await studio.getByTestId("roundtable-apply").click();
   await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(5);
   await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(6);
+  await studio.getByTestId("workflow-graph-inspector")
+    .getByTestId("dynamic-task-skills")
+    .getByText("analysis-workflow · bundled")
+    .click();
   await studio.getByTestId("workflow-save").click();
 
   await expect.poll(() => lastInvokeArgs(page, "save_workflow_template")).toMatchObject({
@@ -1933,7 +1937,7 @@ test("Workflow Studio reuses the roundtable generator and saves a Quick Action b
       proposal: {
         goal: "Choose a website architecture",
         tasks: [
-          { id: "seat_1_opening", depends_on: [] },
+          { id: "seat_1_opening", depends_on: [], skill_ids: ["analysis-workflow"] },
           { id: "seat_2_opening", depends_on: [] },
           {
             id: "seat_1_review",

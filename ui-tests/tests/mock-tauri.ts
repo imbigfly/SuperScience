@@ -429,6 +429,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       { id: "review", display_name: "Review", description: "Inspect project evidence without modifying it.", risk: "read_only" },
       { id: "delegation", display_name: "Nested delegation", description: "Create one bounded child batch within root-wide limits.", risk: "read_only" },
     ],
+    skills: [
+      { id: "analysis-workflow", name: "analysis-workflow", scope: "bundled" },
+      { id: "literature-review", name: "literature-review", scope: "bundled" },
+    ],
     models: [
       { id: "default", external: false },
       { id: "opus", external: true },
