@@ -101,6 +101,13 @@ pub(crate) struct AgentCapabilityOption {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct AgentSkillOption {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) scope: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct AgentModelOption {
     pub(crate) id: String,
     pub(crate) external: bool,
@@ -142,6 +149,7 @@ impl ExecutorProfileSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct DynamicAgentEditorOptions {
     pub(crate) capabilities: Vec<AgentCapabilityOption>,
+    pub(crate) skills: Vec<AgentSkillOption>,
     pub(crate) models: Vec<AgentModelOption>,
     pub(crate) executors: Vec<ExecutorProfileSummary>,
 }
@@ -149,6 +157,7 @@ pub(crate) struct DynamicAgentEditorOptions {
 pub(crate) fn editor_options(
     registry: &CapabilityRegistry,
     host: &DelegationHostPolicy,
+    resources: &crate::delegation_resources::ScientificResourceCatalog,
 ) -> DynamicAgentEditorOptions {
     let capabilities = registry
         .available_ids(host)
@@ -179,6 +188,7 @@ pub(crate) fn editor_options(
         .collect();
     DynamicAgentEditorOptions {
         capabilities,
+        skills: resources.skill_options(),
         models,
         executors,
     }
@@ -223,6 +233,8 @@ pub(crate) struct DynamicAgentTaskProposal {
     #[serde(default)]
     pub(crate) depends_on: Vec<String>,
     pub(crate) capabilities: Vec<String>,
+    #[serde(default)]
+    pub(crate) skill_ids: Vec<String>,
     #[serde(default)]
     pub(crate) specialist_id: Option<String>,
     #[serde(default)]
@@ -281,6 +293,7 @@ pub(crate) struct ResolvedAgentTaskSummary {
     pub(crate) instruction: String,
     pub(crate) depends_on: Vec<String>,
     pub(crate) capabilities: Vec<String>,
+    pub(crate) skill_bindings: Vec<wisp_core::AgentSkillBinding>,
     pub(crate) specialist_id: Option<String>,
     pub(crate) specialist_name: Option<String>,
     pub(crate) executor: AgentExecutorSummary,
@@ -360,8 +373,12 @@ pub(crate) async fn resolve_proposal(
     let mut tasks = Vec::with_capacity(proposal.tasks.len());
     for task in proposal.tasks {
         let specialist = specialist_snapshot(store, task.specialist_id.as_deref()).await?;
+        let skill_bindings = resources
+            .map(|resources| resources.resolve_skill_bindings(&task.skill_ids, specialist.as_ref()))
+            .transpose()?
+            .unwrap_or_default();
         if let Some(resources) = resources {
-            resources.validate_task(&task.capabilities, specialist.as_ref())?;
+            resources.validate_task(&task.capabilities, &skill_bindings, specialist.as_ref())?;
         }
         if specialist
             .as_ref()
@@ -389,6 +406,7 @@ pub(crate) async fn resolve_proposal(
                 .map(|dependency| stored_task_id(&workflow_id, dependency))
                 .collect(),
             capabilities: task.capabilities,
+            skill_bindings,
             specialist,
             output_schema: task.output_schema,
             isolated: task.isolated,
@@ -467,6 +485,12 @@ pub(crate) fn summarize(
             instruction: step.spec.goal.clone(),
             depends_on: depends_on.clone(),
             capabilities: step.spec.capabilities.clone(),
+            skill_ids: step
+                .spec
+                .skill_bindings
+                .iter()
+                .map(|binding| binding.id.clone())
+                .collect(),
             specialist_id: specialist.map(|value| value.id.clone()),
             output_schema: output_schema.clone(),
             isolated: requested.map_or(
@@ -519,6 +543,7 @@ pub(crate) fn summarize(
             instruction: step.spec.goal.clone(),
             depends_on,
             capabilities: step.spec.capabilities.clone(),
+            skill_bindings: step.spec.skill_bindings.clone(),
             specialist_id: specialist.map(|value| value.id.clone()),
             specialist_name: specialist.map(|value| value.name.clone()),
             executor: executor_summary,
@@ -748,6 +773,7 @@ mod tests {
             instruction: format!("Run {id}"),
             depends_on: depends_on.iter().map(|value| (*value).into()).collect(),
             capabilities: vec!["reasoning".into()],
+            skill_ids: vec![],
             specialist_id: None,
             output_schema: None,
             isolated: false,
@@ -850,7 +876,9 @@ mod tests {
             ..DelegationHostPolicy::default()
         };
 
-        let options = editor_options(&registry, &host);
+        let resources =
+            crate::delegation_resources::ScientificResourceCatalog::fake(&[], &[], &[], &[], &[]);
+        let options = editor_options(&registry, &host, &resources);
 
         assert_eq!(options.capabilities.len(), 1);
         assert_eq!(options.capabilities[0].id, "reasoning");

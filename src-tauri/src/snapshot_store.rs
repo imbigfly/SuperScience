@@ -193,15 +193,25 @@ fn verify_blob(path: &Path, expected_checksum: &str, expected_size: u64) -> Resu
 }
 
 fn reject_project_symlinks(project_root: &Path, source: &Path) -> Result<(), String> {
+    // macOS exposes the temporary directory through `/var` while canonical
+    // input paths use `/private/var`. Compare against the physical root so a
+    // path that is genuinely inside the project is not rejected.
+    let logical_root = project_root;
+    let project_root = logical_root
+        .canonicalize()
+        .unwrap_or_else(|_| logical_root.to_path_buf());
     let source = if source.is_absolute() {
-        source.to_path_buf()
+        source
+            .strip_prefix(logical_root)
+            .map(|relative| project_root.join(relative))
+            .unwrap_or_else(|_| source.to_path_buf())
     } else {
         project_root.join(source)
     };
     let relative = source
-        .strip_prefix(project_root)
+        .strip_prefix(&project_root)
         .map_err(|_| "artifact path is outside project root".to_string())?;
-    let mut current = project_root.to_path_buf();
+    let mut current = project_root;
     for component in relative.components() {
         match component {
             std::path::Component::CurDir => continue,

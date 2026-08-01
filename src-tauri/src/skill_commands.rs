@@ -1,18 +1,17 @@
 use super::{
     clear_idle_agents, effective_enabled_skill_names, load_enabled_skill_names, load_skill_index,
-    load_skill_tags, normalize_tags, save_enabled_skill_names, save_skill_tags, skill_infos,
-    AppState, SkillInfo,
+    load_skill_tags, normalize_tags, project_skill_catalog, save_enabled_skill_names,
+    save_skill_tags, skill_infos, AppState, SkillInfo,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
-use wisp_skills::{SkillIndex, SkillSource};
 
 async fn list_skill_infos_for_project(state: &AppState, label: &str) -> Vec<SkillInfo> {
     let ap = state.active(label);
     let tags = load_skill_tags(&state.store).await;
-    let mut enabled = effective_enabled_skill_names(&state.store, &ap).await;
+    let (all, enabled) = project_skill_catalog(&state.store, &ap).await;
     let plugin_roots = crate::plugins::enabled_plugin_manifests(&state.store, &ap.id)
         .await
         .into_iter()
@@ -24,21 +23,6 @@ async fn list_skill_infos_for_project(state: &AppState, label: &str) -> Vec<Skil
                 .map(move |path| (path, display_name.clone()))
         })
         .collect::<Vec<_>>();
-    let plugin_paths = plugin_roots
-        .iter()
-        .map(|(path, _)| (path.clone(), SkillSource::Plugin))
-        .collect::<Vec<_>>();
-    let plugins = SkillIndex::load_scoped(&plugin_paths);
-    if let Some(names) = &mut enabled {
-        names.extend(
-            plugins
-                .all()
-                .iter()
-                .filter(|skill| ap.skills.get(&skill.name).is_none())
-                .map(|skill| skill.name.clone()),
-        );
-    }
-    let all = ap.skills.merged_preserving_self(&plugins);
     let mut infos = skill_infos(&all, &tags, enabled.as_ref());
     for info in &mut infos {
         if let Some((_, display_name)) = plugin_roots

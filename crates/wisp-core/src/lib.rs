@@ -19,9 +19,10 @@ pub use delegation::{
     AgentArtifact, AgentAuthorizationSnapshot, AgentBackend, AgentBudget, AgentDelegationLineage,
     AgentDelegationRequest, AgentDelegationResponse, AgentDelegator, AgentEvidence,
     AgentExecutorRef, AgentOrigin, AgentOutputSchemaSource, AgentRequestPreferences, AgentRole,
-    AgentSessionPolicy, AgentSpec, AgentUsage, AgentWorkspacePolicy, CapabilityRevision,
-    ContextPolicy, DelegationStatus, PermissionSet, SpecialistSnapshot, UnconfiguredAgentDelegator,
-    ValidatedAgentDelegationRequest, MAX_AGENT_DELEGATION_DEPTH, MAX_AGENT_OUTPUT_SCHEMA_BYTES,
+    AgentSessionPolicy, AgentSkillBinding, AgentSpec, AgentUsage, AgentWorkspacePolicy,
+    CapabilityRevision, ContextPolicy, DelegationStatus, PermissionSet, SpecialistSnapshot,
+    UnconfiguredAgentDelegator, ValidatedAgentDelegationRequest, MAX_AGENT_DELEGATION_DEPTH,
+    MAX_AGENT_OUTPUT_SCHEMA_BYTES,
 };
 pub use delegation_policy::{
     CapabilityDefinition, CapabilityRegistry, CapabilityRisk, DelegatedTaskProposal,
@@ -57,6 +58,9 @@ pub fn build_registry(
     memory_enabled: bool,
 ) -> Registry {
     let mut reg = Registry::builtins();
+    reg.add(Box::new(wisp_skills::ListSkillCatalogTool::new(
+        skills.clone(),
+    )));
     reg.add(Box::new(wisp_skills::SearchSkillsTool::new(skills.clone())));
     reg.add(Box::new(wisp_skills::UseSkillTool::new(skills)));
     if memory_enabled {

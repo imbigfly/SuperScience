@@ -358,6 +358,11 @@ the coordination paths.
 - Children receive only their instruction, bounded shared context, applicable
   project instructions, explicit inputs, and direct dependency results. They
   do not receive the full parent transcript.
+- Dynamic tasks bind Skill guidance with explicit `skill_ids`, independently
+  from capability permissions. Resolution snapshots each effective Skill's
+  scope, path, declared version, package origin, and SHA-256. Native and ACP
+  children receive only those rendered instructions; a disabled, shadowed, or
+  changed Skill fails closed and requires the draft to be regenerated.
 - Delegated Agents receive `delegate_tasks` only from an approved `delegation`
   capability and only while root-wide depth, task, concurrency, token, tool,
   cost, cancellation, and time checks still have capacity.
@@ -365,6 +370,29 @@ the coordination paths.
   structured results, artifacts, evidence, usage, child conversation IDs, and
   backend session IDs remain auditable in SQLite. Secrets stay in the existing
   credential stores.
+
+## Skill Portfolio Planner
+
+Workflow Studio can generate a draft from the current effective Skill Catalog. The planner
+normalizes the research request, applies deterministic lexical and `wisp` metadata scoring, and
+selects a compact, standard, or deep complementary portfolio. Its preflight uses the rendered
+Skill instruction plus request and node output allowance; it reserves synthesis tokens before
+selecting child nodes and defers lower-ranked optional candidates when the remaining child budget
+is insufficient.
+
+The confirmation card shows exact Skill sources and reasons, selected and deferred nodes, node and
+total budgets, the synthesis reserve, the runtime maximum of two parallel Agents, and estimated DAG
+batches. Applying the card opens the generated nodes in Workflow Studio for editing. Network,
+execution, write, external-service, multi-Skill, deferred, standard, and deep plans require review;
+only a compact, low-cost, read-only plan can remain auto-safe.
+
+The built-in **Data-driven research design** Workflow is the first validation template. It keeps
+the general planner domain-neutral while giving the final synthesis a strict eight-part schema:
+data observations and robustness; literature consensus, conflicts, and gaps; hypotheses and
+alternatives; deductive predictions; discriminating experiments plus rescue/falsification;
+failure-driven iteration; translation, feasibility, and risk; and a source-marked evidence–claim
+matrix with priorities. Its data and literature nodes run independently before synthesis and each
+binds only its declared Skill.
 - Turning Delegation off prevents the main conversation and its MCP bridge from
   listing or invoking delegation tools. It does not erase workflow history or
   implicitly cancel a workflow that is already running.

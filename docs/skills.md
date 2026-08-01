@@ -3,6 +3,16 @@
 Wisp discovers `SKILL.md` packages from several scopes. The Skills settings
 page shows the scope and absolute source path for every discovered skill, and
 the Agent's `search_skills` result includes the same `scope` and `path` fields.
+For inventory questions, `list_skill_catalog` pages through the complete
+discovered or effective view and reports separate discovered, effective,
+shadowed, parse-error, and currently searchable enabled counts. Search result
+counts must not be interpreted as the configured Skill inventory.
+
+Skills may declare an optional `wisp` YAML mapping with `schema_version: 1`
+and controlled `domains`, `research_stages`, `roles`, `evidence_types`,
+`outputs`, and `side_effects`. Legacy frontmatter remains valid. Invalid Wisp
+semantics are retained as catalog parse-error records instead of silently
+entering the effective catalog.
 
 Discovery uses this precedence when two packages declare the same public name:
 

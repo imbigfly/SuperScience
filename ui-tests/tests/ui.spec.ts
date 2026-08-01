@@ -1910,6 +1910,27 @@ test("Workflow library includes a built-in Roundtable DAG", async ({ page }) => 
   expect(chair.x).toBeGreaterThan(reviews[0].x);
 });
 
+test("Skill Portfolio Planner confirms budget and opens an editable DAG", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Workflows");
+  const studio = page.getByTestId("workflow-studio");
+
+  await studio.getByTestId("portfolio-planner-open").click();
+  await expect(page.getByTestId("portfolio-planner-overlay")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("portfolio-planner-overlay")).toBeHidden();
+
+  await studio.getByTestId("portfolio-planner-open").click();
+  await page.getByTestId("portfolio-request").fill("Design an oncology omics study");
+  await page.getByTestId("portfolio-generate").click();
+  const card = page.getByTestId("portfolio-plan-card");
+  await expect(card).toContainText("3 Skills · 3 batches · max 2 parallel");
+  await expect(page.getByTestId("portfolio-deferred")).toContainText("insufficient_token_budget");
+  await card.getByTestId("portfolio-edit-studio").click();
+  await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(4);
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(3);
+});
+
 test("Workflow Studio reuses the roundtable generator and saves a Quick Action binding", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Workflows");
@@ -1924,6 +1945,10 @@ test("Workflow Studio reuses the roundtable generator and saves a Quick Action b
   await studio.getByTestId("roundtable-apply").click();
   await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(5);
   await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(6);
+  await studio.getByTestId("workflow-graph-inspector")
+    .getByTestId("dynamic-task-skills")
+    .getByText("analysis-workflow · bundled")
+    .click();
   await studio.getByTestId("workflow-save").click();
 
   await expect.poll(() => lastInvokeArgs(page, "save_workflow_template")).toMatchObject({
@@ -1933,7 +1958,7 @@ test("Workflow Studio reuses the roundtable generator and saves a Quick Action b
       proposal: {
         goal: "Choose a website architecture",
         tasks: [
-          { id: "seat_1_opening", depends_on: [] },
+          { id: "seat_1_opening", depends_on: [], skill_ids: ["analysis-workflow"] },
           { id: "seat_2_opening", depends_on: [] },
           {
             id: "seat_1_review",

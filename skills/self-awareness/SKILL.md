@@ -37,6 +37,7 @@ corresponding Wisp tool instead.
 | Inspect a local image | `view_image` | Explicit tool call for a supported local image; this is not a Python method. |
 | Track a multi-step plan | `update_plan` | Update task progress when a plan materially helps. |
 | Present the completed result | `attempt_completion` | Wisp's normal completion path; there is no separate structured-output submission SDK. |
+| Audit configured workflow guidance | `list_skill_catalog` | Page through discovered/effective records and use its explicit counts. |
 | Discover and load workflow guidance | `search_skills`, `use_skill` | Search by task/domain, then load the exact returned skill name. |
 | Search or save durable notes | `search_memory`, `append_memory` | Available only when project memory is enabled; memory is not a transcript or telemetry database. |
 | Delegate multi-file codebase reading | `explore` | Read-only sub-Agent with its own context and `read`/`grep`/`search` access. |

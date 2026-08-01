@@ -7,9 +7,10 @@
 use crate::orchestration::MAX_PARALLEL_AGENTS;
 use crate::{
     AgentAuthorizationSnapshot, AgentBackend, AgentBudget, AgentExecutorRef, AgentOrigin,
-    AgentOutputSchemaSource, AgentRole, AgentSessionPolicy, AgentSpec, AgentWorkspacePolicy,
-    CapabilityRevision, ContextPolicy, DelegationMode, DelegationPlan, DelegationPlanStep,
-    PermissionSet, SpecialistSnapshot, DYNAMIC_DELEGATION_SCHEMA_VERSION, MAX_DELEGATION_TASKS,
+    AgentOutputSchemaSource, AgentRole, AgentSessionPolicy, AgentSkillBinding, AgentSpec,
+    AgentWorkspacePolicy, CapabilityRevision, ContextPolicy, DelegationMode, DelegationPlan,
+    DelegationPlanStep, PermissionSet, SpecialistSnapshot, DYNAMIC_DELEGATION_SCHEMA_VERSION,
+    MAX_DELEGATION_TASKS,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -144,6 +145,8 @@ pub struct DelegatedTaskProposal {
     #[serde(default)]
     pub depends_on: Vec<String>,
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub skill_bindings: Vec<AgentSkillBinding>,
     #[serde(default)]
     pub specialist: Option<SpecialistSnapshot>,
     #[serde(default)]
@@ -413,6 +416,7 @@ impl CapabilityRegistry {
                 .any(|capability| capability == "delegation"),
             origin,
             capabilities: proposal.capabilities.clone(),
+            skill_bindings: proposal.skill_bindings.clone(),
             executor: Some(executor),
             request_preferences: Some(crate::AgentRequestPreferences {
                 model_id: proposal.model_id.clone(),
@@ -1076,6 +1080,7 @@ fn proposal_from_spec(spec: &AgentSpec) -> Result<DelegatedTaskProposal, Resolut
         context_summary: spec.context_summary.clone(),
         depends_on: spec.dependencies.clone(),
         capabilities: spec.capabilities.clone(),
+        skill_bindings: spec.skill_bindings.clone(),
         specialist,
         output_schema,
         isolated: preferences.map_or(
@@ -1603,6 +1608,7 @@ mod tests {
             context_summary: String::new(),
             depends_on: vec![],
             capabilities: capabilities.iter().map(|value| (*value).into()).collect(),
+            skill_bindings: vec![],
             specialist: None,
             output_schema: None,
             isolated: false,

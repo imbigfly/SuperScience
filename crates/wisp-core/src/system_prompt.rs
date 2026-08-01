@@ -114,6 +114,7 @@ If a named workflow is disabled or unavailable, follow the same principles direc
             "## Skills Selection Guidelines\n\n\
 {count} installed {availability} available. Their catalog and bodies are not preloaded.\n\n\
 - When a task may match an installed workflow, call `search_skills` with concise task or domain keywords.\n\
+- When the user asks how many Skills are configured, enabled, effective, shadowed, or broken, use `list_skill_catalog`; do not infer inventory counts from search results.\n\
 - Then call `use_skill` with the exact returned name before proceeding.\n\
 - If the user already attached a selected skill's guidance to the turn, follow that content without loading it again.\n"
         )

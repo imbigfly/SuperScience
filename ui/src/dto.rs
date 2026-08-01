@@ -2385,6 +2385,13 @@ pub(crate) struct AgentCapabilityOption {
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentSkillOption {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) scope: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AgentModelOption {
     pub(crate) id: String,
     pub(crate) external: bool,
@@ -2403,6 +2410,8 @@ pub(crate) struct ExecutorProfileSummary {
 #[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DynamicAgentEditorOptions {
     pub(crate) capabilities: Vec<AgentCapabilityOption>,
+    #[serde(default)]
+    pub(crate) skills: Vec<AgentSkillOption>,
     pub(crate) models: Vec<AgentModelOption>,
     pub(crate) executors: Vec<ExecutorProfileSummary>,
 }
@@ -2420,6 +2429,8 @@ pub(crate) struct DynamicAgentTaskProposal {
     pub(crate) instruction: String,
     pub(crate) depends_on: Vec<String>,
     pub(crate) capabilities: Vec<String>,
+    #[serde(default)]
+    pub(crate) skill_ids: Vec<String>,
     pub(crate) specialist_id: Option<String>,
     pub(crate) output_schema: Option<serde_json::Value>,
     pub(crate) isolated: bool,
@@ -2434,6 +2445,58 @@ pub(crate) struct DynamicAgentWorkflowProposal {
     pub(crate) context: String,
     pub(crate) approval_policy: AgentApprovalPolicy,
     pub(crate) tasks: Vec<DynamicAgentTaskProposal>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResearchIntentRequest {
+    pub(crate) request: String,
+    pub(crate) domains: Vec<String>,
+    pub(crate) research_stages: Vec<String>,
+    pub(crate) roles: Vec<String>,
+    pub(crate) evidence_types: Vec<String>,
+    pub(crate) outputs: Vec<String>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PortfolioConfigRequest {
+    pub(crate) tier: String,
+    pub(crate) total_token_budget: u32,
+    pub(crate) synthesis_reserve: u32,
+    pub(crate) node_output_tokens: u32,
+    pub(crate) user_parallel_limit: usize,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PortfolioSelectionSummary {
+    pub(crate) skill_id: String,
+    pub(crate) name: String,
+    pub(crate) scope: String,
+    pub(crate) reasons: Vec<String>,
+    pub(crate) node_budget: u32,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PortfolioDeferralSummary {
+    pub(crate) name: String,
+    pub(crate) reason: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PortfolioPlanSummary {
+    pub(crate) selected: Vec<PortfolioSelectionSummary>,
+    pub(crate) deferred: Vec<PortfolioDeferralSummary>,
+    pub(crate) total_token_budget: u32,
+    pub(crate) selected_node_budget: u32,
+    pub(crate) synthesis_reserve: u32,
+    pub(crate) max_parallel: usize,
+    pub(crate) estimated_batches: usize,
+    pub(crate) requires_confirmation: bool,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SkillPortfolioDraft {
+    pub(crate) plan: PortfolioPlanSummary,
+    pub(crate) proposal: DynamicAgentWorkflowProposal,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2470,6 +2533,8 @@ pub(crate) struct ResolvedAgentTaskSummary {
     pub(crate) instruction: String,
     pub(crate) depends_on: Vec<String>,
     pub(crate) capabilities: Vec<String>,
+    #[serde(default)]
+    pub(crate) skill_bindings: Vec<AgentSkillBinding>,
     pub(crate) specialist_id: Option<String>,
     pub(crate) specialist_name: Option<String>,
     pub(crate) executor: AgentExecutorSummary,
@@ -2485,6 +2550,19 @@ pub(crate) struct ResolvedAgentTaskSummary {
     pub(crate) approval_reasons: Vec<String>,
     pub(crate) output_schema: Option<serde_json::Value>,
     pub(crate) result: Option<AgentResultSummary>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentSkillBinding {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) scope: String,
+    pub(crate) path: String,
+    pub(crate) declared_version: Option<String>,
+    pub(crate) skill_md_sha256: String,
+    pub(crate) package_id: Option<String>,
+    pub(crate) package_version: Option<String>,
+    pub(crate) package_source: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]

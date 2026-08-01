@@ -73,6 +73,7 @@ mod session_context_tool;
 mod session_export;
 mod settings_commands;
 mod skill_commands;
+mod skill_portfolio;
 mod snapshot_store;
 mod specialist_tool;
 mod specialists;
@@ -3057,9 +3058,11 @@ fn skill_infos(
         .collect()
 }
 
-async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex> {
+async fn project_skill_catalog(
+    store: &Store,
+    ap: &ActiveProject,
+) -> (SkillIndex, Option<HashSet<String>>) {
     let mut enabled = effective_enabled_skill_names(store, ap).await;
-    let tags = load_skill_tags(store).await;
     let plugin_paths: Vec<PathBuf> = plugins::enabled_plugin_manifests(store, &ap.id)
         .await
         .into_iter()
@@ -3081,12 +3084,17 @@ async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex
                 .map(|skill| skill.name.clone()),
         );
     }
-    Arc::new(
+    (
         ap.skills
             .merged_preserving_self(&plugin)
-            .with_tag_overrides(&tags)
-            .filtered_by_names(enabled.as_ref()),
+            .with_tag_overrides(&load_skill_tags(store).await),
+        enabled,
     )
+}
+
+async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex> {
+    let (catalog, enabled) = project_skill_catalog(store, ap).await;
+    Arc::new(catalog.filtered_by_names(enabled.as_ref()))
 }
 
 /// Identity section appended after the base system prompt when a session has
@@ -6508,6 +6516,7 @@ pub fn run() {
             quick_actions::save_workflow_template,
             quick_actions::remove_workflow_template,
             quick_actions::run_quick_action,
+            skill_portfolio::plan_skill_portfolio,
             review_session,
             side_chat,
             context_probe::probe_execution_context,

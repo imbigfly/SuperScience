@@ -18,6 +18,7 @@ struct DynamicTaskForm {
     instruction: String,
     depends_on: Vec<String>,
     capabilities: Vec<String>,
+    skill_ids: Vec<String>,
     specialist_id: String,
     output_schema: String,
     isolated: bool,
@@ -36,6 +37,7 @@ impl DynamicTaskForm {
             instruction: String::new(),
             depends_on: vec![],
             capabilities: vec!["reasoning".into()],
+            skill_ids: vec![],
             specialist_id: String::new(),
             output_schema: String::new(),
             isolated: false,
@@ -55,6 +57,7 @@ impl DynamicTaskForm {
             instruction: task.instruction,
             depends_on: task.depends_on,
             capabilities: task.capabilities,
+            skill_ids: task.skill_ids,
             specialist_id: task.specialist_id.unwrap_or_default(),
             output_schema: task
                 .output_schema
@@ -102,6 +105,7 @@ impl DynamicTaskForm {
             instruction: self.instruction.trim().into(),
             depends_on: self.depends_on.clone(),
             capabilities: self.capabilities.clone(),
+            skill_ids: self.skill_ids.clone(),
             specialist_id: nonempty(&self.specialist_id),
             output_schema,
             isolated: self.isolated,
@@ -1376,6 +1380,42 @@ fn dynamic_task_editor(
                     }}
                 </div>
             </fieldset>
+            <fieldset class="dynamic-agent-choice-group">
+                <legend>{"Skills"}</legend>
+                <div class="dynamic-agent-checks" data-testid="dynamic-task-skills">
+                    <For each=move || state.options.get().skills
+                        key=|skill| skill.id.clone()
+                        children=move |skill| {
+                            let id = skill.id.clone();
+                            let checked_id = id.clone();
+                            let update_id = id.clone();
+                            let label = format!("{} · {}", skill.name, skill.scope);
+                            view! {
+                                <label class="dynamic-agent-check">
+                                    <input type="checkbox"
+                                        prop:checked=move || state.dynamic_form.with(|form| {
+                                            form.tasks.iter().find(|task| task.key == key)
+                                                .is_some_and(|task| task.skill_ids.contains(&checked_id))
+                                        })
+                                        on:change=move |event| {
+                                            let checked = event_target_checked(&event);
+                                            update_task(state.dynamic_form, key, |task| {
+                                                if checked {
+                                                    if !task.skill_ids.contains(&update_id) {
+                                                        task.skill_ids.push(update_id.clone());
+                                                    }
+                                                } else {
+                                                    task.skill_ids.retain(|id| id != &update_id);
+                                                }
+                                            });
+                                        } />
+                                    <span>{label}</span>
+                                </label>
+                            }
+                        }
+                    />
+                </div>
+            </fieldset>
             <label>
                 <span>{move || t(locale.get(), "agents.task.specialist")}</span>
                 <select data-testid="dynamic-task-specialist"
@@ -2349,6 +2389,64 @@ pub(super) fn workflow_studio(
     let saving = create_rw_signal(false);
     let selected_task_key = create_rw_signal::<Option<u32>>(None);
     let connect_from_key = create_rw_signal::<Option<u32>>(None);
+    let portfolio_open = create_rw_signal(false);
+    let portfolio_request = create_rw_signal(String::new());
+    let portfolio_tier = create_rw_signal("standard".to_string());
+    let portfolio_total = create_rw_signal("16000".to_string());
+    let portfolio_reserve = create_rw_signal("4000".to_string());
+    let portfolio_draft = create_rw_signal::<Option<SkillPortfolioDraft>>(None);
+    let portfolio_loading = create_rw_signal(false);
+
+    window_capture_escape(move || {
+        if !portfolio_open.get_untracked() {
+            return false;
+        }
+        portfolio_open.set(false);
+        true
+    });
+
+    let generate_portfolio = move |_| {
+        let request_text = portfolio_request.get_untracked().trim().to_string();
+        let total = portfolio_total.get_untracked().parse::<u32>().unwrap_or(0);
+        let reserve = portfolio_reserve.get_untracked().parse::<u32>().unwrap_or(0);
+        if request_text.is_empty() || total == 0 || reserve == 0 {
+            state.error.set(Some("Research request and positive budgets are required.".into()));
+            return;
+        }
+        portfolio_loading.set(true);
+        let args = serde_json::json!({
+            "request": {
+                "intent": ResearchIntentRequest {
+                    request: request_text,
+                    domains: vec![],
+                    research_stages: vec![],
+                    roles: vec![],
+                    evidence_types: vec![],
+                    outputs: vec![],
+                },
+                "config": PortfolioConfigRequest {
+                    tier: portfolio_tier.get_untracked(),
+                    total_token_budget: total,
+                    synthesis_reserve: reserve,
+                    node_output_tokens: 2_000,
+                    user_parallel_limit: 2,
+                }
+            }
+        });
+        spawn_local(async move {
+            match invoke_checked("plan_skill_portfolio", to_value(&args).unwrap()).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<SkillPortfolioDraft>(value) {
+                    Ok(draft) => {
+                        portfolio_draft.set(Some(draft));
+                        state.error.set(None);
+                    }
+                    Err(error) => state.error.set(Some(error.to_string())),
+                },
+                Err(error) => state.error.set(Some(js_error_text(error))),
+            }
+            portfolio_loading.set(false);
+        });
+    };
 
     create_effect(move |_| {
         let items = templates.get();
@@ -2514,6 +2612,13 @@ pub(super) fn workflow_studio(
                     <button type="button" class="settings-add-btn" data-testid="workflow-new"
                         on:click=start_new>
                         {move || format!("+ {}", t(locale.get(), "workflow_studio.new"))}
+                    </button>
+                    <button type="button" class="settings-add-btn" data-testid="portfolio-planner-open"
+                        on:click=move |_| {
+                            portfolio_draft.set(None);
+                            portfolio_open.set(true);
+                        }>
+                        {"Plan from Skills"}
                     </button>
                 </div>
                 <div class="workflow-studio-template-list">
@@ -2747,6 +2852,77 @@ pub(super) fn workflow_studio(
                     <div class="agents-error" data-testid="workflow-studio-error">{error}</div>
                 })}
             </form>
+            {move || portfolio_open.get().then(|| view! {
+                <div class="overlay" role="presentation" data-testid="portfolio-planner-overlay"
+                    on:click=move |_| portfolio_open.set(false)>
+                    <div class="modal agents-create" role="dialog" aria-modal="true"
+                        aria-label="Skill Portfolio Planner"
+                        on:click=move |event| event.stop_propagation()>
+                        <div class="modal-header">
+                            <div>
+                                <strong>{"Skill Portfolio Planner"}</strong>
+                                <span>{"Build an explainable, budgeted workflow from the effective catalog."}</span>
+                            </div>
+                            <button type="button" aria-label="Close" on:click=move |_| portfolio_open.set(false)>{"×"}</button>
+                        </div>
+                        <label>
+                            <span>{"Research request"}</span>
+                            <textarea data-testid="portfolio-request"
+                                prop:value=move || portfolio_request.get()
+                                on:input=move |event| portfolio_request.set(event_target_value(&event))></textarea>
+                        </label>
+                        <div class="dynamic-agent-policy-row">
+                            <label><span>{"Plan depth"}</span>
+                                <select data-testid="portfolio-tier" on:change=move |event| portfolio_tier.set(dom_value(&event))>
+                                    <option value="compact">{"Compact"}</option>
+                                    <option value="standard" selected>{"Standard"}</option>
+                                    <option value="deep">{"Deep"}</option>
+                                </select>
+                            </label>
+                            <label><span>{"Total tokens"}</span><input data-testid="portfolio-total" type="number"
+                                prop:value=move || portfolio_total.get()
+                                on:input=move |event| portfolio_total.set(event_target_value(&event)) /></label>
+                            <label><span>{"Synthesis reserve"}</span><input data-testid="portfolio-reserve" type="number"
+                                prop:value=move || portfolio_reserve.get()
+                                on:input=move |event| portfolio_reserve.set(event_target_value(&event)) /></label>
+                        </div>
+                        <button type="button" class="agents-primary" data-testid="portfolio-generate"
+                            disabled=move || portfolio_loading.get() on:click=generate_portfolio>
+                            {move || if portfolio_loading.get() { "Planning…" } else { "Generate plan" }}
+                        </button>
+                        {move || portfolio_draft.get().map(|draft| {
+                            let plan = draft.plan.clone();
+                            let proposal = draft.proposal.clone();
+                            view! {
+                                <section data-testid="portfolio-plan-card">
+                                    <strong>{format!("{} Skills · {} batches · max {} parallel", plan.selected.len(), plan.estimated_batches, plan.max_parallel)}</strong>
+                                    <p>{format!("{} total · {} node tokens · {} synthesis reserve", plan.total_token_budget, plan.selected_node_budget, plan.synthesis_reserve)}</p>
+                                    <ul>{plan.selected.into_iter().map(|item| view! {
+                                        <li><code>{format!("{}:{}", item.scope, item.skill_id)}</code>
+                                            {format!(" · {} tokens · {}", item.node_budget, item.reasons.join("; "))}</li>
+                                    }).collect_view()}</ul>
+                                    {(!plan.deferred.is_empty()).then(|| view! {
+                                        <p data-testid="portfolio-deferred">{format!("Deferred: {}", plan.deferred.into_iter().map(|item| format!("{} ({})", item.name, item.reason)).collect::<Vec<_>>().join(", "))}</p>
+                                    })}
+                                    <p>{if plan.requires_confirmation { "Review required before execution." } else { "Eligible for safe automatic execution." }}</p>
+                                    <button type="button" class="agents-primary" data-testid="portfolio-edit-studio"
+                                        on:click=move |_| {
+                                            let form = DynamicWorkflowForm::from_proposal(proposal.clone());
+                                            selected_task_key.set(form.tasks.first().map(|task| task.key));
+                                            state.dynamic_form.set(form);
+                                            template_name.set("Skill Portfolio".into());
+                                            template_description.set("Generated from the effective Skill Catalog".into());
+                                            creating.set(true);
+                                            loaded_id.set(None);
+                                            selected_template_id.set(None);
+                                            portfolio_open.set(false);
+                                        }>{"Edit in Workflow Studio"}</button>
+                                </section>
+                            }
+                        })}
+                    </div>
+                </div>
+            })}
         </div>
     }
 }
@@ -2995,6 +3171,16 @@ fn dynamic_workflow_card(
                                     <span class="agent-chip capability">{capability}</span>
                                 }).collect_view()}
                             </div>
+                            {(!task.skill_bindings.is_empty()).then(|| view! {
+                                <div class="agent-chip-row" aria-label="Skills">
+                                    <span class="agent-chip-label">{"Skills"}</span>
+                                    {task.skill_bindings.into_iter().map(|binding| view! {
+                                        <span class="agent-chip skill" title=format!("{} · {}", binding.path, binding.skill_md_sha256)>
+                                            {format!("{} · {}", binding.name, binding.scope)}
+                                        </span>
+                                    }).collect_view()}
+                                </div>
+                            })}
                             <div class="agent-resolved-authority">
                                 <div><span>{t(locale.get(), "agents.task.workspace")}</span><strong>{task.workspace_policy}</strong></div>
                                 <div><span>{t(locale.get(), "agents.task.merge")}</span><strong>{merge_policy_label(locale.get(), &task.merge_policy)}</strong></div>
