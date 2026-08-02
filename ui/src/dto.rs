@@ -2605,7 +2605,6 @@ pub(crate) struct AgentResultSummary {
     pub(crate) status: String,
     pub(crate) summary: Option<String>,
     pub(crate) error: Option<String>,
-    pub(crate) child_frame_id: Option<String>,
     #[serde(default)]
     pub(crate) run_id: Option<String>,
     pub(crate) input_tokens: i64,

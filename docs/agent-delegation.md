@@ -483,10 +483,10 @@ drafts, so lifecycle controls remain on the root only.
 Each dynamic task shows dependencies, requested capabilities, optional
 Specialist, resolved model and executor, workspace/tool authority, approval
 reasons, status, duration, usage, summary, and whether a full result is
-available. **Inspect result** opens the persisted structured response; **Take
-over** opens that task's child conversation. Child conversations remain linked
-to their dispatching conversation and do not appear as top-level sessions in
-the sidebar, recent-session views, or session search.
+available. **Inspect result** opens a readable view of the persisted summary,
+deliverables, changes, evidence, checks, risks, and custom output fields. Child
+conversation IDs and other execution-envelope details stay internal; the panel
+does not offer a separate child-conversation takeover flow.
 
 Workflow Studio creates arbitrary task graphs instead of assembling a fixed
 team. Add bounded tasks, connect them with dependencies, and choose
@@ -514,6 +514,9 @@ completion waits behind it. Then create an equivalent graph in
 panel shows the run without showing workflow editing fields. Repeat with a
 write capability: Wisp should show the exact resolved authority and start zero
 children if approval is denied.
+Open a completed task result and confirm its sections and rendered Markdown are
+readable without raw JSON or a child-conversation action. Press Escape
+immediately after opening it and confirm only the result dialog closes.
 Finally, add the **Nested delegation** capability to one root task and let it
 create two independent leaf tasks. Confirm that both leaves appear under the
 same root card at depth 2, their IDs are prefixed by the parent task, their

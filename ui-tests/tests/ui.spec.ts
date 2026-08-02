@@ -7211,7 +7211,7 @@ test("failed dynamic tasks and dependency-blocked tasks stay distinct", async ({
   await expect(card.locator('[data-step-id$=":research_b"] .agent-attempt-status')).toHaveText("Succeeded");
 });
 
-test("full result inspection and Take over target the selected child Agent", async ({ page }) => {
+test("task results are readable without exposing the child Agent conversation", async ({ page }) => {
   await enterApp(page, "/?mockAgentWorkflow=succeeded");
   await page.getByRole("button", { name: "Toggle panel" }).click();
   await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
@@ -7221,18 +7221,19 @@ test("full result inspection and Take over target the selected child Agent", asy
   await expect(synthesis).toContainText("1140 tokens · 3 tools");
 
   await synthesis.getByTestId("agent-inspect-result").click();
-  const dialog = page.getByRole("dialog", { name: "Full task result" });
-  await expect(dialog.getByTestId("agent-result-json")).toContainText('"task_id": "synthesize"');
-  await expect(dialog.getByTestId("agent-result-json")).toContainText("evidence-for-synthesize");
+  const dialog = page.getByRole("dialog", { name: "Task result" });
+  await expect(dialog.getByTestId("agent-result-summary")).toContainText("Completed synthesize");
+  await expect(dialog.getByTestId("agent-result-artifacts")).toContainText("Readable result content for synthesize");
+  await expect(dialog.getByTestId("agent-result-evidence")).toContainText("evidence-for-synthesize");
+  await expect(dialog.getByTestId("agent-result-tests")).toContainText("Structure check passed");
+  await expect(dialog.getByTestId("agent-result-risks")).toContainText("Mock evidence only");
+  await expect(dialog).not.toContainText("agent-child-synthesize");
+  await expect(dialog.getByTestId("agent-result-json")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(page.getByTestId("agent-workflows")).toBeVisible();
   await expect(page.locator(".rightpane")).toBeVisible();
-
-  const researchB = card.locator('[data-step-id$=":research_b"]');
-  await researchB.getByRole("button", { name: "Take over" }).click();
-  await expect.poll(() => lastInvokeArgs(page, "load_session"))
-    .toMatchObject({ id: "agent-child-research_b" });
+  await expect(card.getByRole("button", { name: "Take over" })).toHaveCount(0);
 });
 
 test("disabled delegation preserves running history and blocks new starts and retries", async ({ page }) => {
