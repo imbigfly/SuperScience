@@ -2988,6 +2988,7 @@ pub(super) fn review_message_ui_index(items: &[ChatItem], message_index: usize) 
             | ChatItem::ApprovalPending { .. }
             | ChatItem::AcpPermission { .. }
             | ChatItem::Usage { .. }
+            | ChatItem::Compaction { .. }
             | ChatItem::ReviewTransition { .. }
             | ChatItem::Review(_) => false,
         })

@@ -1241,6 +1241,8 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.workspace_dir") => Some("Workspace folder (blank = default; applies after restart)"),
         (Locale::En, "settings.max_iter") => Some("Maximum agent iterations per turn"),
         (Locale::En, "settings.max_iter_hint") => Some("Limits model/tool rounds in one turn. Default: 100; 0 means unlimited."),
+        (Locale::En, "settings.auto_compact") => Some("Automatically compact long conversations"),
+        (Locale::En, "settings.auto_compact_hint") => Some("Enabled by default. Before each model call, Wisp archives and compacts the conversation when its estimated context reaches 80%."),
         (Locale::En, "settings.proxy_url") => Some("Model API proxy"),
         (Locale::En, "settings.proxy_url_hint") => Some("Empty follows the system proxy. Enter `none` to force a direct connection, or a proxy URL like http://127.0.0.1:7890 or socks5://127.0.0.1:1080. Applies to model API requests after saving."),
         (Locale::En, "settings.send_shortcut") => Some("Send and newline shortcuts"),
@@ -1423,6 +1425,19 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "chat.error") => Some("Error"),
         (Locale::En, "chat.jump_last_user") => Some("⌃ Your last message"),
         (Locale::En, "chat.resume") => Some("Resume"),
+        (Locale::En, "chat.context_auto_compacted") => Some("Context automatically compacted"),
+        (Locale::En, "chat.context_compacted") => Some("Context compacted"),
+        (Locale::En, "context_recovery.title") => Some("This conversation is too long"),
+        (Locale::En, "context_recovery.body") => Some("The model rejected the request because the conversation exceeded its context window. Choose how Wisp should preserve and continue the work."),
+        (Locale::En, "context_recovery.compact") => Some("Compact and continue"),
+        (Locale::En, "context_recovery.compact_hint") => Some("Archive the full history, fold older turns, then retry the unfinished response without replaying completed tools."),
+        (Locale::En, "context_recovery.new_session") => Some("Continue in a new conversation"),
+        (Locale::En, "context_recovery.new_session_hint") => Some("Start fresh and use a compact Reader summary of this conversation as context."),
+        (Locale::En, "context_recovery.pause") => Some("Pause conversation"),
+        (Locale::En, "context_recovery.pause_hint") => Some("Keep the error and all completed work here without sending another request."),
+        (Locale::En, "context_recovery.compacting") => Some("Compacting…"),
+        (Locale::En, "context_recovery.starting") => Some("Starting…"),
+        (Locale::En, "context_recovery.new_prompt") => Some("Continue the last unfinished request from the attached conversation. Use its summarized context, preserve completed work, and report the final result, verification, and anything still incomplete."),
         (Locale::En, "chat.image_generating") => Some("Generating image…"),
         (Locale::En, "chat.image_loading") => Some("Loading generated image…"),
         (Locale::En, "chat.image_generated") => Some("Generated image"),
@@ -2931,6 +2946,8 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.workspace_dir") => Some("工作区目录（留空=默认；重启后生效）"),
         (Locale::Zh, "settings.max_iter") => Some("每轮最大 Agent 迭代次数"),
         (Locale::Zh, "settings.max_iter_hint") => Some("限制单轮对话中的模型/工具循环次数；默认 100，0 表示不限制。"),
+        (Locale::Zh, "settings.auto_compact") => Some("自动压缩过长对话"),
+        (Locale::Zh, "settings.auto_compact_hint") => Some("默认开启。每次模型调用前，当预估上下文达到 80% 时，Wisp 会先归档完整对话，再自动压缩。"),
         (Locale::Zh, "settings.proxy_url") => Some("模型 API 代理"),
         (Locale::Zh, "settings.proxy_url_hint") => Some("留空＝跟随系统代理；填 none＝强制直连（忽略系统代理）；或填代理地址，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080。保存后对模型 API 请求生效。"),
         (Locale::Zh, "settings.send_shortcut") => Some("发送与换行快捷键"),
@@ -3111,6 +3128,19 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "chat.error") => Some("错误"),
         (Locale::Zh, "chat.jump_last_user") => Some("⌃ 你的上一条消息"),
         (Locale::Zh, "chat.resume") => Some("继续执行"),
+        (Locale::Zh, "chat.context_auto_compacted") => Some("上下文已自动压缩"),
+        (Locale::Zh, "chat.context_compacted") => Some("上下文已压缩"),
+        (Locale::Zh, "context_recovery.title") => Some("当前对话过长"),
+        (Locale::Zh, "context_recovery.body") => Some("对话已超出模型的上下文窗口，请选择如何保留并继续当前工作。"),
+        (Locale::Zh, "context_recovery.compact") => Some("压缩对话并继续"),
+        (Locale::Zh, "context_recovery.compact_hint") => Some("先归档完整历史并压缩较早轮次，再继续未完成的回复；不会重复执行已完成的工具。"),
+        (Locale::Zh, "context_recovery.new_session") => Some("新开对话并继续"),
+        (Locale::Zh, "context_recovery.new_session_hint") => Some("新建对话，通过 Reader 生成当前对话的精简摘要并作为上下文继续。"),
+        (Locale::Zh, "context_recovery.pause") => Some("暂停对话"),
+        (Locale::Zh, "context_recovery.pause_hint") => Some("保留当前错误和所有已完成工作，不再发送请求。"),
+        (Locale::Zh, "context_recovery.compacting") => Some("正在压缩…"),
+        (Locale::Zh, "context_recovery.starting") => Some("正在新建…"),
+        (Locale::Zh, "context_recovery.new_prompt") => Some("请继续处理所附对话中最后一个未完成的请求。使用其精简上下文，保留已经完成的工作，并汇报最终结果、核验情况以及仍未完成的内容。"),
         (Locale::Zh, "chat.image_generating") => Some("正在生成图片…"),
         (Locale::Zh, "chat.image_loading") => Some("正在加载生成的图片…"),
         (Locale::Zh, "chat.image_generated") => Some("图片已生成"),
@@ -3588,6 +3618,12 @@ pub fn is_image_unsupported(msg: &str) -> bool {
     api_error_hint_key(msg) == Some("err.hint.image")
 }
 
+/// True only for provider errors that explicitly say the request exceeded the
+/// model's context window. Generic HTTP 400s must not open the recovery modal.
+pub fn is_context_limit_error(msg: &str) -> bool {
+    api_error_hint_key(msg) == Some("err.hint.context")
+}
+
 fn api_error_hint_key(msg: &str) -> Option<&'static str> {
     if !msg.contains("api: ") && !msg.contains("http: ") {
         return None;
@@ -3600,7 +3636,12 @@ fn api_error_hint_key(msg: &str) -> Option<&'static str> {
         "err.hint.balance"
     } else if m.contains("maximum context length")
         || m.contains("context_length_exceeded")
+        || m.contains("context length exceeded")
+        || m.contains("context window exceeded")
+        || m.contains("exceeds the context window")
         || m.contains("prompt is too long")
+        || m.contains("input is too long")
+        || m.contains("too many tokens")
         || m.contains("reduce the length")
     {
         "err.hint.context"
@@ -3699,6 +3740,20 @@ mod api_error_hint_tests {
             r#"api: 402 {"error":{"message":"Insufficient Balance for image_url request"}}"#
         ));
         assert!(!is_image_unsupported("tool `python` failed: image_url"));
+    }
+
+    #[test]
+    fn context_recovery_requires_an_explicit_context_limit_error() {
+        assert!(is_context_limit_error(
+            r#"api: 400 {"error":{"message":"context window exceeded"}}"#
+        ));
+        assert!(is_context_limit_error(
+            r#"api: 400 {"error":{"message":"Input is too long for this model"}}"#
+        ));
+        assert!(!is_context_limit_error(
+            r#"api: 400 {"error":{"message":"invalid context field"}}"#
+        ));
+        assert!(!is_context_limit_error("context window exceeded"));
     }
 
     #[test]

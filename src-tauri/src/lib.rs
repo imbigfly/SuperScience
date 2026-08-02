@@ -155,8 +155,7 @@ enum AgentEvent {
         after: usize,
         strategy: String,
     },
-    /// The context estimate crossed the warning threshold. The agent never
-    /// compacts on its own — the user decides (send "/compact").
+    /// The context estimate crossed the warning threshold and remains high.
     ContextWarning {
         frame_id: String,
         ctx_tokens: usize,
@@ -1212,6 +1211,30 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                 acc.2 += reasoning;
                 acc.3 += cached;
             }
+            AgentEvent::Compaction {
+                before,
+                after,
+                strategy,
+                ..
+            } => items.push(UiItem {
+                role: "compaction".into(),
+                text: serde_json::json!({
+                    "before": before,
+                    "after": after,
+                    "strategy": strategy,
+                })
+                .to_string(),
+                tool_name: None,
+                ok: None,
+                duration_ms: None,
+                input: None,
+                model_name: None,
+                call_id: None,
+                kind: None,
+                status: None,
+                locations: None,
+                resources: Vec::new(),
+            }),
             AgentEvent::Text { delta, .. } | AgentEvent::Reasoning { delta, .. } => {
                 let role = if matches!(event, AgentEvent::Text { .. }) {
                     "assistant"
@@ -1443,6 +1466,10 @@ struct Settings {
     /// Maximum LLM/tool iterations in one agent turn.
     #[serde(default = "default_max_iter_setting")]
     max_iter: i64,
+    /// Compact long native-model conversations automatically at 80% of the
+    /// configured context budget. ACP agents own their remote context.
+    #[serde(default = "default_auto_compact")]
+    auto_compact: bool,
     /// Max output tokens per LLM turn. 0 = provider default.
     #[serde(default)]
     max_tokens: u64,
@@ -1483,6 +1510,10 @@ const MAX_MCP_APP_NAME_CHARS: usize = 160;
 
 const fn default_max_iter_setting() -> i64 {
     DEFAULT_MAX_ITER as i64
+}
+
+const fn default_auto_compact() -> bool {
+    true
 }
 
 /// Drop cached per-session agents so the next turn picks up new model settings.
@@ -2134,6 +2165,7 @@ fn should_persist_ui_event(event: &AgentEvent) -> bool {
             | AgentEvent::ToolPresentation { .. }
             | AgentEvent::Stdout { .. }
             | AgentEvent::Usage { .. }
+            | AgentEvent::Compaction { .. }
     )
 }
 
@@ -3308,6 +3340,16 @@ async fn load_notifications_enabled(store: &Store) -> bool {
         .unwrap_or(true)
 }
 
+async fn load_auto_compact_enabled(store: &Store) -> bool {
+    store
+        .get_setting("auto_compact")
+        .await
+        .ok()
+        .flatten()
+        .map(|value| value != "false")
+        .unwrap_or(true)
+}
+
 /// Labels of app windows currently holding OS focus. A set (not a bool) so the
 /// unordered Focused(false)/Focused(true) pair fired when focus moves between
 /// two app windows cannot leave us wrongly marked unfocused.
@@ -4475,7 +4517,7 @@ async fn send_message_inner(
     }
     let vision_cfg = build_vision_provider_config(&state.store).await;
 
-    let max_context = state
+    let fallback_max_context = state
         .store
         .get_setting("max_context")
         .await
@@ -4521,6 +4563,14 @@ async fn send_message_inner(
     let session_profile_id = models::session_profile_id(&state.store, &frame_id).await;
     let model_label = models::session_label(&state.store, &frame_id).await;
     let specialist = specialists::session_specialist(&state.store, &frame_id).await;
+    let max_context = match &specialist {
+        Some(specialist) => specialists::specialist_context_window(&state.store, specialist).await,
+        None => models::profile_context_window(&state.store, &session_profile_id)
+            .await
+            .unwrap_or(fallback_max_context as u64),
+    }
+    .try_into()
+    .unwrap_or(fallback_max_context);
     if references.as_ref().is_some_and(|references| {
         references
             .iter()
@@ -4664,6 +4714,7 @@ async fn send_message_inner(
             load_memory_enabled(&state.store).await,
             vision_cfg.clone(),
         );
+        agent.set_auto_compact(load_auto_compact_enabled(&state.store).await);
         if specialist
             .as_ref()
             .is_some_and(|specialist| specialist.id == "scientific_illustrator")
@@ -4860,15 +4911,19 @@ async fn send_message_inner(
                         format!("compact: persisting the rewritten context failed: {e}")
                     })?;
                 rt.set_last_seq(agent.ctx.messages.len() as i64);
-                emit_agent_event(
-                    &app,
-                    AgentEvent::Compaction {
-                        frame_id: frame_id.clone(),
-                        before,
-                        after,
-                        strategy: "manual".into(),
-                    },
-                );
+                let event = AgentEvent::Compaction {
+                    frame_id: frame_id.clone(),
+                    before,
+                    after,
+                    strategy: "manual".into(),
+                };
+                let mut event_seq = state
+                    .store
+                    .next_session_ui_event_seq(&frame_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                append_ui_event(&state.store, &frame_id, &mut event_seq, event.clone()).await;
+                emit_agent_event(&app, event);
                 emit_agent_event(
                     &app,
                     AgentEvent::Done {
@@ -5112,12 +5167,13 @@ async fn send_message_inner(
     };
 
     let turn_start = agent.ctx.messages.len();
+    let compaction_revision = agent.ctx.compaction_revision();
     // Re-stated every turn: the session may have been switched to a different
     // model since the last one, and images already in history must follow the
     // model that is about to receive them, not the one that accepted them.
     agent.ctx.supports_vision = primary_supports_vision;
     state.running_turns.lock().await.insert(frame_id.clone());
-    let result = if resume {
+    let mut result = if resume {
         agent
             .run_resume(&output, Some(&rt.cancel), Some(&rt.pending_guidance))
             .await
@@ -5181,6 +5237,19 @@ async fn send_message_inner(
         }
     }
     let _ = tokio::time::timeout(std::time::Duration::from_secs(10), prov_handle).await;
+    if agent.ctx.compaction_revision() != compaction_revision {
+        if let Err(error) = state
+            .store
+            .replace_messages(&frame_id, &agent.ctx.messages)
+            .await
+        {
+            result = Err(anyhow::anyhow!(
+                "automatic compact: persisting the rewritten context failed: {error}"
+            ));
+        } else {
+            rt.set_last_seq(agent.ctx.messages.len() as i64);
+        }
+    }
     drop(guard);
     // After the persist flush so the seen snapshot covers the final messages.
     mark_seen_if_viewed(&state, &frame_id).await;

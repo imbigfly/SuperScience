@@ -931,6 +931,12 @@ fn App() -> impl IntoView {
     // Set when a send fails because no API key is configured, so the status bar
     // can offer a one-click jump to Settings instead of a dead-end message.
     let needs_api_key = create_rw_signal(false);
+    // A built-in model context-overflow error opens a root-owned recovery
+    // choice. Keep it in the app Escape stack: it can appear without focus
+    // moving into the dialog, immediately after an async AgentEvent::Error.
+    let context_recovery_dialog = create_rw_signal::<Option<String>>(None);
+    let context_recovery_busy = create_rw_signal(false);
+    let context_recovery_error = create_rw_signal::<Option<String>>(None);
     let refresh_models = move || {
         spawn_local(async move {
             let v = invoke("list_models", JsValue::UNDEFINED).await;
@@ -2202,8 +2208,15 @@ fn App() -> impl IntoView {
                 frame_id,
                 before,
                 after,
-                ..
+                strategy,
             } => {
+                route_items(active_cb, items_cb, transcripts_cb, &frame_id, |items| {
+                    items.push(ChatItem::Compaction {
+                        before,
+                        after,
+                        strategy,
+                    });
+                });
                 if active_cb.get().as_deref() == Some(&frame_id) {
                     status_cb.set(tf(
                         locale_cb.get(),
@@ -2295,6 +2308,13 @@ fn App() -> impl IntoView {
                         }
                         last_user.is_some()
                     };
+                let offer_context_recovery = !rolled_back
+                    && i18n::is_context_limit_error(&message)
+                    && active_cb.get_untracked().as_deref() == Some(&frame_id)
+                    // ACP owns its remote transcript and cannot run Wisp's
+                    // /compact + resume path. Do not offer an action that
+                    // cannot preserve its opaque session state.
+                    && active_acp_agent_id.get_untracked().is_none();
                 if !rolled_back {
                     let model = session_model_label(
                         &models_cb.get_untracked(),
@@ -2318,6 +2338,14 @@ fn App() -> impl IntoView {
                 set_pet_activity(&frame_id, "failed");
                 if stopping_session.get().as_deref() == Some(&frame_id) {
                     stopping_session.set(None);
+                }
+                if offer_context_recovery {
+                    // The modal supersedes any transient surface left open
+                    // when the async error arrived.
+                    selection_popup.set(None);
+                    context_recovery_busy.set(false);
+                    context_recovery_error.set(None);
+                    context_recovery_dialog.set(Some(frame_id));
                 }
             }
             AgentEvent::DelegationCompleted {
@@ -3556,6 +3584,151 @@ fn App() -> impl IntoView {
             });
         }
     };
+
+    let compact_context_recovery = Callback::new(move |id: String| {
+        if context_recovery_busy.get_untracked() {
+            return;
+        }
+        context_recovery_busy.set(true);
+        context_recovery_error.set(None);
+        spawn_local(async move {
+            let compact = to_value(&SendMessageArgs {
+                session_id: Some(id.clone()),
+                message: "/compact".into(),
+                attachments: vec![],
+                references: vec![],
+                resume: false,
+                acp_agent_id: None,
+                guide: None,
+                replace: None,
+            })
+            .unwrap();
+            if let Err(error) = invoke_checked("send_message", compact).await {
+                let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                context_recovery_error.set(Some(message));
+                context_recovery_busy.set(false);
+                return;
+            }
+
+            // /compact rewrites only the model context. The existing error row
+            // stays in the visual transcript until we remove it here; the
+            // completed tool rows remain and Resume continues after them.
+            if active_session.get_untracked().as_deref() == Some(id.as_str()) {
+                let model = session_model_label(
+                    &models.get_untracked(),
+                    &session_model_ids.get_untracked(),
+                    Some(&id),
+                );
+                items.update(|rows| {
+                    if let Some(index) = rows.iter().rposition(is_error_assistant) {
+                        rows.remove(index);
+                    }
+                    ensure_streaming_assistant(rows, model);
+                });
+            }
+            context_recovery_dialog.set(None);
+            context_recovery_error.set(None);
+            begin_pending_turn(pending_turns, running, &id);
+            force_chat_bottom();
+
+            let resume = to_value(&SendMessageArgs {
+                session_id: Some(id.clone()),
+                message: String::new(),
+                attachments: vec![],
+                references: vec![],
+                resume: true,
+                acp_agent_id: None,
+                guide: None,
+                replace: None,
+            })
+            .unwrap();
+            if let Err(error) = invoke_checked("send_message", resume).await {
+                let raw = js_error_text(error);
+                if raw.contains(NO_API_KEY_MARK) {
+                    needs_api_key.set(true);
+                }
+                status.set(tf(
+                    locale.get_untracked(),
+                    "status.send_failed",
+                    &[("msg", &localize_backend(locale.get_untracked(), &raw))],
+                ));
+            }
+            finish_pending_turn(pending_turns, running, &id);
+            context_recovery_busy.set(false);
+            refresh_session_history();
+        });
+    });
+
+    let new_session_context_recovery = Callback::new(move |source_id: String| {
+        if context_recovery_busy.get_untracked() {
+            return;
+        }
+        context_recovery_busy.set(true);
+        context_recovery_error.set(None);
+        spawn_local(async move {
+            let Some(id) = invoke("new_session", JsValue::UNDEFINED).await.as_string() else {
+                context_recovery_error.set(Some(t(locale.get_untracked(), "status.send_failed")));
+                context_recovery_busy.set(false);
+                return;
+            };
+
+            if active_session.get_untracked().as_deref() == Some(source_id.as_str()) {
+                transcripts.update(|all| {
+                    all.insert(source_id.clone(), items.get_untracked());
+                });
+            }
+            let prompt = t(locale.get_untracked(), "context_recovery.new_prompt");
+            let model = active_model_label(&models.get_untracked());
+            active_acp_agent_id.set(None);
+            active_session.set(Some(id.clone()));
+            transcript_pages.update(|pages| {
+                pages.entry(id.clone()).or_default().window_user_start = usize::MAX;
+            });
+            items.set(vec![
+                ChatItem::User(prompt.clone()),
+                ChatItem::Assistant {
+                    text: String::new(),
+                    model,
+                    resources: Vec::new(),
+                },
+            ]);
+            input.set(String::new());
+            attachments.set(vec![]);
+            composer_references.set(vec![]);
+            composer_quotes.set(vec![]);
+            context_recovery_dialog.set(None);
+            context_recovery_error.set(None);
+            begin_pending_turn(pending_turns, running, &id);
+            force_chat_bottom();
+            refresh_session_history();
+
+            let args = to_value(&SendMessageArgs {
+                session_id: Some(id.clone()),
+                message: prompt,
+                attachments: vec![],
+                references: vec![ComposerReferenceArg::Session { id: source_id }],
+                resume: false,
+                acp_agent_id: None,
+                guide: None,
+                replace: None,
+            })
+            .unwrap();
+            if let Err(error) = invoke_checked("send_message", args).await {
+                let raw = js_error_text(error);
+                if raw.contains(NO_API_KEY_MARK) {
+                    needs_api_key.set(true);
+                }
+                status.set(tf(
+                    locale.get_untracked(),
+                    "status.send_failed",
+                    &[("msg", &localize_backend(locale.get_untracked(), &raw))],
+                ));
+            }
+            finish_pending_turn(pending_turns, running, &id);
+            context_recovery_busy.set(false);
+            refresh_session_history();
+        });
+    });
 
     let pick_files = move |_| {
         if uploading.get() {
@@ -6273,6 +6446,14 @@ fn App() -> impl IntoView {
             return;
         };
         if ev.key() != "Escape" || ev.default_prevented() || ime_composing(ev) {
+            return;
+        }
+        if context_recovery_dialog.get().is_some() {
+            ev.prevent_default();
+            if !context_recovery_busy.get() {
+                context_recovery_dialog.set(None);
+                context_recovery_error.set(None);
+            }
             return;
         }
         if selection_popup.get().is_some() {
@@ -12669,6 +12850,78 @@ fn App() -> impl IntoView {
             save_onboard_key=save_onboard_key
             dismiss_onboard=Callback::new(dismiss_onboard)
         />
+        {move || context_recovery_dialog.get().map(|frame_id| {
+            let compact_id = frame_id.clone();
+            let new_session_id = frame_id;
+            view! {
+                <div class="overlay context-recovery-overlay">
+                    <div
+                        class="modal context-recovery-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="context-recovery-title"
+                        data-testid="context-recovery-modal"
+                    >
+                        <h2 id="context-recovery-title">
+                            {move || t(locale.get(), "context_recovery.title")}
+                        </h2>
+                        <p class="context-recovery-body">
+                            {move || t(locale.get(), "context_recovery.body")}
+                        </p>
+                        <div class="context-recovery-options">
+                            <button
+                                type="button"
+                                class="context-recovery-option recommended"
+                                data-testid="context-recovery-compact"
+                                disabled=move || context_recovery_busy.get()
+                                on:click=move |_| compact_context_recovery.call(compact_id.clone())
+                            >
+                                <span class="context-recovery-option-title">
+                                    {move || t(locale.get(), "context_recovery.compact")}
+                                </span>
+                                <span class="context-recovery-option-hint">
+                                    {move || t(locale.get(), "context_recovery.compact_hint")}
+                                </span>
+                            </button>
+                            <button
+                                type="button"
+                                class="context-recovery-option"
+                                data-testid="context-recovery-new-session"
+                                disabled=move || context_recovery_busy.get()
+                                on:click=move |_| new_session_context_recovery.call(new_session_id.clone())
+                            >
+                                <span class="context-recovery-option-title">
+                                    {move || t(locale.get(), "context_recovery.new_session")}
+                                </span>
+                                <span class="context-recovery-option-hint">
+                                    {move || t(locale.get(), "context_recovery.new_session_hint")}
+                                </span>
+                            </button>
+                            <button
+                                type="button"
+                                class="context-recovery-option"
+                                data-testid="context-recovery-pause"
+                                disabled=move || context_recovery_busy.get()
+                                on:click=move |_| {
+                                    context_recovery_dialog.set(None);
+                                    context_recovery_error.set(None);
+                                }
+                            >
+                                <span class="context-recovery-option-title">
+                                    {move || t(locale.get(), "context_recovery.pause")}
+                                </span>
+                                <span class="context-recovery-option-hint">
+                                    {move || t(locale.get(), "context_recovery.pause_hint")}
+                                </span>
+                            </button>
+                        </div>
+                        {move || context_recovery_error.get().map(|error| view! {
+                            <div class="context-recovery-error" role="alert">{error}</div>
+                        })}
+                    </div>
+                </div>
+            }
+        })}
         <ContextMenuPortal menu=ctx_menu.read_only() set_menu=ctx_menu.write_only() on_pick=on_ctx_pick />
         </div>
     }
@@ -12697,6 +12950,7 @@ fn class_for(item: &ChatItem) -> &'static str {
         ChatItem::AcpPermission { .. } => "tool-wrap approval-wrap-row",
         ChatItem::AcpTool { .. } => "tool-wrap",
         ChatItem::Usage { .. } => "usage-row",
+        ChatItem::Compaction { .. } => "context-compaction-row",
         ChatItem::ReviewTransition { .. } => "review-transition-row",
         ChatItem::Review(_) => "tool-wrap",
         ChatItem::Plan(_) => "tool-wrap plan-wrap",
@@ -13452,6 +13706,32 @@ fn render_item(
                         }
                         s
                     }}
+                </div>
+            }.into_view()
+        }
+        ChatItem::Compaction {
+            before,
+            after,
+            strategy,
+        } => {
+            let automatic = strategy == "auto";
+            let counts = format!(
+                "{} → {}",
+                fmt_tokens(*before as u64),
+                fmt_tokens(*after as u64)
+            );
+            view! {
+                <div class="context-compaction-flag" data-testid="context-compaction-flag">
+                    <span class="gi doc" aria-hidden="true"></span>
+                    <span>{move || t(
+                        locale.get(),
+                        if automatic {
+                            "chat.context_auto_compacted"
+                        } else {
+                            "chat.context_compacted"
+                        },
+                    )}</span>
+                    <span class="context-compaction-count">{counts}</span>
                 </div>
             }.into_view()
         }
