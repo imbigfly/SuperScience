@@ -96,6 +96,7 @@ pub struct DelegationExecutor {
     observer: Arc<dyn DelegationExecutionObserver>,
     dynamic_policy: Option<(CapabilityRegistry, DelegationHostPolicy)>,
     lineage: Option<AgentDelegationLineage>,
+    completed_responses: HashMap<String, AgentDelegationResponse>,
 }
 
 impl DelegationExecutor {
@@ -105,6 +106,7 @@ impl DelegationExecutor {
             observer: Arc::new(NoopDelegationObserver),
             dynamic_policy: None,
             lineage: None,
+            completed_responses: HashMap::new(),
         }
     }
 
@@ -124,6 +126,14 @@ impl DelegationExecutor {
 
     pub fn with_lineage(mut self, lineage: AgentDelegationLineage) -> Self {
         self.lineage = Some(lineage);
+        self
+    }
+
+    pub fn with_completed_responses(
+        mut self,
+        responses: HashMap<String, AgentDelegationResponse>,
+    ) -> Self {
+        self.completed_responses = responses;
         self
     }
 
@@ -149,6 +159,15 @@ impl DelegationExecutor {
 
     pub async fn execute(&self, plan: DelegationPlan) -> anyhow::Result<DelegationExecutionResult> {
         self.validate_plan(&plan)?;
+        for (step_id, response) in &self.completed_responses {
+            if !plan.steps.iter().any(|step| step.id == *step_id) {
+                anyhow::bail!("completed response references an unknown step: {step_id}");
+            }
+            if response.status != DelegationStatus::Succeeded {
+                anyhow::bail!("completed response is not successful: {step_id}");
+            }
+            response.validate()?;
+        }
         self.observer.workflow_started(&plan).await?;
 
         let requests = plan
@@ -171,9 +190,10 @@ impl DelegationExecutor {
         let mut pending = plan
             .steps
             .iter()
+            .filter(|step| !self.completed_responses.contains_key(&step.id))
             .map(|step| step.id.clone())
             .collect::<Vec<_>>();
-        let mut responses = HashMap::<String, AgentDelegationResponse>::new();
+        let mut responses = self.completed_responses.clone();
         let mut running = FuturesUnordered::new();
         let mut running_requests = HashMap::<String, String>::new();
         let mut running_mutations = HashSet::<String>::new();
@@ -716,6 +736,44 @@ mod tests {
         let calls = delegator.calls.lock().await;
         assert_eq!(calls.last().map(String::as_str), Some("synthesize"));
         assert!(result.steps.last().unwrap().response.output.is_object());
+    }
+
+    #[tokio::test]
+    async fn scheduler_reuses_completed_steps_when_resuming() {
+        let (plan, registry, host) = fan_in_plan();
+        let completed_step = plan.steps[0].id.clone();
+        let completed = AgentDelegationResponse {
+            request_id: "persisted-request".into(),
+            status: DelegationStatus::Succeeded,
+            output: serde_json::json!({"step": completed_step}),
+            artifact_ids: vec![],
+            artifacts: vec![],
+            evidence: vec![],
+            usage: Default::default(),
+            agent_session_id: None,
+            child_frame_id: Some("persisted-frame".into()),
+            error: None,
+            nested_results: vec![],
+        };
+        let delegator = Arc::new(RecordingDelegator {
+            active: AtomicUsize::new(0),
+            max_active: AtomicUsize::new(0),
+            calls: Mutex::new(vec![]),
+            fail: None,
+        });
+
+        let result = DelegationExecutor::new(delegator.clone())
+            .with_completed_responses(HashMap::from([(completed_step.clone(), completed)]))
+            .with_dynamic_policy(registry, host)
+            .execute(plan)
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, DelegationExecutionStatus::Succeeded);
+        let calls = delegator.calls.lock().await;
+        assert!(!calls.contains(&completed_step));
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.last().map(String::as_str), Some("synthesize"));
     }
 
     #[tokio::test]

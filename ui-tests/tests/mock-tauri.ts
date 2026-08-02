@@ -591,6 +591,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const executeMockDynamicWorkflow = async (snapshot: any) => {
     snapshot.workflow.status = "running";
     for (const task of snapshot.dynamic.tasks) {
+      if (task.result?.status === "succeeded") continue;
       task.result = task.depends_on.length ? null : dynamicResult(task, "running");
     }
     const cancellationDemo = snapshot.workflow.goal.includes("CANCEL DEMO");
@@ -598,12 +599,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     if (snapshot.workflow.status === "cancelled") {
       return { workflow_id: snapshot.workflow.id, status: "cancelled", steps: [] };
     }
-    const partialDemo = snapshot.workflow.goal.includes("PARTIAL DEMO");
+    const partialDemo = snapshot.workflow.goal.includes("PARTIAL DEMO") && !snapshot.partialFailureRecorded;
     let failedTaskId: string | null = null;
     for (const task of snapshot.dynamic.tasks) {
       if (partialDemo && failedTaskId === null) {
         failedTaskId = task.id;
+        snapshot.partialFailureRecorded = true;
         task.result = dynamicResult(task, "failed");
+      } else if (task.result?.status === "succeeded") {
+        continue;
       } else if (failedTaskId && task.depends_on.includes(failedTaskId)) {
         task.result = dynamicResult(task, "blocked", { child_frame_id: null });
       } else {
@@ -660,6 +664,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       snapshot.dynamic.tasks[0].result = dynamicResult(snapshot.dynamic.tasks[0], "running");
       snapshot.dynamic.tasks[1].result = dynamicResult(snapshot.dynamic.tasks[1], "running");
     } else if (kind === "partial") {
+      snapshot.partialFailureRecorded = true;
       snapshot.workflow.status = "failed";
       snapshot.dynamic.tasks[0].result = dynamicResult(snapshot.dynamic.tasks[0], "failed");
       snapshot.dynamic.tasks[1].result = dynamicResult(snapshot.dynamic.tasks[1], "succeeded");
@@ -1889,7 +1894,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (!snapshot.delegation_enabled) throw new Error("Sub-Agent delegation is off for this conversation.");
             snapshot.workflow.status = "approved";
             snapshot.workflow.version += 1;
-            for (const task of snapshot.dynamic.tasks) task.result = null;
+            const overrides = arg("budgetOverrides") ?? {};
+            for (const task of snapshot.dynamic.tasks) {
+              if (overrides[task.id]?.max_tokens) {
+                task.budget.max_tokens = overrides[task.id].max_tokens;
+              }
+              if (task.result?.status !== "succeeded") task.result = null;
+            }
             if (snapshot.workflow.mode === "automatic") {
               void executeMockDynamicWorkflow(snapshot);
             }

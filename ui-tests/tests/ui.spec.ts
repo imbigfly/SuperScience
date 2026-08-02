@@ -6979,6 +6979,7 @@ test("nested Agent workflows render under their root without independent control
 
 test("failed dynamic tasks and dependency-blocked tasks stay distinct", async ({ page }) => {
   await enterApp(page, "/?mockAgentWorkflow=partial");
+  await enableDelegation(page);
   await page.getByRole("button", { name: "Toggle panel" }).click();
   await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
   const card = page.getByTestId("agent-workflows").locator(".agent-workflow-card.dynamic").first();
@@ -6988,6 +6989,22 @@ test("failed dynamic tasks and dependency-blocked tasks stay distinct", async ({
   await expect(card.locator('[data-step-id$=":research_b"] .agent-attempt-status')).toHaveText("Succeeded");
   await expect(card.locator('[data-step-id$=":synthesize"] .agent-attempt-status')).toHaveText("Blocked");
   await expect(card.locator('[data-step-id$=":synthesize"]')).toContainText("Blocked by a failed dependency");
+
+  const retryBudget = card.locator('[data-step-id$=":research_a"]')
+    .getByTestId("agent-retry-max-tokens");
+  await expect(retryBudget).toHaveValue("8000");
+  await retryBudget.fill("16000");
+  const workflowId = await card.getAttribute("data-workflow-id");
+  await card.getByTestId("agent-retry").click();
+  await expect.poll(() => lastInvokeArgs(page, "retry_agent_workflow")).toMatchObject({
+    workflowId,
+    budgetOverrides: { research_a: { max_tokens: 16000 } },
+  });
+  await expect(card.locator(".agent-workflow-status")).toHaveText("Approved");
+  await expect(card.locator('[data-step-id$=":research_b"] .agent-attempt-status')).toHaveText("Succeeded");
+  await card.getByTestId("agent-run").click();
+  await expect(card.locator(".agent-workflow-status")).toHaveText("Succeeded", { timeout: 2_000 });
+  await expect(card.locator('[data-step-id$=":research_b"] .agent-attempt-status')).toHaveText("Succeeded");
 });
 
 test("full result inspection and Take over target the selected child Agent", async ({ page }) => {

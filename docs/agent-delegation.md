@@ -105,8 +105,8 @@ boundary.
    when it is, calls `delegate_tasks` itself.
 3. The call describes an overall goal, bounded shared context, and up to eight
    tasks. Each task has its own instruction, dependency IDs, capability IDs,
-   optional Specialist, optional JSON output schema, and optional isolation
-   request.
+   optional Specialist, optional JSON output schema, optional isolation
+   request, and optional per-task token/tool/cost budget.
 4. Wisp resolves every capability through host policy into an exact model,
    executor, tool set, project scope, workspace policy, budget, and timeout.
    The model cannot grant raw tools or permissions to a child.
@@ -122,6 +122,14 @@ boundary.
    them into its final response rather than sending the user elsewhere. If a
    result was truncated, `get_delegated_result` reads that task's full persisted
    result for the same conversation.
+
+Failed and cancelled workflows are resumable. **Retry** keeps the persisted
+workflow and every successful task result, reruns only failed/cancelled tasks
+and descendants that were blocked, then supplies the retained dependency
+results to those descendants. A failed task exposes its current token limit in
+the activity card; changing **Retry max tokens** before retrying revises only
+that task's authorized budget on the same workflow. The new value is still
+checked against capability and host ceilings.
 
 Omitting `specialist_id` creates a generic temporary Agent. Selecting a
 Specialist reuses its persona, model preference, skills, and connector

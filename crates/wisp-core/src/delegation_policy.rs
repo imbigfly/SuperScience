@@ -1331,7 +1331,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &["literature"],
             AgentWorkspacePolicy::SharedReadOnly,
             10_000,
-            20_000,
+            32_000,
         ),
         capability(
             "external_research",

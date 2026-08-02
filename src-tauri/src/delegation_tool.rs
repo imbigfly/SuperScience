@@ -3,8 +3,8 @@
 use crate::{
     delegation_runtime,
     dynamic_workflow::{
-        self, AgentApprovalPolicy, DynamicAgentTaskProposal, DynamicAgentWorkflowProposal,
-        MAX_CONTEXT_CHARS, MAX_GOAL_CHARS, MAX_INSTRUCTION_CHARS,
+        self, AgentApprovalPolicy, AgentBudgetProposal, DynamicAgentTaskProposal,
+        DynamicAgentWorkflowProposal, MAX_CONTEXT_CHARS, MAX_GOAL_CHARS, MAX_INSTRUCTION_CHARS,
     },
     run_context::RunManager,
     specialists, ActiveProject,
@@ -49,6 +49,8 @@ struct DelegateTaskInput {
     output_schema: Option<Value>,
     #[serde(default)]
     isolated: bool,
+    #[serde(default)]
+    budget: Option<AgentBudgetProposal>,
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +313,16 @@ fn build_delegate_tasks_schema(
                             "isolated": {
                                 "type": "boolean",
                                 "description": "Request a temporary Git worktree for this task. Successful changes are conflict-checked and cherry-picked; rejected or failed changes are preserved as patch Artifacts. Use this for independent parallel writers. It is unavailable for non-Git or dirty project checkouts."
+                            },
+                            "budget": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "max_tokens": {"type": "integer", "minimum": 1},
+                                    "max_tool_calls": {"type": "integer", "minimum": 1},
+                                    "max_cost_microunits": {"type": "integer", "minimum": 1}
+                                },
+                                "description": "Optional per-task limits. Values are validated against capability and host ceilings; omit a dimension to use its capability default."
                             }
                         },
                         "required": ["id", "instruction", "capabilities"]
@@ -522,7 +534,7 @@ impl DelegateTasksTool {
                     isolated: task.isolated,
                     model_id: None,
                     executor: None,
-                    budget: None,
+                    budget: task.budget,
                 })
                 .collect(),
         };
@@ -899,11 +911,18 @@ pub(crate) fn compact_execution_result(
             })
         })
         .collect::<Vec<_>>();
+    let resumable = execution.status != wisp_core::DelegationExecutionStatus::Succeeded;
+    let message = if resumable {
+        "This persisted workflow is resumable. Do not create a replacement delegate_tasks plan automatically: report the failure and workflow_id. Retry from the Agents activity card reruns only unsuccessful tasks, and its failed-task token budget can be adjusted there."
+    } else {
+        "Synthesize these ordered delegated results into the final answer. Independent failures are partial evidence; do not hide them."
+    };
     json!({
         "workflow_id": execution.workflow_id,
         "status": execution.status,
+        "resumable": resumable,
         "results": results,
-        "message": "Synthesize these ordered delegated results into the final answer. Independent failures are partial evidence; do not hide them."
+        "message": message
     })
 }
 
@@ -1538,6 +1557,7 @@ mod tests {
         let parameters = schema.function.parameters.to_string();
         assert!(parameters.contains("paper-expert"));
         assert!(parameters.contains("Finds primary literature"));
+        assert!(parameters.contains("max_tokens"));
         assert!(!parameters.contains("PRIVATE SPECIALIST RUBRIC"));
         assert!(!parameters.contains("private-model-binding"));
     }
@@ -1554,7 +1574,8 @@ mod tests {
                 {
                     "id": "left",
                     "instruction": "Analyze the left input.",
-                    "capabilities": ["reasoning"]
+                    "capabilities": ["reasoning"],
+                    "budget": {"max_tokens": 16000, "max_tool_calls": 16}
                 },
                 {
                     "id": "right",
@@ -1593,6 +1614,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(delegator.max_active.load(Ordering::SeqCst), 2);
+        let workflow = store.list_agent_workflows("p").await.unwrap().remove(0);
+        let plan: DelegationPlan = serde_json::from_str(&workflow.plan_json).unwrap();
+        assert_eq!(plan.steps[0].spec.budget.max_tokens, Some(16_000));
+        assert_eq!(plan.steps[0].spec.budget.max_tool_calls, Some(16));
         let provider_messages = provider.messages.lock().unwrap();
         assert_eq!(provider_messages.len(), 2);
         let tool_message = provider_messages[1]

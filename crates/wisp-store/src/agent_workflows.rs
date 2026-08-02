@@ -703,6 +703,112 @@ impl super::Store {
         Ok(true)
     }
 
+    /// Replace only the resolved snapshot of a failed root workflow while
+    /// retaining its attempts, then put it back into the approved state.
+    pub async fn replace_agent_workflow_plan_for_retry(
+        &self,
+        workflow: &AgentWorkflow,
+        steps: &[AgentWorkflowStep],
+        expected_status: AgentWorkflowStatus,
+        expected_version: i64,
+    ) -> Result<bool> {
+        workflow.validate()?;
+        if workflow.depth != 0
+            || !matches!(
+                expected_status,
+                AgentWorkflowStatus::Failed | AgentWorkflowStatus::Cancelled
+            )
+        {
+            anyhow::bail!("only failed or cancelled root workflows can be revised for retry");
+        }
+        validate_plan_steps(&workflow.id, steps)?;
+        let limits: AgentDelegationRootLimits = serde_json::from_str(&workflow.root_limits_json)?;
+        if plan_budget(steps)?.exceeds(&limits) {
+            anyhow::bail!("root Agent workflow registered budget is exceeded");
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let mut tx = self.begin_write().await?;
+        let existing_ids = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM agent_workflow_steps WHERE workflow_id=? ORDER BY id",
+        )
+        .bind(&workflow.id)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+        let replacement_ids = steps
+            .iter()
+            .map(|step| step.id.clone())
+            .collect::<HashSet<_>>();
+        if existing_ids != replacement_ids {
+            anyhow::bail!("retry plan must preserve the existing workflow task ids");
+        }
+
+        // The step triggers deliberately allow edits only while the workflow is
+        // draft. This temporary state is visible only inside this transaction.
+        let updated = sqlx::query(
+            "UPDATE agent_workflows SET status='draft' WHERE id=? AND version=? AND status=?",
+        )
+        .bind(&workflow.id)
+        .bind(expected_version)
+        .bind(expected_status.as_str())
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        for step in steps {
+            let updated = sqlx::query(
+                "UPDATE agent_workflow_steps SET position=?,agent_id=?,template_id=?,role=?,backend=?,model=?,prompt_template=?,input_schema_json=?,output_schema_json=?,input_contract_json=?,output_contract_json=?,permissions_json=?,context_policy_json=?,budget_json=?,spec_json=?,timeout_secs=?,updated_at=? WHERE id=? AND workflow_id=?",
+            )
+            .bind(step.position)
+            .bind(&step.agent_id)
+            .bind(&step.template_id)
+            .bind(&step.role)
+            .bind(&step.backend)
+            .bind(step.model.as_deref())
+            .bind(&step.prompt_template)
+            .bind(&step.input_schema_json)
+            .bind(&step.output_schema_json)
+            .bind(&step.input_contract_json)
+            .bind(&step.output_contract_json)
+            .bind(&step.permissions_json)
+            .bind(&step.context_policy_json)
+            .bind(&step.budget_json)
+            .bind(&step.spec_json)
+            .bind(step.timeout_secs)
+            .bind(now)
+            .bind(&step.id)
+            .bind(&workflow.id)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() != 1 {
+                anyhow::bail!("retry plan task disappeared during update");
+            }
+        }
+        let approved = sqlx::query(
+            "UPDATE agent_workflows SET goal=?,mode=?,status='approved',max_parallel=?,requires_confirmation=?,plan_json=?,version=version+1,approved_at=?,updated_at=? WHERE id=? AND version=? AND status='draft'",
+        )
+        .bind(&workflow.goal)
+        .bind(&workflow.mode)
+        .bind(workflow.max_parallel)
+        .bind(workflow.requires_confirmation as i64)
+        .bind(&workflow.plan_json)
+        .bind(now)
+        .bind(now)
+        .bind(&workflow.id)
+        .bind(expected_version)
+        .execute(&mut *tx)
+        .await?;
+        if approved.rows_affected() != 1 {
+            anyhow::bail!("retry plan could not be approved after update");
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+
     pub async fn approve_agent_workflow_plan(
         &self,
         id: &str,
