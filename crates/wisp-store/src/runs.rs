@@ -244,7 +244,7 @@ impl Store {
     pub async fn request_run_cancellation(&self, id: &str) -> Result<bool> {
         let updated = sqlx::query(
             "UPDATE runs SET status='cancelling' \
-             WHERE id=? AND status IN ('submitted','running')",
+             WHERE id=? AND status IN ('draft','submitted','running','paused')",
         )
         .bind(id)
         .execute(&self.pool)

@@ -957,7 +957,7 @@ impl ExecutionContextKind {
         }
     }
 
-    fn from_storage(s: &str) -> Result<Self> {
+    pub(crate) fn from_storage(s: &str) -> Result<Self> {
         match s {
             "local" => Ok(Self::Local),
             "ssh" => Ok(Self::Ssh),
@@ -987,6 +987,7 @@ pub enum RunStatus {
     Draft,
     Submitted,
     Running,
+    Paused,
     Cancelling,
     Succeeded,
     Failed,
@@ -1001,6 +1002,7 @@ impl RunStatus {
             Self::Draft => "draft",
             Self::Submitted => "submitted",
             Self::Running => "running",
+            Self::Paused => "paused",
             Self::Cancelling => "cancelling",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
@@ -1010,11 +1012,12 @@ impl RunStatus {
         }
     }
 
-    fn from_storage(s: &str) -> Result<Self> {
+    pub(crate) fn from_storage(s: &str) -> Result<Self> {
         match s {
             "draft" => Ok(Self::Draft),
             "submitted" => Ok(Self::Submitted),
             "running" => Ok(Self::Running),
+            "paused" => Ok(Self::Paused),
             "cancelling" => Ok(Self::Cancelling),
             "succeeded" => Ok(Self::Succeeded),
             "failed" => Ok(Self::Failed),

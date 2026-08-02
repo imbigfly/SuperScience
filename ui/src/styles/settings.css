@@ -795,6 +795,19 @@ body:has(.settings-page) .projects-screen { display: none; }
   border-color: var(--clay);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--clay) 16%, transparent), var(--shadow-sm);
 }
+.workflow-graph-node.run-activity {
+  border-style: double;
+  border-color: color-mix(in srgb, var(--ok) 58%, var(--border-strong));
+  background: color-mix(in srgb, var(--ok) 5%, var(--bg-elev));
+}
+.workflow-graph-node.run-activity.selected {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 16%, transparent), var(--shadow-sm);
+}
+.workflow-graph-node.run-activity .workflow-graph-node-meta code {
+  border-color: color-mix(in srgb, var(--ok) 34%, var(--border-strong));
+  color: var(--ok);
+}
 .workflow-graph-node.connecting {
   border-color: var(--clay);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--clay) 20%, transparent);

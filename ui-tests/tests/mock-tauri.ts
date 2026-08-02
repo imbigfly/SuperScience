@@ -262,6 +262,67 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     sort_order: 0,
     builtin: true,
   }];
+  const mockMethodSearchWorkflowTemplate = {
+    id: "develop_computational_method",
+    name: "Develop computational method",
+    description: "Audit evidence and a baseline, freeze an evaluator contract, run a durable method search, then review verified finalists.",
+    builtin: true,
+    proposal: {
+      goal: "Develop and independently verify a reusable computational method",
+      context: "Supply project-local source, evaluator, data, metric, and guardrail details.",
+      approval_policy: "review_all",
+      tasks: [
+        { id: "literature_methods", instruction: "Review relevant methods", depends_on: [], task_kind: "agent", run_activity: null, capabilities: ["literature_search"], skill_ids: ["literature-review"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null } },
+        { id: "data_audit", instruction: "Audit validation data", depends_on: [], task_kind: "agent", run_activity: null, capabilities: ["project_read", "reasoning"], skill_ids: ["analysis-workflow"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null } },
+        { id: "baseline_analysis", instruction: "Inspect the baseline", depends_on: [], task_kind: "agent", run_activity: null, capabilities: ["project_read", "reasoning"], skill_ids: ["analysis-workflow"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null } },
+        {
+          id: "prepare_contract",
+          instruction: "Freeze and audit the evaluator contract",
+          depends_on: ["literature_methods", "data_audit", "baseline_analysis"],
+          task_kind: "agent",
+          run_activity: null,
+          capabilities: ["code_run"],
+          skill_ids: ["analysis-workflow"],
+          specialist_id: null,
+          output_schema: {
+            type: "object",
+            required: ["method_search_spec_artifact_version_id"],
+            properties: { method_search_spec_artifact_version_id: { type: "string" } },
+          },
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null },
+        },
+        {
+          id: "method_search",
+          instruction: "Run the durable method search",
+          depends_on: ["prepare_contract"],
+          task_kind: "run_activity",
+          run_activity: {
+            activity: "method_search",
+            context_id: "local",
+            input_task_id: "prepare_contract",
+            spec_output_pointer: "method_search_spec_artifact_version_id",
+            max_candidates: 20,
+            max_wall_seconds: 14400,
+            max_evaluator_seconds: 120,
+            max_cost_microunits: 5000000,
+          },
+          capabilities: [],
+          skill_ids: [],
+          specialist_id: null,
+          output_schema: null,
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: null,
+        },
+        { id: "verify_finalists", instruction: "Review verified finalists", depends_on: ["method_search"], task_kind: "agent", run_activity: null, capabilities: ["project_read", "review"], skill_ids: [], specialist_id: null, output_schema: { type: "object" }, isolated: false, model_id: null, executor: null, budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null } },
+        { id: "method_report", instruction: "Write the method report", depends_on: ["prepare_contract", "method_search", "verify_finalists"], task_kind: "agent", run_activity: null, capabilities: ["reasoning"], skill_ids: [], specialist_id: null, output_schema: { type: "object" }, isolated: false, model_id: null, executor: null, budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null } },
+      ],
+    },
+  };
   let mockWorkflowTemplates: any[] = [{
     id: "literature_evidence_review",
     name: "Literature evidence review",
@@ -383,6 +444,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       ],
     },
   }];
+  mockWorkflowTemplates.push(mockMethodSearchWorkflowTemplate);
   const quickActionSessions: Record<string, string> = {};
   let mockModels = [
     {
@@ -822,7 +884,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       lastError: null,
     },
   ];
-  const runs = [
+  const runs: any[] = [
     {
       id: "run-kinase-001",
       project_id: "default",
@@ -874,7 +936,117 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       env_snapshot_json: "{}",
     },
   ];
+  if (query.get("mockMethodSearch") === "1") {
+    runs.push({
+      id: "method-search-001",
+      project_id: "default",
+      frame_id: "s-complete",
+      context_id: "local",
+      title: "Develop computational method",
+      kind: "method_search",
+      status: "draft",
+      command: null,
+      script_path: null,
+      input_refs_json: "[]",
+      output_specs_json: "[]",
+      created_at: 1783482800,
+      started_at: null,
+      ended_at: null,
+      exit_code: null,
+      stdout_tail: "",
+      stderr_tail: "",
+      remote_workdir: null,
+      remote_handle_json: null,
+      timeout_secs: 14400,
+      last_polled_at: null,
+      last_poll_error: null,
+      progress_json: JSON.stringify({
+        schema: "wisp.method-search-progress.v1",
+        phase: "awaiting_approval",
+        baseline_primary: 0.5372,
+        best_primary: 0.5717,
+        candidate_count: 21,
+        successful_count: 17,
+        failed_count: 4,
+        cost_microunits: 1300000,
+        current_strategy: "diagnostic:residual_slice",
+      }),
+      env_snapshot_json: "{}",
+    });
+  }
   (window as any).__mockRuns = runs;
+  const mockMethodSearchDetails = () => ({
+    run: runs.find((item) => item.id === "method-search-001"),
+    state: {
+      run_id: "method-search-001",
+      spec_artifact_version_id: "spec-version-001",
+      spec_sha256: "a".repeat(64),
+      activity_version: 1,
+      checkpoint_json: "{}",
+      control_state: "run",
+      result_status: null,
+      created_at: 1783482800,
+      updated_at: 1783482800,
+    },
+    spec: {
+      schema: "wisp.method-search.v1",
+      objective: "Improve validation AUPRC without violating runtime limits.",
+      target: {
+        language: "python",
+        source_artifact_version_id: "source-version-001",
+        source_path: "analysis/model.py",
+        symbol: "fit_model",
+      },
+      evaluator: {
+        artifact_version_id: "evaluator-version-001",
+        entry_path: "analysis/evaluate.py",
+        repetitions: 3,
+        timeout_seconds: 120,
+        protocol: "wisp_evaluate_jsonl_v1",
+      },
+      metrics: {
+        primary: "auprc",
+        direction: "maximize",
+        guardrails: [{ metric: "runtime_seconds", op: "lte", value: 120 }],
+      },
+      inputs: [],
+      protected_paths: ["analysis/evaluate.py", "data/validation.csv"],
+      constraints: ["Keep the target signature unchanged."],
+      budget: {
+        max_candidates: 20,
+        max_wall_seconds: 14400,
+        max_evaluator_seconds: 120,
+        max_cost_microunits: 5000000,
+      },
+      final_verification: { artifact_version_id: "holdout-version-001", path: "data/holdout.csv", repetitions: 5 },
+    },
+    audit: {
+      schema: "wisp.method-search-audit.v1",
+      preparationId: "prepare-001",
+      baseline: {
+        repetitions: 3,
+        successful_repetitions: 3,
+        failure_rate: 0,
+        median_primary: 0.5372,
+        spread: 0.001,
+        median_absolute_deviation: 0.0005,
+        noise_floor: 0.002,
+      },
+      sentinelReachable: true,
+      protectedFiles: [{ path: "analysis/evaluate.py", sha256: "b".repeat(64) }],
+      targetSourceSha256: "c".repeat(64),
+      evaluatorArtifactVersionId: "evaluator-version-001",
+      findings: ["Baseline stable across three repetitions."],
+    },
+    auditArtifactVersionId: "audit-version-001",
+    candidates: [
+      { id: "candidate-0", run_id: "method-search-001", parent_candidate_id: null, sequence: 0, strategy_key: "baseline", family: "baseline", status: "succeeded", primary_score: 0.5372, utility: 0.5372, metrics_json: "{}", runtime_ms: 1000, source_sha256: "d".repeat(64), patch_sha256: "e".repeat(64), source_blob_id: "blob-0", patch_blob_id: null, changed_lines: 0, dependency_count: 0, rationale: "Frozen baseline", diagnostic_summary: null, error: null, created_at: 1783482800, finished_at: 1783482801 },
+      { id: "candidate-21", run_id: "method-search-001", parent_candidate_id: "candidate-0", sequence: 21, strategy_key: "diagnostic:residual_slice", family: "ridge", status: "succeeded", primary_score: 0.5717, utility: 0.5717, metrics_json: "{}", runtime_ms: 900, source_sha256: "f".repeat(64), patch_sha256: "1".repeat(64), source_blob_id: "blob-21", patch_blob_id: "patch-21", changed_lines: 8, dependency_count: 0, rationale: "Use robust residual features.", diagnostic_summary: null, error: null, created_at: 1783482900, finished_at: 1783482901 },
+    ],
+    strategies: [{ run_id: "method-search-001", strategy_key: "diagnostic:residual_slice", category: "diagnostic", weight: 1.4, attempts: 4, improvements: 2, cumulative_reward: 3.2, summary: "Residual analysis", source_refs_json: "[]", updated_at: 1783482901 }],
+    outputs: [{ id: "output-selected", run_id: "method-search-001", artifact_version_id: "selected-version-001", role: "selected_method", logical_output_key: "selected_method", source_path: "method-search/selected_method.py", created_at: 1783483000 }],
+    activity: { attempt_id: "attempt-search", run_id: "method-search-001", activity: "method_search", state_json: "{}", created_at: 1783482800, updated_at: 1783482800 },
+  });
   let monitorRunFrameId: string | null = null;
   let resolveMonitorRun: ((frameId: string) => void) | null = null;
   const artifacts = [
@@ -2260,6 +2432,46 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "list_runs":
             return runs;
+          case "get_method_search_run":
+            return mockMethodSearchDetails();
+          case "start_method_search": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run || run.kind !== "method_search" || run.status !== "draft") {
+              throw new Error("Method-search Run could not start");
+            }
+            run.status = "submitted";
+            run.started_at = Math.floor(Date.now() / 1000);
+            run.progress_json = JSON.stringify({
+              ...JSON.parse(run.progress_json),
+              phase: "search",
+            });
+            return mockMethodSearchDetails();
+          }
+          case "pause_method_search": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run || !["submitted", "running"].includes(run.status)) {
+              throw new Error("Method-search Run is not running");
+            }
+            run.status = "paused";
+            return mockMethodSearchDetails();
+          }
+          case "resume_method_search": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run || run.status !== "paused") {
+              throw new Error("Method-search Run is not paused");
+            }
+            run.status = "submitted";
+            return mockMethodSearchDetails();
+          }
+          case "cancel_method_search": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run || run.kind !== "method_search") {
+              throw new Error("Method-search Run does not exist");
+            }
+            run.status = "cancelled";
+            run.ended_at = Math.floor(Date.now() / 1000);
+            return mockMethodSearchDetails();
+          }
           case "cancel_run": {
             const run = runs.find((r) => r.id === (arg("runId") ?? arg("run_id")));
             if (run) {

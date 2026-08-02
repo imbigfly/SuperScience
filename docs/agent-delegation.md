@@ -25,8 +25,8 @@ Manage these two layers in Settings:
 The Studio uses the same task contract and proposal type as runtime delegation.
 The right-panel Agents view is intentionally an activity surface rather than a
 second workflow editor.
-**Literature evidence review** and **Roundtable** are both read-only built-in
-Workflows in its library. The Roundtable generator is also available for
+**Literature evidence review**, **Roundtable**, and **Develop computational
+method** are read-only built-in Workflows in its library. The Roundtable generator is also available for
 custom variants: it expands two or three participants plus a chair into
 ordinary parallel opening, cross-review, and synthesis tasks. The generated
 nodes remain editable and can be saved as a reusable Workflow, then bound to
@@ -213,6 +213,62 @@ a crash are reconstructed from their immutable plan and attempts, then
 delivered normally. The compact conversation message may later be removed by
 ordinary transcript retention; full task responses and lookup records remain
 in workflow attempts.
+
+## Host-managed Run activities
+
+A Workflow may contain a bounded host-managed `run_activity` node in addition
+to ordinary Agent nodes. The first supported activity is `method_search`.
+Workflow remains an immutable DAG: candidate iteration happens inside one
+persisted Run and never expands the approved graph.
+
+Run activities have their own exact authority snapshot: activity version,
+ExecutionContext revision, one direct dependency and structured output
+pointer, candidate/time/evaluator/cost limits, provider/model profile IDs, and
+integrity hash. Specialist, Agent executor, Skill, isolation, model override,
+and Agent token/tool budgets are rejected on these nodes. A method-search node
+may consume only the required
+`method_search_spec_artifact_version_id` field declared by its direct
+dependency's output schema.
+
+After its attempt starts, Wisp atomically creates and links the Run and moves
+the attempt to `waiting_run`. That state is unfinished for DAG dependencies but
+does not occupy one of the root Agent concurrency slots. Descendants remain
+blocked until the linked Run succeeds. Run failure, timeout, loss, or
+cancellation maps to one terminal attempt exactly once; retry creates a new
+attempt and a new Run.
+
+For `method_search`, creation stops at a second, exact review boundary. The
+linked Run is `Draft`, the provider is not called, and no candidate evaluator
+runs. The Run detail shows the immutable spec and audit ArtifactVersion IDs,
+target symbol, evaluator, baseline/noise summary, reachability result,
+guardrails, protected inputs, ExecutionContext, and budgets. **Start search**
+revalidates those frozen inputs plus the approved model profile and only then
+moves the Run to `Submitted`. This review is distinct from approving the
+Workflow plan: plan approval authorizes preparation; Run start authorizes
+search against the exact contract that preparation produced.
+
+The method-search Run surface reports bounded progress and candidate lineage,
+and provides pause, resume, and cancel controls. A pause takes effect at a
+durable candidate boundary. Resume revalidates the exact contract and context;
+it never silently substitutes current files. Selected code remains an
+ArtifactVersion and is not applied to the project checkout.
+
+Startup recovery keeps `waiting_run` only when its dedicated Run link still
+exists in the same project. A missing or mismatched link fails explicitly.
+Project import always fails an imported waiting activity instead of guessing
+that work on another device can resume; the Run link and prior evidence remain
+available for inspection. Cancelling the root requests cancellation of both
+active Agent attempts and linked Runs. Graceful desktop shutdown converts a
+submitted/running local method search to `Paused` after its last durable
+checkpoint and terminates the bounded evaluator with the application. Startup
+also converts an interrupted search to `Paused` with a recovery note. Both
+paths require an explicit resume.
+
+Method-search v0 is deliberately local and serial: Python only, one declared
+function/class target, one local ExecutionContext, 1–50 candidates, immutable
+project-local inputs, and a bounded evaluator. It does not provide GPU/remote
+scheduling, multi-target repository edits, automatic data downloads, or
+automatic application of the selected method.
 
 ## Native, ACP, and code execution
 
