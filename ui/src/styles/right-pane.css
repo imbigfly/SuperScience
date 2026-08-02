@@ -576,6 +576,8 @@
 .agent-step-list { display: grid; gap: 7px; margin-top: 10px; }
 .agent-step { padding: 8px 9px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-app); }
 .agent-step-name { color: var(--text); font-size: 11.5px; font-weight: 650; text-transform: capitalize; }
+.agent-retry-budget { display: flex; align-items: center; gap: 7px; margin-top: 7px; color: var(--text-muted); font-size: 10.5px; font-weight: 650; }
+.agent-retry-budget input { width: 96px; padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg-elev); color: var(--text); font: inherit; }
 .agent-attempt-summary { margin: 6px 0 0; color: var(--text-muted); font-size: 11.5px; line-height: 1.45; }
 .agent-takeover { margin-top: 7px; }
 

@@ -903,14 +903,200 @@ pub(crate) async fn retry_agent_workflow(
     state: State<'_, crate::AppState>,
     window: tauri::WebviewWindow,
     workflow_id: String,
+    budget_overrides: Option<HashMap<String, dynamic_workflow::AgentBudgetProposal>>,
 ) -> Result<AgentWorkflowSnapshot, String> {
     let project = state.active(window.label());
-    let snapshot = prepare_agent_workflow_retry(&state.store, &project.id, &workflow_id).await?;
+    let snapshot = match budget_overrides.filter(|overrides| !overrides.is_empty()) {
+        Some(overrides) => {
+            let frame_id = state.active_frame(window.label());
+            let policy = dynamic_delegation_policy_for_project(
+                &state.store,
+                &project,
+                frame_id.as_deref(),
+                &state.app_data,
+            )
+            .await?;
+            prepare_agent_workflow_budget_retry(
+                &state.store,
+                &project.id,
+                &project.root,
+                &workflow_id,
+                overrides,
+                &(policy.registry, policy.host),
+                Some(&policy.resources),
+            )
+            .await?
+        }
+        None => prepare_agent_workflow_retry(&state.store, &project.id, &workflow_id).await?,
+    };
     let automatic = snapshot.workflow.mode == "automatic";
     if automatic {
         spawn_agent_workflow(&state, project, workflow_id).await?;
     }
     Ok(snapshot)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn prepare_agent_workflow_budget_retry(
+    store: &Store,
+    project_id: &str,
+    project_root: &Path,
+    workflow_id: &str,
+    overrides: HashMap<String, dynamic_workflow::AgentBudgetProposal>,
+    policy: &(CapabilityRegistry, DelegationHostPolicy),
+    resources: Option<&crate::delegation_resources::ScientificResourceCatalog>,
+) -> Result<AgentWorkflowSnapshot, String> {
+    let current = project_workflow(store, project_id, workflow_id).await?;
+    require_workflow_delegation(store, &current).await?;
+    if current.depth != 0
+        || !matches!(
+            current.status,
+            AgentWorkflowStatus::Failed | AgentWorkflowStatus::Cancelled
+        )
+    {
+        return Err(
+            "Only a failed or cancelled root Agent workflow can be revised for retry.".into(),
+        );
+    }
+
+    let attempts = store
+        .list_agent_workflow_attempts(workflow_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let original_plan = stored_dynamic_plan(&current)?;
+    policy
+        .0
+        .validate_resolved_plan(&original_plan, &policy.1)
+        .map_err(|error| {
+            format!("Stored Agent workflow can no longer be revised safely: {error}")
+        })?;
+    let summary = dynamic_workflow::summarize(&original_plan, &attempts)?;
+    let retryable_tasks = summary
+        .tasks
+        .iter()
+        .filter(|task| {
+            task.result
+                .as_ref()
+                .is_some_and(|result| matches!(result.status.as_str(), "failed" | "cancelled"))
+        })
+        .map(|task| (task.id.clone(), task.stored_step_id.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut proposal = summary.editable_proposal;
+    let mut revised_step_ids = HashSet::new();
+    for (task_id, requested) in overrides {
+        if requested.max_tokens.is_none()
+            && requested.max_tool_calls.is_none()
+            && requested.max_cost_microunits.is_none()
+        {
+            return Err(format!("Retry budget for task '{task_id}' is empty."));
+        }
+        let step_id = retryable_tasks.get(&task_id).ok_or_else(|| {
+            format!("Retry budget can only be changed for a failed or cancelled task: '{task_id}'.")
+        })?;
+        revised_step_ids.insert(step_id.clone());
+        let task = proposal
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == task_id)
+            .ok_or_else(|| format!("Retry budget references unknown task '{task_id}'."))?;
+        let budget = task.budget.get_or_insert_default();
+        if requested.max_tokens.is_some() {
+            budget.max_tokens = requested.max_tokens;
+        }
+        if requested.max_tool_calls.is_some() {
+            budget.max_tool_calls = requested.max_tool_calls;
+        }
+        if requested.max_cost_microunits.is_some() {
+            budget.max_cost_microunits = requested.max_cost_microunits;
+        }
+    }
+
+    let plan = dynamic_workflow::resolve_proposal(
+        store,
+        workflow_id.into(),
+        proposal,
+        &policy.0,
+        &policy.1,
+        resources,
+    )
+    .await?;
+    policy
+        .0
+        .validate_resolved_plan(&plan, &policy.1)
+        .map_err(|error| error.to_string())?;
+    ensure_retry_revises_only_budgets(&original_plan, &plan, &revised_step_ids)?;
+    let (mut replacement, steps) =
+        workflow_records(&plan, project_id, project_root, current.frame_id.clone())?;
+    replacement.workspace_id.clone_from(&current.workspace_id);
+    replacement
+        .root_workflow_id
+        .clone_from(&current.root_workflow_id);
+    replacement
+        .parent_attempt_id
+        .clone_from(&current.parent_attempt_id);
+    replacement.depth = current.depth;
+    replacement
+        .root_limits_json
+        .clone_from(&current.root_limits_json);
+    replacement.description.clone_from(&current.description);
+    replacement.version = current.version;
+    replacement.enabled = current.enabled;
+    replacement.created_at = current.created_at;
+    if !store
+        .replace_agent_workflow_plan_for_retry(
+            &replacement,
+            &steps,
+            current.status,
+            current.version,
+        )
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Agent workflow changed in another window; refresh and try again.".into());
+    }
+    let updated = project_workflow(store, project_id, workflow_id).await?;
+    load_workflow_snapshot(store, updated).await
+}
+
+fn ensure_retry_revises_only_budgets(
+    original: &DelegationPlan,
+    revised: &DelegationPlan,
+    revised_step_ids: &HashSet<String>,
+) -> Result<(), String> {
+    let mut expected = original.clone();
+    expected.requires_confirmation = revised.requires_confirmation;
+    for step in &mut expected.steps {
+        if !revised_step_ids.contains(&step.id) {
+            continue;
+        }
+        let actual = revised
+            .steps
+            .iter()
+            .find(|candidate| candidate.id == step.id)
+            .ok_or_else(|| "Retry budget revision changed the workflow task graph.".to_string())?;
+        step.spec.budget.clone_from(&actual.spec.budget);
+        match (
+            step.spec.request_preferences.as_mut(),
+            actual.spec.request_preferences.as_ref(),
+        ) {
+            (Some(expected), Some(actual)) => expected.budget.clone_from(&actual.budget),
+            (None, None) => {}
+            _ => return Err("Retry budget revision changed the task request preferences.".into()),
+        }
+        step.spec
+            .approval_reasons
+            .clone_from(&actual.spec.approval_reasons);
+        step.spec
+            .authorization
+            .clone_from(&actual.spec.authorization);
+    }
+    if expected != *revised {
+        return Err(
+            "Retry budget revision would change more than task budgets; refresh or retry without an override."
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) async fn prepare_agent_workflow_retry(
@@ -1679,6 +1865,11 @@ async fn execute_agent_workflow_with_delegator_inner(
         Some(policy) => policy,
         None => dynamic_delegation_policy(store).await?,
     };
+    let completed_steps = if prior_steps.is_none() {
+        persisted_successful_steps(store, workflow_id).await?
+    } else {
+        vec![]
+    };
     let (_, project_workspace) = store
         .get_project(project_id)
         .await
@@ -1698,7 +1889,11 @@ async fn execute_agent_workflow_with_delegator_inner(
         .with_dynamic_policy(registry, host);
     let result = match prior_steps {
         Some(prior_steps) => executor.resume(plan, prior_steps).await,
-        None => executor.execute(plan).await,
+        None => {
+            executor
+                .execute_with_completed_steps(plan, completed_steps)
+                .await
+        }
     };
     if result.is_err() {
         let _ = fail_owned_agent_workflow_execution(
@@ -1710,6 +1905,45 @@ async fn execute_agent_workflow_with_delegator_inner(
         .await;
     }
     result.map_err(|error| error.to_string())
+}
+
+async fn persisted_successful_steps(
+    store: &Store,
+    workflow_id: &str,
+) -> Result<Vec<wisp_core::DelegationStepExecution>, String> {
+    let mut latest = HashMap::<String, AgentWorkflowAttempt>::new();
+    for attempt in store
+        .list_agent_workflow_attempts(workflow_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let replace = latest
+            .get(&attempt.step_id)
+            .is_none_or(|current| current.attempt < attempt.attempt);
+        if replace {
+            latest.insert(attempt.step_id.clone(), attempt);
+        }
+    }
+    let mut completed = Vec::new();
+    for attempt in latest
+        .into_values()
+        .into_iter()
+        .filter(|attempt| attempt.status == AgentWorkflowAttemptStatus::Succeeded)
+    {
+        let Some(raw) = attempt.response_json else {
+            continue;
+        };
+        let Ok(response) = serde_json::from_str::<AgentDelegationResponse>(&raw) else {
+            continue;
+        };
+        if response.status == DelegationStatus::Succeeded {
+            completed.push(wisp_core::DelegationStepExecution {
+                step_id: attempt.step_id,
+                response,
+            });
+        }
+    }
+    Ok(completed)
 }
 
 async fn fail_owned_agent_workflow_execution(
@@ -5828,6 +6062,137 @@ mod tests {
         assert_eq!(specs[0], specs[1]);
 
         drop(specs);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    struct ResumeSuccessfulStepsDelegator {
+        failed_research_once: AtomicBool,
+        calls: StdMutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl AgentDelegator for ResumeSuccessfulStepsDelegator {
+        async fn delegate_validated(
+            &self,
+            request: ValidatedAgentDelegationRequest,
+        ) -> anyhow::Result<AgentDelegationResponse> {
+            let request = request.into_request();
+            let task_id = request.input["task_id"].as_str().unwrap().to_string();
+            self.calls.lock().unwrap().push(task_id.clone());
+            let failed =
+                task_id == "research" && !self.failed_research_once.swap(true, Ordering::SeqCst);
+            Ok(AgentDelegationResponse {
+                request_id: request.request_id,
+                status: if failed {
+                    DelegationStatus::Failed
+                } else {
+                    DelegationStatus::Succeeded
+                },
+                output: if failed {
+                    json!({})
+                } else {
+                    json!({"summary": format!("completed {task_id}")})
+                },
+                artifact_ids: vec![],
+                artifacts: vec![],
+                evidence: vec![],
+                usage: AgentUsage::default(),
+                agent_session_id: None,
+                child_frame_id: None,
+                error: failed.then(|| "research failed once".into()),
+                nested_results: vec![],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_resumes_from_persisted_successful_steps() {
+        let (store, root) = dynamic_fixture().await;
+        let policy = test_dynamic_policy();
+        let created = create_dynamic_agent_workflow_draft(
+            &store,
+            "p",
+            &root,
+            "f".into(),
+            dynamic_proposal(vec![
+                dynamic_task("inspect", &[]),
+                dynamic_task("research", &[]),
+                dynamic_task("synthesize", &["inspect", "research"]),
+            ]),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(store
+            .approve_agent_workflow_plan(&created.workflow.id, created.workflow.version)
+            .await
+            .unwrap());
+        let delegator = Arc::new(ResumeSuccessfulStepsDelegator {
+            failed_research_once: AtomicBool::new(false),
+            calls: StdMutex::new(vec![]),
+        });
+
+        let first = execute_agent_workflow_with_delegator(
+            &store,
+            "p",
+            &created.workflow.id,
+            delegator.clone(),
+            Some(policy.clone()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.status, DelegationExecutionStatus::Failed);
+
+        let revised = prepare_agent_workflow_budget_retry(
+            &store,
+            "p",
+            &root,
+            &created.workflow.id,
+            HashMap::from([(
+                "research".into(),
+                dynamic_workflow::AgentBudgetProposal {
+                    max_tokens: Some(16_000),
+                    max_tool_calls: None,
+                    max_cost_microunits: None,
+                },
+            )]),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            revised
+                .dynamic
+                .tasks
+                .iter()
+                .find(|task| task.id == "research")
+                .unwrap()
+                .budget
+                .max_tokens,
+            Some(16_000)
+        );
+        let second = execute_agent_workflow_with_delegator(
+            &store,
+            "p",
+            &created.workflow.id,
+            delegator.clone(),
+            Some(policy),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(second.status, DelegationExecutionStatus::Succeeded);
+        let calls = delegator.calls.lock().unwrap();
+        assert_eq!(calls.iter().filter(|task| *task == "inspect").count(), 1);
+        assert_eq!(calls.iter().filter(|task| *task == "research").count(), 2);
+        assert_eq!(calls.iter().filter(|task| *task == "synthesize").count(), 1);
+
+        drop(calls);
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }

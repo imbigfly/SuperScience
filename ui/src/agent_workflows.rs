@@ -535,6 +535,8 @@ impl DynamicWorkflowForm {
             let mut task = DynamicTaskForm::blank(next_key, id.clone());
             next_key += 1;
             task.instruction.clone_from(&opening_instruction);
+            task.max_tokens = "16000".into();
+            task.max_tool_calls = "16".into();
             template.participants[index].apply_to(&mut task);
             tasks.push(task);
         }
@@ -544,6 +546,8 @@ impl DynamicWorkflowForm {
             next_key += 1;
             task.instruction.clone_from(&review_instruction);
             task.depends_on.clone_from(&opening_ids);
+            task.max_tokens = "16000".into();
+            task.max_tool_calls = "16".into();
             template.participants[index].apply_to(&mut task);
             tasks.push(task);
         }
@@ -552,6 +556,8 @@ impl DynamicWorkflowForm {
         next_key += 1;
         chair.instruction = chair_instruction;
         chair.depends_on = review_ids;
+        chair.max_tokens = "16000".into();
+        chair.max_tool_calls = "16".into();
         template.chair.apply_to(&mut chair);
         tasks.push(chair);
 
@@ -840,6 +846,7 @@ pub(super) struct AgentPanelState {
     pub(super) dynamic_form: RwSignal<DynamicWorkflowForm>,
     roundtable_form: RwSignal<RoundtableTemplateForm>,
     pub(super) launching: RwSignal<Vec<String>>,
+    retry_budgets: RwSignal<HashMap<(String, String), String>>,
     pub(super) error: RwSignal<Option<String>>,
     pub(super) result: RwSignal<Option<AgentWorkflowResultDetail>>,
 }
@@ -853,6 +860,7 @@ impl AgentPanelState {
             dynamic_form: create_rw_signal(DynamicWorkflowForm::default()),
             roundtable_form: create_rw_signal(RoundtableTemplateForm::default()),
             launching: create_rw_signal(vec![]),
+            retry_budgets: create_rw_signal(HashMap::new()),
             error: create_rw_signal(None),
             result: create_rw_signal(None),
         }
@@ -3456,6 +3464,60 @@ fn invoke_workflow_action(command: &'static str, args: serde_json::Value, state:
     });
 }
 
+fn retry_workflow(snapshot: AgentWorkflowSnapshot, state: AgentPanelState) {
+    let workflow_id = snapshot.workflow.id;
+    let overrides = match state.retry_budgets.with_untracked(|values| {
+        snapshot
+            .dynamic
+            .tasks
+            .iter()
+            .filter_map(|task| {
+                let raw = values.get(&(workflow_id.clone(), task.id.clone()))?;
+                Some((task, raw))
+            })
+            .try_fold(HashMap::new(), |mut overrides, (task, raw)| {
+                let max_tokens = raw
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| "Retry token budget must be a positive whole number".to_string())?;
+                if task.budget.max_tokens != Some(max_tokens) {
+                    overrides.insert(
+                        task.id.clone(),
+                        AgentBudgetProposal {
+                            max_tokens: Some(max_tokens),
+                            max_tool_calls: None,
+                            max_cost_microunits: None,
+                        },
+                    );
+                }
+                Ok(overrides)
+            })
+    }) {
+        Ok(overrides) => overrides,
+        Err(error) => {
+            state.error.set(Some(error));
+            return;
+        }
+    };
+    let args = serde_json::json!({
+        "workflowId": workflow_id.clone(),
+        "budgetOverrides": (!overrides.is_empty()).then_some(overrides),
+    });
+    spawn_local(async move {
+        match invoke_checked("retry_agent_workflow", to_value(&args).unwrap()).await {
+            Ok(_) => {
+                state
+                    .retry_budgets
+                    .update(|values| values.retain(|(id, _), _| id != &workflow_id));
+                refresh_agent_workflows(state);
+            }
+            Err(error) => state.error.set(Some(js_error_text(error))),
+        }
+    });
+}
+
 fn launch_workflow(workflow_id: String, state: AgentPanelState) {
     if state
         .launching
@@ -3516,7 +3578,7 @@ fn workflow_actions(
     let run_id = workflow_id.clone();
     let run_busy_id = workflow_id.clone();
     let cancel_id = workflow_id.clone();
-    let retry_id = workflow_id.clone();
+    let retry_snapshot = snapshot.clone();
     let delegation_enabled = snapshot.delegation_enabled;
     let automatic = snapshot.approval_policy == AgentApprovalPolicy::AutoSafe;
     view! {
@@ -3563,11 +3625,9 @@ fn workflow_actions(
             {matches!(workflow.status.as_str(), "failed" | "cancelled").then(|| view! {
                 <button type="button" class="agents-primary" data-testid="agent-retry"
                     disabled=!delegation_enabled
-                    on:click=move |_| invoke_workflow_action(
-                        "retry_agent_workflow",
-                        serde_json::json!({ "workflowId": retry_id }),
-                        state,
-                    )>{t(locale.get(), "agents.retry")}</button>
+                    on:click=move |_| retry_workflow(retry_snapshot.clone(), state)>
+                    {t(locale.get(), "agents.retry")}
+                </button>
             })}
         </div>
     }
@@ -3677,6 +3737,12 @@ fn dynamic_workflow_card(
                     let child_frame = result.as_ref().and_then(|result| result.child_frame_id.clone());
                     let linked_run_id = result.as_ref().and_then(|result| result.run_id.clone());
                     let task_approval_reasons = task.approval_reasons.clone();
+                    let task_budget = task.budget.clone();
+                    let retry_budget_key = (workflow_id.clone(), task.id.clone());
+                    let retry_budget_value = task_budget.max_tokens
+                        .map(|value| value.to_string())
+                        .unwrap_or_default();
+                    let show_retry_budget = !is_run_activity && task_status == "failed";
                     let result_workflow_id = workflow_id.clone();
                     let result_step_id = task.stored_step_id.clone();
                     view! {
@@ -3689,6 +3755,27 @@ fn dynamic_workflow_card(
                                 <span class=attempt_class>{status_label(locale.get(), &task_status)}</span>
                             </div>
                             <p class="agent-task-instruction">{task.instruction}</p>
+                            {(!is_run_activity).then(|| view! {
+                                <div class="agent-step-limits">{format!(
+                                "{} tokens · {} tools",
+                                task_budget.max_tokens.map_or_else(|| "—".into(), |value| value.to_string()),
+                                task_budget.max_tool_calls.map_or_else(|| "—".into(), |value| value.to_string()),
+                                )}</div>
+                            })}
+                            {show_retry_budget.then(|| {
+                                let key = retry_budget_key.clone();
+                                view! {
+                                    <label class="agent-retry-budget">
+                                        <span>{t(locale.get(), "agents.retry.max_tokens")}</span>
+                                        <input type="number" min="1" step="1"
+                                            data-testid="agent-retry-max-tokens"
+                                            prop:value=retry_budget_value
+                                            on:input=move |event| state.retry_budgets.update(|values| {
+                                                values.insert(key.clone(), event_target_value(&event));
+                                            }) />
+                                    </label>
+                                }
+                            })}
                             {run_activity.map(|activity| view! {
                                 <div class="agent-chip-row" data-testid="agent-run-activity">
                                     <span class="agent-chip capability">{activity.activity}</span>
@@ -4146,6 +4233,11 @@ mod tests {
             proposal.tasks[4].depends_on,
             ["seat_1_review", "seat_2_review"]
         );
+        assert!(proposal.tasks.iter().all(|task| {
+            task.budget.as_ref().is_some_and(|budget| {
+                budget.max_tokens == Some(16_000) && budget.max_tool_calls == Some(16)
+            })
+        }));
 
         for task in [&proposal.tasks[0], &proposal.tasks[2]] {
             assert_eq!(task.specialist_id.as_deref(), Some("reader"));

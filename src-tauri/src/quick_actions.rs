@@ -306,6 +306,13 @@ fn roundtable_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
     let review = "Review both opening positions supplied as dependency results. Compare them, \
         identify agreements, conflicts, missing evidence, and failure modes, then give a revised \
         recommendation. Preserve meaningful disagreement instead of forcing consensus.";
+    let budget = || {
+        Some(dynamic_workflow::AgentBudgetProposal {
+            max_tokens: Some(16_000),
+            max_tool_calls: Some(16),
+            max_cost_microunits: None,
+        })
+    };
     dynamic_workflow::DynamicAgentWorkflowProposal {
         goal: "Run a two-perspective roundtable and chair synthesis".into(),
         context: String::new(),
@@ -326,7 +333,7 @@ fn roundtable_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                 isolated: false,
                 model_id: None,
                 executor: None,
-                budget: None,
+                budget: budget(),
             },
             dynamic_workflow::DynamicAgentTaskProposal {
                 id: "seat_2_opening".into(),
@@ -341,7 +348,7 @@ fn roundtable_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                 isolated: false,
                 model_id: None,
                 executor: None,
-                budget: None,
+                budget: budget(),
             },
             dynamic_workflow::DynamicAgentTaskProposal {
                 id: "seat_1_review".into(),
@@ -356,7 +363,7 @@ fn roundtable_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                 isolated: false,
                 model_id: None,
                 executor: None,
-                budget: None,
+                budget: budget(),
             },
             dynamic_workflow::DynamicAgentTaskProposal {
                 id: "seat_2_review".into(),
@@ -371,7 +378,7 @@ fn roundtable_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                 isolated: false,
                 model_id: None,
                 executor: None,
-                budget: None,
+                budget: budget(),
             },
             dynamic_workflow::DynamicAgentTaskProposal {
                 id: "chair_synthesis".into(),
@@ -390,7 +397,7 @@ fn roundtable_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                 isolated: false,
                 model_id: None,
                 executor: None,
-                budget: None,
+                budget: budget(),
             },
         ],
     }
@@ -1442,6 +1449,11 @@ mod tests {
     fn roundtable_template_has_parallel_openings_reviews_and_chair() {
         let proposal = roundtable_base_proposal();
         assert_eq!(proposal.tasks.len(), 5);
+        assert!(proposal.tasks.iter().all(|task| {
+            task.budget.as_ref().is_some_and(|budget| {
+                budget.max_tokens == Some(16_000) && budget.max_tool_calls == Some(16)
+            })
+        }));
         assert!(proposal.tasks[0].depends_on.is_empty());
         assert!(proposal.tasks[1].depends_on.is_empty());
         assert_eq!(

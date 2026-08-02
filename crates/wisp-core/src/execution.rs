@@ -191,6 +191,27 @@ impl DelegationExecutor {
         self.execute_inner(plan, HashMap::new(), false).await
     }
 
+    pub async fn execute_with_completed_steps(
+        &self,
+        plan: DelegationPlan,
+        completed_steps: Vec<DelegationStepExecution>,
+    ) -> anyhow::Result<DelegationExecutionResult> {
+        let mut completed = HashMap::new();
+        for step in completed_steps {
+            if step.response.status != DelegationStatus::Succeeded
+                || completed
+                    .insert(step.step_id.clone(), step.response)
+                    .is_some()
+            {
+                anyhow::bail!("completed Workflow steps must be unique and successful");
+            }
+        }
+        for response in completed.values() {
+            response.validate()?;
+        }
+        self.execute_inner(plan, completed, false).await
+    }
+
     pub async fn resume(
         &self,
         plan: DelegationPlan,
