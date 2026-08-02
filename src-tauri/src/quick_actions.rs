@@ -8,8 +8,9 @@ use crate::{delegation_runtime, dynamic_workflow, ActiveProject, AppState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::State;
-use wisp_llm::Message;
+use wisp_llm::{Message, ToolSchema};
 use wisp_store::Store;
+use wisp_tools::{Tool, ToolEnv, ToolResult};
 
 const QUICK_ACTIONS_KEY: &str = "quick_actions";
 const WORKFLOW_TEMPLATES_KEY: &str = "workflow_templates";
@@ -61,6 +62,64 @@ pub(crate) struct WorkflowTemplate {
     pub(crate) proposal: dynamic_workflow::DynamicAgentWorkflowProposal,
     #[serde(default)]
     pub(crate) builtin: bool,
+}
+
+pub(crate) struct ExplainWorkflowTool {
+    store: Store,
+}
+
+impl ExplainWorkflowTool {
+    pub(crate) fn new(store: Store) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for ExplainWorkflowTool {
+    fn name(&self) -> &str {
+        "explain_workflow"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "explain_workflow",
+            "Explain a configured reusable Workflow by name or id. Returns its goal, task graph, dependencies, capabilities, Skill bindings, and output sections without running it. Use this when the user asks what a Workflow is, what it does, or how it works. Pass '*' to browse.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Workflow name, id, identifying keywords, or '*' to browse"
+                    }
+                },
+                "required": ["query"]
+            }),
+        )
+    }
+
+    fn read_only(&self) -> bool {
+        true
+    }
+
+    fn preview(&self, args: &Value) -> String {
+        args.get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
+        let Some(query) = args
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+        else {
+            return ToolResult::fail("missing required argument 'query'");
+        };
+        let templates = ensure_templates(&self.store).await;
+        ToolResult::ok(render_workflow_explanation(&templates, query))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -472,6 +531,134 @@ pub(crate) async fn ensure_templates(store: &Store) -> Vec<WorkflowTemplate> {
             .then_with(|| left.name.cmp(&right.name))
     });
     templates
+}
+
+fn workflow_catalog_entry(template: &WorkflowTemplate) -> Value {
+    json!({
+        "id": template.id,
+        "name": template.name,
+        "description": template.description,
+        "builtin": template.builtin,
+    })
+}
+
+fn workflow_explanation(template: &WorkflowTemplate) -> Value {
+    let tasks = template
+        .proposal
+        .tasks
+        .iter()
+        .map(|task| {
+            let output_sections = task
+                .output_schema
+                .as_ref()
+                .and_then(|schema| schema.get("required"))
+                .and_then(Value::as_array)
+                .map(|required| {
+                    required
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            json!({
+                "id": task.id,
+                "purpose": truncate_workflow_text(&task.instruction, 1_000),
+                "depends_on": task.depends_on,
+                "capabilities": task.capabilities,
+                "skills": task.skill_ids,
+                "specialist_id": task.specialist_id,
+                "output_sections": output_sections,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "found": true,
+        "workflow": {
+            "id": template.id,
+            "name": template.name,
+            "description": template.description,
+            "builtin": template.builtin,
+            "goal": template.proposal.goal,
+            "approval_policy": template.proposal.approval_policy,
+            "uses_saved_context": !template.proposal.context.trim().is_empty(),
+            "execution": {
+                "task_count": tasks.len(),
+                "dependency_rule": "Tasks whose dependencies are satisfied may run in parallel; each dependent task waits for every listed dependency.",
+                "tasks": tasks,
+            },
+        },
+        "note": "Inspection only. No Workflow or Agent was started.",
+    })
+}
+
+fn render_workflow_explanation(templates: &[WorkflowTemplate], query: &str) -> String {
+    let normalized = query.to_lowercase();
+    if normalized == "*" {
+        return serde_json::to_string_pretty(&json!({
+            "found": false,
+            "workflows": templates.iter().map(workflow_catalog_entry).collect::<Vec<_>>(),
+            "next": "Call explain_workflow again with an exact Workflow name or id for its task graph.",
+            "note": "Inspection only. No Workflow or Agent was started.",
+        }))
+        .unwrap_or_default();
+    }
+
+    let id_match = templates
+        .iter()
+        .find(|template| template.id.to_lowercase() == normalized);
+    let name_matches = templates
+        .iter()
+        .filter(|template| template.name.to_lowercase() == normalized)
+        .collect::<Vec<_>>();
+    let matched = id_match.or_else(|| {
+        (name_matches.len() == 1)
+            .then(|| name_matches.first().copied())
+            .flatten()
+    });
+
+    if let Some(template) = matched {
+        return serde_json::to_string_pretty(&workflow_explanation(template)).unwrap_or_default();
+    }
+
+    let terms = normalized.split_whitespace().collect::<Vec<_>>();
+    let suggestions = templates
+        .iter()
+        .filter(|template| {
+            let haystack = format!(
+                "{} {} {}",
+                template.id.to_lowercase(),
+                template.name.to_lowercase(),
+                template.description.to_lowercase()
+            );
+            terms.iter().all(|term| haystack.contains(term))
+        })
+        .collect::<Vec<_>>();
+    if suggestions.len() == 1 {
+        return serde_json::to_string_pretty(&workflow_explanation(suggestions[0]))
+            .unwrap_or_default();
+    }
+
+    serde_json::to_string_pretty(&json!({
+        "found": false,
+        "query": query,
+        "suggestions": suggestions.iter().map(|template| workflow_catalog_entry(template)).collect::<Vec<_>>(),
+        "next": if suggestions.is_empty() {
+            "No configured Workflow matched. Use query '*' to browse the current catalog."
+        } else {
+            "Call explain_workflow again with one returned Workflow name or id."
+        },
+        "note": "Inspection only. No Workflow or Agent was started.",
+    }))
+    .unwrap_or_default()
+}
+
+fn truncate_workflow_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("… [truncated]");
+    truncated
 }
 
 pub(crate) async fn render_workflow_reference(
@@ -905,6 +1092,21 @@ pub(crate) async fn run_quick_action(
 mod tests {
     use super::*;
 
+    struct NoEnv(std::path::PathBuf);
+
+    #[async_trait::async_trait]
+    impl ToolEnv for NoEnv {
+        fn project_root(&self) -> &std::path::Path {
+            &self.0
+        }
+
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+
+        async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+    }
+
     fn input() -> QuickActionInput {
         QuickActionInput {
             selection: "A testable biological claim.".into(),
@@ -945,6 +1147,67 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         (Store::open(&path).await.unwrap(), path)
+    }
+
+    #[tokio::test]
+    async fn explain_workflow_returns_the_saved_graph_without_running_it() {
+        let (store, path) = store().await;
+        let tool = ExplainWorkflowTool::new(store);
+        assert!(tool.read_only());
+        assert!(tool
+            .schema()
+            .function
+            .description
+            .contains("without running it"));
+
+        let result = tool
+            .run(
+                &json!({"query": "Data-driven research design"}),
+                &NoEnv(path.clone()),
+            )
+            .await;
+        assert!(result.success, "{}", result.content);
+        let explanation: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(explanation["workflow"]["id"], RESEARCH_DESIGN_TEMPLATE_ID);
+        assert_eq!(explanation["workflow"]["execution"]["task_count"], 3);
+        let tasks = explanation["workflow"]["execution"]["tasks"]
+            .as_array()
+            .unwrap();
+        assert_eq!(tasks[0]["skills"], json!(["analysis-workflow"]));
+        assert_eq!(tasks[1]["skills"], json!(["literature-review"]));
+        assert_eq!(
+            tasks[2]["depends_on"],
+            json!(["data_analysis", "literature_landscape"])
+        );
+        assert_eq!(tasks[2]["output_sections"].as_array().unwrap().len(), 8);
+        assert_eq!(
+            explanation["note"],
+            "Inspection only. No Workflow or Agent was started."
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn explain_workflow_can_browse_and_suggest_without_guessing() {
+        let (store, path) = store().await;
+        let tool = ExplainWorkflowTool::new(store);
+        let browse = tool.run(&json!({"query": "*"}), &NoEnv(path.clone())).await;
+        let catalog: Value = serde_json::from_str(&browse.content).unwrap();
+        assert_eq!(catalog["workflows"].as_array().unwrap().len(), 3);
+
+        let missing = tool
+            .run(
+                &json!({"query": "not a real workflow"}),
+                &NoEnv(path.clone()),
+            )
+            .await;
+        let missing: Value = serde_json::from_str(&missing.content).unwrap();
+        assert_eq!(missing["found"], false);
+        assert!(missing["suggestions"].as_array().unwrap().is_empty());
+        assert!(missing["next"].as_str().unwrap().contains("query '*'"));
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
