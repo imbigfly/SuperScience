@@ -5375,6 +5375,30 @@ test("native approval remains clickable while the agent turn is blocked", async 
   )).toBe(false);
 });
 
+test("background approval targets its session after switching conversations", async ({ page }) => {
+  await enterApp(page, "/?mockSessionModels=1&mockBackgroundApproval=1");
+  await page.locator('[data-session-id="s-model-a"]').click();
+  await expect(page.getByText("Answer in s-model-a")).toBeVisible();
+
+  await page.evaluate(() => (window as any).__tauriEmit("confirm-request", {
+    frame_id: "s-model-b",
+    message: "Run tool 'transfer_between_contexts'?",
+    tool: "transfer_between_contexts",
+    preview: "ssh:source:/data/results.tsv -> local:/project/data/results.tsv",
+  }));
+  await page.locator('[data-session-id="s-model-b"]').click();
+
+  const reject = page.getByRole("button", { name: "Deny" });
+  await expect(reject).toBeVisible();
+  await reject.click();
+
+  await expect.poll(() => lastInvokeArgs(page, "confirm_response")).toMatchObject({
+    sessionId: "s-model-b",
+    approved: false,
+  });
+  await expect(reject).toHaveCount(0);
+});
+
 test("Escape closes plan feedback before rejecting the plan", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("NEEDPLAN");
