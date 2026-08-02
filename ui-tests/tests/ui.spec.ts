@@ -7222,6 +7222,7 @@ test("task results are readable without exposing the child Agent conversation", 
 
   await synthesis.getByTestId("agent-inspect-result").click();
   const dialog = page.getByRole("dialog", { name: "Task result" });
+  await expect(dialog).toHaveClass(/artifact-modal/);
   await expect(dialog.getByTestId("agent-result-summary")).toContainText("Completed synthesize");
   await expect(dialog.getByTestId("agent-result-artifacts")).toContainText("Readable result content for synthesize");
   await expect(dialog.getByTestId("agent-result-evidence")).toContainText("evidence-for-synthesize");

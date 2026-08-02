@@ -4091,7 +4091,7 @@ fn workflow_result_dialog(state: AgentPanelState, locale: RwSignal<Locale>) -> V
             view! {
                 <div class="overlay agent-result-overlay" role="presentation"
                     on:click=move |_| state.result.set(None)>
-                    <div class="modal agent-result-modal" role="dialog" aria-modal="true"
+                    <div class="modal artifact-modal agent-result-modal" role="dialog" aria-modal="true"
                         aria-labelledby="agent-result-title"
                         tabindex="-1"
                         on:click=|event| event.stop_propagation()>
