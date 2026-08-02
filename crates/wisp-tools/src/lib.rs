@@ -20,7 +20,10 @@ pub mod shell;
 pub mod tool;
 pub mod write;
 
-pub use env::{Approval, ConfirmDecision, ImageData, ToolControl, ToolEnv, ToolEvent, ToolResult};
+pub use env::{
+    Approval, ConfirmDecision, ImageData, ToolControl, ToolEnv, ToolEvent, ToolResourceLease,
+    ToolResult,
+};
 pub use tool::Tool;
 
 use serde_json::Value;
@@ -349,6 +352,13 @@ async fn run_registered_tool(tool: &dyn Tool, args: &Value, env: &dyn ToolEnv) -
         env.emit(ToolEvent::Result { ok: false }).await;
         return ToolResult::fail(format!("tool '{name}' was denied by the user")).stop_batch();
     }
+    let _resource_lease = match env.acquire_tool_resources(name, args).await {
+        Ok(lease) => lease,
+        Err(error) => {
+            env.emit(ToolEvent::Result { ok: false }).await;
+            return ToolResult::fail(error).stop_batch();
+        }
+    };
     tool.before(args, env).await;
     let result = tool.run(args, env).await;
     env.emit(ToolEvent::Result { ok: result.success }).await;
@@ -444,7 +454,7 @@ mod approval_tests {
     use crate::env::{Approval, ToolEnv, ToolEvent};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     /// A tool that flips a flag when it actually runs, so we can assert whether
     /// the approval gate let it through.
@@ -557,6 +567,60 @@ mod approval_tests {
         events: Mutex<Vec<ToolEvent>>,
     }
 
+    struct LeaseEnv {
+        root: PathBuf,
+        held: Arc<AtomicBool>,
+        released: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolEnv for LeaseEnv {
+        fn project_root(&self) -> &Path {
+            &self.root
+        }
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+        async fn acquire_tool_resources(
+            &self,
+            _tool: &str,
+            _args: &Value,
+        ) -> Result<Option<ToolResourceLease>, String> {
+            self.held.store(true, Ordering::SeqCst);
+            let held = self.held.clone();
+            let released = self.released.clone();
+            Ok(Some(ToolResourceLease::new(move || {
+                held.store(false, Ordering::SeqCst);
+                released.store(true, Ordering::SeqCst);
+            })))
+        }
+        async fn emit(&self, _event: ToolEvent) {}
+    }
+
+    struct LeaseAwareTool {
+        held: Arc<AtomicBool>,
+        before_ran: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for LeaseAwareTool {
+        fn name(&self) -> &str {
+            "lease_aware"
+        }
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(self.name(), "test", serde_json::json!({}))
+        }
+        async fn before(&self, _args: &Value, _env: &dyn ToolEnv) {
+            assert!(self.held.load(Ordering::SeqCst));
+            self.before_ran.store(true, Ordering::SeqCst);
+        }
+        async fn run(&self, _args: &Value, _env: &dyn ToolEnv) -> ToolResult {
+            assert!(self.before_ran.load(Ordering::SeqCst));
+            assert!(self.held.load(Ordering::SeqCst));
+            ToolResult::ok("ran while leased")
+        }
+    }
+
     #[async_trait::async_trait]
     impl ToolEnv for EventEnv {
         fn project_root(&self) -> &Path {
@@ -654,6 +718,31 @@ mod approval_tests {
         // Allow: runs without asking.
         let (ran, res) = run_with(Approval::Allow, false).await;
         assert!(ran && res.success, "allow must run the tool");
+    }
+
+    #[tokio::test]
+    async fn resource_lease_covers_before_and_run_then_releases() {
+        let held = Arc::new(AtomicBool::new(false));
+        let released = Arc::new(AtomicBool::new(false));
+        let before_ran = Arc::new(AtomicBool::new(false));
+        let mut registry = Registry { tools: vec![] };
+        registry.add(Box::new(LeaseAwareTool {
+            held: held.clone(),
+            before_ran,
+        }));
+        let env = LeaseEnv {
+            root: PathBuf::from("."),
+            held: held.clone(),
+            released: released.clone(),
+        };
+
+        let result = registry
+            .run("lease_aware", &serde_json::json!({}), &env)
+            .await;
+
+        assert!(result.success, "{}", result.content);
+        assert!(!held.load(Ordering::SeqCst));
+        assert!(released.load(Ordering::SeqCst));
     }
 
     struct PlanEnv {

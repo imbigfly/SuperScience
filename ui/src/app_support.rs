@@ -9763,6 +9763,7 @@ pub(super) fn ApprovalCard(
 ) -> impl IntoView {
     let locale = use_locale();
     let is_plan = tool == "update_plan";
+    let is_resource_conflict = tool == "resource_conflict";
     let show_feedback = create_rw_signal(false);
     let feedback = create_rw_signal(String::new());
     let approval_scope = create_rw_signal(String::from("once"));
@@ -9797,6 +9798,7 @@ pub(super) fn ApprovalCard(
         let loc = locale.get();
         match tool_for_title.as_str() {
             _ if is_plan => t(loc, "approval.review_plan"),
+            "resource_conflict" => t(loc, "approval.resource_conflict_title"),
             "python" => t(loc, "approval.run_python"),
             "r" => t(loc, "approval.run_r"),
             "shell" => t(loc, "approval.run_shell"),
@@ -9829,12 +9831,15 @@ pub(super) fn ApprovalCard(
                         </div>
                     }.into_view()
                 } else {
-                    let show_tag = !tool.is_empty();
+                    let show_tag = !tool.is_empty() && !is_resource_conflict;
                     let tag = tool.clone();
-                    let show_code = !preview.is_empty();
+                    let show_code = !preview.is_empty() && !is_resource_conflict;
                     let p = preview.clone();
                     let lang = lang.clone();
                     view! {
+                        {is_resource_conflict.then(|| view! {
+                            <p class="approval-conflict-message">{p.clone()}</p>
+                        })}
                         {show_tag.then(|| view! {
                             <div class="approval-tags"><span class="approval-tag">{tag}</span></div>
                         })}
@@ -9846,9 +9851,15 @@ pub(super) fn ApprovalCard(
                         })}
                     }.into_view()
                 }}
-                <p class="approval-hint">{move || t(locale.get(), if is_plan { "approval.plan_hint" } else { "approval.hint" })}</p>
+                <p class="approval-hint">{move || t(locale.get(), if is_plan {
+                    "approval.plan_hint"
+                } else if is_resource_conflict {
+                    "approval.resource_conflict_hint"
+                } else {
+                    "approval.hint"
+                })}</p>
                 <div class="approval-actions">
-                    {(!is_plan).then(|| view! {
+                    {(!is_plan && !is_resource_conflict).then(|| view! {
                         <label class="approval-scope">
                             <span>{move || t(locale.get(), "approval.scope")}</span>
                             <select
@@ -9870,6 +9881,8 @@ pub(super) fn ApprovalCard(
                         {move || {
                             if is_plan {
                                 t(locale.get(), "approval.plan_approve").to_string()
+                            } else if is_resource_conflict {
+                                t(locale.get(), "approval.resource_conflict_wait").to_string()
                             } else {
                                 t(locale.get(), approval_allow_label_key(&approval_scope.get())).to_string()
                             }
@@ -9877,7 +9890,13 @@ pub(super) fn ApprovalCard(
                     </button>
                     <button type="button"
                         on:click=move |_| on_decide.call((sid_deny.clone(), false, None, "once".into()))>
-                        {move || t(locale.get(), if is_plan { "approval.plan_reject" } else { "confirm.deny" })}
+                        {move || t(locale.get(), if is_plan {
+                            "approval.plan_reject"
+                        } else if is_resource_conflict {
+                            "approval.resource_conflict_cancel"
+                        } else {
+                            "confirm.deny"
+                        })}
                     </button>
                     {is_plan.then(|| view! {
                         <button type="button" on:click=move |_| show_feedback.update(|open| *open = !*open)>

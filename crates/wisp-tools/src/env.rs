@@ -3,6 +3,32 @@
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
+/// A host-owned resource lease held for one complete tool call.
+///
+/// The tools crate deliberately does not know how the desktop coordinates
+/// projects or conversations. Hosts that do coordinate them return a lease
+/// whose release callback removes the active claim when the tool finishes,
+/// fails, or is cancelled. Headless hosts keep the default `None` behavior.
+pub struct ToolResourceLease {
+    release: Option<Box<dyn FnOnce() + Send + 'static>>,
+}
+
+impl ToolResourceLease {
+    pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            release: Some(Box::new(release)),
+        }
+    }
+}
+
+impl Drop for ToolResourceLease {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            release();
+        }
+    }
+}
+
 /// Events a tool emits to the UI as it runs (tool-call card, diff preview,
 /// live stdout, result tick).
 #[derive(Debug, Clone)]
@@ -105,6 +131,16 @@ pub trait ToolEnv: Send + Sync {
     /// tests auto-running; the Tauri host overrides this from its saved policy.
     async fn approval_mode(&self, _tool: &str) -> Approval {
         Approval::Allow
+    }
+    /// Acquire any cross-conversation resources needed by this call. The
+    /// registry holds the returned lease across `before` and `run`, so a host
+    /// can make a read-modify-write tool one indivisible coordinated action.
+    async fn acquire_tool_resources(
+        &self,
+        _tool: &str,
+        _args: &serde_json::Value,
+    ) -> Result<Option<ToolResourceLease>, String> {
+        Ok(None)
     }
     /// Whether approval prompts should be bypassed for this conversation.
     /// Explicit host `Deny` rules and hard safety boundaries still win. This is

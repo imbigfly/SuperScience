@@ -68,6 +68,15 @@ pub trait Output: Send + Sync {
     fn approval_mode(&self, _tool: &str) -> wisp_tools::Approval {
         wisp_tools::Approval::Allow
     }
+    /// Desktop hosts can coordinate project resources across conversations.
+    /// The default keeps CLI and test execution independent.
+    fn acquire_tool_resources<'a>(
+        &'a self,
+        _tool: &'a str,
+        _args: &'a Value,
+    ) -> OutputFuture<'a, Result<Option<wisp_tools::ToolResourceLease>, String>> {
+        Box::pin(async { Ok(None) })
+    }
     /// Whether this conversation bypasses approval prompts. Explicit blocks
     /// and the tool registry's plan-mode gate remain authoritative.
     fn approval_bypass(&self) -> bool {
@@ -150,6 +159,13 @@ impl<'a> wisp_tools::ToolEnv for ToolEnvAdapter<'a> {
     }
     async fn approval_mode(&self, tool: &str) -> wisp_tools::Approval {
         self.out.approval_mode(tool)
+    }
+    async fn acquire_tool_resources(
+        &self,
+        tool: &str,
+        args: &Value,
+    ) -> Result<Option<wisp_tools::ToolResourceLease>, String> {
+        self.out.acquire_tool_resources(tool, args).await
     }
     fn approval_bypass(&self) -> bool {
         self.out.approval_bypass()
