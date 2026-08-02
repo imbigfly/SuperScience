@@ -8749,19 +8749,24 @@ fn App() -> impl IntoView {
                             let busy_now = busy.get();
                             let native_session = active_acp_agent_id.get().is_none();
                             let outline = conversation_outline.get();
-                            let user_offset = active_session
+                            // `load_session` deliberately swaps the visible rows before
+                            // publishing their session id. Carry the id in every keyed row
+                            // so that second update rebuilds callbacks which must target the
+                            // newly active session (notably background approval cards).
+                            let thread_session_id = active_session.get().unwrap_or_default();
+                            let user_offset = transcript_pages
                                 .get()
-                                .and_then(|id| transcript_pages.get().get(&id).copied())
+                                .get(&thread_session_id)
+                                .copied()
                                 .map_or(0, |page| page.user_offset);
                             let requested_start = if busy_now {
                                 usize::MAX
                             } else {
-                                active_session.get().and_then(|id| {
-                                    transcript_pages
-                                        .get()
-                                        .get(&id)
-                                        .map(|page| page.window_user_start)
-                                }).unwrap_or(usize::MAX)
+                                transcript_pages
+                                    .get()
+                                    .get(&thread_session_id)
+                                    .map(|page| page.window_user_start)
+                                    .unwrap_or(usize::MAX)
                             };
                             // `with` avoids deep-cloning every message per flush;
                             // only rows being built clone their item below.
@@ -8788,7 +8793,7 @@ fn App() -> impl IntoView {
                             // Keep process layers separate while the turn runs;
                             // once complete, fold commentary + reasoning + tools
                             // into one activity summary before the final answer.
-                            let mut rows: Vec<(usize, u64, ThreadRow)> = Vec::new();
+                            let mut rows: Vec<(String, usize, u64, ThreadRow)> = Vec::new();
                             let (window, _, _) = transcript_render_window(
                                 list,
                                 requested_start,
@@ -8814,7 +8819,7 @@ fn App() -> impl IntoView {
                                         .collect::<Vec<_>>()
                                         .join(" ");
                                     let items_only = run.into_iter().map(|(_, item)| item).collect();
-                                    rows.push((start, h.finish(), ThreadRow::Activity {
+                                    rows.push((thread_session_id.clone(), start, h.finish(), ThreadRow::Activity {
                                         items: items_only,
                                         ui_indices,
                                     }));
@@ -8842,7 +8847,7 @@ fn App() -> impl IntoView {
                                         .collect::<Vec<_>>()
                                         .join(" ");
                                     let items_only: Vec<ChatItem> = run.into_iter().map(|(_, c)| c).collect();
-                                    rows.push((start, h.finish(), ThreadRow::Steps {
+                                    rows.push((thread_session_id.clone(), start, h.finish(), ThreadRow::Steps {
                                         items: items_only,
                                         live,
                                         ui_indices,
@@ -8872,7 +8877,7 @@ fn App() -> impl IntoView {
                                     fp ^= (compact_assistant as u64) << 62;
                                     fp ^= (can_undo as u64) << 61;
                                     fp ^= timestamp.unwrap_or_default() as u64;
-                                    rows.push((i, fp, ThreadRow::Item {
+                                    rows.push((thread_session_id.clone(), i, fp, ThreadRow::Item {
                                         i,
                                         item: list[i].clone(),
                                         timestamp,
@@ -8886,8 +8891,8 @@ fn App() -> impl IntoView {
                             rows
                             })
                         }
-                        key=|(start, fp, _)| (*start, *fp)
-                        children=move |(start, _, row)| {
+                        key=|(session_id, start, fp, _)| (session_id.clone(), *start, *fp)
+                        children=move |(session_id, start, _, row)| {
                             match row {
                                 ThreadRow::Item {
                                     i,
@@ -8898,7 +8903,6 @@ fn App() -> impl IntoView {
                                     can_undo,
                                 } => {
                                     let arts = artifacts.get_untracked();
-                                    let sid = active_session.get().unwrap_or_default();
                                     let on_resume = Callback::new(resume_turn);
                                     let class = if commentary {
                                         "msg assistant commentary"
@@ -8908,12 +8912,9 @@ fn App() -> impl IntoView {
                                     let user_index =
                                         user_turn_index(&items.get_untracked(), i).map(|index| {
                                             index
-                                                + active_session
-                                                    .get_untracked()
-                                                    .and_then(|id| {
-                                                        transcript_pages.with_untracked(|pages| {
-                                                            pages.get(&id).copied()
-                                                        })
+                                                + transcript_pages
+                                                    .with_untracked(|pages| {
+                                                        pages.get(&session_id).copied()
                                                     })
                                                     .map_or(0, |page| page.user_offset)
                                         });
@@ -8928,7 +8929,7 @@ fn App() -> impl IntoView {
                                             data-user-index=data_user_index>
                                             {render_item(
                                                 i, &item, timestamp, &arts, on_artifact_select, on_file_link,
-                                                run_records, busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, sid,
+                                                run_records, busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, session_id,
                                                 respond_confirm, on_resume, on_queue,
                                                 plan_mode_active, plan_compat, on_plan_decision,
                                                 on_question_answer, jump_to_review_message,
@@ -8937,10 +8938,9 @@ fn App() -> impl IntoView {
                                     }.into_view()
                                 }
                                 ThreadRow::Steps { items, live, ui_indices } => {
-                                    let sid = active_session.get().unwrap_or_default();
                                     // ponytail: position-keyed; move to stable
                                     // row ids if mid-list edits ever shift groups.
-                                    let group_id = format!("{sid}:steps:{start}");
+                                    let group_id = format!("{session_id}:steps:{start}");
                                     view! {
                                         <div class="steps-wrap" data-ui-indices=ui_indices>{
                                             render_steps_group(
@@ -8954,8 +8954,7 @@ fn App() -> impl IntoView {
                                     }.into_view()
                                 },
                                 ThreadRow::Activity { items, ui_indices } => {
-                                    let sid = active_session.get().unwrap_or_default();
-                                    let group_id = format!("{sid}:activity:{start}");
+                                    let group_id = format!("{session_id}:activity:{start}");
                                     view! {
                                         <div class="steps-wrap" data-ui-indices=ui_indices>{
                                             render_steps_group(

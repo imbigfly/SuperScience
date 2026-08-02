@@ -248,7 +248,9 @@ permission requests for that conversation until it is turned off or the app is
 restarted. It does not remove project-path restrictions or override tools that
 the user explicitly blocked. Without Full Permission, a pending approval keeps
 the agent turn suspended until the user explicitly approves, rejects, or stops
-it; it never times out into an implicit rejection. Rejecting an action also
+it; it never times out into an implicit rejection. Approval cards remain bound
+to their originating conversation when they arrive in the background and the
+user later switches to that conversation. Rejecting an action also
 skips any later tool calls the model placed in the same batch. `ask_user` and
 plan submission are hard turn boundaries: later batched calls do not run while
 the agent is waiting for the user's next message.

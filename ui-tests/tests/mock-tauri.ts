@@ -90,7 +90,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
         : query.get("mockSessionModels") === "1"
           ? [
               { id: "s-model-a", title: "First model session", ts: 2000, running: false },
-              { id: "s-model-b", title: "Second model session", ts: 1900, running: false },
+              {
+                id: "s-model-b",
+                title: "Second model session",
+                ts: 1900,
+                running: query.get("mockBackgroundApproval") === "1",
+              },
             ]
           : [];
   const mockCodexSessions = [
