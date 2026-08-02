@@ -2357,6 +2357,12 @@ pub(super) fn run_progress(run: &RunRecord) -> Option<RunProgress> {
     serde_json::from_str(&run.progress_json).ok()
 }
 
+pub(super) fn method_search_progress(run: &RunRecord) -> Option<MethodSearchProgressView> {
+    (run.kind == "method_search")
+        .then(|| serde_json::from_str(&run.progress_json).ok())
+        .flatten()
+}
+
 pub(super) fn transfer_progress_visible(progress: &RunProgress, run_status: &str) -> bool {
     (matches!(run_status, "submitted" | "running" | "cancelling")
         && matches!(progress.phase.as_str(), "uploading" | "downloading"))
@@ -2390,8 +2396,10 @@ pub(super) fn transfer_duration(seconds: u64) -> String {
 
 pub(super) fn run_status_label(locale: Locale, status: &str) -> String {
     let key = match status {
+        "draft" => "runs.status.draft",
         "submitted" => "runs.status.submitted",
         "running" => "runs.status.running",
+        "paused" => "runs.status.paused",
         "cancelling" => "runs.status.cancelling",
         "succeeded" => "runs.status.succeeded",
         "failed" => "runs.status.failed",
@@ -2461,6 +2469,292 @@ pub(super) fn run_progress_meter(progress: RunProgress, locale: Locale) -> impl 
                 {eta.map(|value| view! { <span>{value}</span> })}
                 {files.map(|value| view! { <span>{value}</span> })}
             </div>
+        </div>
+    }
+}
+
+fn load_method_search_details(
+    run_id: String,
+    details: RwSignal<Option<MethodSearchRunDetails>>,
+    loading: RwSignal<bool>,
+    error: RwSignal<Option<String>>,
+) {
+    loading.set(true);
+    error.set(None);
+    spawn_local(async move {
+        let args = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+        match invoke_checked("get_method_search_run", args).await {
+            Ok(value) => match serde_wasm_bindgen::from_value(value) {
+                Ok(value) => details.set(Some(value)),
+                Err(parse_error) => error.set(Some(parse_error.to_string())),
+            },
+            Err(invoke_error) => error.set(Some(js_error_text(invoke_error))),
+        }
+        loading.set(false);
+    });
+}
+
+fn control_method_search(
+    command: &'static str,
+    run_id: String,
+    details: RwSignal<Option<MethodSearchRunDetails>>,
+    loading: RwSignal<bool>,
+    error: RwSignal<Option<String>>,
+) {
+    loading.set(true);
+    error.set(None);
+    spawn_local(async move {
+        let args = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+        match invoke_checked(command, args).await {
+            Ok(value) => match serde_wasm_bindgen::from_value(value) {
+                Ok(value) => details.set(Some(value)),
+                Err(parse_error) => error.set(Some(parse_error.to_string())),
+            },
+            Err(invoke_error) => error.set(Some(js_error_text(invoke_error))),
+        }
+        loading.set(false);
+    });
+}
+
+#[component]
+fn MethodSearchRunPanel(
+    run_id: String,
+    locale: RwSignal<Locale>,
+    modal: RwSignal<Option<(String, ContextModalKind)>>,
+    modal_artifact: RwSignal<Option<ModalArtifact>>,
+) -> impl IntoView {
+    let expanded = create_rw_signal(false);
+    let loading = create_rw_signal(false);
+    let details = create_rw_signal(None::<MethodSearchRunDetails>);
+    let error = create_rw_signal(None::<String>);
+    let inspect_run_id = run_id.clone();
+    let refresh_run_id = run_id.clone();
+    view! {
+        <div class="method-search-panel" data-testid="method-search-panel">
+            <button type="button" class="secondary method-search-inspect"
+                data-testid="method-search-inspect"
+                aria-expanded=move || expanded.get().to_string()
+                on:click=move |_| {
+                    let next = !expanded.get_untracked();
+                    expanded.set(next);
+                    if next && details.get_untracked().is_none() {
+                        load_method_search_details(
+                            inspect_run_id.clone(),
+                            details,
+                            loading,
+                            error,
+                        );
+                    }
+                }>
+                {move || if expanded.get() {
+                    t(locale.get(), "method_search.hide")
+                } else {
+                    t(locale.get(), "method_search.inspect")
+                }}
+            </button>
+            {move || {
+                let current_refresh_id = refresh_run_id.clone();
+                let current_run_id = run_id.clone();
+                expanded.get().then(move || view! {
+                <section class="method-search-details" data-testid="method-search-details">
+                    <div class="method-search-detail-head">
+                        <strong>{move || t(locale.get(), "method_search.contract")}</strong>
+                        <button type="button" class="icon-btn"
+                            data-testid="method-search-refresh"
+                            title=move || t(locale.get(), "runs.refresh")
+                            aria-label=move || t(locale.get(), "runs.refresh")
+                            disabled=move || loading.get()
+                            on:click=move |_| load_method_search_details(
+                                current_refresh_id.clone(),
+                                details,
+                                loading,
+                                error,
+                            )>{compose_icon("sync")}</button>
+                    </div>
+                    {move || loading.get().then(|| view! {
+                        <div class="method-search-loading">{t(locale.get(), "method_search.loading")}</div>
+                    })}
+                    {move || error.get().map(|message| view! {
+                        <div class="context-error" data-testid="method-search-error">{message}</div>
+                    })}
+                    {move || {
+                        let command_run_id = current_run_id.clone();
+                        details.get().map(move |detail| {
+                        let status = detail.run.status.clone();
+                        let spec = detail.spec.clone();
+                        let audit = detail.audit.clone();
+                        let state = detail.state.clone();
+                        let candidates = detail.candidates.clone();
+                        let strategies = detail.strategies.clone();
+                        let outputs = detail.outputs.clone();
+                        let progress: MethodSearchProgressView =
+                            serde_json::from_str(&detail.run.progress_json).unwrap_or_default();
+                        let start_id = command_run_id.clone();
+                        let pause_id = command_run_id.clone();
+                        let resume_id = command_run_id.clone();
+                        let cancel_id = command_run_id;
+                        view! {
+                            <div class="method-search-approval" data-testid="method-search-contract">
+                                <div class="method-search-status-row">
+                                    <span class=format!("run-status {status}")>
+                                        {run_status_label(locale.get(), &status)}
+                                    </span>
+                                    <code title=state.spec_artifact_version_id.clone()>
+                                        {format!("spec {}", state.spec_artifact_version_id.chars().take(12).collect::<String>())}
+                                    </code>
+                                    <code title=detail.audit_artifact_version_id.clone()>
+                                        {format!("audit {}", detail.audit_artifact_version_id.chars().take(12).collect::<String>())}
+                                    </code>
+                                </div>
+                                <p>{spec.objective.clone()}</p>
+                                <dl class="method-search-contract-grid">
+                                    <div><dt>{t(locale.get(), "method_search.target")}</dt><dd><code>{format!("{}::{}", spec.target.source_path, spec.target.symbol)}</code></dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.evaluator")}</dt><dd><code>{spec.evaluator.entry_path}</code></dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.metric")}</dt><dd>{format!("{} · {}", spec.metrics.primary, spec.metrics.direction)}</dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.context")}</dt><dd><code>{detail.run.context_id}</code></dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.baseline")}</dt><dd>{format!("{:.6} ± {:.6}", audit.baseline.median_primary, audit.baseline.spread)}</dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.noise")}</dt><dd>{format!("{:.6}", audit.baseline.noise_floor)}</dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.reachability")}</dt><dd>{if audit.sentinel_reachable { "✓" } else { "×" }}</dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.budget")}</dt><dd>{format!("{} · {} · {}s · eval {}s", spec.budget.max_candidates, spec.budget.max_cost_microunits, spec.budget.max_wall_seconds, spec.budget.max_evaluator_seconds)}</dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.protected")}</dt><dd>{spec.protected_paths.len().to_string()}</dd></div>
+                                </dl>
+                                {(!spec.metrics.guardrails.is_empty()).then(|| view! {
+                                    <div class="method-search-tags">
+                                        <span>{t(locale.get(), "method_search.guardrails")}</span>
+                                        {spec.metrics.guardrails.into_iter().map(|guardrail| view! {
+                                            <code>{format!("{} {} {}", guardrail.metric, guardrail.op, guardrail.value)}</code>
+                                        }).collect_view()}
+                                    </div>
+                                })}
+                                {(!spec.constraints.is_empty()).then(|| view! {
+                                    <ul class="method-search-findings">
+                                        {spec.constraints.into_iter().map(|finding| view! { <li>{finding}</li> }).collect_view()}
+                                    </ul>
+                                })}
+                                <div class="method-search-actions">
+                                    {(status == "draft").then(|| view! {
+                                        <button type="button" class="primary"
+                                            data-testid="method-search-start"
+                                            disabled=move || loading.get()
+                                            on:click=move |_| control_method_search(
+                                                "start_method_search",
+                                                start_id.clone(), details, loading, error,
+                                            )>{move || t(locale.get(), "method_search.start")}</button>
+                                    })}
+                                    {matches!(status.as_str(), "submitted" | "running").then(|| view! {
+                                        <button type="button" class="secondary"
+                                            data-testid="method-search-pause"
+                                            disabled=move || loading.get()
+                                            on:click=move |_| control_method_search(
+                                                "pause_method_search",
+                                                pause_id.clone(), details, loading, error,
+                                            )>{move || t(locale.get(), "method_search.pause")}</button>
+                                    })}
+                                    {(status == "paused").then(|| view! {
+                                        <button type="button" class="primary"
+                                            data-testid="method-search-resume"
+                                            disabled=move || loading.get()
+                                            on:click=move |_| control_method_search(
+                                                "resume_method_search",
+                                                resume_id.clone(), details, loading, error,
+                                            )>{move || t(locale.get(), "method_search.resume")}</button>
+                                    })}
+                                    {matches!(status.as_str(), "draft" | "submitted" | "running" | "paused").then(|| view! {
+                                        <button type="button" class="agents-danger"
+                                            data-testid="method-search-cancel"
+                                            disabled=move || loading.get()
+                                            on:click=move |_| control_method_search(
+                                                "cancel_method_search",
+                                                cancel_id.clone(), details, loading, error,
+                                            )>{move || t(locale.get(), "method_search.cancel")}</button>
+                                    })}
+                                </div>
+                            </div>
+                            <div class="method-search-progress-grid" data-testid="method-search-progress">
+                                <div><span>{t(locale.get(), "method_search.phase")}</span><strong>{progress.phase}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.baseline")}</span><strong>{progress.baseline_primary.map(|value| format!("{value:.6}")).unwrap_or_else(|| "—".into())}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.best")}</span><strong>{progress.best_primary.map(|value| format!("{value:.6}")).unwrap_or_else(|| "—".into())}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.candidates")}</span><strong>{progress.candidate_count}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.success_failed")}</span><strong>{format!("{} / {}", progress.successful_count, progress.failed_count)}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.cost")}</span><strong>{progress.cost_microunits}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.strategy")}</span><strong>{progress.current_strategy.unwrap_or_else(|| "—".into())}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.checkpoint")}</span><strong>{progress.last_checkpoint_at.map(|value| format!("{}s", ((js_sys::Date::now() / 1000.0) as i64).saturating_sub(value))).unwrap_or_else(|| "—".into())}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.best_candidate")}</span><strong>{progress.best_candidate_id.map(|value| value.chars().take(12).collect::<String>()).unwrap_or_else(|| "—".into())}</strong></div>
+                            </div>
+                            {(!outputs.is_empty()).then(|| view! {
+                                <div class="method-search-outputs" data-testid="method-search-outputs">
+                                    <strong>{t(locale.get(), "method_search.outputs")}</strong>
+                                    {outputs.into_iter().map(|output| {
+                                        let name = if output.logical_output_key.trim().is_empty() {
+                                            output.role.clone()
+                                        } else {
+                                            output.logical_output_key.clone()
+                                        };
+                                        let target = (
+                                            format!("artifact-version:{}", output.artifact_version_id),
+                                            output.source_path.clone(),
+                                            file_kind(&output.source_path).unwrap_or("text").to_string(),
+                                        );
+                                        view! {
+                                            <button type="button" class="run-artifact"
+                                                on:click=move |_| {
+                                                    modal.set(None);
+                                                    modal_artifact.set(Some(target.clone()));
+                                                }>{name}</button>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            })}
+                            {(!candidates.is_empty()).then(|| view! {
+                                <details class="method-search-lineage" data-testid="method-search-lineage">
+                                    <summary>{tf(locale.get(), "method_search.lineage", &[("count", &candidates.len().to_string())])}</summary>
+                                    <div>
+                                        {candidates.into_iter().map(|candidate| view! {
+                                            <article data-candidate-id=candidate.id>
+                                                <span>{format!("#{}", candidate.sequence)}</span>
+                                                <code>{candidate.family}</code>
+                                                <code>{candidate.strategy_key}</code>
+                                                <strong>{candidate.primary_score.map(|value| format!("{value:.6}")).unwrap_or_else(|| candidate.status.clone())}</strong>
+                                                {candidate.changed_lines.map(|value| view! { <small>{format!("Δ {value}")}</small> })}
+                                                {candidate.runtime_ms.map(|value| view! { <small>{format!("{value} ms")}</small> })}
+                                                {candidate.parent_candidate_id.map(|value| view! { <small>{format!("← {}", value.chars().take(8).collect::<String>())}</small> })}
+                                                {candidate.rationale.map(|value| view! { <p>{value}</p> })}
+                                                {candidate.error.map(|value| view! { <p class="context-error">{value}</p> })}
+                                            </article>
+                                        }).collect_view()}
+                                    </div>
+                                </details>
+                            })}
+                            {(!strategies.is_empty()).then(|| view! {
+                                <details class="method-search-lineage">
+                                    <summary>{t(locale.get(), "method_search.strategies")}</summary>
+                                    <div>
+                                        {strategies.into_iter().map(|strategy| view! {
+                                            <article>
+                                                <code>{strategy.strategy_key}</code>
+                                                <span>{strategy.category}</span>
+                                                <strong>{format!("{:.3}", strategy.weight)}</strong>
+                                                <small>{format!("{} / {}", strategy.improvements, strategy.attempts)}</small>
+                                            </article>
+                                        }).collect_view()}
+                                    </div>
+                                </details>
+                            })}
+                            <div class="method-search-integrity">
+                                <code title=state.spec_sha256>{state.control_state}</code>
+                                <span>{state.result_status.unwrap_or_else(|| t(locale.get(), "method_search.pending").into())}</span>
+                                <span>{format!("{} / {}", audit.baseline.successful_repetitions, audit.baseline.repetitions)}</span>
+                                <span>{format!("{:.1}%", audit.baseline.failure_rate * 100.0)}</span>
+                                <span>{format!("{} {}", audit.protected_files.len(), t(locale.get(), "method_search.protected"))}</span>
+                                <span>{format!("{} {}", audit.findings.len(), t(locale.get(), "method_search.findings"))}</span>
+                                <code title=audit.target_source_sha256>{spec.target.source_artifact_version_id.chars().take(12).collect::<String>()}</code>
+                                <code title=spec.evaluator.artifact_version_id>{format!("{}×{}s", spec.evaluator.repetitions, spec.evaluator.timeout_seconds)}</code>
+                                <span>{if spec.final_verification.is_some() { t(locale.get(), "method_search.final_enabled") } else { t(locale.get(), "method_search.validation_only") }}</span>
+                            </div>
+                        }.into_view()
+                    })}}
+                </section>
+            })}}
         </div>
     }
 }
@@ -2655,10 +2949,16 @@ pub(super) fn ContextDetailsOverlay(
                                             let title = run_title(&run);
                                             let status_class = format!("run-status {}", run.status);
                                             let cancel_id = run.id.clone();
-                                            let cancellable = matches!(run.status.as_str(), "submitted" | "running");
+                                            let method_search = run.kind == "method_search";
+                                            let cancellable = !method_search
+                                                && matches!(run.status.as_str(), "submitted" | "running");
                                             let remote_workdir = run.remote_workdir.clone();
                                             let poll_error = run.last_poll_error.clone();
-                                            let progress = run_progress(&run);
+                                            let progress = (!method_search)
+                                                .then(|| run_progress(&run))
+                                                .flatten();
+                                            let method_progress = method_search_progress(&run);
+                                            let method_run_id = run.id.clone();
                                             let stdout_tail = run.stdout_tail.clone().unwrap_or_default();
                                             let stderr_tail = run.stderr_tail.clone().unwrap_or_default();
                                             let output = match (stdout_tail.is_empty(), stderr_tail.is_empty()) {
@@ -2678,7 +2978,7 @@ pub(super) fn ContextDetailsOverlay(
                                                 label: title.clone(),
                                             };
                                             view! {
-                                                <div class="run-card">
+                                                <div class="run-card" class:method-search=method_search>
                                                     <div class="run-card-head">
                                                         <span class="run-title">{title}</span>
                                                         <span class=status_class>{run.status.clone()}</span>
@@ -2707,6 +3007,21 @@ pub(super) fn ContextDetailsOverlay(
                                                     </div>
                                                     <div class="run-meta">{meta}</div>
                                                     {progress.map(|progress| run_progress_meter(progress, locale.get()))}
+                                                    {method_progress.map(|progress| view! {
+                                                        <div class="method-search-card-progress">
+                                                            <span>{progress.phase}</span>
+                                                            <span>{format!("{} / {}", progress.candidate_count, progress.successful_count)}</span>
+                                                            <strong>{progress.best_primary.map(|value| format!("{value:.6}")).unwrap_or_else(|| "—".into())}</strong>
+                                                        </div>
+                                                    })}
+                                                    {method_search.then(|| view! {
+                                                        <MethodSearchRunPanel
+                                                            run_id=method_run_id
+                                                            locale=locale
+                                                            modal=modal
+                                                            modal_artifact=modal_artifact
+                                                        />
+                                                    })}
                                                     {run.command.clone().filter(|command| !command.trim().is_empty()).map(|command| view! {
                                                         <div class="run-command">{command}</div>
                                                     })}

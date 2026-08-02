@@ -6,6 +6,7 @@
 mod acp_sessions;
 mod agent_workflow_attempts;
 mod agent_workflow_deliveries;
+mod agent_workflow_run_activities;
 mod agent_workflows;
 mod artifacts;
 mod ask_user_requests;
@@ -14,6 +15,7 @@ mod execution_contexts;
 mod external_session_cache;
 mod library;
 mod lineage;
+mod method_search;
 mod models;
 mod plugins;
 mod project_sync;
@@ -33,6 +35,7 @@ pub use agent_workflow_attempts::{
     AgentWorkflowAttempt, AgentWorkflowAttemptStart, AgentWorkflowAttemptStatus,
 };
 pub use agent_workflow_deliveries::{AgentWorkflowDelivery, AGENT_WORKFLOW_COMPLETION_TOOL};
+pub use agent_workflow_run_activities::AgentWorkflowRunActivity;
 pub use agent_workflows::{
     AgentDelegationRootLimits, AgentWorkflow, AgentWorkflowStatus, AgentWorkflowStep,
     MAX_ROOT_AGENT_DEPTH, MAX_ROOT_AGENT_TASKS,
@@ -42,6 +45,10 @@ pub use ask_user_requests::AskUserPoll;
 pub use external_session_cache::ExternalSessionCacheRecord;
 pub use library::{
     LibraryItem, LibraryItemDetail, LibraryItemVersion, LibraryStore, NewLibraryItem,
+};
+pub use method_search::{
+    MethodCandidate, MethodCandidateBlob, MethodCandidateStatus, MethodSearchRunState,
+    MethodStrategyStat,
 };
 pub use models::*;
 pub use project_sync::ProjectSyncState;
@@ -105,6 +112,12 @@ const PUBLICATION_FREEZE_MIGRATION_SQL: &str =
 const PUBLICATION_VERIFICATION_MIGRATION: &str = "0032_publication_verification";
 const PUBLICATION_VERIFICATION_MIGRATION_SQL: &str =
     include_str!("../migrations/0032_publication_verification.sql");
+const AGENT_WORKFLOW_RUN_ACTIVITIES_MIGRATION: &str = "0033_agent_workflow_run_activities";
+const AGENT_WORKFLOW_RUN_ACTIVITIES_MIGRATION_SQL: &str =
+    include_str!("../migrations/0033_agent_workflow_run_activities.sql");
+const METHOD_SEARCH_MIGRATION: &str = "0034_method_search";
+const METHOD_SEARCH_MIGRATION_SQL: &str = include_str!("../migrations/0034_method_search.sql");
+const METHOD_SEARCH_CONTROL_MIGRATION: &str = "0035_method_search_control";
 
 #[derive(Clone)]
 pub struct Store {
@@ -447,6 +460,32 @@ impl Store {
         if !Self::migration_applied(pool, PUBLICATION_VERIFICATION_MIGRATION).await? {
             Self::execute_sql_script(pool, PUBLICATION_VERIFICATION_MIGRATION_SQL).await?;
             Self::record_migration(pool, PUBLICATION_VERIFICATION_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, AGENT_WORKFLOW_RUN_ACTIVITIES_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "agent_workflow_steps",
+                &[
+                    ("task_kind", "TEXT NOT NULL DEFAULT 'agent'"),
+                    ("activity_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ],
+            )
+            .await?;
+            Self::execute_sql_script(pool, AGENT_WORKFLOW_RUN_ACTIVITIES_MIGRATION_SQL).await?;
+            Self::record_migration(pool, AGENT_WORKFLOW_RUN_ACTIVITIES_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, METHOD_SEARCH_MIGRATION).await? {
+            Self::execute_sql_script(pool, METHOD_SEARCH_MIGRATION_SQL).await?;
+            Self::record_migration(pool, METHOD_SEARCH_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, METHOD_SEARCH_CONTROL_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "method_search_runs",
+                &[("control_state", "TEXT NOT NULL DEFAULT 'run'")],
+            )
+            .await?;
+            Self::record_migration(pool, METHOD_SEARCH_CONTROL_MIGRATION).await?;
         }
         Ok(())
     }

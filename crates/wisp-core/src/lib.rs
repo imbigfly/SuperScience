@@ -7,6 +7,7 @@ pub mod delegation;
 pub mod delegation_policy;
 pub mod execution;
 pub mod memory;
+pub mod method_search;
 pub mod orchestration;
 pub mod output;
 pub mod provenance;
@@ -31,12 +32,13 @@ pub use delegation_policy::{
 };
 pub use execution::{
     DelegationExecutionObserver, DelegationExecutionResult, DelegationExecutionStatus,
-    DelegationExecutor, DelegationStepExecution, NoopDelegationObserver,
+    DelegationExecutor, DelegationStepExecution, NoopDelegationObserver, WorkflowRunActivityDriver,
+    WorkflowRunActivityRequest,
 };
 pub use memory::MemoryManager;
 pub use orchestration::{
-    DelegationMode, DelegationPlan, DelegationPlanStep, DYNAMIC_DELEGATION_SCHEMA_VERSION,
-    MAX_DELEGATION_TASKS,
+    DelegationMode, DelegationPlan, DelegationPlanStep, RunActivitySpec, WorkflowTaskKind,
+    DYNAMIC_DELEGATION_SCHEMA_VERSION, MAX_DELEGATION_TASKS,
 };
 pub use output::{NullOutput, Output, OutputFuture, StreamSinkAdapter, ToolEnvAdapter};
 pub use provenance::ProvenanceRecord;

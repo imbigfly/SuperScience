@@ -282,8 +282,8 @@ impl CapabilityRegistry {
             .iter_mut()
             .find(|definition| definition.id == "code_run")
             .expect("code_run capability")
-            .revision = 2;
-        Self::new("wisp-capabilities-v3", definitions)
+            .revision = 3;
+        Self::new("wisp-capabilities-v4", definitions)
             .expect("built-in capability definitions must be valid")
     }
 
@@ -515,6 +515,8 @@ impl CapabilityRegistry {
                     id: task.spec.agent_id.clone(),
                     spec: task.spec,
                     input: task.input,
+                    task_kind: crate::WorkflowTaskKind::Agent,
+                    run_activity: None,
                 })
                 .collect(),
         };
@@ -585,27 +587,28 @@ impl CapabilityRegistry {
         plan.validate_structure()
             .map_err(|error| ResolutionError::InvalidProposal(error.to_string()))?;
         for step in &plan.steps {
-            self.validate_resolved_spec(&step.spec, host)?;
-        }
-        let proposals = plan
-            .steps
-            .iter()
-            .map(|step| {
-                let mut proposal = proposal_from_spec(&step.spec)?;
-                proposal.input = step.input.clone();
-                Ok(proposal)
-            })
-            .collect::<Result<Vec<_>, ResolutionError>>()?;
-        let expected = self.resolve_plan_with_id(
-            plan.id.clone(),
-            plan.goal.clone(),
-            plan.mode,
-            plan.max_parallel,
-            proposals,
-            host,
-        )?;
-        if expected.plan != *plan {
-            return Err(ResolutionError::SnapshotMismatch);
+            match step.task_kind {
+                crate::WorkflowTaskKind::Agent => {
+                    self.validate_resolved_spec(&step.spec, host)?;
+                    let mut proposal = proposal_from_spec(&step.spec)?;
+                    proposal.input = step.input.clone();
+                    let expected = self.resolve_task(proposal, host)?;
+                    if expected.spec != step.spec || expected.input != step.input {
+                        return Err(ResolutionError::SnapshotMismatch);
+                    }
+                }
+                crate::WorkflowTaskKind::RunActivity => {
+                    step.run_activity
+                        .as_ref()
+                        .ok_or_else(|| {
+                            ResolutionError::InvalidProposal(
+                                "Run activity metadata is missing".into(),
+                            )
+                        })?
+                        .validate()
+                        .map_err(|error| ResolutionError::InvalidProposal(error.to_string()))?;
+                }
+            }
         }
         Ok(())
     }
@@ -1303,6 +1306,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
                 "run_in_context",
                 "get_run",
                 "cancel_run",
+                "prepare_method_search",
             ],
             false,
             false,
@@ -1648,6 +1652,7 @@ mod tests {
                     "run_in_context",
                     "get_run",
                     "cancel_run",
+                    "prepare_method_search",
                 ],
                 false,
                 false,

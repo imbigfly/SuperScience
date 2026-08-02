@@ -84,6 +84,16 @@ async fn copy_project_children(tx: &mut Transaction<'_, Sqlite>, project_id: &st
                 "s.agent_id"
             };
             let spec_expr = if has_plan { "s.spec_json" } else { "'{}'" };
+            let task_kind_expr = if columns.contains("task_kind") {
+                "s.task_kind"
+            } else {
+                "'agent'"
+            };
+            let activity_expr = if columns.contains("activity_json") {
+                "s.activity_json"
+            } else {
+                "'{}'"
+            };
             let input_contract_expr = if has_contracts {
                 "s.input_contract_json"
             } else {
@@ -100,8 +110,8 @@ async fn copy_project_children(tx: &mut Transaction<'_, Sqlite>, project_id: &st
                 "'{}'"
             };
             let query = format!(
-                "INSERT INTO agent_workflow_steps(id,workflow_id,position,agent_id,template_id,role,backend,model,prompt_template,input_schema_json,output_schema_json,input_contract_json,output_contract_json,permissions_json,context_policy_json,budget_json,spec_json,timeout_secs,created_at,updated_at) \
-                 SELECT s.id,s.workflow_id,s.position,s.agent_id,{template_expr},s.role,s.backend,s.model,s.prompt_template,s.input_schema_json,s.output_schema_json,{input_contract_expr},{output_contract_expr},s.permissions_json,s.context_policy_json,{budget_expr},{spec_expr},s.timeout_secs,s.created_at,s.updated_at \
+                "INSERT INTO agent_workflow_steps(id,workflow_id,position,agent_id,template_id,role,backend,model,prompt_template,input_schema_json,output_schema_json,input_contract_json,output_contract_json,permissions_json,context_policy_json,budget_json,spec_json,task_kind,activity_json,timeout_secs,created_at,updated_at) \
+                 SELECT s.id,s.workflow_id,s.position,s.agent_id,{template_expr},s.role,s.backend,s.model,s.prompt_template,s.input_schema_json,s.output_schema_json,{input_contract_expr},{output_contract_expr},s.permissions_json,s.context_policy_json,{budget_expr},{spec_expr},{task_kind_expr},{activity_expr},s.timeout_secs,s.created_at,s.updated_at \
                  FROM transfer.agent_workflow_steps s JOIN transfer.agent_workflows w ON w.id=s.workflow_id WHERE w.project_id=?"
             );
             sqlx::query(&query)
@@ -377,7 +387,7 @@ async fn copy_project_children(tx: &mut Transaction<'_, Sqlite>, project_id: &st
             .await?;
         let now = chrono::Utc::now().timestamp();
         sqlx::query(
-            "UPDATE agent_workflow_attempts SET status='failed',error=COALESCE(error,'Imported from another device; the Agent attempt was not resumed.'),finished_at=COALESCE(finished_at,?),updated_at=? WHERE workflow_id IN (SELECT id FROM agent_workflows WHERE project_id=?) AND status IN ('queued','running')",
+            "UPDATE agent_workflow_attempts SET status='failed',error=COALESCE(error,'Imported from another device; the Workflow activity was not resumed.'),finished_at=COALESCE(finished_at,?),updated_at=? WHERE workflow_id IN (SELECT id FROM agent_workflows WHERE project_id=?) AND status IN ('queued','running','waiting_run')",
         )
         .bind(now)
         .bind(now)
@@ -388,6 +398,55 @@ async fn copy_project_children(tx: &mut Transaction<'_, Sqlite>, project_id: &st
             "UPDATE agent_workflows SET status='failed',updated_at=? WHERE project_id=? AND status='running'",
         )
         .bind(now)
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    if attached_table_exists(tx, "agent_workflow_run_activities").await? {
+        sqlx::query(
+            "INSERT INTO agent_workflow_run_activities(attempt_id,run_id,activity,state_json,created_at,updated_at) \
+             SELECT link.attempt_id,link.run_id,link.activity,link.state_json,link.created_at,link.updated_at \
+             FROM transfer.agent_workflow_run_activities link \
+             JOIN transfer.agent_workflow_attempts attempt ON attempt.id=link.attempt_id \
+             JOIN transfer.agent_workflows workflow ON workflow.id=attempt.workflow_id \
+             JOIN transfer.runs run ON run.id=link.run_id \
+             WHERE workflow.project_id=? AND run.project_id=?",
+        )
+        .bind(project_id)
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    if attached_table_exists(tx, "method_search_runs").await? {
+        sqlx::query(
+            "INSERT INTO method_search_runs(run_id,spec_artifact_version_id,spec_sha256,activity_version,checkpoint_json,control_state,result_status,created_at,updated_at) \
+             SELECT state.run_id,state.spec_artifact_version_id,state.spec_sha256,state.activity_version,state.checkpoint_json,'run',state.result_status,state.created_at,state.updated_at \
+             FROM transfer.method_search_runs state JOIN transfer.runs run ON run.id=state.run_id WHERE run.project_id=?",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO method_candidate_blobs(id,run_id,kind,checksum,size_bytes,storage_path,created_at) \
+             SELECT blob.id,blob.run_id,blob.kind,blob.checksum,blob.size_bytes,blob.storage_path,blob.created_at \
+             FROM transfer.method_candidate_blobs blob JOIN transfer.runs run ON run.id=blob.run_id WHERE run.project_id=?",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO method_candidates(id,run_id,parent_candidate_id,sequence,strategy_key,family,status,primary_score,utility,metrics_json,runtime_ms,source_sha256,patch_sha256,source_blob_id,patch_blob_id,changed_lines,dependency_count,rationale,diagnostic_summary,error,created_at,finished_at) \
+             SELECT candidate.id,candidate.run_id,candidate.parent_candidate_id,candidate.sequence,candidate.strategy_key,candidate.family,candidate.status,candidate.primary_score,candidate.utility,candidate.metrics_json,candidate.runtime_ms,candidate.source_sha256,candidate.patch_sha256,candidate.source_blob_id,candidate.patch_blob_id,candidate.changed_lines,candidate.dependency_count,candidate.rationale,candidate.diagnostic_summary,candidate.error,candidate.created_at,candidate.finished_at \
+             FROM transfer.method_candidates candidate JOIN transfer.runs run ON run.id=candidate.run_id WHERE run.project_id=? ORDER BY candidate.sequence,candidate.id",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO method_strategy_stats(run_id,strategy_key,category,weight,attempts,improvements,cumulative_reward,summary,source_refs_json,updated_at) \
+             SELECT stat.run_id,stat.strategy_key,stat.category,stat.weight,stat.attempts,stat.improvements,stat.cumulative_reward,stat.summary,stat.source_refs_json,stat.updated_at \
+             FROM transfer.method_strategy_stats stat JOIN transfer.runs run ON run.id=stat.run_id WHERE run.project_id=?",
+        )
         .bind(project_id)
         .execute(&mut **tx)
         .await?;
@@ -743,6 +802,10 @@ pub(crate) async fn delete_project_children(
         "UPDATE publication_revisions SET state='deleting' WHERE publication_id IN (SELECT id FROM publications WHERE project_id=?)",
         "DELETE FROM reproduction_results WHERE reproduction_run_id IN (SELECT reproduction.id FROM reproduction_runs reproduction JOIN publication_revisions revision ON revision.id=reproduction.revision_id JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
         "DELETE FROM reproduction_runs WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
+        "DELETE FROM method_strategy_stats WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
+        "DELETE FROM method_candidates WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
+        "DELETE FROM method_candidate_blobs WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
+        "DELETE FROM method_search_runs WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
         "DELETE FROM capsule_builds WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
         "DELETE FROM publication_readiness_reports WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
         "DELETE FROM publication_waivers WHERE revision_id IN (SELECT revision.id FROM publication_revisions revision JOIN publications publication ON publication.id=revision.publication_id WHERE publication.project_id=?)",
@@ -760,6 +823,7 @@ pub(crate) async fn delete_project_children(
         "DELETE FROM run_artifacts WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)",
         "DELETE FROM artifact_dependencies WHERE artifact_version_id IN (SELECT av.id FROM artifact_versions av JOIN artifacts a ON a.id=av.artifact_id WHERE a.project_id=?)",
         "DELETE FROM agent_workflow_deliveries WHERE workflow_id IN (SELECT id FROM agent_workflows WHERE project_id=?)",
+        "DELETE FROM agent_workflow_run_activities WHERE attempt_id IN (SELECT a.id FROM agent_workflow_attempts a JOIN agent_workflows w ON w.id=a.workflow_id WHERE w.project_id=?)",
         "DELETE FROM agent_workflow_attempts WHERE workflow_id IN (SELECT id FROM agent_workflows WHERE project_id=?)",
         "DELETE FROM agent_workflow_steps WHERE workflow_id IN (SELECT id FROM agent_workflows WHERE project_id=?)",
         "DELETE FROM agent_workflows WHERE project_id=?",
@@ -1195,6 +1259,11 @@ impl Store {
             ("agent_workflows", "*", "id"),
             ("agent_workflow_steps", "*", "id"),
             ("agent_workflow_attempts", "*", "id"),
+            ("agent_workflow_run_activities", "*", "attempt_id"),
+            ("method_search_runs", "*", "run_id"),
+            ("method_candidate_blobs", "*", "id"),
+            ("method_candidates", "*", "id"),
+            ("method_strategy_stats", "*", "run_id,strategy_key"),
             ("agent_workflow_deliveries", "*", "id"),
             ("frames", "*", "id"),
             ("messages", "*", "id"),
@@ -1523,10 +1592,11 @@ mod tests {
     use crate::{
         ArtifactCaptureTiming, ArtifactMaterialization, ArtifactVersionDraft, EvidenceBindingDraft,
         EvidenceReview, EvidenceSelectionState, EvidenceSourceKind, EvidenceSupersession,
-        EvidenceVisibility, LineageBasis, LineageConfidence, PublicationItem, PublicationItemKind,
-        PublicationRevisionState, PublicationWaiver, ReproductionComparatorKind,
-        ReproductionResult, ReproductionRunCommit, ReproductionRunStart, RunCodeSnapshot, RunInput,
-        RunOutput, RunRecord, RunStatus,
+        EvidenceVisibility, LineageBasis, LineageConfidence, MethodCandidate, MethodCandidateBlob,
+        MethodCandidateStatus, MethodSearchRunState, MethodStrategyStat, PublicationItem,
+        PublicationItemKind, PublicationRevisionState, PublicationWaiver,
+        ReproductionComparatorKind, ReproductionResult, ReproductionRunCommit,
+        ReproductionRunStart, RunCodeSnapshot, RunInput, RunOutput, RunRecord, RunStatus,
     };
     use wisp_llm::Message;
 
@@ -1557,6 +1627,246 @@ mod tests {
             r"C:\Users\Alice\Study\figures\plot.png"
         );
         assert!(restored_project_path(Path::new("/tmp/study"), "../escape").is_err());
+    }
+
+    #[tokio::test]
+    async fn method_search_checkpoint_candidates_and_strategy_roundtrip() {
+        let token = uuid::Uuid::new_v4();
+        let source_path =
+            std::env::temp_dir().join(format!("wisp_method_transfer_source_{token}.sqlite"));
+        let archive_path =
+            std::env::temp_dir().join(format!("wisp_method_transfer_archive_{token}.sqlite"));
+        let target_path =
+            std::env::temp_dir().join(format!("wisp_method_transfer_target_{token}.sqlite"));
+        let source = Store::open(&source_path).await.unwrap();
+        source
+            .create_project("project", "Method project", "workspace")
+            .await
+            .unwrap();
+        source
+            .create_frame("frame", "project", "Method search", "model")
+            .await
+            .unwrap();
+        let spec_version = source
+            .save_artifact_version(&ArtifactVersionDraft {
+                version_id: Some("spec-version".into()),
+                artifact_id: "spec-artifact".into(),
+                project_id: "project".into(),
+                root_frame_id: "frame".into(),
+                filename: "method-search.json".into(),
+                content_type: "application/json".into(),
+                storage_path: ".wisp/artifacts/sha256/aa/spec.json".into(),
+                logical_key: Some("method-search:spec".into()),
+                size_bytes: Some(2),
+                checksum: Some("a".repeat(64)),
+                producing_run_id: None,
+                env_snapshot_hash: None,
+                materialization: ArtifactMaterialization::Snapshot,
+                capture_timing: ArtifactCaptureTiming::AtCreation,
+            })
+            .await
+            .unwrap();
+        let run = RunRecord::new("run", "project", "local", "Method search", "method_search");
+        source.create_run(&run).await.unwrap();
+        source
+            .create_method_search_run_state(
+                &MethodSearchRunState::new("run", &spec_version, "a".repeat(64)).unwrap(),
+            )
+            .await
+            .unwrap();
+        let blob = MethodCandidateBlob {
+            id: "source-blob".into(),
+            run_id: "run".into(),
+            kind: "source".into(),
+            checksum: "b".repeat(64),
+            size_bytes: 12,
+            storage_path: ".wisp/method-search/run/blobs/bb/source.py".into(),
+            created_at: 1,
+        };
+        source.save_method_candidate_blob(&blob).await.unwrap();
+        let mut candidate = MethodCandidate::proposed(
+            "candidate",
+            "run",
+            0,
+            "baseline",
+            "baseline",
+            "b".repeat(64),
+            "c".repeat(64),
+        )
+        .unwrap();
+        source.insert_method_candidate(&candidate).await.unwrap();
+        assert!(source
+            .transition_method_candidate_to_evaluating(&candidate.id)
+            .await
+            .unwrap());
+        candidate.status = MethodCandidateStatus::Succeeded;
+        candidate.primary_score = Some(0.5);
+        candidate.utility = Some(0.5);
+        candidate.metrics_json = r#"{"accuracy":0.5}"#.into();
+        candidate.source_blob_id = Some(blob.id.clone());
+        candidate.finished_at = Some(2);
+        assert!(source
+            .finish_method_candidate(&candidate, MethodCandidateStatus::Evaluating)
+            .await
+            .unwrap());
+        let strategy = MethodStrategyStat {
+            run_id: "run".into(),
+            strategy_key: "diagnostic".into(),
+            category: "diagnostic".into(),
+            weight: 0.25,
+            attempts: 1,
+            improvements: 1,
+            cumulative_reward: 1.0,
+            summary: "Inspect residuals".into(),
+            source_refs_json: "[]".into(),
+            updated_at: 2,
+        };
+        source.upsert_method_strategy_stat(&strategy).await.unwrap();
+
+        source
+            .export_project_database("project", &archive_path)
+            .await
+            .unwrap();
+        let target = Store::open(&target_path).await.unwrap();
+        target
+            .import_project_database(&archive_path, "project", Path::new("workspace-imported"))
+            .await
+            .unwrap();
+        assert_eq!(
+            target.get_method_search_run_state("run").await.unwrap(),
+            source.get_method_search_run_state("run").await.unwrap()
+        );
+        assert_eq!(
+            target.list_method_candidates("run").await.unwrap(),
+            vec![candidate]
+        );
+        assert_eq!(
+            target.list_method_strategy_stats("run").await.unwrap(),
+            vec![strategy]
+        );
+        assert_eq!(
+            target
+                .find_method_candidate_blob("run", "source", &"b".repeat(64))
+                .await
+                .unwrap(),
+            Some(blob)
+        );
+
+        source.pool.close().await;
+        target.pool.close().await;
+        for path in [source_path, archive_path, target_path] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_run_activity_roundtrips_and_import_fails_waiting_attempt_explicitly() {
+        let token = uuid::Uuid::new_v4();
+        let source_path = std::env::temp_dir().join(format!("wisp_activity_source_{token}.sqlite"));
+        let archive_path =
+            std::env::temp_dir().join(format!("wisp_activity_archive_{token}.sqlite"));
+        let target_path = std::env::temp_dir().join(format!("wisp_activity_target_{token}.sqlite"));
+        let source = Store::open(&source_path).await.unwrap();
+        source
+            .create_project("project", "Method project", "workspace")
+            .await
+            .unwrap();
+        let workflow =
+            crate::AgentWorkflow::new("workflow", "project", "workspace", "Search").unwrap();
+        let mut step = crate::AgentWorkflowStep::new(
+            "activity-step",
+            "workflow",
+            0,
+            "activity-step",
+            "run_activity",
+            "local",
+            "host activity",
+        )
+        .unwrap();
+        step.task_kind = "run_activity".into();
+        step.activity_json = serde_json::json!({"activity":"method_search"}).to_string();
+        source
+            .create_agent_workflow_plan(&workflow, &[step])
+            .await
+            .unwrap();
+        source
+            .approve_agent_workflow_plan("workflow", 1)
+            .await
+            .unwrap();
+        source
+            .transition_agent_workflow_status(
+                "workflow",
+                crate::AgentWorkflowStatus::Approved,
+                crate::AgentWorkflowStatus::Running,
+            )
+            .await
+            .unwrap();
+        let attempt = crate::AgentWorkflowAttempt::queued(
+            "attempt",
+            "workflow",
+            "activity-step",
+            1,
+            "request",
+            "local",
+            "{}",
+        )
+        .unwrap();
+        let attempt = match source
+            .try_create_started_agent_workflow_attempt(attempt)
+            .await
+            .unwrap()
+        {
+            crate::AgentWorkflowAttemptStart::Started(attempt) => attempt,
+            other => panic!("activity attempt did not start: {other:?}"),
+        };
+        let run = RunRecord::new("run", "project", "local", "Method search", "method_search");
+        let link =
+            crate::AgentWorkflowRunActivity::new(&attempt.id, &run.id, "method_search").unwrap();
+        source
+            .create_agent_workflow_run_activity(&run, &link)
+            .await
+            .unwrap();
+        source
+            .update_agent_workflow_run_activity_state("attempt", r#"{"checkpoint":"created"}"#)
+            .await
+            .unwrap();
+
+        source
+            .export_project_database("project", &archive_path)
+            .await
+            .unwrap();
+        let target = Store::open(&target_path).await.unwrap();
+        target
+            .import_project_database(&archive_path, "project", Path::new("workspace-imported"))
+            .await
+            .unwrap();
+        let imported = target
+            .get_agent_workflow_run_activity("attempt")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(imported.run_id, "run");
+        assert_eq!(imported.state_json, r#"{"checkpoint":"created"}"#);
+        let imported_attempt = target
+            .get_agent_workflow_attempt("attempt")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            imported_attempt.status,
+            crate::AgentWorkflowAttemptStatus::Failed
+        );
+        assert!(imported_attempt
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("not resumed"));
+
+        source.pool.close().await;
+        target.pool.close().await;
+        for path in [source_path, archive_path, target_path] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[tokio::test]

@@ -1984,6 +1984,43 @@ test("Workflow library includes a built-in Roundtable DAG", async ({ page }) => 
   expect(chair.x).toBeGreaterThan(reviews[0].x);
 });
 
+test("Workflow library includes the Wisp-native seven-node method-search DAG", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Workflows");
+  const studio = page.getByTestId("workflow-studio");
+  const template = studio.getByTestId("workflow-template-card")
+    .filter({ hasText: "Develop computational method" });
+  await expect(template).toContainText("durable method search");
+  await template.click();
+
+  const nodes = studio.getByTestId("workflow-graph-node");
+  await expect(nodes).toHaveCount(7);
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(8);
+  const rootPositions = await nodes.evaluateAll((items) => items
+    .filter((item) => ["literature_methods", "data_audit", "baseline_analysis"]
+      .includes(item.getAttribute("data-node-id") ?? ""))
+    .map((item) => item.getBoundingClientRect().x));
+  expect(rootPositions).toHaveLength(3);
+  expect(Math.max(...rootPositions) - Math.min(...rootPositions)).toBeLessThan(2);
+
+  const activityNode = studio.locator(
+    '[data-testid="workflow-graph-node"][data-node-id="method_search"]',
+  );
+  await expect(activityNode).toHaveClass(/run-activity/);
+  await activityNode.getByTestId("workflow-graph-node-select").click();
+  const inspector = studio.getByTestId("workflow-graph-inspector");
+  await expect(inspector.getByTestId("dynamic-task-type"))
+    .toHaveValue("run_activity");
+  await expect(inspector.getByTestId("run-activity-config")).toBeVisible();
+  await expect(inspector.getByTestId("run-activity-input-task"))
+    .toHaveValue("prepare_contract");
+  await expect(inspector.getByTestId("run-activity-max-candidates")).toHaveValue("20");
+  await expect(inspector.getByTestId("dynamic-task-capabilities")).toBeHidden();
+  await expect(inspector.getByTestId("dynamic-task-skills")).toBeHidden();
+  await expect(inspector.getByTestId("dynamic-task-specialist")).toBeHidden();
+  await expect(studio.getByTestId("workflow-save")).toHaveText("Save as copy");
+});
+
 test("Skill Portfolio Planner confirms budget and opens an editable DAG", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Workflows");
@@ -2050,18 +2087,18 @@ test("Workflow Studio reuses the roundtable generator and saves a Quick Action b
       },
     },
   });
-  await expect(studio.getByTestId("workflow-template-card")).toHaveCount(3);
+  await expect(studio.getByTestId("workflow-template-card")).toHaveCount(4);
 
   await studio.getByTestId("workflow-studio-back").click();
   await expect(page.locator(".settings-nav")).toBeVisible();
   await page.getByTestId("quick-action-new").click();
   await page.getByTestId("quick-action-name").fill("Discuss selection");
-  await page.getByTestId("quick-action-workflow").selectOption("workflow_2");
+  await page.getByTestId("quick-action-workflow").selectOption("workflow_3");
   await page.getByTestId("quick-action-save").click();
   await expect.poll(() => lastInvokeArgs(page, "save_quick_action")).toMatchObject({
     action: {
       name: "Discuss selection",
-      workflow_template_id: "workflow_2",
+      workflow_template_id: "workflow_3",
       context: "selection",
       enabled: true,
     },
@@ -3234,6 +3271,42 @@ test("Run surface binds an exact publication evidence source", async ({ page }) 
   });
   await expect(dialog).toHaveCount(0);
   await expect(page.getByTestId("publication-workspace")).toContainText("run-kinase-001");
+});
+
+test("method-search Run reviews the frozen contract before start and exposes controls", async ({ page }) => {
+  await enterApp(page, "/?mockMethodSearch=1");
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "Local machine" })
+    .getByRole("button", { name: "View runs" }).click();
+
+  const card = page.locator(".run-card", { hasText: "Develop computational method" });
+  await expect(card).toContainText("awaiting_approval");
+  await card.getByTestId("method-search-inspect").click();
+  const details = card.getByTestId("method-search-details");
+  await expect(details).toContainText("analysis/model.py::fit_model");
+  await expect(details).toContainText("0.537200");
+  await expect(details).toContainText("Candidate reachability");
+  await expect(details).toContainText("runtime_seconds lte 120");
+  await expect(details.getByTestId("method-search-start")).toBeVisible();
+  await expect(details.getByTestId("method-search-lineage")).toContainText("Candidate lineage (2)");
+  await expect(details.getByTestId("method-search-outputs")).toContainText("selected_method");
+
+  await details.getByTestId("method-search-start").click();
+  await expect.poll(() => lastInvokeArgs(page, "start_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await expect(details.getByTestId("method-search-pause")).toBeVisible();
+  await details.getByTestId("method-search-pause").click();
+  await expect.poll(() => lastInvokeArgs(page, "pause_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await expect(details.getByTestId("method-search-resume")).toBeVisible();
+  await details.getByTestId("method-search-resume").click();
+  await expect.poll(() => lastInvokeArgs(page, "resume_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await details.getByTestId("method-search-cancel").click();
+  await expect.poll(() => lastInvokeArgs(page, "cancel_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await expect(details).toContainText("Cancelled");
 });
 
 test("precise message evidence uses a stable locator and Escape closes only the top layer", async ({ page }) => {

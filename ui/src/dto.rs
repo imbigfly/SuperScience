@@ -2469,11 +2469,53 @@ pub(crate) struct AgentBudgetProposal {
     pub(crate) max_cost_microunits: Option<u64>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkflowTaskKind {
+    #[default]
+    Agent,
+    RunActivity,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunActivityProposal {
+    pub(crate) activity: String,
+    pub(crate) context_id: String,
+    pub(crate) input_task_id: String,
+    pub(crate) spec_output_pointer: String,
+    pub(crate) max_candidates: u32,
+    pub(crate) max_wall_seconds: u64,
+    pub(crate) max_evaluator_seconds: u64,
+    pub(crate) max_cost_microunits: u64,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunActivitySpec {
+    pub(crate) activity: String,
+    pub(crate) context_id: String,
+    pub(crate) context_revision: String,
+    pub(crate) input_task_id: String,
+    pub(crate) spec_output_pointer: String,
+    pub(crate) max_candidates: u32,
+    pub(crate) max_wall_seconds: u64,
+    pub(crate) max_evaluator_seconds: u64,
+    pub(crate) max_cost_microunits: u64,
+    pub(crate) provider_profile_id: Option<String>,
+    pub(crate) model_profile_id: Option<String>,
+    pub(crate) approval_reasons: Vec<String>,
+    pub(crate) integrity_hash: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DynamicAgentTaskProposal {
     pub(crate) id: String,
     pub(crate) instruction: String,
     pub(crate) depends_on: Vec<String>,
+    #[serde(default)]
+    pub(crate) task_kind: WorkflowTaskKind,
+    #[serde(default)]
+    pub(crate) run_activity: Option<RunActivityProposal>,
+    #[serde(default)]
     pub(crate) capabilities: Vec<String>,
     #[serde(default)]
     pub(crate) skill_ids: Vec<String>,
@@ -2564,6 +2606,8 @@ pub(crate) struct AgentResultSummary {
     pub(crate) summary: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) child_frame_id: Option<String>,
+    #[serde(default)]
+    pub(crate) run_id: Option<String>,
     pub(crate) input_tokens: i64,
     pub(crate) output_tokens: i64,
     pub(crate) tool_calls: i64,
@@ -2578,6 +2622,11 @@ pub(crate) struct ResolvedAgentTaskSummary {
     pub(crate) stored_step_id: String,
     pub(crate) instruction: String,
     pub(crate) depends_on: Vec<String>,
+    #[serde(default)]
+    pub(crate) task_kind: WorkflowTaskKind,
+    #[serde(default)]
+    pub(crate) run_activity: Option<RunActivitySpec>,
+    #[serde(default)]
     pub(crate) capabilities: Vec<String>,
     #[serde(default)]
     pub(crate) skill_bindings: Vec<AgentSkillBinding>,
@@ -2799,6 +2848,147 @@ pub(crate) struct RunRecord {
     #[serde(default)]
     pub(crate) progress_json: String,
     pub(crate) env_snapshot_json: String,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchRunState {
+    pub(crate) spec_artifact_version_id: String,
+    pub(crate) spec_sha256: String,
+    pub(crate) control_state: String,
+    pub(crate) result_status: Option<String>,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchTargetView {
+    pub(crate) source_artifact_version_id: String,
+    pub(crate) source_path: String,
+    pub(crate) symbol: String,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchEvaluatorView {
+    pub(crate) artifact_version_id: String,
+    pub(crate) entry_path: String,
+    pub(crate) repetitions: u32,
+    pub(crate) timeout_seconds: u64,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchGuardrailView {
+    pub(crate) metric: String,
+    pub(crate) op: String,
+    pub(crate) value: f64,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchMetricsView {
+    pub(crate) primary: String,
+    pub(crate) direction: String,
+    pub(crate) guardrails: Vec<MethodSearchGuardrailView>,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchBudgetView {
+    pub(crate) max_candidates: u32,
+    pub(crate) max_wall_seconds: u64,
+    pub(crate) max_evaluator_seconds: u64,
+    pub(crate) max_cost_microunits: u64,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchSpecView {
+    pub(crate) objective: String,
+    pub(crate) target: MethodSearchTargetView,
+    pub(crate) evaluator: MethodSearchEvaluatorView,
+    pub(crate) metrics: MethodSearchMetricsView,
+    pub(crate) protected_paths: Vec<String>,
+    pub(crate) constraints: Vec<String>,
+    pub(crate) budget: MethodSearchBudgetView,
+    pub(crate) final_verification: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct BaselineAuditView {
+    pub(crate) repetitions: u32,
+    pub(crate) successful_repetitions: u32,
+    pub(crate) failure_rate: f64,
+    pub(crate) median_primary: f64,
+    pub(crate) spread: f64,
+    pub(crate) noise_floor: f64,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MethodSearchAuditView {
+    pub(crate) baseline: BaselineAuditView,
+    pub(crate) sentinel_reachable: bool,
+    pub(crate) protected_files: Vec<serde_json::Value>,
+    pub(crate) target_source_sha256: String,
+    pub(crate) findings: Vec<String>,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodCandidateView {
+    pub(crate) id: String,
+    pub(crate) parent_candidate_id: Option<String>,
+    pub(crate) sequence: i64,
+    pub(crate) strategy_key: String,
+    pub(crate) family: String,
+    pub(crate) status: String,
+    pub(crate) primary_score: Option<f64>,
+    pub(crate) runtime_ms: Option<i64>,
+    pub(crate) changed_lines: Option<i64>,
+    pub(crate) rationale: Option<String>,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodStrategyView {
+    pub(crate) strategy_key: String,
+    pub(crate) category: String,
+    pub(crate) weight: f64,
+    pub(crate) attempts: i64,
+    pub(crate) improvements: i64,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchRunOutput {
+    pub(crate) artifact_version_id: String,
+    pub(crate) role: String,
+    pub(crate) logical_output_key: String,
+    pub(crate) source_path: String,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MethodSearchRunDetails {
+    pub(crate) run: RunRecord,
+    pub(crate) state: MethodSearchRunState,
+    pub(crate) spec: MethodSearchSpecView,
+    pub(crate) audit: MethodSearchAuditView,
+    pub(crate) audit_artifact_version_id: String,
+    pub(crate) candidates: Vec<MethodCandidateView>,
+    pub(crate) strategies: Vec<MethodStrategyView>,
+    pub(crate) outputs: Vec<MethodSearchRunOutput>,
+}
+
+#[derive(Deserialize, Clone, Default)]
+pub(crate) struct MethodSearchProgressView {
+    #[serde(default)]
+    pub(crate) phase: String,
+    pub(crate) baseline_primary: Option<f64>,
+    pub(crate) best_primary: Option<f64>,
+    #[serde(default)]
+    pub(crate) candidate_count: usize,
+    #[serde(default)]
+    pub(crate) successful_count: usize,
+    #[serde(default)]
+    pub(crate) failed_count: usize,
+    #[serde(default)]
+    pub(crate) cost_microunits: u64,
+    pub(crate) current_strategy: Option<String>,
+    pub(crate) last_checkpoint_at: Option<i64>,
+    pub(crate) best_candidate_id: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
