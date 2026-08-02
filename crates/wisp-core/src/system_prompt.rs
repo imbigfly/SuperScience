@@ -79,6 +79,7 @@ never reduce the promised samples or scientific objective without the user's exp
     fn tool_guidance() -> String {
         "## Tool Selection\n\n\
 Use the dedicated tool when one exists (read/write/edit/search/grep/attempt_completion). Reach for **shell** only when no dedicated tool fits — it runs PowerShell on Windows and POSIX `sh` on macOS/Linux, with a 60s timeout.\n\
+When the user asks what a configured Workflow is, what it does, or how it works, call **explain_workflow** when available and explain the returned task graph. Inspection is not execution: do not call **delegate_tasks** unless the user asks to run the Workflow.\n\
 Use **edit** (not write) for small in-place changes; read the target first so `old` matches the current file exactly, and ensure `old` is unique or pass `all=true`.\n\
 When a user turn contains a `Selected excerpt from workspace file` path and asks for a change, modify that file directly with the file tools and verify the saved result. Do not merely reply with a replacement code block.\n\
 Use **view_image** for screenshots, UI mockups, error screens, and diagrams. The `read` tool auto-routes image files (.png/.jpg/.jpeg/.gif/.webp) to vision, but call `view_image` directly when the path is computed.\n\
@@ -277,6 +278,21 @@ mod tests {
         assert!(
             out.contains("nested-quote one-liners"),
             "ssh quoting guidance missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn prompt_separates_workflow_explanation_from_execution() {
+        let skills = SkillIndex::default();
+        let out = SystemPrompt::new(std::path::Path::new("/tmp"), &skills, None).assemble();
+        assert!(
+            out.contains("call **explain_workflow** when available"),
+            "{out}"
+        );
+        assert!(out.contains("Inspection is not execution"), "{out}");
+        assert!(
+            out.contains("do not call **delegate_tasks** unless the user asks"),
+            "{out}"
         );
     }
 

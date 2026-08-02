@@ -452,6 +452,12 @@ alternatives; deductive predictions; discriminating experiments plus rescue/fals
 failure-driven iteration; translation, feasibility, and risk; and a source-marked evidence–claim
 matrix with priorities. Its data and literature nodes run independently before synthesis and each
 binds only its declared Skill.
+
+The main Agent can inspect any configured template with the read-only `explain_workflow` tool.
+Questions such as “What is Data-driven research design?” return the saved goal, task graph,
+dependencies, capabilities, Skill bindings, and output sections. Inspection never starts the
+Workflow; execution still requires a separate `delegate_tasks` call or an explicit UI action.
+
 - Turning Delegation off prevents the main conversation and its MCP bridge from
   listing or invoking delegation tools. It does not erase workflow history or
   implicitly cancel a workflow that is already running.
