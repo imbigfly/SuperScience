@@ -1619,6 +1619,80 @@ test("conversation action button renames, transfers, and deletes sessions (#557)
   )).toBe(true);
 });
 
+test("conversations can be selected and moved or deleted together", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await page.goto("/");
+  await page.locator(".proj-card-main").first().click();
+
+  await page.getByRole("button", { name: "New group" }).click();
+  const folderInput = page.locator("#folder-modal-input");
+  await folderInput.fill("Bulk destination");
+  await page.locator(".modal", { has: folderInput }).getByRole("button", { name: "Save" }).click();
+
+  const titles = ["actions-bulk-one", "actions-bulk-two", "actions-bulk-keep"];
+  for (const title of titles) {
+    await newSessionButton(page).click();
+    await composer(page).fill(title);
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.locator(".side-item.ses", { hasText: title })).toBeVisible({ timeout: 10_000 });
+  }
+
+  const sidebar = page.locator(".sidebar");
+  let first = sidebar.locator(".side-item.ses", { hasText: titles[0] });
+  let second = sidebar.locator(".side-item.ses", { hasText: titles[1] });
+  const keep = sidebar.locator(".side-item.ses", { hasText: titles[2] });
+  const firstId = await first.getAttribute("data-session-id");
+  const secondId = await second.getAttribute("data-session-id");
+
+  await sidebar.getByRole("button", { name: "Select", exact: true }).click();
+  await first.click();
+  await second.click();
+  await expect(first).toHaveAttribute("aria-pressed", "true");
+  await expect(second).toHaveAttribute("aria-pressed", "true");
+  await expect(sidebar.getByText("2 selected", { exact: true })).toBeVisible();
+
+  await sidebar.getByTestId("bulk-move-sessions").selectOption("folder-1");
+  await expect.poll(() => page.evaluate(({ firstId, secondId }) => {
+    const calls = ((window as any).__sendInvokeLog ?? [])
+      .filter((call: any) => call.cmd === "move_session")
+      .slice(-2)
+      .map((call: any) => call.args instanceof Map ? Object.fromEntries(call.args) : call.args)
+      .sort((a: any, b: any) => String(a.id).localeCompare(String(b.id)));
+    return calls;
+  }, { firstId, secondId })).toEqual([
+    { id: firstId, folderId: "folder-1" },
+    { id: secondId, folderId: "folder-1" },
+  ].sort((a, b) => String(a.id).localeCompare(String(b.id))));
+  await expect(sidebar.getByRole("button", { name: "Select", exact: true })).toBeVisible();
+
+  first = sidebar.locator(".side-item.ses", { hasText: titles[0] });
+  second = sidebar.locator(".side-item.ses", { hasText: titles[1] });
+  await sidebar.getByRole("button", { name: "Select", exact: true }).click();
+  await first.click();
+  await second.click();
+  await sidebar.getByTestId("bulk-delete-sessions").click();
+
+  const confirm = page.locator(".confirm-modal");
+  await expect(confirm).toContainText("Delete 2 conversations? This cannot be undone.");
+  await page.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  await expect(sidebar.getByTestId("bulk-delete-sessions")).toBeVisible();
+  await expect(first).toHaveAttribute("aria-pressed", "true");
+
+  await sidebar.getByTestId("bulk-delete-sessions").click();
+  await confirm.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(first).toHaveCount(0);
+  await expect(second).toHaveCount(0);
+  await expect(keep).toBeVisible();
+  await expect.poll(() => page.evaluate(({ firstId, secondId }) => {
+    const ids = ((window as any).__sendInvokeLog ?? [])
+      .filter((call: any) => call.cmd === "delete_session")
+      .map((call: any) => call.args instanceof Map ? Object.fromEntries(call.args) : call.args)
+      .map((args: any) => args.id);
+    return [firstId, secondId].every((id) => ids.includes(id));
+  }, { firstId, secondId })).toBe(true);
+});
+
 test("group action button visibly renames and deletes groups", async ({ page }) => {
   await page.addInitScript(parallelMock);
   await page.goto("/");
@@ -1833,6 +1907,17 @@ test("Quick Actions opens its bound graph in the standalone Workflow Studio", as
   await expect(page.locator(".settings-nav")).toBeHidden();
   const studio = page.getByTestId("workflow-studio");
   await expect(studio).toBeVisible();
+  const libraryLayout = await studio.locator(".workflow-studio-library").evaluate((library) => {
+    const bounds = library.getBoundingClientRect();
+    const buttons = [...library.querySelectorAll<HTMLElement>(".workflow-studio-library-actions button")]
+      .map((button) => button.getBoundingClientRect());
+    return {
+      inside: buttons.every((button) => button.left >= bounds.left
+        && button.right <= bounds.right),
+      stacked: buttons.length === 2 && buttons[1].top > buttons[0].bottom,
+    };
+  });
+  expect(libraryLayout).toEqual({ inside: true, stacked: true });
   const studioBox = await studio.boundingBox();
   const viewport = page.viewportSize()!;
   expect(studioBox?.width ?? 0).toBeGreaterThan(viewport.width * 0.95);
@@ -1862,6 +1947,48 @@ test("Quick Actions opens its bound graph in the standalone Workflow Studio", as
   const inspector = studio.getByTestId("workflow-graph-inspector");
   await expect(inspector.getByTestId("dynamic-task-id")).toHaveValue("synthesize");
   await expect(inspector.getByTestId("workflow-graph-remove-edge")).toHaveCount(2);
+  const skillPicker = inspector.getByTestId("dynamic-task-skills");
+  await expect(skillPicker.getByTestId("dynamic-task-skill-option")).toHaveCount(0);
+  await skillPicker.getByTestId("dynamic-task-skill-search").fill("literature");
+  await expect(skillPicker.getByTestId("dynamic-task-skill-option")).toHaveCount(1);
+  await expect(skillPicker.getByTestId("dynamic-task-skill-option"))
+    .toContainText("literature-review");
+
+  const resizer = studio.getByTestId("workflow-graph-resizer");
+  await expect(resizer).toHaveAttribute("role", "separator");
+  const inspectorBeforeResize = await inspector.boundingBox();
+  await resizer.evaluate((handle) => {
+    const rect = handle.getBoundingClientRect();
+    const startX = rect.left + rect.width / 2;
+    const startY = rect.top + 60;
+    handle.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      button: 0,
+      pointerId: 17,
+      clientX: startX,
+      clientY: startY,
+    }));
+    handle.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      buttons: 1,
+      pointerId: 17,
+      clientX: startX - 80,
+      clientY: startY,
+    }));
+    handle.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      button: 0,
+      pointerId: 17,
+      clientX: startX - 80,
+      clientY: startY,
+    }));
+  });
+  await expect.poll(async () => {
+    const resized = await inspector.boundingBox();
+    return inspectorBeforeResize && resized
+      ? Math.round(resized.width - inspectorBeforeResize.width)
+      : 0;
+  }).toBeGreaterThan(60);
   await expect(studio.getByTestId("workflow-graph-minimap")).toBeVisible();
   await studio.getByTestId("workflow-graph-zoom-in").click();
   await expect(studio.getByTestId("workflow-graph-fit")).toHaveText("110%");
@@ -1910,6 +2037,43 @@ test("Workflow library includes a built-in Roundtable DAG", async ({ page }) => 
   expect(chair.x).toBeGreaterThan(reviews[0].x);
 });
 
+test("Workflow library includes the Wisp-native seven-node method-search DAG", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Workflows");
+  const studio = page.getByTestId("workflow-studio");
+  const template = studio.getByTestId("workflow-template-card")
+    .filter({ hasText: "Develop computational method" });
+  await expect(template).toContainText("durable method search");
+  await template.click();
+
+  const nodes = studio.getByTestId("workflow-graph-node");
+  await expect(nodes).toHaveCount(7);
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(8);
+  const rootPositions = await nodes.evaluateAll((items) => items
+    .filter((item) => ["literature_methods", "data_audit", "baseline_analysis"]
+      .includes(item.getAttribute("data-node-id") ?? ""))
+    .map((item) => item.getBoundingClientRect().x));
+  expect(rootPositions).toHaveLength(3);
+  expect(Math.max(...rootPositions) - Math.min(...rootPositions)).toBeLessThan(2);
+
+  const activityNode = studio.locator(
+    '[data-testid="workflow-graph-node"][data-node-id="method_search"]',
+  );
+  await expect(activityNode).toHaveClass(/run-activity/);
+  await activityNode.getByTestId("workflow-graph-node-select").click();
+  const inspector = studio.getByTestId("workflow-graph-inspector");
+  await expect(inspector.getByTestId("dynamic-task-type"))
+    .toHaveValue("run_activity");
+  await expect(inspector.getByTestId("run-activity-config")).toBeVisible();
+  await expect(inspector.getByTestId("run-activity-input-task"))
+    .toHaveValue("prepare_contract");
+  await expect(inspector.getByTestId("run-activity-max-candidates")).toHaveValue("20");
+  await expect(inspector.getByTestId("dynamic-task-capabilities")).toBeHidden();
+  await expect(inspector.getByTestId("dynamic-task-skills")).toBeHidden();
+  await expect(inspector.getByTestId("dynamic-task-specialist")).toBeHidden();
+  await expect(studio.getByTestId("workflow-save")).toHaveText("Save as copy");
+});
+
 test("Skill Portfolio Planner confirms budget and opens an editable DAG", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Workflows");
@@ -1945,10 +2109,14 @@ test("Workflow Studio reuses the roundtable generator and saves a Quick Action b
   await studio.getByTestId("roundtable-apply").click();
   await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(5);
   await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(6);
-  await studio.getByTestId("workflow-graph-inspector")
-    .getByTestId("dynamic-task-skills")
-    .getByText("analysis-workflow · bundled")
+  const skillPicker = studio.getByTestId("workflow-graph-inspector")
+    .getByTestId("dynamic-task-skills");
+  await skillPicker.getByTestId("dynamic-task-skill-search").fill("analysis");
+  await skillPicker.getByTestId("dynamic-task-skill-option")
+    .filter({ hasText: "analysis-workflow" })
     .click();
+  await expect(skillPicker.getByTestId("dynamic-task-selected-skills"))
+    .toContainText("analysis-workflow · bundled");
   await studio.getByTestId("workflow-save").click();
 
   await expect.poll(() => lastInvokeArgs(page, "save_workflow_template")).toMatchObject({
@@ -1976,18 +2144,18 @@ test("Workflow Studio reuses the roundtable generator and saves a Quick Action b
       },
     },
   });
-  await expect(studio.getByTestId("workflow-template-card")).toHaveCount(3);
+  await expect(studio.getByTestId("workflow-template-card")).toHaveCount(4);
 
   await studio.getByTestId("workflow-studio-back").click();
   await expect(page.locator(".settings-nav")).toBeVisible();
   await page.getByTestId("quick-action-new").click();
   await page.getByTestId("quick-action-name").fill("Discuss selection");
-  await page.getByTestId("quick-action-workflow").selectOption("workflow_2");
+  await page.getByTestId("quick-action-workflow").selectOption("workflow_3");
   await page.getByTestId("quick-action-save").click();
   await expect.poll(() => lastInvokeArgs(page, "save_quick_action")).toMatchObject({
     action: {
       name: "Discuss selection",
-      workflow_template_id: "workflow_2",
+      workflow_template_id: "workflow_3",
       context: "selection",
       enabled: true,
     },
@@ -3160,6 +3328,42 @@ test("Run surface binds an exact publication evidence source", async ({ page }) 
   });
   await expect(dialog).toHaveCount(0);
   await expect(page.getByTestId("publication-workspace")).toContainText("run-kinase-001");
+});
+
+test("method-search Run reviews the frozen contract before start and exposes controls", async ({ page }) => {
+  await enterApp(page, "/?mockMethodSearch=1");
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "Local machine" })
+    .getByRole("button", { name: "View runs" }).click();
+
+  const card = page.locator(".run-card", { hasText: "Develop computational method" });
+  await expect(card).toContainText("awaiting_approval");
+  await card.getByTestId("method-search-inspect").click();
+  const details = card.getByTestId("method-search-details");
+  await expect(details).toContainText("analysis/model.py::fit_model");
+  await expect(details).toContainText("0.537200");
+  await expect(details).toContainText("Candidate reachability");
+  await expect(details).toContainText("runtime_seconds lte 120");
+  await expect(details.getByTestId("method-search-start")).toBeVisible();
+  await expect(details.getByTestId("method-search-lineage")).toContainText("Candidate lineage (2)");
+  await expect(details.getByTestId("method-search-outputs")).toContainText("selected_method");
+
+  await details.getByTestId("method-search-start").click();
+  await expect.poll(() => lastInvokeArgs(page, "start_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await expect(details.getByTestId("method-search-pause")).toBeVisible();
+  await details.getByTestId("method-search-pause").click();
+  await expect.poll(() => lastInvokeArgs(page, "pause_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await expect(details.getByTestId("method-search-resume")).toBeVisible();
+  await details.getByTestId("method-search-resume").click();
+  await expect.poll(() => lastInvokeArgs(page, "resume_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await details.getByTestId("method-search-cancel").click();
+  await expect.poll(() => lastInvokeArgs(page, "cancel_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await expect(details).toContainText("Cancelled");
 });
 
 test("precise message evidence uses a stable locator and Escape closes only the top layer", async ({ page }) => {

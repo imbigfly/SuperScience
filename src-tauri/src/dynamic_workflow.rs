@@ -9,10 +9,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use wisp_core::{
-    AgentBudget, AgentExecutorRef, AgentOrigin, AgentOutputSchemaSource, AgentWorkspacePolicy,
-    CapabilityRegistry, CapabilityRisk, DelegatedTaskProposal, DelegationHostPolicy,
-    DelegationMode, DelegationPlan, ExecutorFeature, SpecialistSnapshot,
-    MAX_AGENT_OUTPUT_SCHEMA_BYTES, MAX_DELEGATION_TASKS,
+    AgentBackend, AgentBudget, AgentExecutorRef, AgentOrigin, AgentOutputSchemaSource, AgentRole,
+    AgentSessionPolicy, AgentSpec, AgentWorkspacePolicy, CapabilityRegistry, CapabilityRisk,
+    ContextPolicy, DelegatedTaskProposal, DelegationHostPolicy, DelegationMode, DelegationPlan,
+    DelegationPlanStep, ExecutorFeature, PermissionSet, RunActivitySpec, SpecialistSnapshot,
+    WorkflowTaskKind, MAX_AGENT_OUTPUT_SCHEMA_BYTES, MAX_DELEGATION_TASKS,
 };
 use wisp_store::{AgentWorkflowAttempt, Store};
 
@@ -232,6 +233,11 @@ pub(crate) struct DynamicAgentTaskProposal {
     pub(crate) instruction: String,
     #[serde(default)]
     pub(crate) depends_on: Vec<String>,
+    #[serde(default)]
+    pub(crate) task_kind: WorkflowTaskKind,
+    #[serde(default)]
+    pub(crate) run_activity: Option<RunActivityProposal>,
+    #[serde(default)]
     pub(crate) capabilities: Vec<String>,
     #[serde(default)]
     pub(crate) skill_ids: Vec<String>,
@@ -247,6 +253,19 @@ pub(crate) struct DynamicAgentTaskProposal {
     pub(crate) executor: Option<AgentExecutorSelection>,
     #[serde(default)]
     pub(crate) budget: Option<AgentBudgetProposal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RunActivityProposal {
+    pub(crate) activity: String,
+    pub(crate) context_id: String,
+    pub(crate) input_task_id: String,
+    pub(crate) spec_output_pointer: String,
+    pub(crate) max_candidates: u32,
+    pub(crate) max_wall_seconds: u64,
+    pub(crate) max_evaluator_seconds: u64,
+    pub(crate) max_cost_microunits: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -278,6 +297,7 @@ pub(crate) struct AgentResultSummary {
     pub(crate) summary: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) child_frame_id: Option<String>,
+    pub(crate) run_id: Option<String>,
     pub(crate) input_tokens: i64,
     pub(crate) output_tokens: i64,
     pub(crate) tool_calls: i64,
@@ -292,6 +312,8 @@ pub(crate) struct ResolvedAgentTaskSummary {
     pub(crate) stored_step_id: String,
     pub(crate) instruction: String,
     pub(crate) depends_on: Vec<String>,
+    pub(crate) task_kind: WorkflowTaskKind,
+    pub(crate) run_activity: Option<RunActivitySpec>,
     pub(crate) capabilities: Vec<String>,
     pub(crate) skill_bindings: Vec<wisp_core::AgentSkillBinding>,
     pub(crate) specialist_id: Option<String>,
@@ -370,66 +392,173 @@ pub(crate) async fn resolve_proposal(
     resources: Option<&crate::delegation_resources::ScientificResourceCatalog>,
 ) -> Result<DelegationPlan, String> {
     validate_proposal(&proposal)?;
-    let mut tasks = Vec::with_capacity(proposal.tasks.len());
+    let mut steps = Vec::with_capacity(proposal.tasks.len());
     for task in proposal.tasks {
-        let specialist = specialist_snapshot(store, task.specialist_id.as_deref()).await?;
-        let skill_bindings = resources
-            .map(|resources| resources.resolve_skill_bindings(&task.skill_ids, specialist.as_ref()))
-            .transpose()?
-            .unwrap_or_default();
-        if let Some(resources) = resources {
-            resources.validate_task(&task.capabilities, &skill_bindings, specialist.as_ref())?;
+        let display_id = task.id.clone();
+        let stored_id = stored_task_id(&workflow_id, &display_id);
+        let dependencies = task
+            .depends_on
+            .iter()
+            .map(|dependency| stored_task_id(&workflow_id, dependency))
+            .collect::<Vec<_>>();
+        match task.task_kind {
+            WorkflowTaskKind::Agent => {
+                let specialist = specialist_snapshot(store, task.specialist_id.as_deref()).await?;
+                let skill_bindings = resources
+                    .map(|resources| {
+                        resources.resolve_skill_bindings(&task.skill_ids, specialist.as_ref())
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                if let Some(resources) = resources {
+                    resources.validate_task(
+                        &task.capabilities,
+                        &skill_bindings,
+                        specialist.as_ref(),
+                    )?;
+                }
+                if specialist
+                    .as_ref()
+                    .is_some_and(|value| value.id == "reviewer")
+                    && (task.capabilities.iter().any(|capability| {
+                        !matches!(capability.as_str(), "reasoning" | "project_read" | "review")
+                    }) || !task
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability == "review"))
+                {
+                    return Err(
+                        "the built-in Reviewer requires the review capability and cannot receive write or execute capabilities"
+                            .into(),
+                    );
+                }
+                let resolved = registry
+                    .resolve_task(
+                        DelegatedTaskProposal {
+                            id: stored_id.clone(),
+                            instruction: task.instruction.trim().into(),
+                            context_summary: proposal.context.trim().into(),
+                            depends_on: dependencies,
+                            capabilities: task.capabilities,
+                            skill_bindings,
+                            specialist,
+                            output_schema: task.output_schema,
+                            isolated: task.isolated,
+                            model_id: task.model_id.filter(|value| !value.trim().is_empty()),
+                            executor: task
+                                .executor
+                                .map(AgentExecutorSelection::into_ref)
+                                .transpose()?,
+                            budget: task.budget.map(AgentBudget::from),
+                            input: json!({"task_id": display_id}),
+                        },
+                        host,
+                    )
+                    .map_err(|error| error.to_string())?;
+                steps.push(DelegationPlanStep {
+                    id: stored_id,
+                    spec: resolved.spec().clone(),
+                    input: resolved.input().clone(),
+                    task_kind: WorkflowTaskKind::Agent,
+                    run_activity: None,
+                });
+            }
+            WorkflowTaskKind::RunActivity => {
+                let activity = task
+                    .run_activity
+                    .ok_or_else(|| format!("task {display_id} requires run_activity"))?;
+                let context = store
+                    .get_execution_context(&activity.context_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        format!(
+                            "task {display_id} uses unknown execution context {}",
+                            activity.context_id
+                        )
+                    })?;
+                let context_value = serde_json::to_value(&context).map_err(|e| e.to_string())?;
+                let (_, context_revision) = wisp_store::canonical_json_sha256(&context_value);
+                let mut resolved_activity = RunActivitySpec {
+                    activity: activity.activity,
+                    context_id: activity.context_id,
+                    context_revision,
+                    input_task_id: stored_task_id(&workflow_id, &activity.input_task_id),
+                    spec_output_pointer: activity.spec_output_pointer,
+                    max_candidates: activity.max_candidates,
+                    max_wall_seconds: activity.max_wall_seconds,
+                    max_evaluator_seconds: activity.max_evaluator_seconds,
+                    max_cost_microunits: activity.max_cost_microunits,
+                    provider_profile_id: None,
+                    model_profile_id: host.default_model_id.clone(),
+                    approval_reasons: vec![
+                        "Runs bounded candidate code generation and evaluation.".into(),
+                        "Consumes the explicitly approved method-search time and cost budget."
+                            .into(),
+                    ],
+                    integrity_hash: String::new(),
+                };
+                resolved_activity
+                    .seal()
+                    .map_err(|error| error.to_string())?;
+                let spec = AgentSpec {
+                    agent_id: stored_id.clone(),
+                    name: display_id.clone(),
+                    goal: task.instruction.trim().into(),
+                    context_summary: proposal.context.trim().into(),
+                    inputs: vec![],
+                    acceptance_criteria: vec![],
+                    dependencies,
+                    role: AgentRole::Custom("run_activity".into()),
+                    backend: AgentBackend::Local,
+                    model: None,
+                    prompt_template: "Host-managed Workflow Run activity.".into(),
+                    input_contract: json!({"type":"object"}),
+                    output_contract: json!({"type":"object"}),
+                    permissions: PermissionSet::default(),
+                    context_policy: ContextPolicy::default(),
+                    budget: AgentBudget::default(),
+                    timeout_secs: Some(resolved_activity.max_wall_seconds),
+                    requires_review: true,
+                    session_policy: AgentSessionPolicy::New,
+                    allow_delegation: false,
+                    origin: AgentOrigin::Temporary,
+                    capabilities: vec![],
+                    skill_bindings: vec![],
+                    executor: None,
+                    request_preferences: None,
+                    workspace_policy: None,
+                    output_schema_source: AgentOutputSchemaSource::Standard,
+                    approval_reasons: resolved_activity.approval_reasons.clone(),
+                    authorization: None,
+                };
+                steps.push(DelegationPlanStep {
+                    id: stored_id,
+                    spec,
+                    input: json!({"task_id": display_id}),
+                    task_kind: WorkflowTaskKind::RunActivity,
+                    run_activity: Some(resolved_activity),
+                });
+            }
         }
-        if specialist
-            .as_ref()
-            .is_some_and(|value| value.id == "reviewer")
-            && (task.capabilities.iter().any(|capability| {
-                !matches!(capability.as_str(), "reasoning" | "project_read" | "review")
-            }) || !task
-                .capabilities
-                .iter()
-                .any(|capability| capability == "review"))
-        {
-            return Err(
-                "the built-in Reviewer requires the review capability and cannot receive write or execute capabilities"
-                    .into(),
-            );
-        }
-        let display_id = task.id;
-        tasks.push(DelegatedTaskProposal {
-            id: stored_task_id(&workflow_id, &display_id),
-            instruction: task.instruction.trim().into(),
-            context_summary: proposal.context.trim().into(),
-            depends_on: task
-                .depends_on
-                .iter()
-                .map(|dependency| stored_task_id(&workflow_id, dependency))
-                .collect(),
-            capabilities: task.capabilities,
-            skill_bindings,
-            specialist,
-            output_schema: task.output_schema,
-            isolated: task.isolated,
-            model_id: task.model_id.filter(|value| !value.trim().is_empty()),
-            executor: task
-                .executor
-                .map(AgentExecutorSelection::into_ref)
-                .transpose()?,
-            budget: task.budget.map(AgentBudget::from),
-            input: json!({"task_id": display_id}),
-        });
     }
-    registry
-        .resolve_plan_with_id(
-            workflow_id,
-            proposal.goal.trim().into(),
-            proposal.approval_policy.mode(),
-            DEFAULT_DYNAMIC_PARALLELISM,
-            tasks,
-            host,
-        )
-        .map(|resolved| resolved.into_plan())
-        .map_err(|error| error.to_string())
+    let requires_confirmation = proposal.approval_policy == AgentApprovalPolicy::ReviewAll
+        || steps.iter().any(|step| {
+            step.task_kind == WorkflowTaskKind::RunActivity
+                || !step.spec.approval_reasons.is_empty()
+        })
+        || !host.auto_safe;
+    let plan = DelegationPlan {
+        schema_version: wisp_core::DYNAMIC_DELEGATION_SCHEMA_VERSION,
+        id: workflow_id,
+        goal: proposal.goal.trim().into(),
+        mode: proposal.approval_policy.mode(),
+        requires_confirmation,
+        max_parallel: DEFAULT_DYNAMIC_PARALLELISM,
+        steps,
+    };
+    plan.validate().map_err(|error| error.to_string())?;
+    Ok(plan)
 }
 
 pub(crate) fn summarize(
@@ -480,10 +609,28 @@ pub(crate) fn summarize(
             .as_ref()
             .map(AgentExecutorSelection::from_ref);
         let requested = step.spec.request_preferences.as_ref();
+        let proposal_run_activity = step.run_activity.clone().map(|mut activity| {
+            activity.input_task_id = ids
+                .get(activity.input_task_id.as_str())
+                .cloned()
+                .unwrap_or(activity.input_task_id);
+            RunActivityProposal {
+                activity: activity.activity,
+                context_id: activity.context_id,
+                input_task_id: activity.input_task_id,
+                spec_output_pointer: activity.spec_output_pointer,
+                max_candidates: activity.max_candidates,
+                max_wall_seconds: activity.max_wall_seconds,
+                max_evaluator_seconds: activity.max_evaluator_seconds,
+                max_cost_microunits: activity.max_cost_microunits,
+            }
+        });
         proposal_tasks.push(DynamicAgentTaskProposal {
             id: id.clone(),
             instruction: step.spec.goal.clone(),
             depends_on: depends_on.clone(),
+            task_kind: step.task_kind,
+            run_activity: proposal_run_activity,
             capabilities: step.spec.capabilities.clone(),
             skill_ids: step
                 .spec
@@ -508,9 +655,13 @@ pub(crate) fn summarize(
                         .map(AgentExecutorSelection::from_ref)
                 })
                 .unwrap_or_else(|| executor.clone()),
-            budget: requested
-                .map(|requested| requested.budget.as_ref().map(AgentBudgetProposal::from))
-                .unwrap_or_else(|| Some(AgentBudgetProposal::from(&step.spec.budget))),
+            budget: if step.task_kind == WorkflowTaskKind::RunActivity {
+                None
+            } else {
+                requested
+                    .map(|requested| requested.budget.as_ref().map(AgentBudgetProposal::from))
+                    .unwrap_or_else(|| Some(AgentBudgetProposal::from(&step.spec.budget)))
+            },
         });
         approval_reasons.extend(step.spec.approval_reasons.iter().map(|message| {
             AgentApprovalReasonSummary {
@@ -542,6 +693,14 @@ pub(crate) fn summarize(
             stored_step_id: step.id.clone(),
             instruction: step.spec.goal.clone(),
             depends_on,
+            task_kind: step.task_kind,
+            run_activity: step.run_activity.clone().map(|mut activity| {
+                activity.input_task_id = ids
+                    .get(activity.input_task_id.as_str())
+                    .cloned()
+                    .unwrap_or(activity.input_task_id);
+                activity
+            }),
             capabilities: step.spec.capabilities.clone(),
             skill_bindings: step.spec.skill_bindings.clone(),
             specialist_id: specialist.map(|value| value.id.clone()),
@@ -575,9 +734,13 @@ pub(crate) fn summarize(
 }
 
 fn result_summary(attempt: &AgentWorkflowAttempt) -> AgentResultSummary {
-    let summary = serde_json::from_str::<Value>(&attempt.output_json)
-        .ok()
+    let output = serde_json::from_str::<Value>(&attempt.output_json).ok();
+    let summary = output
+        .as_ref()
         .and_then(|value| value.get("summary")?.as_str().map(str::to_string));
+    let run_id = output
+        .as_ref()
+        .and_then(|value| value.get("run_id")?.as_str().map(str::to_string));
     AgentResultSummary {
         status: serde_json::to_value(attempt.status)
             .ok()
@@ -586,6 +749,7 @@ fn result_summary(attempt: &AgentWorkflowAttempt) -> AgentResultSummary {
         summary,
         error: attempt.error.clone(),
         child_frame_id: attempt.child_frame_id.clone(),
+        run_id,
         input_tokens: attempt.input_tokens,
         output_tokens: attempt.output_tokens,
         tool_calls: attempt.tool_calls,
@@ -687,8 +851,58 @@ pub(crate) fn validate_proposal(proposal: &DynamicAgentWorkflowProposal) -> Resu
                 task.id
             ));
         }
-        if task.capabilities.is_empty() {
-            return Err(format!("task {} requires at least one capability", task.id));
+        match task.task_kind {
+            WorkflowTaskKind::Agent => {
+                if task.capabilities.is_empty() {
+                    return Err(format!("task {} requires at least one capability", task.id));
+                }
+                if task.run_activity.is_some() {
+                    return Err(format!(
+                        "Agent task {} cannot include run_activity",
+                        task.id
+                    ));
+                }
+            }
+            WorkflowTaskKind::RunActivity => {
+                let activity = task.run_activity.as_ref().ok_or_else(|| {
+                    format!("Run activity task {} requires run_activity", task.id)
+                })?;
+                if !task.capabilities.is_empty()
+                    || !task.skill_ids.is_empty()
+                    || task.specialist_id.is_some()
+                    || task.output_schema.is_some()
+                    || task.isolated
+                    || task.model_id.is_some()
+                    || task.executor.is_some()
+                    || task.budget.is_some()
+                {
+                    return Err(format!(
+                        "Run activity task {} cannot include Agent-only fields",
+                        task.id
+                    ));
+                }
+                if activity.activity != "method_search"
+                    || activity.context_id.trim().is_empty()
+                    || activity.spec_output_pointer != "method_search_spec_artifact_version_id"
+                    || !(1..=50).contains(&activity.max_candidates)
+                    || activity.max_wall_seconds == 0
+                    || activity.max_wall_seconds > 7 * 24 * 60 * 60
+                    || activity.max_evaluator_seconds == 0
+                    || activity.max_evaluator_seconds > 300
+                    || activity.max_cost_microunits == 0
+                {
+                    return Err(format!(
+                        "Run activity task {} has an invalid activity or budget",
+                        task.id
+                    ));
+                }
+                if !task.depends_on.contains(&activity.input_task_id) {
+                    return Err(format!(
+                        "Run activity task {} input_task_id must be a direct dependency",
+                        task.id
+                    ));
+                }
+            }
         }
         if task.output_schema.as_ref().is_some_and(|schema| {
             !schema.is_object()
@@ -725,6 +939,32 @@ pub(crate) fn validate_proposal(proposal: &DynamicAgentWorkflowProposal) -> Resu
                 return Err(format!(
                     "task {} depends on unknown task {dependency}",
                     task.id
+                ));
+            }
+        }
+        if let Some(activity) = task.run_activity.as_ref() {
+            let input = proposal
+                .tasks
+                .iter()
+                .find(|candidate| candidate.id == activity.input_task_id)
+                .ok_or_else(|| format!("Run activity task {} input_task_id is unknown", task.id))?;
+            let pointer = activity.spec_output_pointer.as_str();
+            let declares_pointer = input.output_schema.as_ref().is_some_and(|schema| {
+                schema
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .is_some_and(|properties| properties.contains_key(pointer))
+                    && schema
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .is_some_and(|required| {
+                            required.iter().any(|value| value.as_str() == Some(pointer))
+                        })
+            });
+            if !declares_pointer {
+                return Err(format!(
+                    "Run activity task {} requires dependency {} to declare required output {}",
+                    task.id, input.id, pointer
                 ));
             }
         }
@@ -772,6 +1012,8 @@ mod tests {
             id: id.into(),
             instruction: format!("Run {id}"),
             depends_on: depends_on.iter().map(|value| (*value).into()).collect(),
+            task_kind: WorkflowTaskKind::Agent,
+            run_activity: None,
             capabilities: vec!["reasoning".into()],
             skill_ids: vec![],
             specialist_id: None,
@@ -804,6 +1046,85 @@ mod tests {
                 .unwrap_err()
                 .contains("cycle")
         );
+    }
+
+    #[test]
+    fn saved_task_json_without_task_kind_defaults_to_agent() {
+        let value = serde_json::json!({
+            "id":"legacy",
+            "instruction":"Run legacy task",
+            "depends_on":[],
+            "capabilities":["reasoning"],
+            "skill_ids":[],
+            "specialist_id":null,
+            "output_schema":null,
+            "isolated":false,
+            "model_id":null,
+            "executor":null,
+            "budget":null
+        });
+        let task: DynamicAgentTaskProposal = serde_json::from_value(value).unwrap();
+        assert_eq!(task.task_kind, WorkflowTaskKind::Agent);
+        assert!(task.run_activity.is_none());
+    }
+
+    #[test]
+    fn run_activity_rejects_agent_fields_and_requires_a_typed_direct_input() {
+        let output_schema = serde_json::json!({
+            "type":"object",
+            "required":["method_search_spec_artifact_version_id"],
+            "properties":{
+                "method_search_spec_artifact_version_id":{"type":"string"}
+            }
+        });
+        let prep = DynamicAgentTaskProposal {
+            output_schema: Some(output_schema),
+            ..task("prep", &[])
+        };
+        let activity = DynamicAgentTaskProposal {
+            id: "search".into(),
+            instruction: "Run bounded method search".into(),
+            depends_on: vec!["prep".into()],
+            task_kind: WorkflowTaskKind::RunActivity,
+            run_activity: Some(RunActivityProposal {
+                activity: "method_search".into(),
+                context_id: "local".into(),
+                input_task_id: "prep".into(),
+                spec_output_pointer: "method_search_spec_artifact_version_id".into(),
+                max_candidates: 20,
+                max_wall_seconds: 3_600,
+                max_evaluator_seconds: 60,
+                max_cost_microunits: 1_000_000,
+            }),
+            capabilities: vec![],
+            skill_ids: vec![],
+            specialist_id: None,
+            output_schema: None,
+            isolated: false,
+            model_id: None,
+            executor: None,
+            budget: None,
+        };
+        let proposal = DynamicAgentWorkflowProposal {
+            goal: "Develop method".into(),
+            context: String::new(),
+            approval_policy: AgentApprovalPolicy::ReviewAll,
+            tasks: vec![prep, activity.clone()],
+        };
+        validate_proposal(&proposal).unwrap();
+
+        let mut invalid = proposal;
+        invalid.tasks[1].capabilities = vec!["reasoning".into()];
+        assert!(validate_proposal(&invalid)
+            .unwrap_err()
+            .contains("Agent-only fields"));
+
+        let mut missing_contract = invalid;
+        missing_contract.tasks[1].capabilities.clear();
+        missing_contract.tasks[0].output_schema = None;
+        assert!(validate_proposal(&missing_contract)
+            .unwrap_err()
+            .contains("declare required output"));
     }
 
     #[test]

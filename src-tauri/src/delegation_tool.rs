@@ -527,6 +527,8 @@ impl DelegateTasksTool {
                     id: task.id,
                     instruction: task.instruction,
                     depends_on: task.depends_on,
+                    task_kind: wisp_core::WorkflowTaskKind::Agent,
+                    run_activity: None,
                     capabilities: task.capabilities,
                     skill_ids: task.skill_ids,
                     specialist_id: task.specialist_id,

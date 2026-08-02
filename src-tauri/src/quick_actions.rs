@@ -17,6 +17,7 @@ const LITERATURE_ACTION_ID: &str = "literature_research";
 const LITERATURE_TEMPLATE_ID: &str = "literature_evidence_review";
 const ROUNDTABLE_TEMPLATE_ID: &str = "roundtable";
 const RESEARCH_DESIGN_TEMPLATE_ID: &str = "data_driven_research_design";
+const METHOD_SEARCH_TEMPLATE_ID: &str = "develop_computational_method";
 const MAX_ACTION_NAME_CHARS: usize = 80;
 const MAX_TEMPLATE_NAME_CHARS: usize = 100;
 const MAX_TEMPLATE_DESCRIPTION_CHARS: usize = 500;
@@ -161,6 +162,8 @@ fn literature_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                      selected passage. Extract the actual finding and explain its relevance. {search_rules}"
                 ),
                 depends_on: vec![],
+                task_kind: wisp_core::WorkflowTaskKind::Agent,
+                run_activity: None,
                 capabilities: vec!["literature_search".into()],
                 skill_ids: vec!["literature-review".into()],
                 specialist_id: None,
@@ -182,6 +185,8 @@ fn literature_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                      Do not merely repeat supporting papers. {search_rules}"
                 ),
                 depends_on: vec![],
+                task_kind: wisp_core::WorkflowTaskKind::Agent,
+                run_activity: None,
                 capabilities: vec!["literature_search".into()],
                 skill_ids: vec!["literature-review".into()],
                 specialist_id: None,
@@ -204,6 +209,8 @@ fn literature_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                     dependency results; do not perform another search."
                     .into(),
                 depends_on: vec!["supporting_evidence".into(), "challenging_evidence".into()],
+                task_kind: wisp_core::WorkflowTaskKind::Agent,
+                run_activity: None,
                 capabilities: vec!["reasoning".into()],
                 skill_ids: vec![],
                 specialist_id: None,
@@ -258,6 +265,8 @@ fn roundtable_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                     "Act as the evidence-focused roundtable participant. {opening}"
                 ),
                 depends_on: vec![],
+                task_kind: wisp_core::WorkflowTaskKind::Agent,
+                run_activity: None,
                 capabilities: vec!["reasoning".into()],
                 skill_ids: vec![],
                 specialist_id: None,
@@ -271,6 +280,8 @@ fn roundtable_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                 id: "seat_2_opening".into(),
                 instruction: format!("Act as the critical roundtable participant. {opening}"),
                 depends_on: vec![],
+                task_kind: wisp_core::WorkflowTaskKind::Agent,
+                run_activity: None,
                 capabilities: vec!["reasoning".into()],
                 skill_ids: vec![],
                 specialist_id: None,
@@ -284,6 +295,8 @@ fn roundtable_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                 id: "seat_1_review".into(),
                 instruction: format!("Continue from the evidence-focused perspective. {review}"),
                 depends_on: vec!["seat_1_opening".into(), "seat_2_opening".into()],
+                task_kind: wisp_core::WorkflowTaskKind::Agent,
+                run_activity: None,
                 capabilities: vec!["reasoning".into()],
                 skill_ids: vec![],
                 specialist_id: None,
@@ -297,6 +310,8 @@ fn roundtable_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                 id: "seat_2_review".into(),
                 instruction: format!("Continue from the critical perspective. {review}"),
                 depends_on: vec!["seat_1_opening".into(), "seat_2_opening".into()],
+                task_kind: wisp_core::WorkflowTaskKind::Agent,
+                run_activity: None,
                 capabilities: vec!["reasoning".into()],
                 skill_ids: vec![],
                 specialist_id: None,
@@ -314,6 +329,8 @@ fn roundtable_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal 
                     erase minority positions."
                     .into(),
                 depends_on: vec!["seat_1_review".into(), "seat_2_review".into()],
+                task_kind: wisp_core::WorkflowTaskKind::Agent,
+                run_activity: None,
                 capabilities: vec!["reasoning".into()],
                 skill_ids: vec![],
                 specialist_id: None,
@@ -384,6 +401,8 @@ fn research_design_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProp
             id: id.into(),
             instruction: instruction.into(),
             depends_on: vec![],
+            task_kind: wisp_core::WorkflowTaskKind::Agent,
+            run_activity: None,
             capabilities: vec![capability.into()],
             skill_ids: vec![skill_id.into()],
             specialist_id: None,
@@ -419,6 +438,8 @@ fn research_design_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProp
                 id: "research_design".into(),
                 instruction: "Synthesize the evidence modules into the required eight-part research design. Preserve Skill source markers, avoid duplicate methodology, distinguish evidence from inference, and include falsification, rescue, and failure-driven iteration.".into(),
                 depends_on: vec!["data_analysis".into(), "literature_landscape".into()],
+                task_kind: wisp_core::WorkflowTaskKind::Agent,
+                run_activity: None,
                 capabilities: vec!["reasoning".into()],
                 skill_ids: vec![],
                 specialist_id: None,
@@ -438,6 +459,176 @@ fn builtin_research_design_template() -> WorkflowTemplate {
         name: "Data-driven research design".into(),
         description: "Parallel data and literature assessment followed by an eight-part, source-marked research design.".into(),
         proposal: research_design_base_proposal(),
+        builtin: true,
+    }
+}
+
+fn method_search_spec_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["method_search_spec_artifact_version_id", "audit_summary"],
+        "properties": {
+            "method_search_spec_artifact_version_id": {
+                "type": "string",
+                "minLength": 1
+            },
+            "audit_summary": {
+                "type": "object",
+                "required": ["baseline_primary", "noise_floor", "sentinel_reachable"],
+                "properties": {
+                    "baseline_primary": { "type": "number" },
+                    "noise_floor": { "type": "number" },
+                    "sentinel_reachable": { "const": true }
+                }
+            }
+        }
+    })
+}
+
+fn method_search_review_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["assessment", "selected_artifact_version_id", "limitations"],
+        "properties": {
+            "assessment": { "type": "string" },
+            "selected_artifact_version_id": { "type": ["string", "null"] },
+            "limitations": { "type": "array", "items": { "type": "string" } }
+        }
+    })
+}
+
+fn method_search_report_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["summary", "baseline", "selected_method", "verification", "limitations", "next_steps"],
+        "properties": {
+            "summary": { "type": "string" },
+            "baseline": { "type": "object" },
+            "selected_method": { "type": "object" },
+            "verification": { "type": "object" },
+            "limitations": { "type": "array", "items": { "type": "string" } },
+            "next_steps": { "type": "array", "items": { "type": "string" } }
+        }
+    })
+}
+
+fn method_search_agent_task(
+    id: &str,
+    instruction: &str,
+    depends_on: &[&str],
+    capabilities: &[&str],
+    skill_ids: &[&str],
+    output_schema: Option<Value>,
+) -> dynamic_workflow::DynamicAgentTaskProposal {
+    dynamic_workflow::DynamicAgentTaskProposal {
+        id: id.into(),
+        instruction: instruction.into(),
+        depends_on: depends_on.iter().map(|value| (*value).into()).collect(),
+        task_kind: wisp_core::WorkflowTaskKind::Agent,
+        run_activity: None,
+        capabilities: capabilities.iter().map(|value| (*value).into()).collect(),
+        skill_ids: skill_ids.iter().map(|value| (*value).into()).collect(),
+        specialist_id: None,
+        output_schema,
+        isolated: false,
+        model_id: None,
+        executor: None,
+        budget: Some(dynamic_workflow::AgentBudgetProposal {
+            max_tokens: Some(16_000),
+            max_tool_calls: Some(16),
+            max_cost_microunits: None,
+        }),
+    }
+}
+
+fn method_search_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowProposal {
+    dynamic_workflow::DynamicAgentWorkflowProposal {
+        goal: "Develop and independently verify a reusable computational method".into(),
+        context: "Describe the scientific objective, project-local baseline source and editable Python symbol, evaluator or evaluation requirements, validation inputs, primary metric, hard guardrails, and final-verification data. The search never edits the project checkout and starts only after the frozen contract is reviewed in the Run detail surface.".into(),
+        approval_policy: dynamic_workflow::AgentApprovalPolicy::ReviewAll,
+        tasks: vec![
+            method_search_agent_task(
+                "literature_methods",
+                "Find verified primary literature and established computational approaches relevant to the requested method. Extract bounded, actionable strategy ideas, cite exact sources, separate evidence from inference, and do not modify the project.",
+                &[],
+                &["literature_search"],
+                &["literature-review"],
+                None,
+            ),
+            method_search_agent_task(
+                "data_audit",
+                "Audit the declared project-local validation and final-verification data: ownership, paths, schema, split semantics, leakage risks, representativeness, checksums, and feasible guardrails. Read only; do not transform the data or run the search.",
+                &[],
+                &["project_read", "reasoning"],
+                &["analysis-workflow"],
+                None,
+            ),
+            method_search_agent_task(
+                "baseline_analysis",
+                "Inspect the project-local baseline implementation and editable Python symbol. Record its exact signature, dependencies, likely bottlenecks, testability, and safe mutation boundary. Read only and do not apply candidate code to the checkout.",
+                &[],
+                &["project_read", "reasoning"],
+                &["analysis-workflow"],
+                None,
+            ),
+            method_search_agent_task(
+                "prepare_contract",
+                "Using only the three dependency results and the Workflow context, construct or validate a deterministic project-local evaluator, then call the native prepare_method_search tool. Pass up to 16 exact literature/resource references as bounded strategy_sources with source_ref, title, summary, and category; do not ask the search loop to discover new data or literature. Use exactly 20 candidates, 14400 wall seconds, 120 evaluator seconds, and 5000000 cost microunits. The tool must pass baseline repetition, protected-input, and candidate-reachability audits. Return its exact method_search_spec_artifact_version_id and compact audit_summary; never substitute a path or paraphrased identifier.",
+                &["literature_methods", "data_audit", "baseline_analysis"],
+                &["code_run"],
+                &["analysis-workflow"],
+                Some(method_search_spec_schema()),
+            ),
+            dynamic_workflow::DynamicAgentTaskProposal {
+                id: "method_search".into(),
+                instruction: "After the user reviews and starts the frozen contract, run the bounded Wisp-native candidate search and wait for its durable Run to finish.".into(),
+                depends_on: vec!["prepare_contract".into()],
+                task_kind: wisp_core::WorkflowTaskKind::RunActivity,
+                run_activity: Some(dynamic_workflow::RunActivityProposal {
+                    activity: "method_search".into(),
+                    context_id: "local".into(),
+                    input_task_id: "prepare_contract".into(),
+                    spec_output_pointer: "method_search_spec_artifact_version_id".into(),
+                    max_candidates: 20,
+                    max_wall_seconds: 14_400,
+                    max_evaluator_seconds: 120,
+                    max_cost_microunits: 5_000_000,
+                }),
+                capabilities: vec![],
+                skill_ids: vec![],
+                specialist_id: None,
+                output_schema: None,
+                isolated: false,
+                model_id: None,
+                executor: None,
+                budget: None,
+            },
+            method_search_agent_task(
+                "verify_finalists",
+                "Review the completed method-search Run, exact Run outputs, selected source, candidate history, and independent verification report. Check guardrails, reproducibility, lineage, validation-only versus verified status, and whether improvements exceed the audited noise floor. Do not modify or apply finalist code.",
+                &["method_search"],
+                &["project_read", "review"],
+                &[],
+                Some(method_search_review_schema()),
+            ),
+            method_search_agent_task(
+                "method_report",
+                "Synthesize the frozen audit, completed Run result, and finalist review into a concise method card. Report the baseline, selected method ArtifactVersion, validation and final-verification evidence, guardrails, limitations, reproducibility instructions, and explicit next steps. Never claim verification when the Run is validation_only.",
+                &["prepare_contract", "method_search", "verify_finalists"],
+                &["reasoning"],
+                &[],
+                Some(method_search_report_schema()),
+            ),
+        ],
+    }
+}
+
+fn builtin_method_search_template() -> WorkflowTemplate {
+    WorkflowTemplate {
+        id: METHOD_SEARCH_TEMPLATE_ID.into(),
+        name: "Develop computational method".into(),
+        description: "Audit evidence and a baseline, freeze an evaluator contract, run a durable method search, then review and report verified finalists.".into(),
+        proposal: method_search_base_proposal(),
         builtin: true,
     }
 }
@@ -466,12 +657,14 @@ pub(crate) async fn ensure_templates(store: &Store) -> Vec<WorkflowTemplate> {
         template.id != LITERATURE_TEMPLATE_ID
             && template.id != ROUNDTABLE_TEMPLATE_ID
             && template.id != RESEARCH_DESIGN_TEMPLATE_ID
+            && template.id != METHOD_SEARCH_TEMPLATE_ID
             && !template.builtin
             && validate_template(template).is_ok()
     });
     templates.push(builtin_literature_template());
     templates.push(builtin_roundtable_template());
     templates.push(builtin_research_design_template());
+    templates.push(builtin_method_search_template());
     templates.sort_by(|left, right| {
         right
             .builtin
@@ -932,6 +1125,8 @@ mod tests {
                     id: "interpret".into(),
                     instruction: "Interpret the selected passage.".into(),
                     depends_on: vec![],
+                    task_kind: wisp_core::WorkflowTaskKind::Agent,
+                    run_activity: None,
                     capabilities: vec!["reasoning".into()],
                     skill_ids: vec![],
                     specialist_id: None,
@@ -1033,6 +1228,40 @@ mod tests {
     }
 
     #[test]
+    fn method_search_template_is_seven_node_wisp_native_dag() {
+        let proposal = method_search_base_proposal();
+        dynamic_workflow::validate_proposal(&proposal).unwrap();
+        assert_eq!(proposal.tasks.len(), 7);
+        assert!(proposal.tasks[..3]
+            .iter()
+            .all(|task| task.depends_on.is_empty()));
+        assert_eq!(
+            proposal.tasks[3].depends_on,
+            ["literature_methods", "data_audit", "baseline_analysis"]
+        );
+        let activity = &proposal.tasks[4];
+        assert_eq!(activity.task_kind, wisp_core::WorkflowTaskKind::RunActivity);
+        assert_eq!(activity.depends_on, ["prepare_contract"]);
+        let activity_spec = activity.run_activity.as_ref().unwrap();
+        assert_eq!(activity_spec.activity, "method_search");
+        assert_eq!(activity_spec.context_id, "local");
+        assert_eq!(
+            activity_spec.spec_output_pointer,
+            "method_search_spec_artifact_version_id"
+        );
+        assert_eq!(proposal.tasks[5].depends_on, ["method_search"]);
+        assert_eq!(
+            proposal.tasks[6].depends_on,
+            ["prepare_contract", "method_search", "verify_finalists"]
+        );
+        let forbidden_reference = ["tu", "so"].concat();
+        assert!(!serde_json::to_string(&proposal)
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains(&forbidden_reference));
+    }
+
+    #[test]
     fn selection_validation_is_bounded() {
         let mut empty = QuickActionInput {
             selection: " \n ".into(),
@@ -1073,7 +1302,7 @@ mod tests {
         let saved = upsert_template(&store, custom_template()).await.unwrap();
         assert_eq!(saved.id, "workflow_1");
         let templates = ensure_templates(&store).await;
-        assert_eq!(templates.len(), 4);
+        assert_eq!(templates.len(), 5);
         let action = QuickAction {
             id: String::new(),
             name: "Compare".into(),

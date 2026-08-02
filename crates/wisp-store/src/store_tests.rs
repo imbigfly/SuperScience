@@ -572,6 +572,329 @@ async fn interrupted_agent_workflows_recover_to_failed_terminal_state() {
 }
 
 #[tokio::test]
+async fn workflow_run_activity_waits_without_consuming_agent_capacity_and_reconciles() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_workflow_run_activity_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    let mut workflow = AgentWorkflow::new("wf", "p", "workspace", "Method search").unwrap();
+    workflow.max_parallel = 1;
+    workflow.root_limits_json = serde_json::to_string(&AgentDelegationRootLimits {
+        max_parallel: 1,
+        ..AgentDelegationRootLimits::default()
+    })
+    .unwrap();
+    let mut activity_step = AgentWorkflowStep::new(
+        "activity",
+        "wf",
+        0,
+        "activity",
+        "run_activity",
+        "local",
+        "host activity",
+    )
+    .unwrap();
+    activity_step.task_kind = "run_activity".into();
+    activity_step.activity_json = serde_json::json!({"activity":"method_search"}).to_string();
+    let agent_step =
+        AgentWorkflowStep::new("agent", "wf", 1, "agent", "worker", "local", "prompt").unwrap();
+    store
+        .create_agent_workflow_plan(&workflow, &[activity_step, agent_step])
+        .await
+        .unwrap();
+    assert!(store.approve_agent_workflow_plan("wf", 1).await.unwrap());
+    assert!(store
+        .transition_agent_workflow_status(
+            "wf",
+            AgentWorkflowStatus::Approved,
+            AgentWorkflowStatus::Running,
+        )
+        .await
+        .unwrap());
+
+    let activity_attempt = AgentWorkflowAttempt::queued(
+        "activity-attempt",
+        "wf",
+        "activity",
+        1,
+        "activity-request",
+        "local",
+        "{}",
+    )
+    .unwrap();
+    let activity_attempt = match store
+        .try_create_started_agent_workflow_attempt(activity_attempt)
+        .await
+        .unwrap()
+    {
+        AgentWorkflowAttemptStart::Started(value) => value,
+        other => panic!("activity attempt did not start: {other:?}"),
+    };
+    let run = RunRecord::new("method-run", "p", "local", "Method search", "method_search");
+    let link =
+        AgentWorkflowRunActivity::new(&activity_attempt.id, &run.id, "method_search").unwrap();
+    store
+        .create_agent_workflow_run_activity(&run, &link)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_agent_workflow_attempt(&activity_attempt.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkflowAttemptStatus::WaitingRun
+    );
+
+    let agent_attempt = AgentWorkflowAttempt::queued(
+        "agent-attempt",
+        "wf",
+        "agent",
+        1,
+        "agent-request",
+        "local",
+        "{}",
+    )
+    .unwrap();
+    assert!(matches!(
+        store
+            .try_create_started_agent_workflow_attempt(agent_attempt)
+            .await
+            .unwrap(),
+        AgentWorkflowAttemptStart::Started(_)
+    ));
+
+    assert!(store
+        .activate_run_lifecycle("method-run", RunStatus::Running, "test-owner", 60)
+        .await
+        .unwrap());
+    assert!(store
+        .finish_active_run_owned("method-run", "test-owner", RunStatus::Succeeded, Some(0))
+        .await
+        .unwrap());
+    assert_eq!(
+        store
+            .reconcile_agent_workflow_run_activity(&activity_attempt.id)
+            .await
+            .unwrap(),
+        Some(AgentWorkflowAttemptStatus::Succeeded)
+    );
+    assert_eq!(
+        store
+            .reconcile_agent_workflow_run_activity(&activity_attempt.id)
+            .await
+            .unwrap(),
+        Some(AgentWorkflowAttemptStatus::Succeeded)
+    );
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn workflow_root_cancellation_cancels_linked_draft_run() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_workflow_linked_cancel_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    let workflow = AgentWorkflow::new("wf", "p", "workspace", "Method search").unwrap();
+    let mut activity_step = AgentWorkflowStep::new(
+        "activity",
+        "wf",
+        0,
+        "activity",
+        "run_activity",
+        "local",
+        "host activity",
+    )
+    .unwrap();
+    activity_step.task_kind = "run_activity".into();
+    activity_step.activity_json = serde_json::json!({"activity":"method_search"}).to_string();
+    let descendant =
+        AgentWorkflowStep::new("report", "wf", 1, "report", "writer", "local", "report").unwrap();
+    store
+        .create_agent_workflow_plan(&workflow, &[activity_step, descendant])
+        .await
+        .unwrap();
+    assert!(store.approve_agent_workflow_plan("wf", 1).await.unwrap());
+    assert!(store
+        .transition_agent_workflow_status(
+            "wf",
+            AgentWorkflowStatus::Approved,
+            AgentWorkflowStatus::Running,
+        )
+        .await
+        .unwrap());
+    let attempt = AgentWorkflowAttempt::queued(
+        "activity-attempt",
+        "wf",
+        "activity",
+        1,
+        "activity-request",
+        "local",
+        "{}",
+    )
+    .unwrap();
+    let attempt = match store
+        .try_create_started_agent_workflow_attempt(attempt)
+        .await
+        .unwrap()
+    {
+        AgentWorkflowAttemptStart::Started(attempt) => attempt,
+        other => panic!("activity attempt did not start: {other:?}"),
+    };
+    let run = RunRecord::new("method-run", "p", "local", "Method search", "method_search");
+    let link = AgentWorkflowRunActivity::new(&attempt.id, &run.id, "method_search").unwrap();
+    store
+        .create_agent_workflow_run_activity(&run, &link)
+        .await
+        .unwrap();
+
+    assert_eq!(store.request_agent_workflow_cancel("wf").await.unwrap(), 1);
+    assert_eq!(
+        store.method_search_run_status("method-run").await.unwrap(),
+        Some(RunStatus::Cancelled)
+    );
+    assert_eq!(
+        store
+            .reconcile_agent_workflow_run_activity(&attempt.id)
+            .await
+            .unwrap(),
+        Some(AgentWorkflowAttemptStatus::Cancelled)
+    );
+    assert!(store
+        .list_agent_workflow_attempts("wf")
+        .await
+        .unwrap()
+        .iter()
+        .all(|attempt| attempt.step_id != "report"));
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn workflow_run_activity_recovery_preserves_valid_link_and_fails_missing_link() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_workflow_run_recovery_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+
+    for (workflow_id, with_link) in [("valid", true), ("invalid", false)] {
+        let workflow = AgentWorkflow::new(workflow_id, "p", "workspace", "Method search").unwrap();
+        let mut step = AgentWorkflowStep::new(
+            format!("{workflow_id}-step"),
+            workflow_id,
+            0,
+            "activity",
+            "run_activity",
+            "local",
+            "host activity",
+        )
+        .unwrap();
+        step.task_kind = "run_activity".into();
+        step.activity_json = serde_json::json!({"activity":"method_search"}).to_string();
+        store
+            .create_agent_workflow_plan(&workflow, &[step.clone()])
+            .await
+            .unwrap();
+        assert!(store
+            .approve_agent_workflow_plan(workflow_id, 1)
+            .await
+            .unwrap());
+        assert!(store
+            .transition_agent_workflow_status(
+                workflow_id,
+                AgentWorkflowStatus::Approved,
+                AgentWorkflowStatus::Running,
+            )
+            .await
+            .unwrap());
+        let attempt = AgentWorkflowAttempt::queued(
+            format!("{workflow_id}-attempt"),
+            workflow_id,
+            &step.id,
+            1,
+            format!("{workflow_id}-request"),
+            "local",
+            "{}",
+        )
+        .unwrap();
+        let mut attempt = match store
+            .try_create_started_agent_workflow_attempt(attempt)
+            .await
+            .unwrap()
+        {
+            AgentWorkflowAttemptStart::Started(value) => value,
+            other => panic!("activity attempt did not start: {other:?}"),
+        };
+        if with_link {
+            let run = RunRecord::new(
+                format!("{workflow_id}-run"),
+                "p",
+                "local",
+                "Method search",
+                "method_search",
+            );
+            let link =
+                AgentWorkflowRunActivity::new(&attempt.id, &run.id, "method_search").unwrap();
+            store
+                .create_agent_workflow_run_activity(&run, &link)
+                .await
+                .unwrap();
+        } else {
+            attempt.status = AgentWorkflowAttemptStatus::WaitingRun;
+            assert!(store
+                .update_agent_workflow_attempt(&attempt, AgentWorkflowAttemptStatus::Running)
+                .await
+                .unwrap());
+        }
+    }
+
+    assert_eq!(
+        store.recover_interrupted_agent_workflows().await.unwrap(),
+        (1, 1)
+    );
+    assert_eq!(
+        store
+            .get_agent_workflow("valid")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkflowStatus::Running
+    );
+    assert_eq!(
+        store
+            .get_agent_workflow_attempt("valid-attempt")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkflowAttemptStatus::WaitingRun
+    );
+    assert_eq!(
+        store
+            .get_agent_workflow_attempt("invalid-attempt")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkflowAttemptStatus::Failed
+    );
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
 async fn workflow_cancellation_is_persisted_and_cleared_for_retry() {
     let tmp =
         std::env::temp_dir().join(format!("wisp_agent_cancel_{}.sqlite", uuid::Uuid::new_v4()));
@@ -2088,10 +2411,169 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             PUBLICATION_DOMAIN_MIGRATION.to_string(),
             PUBLICATION_FREEZE_MIGRATION.to_string(),
             PUBLICATION_VERIFICATION_MIGRATION.to_string(),
+            AGENT_WORKFLOW_RUN_ACTIVITIES_MIGRATION.to_string(),
+            METHOD_SEARCH_MIGRATION.to_string(),
+            METHOD_SEARCH_CONTROL_MIGRATION.to_string(),
         ]
     );
 
     let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn method_search_state_candidates_and_pause_lifecycle_are_durable() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_method_search_store_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store
+        .create_project("p", "proj", "workspace")
+        .await
+        .unwrap();
+    store
+        .create_frame("f", "p", "OPERON", "model")
+        .await
+        .unwrap();
+    let spec_version = store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: Some("spec-v1".into()),
+            artifact_id: "spec-artifact".into(),
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "method-search.json".into(),
+            content_type: "application/json".into(),
+            storage_path: ".wisp/artifacts/sha256/aa/spec.json".into(),
+            logical_key: Some("method-search:spec".into()),
+            size_bytes: Some(2),
+            checksum: Some("a".repeat(64)),
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::Snapshot,
+            capture_timing: ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    let run = RunRecord::new("run", "p", "local", "Method search", "method_search");
+    store.create_run(&run).await.unwrap();
+    let state = MethodSearchRunState::new("run", &spec_version, "a".repeat(64)).unwrap();
+    store.create_method_search_run_state(&state).await.unwrap();
+    assert_eq!(
+        store.method_search_run_status("run").await.unwrap(),
+        Some(RunStatus::Draft)
+    );
+
+    let cancel_run = RunRecord::new(
+        "cancel-draft",
+        "p",
+        "local",
+        "Cancelled draft",
+        "method_search",
+    );
+    store.create_run(&cancel_run).await.unwrap();
+    store
+        .create_method_search_run_state(
+            &MethodSearchRunState::new("cancel-draft", &spec_version, "a".repeat(64)).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(store
+        .request_run_cancellation("cancel-draft")
+        .await
+        .unwrap());
+    assert_eq!(
+        store
+            .method_search_run_status("cancel-draft")
+            .await
+            .unwrap(),
+        Some(RunStatus::Cancelling)
+    );
+    assert!(store
+        .claim_run_lifecycle("cancel-draft", "cancel-owner", 60)
+        .await
+        .unwrap());
+    assert!(store
+        .finish_active_run_owned("cancel-draft", "cancel-owner", RunStatus::Cancelled, None,)
+        .await
+        .unwrap());
+
+    let blob = MethodCandidateBlob {
+        id: "blob".into(),
+        run_id: "run".into(),
+        kind: "source".into(),
+        checksum: "b".repeat(64),
+        size_bytes: 12,
+        storage_path: ".wisp/method-search/run/blobs/bb/source.py".into(),
+        created_at: 1,
+    };
+    store.save_method_candidate_blob(&blob).await.unwrap();
+    let mut candidate = MethodCandidate::proposed(
+        "candidate",
+        "run",
+        0,
+        "baseline",
+        "baseline",
+        "b".repeat(64),
+        "c".repeat(64),
+    )
+    .unwrap();
+    store.insert_method_candidate(&candidate).await.unwrap();
+    assert!(store
+        .transition_method_candidate_to_evaluating("candidate")
+        .await
+        .unwrap());
+    candidate.status = MethodCandidateStatus::Succeeded;
+    candidate.primary_score = Some(0.5);
+    candidate.utility = Some(0.5);
+    candidate.source_blob_id = Some("blob".into());
+    candidate.metrics_json = serde_json::json!({"accuracy":0.5}).to_string();
+    candidate.finished_at = Some(2);
+    assert!(store
+        .finish_method_candidate(&candidate, MethodCandidateStatus::Evaluating)
+        .await
+        .unwrap());
+    assert_eq!(
+        store.list_method_candidates("run").await.unwrap(),
+        vec![candidate]
+    );
+
+    assert!(store
+        .activate_run_lifecycle("run", RunStatus::Running, "owner", 60)
+        .await
+        .unwrap());
+    assert!(store
+        .pause_method_search_run_owned("run", "owner", "user requested pause")
+        .await
+        .unwrap());
+    assert_eq!(
+        store.method_search_run_status("run").await.unwrap(),
+        Some(RunStatus::Paused)
+    );
+    assert!(!store.project_has_active_runs("p").await.unwrap());
+    assert!(store.resume_method_search_run("run").await.unwrap());
+    assert_eq!(store.pause_method_searches_for_shutdown().await.unwrap(), 1);
+    let shutdown_run = store.get_run("run").await.unwrap().unwrap();
+    assert_eq!(shutdown_run.status, RunStatus::Paused);
+    assert!(shutdown_run
+        .last_poll_error
+        .as_deref()
+        .unwrap()
+        .contains("graceful application shutdown"));
+    assert!(store.resume_method_search_run("run").await.unwrap());
+    assert_eq!(
+        store
+            .recover_interrupted_method_search_runs()
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.method_search_run_status("run").await.unwrap(),
+        Some(RunStatus::Paused)
+    );
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
 }
 
 #[tokio::test]

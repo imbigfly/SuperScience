@@ -70,6 +70,8 @@ fn workflow_draft(plan: &PortfolioPlan) -> dynamic_workflow::DynamicAgentWorkflo
                 selection.reasons.join("; ")
             ),
             depends_on: vec![],
+            task_kind: wisp_core::WorkflowTaskKind::Agent,
+            run_activity: None,
             capabilities: capabilities_for(selection.side_effects),
             skill_ids: vec![selection.skill_id.clone()],
             specialist_id: None,
@@ -97,6 +99,8 @@ fn workflow_draft(plan: &PortfolioPlan) -> dynamic_workflow::DynamicAgentWorkflo
         id: "synthesis".into(),
         instruction: "Synthesize the dependency results without repeating methodology. Preserve every [scope:skill-id] source marker, reconcile contradictions, and distinguish evidence from inference.".into(),
         depends_on: dependencies,
+        task_kind: wisp_core::WorkflowTaskKind::Agent,
+        run_activity: None,
         capabilities: vec!["reasoning".into()],
         skill_ids: vec![],
         specialist_id: None,

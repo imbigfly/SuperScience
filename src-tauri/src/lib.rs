@@ -45,6 +45,8 @@ mod mcp_bridge;
 pub use mcp_bridge::run_mcp_bridge_cli;
 mod mcp_oauth;
 mod memory_commands;
+mod method_search;
+mod method_search_coordinator;
 mod models;
 mod native_delegation;
 mod pet_commands;
@@ -4881,6 +4883,11 @@ async fn send_message_inner(
             state.run_manager.clone(),
             ap.id.clone(),
         )));
+        agent.add_tool(Box::new(method_search::PrepareMethodSearchTool::new(
+            state.store.clone(),
+            ap.id.clone(),
+            frame_id.clone(),
+        )));
         agent.add_tool(Box::new(research_graph::ResearchGraphTool::new(
             state.store.clone(),
             ap.id.clone(),
@@ -6442,6 +6449,13 @@ pub fn run() {
                 &app_data.join("library.sqlite"),
             ))
             .expect("open global library");
+            let paused_method_searches = tauri::async_runtime::block_on(
+                store.recover_interrupted_method_search_runs(),
+            )
+            .expect("checkpoint interrupted method searches");
+            if paused_method_searches > 0 {
+                tracing::warn!(target: "wisp", paused_method_searches, "paused interrupted method searches for explicit resume");
+            }
             let run_manager = run_context::RunManager::new();
             tauri::async_runtime::block_on(run_manager.recover(&store))
                 .expect("recover incomplete runs");
@@ -6709,6 +6723,12 @@ pub fn run() {
             delegation_runtime::cancel_agent_workflow,
             delegation_runtime::discard_agent_workflow,
             delegation_runtime::retry_agent_workflow,
+            method_search::prepare_method_search,
+            method_search::get_method_search_run,
+            method_search::pause_method_search,
+            method_search::start_method_search,
+            method_search::resume_method_search,
+            method_search::cancel_method_search,
             quick_actions::list_quick_actions,
             quick_actions::list_workflow_templates,
             quick_actions::save_quick_action,
@@ -6927,6 +6947,16 @@ pub fn run() {
                 macos_exit_in_progress.store(true, Ordering::SeqCst);
             }
             if matches!(_event, tauri::RunEvent::Exit) {
+                let store = _app.state::<AppState>().store.clone();
+                match tauri::async_runtime::block_on(store.pause_method_searches_for_shutdown()) {
+                    Ok(paused) if paused > 0 => {
+                        tracing::info!(target: "wisp", paused, "checkpointed method searches for shutdown");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::error!(target: "wisp", %error, "failed to pause method searches during shutdown");
+                    }
+                }
                 let device_bridge = _app.state::<AppState>().device_bridge.clone();
                 tauri::async_runtime::block_on(device_bridge.stop());
                 let runtime_manager = _app.state::<AppState>().runtime_manager.clone();

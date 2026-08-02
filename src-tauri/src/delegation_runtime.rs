@@ -689,6 +689,17 @@ fn workflow_records(
             stored.context_policy_json = serde_json::to_string(&spec.context_policy)?;
             stored.budget_json = serde_json::to_string(&spec.budget)?;
             stored.spec_json = serde_json::to_string(spec)?;
+            stored.task_kind = match step.task_kind {
+                wisp_core::WorkflowTaskKind::Agent => "agent",
+                wisp_core::WorkflowTaskKind::RunActivity => "run_activity",
+            }
+            .into();
+            stored.activity_json = step
+                .run_activity
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?
+                .unwrap_or_else(|| "{}".into());
             stored.timeout_secs = spec.timeout_secs.map(i64::try_from).transpose()?;
             Ok::<_, anyhow::Error>(stored)
         })
@@ -1447,6 +1458,7 @@ async fn build_dynamic_delegation_policy(
         "run_in_context".into(),
         "get_run".into(),
         "cancel_run".into(),
+        "prepare_method_search".into(),
         "delegate_tasks".into(),
         "get_delegated_result".into(),
     ];
@@ -1683,6 +1695,122 @@ pub(crate) async fn execute_inline_agent_workflow(
     .await
 }
 
+fn persisted_attempt_response(
+    attempt: &AgentWorkflowAttempt,
+) -> Result<AgentDelegationResponse, String> {
+    if let Some(response) = attempt
+        .response_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<AgentDelegationResponse>(raw).ok())
+    {
+        return Ok(response);
+    }
+    let status = match attempt.status {
+        AgentWorkflowAttemptStatus::Succeeded => DelegationStatus::Succeeded,
+        AgentWorkflowAttemptStatus::Cancelled => DelegationStatus::Cancelled,
+        AgentWorkflowAttemptStatus::Blocked => DelegationStatus::Blocked,
+        AgentWorkflowAttemptStatus::Failed => DelegationStatus::Failed,
+        _ => return Err("Persisted Workflow resume encountered a non-terminal attempt".into()),
+    };
+    Ok(AgentDelegationResponse {
+        request_id: attempt.request_id.clone(),
+        status,
+        output: serde_json::from_str(&attempt.output_json).map_err(|error| error.to_string())?,
+        artifact_ids: serde_json::from_str(&attempt.artifact_ids_json)
+            .map_err(|error| error.to_string())?,
+        artifacts: vec![],
+        evidence: serde_json::from_str(&attempt.evidence_json)
+            .map_err(|error| error.to_string())?,
+        usage: wisp_core::AgentUsage {
+            input_tokens: u64::try_from(attempt.input_tokens).unwrap_or_default(),
+            output_tokens: u64::try_from(attempt.output_tokens).unwrap_or_default(),
+            tool_calls: u64::try_from(attempt.tool_calls).unwrap_or_default(),
+            cost_microunits: u64::try_from(attempt.cost_microunits).unwrap_or_default(),
+        },
+        agent_session_id: attempt.agent_session_id.clone(),
+        child_frame_id: attempt.child_frame_id.clone(),
+        error: attempt.error.clone(),
+        nested_results: vec![],
+    })
+}
+
+async fn persisted_workflow_steps(
+    store: &Store,
+    workflow_id: &str,
+) -> Result<Vec<wisp_core::DelegationStepExecution>, String> {
+    let mut latest = HashMap::<String, AgentWorkflowAttempt>::new();
+    for attempt in store
+        .list_agent_workflow_attempts(workflow_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        if latest
+            .get(&attempt.step_id)
+            .is_none_or(|existing| attempt.attempt > existing.attempt)
+        {
+            latest.insert(attempt.step_id.clone(), attempt);
+        }
+    }
+    let mut prior = Vec::new();
+    for attempt in latest.into_values() {
+        if !attempt.status.is_terminal() {
+            return Err(format!(
+                "Workflow step '{}' is still active and cannot be resumed twice",
+                attempt.step_id
+            ));
+        }
+        prior.push(wisp_core::DelegationStepExecution {
+            step_id: attempt.step_id.clone(),
+            response: persisted_attempt_response(&attempt)?,
+        });
+    }
+    Ok(prior)
+}
+
+pub(crate) async fn resume_inline_agent_workflow(
+    store: &Store,
+    project: ActiveProject,
+    run_manager: crate::run_context::RunManager,
+    runtime_manager: wisp_runtime::RuntimeManager,
+    app_data: std::path::PathBuf,
+    workflow_id: &str,
+) -> Result<DelegationExecutionResult, String> {
+    let workflow = project_workflow(store, &project.id, workflow_id).await?;
+    if workflow.status != AgentWorkflowStatus::Running {
+        return Err("Only a persisted running Workflow can continue after Run recovery".into());
+    }
+    let policy = dynamic_delegation_policy_for_project(
+        store,
+        &project,
+        workflow.frame_id.as_deref(),
+        &app_data,
+    )
+    .await?;
+    let delegator = Arc::new(TauriDelegator::new(
+        store.clone(),
+        project.clone(),
+        run_manager,
+        runtime_manager,
+        app_data,
+        policy.resources.clone(),
+    ));
+    let prior = persisted_workflow_steps(store, workflow_id).await?;
+    let result = execute_agent_workflow_with_delegator_inner(
+        store,
+        &project.id,
+        workflow_id,
+        delegator.clone(),
+        Some((policy.registry, policy.host)),
+        None,
+        Some(prior),
+    )
+    .await;
+    if result.is_err() {
+        delegator.cancel_all().await;
+    }
+    result
+}
+
 pub(crate) async fn execute_agent_workflow_with_delegator(
     store: &Store,
     project_id: &str,
@@ -1690,6 +1818,27 @@ pub(crate) async fn execute_agent_workflow_with_delegator(
     delegator: Arc<dyn AgentDelegator>,
     dynamic_policy: Option<(CapabilityRegistry, DelegationHostPolicy)>,
     attempt_generation: Option<i64>,
+) -> Result<DelegationExecutionResult, String> {
+    execute_agent_workflow_with_delegator_inner(
+        store,
+        project_id,
+        workflow_id,
+        delegator,
+        dynamic_policy,
+        attempt_generation,
+        None,
+    )
+    .await
+}
+
+async fn execute_agent_workflow_with_delegator_inner(
+    store: &Store,
+    project_id: &str,
+    workflow_id: &str,
+    delegator: Arc<dyn AgentDelegator>,
+    dynamic_policy: Option<(CapabilityRegistry, DelegationHostPolicy)>,
+    attempt_generation: Option<i64>,
+    prior_steps: Option<Vec<wisp_core::DelegationStepExecution>>,
 ) -> Result<DelegationExecutionResult, String> {
     let workflow = store
         .get_agent_workflow(workflow_id)
@@ -1716,13 +1865,36 @@ pub(crate) async fn execute_agent_workflow_with_delegator(
         Some(policy) => policy,
         None => dynamic_delegation_policy(store).await?,
     };
-    let completed_responses = persisted_successful_responses(store, workflow_id).await?;
+    let completed_steps = if prior_steps.is_none() {
+        persisted_successful_steps(store, workflow_id).await?
+    } else {
+        vec![]
+    };
+    let (_, project_workspace) = store
+        .get_project(project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent workflow project does not exist".to_string())?;
+    let activity_driver = Arc::new(
+        crate::method_search_coordinator::StoreWorkflowRunActivityDriver::new(
+            store.clone(),
+            project_id.to_string(),
+            std::path::PathBuf::from(project_workspace),
+        ),
+    );
     let executor = DelegationExecutor::new(delegator.clone())
         .with_observer(observer.clone())
         .with_lineage(lineage)
-        .with_completed_responses(completed_responses)
+        .with_run_activity_driver(activity_driver)
         .with_dynamic_policy(registry, host);
-    let result = executor.execute(plan).await;
+    let result = match prior_steps {
+        Some(prior_steps) => executor.resume(plan, prior_steps).await,
+        None => {
+            executor
+                .execute_with_completed_steps(plan, completed_steps)
+                .await
+        }
+    };
     if result.is_err() {
         let _ = fail_owned_agent_workflow_execution(
             store,
@@ -1735,10 +1907,10 @@ pub(crate) async fn execute_agent_workflow_with_delegator(
     result.map_err(|error| error.to_string())
 }
 
-async fn persisted_successful_responses(
+async fn persisted_successful_steps(
     store: &Store,
     workflow_id: &str,
-) -> Result<HashMap<String, AgentDelegationResponse>, String> {
+) -> Result<Vec<wisp_core::DelegationStepExecution>, String> {
     let mut latest = HashMap::<String, AgentWorkflowAttempt>::new();
     for attempt in store
         .list_agent_workflow_attempts(workflow_id)
@@ -1752,7 +1924,7 @@ async fn persisted_successful_responses(
             latest.insert(attempt.step_id.clone(), attempt);
         }
     }
-    let mut completed = HashMap::new();
+    let mut completed = Vec::new();
     for attempt in latest
         .into_values()
         .into_iter()
@@ -1765,7 +1937,10 @@ async fn persisted_successful_responses(
             continue;
         };
         if response.status == DelegationStatus::Succeeded {
-            completed.insert(attempt.step_id, response);
+            completed.push(wisp_core::DelegationStepExecution {
+                step_id: attempt.step_id,
+                response,
+            });
         }
     }
     Ok(completed)
@@ -2568,6 +2743,13 @@ impl AgentDelegator for NativeDelegator {
             self.run_manager.clone(),
             self.project.id.clone(),
         )));
+        tools.add(Box::new(
+            crate::method_search::PrepareMethodSearchTool::new(
+                self.store.clone(),
+                self.project.id.clone(),
+                child_frame_id.clone(),
+            ),
+        ));
         let runtime_project_id =
             if request.spec.workspace_policy == Some(wisp_core::AgentWorkspacePolicy::Isolated) {
                 isolated_runtime_scope(&self.project.id, &request.request_id)
@@ -2825,7 +3007,7 @@ fn native_tool_allowlist(request: &AgentDelegationRequest) -> Vec<String> {
             "read" | "search" | "grep" => !request.spec.permissions.paths.is_empty(),
             "write" | "edit" => request.spec.permissions.write && !reviewer,
             "view_image" => !request.spec.permissions.paths.is_empty() && !reviewer,
-            "run_in_context" | "get_run" | "cancel_run" => {
+            "run_in_context" | "get_run" | "cancel_run" | "prepare_method_search" => {
                 request.spec.permissions.execute && !reviewer
             }
             _ => false,
@@ -3934,6 +4116,19 @@ impl DelegationExecutionObserver for StoreDelegationObserver {
         Ok(())
     }
 
+    async fn workflow_resumed(&self, plan: &DelegationPlan) -> anyhow::Result<()> {
+        let workflow = self
+            .store
+            .get_agent_workflow(&plan.id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Agent workflow no longer exists"))?;
+        if workflow.status != AgentWorkflowStatus::Running {
+            anyhow::bail!("Only a persisted running Agent workflow can resume");
+        }
+        self.execution_claimed.store(true, Ordering::Release);
+        Ok(())
+    }
+
     async fn step_started(&self, request: &AgentDelegationRequest) -> anyhow::Result<()> {
         self.create_started_attempt(request).await?;
         Ok(())
@@ -3956,6 +4151,13 @@ impl DelegationExecutionObserver for StoreDelegationObserver {
             .get_agent_workflow_attempt(&attempt_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Agent attempt disappeared"))?;
+        let expected_status = attempt.status;
+        if !matches!(
+            expected_status,
+            AgentWorkflowAttemptStatus::Running | AgentWorkflowAttemptStatus::WaitingRun
+        ) {
+            anyhow::bail!("Workflow attempt is no longer active");
+        }
         attempt.status = match response.status {
             DelegationStatus::Succeeded => AgentWorkflowAttemptStatus::Succeeded,
             DelegationStatus::Cancelled => AgentWorkflowAttemptStatus::Cancelled,
@@ -3977,7 +4179,7 @@ impl DelegationExecutionObserver for StoreDelegationObserver {
         attempt.finished_at = Some(chrono::Utc::now().timestamp());
         if !self
             .store
-            .update_agent_workflow_attempt(&attempt, AgentWorkflowAttemptStatus::Running)
+            .update_agent_workflow_attempt(&attempt, expected_status)
             .await?
         {
             anyhow::bail!("Agent attempt terminal state lost a concurrent update");
@@ -4690,6 +4892,7 @@ mod tests {
                         "run_in_context".into(),
                         "get_run".into(),
                         "cancel_run".into(),
+                        "prepare_method_search".into(),
                     ],
                     paths: vec!["project://**".into()],
                     network: false,
@@ -4719,6 +4922,8 @@ mod tests {
             id: id.into(),
             instruction: format!("Complete task {id}"),
             depends_on: dependencies.iter().map(|value| (*value).into()).collect(),
+            task_kind: wisp_core::WorkflowTaskKind::Agent,
+            run_activity: None,
             capabilities: vec!["reasoning".into()],
             skill_ids: vec![],
             specialist_id: None,
