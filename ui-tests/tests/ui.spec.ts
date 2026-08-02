@@ -5399,6 +5399,29 @@ test("background approval targets its session after switching conversations", as
   await expect(reject).toHaveCount(0);
 });
 
+test("resource conflict approval explains the owner and only offers wait or cancel", async ({ page }) => {
+  await enterApp(page, "/?mockSessionModels=1");
+  await page.locator('[data-session-id="s-model-a"]').click();
+  await page.evaluate(() => (window as any).__tauriEmit("confirm-request", {
+    frame_id: "s-model-a",
+    message: "WISP_RESOURCE_CONFLICT\nPlot analysis · abc123 is using `plot.R`.",
+    tool: "resource_conflict",
+    preview: "Plot analysis · abc123 is using `plot.R`. Approve to wait for the R call to finish.",
+  }));
+
+  await expect(page.getByText("Another conversation is using this resource")).toBeVisible();
+  await expect(page.getByText(/Plot analysis .* is using `plot\.R`/)).toBeVisible();
+  await expect(page.getByLabel("Approval scope")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Cancel operation" })).toBeVisible();
+  await page.getByRole("button", { name: "Wait & continue" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "confirm_response")).toMatchObject({
+    sessionId: "s-model-a",
+    approved: true,
+    scope: "once",
+  });
+});
+
 test("Escape closes plan feedback before rejecting the plan", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("NEEDPLAN");

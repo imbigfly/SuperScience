@@ -33,6 +33,18 @@ async fn native_confirmation_waits_for_an_explicit_response() {
 }
 
 #[test]
+fn resource_conflict_confirmation_has_dedicated_ui_payload_and_no_saved_grant() {
+    let message = format!(
+        "{}Analysis · abc123 is using `plot.R`. Approve to wait.",
+        super::resource_leases::CONFIRM_PREFIX
+    );
+    let (tool, preview) = super::parse_confirm_payload(&message);
+    assert_eq!(tool, super::resource_leases::CONFIRM_TOOL);
+    assert!(preview.contains("plot.R"));
+    assert!(super::approval_grant_key(&message).is_none());
+}
+
+#[test]
 fn mcp_app_context_is_latest_only_and_session_scoped() {
     let first = super::normalize_mcp_app_context(
         "Motif for Claude Science",

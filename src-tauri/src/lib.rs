@@ -60,6 +60,7 @@ mod publication_freeze;
 mod publication_reproduction;
 mod quick_actions;
 mod research_graph;
+mod resource_leases;
 mod resource_refs;
 mod review;
 mod run_context;
@@ -350,7 +351,7 @@ impl ApprovalGrants {
 
 fn approval_grant_key(message: &str) -> Option<ApprovalGrantKey> {
     let (tool, preview) = parse_confirm_payload(message);
-    if tool.is_empty() || tool == "update_plan" {
+    if tool.is_empty() || matches!(tool.as_str(), "update_plan" | resource_leases::CONFIRM_TOOL) {
         return None;
     }
     let target = if tool == "shell" {
@@ -380,6 +381,9 @@ fn parse_confirm_payload(message: &str) -> (String, String) {
     // the UI renders the dedicated plan card (preview = the checklist).
     if let Some(rest) = message.strip_prefix(wisp_tools::plan::PLAN_APPROVAL_PREFIX) {
         return ("update_plan".to_string(), rest.to_string());
+    }
+    if let Some(rest) = message.strip_prefix(resource_leases::CONFIRM_PREFIX) {
+        return (resource_leases::CONFIRM_TOOL.to_string(), rest.to_string());
     }
     if let Some(rest) = message.strip_prefix("Run tool '") {
         if let Some((tool, _)) = rest.split_once("'?") {
@@ -1834,6 +1838,9 @@ struct AppState {
     /// Read-locked for the lifetime of project tasks; manual sync takes the
     /// write lock so task start and snapshot creation cannot race.
     project_activity: StdMutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
+    /// Advisory leases for local project resources used by parallel built-in
+    /// conversations. External editors remain outside this in-process boundary.
+    resource_leases: resource_leases::ProjectResourceCoordinator,
     /// The frame id the UI is currently viewing. Drives artifact attachment
     /// (`upload_file`/`register_artifact`) and `list_artifacts` fallback.
     /// Written only by view-navigation commands (`load_session`/`new_session`/
@@ -2094,6 +2101,10 @@ struct TauriOutput {
     app: AppHandle,
     frame_id: String,
     project_id: String,
+    project_root: PathBuf,
+    store: Store,
+    resource_leases: resource_leases::ProjectResourceCoordinator,
+    cancel: Arc<AtomicBool>,
     device_hub: Arc<device_hub::DeviceHub>,
     confirms: ConfirmMap,
     awaiting_confirm: Arc<StdMutex<HashSet<String>>>,
@@ -2136,6 +2147,97 @@ impl TauriOutput {
             }
         }
         emit_agent_event_to_surfaces(&self.app, event);
+    }
+
+    async fn request_confirmation(
+        &self,
+        message: &str,
+        allow_full_permission: bool,
+    ) -> wisp_tools::ConfirmDecision {
+        if allow_full_permission && self.full_permission() {
+            return wisp_tools::ConfirmDecision::Approved;
+        }
+        let (tool, preview) = parse_confirm_payload(message);
+        let grant = approval_grant_key(message);
+        if allow_full_permission
+            && grant.as_ref().is_some_and(|key| {
+                self.approval_grants
+                    .lock()
+                    .map(|grants| grants.allows(&self.frame_id, &self.project_id, key))
+                    .unwrap_or(false)
+            })
+        {
+            return wisp_tools::ConfirmDecision::Approved;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.confirms.lock().unwrap().insert(
+            self.frame_id.clone(),
+            PendingConfirm {
+                tx,
+                grant,
+                project_id: self.project_id.clone(),
+            },
+        );
+        self.awaiting_confirm
+            .lock()
+            .unwrap()
+            .insert(self.frame_id.clone());
+        self.device_hub
+            .mark_needs_user(&self.frame_id, Some(&self.project_id));
+        let _ = self.app.emit(
+            "confirm-request",
+            ConfirmRequest {
+                frame_id: self.frame_id.clone(),
+                message: message.into(),
+                tool,
+                preview,
+            },
+        );
+
+        // There is deliberately no timeout: lack of approval must never be
+        // converted into a denial that lets the same agent turn continue.
+        let decision = receive_confirm_decision(rx).await;
+        self.confirms.lock().unwrap().remove(&self.frame_id);
+        self.awaiting_confirm.lock().unwrap().remove(&self.frame_id);
+        self.device_hub.resolve_needs_user(&self.frame_id);
+        decision
+    }
+
+    async fn resource_owner_label(&self, frame_id: &str) -> String {
+        let title = self
+            .store
+            .get_session_reference(frame_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|session| session.title)
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Untitled conversation".into());
+        let short: String = frame_id.chars().take(8).collect();
+        format!("{title} · {short}")
+    }
+
+    fn resource_conflict_message(
+        &self,
+        owner: &str,
+        conflict: &resource_leases::ResourceConflict,
+        tool: &str,
+        request: &resource_leases::ResourceRequest,
+    ) -> String {
+        let active_preview = if conflict.preview.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" Active call: `{}`.", conflict.preview.replace('\n', " "))
+        };
+        format!(
+            "{}{owner} has been using {} with `{}` for {}s. `{tool}` needs {}.{} Approve to wait for that call to finish, then continue; deny to cancel this operation.",
+            resource_leases::CONFIRM_PREFIX,
+            conflict.request.description(),
+            conflict.tool,
+            conflict.elapsed_secs,
+            request.description(),
+            active_preview,
+        )
     }
 }
 
@@ -2286,59 +2388,66 @@ impl Output for TauriOutput {
         &'a self,
         message: &'a str,
     ) -> OutputFuture<'a, wisp_tools::ConfirmDecision> {
-        Box::pin(async move {
-            if self.full_permission() {
-                return wisp_tools::ConfirmDecision::Approved;
-            }
-            let (tool, preview) = parse_confirm_payload(message);
-            let grant = approval_grant_key(message);
-            if grant.as_ref().is_some_and(|key| {
-                self.approval_grants
-                    .lock()
-                    .map(|grants| grants.allows(&self.frame_id, &self.project_id, key))
-                    .unwrap_or(false)
-            }) {
-                return wisp_tools::ConfirmDecision::Approved;
-            }
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            self.confirms.lock().unwrap().insert(
-                self.frame_id.clone(),
-                PendingConfirm {
-                    tx,
-                    grant,
-                    project_id: self.project_id.clone(),
-                },
-            );
-            self.awaiting_confirm
-                .lock()
-                .unwrap()
-                .insert(self.frame_id.clone());
-            self.device_hub
-                .mark_needs_user(&self.frame_id, Some(&self.project_id));
-            let _ = self.app.emit(
-                "confirm-request",
-                ConfirmRequest {
-                    frame_id: self.frame_id.clone(),
-                    message: message.into(),
-                    tool,
-                    preview,
-                },
-            );
-
-            // There is deliberately no timeout: lack of approval must never be
-            // converted into a denial that lets the same agent turn continue.
-            let decision = receive_confirm_decision(rx).await;
-            self.confirms.lock().unwrap().remove(&self.frame_id);
-            self.awaiting_confirm.lock().unwrap().remove(&self.frame_id);
-            self.device_hub.resolve_needs_user(&self.frame_id);
-            decision
-        })
+        Box::pin(async move { self.request_confirmation(message, true).await })
     }
     fn approval_mode(&self, tool: &str) -> wisp_tools::Approval {
         self.approvals
             .read()
             .map(|p| p.mode_for(tool))
             .unwrap_or(wisp_tools::Approval::Allow)
+    }
+    fn acquire_tool_resources<'a>(
+        &'a self,
+        tool: &'a str,
+        args: &'a serde_json::Value,
+    ) -> OutputFuture<'a, Result<Option<wisp_tools::ToolResourceLease>, String>> {
+        Box::pin(async move {
+            let Some(request) = resource_leases::request_for_call(&self.project_root, tool, args)
+            else {
+                return Ok(None);
+            };
+            let preview = resource_leases::preview_for_call(tool, args);
+            let mut wait_approved = false;
+            loop {
+                match self.resource_leases.try_acquire(
+                    &self.project_id,
+                    &self.frame_id,
+                    tool,
+                    &preview,
+                    request.clone(),
+                ) {
+                    resource_leases::AcquireResult::Acquired(lease) => {
+                        return Ok(Some(lease));
+                    }
+                    resource_leases::AcquireResult::Conflict(mut conflict) => {
+                        if !wait_approved {
+                            let owner = self.resource_owner_label(&conflict.frame_id).await;
+                            let message =
+                                self.resource_conflict_message(&owner, &conflict, tool, &request);
+                            let decision = self.request_confirmation(&message, false).await;
+                            if !decision.approved() {
+                                let feedback = decision
+                                    .feedback()
+                                    .map(|feedback| format!(" User feedback: {feedback}"))
+                                    .unwrap_or_default();
+                                return Err(format!(
+                                    "resource conflict: user cancelled `{tool}` instead of waiting for {owner}.{feedback}"
+                                ));
+                            }
+                            wait_approved = true;
+                        }
+                        tokio::select! {
+                            _ = conflict.wait_until_released() => {}
+                            _ = async {
+                                while !self.cancel.load(Ordering::Relaxed) {
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                }
+                            } => return Err("resource wait interrupted by user".into()),
+                        }
+                    }
+                }
+            }
+        })
     }
     fn approval_bypass(&self) -> bool {
         self.full_permission()
@@ -5153,6 +5262,10 @@ async fn send_message_inner(
         app: app.clone(),
         frame_id: frame_id.clone(),
         project_id: ap.id.clone(),
+        project_root: ap.root.clone(),
+        store: state.store.clone(),
+        resource_leases: state.resource_leases.clone(),
+        cancel: rt.cancel.clone(),
         device_hub: state.device_hub.clone(),
         confirms: state.confirms.clone(),
         awaiting_confirm: state.awaiting_confirm.clone(),
@@ -6453,6 +6566,7 @@ pub fn run() {
                 running_turns: tokio::sync::Mutex::new(HashSet::new()),
                 completion_dispatches: tokio::sync::Mutex::new(HashSet::new()),
                 project_activity: StdMutex::new(HashMap::new()),
+                resource_leases: resource_leases::ProjectResourceCoordinator::default(),
                 active_frame: std::sync::RwLock::new(HashMap::new()),
                 notification_window: std::sync::RwLock::new(HashMap::new()),
                 confirms: Arc::new(StdMutex::new(HashMap::new())),

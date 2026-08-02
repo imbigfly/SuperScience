@@ -254,6 +254,16 @@ user later switches to that conversation. Rejecting an action also
 skips any later tool calls the model placed in the same batch. `ask_user` and
 plan submission are hard turn boundaries: later batched calls do not run while
 the agent is waiting for the user's next message.
+
+Parallel built-in conversations in one project coordinate active local file
+access. Exact `read`, `write`, `edit`, and image paths use path-level leases;
+shell, Python, and R calls use a conservative project-wide lease because their
+paths can be computed dynamically. When another conversation holds a
+conflicting lease, Wisp shows a resource-conflict card even in Full Permission:
+the user can cancel the new operation or approve waiting for the active call to
+finish. These leases coordinate work started by Wisp; external editors and ACP
+agents do not participate in this in-process boundary yet.
+
 **Conversations persist to that SQLite database** — each turn's
 messages are appended to the active session frame, so restarting the app
 restores the full history. The headless CLI keeps using `.wisp/session.json` for
