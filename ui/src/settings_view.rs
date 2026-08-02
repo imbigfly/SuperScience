@@ -1021,6 +1021,18 @@ pub(super) fn SettingsView(
                                 prop:value=move || settings.get().max_iter.to_string() />
                             <span class="settings-field-hint">{move || t(locale.get(), "settings.max_iter_hint")}</span>
                         </label>
+                        <div class="span-2 appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "settings.auto_compact")}</strong>
+                                <span>{move || t(locale.get(), "settings.auto_compact_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="auto-compact-enabled"
+                                    prop:checked=move || settings.get().auto_compact
+                                    on:change=move |ev| settings.update(|current| current.auto_compact = event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
                         <label class="span-2">{move || t(locale.get(), "settings.proxy_url")}
                             <input data-testid="proxy-url" placeholder="http://127.0.0.1:7890"
                                 on:input=move |ev| settings.update(|s| {

@@ -8,7 +8,7 @@ use crate::provenance;
 use crate::Output;
 use anyhow::Result;
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use wisp_llm::{
@@ -19,6 +19,7 @@ use wisp_tools::{ImageData, Registry, ToolControl, ToolEnv};
 const RETRY_DELAYS: [u64; 5] = [2_000, 10_000, 30_000, 60_000, 120_000];
 const TRUNCATED_OUTPUT_MESSAGE: &str = "模型输出在达到 max_tokens 上限时被截断，任务可能尚未完成——请在设置中调高该模型的 max_tokens，或直接继续对话让我接着做。(output truncated at max_tokens)";
 const STREAM_CUT_MESSAGE: &str = "模型响应流在中途被断开（未收到结束标记），已生成的部分内容不完整、不会计入上下文。常见原因：网络不稳定、代理/中转站切断连接，或同一 API key 的并发请求达到上限（例如多个会话同时使用同一模型）。可重发消息重试；需要并行会话时建议错开请求或使用不同的 API key。(stream cut mid-response, #437)";
+const EMPTY_RESPONSE_MESSAGE: &str = "模型完成了本轮推理，但没有返回可显示的文本或工具调用。对话上下文和已完成的工具结果均已保留；请点击“继续执行”重新生成最终回复。若长对话中反复出现，请先发送 /compact 压缩上下文。(model returned no visible response)";
 /// How many byte-identical tool-call batches within the recent window count as
 /// "stuck". Windowed (not consecutive) so alternating A/B/A/B loops also trip it.
 const STUCK_REPEAT_LIMIT: usize = 5;
@@ -38,6 +39,14 @@ const STREAM_OUTPUT_TOOLS: [&str; 3] = ["shell", "python", "r"];
 /// ~16 KiB ≈ 4K estimated tokens. Override with WISP_TOOL_RESULT_BUDGET
 /// (bytes; 0 disables). ponytail: env knob only, per-tool budgets when needed.
 const DEFAULT_STREAM_RESULT_BUDGET: usize = 16 * 1024;
+
+fn auto_compact_archive_path(root: &Path) -> PathBuf {
+    root.join(".wisp").join("history").join(format!(
+        "session-auto-{}-{}.json",
+        chrono::Utc::now().timestamp_millis(),
+        uuid::Uuid::new_v4().simple()
+    ))
+}
 
 /// Head/tail-truncate a stream tool's text result to the ingestion budget,
 /// with a marker telling the model what was elided and how to get it back.
@@ -243,6 +252,21 @@ async fn agent_loop_inner(
             }
         }
         iteration += 1;
+        // Match the long-context behaviour used by mangopi-cli: check the
+        // budget at every model boundary, not only when the user first sends a
+        // turn. Wisp's archive-first compactor preserves the full transcript
+        // on disk before folding old turns, so automatic recovery has the same
+        // retrievability contract as manual `/compact`.
+        if ctx.needs_auto_compact() {
+            let archive = auto_compact_archive_path(root);
+            match ctx.compact(provider, &archive).await {
+                Ok((before, after)) => output.compaction(before, after, "auto"),
+                Err(error) => tracing::warn!(
+                    archive = %archive.display(),
+                    "automatic context compaction failed: {error}"
+                ),
+            }
+        }
         let messages = ctx.prepare_for_api(output);
         let mut sink = match cancel {
             Some(c) => StreamSinkAdapter::with_cancel(output, c),
@@ -261,6 +285,24 @@ async fn agent_loop_inner(
         }
         if is_truncated(comp.finish_reason.as_deref()) {
             anyhow::bail!(TRUNCATED_OUTPUT_MESSAGE);
+        }
+        // A few reasoning models can terminate cleanly after spending output
+        // tokens entirely on `reasoning_content`, leaving neither user-visible
+        // text nor a tool call. Treating that as success produces a bare
+        // "Processed" row and, worse, persists an empty assistant turn. Fail
+        // resumably instead: tool results already appended to the context stay
+        // intact, so Resume asks only for the missing final response.
+        if comp.content.trim().is_empty() && comp.tool_calls.is_empty() {
+            output.usage(
+                iteration,
+                comp.usage.input_tokens,
+                comp.usage.output_tokens,
+                comp.usage.reasoning_tokens,
+                comp.usage.cached_input_tokens,
+                ctx.total_tokens(),
+                ctx.max_context,
+            );
+            anyhow::bail!(EMPTY_RESPONSE_MESSAGE);
         }
 
         ctx.append_assistant(
@@ -661,6 +703,15 @@ mod tests {
         runs: Arc<AtomicUsize>,
     }
 
+    struct CompactionCounter(AtomicUsize);
+
+    impl Output for CompactionCounter {
+        fn compaction(&self, _before: usize, _after: usize, strategy: &str) {
+            assert_eq!(strategy, "auto");
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     #[async_trait]
     impl Tool for CountingTool {
         fn name(&self) -> &str {
@@ -697,6 +748,53 @@ mod tests {
             .iter()
             .filter_map(|message| message.tool_call_id.as_deref())
             .collect()
+    }
+
+    #[tokio::test]
+    async fn auto_compacts_at_each_model_boundary_and_archives_first() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp_auto_compact_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = SequenceProvider::new([Completion {
+            content: "continued after compacting".into(),
+            finish_reason: Some("stop".into()),
+            ..Completion::default()
+        }]);
+        let output = CompactionCounter(AtomicUsize::new(0));
+        let mut ctx = ContextManager::new(1_000);
+        for turn in 0..12 {
+            ctx.append_user(format!("question {turn} {}", "u".repeat(180)));
+            ctx.append_assistant(format!("answer {turn} {}", "a".repeat(180)), vec![], None);
+        }
+        assert!(ctx.needs_auto_compact());
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &Registry::builtins(),
+            &root,
+            &output,
+            "continue",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output.0.load(Ordering::SeqCst), 1);
+        assert_eq!(ctx.compaction_revision(), 1);
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+        let archives = std::fs::read_dir(root.join(".wisp/history"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(archives.len(), 1, "automatic compaction must archive once");
+        assert!(archives[0].path().is_file());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
@@ -881,6 +979,79 @@ mod tests {
             .content
             .as_text()
             .contains("invalidated later calls"));
+    }
+
+    #[tokio::test]
+    async fn empty_terminal_response_is_resumable_without_replaying_tools() {
+        let tool_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([
+            Completion {
+                tool_calls: vec![call("work-1", "work", serde_json::json!({}))],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            },
+            Completion {
+                reasoning: Some("The work succeeded; I should summarize it.".into()),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+            Completion {
+                content: "Work completed successfully.".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(CountingTool {
+            name: "work",
+            runs: tool_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+
+        let error = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &NullOutput,
+            "do the work",
+            0,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("model returned no visible response"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(tool_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(ctx.messages.len(), 3, "empty assistant is not persisted");
+        assert_eq!(ctx.messages[2].tool_call_id.as_deref(), Some("work-1"));
+
+        agent_loop_continue(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &NullOutput,
+            0,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(tool_runs.load(Ordering::SeqCst), 1, "Resume reran the tool");
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            ctx.messages.last().unwrap().content.as_text(),
+            "Work completed successfully."
+        );
     }
 
     #[tokio::test]

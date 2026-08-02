@@ -246,6 +246,14 @@ pub(crate) enum ChatItem {
         reasoning: u64,
         cached: u64,
     },
+    /// Persistent timeline marker emitted whenever the model context is
+    /// rewritten. `strategy == "auto"` distinguishes the default 80%
+    /// threshold path from an explicit `/compact`.
+    Compaction {
+        before: usize,
+        after: usize,
+        strategy: String,
+    },
     /// A visible handoff between the main agent and the independent reviewer.
     ReviewTransition {
         phase: ReviewTransitionPhase,
@@ -335,6 +343,11 @@ impl ChatItem {
                 reasoning,
                 cached,
             } => (8u8, input, output, reasoning, cached).hash(&mut h),
+            Self::Compaction {
+                before,
+                after,
+                strategy,
+            } => (13u8, before, after, strategy).hash(&mut h),
             Self::ReviewTransition { phase, model } => (11u8, phase, model).hash(&mut h),
             Self::Review(report) => (5u8, report).hash(&mut h),
             Self::Plan(plan) => (7u8, plan).hash(&mut h),
@@ -1014,6 +1027,8 @@ pub(crate) struct Settings {
     pub(crate) workspace_dir: String,
     #[serde(default = "default_max_iter")]
     pub(crate) max_iter: i64,
+    #[serde(default = "default_auto_compact")]
+    pub(crate) auto_compact: bool,
     #[serde(default)]
     pub(crate) max_tokens: u64,
     #[serde(default)]
@@ -1045,6 +1060,10 @@ fn default_sync_backend() -> String {
 }
 
 fn default_notifications_enabled() -> bool {
+    true
+}
+
+fn default_auto_compact() -> bool {
     true
 }
 
@@ -1159,6 +1178,7 @@ impl Default for Settings {
             locale: Locale::En.code().into(),
             workspace_dir: String::new(),
             max_iter: default_max_iter(),
+            auto_compact: true,
             max_tokens: 8192,
             reasoning_effort: String::new(),
             proxy_url: String::new(),
@@ -1539,6 +1559,24 @@ impl LoadedItem {
                     output: n("output"),
                     reasoning: n("reasoning"),
                     cached: n("cached"),
+                }
+            }
+            "compaction" => {
+                let value: serde_json::Value = serde_json::from_str(&self.text).unwrap_or_default();
+                ChatItem::Compaction {
+                    before: value
+                        .get("before")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default() as usize,
+                    after: value
+                        .get("after")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default() as usize,
+                    strategy: value
+                        .get("strategy")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("manual")
+                        .to_string(),
                 }
             }
             _ => ChatItem::Assistant {

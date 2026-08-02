@@ -31,8 +31,8 @@ pub trait Output: Send + Sync {
     ) {
     }
     fn compaction(&self, _before: usize, _after: usize, _strategy: &str) {}
-    /// Fired once when the context estimate crosses the warning threshold —
-    /// the agent never compacts on its own; the user decides (/compact).
+    /// Fired once when the context estimate crosses the warning threshold and
+    /// automatic compaction is disabled or could not bring it back under.
     fn context_warning(&self, _ctx_tokens: usize, _max_context: usize) {}
     fn diff(&self, _path: &str, _old: &str, _new: &str) {}
     fn file_changed(&self, _path: &str) {}

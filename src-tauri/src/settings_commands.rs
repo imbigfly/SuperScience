@@ -114,6 +114,7 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         .flatten()
         .unwrap_or_default();
     let notifications_enabled = super::load_notifications_enabled(&state.store).await;
+    let auto_compact = super::load_auto_compact_enabled(&state.store).await;
     let proxy_url = state
         .store
         .get_setting("proxy_url")
@@ -130,6 +131,7 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         locale,
         workspace_dir,
         max_iter,
+        auto_compact,
         max_tokens,
         reasoning_effort,
         proxy_url,
@@ -287,6 +289,11 @@ pub(super) async fn set_settings(
     state
         .store
         .set_setting("max_iter", &settings.max_iter.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .set_setting("auto_compact", &settings.auto_compact.to_string())
         .await
         .map_err(|e| e.to_string())?;
     state

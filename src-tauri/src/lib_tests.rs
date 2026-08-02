@@ -496,6 +496,26 @@ fn persisted_ui_events_ignore_ephemeral_reviewer_handoffs() {
 }
 
 #[test]
+fn persisted_ui_events_restore_context_compaction_flags() {
+    let event = AgentEvent::Compaction {
+        frame_id: "f".into(),
+        before: 812_000,
+        after: 236_000,
+        strategy: "auto".into(),
+    };
+    assert!(should_persist_ui_event(&event));
+    let events = vec![event];
+
+    let (items, _) = events_to_items(&events);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].role, "compaction");
+    let payload: serde_json::Value = serde_json::from_str(&items[0].text).unwrap();
+    assert_eq!(payload["before"], 812_000);
+    assert_eq!(payload["after"], 236_000);
+    assert_eq!(payload["strategy"], "auto");
+}
+
+#[test]
 fn mcp_app_presentations_are_persisted_for_session_restore() {
     let presentation = AgentEvent::ToolPresentation {
         frame_id: "f".into(),

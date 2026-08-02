@@ -1,6 +1,7 @@
-//! Conversation context. The manager NEVER rewrites history on its own:
-//! crossing the 80% warning threshold only fires `Output::context_warning`
-//! once, and the user decides when to run `/compact`.
+//! Conversation context. `prepare_for_api` never rewrites history on its own:
+//! crossing the 80% threshold only fires `Output::context_warning` once. The
+//! agent loop may call `compact` before that boundary when automatic
+//! compaction is enabled; `/compact` uses the same archive-first pipeline.
 //!
 //! `/compact` (`ContextManager::compact`) first archives the full history to a
 //! file — every tombstone it leaves behind names that file, so the model can
@@ -59,6 +60,14 @@ pub struct ContextManager {
     warn_threshold: usize,
     /// Set once the warning fired; reset when back under the threshold.
     warned: bool,
+    /// Whether the agent loop should compact before a model request once the
+    /// 80% threshold is crossed. Hosts can turn this off globally while still
+    /// retaining the warning and manual `/compact` path.
+    auto_compact: bool,
+    /// Increments after every successful context rewrite. The desktop host
+    /// uses this to replace incrementally persisted rows after a mid-turn
+    /// automatic compaction.
+    compaction_revision: u64,
     pub runtime_injections: Vec<Message>,
     /// Whether the model this context is about to be sent to accepts image
     /// content parts. Set per turn from the active profile; `true` by default
@@ -78,6 +87,8 @@ impl ContextManager {
             max_context,
             warn_threshold: (max_context as f64 * 0.8) as usize,
             warned: false,
+            auto_compact: true,
+            compaction_revision: 0,
             runtime_injections: vec![],
             supports_vision: true,
             last_request_message_count: None,
@@ -94,6 +105,25 @@ impl ContextManager {
     pub fn clear(&mut self) {
         self.messages.clear();
         self.invalidate_last_request();
+    }
+
+    pub fn set_auto_compact(&mut self, enabled: bool) {
+        self.auto_compact = enabled;
+    }
+
+    pub fn auto_compact_enabled(&self) -> bool {
+        self.auto_compact
+    }
+
+    /// The threshold is intentionally the same 80% boundary used by the
+    /// warning. Checking this immediately before every model call also covers
+    /// tool-heavy turns that grow substantially after the user's first send.
+    pub fn needs_auto_compact(&self) -> bool {
+        self.auto_compact && !self.under_threshold()
+    }
+
+    pub fn compaction_revision(&self) -> u64 {
+        self.compaction_revision
     }
 
     pub fn append_system(&mut self, content: impl Into<String>) {
@@ -475,15 +505,15 @@ work in progress. Use this structure:
                 })?;
         }
         self.warned = false;
+        self.compaction_revision = self.compaction_revision.wrapping_add(1);
         Ok((before, self.total_tokens()))
     }
 
     /// Return the messages to send to the model (persisted + runtime
-    /// injections). NEVER rewrites history — compaction is user-triggered only
-    /// — so every message serializes byte-identically round after round and
-    /// provider prefix caches stay valid. Crossing the warning threshold fires
-    /// `Output::context_warning` once; it re-arms after a `/compact` (or
-    /// anything else) brings the estimate back under.
+    /// injections). This method never rewrites history, so each prepared
+    /// prefix remains byte-identical between compactions. Crossing the warning
+    /// threshold fires `Output::context_warning` once; it re-arms after a
+    /// manual or automatic compaction brings the estimate back under.
     pub fn prepare_for_api(&mut self, output: &dyn Output) -> std::borrow::Cow<'_, [Message]> {
         let total = self.total_tokens();
         if total < self.warn_threshold {
@@ -738,8 +768,8 @@ mod tests {
         }
     }
 
-    // The agent never compacts on its own: crossing the threshold only warns,
-    // and warns exactly once until the context drops back under and re-crosses.
+    // prepare_for_api never compacts on its own: crossing the threshold only
+    // warns, and warns exactly once until context drops back under and re-crosses.
     #[test]
     fn prepare_for_api_warns_once_per_crossing_and_never_rewrites() {
         let counter = WarnCounter(std::sync::atomic::AtomicUsize::new(0));
@@ -761,6 +791,19 @@ mod tests {
         ctx.append_user("y".repeat(4_000));
         ctx.prepare_for_api(&counter);
         assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn automatic_compaction_can_be_disabled_without_disabling_the_warning() {
+        let counter = WarnCounter(std::sync::atomic::AtomicUsize::new(0));
+        let mut ctx = ContextManager::new(1_000);
+        ctx.set_auto_compact(false);
+        ctx.append_user("x".repeat(4_000));
+
+        assert!(!ctx.auto_compact_enabled());
+        assert!(!ctx.needs_auto_compact());
+        ctx.prepare_for_api(&counter);
+        assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     // An image attached under a vision model stays in history; sending it to a

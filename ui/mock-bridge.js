@@ -326,7 +326,7 @@
               thinking: "Planning kinome coverage.",
             };
           case "get_settings":
-            return { provider: "openai", api_url: "https://api.deepseek.com", model: "deepseek-v4-pro", label: "deepseek-v4-pro", has_api_key: true, locale: "en", max_iter: 100, max_tokens: 4096, reasoning_effort: "", supports_vision: true };
+            return { provider: "openai", api_url: "https://api.deepseek.com", model: "deepseek-v4-pro", label: "deepseek-v4-pro", has_api_key: true, locale: "en", max_iter: 100, auto_compact: true, max_tokens: 4096, reasoning_effort: "", supports_vision: true };
           case "list_models":
             return mockModels;
           case "get_storage_usage":

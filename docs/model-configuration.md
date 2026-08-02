@@ -78,6 +78,35 @@ Empty `content` placeholders sent alongside Alibaba/DashScope
 `reasoning_content` chunks are ignored, so a continuous thought process remains
 one disclosure in the conversation.
 
+If a provider ends a turn after returning only reasoning tokens—without visible
+text or a tool call—Wisp reports a resumable error instead of showing the turn
+as silently processed. Completed tool results remain in the conversation; use
+**Resume** to request the missing final reply without replaying those tools. If
+this repeats in a long conversation, send `/compact` before resuming to fold old
+turns while preserving an archive of the full history.
+
+**Settings → General → Automatically compact long conversations** is enabled by
+default. Following mangopi-cli's model-boundary approach, Wisp checks the
+estimated context before every native-agent model call, including later calls
+after large tool results. At 80% it archives the complete pre-compact history,
+folds older turns while protecting recent turns, and uses an LLM summary only
+if the deterministic folds are still too large. Each automatic or manual
+rewrite leaves a persistent **Context automatically compacted** / **Context
+compacted** flag in the conversation with the before and after token estimates.
+Turning the setting off keeps the warning, manual `/compact`, and overflow
+recovery dialog available. ACP agents are not modified because their remote
+transcripts are owned by the ACP process.
+
+When the provider explicitly rejects a built-in Wisp-agent request for
+exceeding its context window, the conversation opens a recovery dialog instead
+of leaving the raw error as a dead end. **Compact and continue** archives the
+full history, folds older turns, and resumes after the retained tool results.
+**Continue in a new conversation** starts a clean session and attaches a
+bounded Reader summary of the old conversation as context. **Pause
+conversation** preserves the error and completed work without making another
+request. Pressing Escape immediately after the dialog opens is equivalent to
+pausing; it closes only this recovery surface.
+
 For OpenAI-compatible and Responses API profiles, Wisp sends its internal
 `python` REPL tool as `wisp_python` and maps returned calls back to `python`.
 This avoids the reserved `python` function-name collision on Codex models,

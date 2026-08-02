@@ -6379,6 +6379,101 @@ test("general settings save the maximum agent iterations", async ({ page }) => {
   });
 });
 
+test("general settings enable automatic context compaction by default", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "General");
+  const toggle = page.getByTestId("auto-compact-enabled");
+  await expect(toggle).toBeChecked();
+  await toggle.locator("..").click();
+  await expect(toggle).not.toBeChecked();
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
+    settings: { auto_compact: false },
+  });
+});
+
+test("context compaction leaves a visible timeline flag", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("start a context-heavy analysis");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
+
+  await emitTauriEvent(page, "agent", {
+    kind: "Compaction",
+    frame_id: frameId,
+    before: 812_000,
+    after: 236_000,
+    strategy: "auto",
+  });
+
+  const flag = page.getByTestId("context-compaction-flag");
+  await expect(flag).toContainText("Context automatically compacted");
+  await expect(flag).toContainText("812.0k → 236.0k");
+});
+
+test("context-limit recovery offers three actions and owns the first Escape", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("continue a long analysis");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
+  const overflow = {
+    kind: "Error",
+    frame_id: frameId,
+    message: 'api: 400 {"error":{"message":"maximum context length exceeded"}}',
+  };
+
+  await emitTauriEvent(page, "agent", overflow);
+  const modal = page.getByTestId("context-recovery-modal");
+  await expect(modal).toBeVisible();
+  await expect(page.getByTestId("context-recovery-compact")).toBeVisible();
+  await expect(page.getByTestId("context-recovery-new-session")).toBeVisible();
+  await expect(page.getByTestId("context-recovery-pause")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  await expect(page.getByText(/maximum context length exceeded/)).toBeVisible();
+
+  await emitTauriEvent(page, "agent", overflow);
+  await page.getByTestId("context-recovery-pause").click();
+  await expect(modal).toHaveCount(0);
+
+  await emitTauriEvent(page, "agent", overflow);
+  await page.getByTestId("context-recovery-compact").click();
+  await expect.poll(async () => {
+    const calls = await invokeArgsList(page, "send_message");
+    return calls.some((args) => args.message === "/compact")
+      && calls.some((args) => args.resume === true);
+  }).toBe(true);
+});
+
+test("context-limit recovery can continue in a new session with the old one attached", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("finish the long analysis");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
+
+  await emitTauriEvent(page, "agent", {
+    kind: "Error",
+    frame_id: frameId,
+    message: 'api: 400 {"error":{"message":"context window exceeded"}}',
+  });
+  await page.getByTestId("context-recovery-new-session").click();
+
+  await expect.poll(async () => {
+    const calls = await invokeArgsList(page, "send_message");
+    return calls.find((args) =>
+      Array.isArray(args.references)
+      && args.references.some((reference: any) =>
+        reference.kind === "session" && reference.id === frameId,
+      ),
+    ) ?? null;
+  }).toMatchObject({
+    references: [{ kind: "session", id: frameId }],
+  });
+});
+
 test("pet stays off until the user explicitly configures its directory", async ({ page }) => {
   await page.goto("/");
   await openSettingsSection(page, "Pet");
