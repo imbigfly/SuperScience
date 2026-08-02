@@ -1907,6 +1907,17 @@ test("Quick Actions opens its bound graph in the standalone Workflow Studio", as
   await expect(page.locator(".settings-nav")).toBeHidden();
   const studio = page.getByTestId("workflow-studio");
   await expect(studio).toBeVisible();
+  const libraryLayout = await studio.locator(".workflow-studio-library").evaluate((library) => {
+    const bounds = library.getBoundingClientRect();
+    const buttons = [...library.querySelectorAll<HTMLElement>(".workflow-studio-library-actions button")]
+      .map((button) => button.getBoundingClientRect());
+    return {
+      inside: buttons.every((button) => button.left >= bounds.left
+        && button.right <= bounds.right),
+      stacked: buttons.length === 2 && buttons[1].top > buttons[0].bottom,
+    };
+  });
+  expect(libraryLayout).toEqual({ inside: true, stacked: true });
   const studioBox = await studio.boundingBox();
   const viewport = page.viewportSize()!;
   expect(studioBox?.width ?? 0).toBeGreaterThan(viewport.width * 0.95);
@@ -1936,6 +1947,48 @@ test("Quick Actions opens its bound graph in the standalone Workflow Studio", as
   const inspector = studio.getByTestId("workflow-graph-inspector");
   await expect(inspector.getByTestId("dynamic-task-id")).toHaveValue("synthesize");
   await expect(inspector.getByTestId("workflow-graph-remove-edge")).toHaveCount(2);
+  const skillPicker = inspector.getByTestId("dynamic-task-skills");
+  await expect(skillPicker.getByTestId("dynamic-task-skill-option")).toHaveCount(0);
+  await skillPicker.getByTestId("dynamic-task-skill-search").fill("literature");
+  await expect(skillPicker.getByTestId("dynamic-task-skill-option")).toHaveCount(1);
+  await expect(skillPicker.getByTestId("dynamic-task-skill-option"))
+    .toContainText("literature-review");
+
+  const resizer = studio.getByTestId("workflow-graph-resizer");
+  await expect(resizer).toHaveAttribute("role", "separator");
+  const inspectorBeforeResize = await inspector.boundingBox();
+  await resizer.evaluate((handle) => {
+    const rect = handle.getBoundingClientRect();
+    const startX = rect.left + rect.width / 2;
+    const startY = rect.top + 60;
+    handle.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      button: 0,
+      pointerId: 17,
+      clientX: startX,
+      clientY: startY,
+    }));
+    handle.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      buttons: 1,
+      pointerId: 17,
+      clientX: startX - 80,
+      clientY: startY,
+    }));
+    handle.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      button: 0,
+      pointerId: 17,
+      clientX: startX - 80,
+      clientY: startY,
+    }));
+  });
+  await expect.poll(async () => {
+    const resized = await inspector.boundingBox();
+    return inspectorBeforeResize && resized
+      ? Math.round(resized.width - inspectorBeforeResize.width)
+      : 0;
+  }).toBeGreaterThan(60);
   await expect(studio.getByTestId("workflow-graph-minimap")).toBeVisible();
   await studio.getByTestId("workflow-graph-zoom-in").click();
   await expect(studio.getByTestId("workflow-graph-fit")).toHaveText("110%");
@@ -2056,10 +2109,14 @@ test("Workflow Studio reuses the roundtable generator and saves a Quick Action b
   await studio.getByTestId("roundtable-apply").click();
   await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(5);
   await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(6);
-  await studio.getByTestId("workflow-graph-inspector")
-    .getByTestId("dynamic-task-skills")
-    .getByText("analysis-workflow · bundled")
+  const skillPicker = studio.getByTestId("workflow-graph-inspector")
+    .getByTestId("dynamic-task-skills");
+  await skillPicker.getByTestId("dynamic-task-skill-search").fill("analysis");
+  await skillPicker.getByTestId("dynamic-task-skill-option")
+    .filter({ hasText: "analysis-workflow" })
     .click();
+  await expect(skillPicker.getByTestId("dynamic-task-selected-skills"))
+    .toContainText("analysis-workflow · bundled");
   await studio.getByTestId("workflow-save").click();
 
   await expect.poll(() => lastInvokeArgs(page, "save_workflow_template")).toMatchObject({

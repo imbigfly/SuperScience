@@ -49,10 +49,13 @@ rejected before save.
 Workflow Studio replaces the normal Settings chrome with a dedicated
 full-window editor. Its stable layout keeps the template library on the left,
 save and lifecycle controls in the top bar, the DAG canvas in the center, and
-the selected-node inspector on the right. Workflow-level fields live in a
-collapsible configuration strip so they do not permanently reduce the canvas.
-The canvas includes zoom controls, a reset-to-100% action, a dotted
-orientation grid, and a minimap; large graphs remain scrollable without
+the selected-node inspector on the right. Drag the divider between the canvas
+and inspector to allocate space to either side. Workflow-level fields live in
+a collapsible configuration strip so they do not permanently reduce the
+canvas. The node inspector keeps selected Skills visible as removable chips
+and searches the effective Skill catalog on demand instead of rendering the
+whole catalog. The canvas includes zoom controls, a reset-to-100% action, a
+dotted orientation grid, and a minimap; large graphs remain scrollable without
 shrinking the inspector.
 
 The composer `/` picker searches both enabled Skills and Workflow templates.
