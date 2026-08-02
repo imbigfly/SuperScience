@@ -567,6 +567,18 @@ const WORKFLOW_GRAPH_ROW_GAP: i32 = 30;
 const WORKFLOW_GRAPH_PADDING_X: i32 = 28;
 const WORKFLOW_GRAPH_PADDING_TOP: i32 = 58;
 const WORKFLOW_GRAPH_PADDING_BOTTOM: i32 = 28;
+const WORKFLOW_INSPECTOR_WIDTH_DEFAULT: i32 = 360;
+const WORKFLOW_INSPECTOR_WIDTH_MIN: i32 = 280;
+const WORKFLOW_INSPECTOR_WIDTH_MAX: i32 = 640;
+const WORKFLOW_GRAPH_MIN_WIDTH: i32 = 320;
+const WORKFLOW_GRAPH_RESIZER_WIDTH: i32 = 7;
+
+fn clamp_workflow_inspector_width(width: i32, workspace_width: f64) -> i32 {
+    let available =
+        (workspace_width.floor() as i32 - WORKFLOW_GRAPH_MIN_WIDTH - WORKFLOW_GRAPH_RESIZER_WIDTH)
+            .clamp(WORKFLOW_INSPECTOR_WIDTH_MIN, WORKFLOW_INSPECTOR_WIDTH_MAX);
+    width.clamp(WORKFLOW_INSPECTOR_WIDTH_MIN, available)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkflowGraphNode {
@@ -1380,6 +1392,26 @@ fn dynamic_task_editor(
 ) -> impl IntoView {
     let key = task.key;
     let remove_key = key;
+    let skill_query = create_rw_signal(String::new());
+    let filtered_skills = create_memo(move |_| {
+        let query = skill_query.get();
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return vec![];
+        }
+        state.options.with(|options| {
+            options
+                .skills
+                .iter()
+                .filter(|skill| {
+                    [&skill.id, &skill.name, &skill.scope]
+                        .into_iter()
+                        .any(|value| value.to_lowercase().contains(&query))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    });
     view! {
         <fieldset class="dynamic-agent-task" data-testid="dynamic-agent-task" data-task-key=key>
             <div class="dynamic-agent-task-head">
@@ -1694,23 +1726,107 @@ fn dynamic_task_editor(
                     }}
                 </div>
             </fieldset>
-            <fieldset class="dynamic-agent-choice-group"
+            <fieldset class="dynamic-agent-choice-group dynamic-skill-picker"
+                data-testid="dynamic-task-skills"
                 prop:hidden=move || task_value(
                     state.dynamic_form,
                     key,
                     |task| task.task_kind,
                 ) == WorkflowTaskKind::RunActivity>
-                <legend>{"Skills"}</legend>
-                <div class="dynamic-agent-checks" data-testid="dynamic-task-skills">
-                    <For each=move || state.options.get().skills
+                <legend>
+                    <span>{move || t(locale.get(), "agents.task.skills")}</span>
+                    <small>{move || tf(
+                        locale.get(),
+                        "agents.task.skills_selected",
+                        &[(
+                            "count",
+                            &task_value(
+                                state.dynamic_form,
+                                key,
+                                |task| task.skill_ids.len(),
+                            ).to_string(),
+                        )],
+                    )}</small>
+                </legend>
+                <Show when=move || !task_value(
+                    state.dynamic_form,
+                    key,
+                    |task| task.skill_ids.clone(),
+                ).is_empty()>
+                    <div class="dynamic-skill-selected" data-testid="dynamic-task-selected-skills">
+                        <For each=move || {
+                            let selected = task_value(
+                                state.dynamic_form,
+                                key,
+                                |task| task.skill_ids.clone(),
+                            );
+                            state.options.with(|options| {
+                                options.skills.iter()
+                                    .filter(|skill| selected.contains(&skill.id))
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                            })
+                        }
+                            key=|skill| skill.id.clone()
+                            children=move |skill| {
+                                let remove_id = skill.id.clone();
+                                let remove_name = skill.name.clone();
+                                view! {
+                                    <button type="button" data-testid="dynamic-task-selected-skill"
+                                        aria-label=move || tf(
+                                            locale.get(),
+                                            "agents.task.skill_remove",
+                                            &[("skill", &remove_name)],
+                                        )
+                                        on:click=move |_| update_task(
+                                            state.dynamic_form,
+                                            key,
+                                            |task| task.skill_ids.retain(|id| id != &remove_id),
+                                        )>
+                                        <span>{format!("{} · {}", skill.name, skill.scope)}</span>
+                                        {compose_icon("close")}
+                                    </button>
+                                }
+                            }
+                        />
+                    </div>
+                </Show>
+                <input type="search" class="dynamic-skill-search"
+                    data-testid="dynamic-task-skill-search"
+                    autocomplete="off"
+                    prop:value=move || skill_query.get()
+                    prop:placeholder=move || t(locale.get(), "agents.task.skills_search")
+                    aria-label=move || t(locale.get(), "agents.task.skills_search")
+                    on:input=move |event| skill_query.set(event_target_value(&event)) />
+                <div class="dynamic-skill-results" data-testid="dynamic-task-skill-results">
+                    {move || {
+                        if skill_query.get().trim().is_empty() {
+                            view! {
+                                <span class="dynamic-skill-hint">{tf(
+                                    locale.get(),
+                                    "agents.task.skills_search_hint",
+                                    &[("count", &state.options.get().skills.len().to_string())],
+                                )}</span>
+                            }.into_view()
+                        } else if filtered_skills.get().is_empty() {
+                            view! {
+                                <span class="dynamic-skill-hint">
+                                    {t(locale.get(), "agents.task.skills_no_results")}
+                                </span>
+                            }.into_view()
+                        } else {
+                            ().into_view()
+                        }
+                    }}
+                    <For each=move || filtered_skills.get()
                         key=|skill| skill.id.clone()
                         children=move |skill| {
                             let id = skill.id.clone();
                             let checked_id = id.clone();
                             let update_id = id.clone();
-                            let label = format!("{} · {}", skill.name, skill.scope);
                             view! {
-                                <label class="dynamic-agent-check">
+                                <label class="dynamic-skill-option" title=skill.id
+                                    data-testid="dynamic-task-skill-option">
                                     <input type="checkbox"
                                         prop:checked=move || state.dynamic_form.with(|form| {
                                             form.tasks.iter().find(|task| task.key == key)
@@ -1728,7 +1844,8 @@ fn dynamic_task_editor(
                                                 }
                                             });
                                         } />
-                                    <span>{label}</span>
+                                    <span>{skill.name}</span>
+                                    <small>{skill.scope}</small>
                                 </label>
                             }
                         }
@@ -1906,6 +2023,9 @@ fn workflow_graph_editor(
     let selected_edge = create_rw_signal::<Option<(u32, u32)>>(None);
     let entering_node_keys = create_rw_signal(HashSet::<u32>::new());
     let canvas_ref = create_node_ref::<leptos::html::Div>();
+    let workspace_ref = create_node_ref::<leptos::html::Div>();
+    let inspector_width = create_rw_signal(WORKFLOW_INSPECTOR_WIDTH_DEFAULT);
+    let inspector_resizing = create_rw_signal(false);
     let layout = create_memo(move |_| {
         state
             .dynamic_form
@@ -2066,7 +2186,12 @@ fn workflow_graph_editor(
     };
 
     view! {
-        <div class="workflow-graph-workspace" data-testid="workflow-graph-editor">
+        <div class="workflow-graph-workspace" data-testid="workflow-graph-editor"
+            node_ref=workspace_ref
+            style=move || format!(
+                "--workflow-inspector-width:{}px",
+                inspector_width.get(),
+            )>
             <div class="workflow-graph-main">
                 <div class="workflow-graph-toolbar">
                     <div class="workflow-graph-legend">
@@ -2645,6 +2770,65 @@ fn workflow_graph_editor(
                     />
                 </svg>
             </div>
+            <div class="workflow-graph-resizer"
+                class:dragging=move || inspector_resizing.get()
+                data-testid="workflow-graph-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                aria-valuemin=WORKFLOW_INSPECTOR_WIDTH_MIN
+                aria-valuemax=WORKFLOW_INSPECTOR_WIDTH_MAX
+                aria-valuenow=move || inspector_width.get()
+                aria-label=move || t(locale.get(), "workflow_studio.graph_resize_inspector")
+                title=move || t(locale.get(), "workflow_studio.graph_resize_inspector")
+                on:pointerdown=move |event: web_sys::PointerEvent| {
+                    if event.button() != 0 {
+                        return;
+                    }
+                    event.prevent_default();
+                    if let Some(target) = event.target()
+                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    {
+                        let _ = target.set_pointer_capture(event.pointer_id());
+                    }
+                    inspector_resizing.set(true);
+                }
+                on:pointermove=move |event: web_sys::PointerEvent| {
+                    if !inspector_resizing.get_untracked() {
+                        return;
+                    }
+                    let Some(workspace) = workspace_ref.get() else {
+                        return;
+                    };
+                    event.prevent_default();
+                    let rect = workspace.get_bounding_client_rect();
+                    let width = (rect.right() - event.client_x() as f64).round() as i32;
+                    inspector_width.set(clamp_workflow_inspector_width(width, rect.width()));
+                }
+                on:pointerup=move |event: web_sys::PointerEvent| {
+                    if let Some(target) = event.target()
+                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    {
+                        let _ = target.release_pointer_capture(event.pointer_id());
+                    }
+                    inspector_resizing.set(false);
+                }
+                on:pointercancel=move |_| inspector_resizing.set(false)
+                on:keydown=move |event: web_sys::KeyboardEvent| {
+                    let delta = match event.key().as_str() {
+                        "ArrowLeft" => 24,
+                        "ArrowRight" => -24,
+                        _ => return,
+                    };
+                    event.prevent_default();
+                    let workspace_width = workspace_ref.get()
+                        .map(|workspace| workspace.get_bounding_client_rect().width())
+                        .unwrap_or(960.0);
+                    inspector_width.set(clamp_workflow_inspector_width(
+                        inspector_width.get_untracked() + delta,
+                        workspace_width,
+                    ));
+                }></div>
             <aside class="workflow-graph-inspector" data-testid="workflow-graph-inspector">
                 {move || selected_task_key.get().and_then(|key| {
                     state.dynamic_form.with(|form| {
@@ -2937,14 +3121,14 @@ pub(super) fn workflow_studio(
                     <span>{move || t(locale.get(), "workflow_studio.back_to_settings")}</span>
                 </button>
                 <div class="workflow-studio-library-head">
-                    <div>
-                        <strong>{move || t(locale.get(), "workflow_studio.library")}</strong>
-                        <span>{move || tf(
-                            locale.get(),
-                            "workflow_studio.count",
-                            &[("count", &templates.get().len().to_string())],
-                        )}</span>
-                    </div>
+                    <strong>{move || t(locale.get(), "workflow_studio.library")}</strong>
+                    <span>{move || tf(
+                        locale.get(),
+                        "workflow_studio.count",
+                        &[("count", &templates.get().len().to_string())],
+                    )}</span>
+                </div>
+                <div class="workflow-studio-library-actions">
                     <button type="button" class="settings-add-btn" data-testid="workflow-new"
                         on:click=start_new>
                         {move || format!("+ {}", t(locale.get(), "workflow_studio.new"))}
@@ -2954,7 +3138,7 @@ pub(super) fn workflow_studio(
                             portfolio_draft.set(None);
                             portfolio_open.set(true);
                         }>
-                        {"Plan from Skills"}
+                        {move || t(locale.get(), "workflow_studio.plan_from_skills")}
                     </button>
                 </div>
                 <div class="workflow-studio-template-list">
@@ -3714,6 +3898,13 @@ pub(super) fn agent_workflows_panel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inspector_width_keeps_both_panes_usable() {
+        assert_eq!(clamp_workflow_inspector_width(120, 1200.0), 280);
+        assert_eq!(clamp_workflow_inspector_width(900, 1200.0), 640);
+        assert_eq!(clamp_workflow_inspector_width(500, 727.0), 400);
+    }
 
     #[test]
     fn arbitrary_tasks_round_trip() {
