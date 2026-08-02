@@ -4,9 +4,10 @@ use crate::app_support::compose_icon;
 use crate::bindings::invoke_checked;
 use crate::dto::*;
 use crate::i18n::{t, tf, Locale};
-use crate::text::{dom_value, event_target_checked, event_target_value, pretty_json};
+use crate::text::{dom_value, event_target_checked, event_target_value, md_to_html};
 use crate::window_capture_escape;
 use leptos::{ev, *};
+use serde_json::Value;
 use serde_wasm_bindgen::to_value;
 use std::collections::{HashMap, HashSet};
 use wasm_bindgen::{JsCast, JsValue};
@@ -1040,20 +1041,11 @@ fn group_workflows(
                 .then_with(|| left.workflow.id.cmp(&right.workflow.id))
         });
     }
-    // A taken-over child frame still belongs to the group that spawned it (#442).
     groups.retain(|group| {
         let Some(session_id) = session_id else {
             return false;
         };
         group.frame_id == session_id
-            || group.snapshots.iter().any(|snapshot| {
-                snapshot.dynamic.tasks.iter().any(|task| {
-                    task.result
-                        .as_ref()
-                        .and_then(|result| result.child_frame_id.as_deref())
-                        == Some(session_id)
-                })
-            })
     });
     groups
 }
@@ -3638,8 +3630,6 @@ fn dynamic_workflow_card(
     snapshot: AgentWorkflowSnapshot,
     state: AgentPanelState,
     locale: RwSignal<Locale>,
-    load_session: Callback<String>,
-    refresh_sessions: Callback<()>,
 ) -> View {
     let workflow = snapshot.workflow.clone();
     let workflow_id = workflow.id.clone();
@@ -3734,7 +3724,6 @@ fn dynamic_workflow_card(
                     let duration = result.as_ref().and_then(|result| result.duration_secs)
                         .map(|seconds| format!("{seconds}s"));
                     let full_result = result.as_ref().is_some_and(|result| result.full_result_available);
-                    let child_frame = result.as_ref().and_then(|result| result.child_frame_id.clone());
                     let linked_run_id = result.as_ref().and_then(|result| result.run_id.clone());
                     let task_approval_reasons = task.approval_reasons.clone();
                     let task_budget = task.budget.clone();
@@ -3849,13 +3838,6 @@ fn dynamic_workflow_card(
                                             result_workflow_id.clone(), result_step_id.clone(), state,
                                         )>{t(locale.get(), "agents.inspect_result")}</button>
                                 })}
-                                {child_frame.map(|frame_id| view! {
-                                    <button type="button" class="agents-secondary agent-takeover"
-                                        on:click=move |_| {
-                                            load_session.call(frame_id.clone());
-                                            refresh_sessions.call(());
-                                        }>{t(locale.get(), "agents.takeover")}</button>
-                                })}
                             </div>
                         </section>
                     }
@@ -3863,6 +3845,224 @@ fn dynamic_workflow_card(
             </div>
         </article>
     }.into_view()
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct AgentResultPresentation {
+    summary: Option<String>,
+    diff_summary: Option<String>,
+    files_changed: Vec<Value>,
+    artifacts: Vec<Value>,
+    evidence: Vec<Value>,
+    tests: Vec<Value>,
+    risks: Vec<Value>,
+    details: Vec<(String, Value)>,
+    error: Option<String>,
+}
+
+impl AgentResultPresentation {
+    fn from_response(response: &Value) -> Self {
+        let is_envelope = response.get("output").is_some();
+        let output = response.get("output").unwrap_or(response);
+        let summary = result_string(output.get("summary"));
+        let diff_summary = result_string(output.get("diff_summary"));
+        let files_changed = result_items(output.get("files_changed"));
+        let mut artifacts = result_items(output.get("artifacts"));
+        if is_envelope {
+            merge_result_artifacts(&mut artifacts, result_items(response.get("artifacts")));
+        }
+        let persisted_evidence = is_envelope
+            .then(|| result_items(response.get("evidence")))
+            .unwrap_or_default();
+        let evidence = if persisted_evidence.is_empty() {
+            result_items(output.get("evidence"))
+        } else {
+            persisted_evidence
+        };
+        let tests = result_items(output.get("tests"));
+        let risks = result_items(output.get("risks"));
+        let details = match output {
+            Value::Object(fields) => fields
+                .iter()
+                .filter(|(key, _)| {
+                    !matches!(
+                        key.as_str(),
+                        "task_id"
+                            | "summary"
+                            | "diff_summary"
+                            | "files_changed"
+                            | "artifacts"
+                            | "evidence"
+                            | "tests"
+                            | "risks"
+                            | "error"
+                    )
+                })
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            Value::Null => vec![],
+            value => vec![("result".into(), value.clone())],
+        };
+        let error = result_string(response.get("error")).or_else(|| result_string(output.get("error")));
+        Self {
+            summary,
+            diff_summary,
+            files_changed,
+            artifacts,
+            evidence,
+            tests,
+            risks,
+            details,
+            error,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.summary.is_none()
+            && self.diff_summary.is_none()
+            && self.files_changed.is_empty()
+            && self.artifacts.is_empty()
+            && self.evidence.is_empty()
+            && self.tests.is_empty()
+            && self.risks.is_empty()
+            && self.details.is_empty()
+            && self.error.is_none()
+    }
+}
+
+fn result_string(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).and_then(nonempty)
+}
+
+fn result_items(value: Option<&Value>) -> Vec<Value> {
+    match value {
+        Some(Value::Array(values)) => values.clone(),
+        Some(Value::Null) | None => vec![],
+        Some(value) => vec![value.clone()],
+    }
+}
+
+fn merge_result_artifacts(artifacts: &mut Vec<Value>, persisted: Vec<Value>) {
+    let mut identities = artifacts
+        .iter()
+        .filter_map(result_artifact_identity)
+        .collect::<HashSet<_>>();
+    for artifact in persisted {
+        let Some(identity) = result_artifact_identity(&artifact) else {
+            artifacts.push(artifact);
+            continue;
+        };
+        if identities.insert(identity) {
+            artifacts.push(artifact);
+        }
+    }
+}
+
+fn result_artifact_identity(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    ["name", "path", "id"]
+        .into_iter()
+        .find_map(|key| object.get(key).and_then(Value::as_str).and_then(nonempty))
+}
+
+fn result_field_label(key: &str) -> String {
+    key.replace('_', " ").replace('-', " ")
+}
+
+fn result_value_view(value: Value) -> View {
+    match value {
+        Value::Null => view! { <span class="agent-result-empty-value">{"—"}</span> }.into_view(),
+        Value::Bool(value) => view! { <span>{value.to_string()}</span> }.into_view(),
+        Value::Number(value) => view! { <span>{value.to_string()}</span> }.into_view(),
+        Value::String(value) => view! {
+            <div class="agent-result-markdown md" inner_html=md_to_html(&value)></div>
+        }
+        .into_view(),
+        Value::Array(values) => view! {
+            <ul class="agent-result-value-list">
+                {values.into_iter().map(|value| view! {
+                    <li>{result_value_view(value)}</li>
+                }).collect_view()}
+            </ul>
+        }
+        .into_view(),
+        Value::Object(fields) => view! {
+            <dl class="agent-result-fields">
+                {fields.into_iter().map(|(key, value)| view! {
+                    <div>
+                        <dt>{result_field_label(&key)}</dt>
+                        <dd>{result_value_view(value)}</dd>
+                    </div>
+                }).collect_view()}
+            </dl>
+        }
+        .into_view(),
+    }
+}
+
+fn result_artifact_view(value: Value, locale: Locale) -> View {
+    let Value::Object(mut fields) = value else {
+        return result_value_view(value);
+    };
+    let name = fields
+        .remove("name")
+        .and_then(|value| value.as_str().map(str::to_string));
+    let kind = fields
+        .remove("kind")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .and_then(|value| nonempty(&value));
+    let path = fields
+        .remove("path")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .and_then(|value| nonempty(&value));
+    fields.remove("id");
+    let content = fields
+        .remove("content")
+        .or_else(|| fields.remove("summary"));
+    let title = name
+        .and_then(|value| nonempty(&value))
+        .or_else(|| path.clone())
+        .unwrap_or_else(|| t(locale, "agents.result.output").into());
+    let details = (!fields.is_empty()).then_some(Value::Object(fields));
+    view! {
+        <article class="agent-result-artifact">
+            <div class="agent-result-item-head">
+                <strong>{title}</strong>
+                {kind.map(|kind| view! { <span>{kind}</span> })}
+            </div>
+            {path.map(|path| view! { <code class="agent-result-reference">{path}</code> })}
+            {content.map(result_value_view)}
+            {details.map(result_value_view)}
+        </article>
+    }
+    .into_view()
+}
+
+fn result_evidence_view(value: Value) -> View {
+    let Value::Object(mut fields) = value else {
+        return result_value_view(value);
+    };
+    let kind = fields
+        .remove("kind")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .and_then(|value| nonempty(&value));
+    let reference = fields
+        .remove("reference")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .and_then(|value| nonempty(&value));
+    let summary = fields
+        .remove("summary")
+        .or_else(|| fields.remove("evidence"));
+    let details = (!fields.is_empty()).then_some(Value::Object(fields));
+    view! {
+        <article class="agent-result-evidence">
+            {kind.map(|kind| view! { <span class="agent-result-kind">{result_field_label(&kind)}</span> })}
+            {summary.map(result_value_view)}
+            {reference.map(|reference| view! { <code class="agent-result-reference">{reference}</code> })}
+            {details.map(result_value_view)}
+        </article>
+    }
+    .into_view()
 }
 
 fn workflow_result_dialog(state: AgentPanelState, locale: RwSignal<Locale>) -> View {
@@ -3875,14 +4075,19 @@ fn workflow_result_dialog(state: AgentPanelState, locale: RwSignal<Locale>) -> V
     });
     view! {
         {move || state.result.get().map(|result| {
+            let current_locale = locale.get();
+            let step = result.step_id.rsplit(':').next().unwrap_or(&result.step_id);
+            let attempt = result.attempt.to_string();
             let title = format!(
-                "{} · {} · #{}",
-                result.step_id,
-                status_label(locale.get(), &result.status),
-                result.attempt,
+                "{} · {} · {}",
+                step,
+                status_label(current_locale, &result.status),
+                tf(current_locale, "agents.result.attempt", &[("number", &attempt)]),
             );
-            let response = serde_json::to_string_pretty(&result.response)
-                .unwrap_or_else(|_| pretty_json(&result.response.to_string()));
+            let presentation = AgentResultPresentation::from_response(&result.response);
+            let empty = presentation.is_empty();
+            let has_changes = presentation.diff_summary.is_some()
+                || !presentation.files_changed.is_empty();
             view! {
                 <div class="overlay agent-result-overlay" role="presentation"
                     on:click=move |_| state.result.set(None)>
@@ -3900,7 +4105,85 @@ fn workflow_result_dialog(state: AgentPanelState, locale: RwSignal<Locale>) -> V
                                 aria-label=t(locale.get(), "agents.result.close")
                                 on:click=move |_| state.result.set(None)>{"×"}</button>
                         </div>
-                        <pre data-testid="agent-result-json">{response}</pre>
+                        <div class="agent-result-body" data-testid="agent-result-content">
+                            {presentation.error.map(|error| view! {
+                                <div class="agents-error agent-result-error" role="alert">{error}</div>
+                            })}
+                            {presentation.summary.map(|summary| view! {
+                                <section class="agent-result-section agent-result-summary"
+                                    data-testid="agent-result-summary">
+                                    <h3>{t(locale.get(), "agents.result.summary")}</h3>
+                                    {result_value_view(Value::String(summary))}
+                                </section>
+                            })}
+                            {has_changes.then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-changes">
+                                    <h3>{t(locale.get(), "agents.result.changes")}</h3>
+                                    {presentation.diff_summary.map(|summary| result_value_view(Value::String(summary)))}
+                                    {(!presentation.files_changed.is_empty()).then(|| view! {
+                                        <ul class="agent-result-files">
+                                            {presentation.files_changed.into_iter().map(|file| view! {
+                                                <li>{result_value_view(file)}</li>
+                                            }).collect_view()}
+                                        </ul>
+                                    })}
+                                </section>
+                            })}
+                            {(!presentation.artifacts.is_empty()).then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-artifacts">
+                                    <h3>{t(locale.get(), "agents.result.artifacts")}</h3>
+                                    <div class="agent-result-card-list">
+                                        {presentation.artifacts.into_iter().map(|artifact| {
+                                            result_artifact_view(artifact, locale.get())
+                                        }).collect_view()}
+                                    </div>
+                                </section>
+                            })}
+                            {(!presentation.evidence.is_empty()).then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-evidence">
+                                    <h3>{t(locale.get(), "agents.result.evidence")}</h3>
+                                    <div class="agent-result-card-list">
+                                        {presentation.evidence.into_iter().map(result_evidence_view).collect_view()}
+                                    </div>
+                                </section>
+                            })}
+                            {(!presentation.tests.is_empty()).then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-tests">
+                                    <h3>{t(locale.get(), "agents.result.tests")}</h3>
+                                    <ul class="agent-result-value-list">
+                                        {presentation.tests.into_iter().map(|test| view! {
+                                            <li>{result_value_view(test)}</li>
+                                        }).collect_view()}
+                                    </ul>
+                                </section>
+                            })}
+                            {(!presentation.risks.is_empty()).then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-risks">
+                                    <h3>{t(locale.get(), "agents.result.risks")}</h3>
+                                    <ul class="agent-result-value-list agent-result-risk-list">
+                                        {presentation.risks.into_iter().map(|risk| view! {
+                                            <li>{result_value_view(risk)}</li>
+                                        }).collect_view()}
+                                    </ul>
+                                </section>
+                            })}
+                            {(!presentation.details.is_empty()).then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-details">
+                                    <h3>{t(locale.get(), "agents.result.details")}</h3>
+                                    <dl class="agent-result-fields">
+                                        {presentation.details.into_iter().map(|(key, value)| view! {
+                                            <div>
+                                                <dt>{result_field_label(&key)}</dt>
+                                                <dd>{result_value_view(value)}</dd>
+                                            </div>
+                                        }).collect_view()}
+                                    </dl>
+                                </section>
+                            })}
+                            {empty.then(|| view! {
+                                <div class="agent-result-empty">{t(locale.get(), "agents.result.empty")}</div>
+                            })}
+                        </div>
                     </div>
                 </div>
             }
@@ -3914,8 +4197,6 @@ pub(super) fn agent_workflows_panel(
     sessions: RwSignal<Vec<SessionInfo>>,
     delegation_enabled: RwSignal<bool>,
     locale: RwSignal<Locale>,
-    load_session: Callback<String>,
-    refresh_sessions: Callback<()>,
     open_workflows: Callback<()>,
 ) -> impl IntoView {
     view! {
@@ -3967,8 +4248,6 @@ pub(super) fn agent_workflows_panel(
                                             snapshot,
                                             state,
                                             locale,
-                                            load_session,
-                                            refresh_sessions,
                                         )).collect_view()}
                                     </div>
                                 </section>
@@ -4304,7 +4583,7 @@ mod tests {
     }
 
     #[test]
-    fn taken_over_child_frame_keeps_its_root_group() {
+    fn workflow_groups_stay_scoped_to_the_parent_conversation() {
         let snapshot: AgentWorkflowSnapshot = serde_json::from_value(serde_json::json!({
             "workflow": {
                 "id": "wf-1",
@@ -4373,9 +4652,52 @@ mod tests {
 
         let parent = group_workflows(vec![snapshot.clone()], &[], Some("parent-frame"));
         assert_eq!(parent.len(), 1);
-        let taken_over = group_workflows(vec![snapshot.clone()], &[], Some("agent-child"));
-        assert_eq!(taken_over.len(), 1);
+        assert!(group_workflows(vec![snapshot.clone()], &[], Some("agent-child")).is_empty());
         assert!(group_workflows(vec![snapshot], &[], Some("unrelated")).is_empty());
+    }
+
+    #[test]
+    fn result_presentation_extracts_readable_content_from_the_runtime_envelope() {
+        let response = serde_json::json!({
+            "request_id": "request-1",
+            "status": "succeeded",
+            "output": {
+                "task_id": "seat_1_opening",
+                "summary": "Completed the opening position.",
+                "files_changed": ["results/opening.md"],
+                "diff_summary": "Created the report.",
+                "artifacts": [{
+                    "name": "opening.md",
+                    "kind": "markdown",
+                    "content": "# Opening position"
+                }],
+                "evidence": ["declared evidence"],
+                "tests": ["Word limit checked"],
+                "risks": ["Evidence remains uncertain"],
+                "confidence": "medium"
+            },
+            "artifacts": [{
+                "id": "declared:opening.md",
+                "name": "opening.md",
+                "kind": "markdown",
+                "path": null
+            }],
+            "evidence": [{"kind": "agent", "summary": "persisted evidence"}],
+            "child_frame_id": "internal-child-frame",
+            "error": null
+        });
+
+        let result = AgentResultPresentation::from_response(&response);
+
+        assert_eq!(result.summary.as_deref(), Some("Completed the opening position."));
+        assert_eq!(result.artifacts.len(), 1);
+        assert_eq!(result.evidence[0]["summary"], "persisted evidence");
+        assert_eq!(result.tests, [serde_json::json!("Word limit checked")]);
+        assert_eq!(result.details, [("confidence".into(), serde_json::json!("medium"))]);
+        assert!(!result
+            .details
+            .iter()
+            .any(|(key, _)| key == "task_id" || key == "child_frame_id"));
     }
 
     #[test]

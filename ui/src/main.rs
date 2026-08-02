@@ -4835,16 +4835,6 @@ fn App() -> impl IntoView {
             }
         });
     });
-    let refresh_agent_sessions = Callback::new(move |_: ()| refresh_session_history());
-
-    // Take-over from the Agents panel: load_session flips the right pane to
-    // Artifacts for the generic session-switch path, which made the panel (and
-    // the workflow being inspected) vanish mid-click (#442).
-    let takeover_session = Callback::new(move |id: String| {
-        load_session.call(id);
-        right_tab.set(RightTab::Agents);
-    });
-
     let load_earlier_messages = Callback::new(move |_: ()| {
         let Some(id) = active_session.get_untracked() else {
             return;
@@ -11169,8 +11159,6 @@ fn App() -> impl IntoView {
                             sessions,
                             delegation_enabled,
                             locale,
-                            takeover_session.clone(),
-                            refresh_agent_sessions.clone(),
                             Callback::new(move |_: ()| {
                                 open_settings_fn(Some("workflows".into()));
                                 refresh_agent_resources(workflow_studio_state, specialists);

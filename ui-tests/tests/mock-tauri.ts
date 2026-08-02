@@ -2091,9 +2091,38 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               attempt: 1,
               status: task.result.status,
               response: {
-                task_id: task.id,
-                summary: task.result.summary,
-                evidence: [`evidence-for-${task.id}`],
+                request_id: `request-${task.id}`,
+                status: task.result.status,
+                output: {
+                  task_id: task.id,
+                  summary: task.result.summary,
+                  files_changed: [`reports/${task.id}.md`],
+                  diff_summary: `Created the ${task.id} report.`,
+                  artifacts: [{
+                    name: `${task.id}.md`,
+                    kind: "markdown",
+                    content: `# ${task.id} result\n\nReadable result content for **${task.id}**.`,
+                  }],
+                  evidence: [`evidence-for-${task.id}`],
+                  tests: ["Structure check passed"],
+                  risks: ["Mock evidence only"],
+                },
+                artifact_ids: [`declared:${task.id}.md`],
+                artifacts: [{
+                  id: `declared:${task.id}.md`,
+                  name: `${task.id}.md`,
+                  kind: "markdown",
+                  path: null,
+                }],
+                evidence: [{
+                  kind: "agent",
+                  summary: `evidence-for-${task.id}`,
+                  reference: null,
+                }],
+                usage: { input_tokens: 900, output_tokens: 240, tool_calls: 3, cost_microunits: 19000 },
+                agent_session_id: null,
+                child_frame_id: `agent-child-${task.id}`,
+                error: null,
               },
             };
           }
