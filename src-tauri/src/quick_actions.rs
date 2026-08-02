@@ -1191,10 +1191,14 @@ mod tests {
     #[tokio::test]
     async fn explain_workflow_can_browse_and_suggest_without_guessing() {
         let (store, path) = store().await;
+        let expected_catalog_size = ensure_templates(&store).await.len();
         let tool = ExplainWorkflowTool::new(store);
         let browse = tool.run(&json!({"query": "*"}), &NoEnv(path.clone())).await;
         let catalog: Value = serde_json::from_str(&browse.content).unwrap();
-        assert_eq!(catalog["workflows"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            catalog["workflows"].as_array().unwrap().len(),
+            expected_catalog_size
+        );
 
         let missing = tool
             .run(
