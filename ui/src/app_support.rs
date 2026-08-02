@@ -443,7 +443,7 @@ pub(super) struct SessionTransfer {
 pub(super) enum UiConfirm {
     EnableFullPermission,
     DeleteFolder(String),
-    DeleteSession(String),
+    DeleteSessions(Vec<String>),
     DeleteFileEntry { path: String, is_dir: bool },
 }
 

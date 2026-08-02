@@ -3518,7 +3518,7 @@ export function parallelMock(): void {
       windowListeners[event]?.({ payload });
     } catch { /* not registered yet */ }
   };
-  const sessions: { id: string; title: string; ts: number }[] = [];
+  const sessions: { id: string; title: string; ts: number; folder_id: string | null }[] = [];
   const folders: { id: string; name: string }[] = [];
   const queues: Record<string, Promise<void>> = {};
 
@@ -3640,7 +3640,11 @@ export function parallelMock(): void {
             if (index >= 0) sessions.splice(index, 1);
             return null;
           }
-          case "move_session": return null;
+          case "move_session": {
+            const session = sessions.find((entry) => entry.id === arg("id"));
+            if (session) session.folder_id = (arg("folderId") as string | null) ?? null;
+            return null;
+          }
           case "transfer_session_to_project": {
             if (arg("mode") === "move") {
               const index = sessions.findIndex((entry) => entry.id === arg("id"));
@@ -3668,7 +3672,7 @@ export function parallelMock(): void {
             const msg = (args && args.message) || "";
             const run = async () => {
               if (!sessions.some((s) => s.id === fid)) {
-                sessions.push({ id: fid, title: msg, ts: Date.now() });
+                sessions.push({ id: fid, title: msg, ts: Date.now(), folder_id: null });
               }
               emit("agent", { kind: "User", frame_id: fid, text: msg });
               emit("agent", { kind: "Text", frame_id: fid, delta: `echo:${msg}` });
