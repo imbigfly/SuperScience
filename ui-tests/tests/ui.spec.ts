@@ -1619,6 +1619,80 @@ test("conversation action button renames, transfers, and deletes sessions (#557)
   )).toBe(true);
 });
 
+test("conversations can be selected and moved or deleted together", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await page.goto("/");
+  await page.locator(".proj-card-main").first().click();
+
+  await page.getByRole("button", { name: "New group" }).click();
+  const folderInput = page.locator("#folder-modal-input");
+  await folderInput.fill("Bulk destination");
+  await page.locator(".modal", { has: folderInput }).getByRole("button", { name: "Save" }).click();
+
+  const titles = ["actions-bulk-one", "actions-bulk-two", "actions-bulk-keep"];
+  for (const title of titles) {
+    await newSessionButton(page).click();
+    await composer(page).fill(title);
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.locator(".side-item.ses", { hasText: title })).toBeVisible({ timeout: 10_000 });
+  }
+
+  const sidebar = page.locator(".sidebar");
+  let first = sidebar.locator(".side-item.ses", { hasText: titles[0] });
+  let second = sidebar.locator(".side-item.ses", { hasText: titles[1] });
+  const keep = sidebar.locator(".side-item.ses", { hasText: titles[2] });
+  const firstId = await first.getAttribute("data-session-id");
+  const secondId = await second.getAttribute("data-session-id");
+
+  await sidebar.getByRole("button", { name: "Select", exact: true }).click();
+  await first.click();
+  await second.click();
+  await expect(first).toHaveAttribute("aria-pressed", "true");
+  await expect(second).toHaveAttribute("aria-pressed", "true");
+  await expect(sidebar.getByText("2 selected", { exact: true })).toBeVisible();
+
+  await sidebar.getByTestId("bulk-move-sessions").selectOption("folder-1");
+  await expect.poll(() => page.evaluate(({ firstId, secondId }) => {
+    const calls = ((window as any).__sendInvokeLog ?? [])
+      .filter((call: any) => call.cmd === "move_session")
+      .slice(-2)
+      .map((call: any) => call.args instanceof Map ? Object.fromEntries(call.args) : call.args)
+      .sort((a: any, b: any) => String(a.id).localeCompare(String(b.id)));
+    return calls;
+  }, { firstId, secondId })).toEqual([
+    { id: firstId, folderId: "folder-1" },
+    { id: secondId, folderId: "folder-1" },
+  ].sort((a, b) => String(a.id).localeCompare(String(b.id))));
+  await expect(sidebar.getByRole("button", { name: "Select", exact: true })).toBeVisible();
+
+  first = sidebar.locator(".side-item.ses", { hasText: titles[0] });
+  second = sidebar.locator(".side-item.ses", { hasText: titles[1] });
+  await sidebar.getByRole("button", { name: "Select", exact: true }).click();
+  await first.click();
+  await second.click();
+  await sidebar.getByTestId("bulk-delete-sessions").click();
+
+  const confirm = page.locator(".confirm-modal");
+  await expect(confirm).toContainText("Delete 2 conversations? This cannot be undone.");
+  await page.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  await expect(sidebar.getByTestId("bulk-delete-sessions")).toBeVisible();
+  await expect(first).toHaveAttribute("aria-pressed", "true");
+
+  await sidebar.getByTestId("bulk-delete-sessions").click();
+  await confirm.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(first).toHaveCount(0);
+  await expect(second).toHaveCount(0);
+  await expect(keep).toBeVisible();
+  await expect.poll(() => page.evaluate(({ firstId, secondId }) => {
+    const ids = ((window as any).__sendInvokeLog ?? [])
+      .filter((call: any) => call.cmd === "delete_session")
+      .map((call: any) => call.args instanceof Map ? Object.fromEntries(call.args) : call.args)
+      .map((args: any) => args.id);
+    return [firstId, secondId].every((id) => ids.includes(id));
+  }, { firstId, secondId })).toBe(true);
+});
+
 test("group action button visibly renames and deletes groups", async ({ page }) => {
   await page.addInitScript(parallelMock);
   await page.goto("/");

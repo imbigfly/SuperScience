@@ -6397,7 +6397,7 @@ fn App() -> impl IntoView {
                         });
                     }
                     context_menu::SessionAction::Delete(id) => {
-                        ui_confirm.set(Some(UiConfirm::DeleteSession(id)));
+                        ui_confirm.set(Some(UiConfirm::DeleteSessions(vec![id])));
                     }
                 }
             }
@@ -7077,16 +7077,25 @@ fn App() -> impl IntoView {
         });
     };
 
-    let move_session_to = {
-        Callback::new(move |(session_id, folder_id): (String, Option<String>)| {
-            spawn_local(async move {
-                let arg = to_value(&serde_json::json!({ "id": session_id, "folderId": folder_id }))
-                    .unwrap();
-                if invoke_checked("move_session", arg).await.is_ok() {
-                    refresh_session_history();
-                }
-            });
-        })
+    let move_sessions_to = {
+        Callback::new(
+            move |(session_ids, folder_id): (Vec<String>, Option<String>)| {
+                spawn_local(async move {
+                    let mut moved = false;
+                    for session_id in session_ids {
+                        let arg = to_value(&serde_json::json!({
+                            "id": session_id,
+                            "folderId": folder_id,
+                        }))
+                        .unwrap();
+                        moved |= invoke_checked("move_session", arg).await.is_ok();
+                    }
+                    if moved {
+                        refresh_session_history();
+                    }
+                });
+            },
+        )
     };
 
     let new_folder = move |_| {
@@ -8245,7 +8254,10 @@ fn App() -> impl IntoView {
                 session_history_cursor,
                 session_history_loading,
             ))
-            move_session_to=move_session_to
+            move_sessions_to=move_sessions_to
+            delete_sessions=Callback::new(move |ids: Vec<String>| {
+                ui_confirm.set(Some(UiConfirm::DeleteSessions(ids)));
+            })
             open_session_actions=Callback::new(move |(ev, id, title, pinned): (web_sys::MouseEvent, String, String, bool)| {
                 ctx_menu.set(Some(context_menu::session_menu(
                     ev.client_x() as f64,
@@ -12379,7 +12391,12 @@ fn App() -> impl IntoView {
             let message = match &action {
                 UiConfirm::EnableFullPermission => t(locale.get(), "full_permission.confirm_body").to_string(),
                 UiConfirm::DeleteFolder(_) => t(locale.get(), "folder.delete_confirm").to_string(),
-                UiConfirm::DeleteSession(_) => t(locale.get(), "session.delete_confirm").to_string(),
+                UiConfirm::DeleteSessions(ids) if ids.len() == 1 => t(locale.get(), "session.delete_confirm").to_string(),
+                UiConfirm::DeleteSessions(ids) => tf(
+                    locale.get(),
+                    "session.delete_many_confirm",
+                    &[("n", &ids.len().to_string())],
+                ),
                 UiConfirm::DeleteFileEntry { path, is_dir } => tf(
                     locale.get(),
                     if *is_dir { "files.delete_directory_confirm" } else { "files.delete_file_confirm" },
@@ -12389,7 +12406,7 @@ fn App() -> impl IntoView {
             let action_key = match &action {
                 UiConfirm::EnableFullPermission => "full_permission.confirm_action",
                 UiConfirm::DeleteFolder(_) => "ctx.delete_folder",
-                UiConfirm::DeleteSession(_) => "ctx.delete_session",
+                UiConfirm::DeleteSessions(_) => "ctx.delete_session",
                 UiConfirm::DeleteFileEntry { is_dir: true, .. } => "files.delete_directory",
                 UiConfirm::DeleteFileEntry { is_dir: false, .. } => "files.delete_file",
             };
@@ -12450,19 +12467,31 @@ fn App() -> impl IntoView {
                                         }
                                     });
                                 }
-                                UiConfirm::DeleteSession(id) => {
+                                UiConfirm::DeleteSessions(ids) => {
                                     let active_session = active_session;
                                     let items = items;
                                     let transcripts = transcripts;
                                     let running = running;
                                     let pending_turns = pending_turns;
                                     spawn_local(async move {
-                                        let arg = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
-                                        if invoke_checked("delete_session", arg).await.is_ok() {
-                                            transcripts.update(|m| { m.remove(&id); });
-                                            running.update(|r| { r.remove(&id); });
-                                            pending_turns.update(|m| { m.remove(&id); });
-                                            if active_session.get().as_deref() == Some(id.as_str()) {
+                                        let mut deleted = HashSet::new();
+                                        for id in ids {
+                                            let arg = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
+                                            if invoke_checked("delete_session", arg).await.is_ok() {
+                                                deleted.insert(id);
+                                            }
+                                        }
+                                        if !deleted.is_empty() {
+                                            transcripts.update(|stored| {
+                                                stored.retain(|id, _| !deleted.contains(id));
+                                            });
+                                            running.update(|stored| {
+                                                stored.retain(|id| !deleted.contains(id));
+                                            });
+                                            pending_turns.update(|stored| {
+                                                stored.retain(|id, _| !deleted.contains(id));
+                                            });
+                                            if active_session.get().is_some_and(|id| deleted.contains(&id)) {
                                                 active_session.set(None);
                                                 items.set(vec![]);
                                             }

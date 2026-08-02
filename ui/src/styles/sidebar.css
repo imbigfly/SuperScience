@@ -55,6 +55,13 @@
 /* --- Session sort/group control --- */
 .side-sessions-head { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 10px 10px 4px; }
 .side-sessions-title { font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--text-faint); }
+.side-sessions-head-actions { display: flex; align-items: center; gap: 3px; }
+.side-select-btn {
+  border: 0; border-radius: var(--radius-xs); padding: 4px 6px;
+  background: transparent; color: var(--text-faint); font: inherit; font-size: 11px; cursor: pointer;
+}
+.side-select-btn:hover, .side-select-btn[aria-pressed="true"] { background: var(--bg-elev); color: var(--text); }
+.side-select-btn:disabled { cursor: default; opacity: .45; }
 .side-sort-btn { width: 26px; height: 26px; color: var(--text-faint); }
 .side-sort-btn svg { width: 16px; height: 16px; }
 .side-sort-btn:hover, .side-sort-btn.active { color: var(--text); background: var(--bg-elev); }
@@ -79,6 +86,21 @@
 .side-sort-check.on { opacity: 1; }
 .side-sort-check svg { width: 15px; height: 15px; }
 .side-sort-sep { height: 1px; background: var(--border); margin: 7px 4px; }
+.side-bulk-actions { display: flex; flex-direction: column; gap: 5px; padding: 2px 8px 7px; }
+.side-bulk-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-faint); font-size: 11px; }
+.side-bulk-link { border: 0; padding: 2px; background: transparent; color: var(--clay); font: inherit; font-size: inherit; cursor: pointer; }
+.side-bulk-link:hover { text-decoration: underline; }
+.side-bulk-controls { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.side-bulk-controls select {
+  min-width: 0; flex: 1 1 auto; height: 29px; padding: 3px 6px;
+  border: 1px solid var(--border); border-radius: var(--radius-xs);
+  background: var(--bg-input); color: var(--text); font: inherit; font-size: 11.5px;
+}
+.side-bulk-delete {
+  height: 29px; padding: 3px 8px; border: 1px solid var(--border); border-radius: var(--radius-xs);
+  background: transparent; color: var(--err); font: inherit; font-size: 11.5px; cursor: pointer;
+}
+.side-bulk-controls :disabled { cursor: default; opacity: .45; }
 .side-item {
   display: flex; align-items: center; gap: 9px;
   padding: 7px 10px; border-radius: var(--radius-sm);
@@ -89,6 +111,16 @@
 .side-item .dot.ok { background: var(--ok); }
 button.side-item { width: 100%; text-align: left; background: transparent; border: 1px solid transparent; font: inherit; font-size: 13px; cursor: pointer; }
 button.side-item.ses { cursor: pointer; user-select: none; padding-right: 34px; }
+button.side-item.ses.selecting { padding-right: 10px; }
+.session-select-mark {
+  display: none; align-items: center; justify-content: center; width: 15px; height: 15px; flex: 0 0 auto;
+  border: 1px solid var(--border-strong); border-radius: 4px; color: transparent;
+}
+.session-select-mark svg { width: 11px; height: 11px; }
+.side-item.ses.selecting .session-select-mark { display: inline-flex; }
+.side-item.ses.selecting .dot { display: none; }
+.side-item.ses.selected { background: var(--clay-soft); border-color: var(--clay); color: var(--text); }
+.side-item.ses.selected .session-select-mark { background: var(--clay); border-color: var(--clay); color: var(--on-clay); }
 .side-item-wrap { position: relative; min-width: 0; }
 .session-actions, .folder-actions {
   position: absolute; z-index: 1; top: 50%; right: 5px; transform: translateY(-50%);
@@ -107,6 +139,7 @@ button.side-item.ses { cursor: pointer; user-select: none; padding-right: 34px; 
 .side-folder:focus-within .folder-actions { opacity: 1; }
 .session-actions:hover, .session-actions:focus-visible,
 .folder-actions:hover, .folder-actions:focus-visible { color: var(--text); background: var(--bg-input); }
+.session-actions.selection-hidden { display: none; }
 .side-item.active { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-sm); }
 .side-item.active .dot { background: var(--clay); }
 .side-item.ses.running .dot { background: var(--clay); animation: tool-pulse 1s ease-in-out infinite; }
