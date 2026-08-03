@@ -3649,6 +3649,24 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 }, 3_100);
               });
             }
+            if (String(arg("message") ?? "").includes("RZSTREAM")) {
+              // Staggered reasoning deltas keep rebuilding the fingerprint-keyed
+              // chat row; the expanded thinking block must not snap shut.
+              return await new Promise<string>((resolve) => {
+                setTimeout(() => {
+                  emit("agent", { kind: "User", frame_id: fid, text: msg });
+                  emit("agent", { kind: "Reasoning", frame_id: fid, delta: "First thought." });
+                }, 30);
+                setTimeout(() => {
+                  emit("agent", { kind: "Reasoning", frame_id: fid, delta: " More reasoning arrives." });
+                }, 1_200);
+                setTimeout(() => {
+                  emit("agent", { kind: "Text", frame_id: fid, delta: "Stream done." });
+                  emit("agent", { kind: "Done", frame_id: fid });
+                  resolve(fid);
+                }, 1_500);
+              });
+            }
             if (String(arg("message") ?? "").includes("RNOTEBOOK")) {
               setTimeout(() => {
                 emit("agent", { kind: "User", frame_id: fid, text: msg });

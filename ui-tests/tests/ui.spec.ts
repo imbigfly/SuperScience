@@ -3652,6 +3652,23 @@ test("monitor_run renders a live Run card inline without get_run polling", async
   await expect(card).toContainText("Cancelled");
 });
 
+test("reasoning details stays open while more thinking streams in", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("RZSTREAM");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const rz = page.locator("details.rz");
+  await expect(rz).toBeVisible();
+  await rz.locator("summary").click();
+  await expect(rz).toHaveAttribute("open", "open");
+
+  // The next streaming delta rebuilds the fingerprint-keyed row; the open
+  // state must survive the rebuild.
+  await expect(rz).toContainText("More reasoning arrives.");
+  await expect(rz).toHaveAttribute("open", "open");
+  await expect(rz).toContainText("First thought.");
+});
+
 test("active session Runs appear automatically with elapsed time and heartbeat (#593)", async ({ page }) => {
   await page.goto("/");
   await page.evaluate(() => {

@@ -9258,6 +9258,7 @@ fn App() -> impl IntoView {
                                                 i, &item, timestamp, &arts, on_artifact_select, on_file_link,
                                                 run_records, busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, session_id,
                                                 respond_confirm, on_resume, on_queue,
+                                                step_disclosure_state,
                                                 plan_mode_active, plan_compat, on_plan_decision,
                                                 on_question_answer, jump_to_review_message,
                                             )}
@@ -13743,6 +13744,7 @@ fn render_item(
     on_approval: Callback<(String, bool, Option<String>, String)>,
     on_resume: Callback<usize>,
     on_queue: Callback<QueueOp>,
+    disclosure_state: RwSignal<HashMap<String, bool>>,
     plan_mode_active: Signal<bool>,
     plan_compat: Signal<bool>,
     on_plan_decision: Callback<PlanDecision>,
@@ -13839,9 +13841,19 @@ fn render_item(
             />
         }.into_view(),
         ChatItem::Reasoning(s) => {
+            // The chat row is fingerprint-keyed, so every streaming delta
+            // rebuilds it and a plain `<details>` would snap shut mid-stream.
+            // Keep the open state in the shared disclosure map, like the step
+            // group does, and drive `open` from it.
+            let open_id = format!("{session_id}:reasoning:{ui_index}");
+            let toggle_id = open_id.clone();
             view! {
-                <details class="rz">
-                    <summary>{move || t(locale.get(), "chat.thinking")}</summary>
+                <details class="rz"
+                    open=move || disclosure_open(disclosure_state, &open_id, false)>
+                    <summary on:click=move |event| {
+                        event.prevent_default();
+                        toggle_disclosure(disclosure_state, &toggle_id, false);
+                    }>{move || t(locale.get(), "chat.thinking")}</summary>
                     <div class="body">{s.clone()}</div>
                 </details>
             }.into_view()
