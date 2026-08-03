@@ -230,12 +230,19 @@ test("Example project shows bundled demos as read-only transcripts", async ({ pa
   // The synthetic "Example project" opens a demo view whose sidebar lists the
   // bundled demos (no per-project "Open demo" button any more).
   await page.getByText("Example project").click();
-  await page.getByText("Design a genome-wide CRISPR").click();
+  await expect(page.getByText("Help me find RNA-seq knockdown datasets")).toBeVisible();
+  await expect(page.getByText("What specific samples are included in GSE153250")).toBeVisible();
+  await page.getByText("Connect to the remote compute host").click();
 
   // The demo request renders as the user turn…
-  await expect(page.getByText("Design a genome-wide CRISPR knockout screen targeting all kinases.")).toBeVisible();
+  await expect(
+    page.getByText("Connect to the remote compute host, locate the FASTQ data for GSE153250, keep only the siESR1 and siNT groups."),
+  ).toBeVisible();
   // …and the agent's final report renders as the assistant turn.
-  await expect(page.getByText("Human Kinome CRISPR-KO Screen")).toBeVisible();
+  await expect(page.getByText("GSE153250 RNA-seq Upstream Analysis")).toBeVisible();
+  // Full transcript includes SSH/run operation cards, not just the summary.
+  await expect(page.getByText("Re-run pipeline with fixed STAR index")).toBeVisible();
+  await expect(page.getByTestId("run-monitor-card")).toBeVisible();
 });
 
 test("send streams a mocked assistant reply", async ({ page, context }) => {

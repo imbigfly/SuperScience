@@ -50,7 +50,7 @@ wisp-science/
 ├─ r/               可选的系统 R kernel worker（需要 jsonlite）
 ├─ skills/          内置 SKILL.md 目录（29 个科研工作流）
 ├─ mcp-servers/     内置 MCP 服务（bio-tools：约 80 个数据库客户端）
-└─ seed/            内置演示会话（CRISPR / 酶 / 极端微生物 / 免疫治疗）
+└─ seed/            内置演示会话（ESR1 / GSE153250 ×3）
 ```
 
 ## 前置要求
@@ -313,10 +313,11 @@ OAuth 访问令牌和刷新令牌保存在系统密钥环中，不会写入项�
 
 ### 内置演示
 
-`seed/` 提供四个预先录制的示例会话：CRISPR 筛选、酶工程、极端微生物和
-免疫治疗。在桌面应用中，**Open demo** 会列出这些示例，并以只读的 User +
-Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压到工作区，
-因此右侧面板可以正确预览图像和数据文件。
+`seed/` 提供三个预先录制的 ESR1 / GSE153250 示例：GEO 数据集检索、样本分组问答，
+以及 RNA-seq 上游分析（siESR1 vs siNT counts）。在桌面应用中，**Open demo**
+会列出这些示例，并以只读对话形式打开（含完整工具/run 操作记录）。打开 rnaseq
+示例时会把内置的 `assets_*.tar.gz` 解压到工作区，因此右侧面板可以正确预览
+counts 等数据文件。
 
 ## 测试
 

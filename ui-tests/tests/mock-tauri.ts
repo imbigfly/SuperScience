@@ -41,15 +41,48 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   };
 
   const demos = [
-    { id: "manifest_crispr_screen", title: "Design a genome-wide CRISPR knockout screen targeting all kinases" },
-    { id: "manifest_enzyme_engineering", title: "Engineer an enzyme for higher thermostability" },
+    { id: "manifest_esr1_datasets", title: "Help me find RNA-seq knockdown datasets involving ESR1" },
+    { id: "manifest_esr1_rnaseq", title: "Connect to the remote compute host, locate the FASTQ data for GSE153250" },
+    { id: "manifest_esr1_samples", title: "What specific samples are included in GSE153250" },
   ];
+  const demoRunJson = JSON.stringify({
+    id: "demo-run-001",
+    context_id: "ssh:remote-host",
+    title: "Re-run pipeline with fixed STAR index",
+    kind: "ssh_direct",
+    status: "succeeded",
+    command: "cd ~/workspace/GSE153250 && bash pipeline.sh",
+    stdout_tail: "Pipeline finished: 38606 genes, 12 samples",
+  });
   const demo = {
-    id: "manifest_crispr_screen",
-    title: "CRISPR screen",
-    request: "Design a genome-wide CRISPR knockout screen targeting all kinases.",
-    response: "## Human Kinome CRISPR-KO Screen\n\nDemo report: 2,072 targeting sgRNAs across 522 kinases.\n\n[Off-target analysis (figure)]",
-    thinking: "Let me plan the kinome list and guide selection.",
+    id: "manifest_esr1_rnaseq",
+    title: "ESR1 RNA-seq",
+    request: "Connect to the remote compute host, locate the FASTQ data for GSE153250, keep only the siESR1 and siNT groups.",
+    response: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.",
+    thinking: "Identify sample groups, download FASTQs, run the upstream pipeline.",
+    items: [
+      {
+        role: "user",
+        text: "Connect to the remote compute host, locate the FASTQ data for GSE153250, keep only the siESR1 and siNT groups.",
+        tool_name: null,
+        ok: null,
+        input: "",
+      },
+      {
+        role: "tool",
+        text: demoRunJson,
+        tool_name: "monitor_run",
+        ok: true,
+        input: "demo-run-001",
+      },
+      {
+        role: "assistant",
+        text: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.",
+        tool_name: null,
+        ok: null,
+        input: "",
+      },
+    ],
   };
 
   const project = {

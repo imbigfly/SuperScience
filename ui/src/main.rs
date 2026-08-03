@@ -5090,17 +5090,23 @@ fn App() -> impl IntoView {
             )
             .await;
             if let Ok(demo) = serde_wasm_bindgen::from_value::<Demo>(v) {
-                let mut view = vec![ChatItem::User(demo.request.clone())];
-                if let Some(t) = &demo.thinking {
-                    if !t.is_empty() {
-                        view.push(ChatItem::Reasoning(t.clone()));
+                let mut view = if !demo.items.is_empty() {
+                    demo.items.into_iter().map(LoadedItem::into_chat).collect()
+                } else {
+                    let mut legacy = vec![ChatItem::User(demo.request.clone())];
+                    if let Some(t) = &demo.thinking {
+                        if !t.is_empty() {
+                            legacy.push(ChatItem::Reasoning(t.clone()));
+                        }
                     }
-                }
-                view.push(ChatItem::Assistant {
-                    text: demo.response.clone(),
-                    model: None,
-                    resources: Vec::new(),
-                });
+                    legacy.push(ChatItem::Assistant {
+                        text: demo.response.clone(),
+                        model: None,
+                        resources: Vec::new(),
+                    });
+                    legacy
+                };
+                settle_question_cards(&mut view);
                 items.set(view);
                 force_chat_bottom();
                 status_cb.set(tf(locale.get(), "status.demo", &[("title", &demo.title)]));

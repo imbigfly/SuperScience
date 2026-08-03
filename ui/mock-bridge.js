@@ -316,14 +316,48 @@
               user_offset: 0,
             };
           case "list_demos":
-            return [{ id: "manifest_crispr_screen", title: "Design a genome-wide CRISPR knockout screen targeting all kinases" }];
+            return [
+              { id: "manifest_esr1_datasets", title: "Help me find RNA-seq knockdown datasets involving ESR1" },
+              { id: "manifest_esr1_rnaseq", title: "Connect to the remote compute host, locate the FASTQ data for GSE153250" },
+              { id: "manifest_esr1_samples", title: "What specific samples are included in GSE153250" },
+            ];
           case "load_demo":
             return {
-              id: "manifest_crispr_screen",
-              title: "CRISPR screen",
-              request: "Design a genome-wide CRISPR knockout screen targeting all kinases.",
-              response: "## Human Kinome CRISPR-KO Screen\n\n| kinase | guides |\n| --- | --- |\n| AKT1 | 4 |",
-              thinking: "Planning kinome coverage.",
+              id: "manifest_esr1_rnaseq",
+              title: "ESR1 RNA-seq",
+              request: "Connect to the remote compute host, locate the FASTQ data for GSE153250, keep only the siESR1 and siNT groups.",
+              response: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.",
+              thinking: "Identify sample groups, download FASTQs, run the upstream pipeline.",
+              items: [
+                {
+                  role: "user",
+                  text: "Connect to the remote compute host, locate the FASTQ data for GSE153250, keep only the siESR1 and siNT groups.",
+                  tool_name: null,
+                  ok: null,
+                  input: "",
+                },
+                {
+                  role: "tool",
+                  text: JSON.stringify({
+                    id: "demo-run-001",
+                    context_id: "ssh:remote-host",
+                    title: "Re-run pipeline with fixed STAR index",
+                    kind: "ssh_direct",
+                    status: "succeeded",
+                    command: "cd ~/workspace/GSE153250 && bash pipeline.sh",
+                  }),
+                  tool_name: "monitor_run",
+                  ok: true,
+                  input: "demo-run-001",
+                },
+                {
+                  role: "assistant",
+                  text: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.",
+                  tool_name: null,
+                  ok: null,
+                  input: "",
+                },
+              ],
             };
           case "get_settings":
             return { provider: "openai", api_url: "https://api.deepseek.com", model: "deepseek-v4-pro", label: "deepseek-v4-pro", has_api_key: true, locale: "en", max_iter: 100, auto_compact: true, max_tokens: 4096, reasoning_effort: "", supports_vision: true };
