@@ -28,16 +28,14 @@ const STUCK_REPEAT_LIMIT: usize = 5;
 /// other calls between each repeat.
 const STUCK_WINDOW: usize = 16;
 const STUCK_LOOP_MESSAGE: &str = "检测到智能体连续多次发出完全相同的工具调用且没有进展，已中断以避免空转烧 token——通常是模型退化，建议换用更强的模型或换一种问法。(aborted: agent repeated an identical tool call with no progress)";
-/// Interpreter/shell output is an unbounded print stream, not content the model
-/// asked to read — budget it at ingestion: the context message is written once
-/// and never rewritten (provider prefix caches stay valid), while the full text
-/// still reaches the user via the tool_result/stdout events emitted before the
-/// truncation. read/grep/edit results keep their own tool-level caps instead:
-/// budgeting a requested file read would break the read.
-const STREAM_OUTPUT_TOOLS: [&str; 3] = ["shell", "python", "r"];
-/// Total byte budget (head + tail) for a stream tool result in the context.
+/// Tool output is an unbounded external payload, not durable conversation
+/// state. Budget every textual result at ingestion: the full text still
+/// reaches the user through the tool-result event emitted before truncation,
+/// while the main model gets a bounded head/tail excerpt. This also covers
+/// read/grep/browser/MCP tools whose own safety cap can exceed a model window.
+/// Total byte budget (head + tail) for one tool result in the model context.
 /// ~16 KiB ≈ 4K estimated tokens. Override with WISP_TOOL_RESULT_BUDGET
-/// (bytes; 0 disables). ponytail: env knob only, per-tool budgets when needed.
+/// (bytes; 0 disables).
 const DEFAULT_STREAM_RESULT_BUDGET: usize = 16 * 1024;
 
 fn auto_compact_archive_path(root: &Path) -> PathBuf {
@@ -48,25 +46,26 @@ fn auto_compact_archive_path(root: &Path) -> PathBuf {
     ))
 }
 
-/// Head/tail-truncate a stream tool's text result to the ingestion budget,
+/// Head/tail-truncate a tool's text result to the ingestion budget,
 /// with a marker telling the model what was elided and how to get it back.
-fn budget_stream_result(tool_name: &str, content: Content) -> Content {
-    if !STREAM_OUTPUT_TOOLS.contains(&tool_name) {
-        return content;
-    }
-    let Content::Text(text) = &content else {
-        return content;
-    };
+fn budget_tool_result(tool_name: &str, content: Content) -> Content {
     let budget = std::env::var("WISP_TOOL_RESULT_BUDGET")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(DEFAULT_STREAM_RESULT_BUDGET);
+    budget_tool_result_with_limit(tool_name, content, budget)
+}
+
+fn budget_tool_result_with_limit(tool_name: &str, content: Content, budget: usize) -> Content {
+    let Content::Text(text) = &content else {
+        return content;
+    };
     if budget == 0 || text.len() <= budget {
         return content;
     }
     let half = budget / 2;
     let marker = format!(
-        "[... ~{} bytes omitted to fit the context budget; the full output was shown to the user. Persist data you need to a file, or re-run with narrower filters (head/tail/grep). ...]",
+        "[... ~{} bytes omitted from {tool_name} to fit the model-context budget; the full output was shown to the user. Re-run with narrower ranges or filters for omitted details. ...]",
         text.len() - budget
     );
     Content::text(ContextManager::truncate_middle(text, half, half, &marker))
@@ -252,29 +251,37 @@ async fn agent_loop_inner(
             }
         }
         iteration += 1;
+        let schemas = tools.schemas();
+        let fixed_request_tokens = ContextManager::estimated_tool_tokens(&schemas);
         // Match the long-context behaviour used by mangopi-cli: check the
         // budget at every model boundary, not only when the user first sends a
         // turn. Wisp's archive-first compactor preserves the full transcript
         // on disk before folding old turns, so automatic recovery has the same
         // retrievability contract as manual `/compact`.
-        if ctx.needs_auto_compact() {
+        if ctx.needs_auto_compact_with_reserve(fixed_request_tokens) {
             let archive = auto_compact_archive_path(root);
-            match ctx.compact(provider, &archive).await {
+            match ctx
+                .compact_with_reserve(provider, &archive, fixed_request_tokens)
+                .await
+            {
                 Ok((before, after)) => output.compaction(before, after, "auto"),
-                Err(error) => tracing::warn!(
-                    archive = %archive.display(),
-                    "automatic context compaction failed: {error}"
-                ),
+                Err(error) => {
+                    tracing::warn!(
+                        archive = %archive.display(),
+                        "automatic context compaction failed: {error}"
+                    );
+                    anyhow::bail!(
+                        "automatic context compaction failed before the model call: {error}"
+                    );
+                }
             }
         }
-        let messages = ctx.prepare_for_api(output);
+        let messages = ctx.prepare_for_api_with_reserve(output, fixed_request_tokens);
         let mut sink = match cancel {
             Some(c) => StreamSinkAdapter::with_cancel(output, c),
             None => StreamSinkAdapter::new(output),
         };
-        let comp = match stream_with_retry(provider, &messages, &tools.schemas(), &mut sink, cancel)
-            .await
-        {
+        let comp = match stream_with_retry(provider, &messages, &schemas, &mut sink, cancel).await {
             // ponytail: no auto-retry after a cut — re-streaming would duplicate the
             // already-emitted deltas in the UI; add a sink reset event if this recurs.
             Err(LlmError::Incomplete) => anyhow::bail!(STREAM_CUT_MESSAGE),
@@ -299,7 +306,7 @@ async fn agent_loop_inner(
                 comp.usage.output_tokens,
                 comp.usage.reasoning_tokens,
                 comp.usage.cached_input_tokens,
-                ctx.total_tokens(),
+                ctx.request_tokens_with_reserve(fixed_request_tokens),
                 ctx.max_context,
             );
             anyhow::bail!(EMPTY_RESPONSE_MESSAGE);
@@ -319,7 +326,7 @@ async fn agent_loop_inner(
             comp.usage.output_tokens,
             comp.usage.reasoning_tokens,
             comp.usage.cached_input_tokens,
-            ctx.total_tokens(),
+            ctx.request_tokens_with_reserve(fixed_request_tokens),
             ctx.max_context,
         );
 
@@ -424,7 +431,7 @@ async fn agent_loop_inner(
                 )
             };
             output.tool_result(&tools.event_name(&name, &args), ok, &tool_text, duration_ms);
-            ctx.append_tool(&tc.id, &name, budget_stream_result(&name, content));
+            ctx.append_tool(&tc.id, &name, budget_tool_result(&name, content));
             if let Some(m) = ctx.messages.last() {
                 output.on_message(m);
             }
@@ -615,6 +622,23 @@ mod tests {
         assert!(iteration_limit_reached(100, 100));
     }
 
+    #[test]
+    fn every_text_tool_result_is_bounded_before_it_enters_model_context() {
+        let raw = format!("BEGIN\n{}\nEND", "界".repeat(20_000));
+        let original_len = raw.len();
+
+        let bounded = budget_tool_result_with_limit("read", Content::text(raw), 16 * 1024);
+        let text = bounded.as_text();
+
+        assert!(text.len() < original_len);
+        assert!(text.contains("bytes omitted from read"));
+        assert!(text.starts_with("BEGIN"));
+        assert!(text.ends_with("END"));
+        assert!(
+            ContextManager::estimated_tokens(&Message::tool("call-read", "read", text)) < 5_000
+        );
+    }
+
     struct FixedProvider {
         completion: Completion,
     }
@@ -650,6 +674,44 @@ mod tests {
     struct SequenceProvider {
         completions: Mutex<VecDeque<Completion>>,
         stream_calls: AtomicUsize,
+    }
+
+    struct FailingCompactProvider {
+        complete_requests: Mutex<Vec<Vec<Message>>>,
+        stream_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for FailingCompactProvider {
+        fn name(&self) -> &str {
+            "failing-compact"
+        }
+
+        fn model(&self) -> &str {
+            "failing-compact"
+        }
+
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            self.complete_requests
+                .lock()
+                .unwrap()
+                .push(messages.to_vec());
+            Err(LlmError::Config("forced compact failure".into()))
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            Err(LlmError::Config("main stream must not run".into()))
+        }
     }
 
     impl SequenceProvider {
@@ -764,6 +826,7 @@ mod tests {
         }]);
         let output = CompactionCounter(AtomicUsize::new(0));
         let mut ctx = ContextManager::new(1_000);
+        let tools = Registry::builtins().filtered(&[]);
         for turn in 0..12 {
             ctx.append_user(format!("question {turn} {}", "u".repeat(180)));
             ctx.append_assistant(format!("answer {turn} {}", "a".repeat(180)), vec![], None);
@@ -771,15 +834,7 @@ mod tests {
         assert!(ctx.needs_auto_compact());
 
         agent_loop(
-            &mut ctx,
-            &provider,
-            None,
-            &Registry::builtins(),
-            &root,
-            &output,
-            "continue",
-            0,
-            None,
+            &mut ctx, &provider, None, &tools, &root, &output, "continue", 0, None,
         )
         .await
         .unwrap();
@@ -793,6 +848,50 @@ mod tests {
             .unwrap();
         assert_eq!(archives.len(), 1, "automatic compaction must archive once");
         assert!(archives[0].path().is_file());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn failed_auto_compaction_never_sends_the_oversized_main_request() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp_auto_compact_failure_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = FailingCompactProvider {
+            complete_requests: Mutex::new(Vec::new()),
+            stream_calls: AtomicUsize::new(0),
+        };
+        let mut ctx = ContextManager::new(10_000);
+        ctx.append_user(format!("oversized {}", "x".repeat(50_000)));
+        let original = serde_json::to_string(&ctx.messages).unwrap();
+        let tools = Registry::builtins().filtered(&[]);
+
+        let error = agent_loop_continue(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            0,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("automatic context compaction failed before the model call"));
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(serde_json::to_string(&ctx.messages).unwrap(), original);
+        assert!(!ctx.messages.iter().any(|message| message
+            .content
+            .as_text()
+            .contains("Create a detailed summary of the conversation so far")));
+        assert_eq!(provider.complete_requests.lock().unwrap().len(), 1);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1375,11 +1474,11 @@ mod tests {
         }
     }
 
-    // Stream-tool (shell/python/r) results are budgeted when INGESTED into the
-    // context — written once, never rewritten — while other tools' results are
-    // stored verbatim. The elision marker tells the model how to recover.
+    // Every text tool result is budgeted when INGESTED into model context —
+    // written once, never rewritten. The elision marker names the source tool
+    // and tells the model how to recover omitted details with a narrower call.
     #[tokio::test]
-    async fn stream_tool_results_are_budgeted_at_ingestion_others_untouched() {
+    async fn all_text_tool_results_are_budgeted_at_ingestion() {
         let call = |id: &str, name: &str| ToolCall {
             id: id.into(),
             kind: "function".into(),
@@ -1439,7 +1538,10 @@ mod tests {
         assert!(py.ends_with("TAIL-MARK"), "tail kept");
         assert!(py.contains("bytes omitted"), "elision marker present");
         let other = by_name("noisy_other");
-        assert!(other.len() > 40_000, "non-stream result stored verbatim");
+        assert!(other.len() < 20_000, "all text tools use the same budget");
+        assert!(other.starts_with("HEAD-MARK"), "other head kept");
+        assert!(other.ends_with("TAIL-MARK"), "other tail kept");
+        assert!(other.contains("bytes omitted from noisy_other"));
         std::fs::remove_dir_all(root).ok();
     }
 

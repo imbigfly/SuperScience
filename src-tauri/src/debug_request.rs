@@ -123,10 +123,7 @@ fn build_snapshot(
     let tool_schemas: Vec<DebugToolSchema> = tools
         .iter()
         .map(|t| {
-            let params = t.function.parameters.to_string();
-            // ponytail: 4-chars-per-token heuristic, same ballpark as the
-            // message estimator; exact tool tokenization isn't worth it here.
-            let est = (t.function.name.len() + t.function.description.len() + params.len()) / 4 + 2;
+            let est = ContextManager::estimated_tool_schema_tokens(t);
             total += est;
             DebugToolSchema {
                 name: t.function.name.clone(),

@@ -8,17 +8,25 @@
 //! read/grep it to retrieve anything folded away — then:
 //! 1. `fold_old_turns` — tombstone old tool outputs, truncate oversized old
 //!    assistant text/reasoning, replace old images with text notes.
-//! 2. `compact_conversation` — drop oldest turns while still over budget.
-//! 3. `full_compact` — LLM-driven summary (last resort).
+//! 2. `fold_oversized_tool_results` — bound even recent tool payloads that can
+//!    exceed a whole context window on their own.
+//! 3. `compact_conversation` — drop oldest turns while still over budget.
+//! 4. `full_compact` — LLM-driven summary (last resort).
 
 use crate::output::Output;
 use std::path::Path;
-use wisp_llm::{Content, Message, Part, Provider, Role, ToolCall};
+use wisp_llm::{Content, Message, Part, Provider, Role, ToolCall, ToolSchema};
 
 /// Turns kept verbatim by `/compact`.
 const RETAIN_TURNS: usize = 10;
 /// Recent turns the drop-oldest fallback protects when folding isn't enough.
 const RETAIN_TURNS_HARD: usize = 8;
+/// Automatic compaction triggers at 80%, but targets 60% so one ordinary tool
+/// result cannot immediately cross the trigger again.
+const COMPACTION_TARGET_PERCENT: usize = 60;
+/// Head + tail bytes retained when a recent tool result is the part preventing
+/// compaction. The full result remains in the archive named by the marker.
+const RECENT_TOOL_EXCERPT_BYTES: usize = 4 * 1024;
 /// Old assistant text larger than this (estimated tokens) is head/tail-cut.
 const OLD_ASSISTANT_MAX_TOKENS: usize = 1500;
 const OLD_ASSISTANT_KEEP: (usize, usize) = (350, 350);
@@ -119,7 +127,13 @@ impl ContextManager {
     /// warning. Checking this immediately before every model call also covers
     /// tool-heavy turns that grow substantially after the user's first send.
     pub fn needs_auto_compact(&self) -> bool {
-        self.auto_compact && !self.under_threshold()
+        self.needs_auto_compact_with_reserve(0)
+    }
+
+    /// Same threshold check, including fixed request payload such as tool
+    /// schemas that are not represented as conversation messages.
+    pub fn needs_auto_compact_with_reserve(&self, fixed_tokens: usize) -> bool {
+        self.auto_compact && self.request_tokens_with_reserve(fixed_tokens) >= self.warn_threshold
     }
 
     pub fn compaction_revision(&self) -> u64 {
@@ -264,8 +278,34 @@ impl ContextManager {
         turns
     }
 
-    fn under_threshold(&self) -> bool {
-        self.total_tokens() < self.warn_threshold
+    /// Estimated tokens in the actual next provider request: durable history
+    /// plus ephemeral host/reviewer/attachment injections.
+    pub fn request_tokens(&self) -> usize {
+        self.total_tokens()
+            + self
+                .runtime_injections
+                .iter()
+                .map(Self::estimated_tokens)
+                .sum::<usize>()
+    }
+
+    pub fn request_tokens_with_reserve(&self, fixed_tokens: usize) -> usize {
+        self.request_tokens().saturating_add(fixed_tokens)
+    }
+
+    /// Use one estimator everywhere Wisp reports or budgets tool definitions,
+    /// so debug exports and automatic compaction agree about request size.
+    pub fn estimated_tool_schema_tokens(tool: &ToolSchema) -> usize {
+        let params = tool.function.parameters.to_string();
+        (tool.function.name.len() + tool.function.description.len() + params.len()) / 4 + 2
+    }
+
+    pub fn estimated_tool_tokens(tools: &[ToolSchema]) -> usize {
+        tools.iter().map(Self::estimated_tool_schema_tokens).sum()
+    }
+
+    fn compaction_target(&self) -> usize {
+        self.max_context.saturating_mul(COMPACTION_TARGET_PERCENT) / 100
     }
 
     /// Rough token estimate (~JSON length / 4) from field lengths directly.
@@ -369,7 +409,57 @@ impl ContextManager {
         true
     }
 
-    fn compact_conversation(&mut self, retain_turns: usize) {
+    /// Bound the largest still-live tool results first. A single `read`,
+    /// `grep`, browser, or MCP response can be larger than the complete model
+    /// window, including when it belongs to the newest turn that normal
+    /// compaction deliberately protects.
+    fn fold_oversized_tool_results(
+        &mut self,
+        target: usize,
+        fixed_tokens: usize,
+        tombstone: &str,
+    ) -> bool {
+        let mut candidates = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, message)| {
+                if message.role != Role::Tool {
+                    return None;
+                }
+                let content = message.content.as_text();
+                if content.starts_with(TOMBSTONE_PREFIX)
+                    || content.len() <= RECENT_TOOL_EXCERPT_BYTES
+                {
+                    return None;
+                }
+                Some((index, Self::estimated_tokens(message)))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|(_, tokens)| std::cmp::Reverse(*tokens));
+
+        let mut changed = false;
+        for (index, _) in candidates {
+            if self.request_tokens_with_reserve(fixed_tokens) <= target {
+                break;
+            }
+            let content = self.messages[index].content.as_text();
+            let half = RECENT_TOOL_EXCERPT_BYTES / 2;
+            let excerpt = Self::truncate_middle(
+                &content,
+                half,
+                half,
+                "[... middle omitted from the model context ...]",
+            );
+            self.messages[index].content = Content::text(format!(
+                "{tombstone}\n[bounded excerpt from this recent tool result]\n{excerpt}"
+            ));
+            changed = true;
+        }
+        changed
+    }
+
+    fn compact_conversation(&mut self, retain_turns: usize, target: usize) {
         let systems: Vec<Message> = self
             .messages
             .iter()
@@ -384,7 +474,7 @@ impl ContextManager {
         for turn in &turns {
             rebuilt.extend(turn.clone());
         }
-        if rebuilt.iter().map(Self::estimated_tokens).sum::<usize>() <= self.warn_threshold {
+        if rebuilt.iter().map(Self::estimated_tokens).sum::<usize>() <= target {
             self.messages = rebuilt;
             return;
         }
@@ -399,7 +489,7 @@ impl ContextManager {
             for turn in recent {
                 candidate.extend(turn.clone());
             }
-            if candidate.iter().map(Self::estimated_tokens).sum::<usize>() <= self.warn_threshold {
+            if candidate.iter().map(Self::estimated_tokens).sum::<usize>() <= target {
                 self.messages = candidate;
                 return;
             }
@@ -411,7 +501,7 @@ impl ContextManager {
             for turn in &trimmed_recent {
                 candidate.extend(turn.clone());
             }
-            if candidate.iter().map(Self::estimated_tokens).sum::<usize>() <= self.warn_threshold {
+            if candidate.iter().map(Self::estimated_tokens).sum::<usize>() <= target {
                 self.messages = candidate;
                 return;
             }
@@ -440,9 +530,15 @@ work in progress. Use this structure:
 6. All user messages
 7. Pending Tasks
 8. Current Work";
-        self.append_user(PROMPT);
+        // The compaction instruction is request-local control data, not a user
+        // turn. Never append it to `self.messages`: if the provider rejects the
+        // summary request, leaking this prompt into the main loop makes the
+        // agent treat compaction as the user's task and can trigger repeated
+        // reads of the just-written archive.
+        let mut summary_request = self.messages.clone();
+        summary_request.push(Message::user(PROMPT));
         let comp = provider
-            .complete(&self.messages, &[])
+            .complete(&summary_request, &[])
             .await
             .map_err(|e| format!("full compact err: {e}"))?;
         let summary = comp.content;
@@ -471,8 +567,19 @@ work in progress. Use this structure:
         provider: &dyn Provider,
         archive_path: &Path,
     ) -> Result<(usize, usize), String> {
+        self.compact_with_reserve(provider, archive_path, 0).await
+    }
+
+    /// Compact while reserving tokens for fixed request payloads (currently
+    /// tool schemas). Returned estimates include that reserve.
+    pub async fn compact_with_reserve(
+        &mut self,
+        provider: &dyn Provider,
+        archive_path: &Path,
+        fixed_tokens: usize,
+    ) -> Result<(usize, usize), String> {
         self.invalidate_last_request();
-        let before = self.total_tokens();
+        let before = self.request_tokens_with_reserve(fixed_tokens);
         self.save(archive_path);
         if !archive_path.is_file() {
             // Never fold anything we failed to archive — retrievability is the
@@ -483,30 +590,49 @@ work in progress. Use this structure:
             ));
         }
         let tombstone = format!(
-            "{TOMBSTONE_PREFIX} full content archived at {} — read/grep that file to retrieve it]",
+            "{TOMBSTONE_PREFIX} full content archived at {} — retrieve only narrow ranges with read/grep; do not load the whole archive back into context]",
             archive_path.display()
         );
         let archive_note = format!(
-            "[The pre-compact conversation history is archived at {} — read/grep that file to retrieve details.]",
+            "[The pre-compact conversation history is archived at {} — retrieve only narrow ranges with read/grep; do not load the whole archive back into context.]",
             archive_path.display()
         );
+        let original_messages = self.messages.clone();
+        let target = self.compaction_target();
+        let injection_tokens = self
+            .runtime_injections
+            .iter()
+            .map(Self::estimated_tokens)
+            .sum::<usize>();
+        let durable_target = target.saturating_sub(injection_tokens.saturating_add(fixed_tokens));
         self.fold_old_turns(RETAIN_TURNS, &tombstone);
-        if !self.under_threshold() {
-            self.compact_conversation(RETAIN_TURNS_HARD);
+        if self.request_tokens_with_reserve(fixed_tokens) > target {
+            self.fold_oversized_tool_results(target, fixed_tokens, &tombstone);
         }
-        if !self.under_threshold() {
-            self.full_compact(provider, &archive_note)
-                .await
-                .map_err(|e| {
-                    format!(
-                        "folded to ~{} tokens, but the LLM summary step failed: {e}",
-                        self.total_tokens()
-                    )
-                })?;
+        if self.request_tokens_with_reserve(fixed_tokens) > target {
+            self.compact_conversation(RETAIN_TURNS_HARD, durable_target);
+        }
+        if self.request_tokens_with_reserve(fixed_tokens) > target {
+            if let Err(error) = self.full_compact(provider, &archive_note).await {
+                let folded_tokens = self.request_tokens_with_reserve(fixed_tokens);
+                self.messages = original_messages;
+                return Err(format!(
+                    "folded to ~{} request tokens, but the LLM summary step failed: {error}",
+                    folded_tokens
+                ));
+            }
+        }
+        let after = self.request_tokens_with_reserve(fixed_tokens);
+        if after >= self.warn_threshold {
+            self.messages = original_messages;
+            return Err(format!(
+                "compaction could not bring the request below the warning threshold (estimated {after} tokens, threshold {})",
+                self.warn_threshold
+            ));
         }
         self.warned = false;
         self.compaction_revision = self.compaction_revision.wrapping_add(1);
-        Ok((before, self.total_tokens()))
+        Ok((before, after))
     }
 
     /// Return the messages to send to the model (persisted + runtime
@@ -515,7 +641,17 @@ work in progress. Use this structure:
     /// threshold fires `Output::context_warning` once; it re-arms after a
     /// manual or automatic compaction brings the estimate back under.
     pub fn prepare_for_api(&mut self, output: &dyn Output) -> std::borrow::Cow<'_, [Message]> {
-        let total = self.total_tokens();
+        self.prepare_for_api_with_reserve(output, 0)
+    }
+
+    /// Prepare a provider request while including fixed payload (tool schemas)
+    /// in warning/accounting decisions.
+    pub fn prepare_for_api_with_reserve(
+        &mut self,
+        output: &dyn Output,
+        fixed_tokens: usize,
+    ) -> std::borrow::Cow<'_, [Message]> {
+        let total = self.request_tokens_with_reserve(fixed_tokens);
         if total < self.warn_threshold {
             self.warned = false;
         } else if !self.warned {
@@ -618,7 +754,8 @@ mod tests {
     }
 
     use async_trait::async_trait;
-    use wisp_llm::{Completion, ToolSchema};
+    use std::sync::Mutex;
+    use wisp_llm::{Completion, LlmError, ToolSchema};
 
     /// Provider stub for /compact tests. Panics if the LLM-summary step is
     /// reached when a test expects folding alone to suffice.
@@ -644,6 +781,36 @@ mod tests {
                 content: "summary".into(),
                 ..Completion::default()
             })
+        }
+        async fn stream(
+            &self,
+            messages: &[Message],
+            tools: &[ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            self.complete(messages, tools).await
+        }
+    }
+
+    struct FailingSummaryProvider {
+        requests: Mutex<Vec<Vec<Message>>>,
+    }
+
+    #[async_trait]
+    impl Provider for FailingSummaryProvider {
+        fn name(&self) -> &str {
+            "failing-summary"
+        }
+        fn model(&self) -> &str {
+            "failing-summary"
+        }
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            self.requests.lock().unwrap().push(messages.to_vec());
+            Err(LlmError::Config("forced summary failure".into()))
         }
         async fn stream(
             &self,
@@ -761,6 +928,94 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn compact_bounds_an_oversized_tool_result_in_the_newest_turn() {
+        let mut ctx = ContextManager::new(100_000);
+        ctx.append_system("system");
+        ctx.append_user("inspect the archive");
+        ctx.append_assistant("".into(), vec![], None);
+        ctx.append_tool(
+            "call-large",
+            "grep",
+            Content::text(format!("BEGIN\n{}\nEND", "x".repeat(500_000))),
+        );
+        let archive = archive_path("oversized-recent-tool.json");
+        let provider = StubProvider {
+            allow_summary: false,
+        };
+
+        let (before, after) = ctx.compact(&provider, &archive).await.unwrap();
+
+        assert!(before > ctx.warn_threshold);
+        assert!(after <= ctx.compaction_target());
+        let tool = ctx
+            .messages
+            .iter()
+            .find(|message| message.role == Role::Tool)
+            .unwrap()
+            .content
+            .as_text();
+        assert!(tool.starts_with(TOMBSTONE_PREFIX));
+        assert!(tool.contains("bounded excerpt"));
+        assert!(tool.contains("BEGIN"));
+        assert!(tool.contains("END"));
+        assert!(tool.len() < 8_000, "tool result remained too large");
+        assert!(
+            std::fs::read_to_string(&archive)
+                .unwrap()
+                .contains(&"x".repeat(100_000)),
+            "the archive must retain the complete result"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_targets_sixty_percent_instead_of_barely_crossing_eighty() {
+        let mut ctx = ContextManager::new(10_000);
+        for turn in 0..12 {
+            ctx.append_user(format!("question {turn} {}", "u".repeat(1_500)));
+            ctx.append_assistant(format!("answer {turn} {}", "a".repeat(1_500)), vec![], None);
+        }
+        let archive = archive_path("target-headroom.json");
+        let provider = StubProvider {
+            allow_summary: false,
+        };
+
+        let (before, after) = ctx.compact(&provider, &archive).await.unwrap();
+
+        assert!(before > ctx.warn_threshold);
+        assert!(after <= ctx.compaction_target());
+        assert!(after < ctx.warn_threshold);
+    }
+
+    #[tokio::test]
+    async fn failed_summary_is_transactional_and_never_leaks_its_prompt() {
+        let mut ctx = ContextManager::new(10_000);
+        ctx.append_system("system");
+        ctx.append_user(format!("oversized user input {}", "x".repeat(50_000)));
+        let original = serde_json::to_string(&ctx.messages).unwrap();
+        let archive = archive_path("summary-failure.json");
+        let provider = FailingSummaryProvider {
+            requests: Mutex::new(Vec::new()),
+        };
+
+        let error = ctx.compact(&provider, &archive).await.unwrap_err();
+
+        assert!(error.contains("forced summary failure"));
+        assert_eq!(serde_json::to_string(&ctx.messages).unwrap(), original);
+        assert!(!ctx.messages.iter().any(|message| {
+            message
+                .content
+                .as_text()
+                .contains("Create a detailed summary of the conversation so far")
+        }));
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].last().is_some_and(|message| message
+            .content
+            .as_text()
+            .contains("Create a detailed summary of the conversation so far")));
+    }
+
     struct WarnCounter(std::sync::atomic::AtomicUsize);
     impl Output for WarnCounter {
         fn context_warning(&self, _ctx_tokens: usize, _max_context: usize) {
@@ -804,6 +1059,17 @@ mod tests {
         assert!(!ctx.needs_auto_compact());
         ctx.prepare_for_api(&counter);
         assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn request_estimate_includes_ephemeral_user_injections() {
+        let mut ctx = ContextManager::new(10_000);
+        ctx.append_user("durable");
+        let durable = ctx.total_tokens();
+        ctx.inject_user("r".repeat(40_000));
+
+        assert!(ctx.request_tokens() > durable + 9_000);
+        assert!(ctx.needs_auto_compact());
     }
 
     // An image attached under a vision model stays in history; sending it to a
