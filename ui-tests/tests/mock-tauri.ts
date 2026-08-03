@@ -118,6 +118,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockOAuthPending = query.get("mockOAuthPending") === "1";
   const mockOnboarding = query.get("mockOnboarding") === "1";
   const mockSyncUnconfigured = query.get("mockSyncUnconfigured") === "1";
+  let mockLocale = query.get("mockLocale") === "zh" ? "zh" : "en";
   const mockSessions: any[] = mockPlanFlow
     ? [{ id: "s1", title: "Plan mode regression", ts: 2000, running: false }]
     : mockPublication
@@ -1916,7 +1917,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               api_url: "https://api.deepseek.com",
               model: "deepseek-v4-pro",
               has_api_key: true,
-              locale: "en",
+              locale: mockLocale,
               max_iter: 100,
               auto_compact: true,
               max_tokens: 4096,
@@ -3121,6 +3122,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const next = plain(arg("settings") ?? {});
             mockPetEnabled = Boolean(next.pet_enabled);
             mockPetDirectory = String(next.pet_directory ?? "");
+            mockLocale = String(next.locale ?? mockLocale);
+            (window as any).__lastSetSettings = next;
             return null;
           }
           case "check_for_updates":

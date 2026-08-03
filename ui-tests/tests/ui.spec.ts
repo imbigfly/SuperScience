@@ -325,6 +325,31 @@ test("general settings can use Ctrl+Enter to send and Enter for newline", async 
   });
 });
 
+test("language select shows the saved locale so Chinese can switch to English directly (#431)", async ({ page }) => {
+  await page.goto("/?mockLocale=zh");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "新建会话" })).toBeVisible();
+
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "常规", exact: true }).click();
+  const language = page.getByTestId("settings-language");
+  // Regression: the select's value binding was applied before its options
+  // existed, so it fell back to the first option ("en") while the saved locale
+  // was Chinese — picking English then fired no change event and never saved.
+  await expect(language).toHaveValue("zh");
+
+  await language.selectOption("en");
+  // Selecting a language re-renders the UI in that language immediately.
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() =>
+    page.evaluate(() => (window as any).__lastSetSettings?.locale)
+  ).toBe("en");
+
+  // The app stays in English and the select stays on English after reopening.
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.getByTestId("settings-language")).toHaveValue("en");
+});
+
 test("problem reports stay local until a reviewed Markdown draft is explicitly opened (#596)", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await enterApp(page);

@@ -991,7 +991,7 @@ pub(super) fn SettingsView(
                     <div class="settings-pane">
                         <div class="settings-form-grid">
                         <label class="span-2">{move || t(locale.get(), "settings.language")}
-                            <select
+                            <select data-testid="settings-language"
                                 on:change=move|ev| {
                                     let code = dom_value(&ev);
                                     let loc = Locale::from_code(&code);
@@ -999,9 +999,13 @@ pub(super) fn SettingsView(
                                     set_document_lang(loc);
                                     settings.update(|s| s.locale = code);
                                 }
-                                prop:value=move || locale.get().code().to_string()>
-                                <option value="en">{move || t(locale.get(), "settings.language.en")}</option>
-                                <option value="zh">{move || t(locale.get(), "settings.language.zh")}</option>
+                                // Bind `selected` on the options instead of `value` on the
+                                // select: the select's `value` property is applied before the
+                                // option children exist, so it falls back to the first option
+                                // and shows "English" while the locale is Chinese (#431).
+                                >
+                                <option value="en" prop:selected=move || locale.get() == Locale::En>{move || t(locale.get(), "settings.language.en")}</option>
+                                <option value="zh" prop:selected=move || locale.get() == Locale::Zh>{move || t(locale.get(), "settings.language.zh")}</option>
                             </select>
                         </label>
                         <label class="span-2">{move || t(locale.get(), "settings.workspace_dir")}
