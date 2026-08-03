@@ -283,7 +283,7 @@ pub(super) async fn spawn_project_window(
     set_active_project(state, &label, id).await?;
     let url = tauri::WebviewUrl::App(project_window_url(id, session).into());
     let builder = tauri::WebviewWindowBuilder::new(app, &label, url)
-        .title("wisp-science")
+        .title("wisp science")
         .inner_size(1100.0, 760.0)
         .resizable(true);
     #[cfg(target_os = "windows")]
