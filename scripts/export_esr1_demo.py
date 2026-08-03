@@ -151,9 +151,94 @@ REDACT = [
     ),
     (re.compile(r"trojan_(?:http_proxy|socks5)\.py", re.I), "tool_helper.py"),
     (re.compile(r"Check proxy config in bashrc", re.I), "Check shell environment"),
+    (re.compile(r"Read bashrc for proxy config", re.I), "Check shell environment"),
+    (re.compile(r"Probe server and bashrc", re.I), "Probe server environment"),
     (re.compile(r"The proxy is configured[^.]*\.", re.I), ""),
     (re.compile(r"\*\*Proxy\*\*[^\n]*", re.I), ""),
     (re.compile(r"Proxy:\s*`?[^`\n]+`?", re.I), ""),
+    # Drop the duplicate "use ~/.bashrc proxy" task wording that the model restates.
+    (
+        re.compile(
+            r"(?im)^\s*(?:\d+\.\s*|[-*]\s*)?(?:Use|Using)\s+(?:the\s+)?"
+            r"proxy\s+configured\s+in\s+~/.bashrc[^\n]*\n?"
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"(?im)^\s*(?:\d+\.\s*|[-*]\s*)?First,\s*check what's in ~/.bashrc "
+            r"for proxy settings\n?"
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"(?i)(?:Use|Using)\s+(?:the\s+)?proxy\s+configured\s+in\s+~/.bashrc"
+            r"(?:\s+for\s+downloading)?\.?\s*"
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"(?i)(?:check|look(?:\s+at)?)\s+(?:what's|what is)\s+in\s+~/.bashrc"
+            r"\s+for\s+proxy\s+settings\.?\s*"
+        ),
+        "",
+    ),
+    (re.compile(r"(?i)I need to use the proxy from ~/.bashrc\.?\s*"), ""),
+    (re.compile(r"(?i)But with our proxy,[^.]*\.\s*"), ""),
+    (re.compile(r"(?i)Handles? the proxy configuration\.?\s*"), ""),
+    (
+        re.compile(
+            r"(?i)Let me monitor the run that checks the proxy config\.?"
+        ),
+        "Let me monitor the environment check.",
+    ),
+    (re.compile(r"(?i)Good[^\n.]*proxy is configured[^\n.]*\.?\s*"), ""),
+    (re.compile(r"(?i)Connect to the server\b"), "Connect to the remote compute host"),
+    (
+        re.compile(
+            r"(?i),\s*checking the proxy configuration,?\s*(?:and\s+)?"
+        ),
+        ", ",
+    ),
+    (
+        re.compile(
+            r"(?i)checking the proxy config(?:uration)?(?:\s+and\s+testing the network)?\.?\s*"
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"(?i)—\s*checking proxy config and available tools"
+        ),
+        "— checking available tools",
+    ),
+    (
+        re.compile(
+            r"(?i)(?:based on the proxy config|based on the proxy configuration)"
+            r"[^,.\n]*[,.]?\s*"
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"(?i)Probe server environment:\s*proxy config,\s*proxy test,\s*"
+            r"available tools"
+        ),
+        "Probe server environment and available tools",
+    ),
+    (re.compile(r"(?i)proxy config(?:uration)?"), "environment"),
+    (re.compile(r"(?i)proxy test"), "connectivity check"),
+    # Shell lines that only pull proxy/env from bashrc; PATH tools stay via absolute paths.
+    (re.compile(r"(?m)^\s*source\s+~/.bashrc\s*(?:2>/dev/null)?\s*;?\s*\n?"), ""),
+    (re.compile(r"source\s+~/.bashrc\s*(?:2>/dev/null)?\s*;?\s*"), ""),
+    # Leftover fragments after proxy/bashrc scrubbing.
+    (re.compile(r"(?i)Test network speed(?:\s+bashrc)?"), "Check network connectivity"),
+    (re.compile(r"(?i)environment in ~/.bashrc,?\s*"), ""),
+    (re.compile(r"(?im)^\s*bashrc:\s*(?:-\s*)*\n?"), ""),
+    (re.compile(r"(?im)^\s*\d+\.\s*bashrc\s*$"), ""),
+    (re.compile(r"(?i)\bbashrc\b(?:\s*\(but they're all commented out[^)]*\))?"), ""),
     (re.compile(r"[ \t]{2,}"), " "),
     (re.compile(r" +\."), "."),
     (re.compile(r"D:\\\\ESR1_project", re.I), "data"),
@@ -177,12 +262,23 @@ REDACT = [
 ]
 
 
+def _drop_proxy_narrative_lines(s: str) -> str:
+    kept: list[str] = []
+    for line in s.splitlines():
+        low = line.lower()
+        if "proxy" in low or "bashrc" in low:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def redact(s: str) -> str:
     if not s:
         return s
     out = s
     for pat, repl in REDACT:
         out = pat.sub(repl, out)
+    out = _drop_proxy_narrative_lines(out)
     # Collapse leftover empty proxy/env noise lines.
     out = re.sub(r"[ \t]+\n", "\n", out)
     out = re.sub(r"\n{3,}", "\n\n", out)
@@ -413,8 +509,20 @@ def assert_clean(blob: str, label: str) -> None:
         "http_proxy=",
         "https_proxy=",
         "all_proxy=",
+        "proxy configured",
+        "proxy settings",
+        "use the proxy",
+        "using the proxy",
+        "via proxy",
+        "with proxy",
+        "without proxy",
+        "proxy config",
+        "proxy is configured",
+        "handles the proxy",
     ):
         assert bad not in lowered, f"{label} still contains {bad}"
+    # Demos must not advertise bashrc/proxy download setup at all.
+    assert "bashrc" not in lowered, f"{label} still mentions bashrc"
 
 
 def export_session(
