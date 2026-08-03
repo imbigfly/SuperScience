@@ -466,6 +466,15 @@ Questions such as “What is Data-driven research design?” return the saved go
 dependencies, capabilities, Skill bindings, and output sections. Inspection never starts the
 Workflow; execution still requires a separate `delegate_tasks` call or an explicit UI action.
 
+The main Agent can also turn an installed Skill into a reusable template with the
+`create_workflow` tool. It reads the named Skill, derives capabilities from the Skill's declared
+side effects, and registers a single-task Workflow that binds the Skill — the same binding the
+delegation runtime expands into full Skill guidance at run time. Optional `params` overrides
+(`goal`, `context`, `instruction`, `capabilities`, `approval_policy`, `output_schema`) expose the
+Skill as a parameterized Workflow input. The generated template behaves like any user-authored
+Workflow: `explain_workflow` shows it, Settings → Workflows edits it, and `delegate_tasks` runs
+it. Names must be unique across built-in and user templates.
+
 - Turning Delegation off prevents the main conversation and its MCP bridge from
   listing or invoking delegation tools. It does not erase workflow history or
   implicitly cancel a workflow that is already running.

@@ -4,9 +4,10 @@
 //! lives in a WorkflowTemplate. Built-in templates are compiled and pinned;
 //! user-authored templates keep the regular dynamic-workflow approval policy.
 
-use crate::{delegation_runtime, dynamic_workflow, ActiveProject, AppState};
+use crate::{delegation_runtime, dynamic_workflow, skill_portfolio, ActiveProject, AppState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use tauri::State;
 use wisp_llm::{Message, ToolSchema};
 use wisp_store::Store;
@@ -121,6 +122,310 @@ impl Tool for ExplainWorkflowTool {
         let templates = ensure_templates(&self.store).await;
         ToolResult::ok(render_workflow_explanation(&templates, query))
     }
+}
+
+/// Convert an installed Skill into a registered, reusable Workflow template.
+///
+/// A Skill carries no machine-readable task graph, so the generated template is
+/// a single Agent task that binds the Skill; at run time the delegation runtime
+/// injects the Skill's full guidance into the child agent (see
+/// `delegation_runtime::bound_skill_prompt`). Capabilities are derived from the
+/// Skill's declared side effects, matching the Skill portfolio mapping.
+pub(crate) struct CreateWorkflowTool {
+    store: Store,
+    skills: Arc<wisp_skills::SkillIndex>,
+}
+
+impl CreateWorkflowTool {
+    pub(crate) fn new(store: Store, skills: Arc<wisp_skills::SkillIndex>) -> Self {
+        Self { store, skills }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for CreateWorkflowTool {
+    fn name(&self) -> &str {
+        "create_workflow"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "create_workflow",
+            "Convert an installed Skill into a registered, reusable Workflow. Generates a one-task Workflow that binds the Skill (capabilities derived from the Skill's declared side effects) and saves it to the Workflow catalog, where explain_workflow can inspect it and delegate_tasks can run it. Use when the user asks to save or pin a Skill as a repeatable Workflow.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "type": "string",
+                        "description": "Exact name of an installed Skill, as returned by search_skills, list_skill_catalog, or use_skill"
+                    },
+                    "workflow_name": {
+                        "type": "string",
+                        "description": "Display name for the new Workflow; defaults to the Skill name"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Workflow description; defaults to the Skill description"
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": "Optional overrides for the generated Workflow",
+                        "properties": {
+                            "goal": {
+                                "type": "string",
+                                "description": "Workflow goal; defaults to running the named Skill"
+                            },
+                            "context": {
+                                "type": "string",
+                                "description": "Shared context passed to every task"
+                            },
+                            "instruction": {
+                                "type": "string",
+                                "description": "Task instruction; defaults to applying the bound Skill"
+                            },
+                            "capabilities": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Capability ids granted to the task; defaults to the mapping from the Skill's declared side effects"
+                            },
+                            "approval_policy": {
+                                "type": "string",
+                                "enum": ["review_all", "auto_safe"],
+                                "description": "Approval policy for runs; defaults to review_all"
+                            },
+                            "output_schema": {
+                                "type": "object",
+                                "description": "JSON object schema describing the task output"
+                            }
+                        }
+                    }
+                },
+                "required": ["skill_name"]
+            }),
+        )
+    }
+
+    fn preview(&self, args: &Value) -> String {
+        args.get("skill_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
+        let Some(skill_name) = args
+            .get("skill_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            return ToolResult::fail("missing required argument 'skill_name'");
+        };
+        let Some(skill) = self.skills.get(skill_name) else {
+            return ToolResult::fail(format!(
+                "Skill '{skill_name}' is not installed or not effective. Use search_skills to find an available Skill name."
+            ));
+        };
+        let description = args
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|description| !description.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                skill
+                    .description
+                    .chars()
+                    .take(MAX_TEMPLATE_DESCRIPTION_CHARS)
+                    .collect()
+            });
+        let side_effects = skill
+            .wisp
+            .as_ref()
+            .map(|metadata| metadata.side_effects)
+            .unwrap_or_default();
+        let mut proposal = dynamic_workflow::DynamicAgentWorkflowProposal {
+            goal: format!("Run Skill '{}' as a reusable Workflow", skill.name),
+            context: String::new(),
+            approval_policy: dynamic_workflow::AgentApprovalPolicy::ReviewAll,
+            tasks: vec![dynamic_workflow::DynamicAgentTaskProposal {
+                id: skill_task_id(&skill.name),
+                instruction: format!(
+                    "Apply the bound Skill '{}' to the user's request. Follow the Skill guidance, use its bundled scripts and references when relevant, and return the requested result.",
+                    skill.name
+                ),
+                depends_on: vec![],
+                task_kind: wisp_core::WorkflowTaskKind::Agent,
+                run_activity: None,
+                capabilities: skill_portfolio::capabilities_for(side_effects),
+                skill_ids: vec![skill.name.clone()],
+                specialist_id: None,
+                output_schema: Some(json!({
+                    "type": "object",
+                    "required": ["summary"],
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "artifacts": {"type": "array", "items": {"type": "string"}},
+                        "limitations": {"type": "array", "items": {"type": "string"}}
+                    }
+                })),
+                isolated: false,
+                model_id: None,
+                executor: None,
+                budget: None,
+            }],
+        };
+        if let Some(params) = args.get("params") {
+            if let Err(error) = apply_workflow_params(&mut proposal, params) {
+                return ToolResult::fail(error);
+            }
+        }
+        let name = args
+            .get("workflow_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&skill.name)
+            .to_string();
+        if let Some(conflict) = ensure_templates(&self.store)
+            .await
+            .iter()
+            .find(|template| template.name.eq_ignore_ascii_case(&name))
+        {
+            return ToolResult::fail(format!(
+                "A Workflow named '{}' already exists (id: {}). Pass a different workflow_name.",
+                conflict.name, conflict.id
+            ));
+        }
+        let template = WorkflowTemplate {
+            id: String::new(),
+            name,
+            description,
+            proposal,
+            builtin: false,
+        };
+        match upsert_template(&self.store, template).await {
+            Ok(saved) => ToolResult::ok(
+                serde_json::to_string_pretty(&json!({
+                    "created": true,
+                    "workflow": workflow_explanation(&saved)["workflow"],
+                    "next": "Inspect it with explain_workflow; run it by passing its proposal to delegate_tasks.",
+                }))
+                .unwrap_or_default(),
+            ),
+            Err(error) => ToolResult::fail(error),
+        }
+    }
+}
+
+/// Task ids must match `dynamic_workflow::valid_task_id`: a lowercase letter
+/// followed by at most 30 lowercase letters, digits, `_`, or `-`.
+fn skill_task_id(skill_name: &str) -> String {
+    let mut id: String = skill_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_uppercase() {
+                character.to_ascii_lowercase()
+            } else if character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '_' | '-')
+            {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if !id
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_lowercase())
+    {
+        id = format!("skill-{id}");
+    }
+    id.truncate(31);
+    if id.is_empty() {
+        "skill".into()
+    } else {
+        id
+    }
+}
+
+fn apply_workflow_params(
+    proposal: &mut dynamic_workflow::DynamicAgentWorkflowProposal,
+    params: &Value,
+) -> Result<(), String> {
+    let params = params
+        .as_object()
+        .ok_or_else(|| "'params' must be an object".to_string())?;
+    for (key, value) in params {
+        match key.as_str() {
+            "goal" => {
+                proposal.goal = required_string(value, "goal")?;
+            }
+            "context" => {
+                proposal.context = value
+                    .as_str()
+                    .ok_or_else(|| "'context' must be a string".to_string())?
+                    .to_string();
+            }
+            "instruction" => {
+                proposal.tasks[0].instruction = required_string(value, "instruction")?;
+            }
+            "capabilities" => {
+                let capabilities = value
+                    .as_array()
+                    .ok_or_else(|| "'capabilities' must be an array of capability ids".to_string())?
+                    .iter()
+                    .map(|entry| {
+                        entry
+                            .as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| "'capabilities' entries must be strings".to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if capabilities.is_empty() {
+                    return Err("'capabilities' must not be empty".into());
+                }
+                let registry = wisp_core::CapabilityRegistry::builtins();
+                if let Some(unknown) = capabilities
+                    .iter()
+                    .find(|capability| registry.get(capability).is_none())
+                {
+                    return Err(format!("unknown capability id '{unknown}'"));
+                }
+                proposal.tasks[0].capabilities = capabilities;
+            }
+            "approval_policy" => {
+                proposal.approval_policy = match value.as_str() {
+                    Some("review_all") => dynamic_workflow::AgentApprovalPolicy::ReviewAll,
+                    Some("auto_safe") => dynamic_workflow::AgentApprovalPolicy::AutoSafe,
+                    _ => return Err("'approval_policy' must be 'review_all' or 'auto_safe'".into()),
+                };
+            }
+            "output_schema" => {
+                if !value.is_object() {
+                    return Err("'output_schema' must be a JSON object".into());
+                }
+                proposal.tasks[0].output_schema = Some(value.clone());
+            }
+            other => {
+                return Err(format!(
+                    "unknown params key '{other}'; supported keys: goal, context, instruction, capabilities, approval_policy, output_schema"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn required_string(value: &Value, key: &str) -> Result<String, String> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("'{key}' must be a non-empty string"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1610,5 +1915,231 @@ mod tests {
             "Literature evidence review",
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    const DEMO_SKILL_MD: &str = "---\n\
+         name: demo-skill\n\
+         description: Demo skill for workflow conversion.\n\
+         wisp:\n  \
+         schema_version: 1\n  \
+         side_effects: code_execution\n\
+         ---\n\
+         # Demo\nDo the demo thing.\n";
+
+    fn demo_skill_index() -> (Arc<wisp_skills::SkillIndex>, std::path::PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("wisp_create_workflow_{}", uuid::Uuid::new_v4()));
+        let dir = root.join("demo-skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), DEMO_SKILL_MD).unwrap();
+        (
+            Arc::new(wisp_skills::SkillIndex::load(&[root.clone()])),
+            root,
+        )
+    }
+
+    #[test]
+    fn skill_task_id_matches_the_delegation_contract() {
+        assert_eq!(skill_task_id("analysis-workflow"), "analysis-workflow");
+        assert_eq!(skill_task_id("My Skill!"), "my-skill-");
+        assert_eq!(skill_task_id("123"), "skill-123");
+        let long = skill_task_id("averyveryverylongskillnamethatkeep ongoing");
+        assert!(long.len() <= 31);
+        assert!(dynamic_workflow::validate_proposal(
+            &dynamic_workflow::DynamicAgentWorkflowProposal {
+                goal: "g".into(),
+                context: String::new(),
+                approval_policy: dynamic_workflow::AgentApprovalPolicy::ReviewAll,
+                tasks: vec![dynamic_workflow::DynamicAgentTaskProposal {
+                    id: long,
+                    instruction: "i".into(),
+                    depends_on: vec![],
+                    task_kind: wisp_core::WorkflowTaskKind::Agent,
+                    run_activity: None,
+                    capabilities: vec!["reasoning".into()],
+                    skill_ids: vec![],
+                    specialist_id: None,
+                    output_schema: None,
+                    isolated: false,
+                    model_id: None,
+                    executor: None,
+                    budget: None,
+                }],
+            }
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn create_workflow_registers_skill_as_runnable_template() {
+        let (store, path) = store().await;
+        let (skills, root) = demo_skill_index();
+        let tool = CreateWorkflowTool::new(store.clone(), skills);
+        assert!(!tool.read_only());
+
+        let result = tool
+            .run(&json!({"skill_name": "demo-skill"}), &NoEnv(path.clone()))
+            .await;
+        assert!(result.success, "{}", result.content);
+        let created: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(created["created"], true);
+        assert_eq!(created["workflow"]["name"], "demo-skill");
+        assert_eq!(created["workflow"]["approval_policy"], "review_all");
+        let tasks = created["workflow"]["execution"]["tasks"]
+            .as_array()
+            .unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["id"], "demo-skill");
+        assert_eq!(tasks[0]["skills"], json!(["demo-skill"]));
+        assert_eq!(tasks[0]["capabilities"], json!(["code_run"]));
+        assert_eq!(tasks[0]["output_sections"], json!(["summary"]));
+
+        let saved = ensure_templates(&store)
+            .await
+            .into_iter()
+            .find(|template| !template.builtin && template.name == "demo-skill")
+            .expect("template persisted");
+        assert_eq!(saved.description, "Demo skill for workflow conversion.");
+        assert_eq!(saved.proposal.tasks[0].skill_ids, ["demo-skill"]);
+        dynamic_workflow::validate_proposal(&saved.proposal).unwrap();
+
+        let explain = ExplainWorkflowTool::new(store.clone())
+            .run(&json!({"query": "demo-skill"}), &NoEnv(path.clone()))
+            .await;
+        let explanation: Value = serde_json::from_str(&explain.content).unwrap();
+        assert_eq!(explanation["found"], true);
+        assert_eq!(explanation["workflow"]["id"], saved.id);
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn create_workflow_rejects_unknown_skill_and_duplicate_name() {
+        let (store, path) = store().await;
+        let (skills, root) = demo_skill_index();
+        let tool = CreateWorkflowTool::new(store.clone(), skills);
+
+        let missing = tool
+            .run(&json!({"skill_name": "nope"}), &NoEnv(path.clone()))
+            .await;
+        assert!(!missing.success);
+        assert!(missing.content.contains("not installed"));
+        assert!(missing.content.contains("search_skills"));
+
+        let first = tool
+            .run(&json!({"skill_name": "demo-skill"}), &NoEnv(path.clone()))
+            .await;
+        assert!(first.success, "{}", first.content);
+        let duplicate = tool
+            .run(&json!({"skill_name": "demo-skill"}), &NoEnv(path.clone()))
+            .await;
+        assert!(!duplicate.success);
+        assert!(duplicate.content.contains("already exists"));
+        assert!(duplicate.content.contains("workflow_name"));
+
+        let renamed = tool
+            .run(
+                &json!({"skill_name": "demo-skill", "workflow_name": "Demo pipeline"}),
+                &NoEnv(path.clone()),
+            )
+            .await;
+        assert!(renamed.success, "{}", renamed.content);
+        let custom = ensure_templates(&store)
+            .await
+            .into_iter()
+            .filter(|template| !template.builtin)
+            .count();
+        assert_eq!(custom, 2);
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn create_workflow_applies_param_overrides_and_validates() {
+        let (store, path) = store().await;
+        let (skills, root) = demo_skill_index();
+        let tool = CreateWorkflowTool::new(store.clone(), skills);
+
+        let result = tool
+            .run(
+                &json!({
+                    "skill_name": "demo-skill",
+                    "params": {
+                        "goal": "Screen a compound library",
+                        "context": "Use the project assay glossary.",
+                        "instruction": "Rank the compounds with the bound Skill.",
+                        "capabilities": ["reasoning"],
+                        "approval_policy": "auto_safe",
+                        "output_schema": {
+                            "type": "object",
+                            "required": ["ranking"],
+                            "properties": {"ranking": {"type": "array"}}
+                        }
+                    }
+                }),
+                &NoEnv(path.clone()),
+            )
+            .await;
+        assert!(result.success, "{}", result.content);
+        let saved = ensure_templates(&store)
+            .await
+            .into_iter()
+            .find(|template| !template.builtin)
+            .expect("template persisted");
+        assert_eq!(saved.proposal.goal, "Screen a compound library");
+        assert_eq!(saved.proposal.context, "Use the project assay glossary.");
+        assert_eq!(
+            saved.proposal.approval_policy,
+            dynamic_workflow::AgentApprovalPolicy::AutoSafe
+        );
+        assert_eq!(
+            saved.proposal.tasks[0].instruction,
+            "Rank the compounds with the bound Skill."
+        );
+        assert_eq!(saved.proposal.tasks[0].capabilities, ["reasoning"]);
+        assert_eq!(
+            saved.proposal.tasks[0].output_schema.as_ref().unwrap()["required"],
+            json!(["ranking"])
+        );
+
+        for (params, expected) in [
+            (json!(["reasoning"]), "'params' must be an object"),
+            (json!({"capabilites": ["reasoning"]}), "unknown params key"),
+            (
+                json!({"capabilities": ["nope"]}),
+                "unknown capability id 'nope'",
+            ),
+            (json!({"capabilities": []}), "must not be empty"),
+            (json!({"approval_policy": "yolo"}), "review_all"),
+            (json!({"goal": "  "}), "non-empty string"),
+            (json!({"output_schema": []}), "must be a JSON object"),
+        ] {
+            let failed = tool
+                .run(
+                    &json!({"skill_name": "demo-skill", "params": params}),
+                    &NoEnv(path.clone()),
+                )
+                .await;
+            assert!(!failed.success, "{params} should fail");
+            assert!(
+                failed.content.contains(expected),
+                "{params} should report '{expected}', got: {}",
+                failed.content
+            );
+        }
+        // Every rejected attempt left the catalog untouched.
+        assert_eq!(
+            ensure_templates(&store)
+                .await
+                .into_iter()
+                .filter(|template| !template.builtin)
+                .count(),
+            1
+        );
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
