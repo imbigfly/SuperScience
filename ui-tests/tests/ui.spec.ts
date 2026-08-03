@@ -6608,6 +6608,21 @@ test("projects sync manually, copy a device code, and join on another device", a
   )).toBe(true);
 });
 
+test("project sync actions appear only after a sync backend is configured", async ({ page }) => {
+  await page.goto("/?mockSyncUnconfigured=1");
+  const projectCard = page.locator(".proj-card:not(.proj-example)").first();
+  await expect(projectCard.getByRole("button", { name: "Sync now" })).toHaveCount(0);
+  await expect(projectCard.getByRole("button", { name: "Copy device code" })).toHaveCount(0);
+
+  await openSettingsSection(page, "General");
+  await page.getByTestId("sync-relay-url").fill("https://relay.example.test");
+  await page.getByTestId("sync-relay-token").fill("secret-token");
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+
+  await expect(projectCard.getByRole("button", { name: "Sync now" })).toBeVisible();
+  await expect(projectCard.getByRole("button", { name: "Copy device code" })).toBeVisible();
+});
+
 test("general settings configure a cloud-drive sync folder", async ({ page }) => {
   await page.goto("/");
   await openSettingsSection(page, "General");

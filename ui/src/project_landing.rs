@@ -18,6 +18,7 @@ pub(super) struct ProjectLandingState {
     pub(super) locale: RwSignal<Locale>,
     pub(super) running: RwSignal<HashSet<String>>,
     pub(super) approval_pending: RwSignal<HashSet<String>>,
+    pub(super) sync_actions_available: RwSignal<bool>,
     pub(super) command_palette_open: RwSignal<bool>,
 }
 #[component]
@@ -40,6 +41,7 @@ pub(super) fn ProjectLanding(
         locale,
         running,
         approval_pending,
+        sync_actions_available,
         command_palette_open,
     } = state;
 
@@ -68,6 +70,7 @@ pub(super) fn ProjectLanding(
                     locale=locale
                     running=running
                     approval_pending=approval_pending.read_only()
+                    sync_actions_available=sync_actions_available.read_only()
                     open_error=project_open_error
                     on_open=open_project
                     on_open_session=open_project_session

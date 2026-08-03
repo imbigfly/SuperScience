@@ -70,6 +70,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockMcpAppSession = query.get("mockMcpAppSession") === "1";
   const mockOAuthPending = query.get("mockOAuthPending") === "1";
   const mockOnboarding = query.get("mockOnboarding") === "1";
+  const mockSyncUnconfigured = query.get("mockSyncUnconfigured") === "1";
   const mockSessions: any[] = mockPlanFlow
     ? [{ id: "s1", title: "Plan mode regression", ts: 2000, running: false }]
     : mockPublication
@@ -1854,10 +1855,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               reasoning_effort: "",
               supports_vision: true,
               sync_backend: "relay",
-              sync_relay_url: "https://relay.example.test",
+              sync_relay_url: mockSyncUnconfigured ? "" : "https://relay.example.test",
               sync_folder: "",
               sync_relay_token: "",
-              has_sync_relay_token: true,
+              has_sync_relay_token: !mockSyncUnconfigured,
               pet_enabled: mockPetEnabled,
               pet_directory: mockPetDirectory,
             };

@@ -823,6 +823,9 @@ fn App() -> impl IntoView {
     // on `kind`; track just `kind` so editing command/url doesn't rebuild them.
     let conn_form_kind = create_memo(move |_| conn_form.get().map(|f| f.kind).unwrap_or_default());
     let settings = create_rw_signal(Settings::default());
+    // This mirrors the last persisted sync configuration. Keep it separate
+    // from `settings`, which also holds unsaved edits while Settings is open.
+    let sync_actions_available = create_rw_signal(false);
     let pet_status = create_rw_signal(PetStatus::default());
     // Configured model profiles + the composer's bottom-right picker state.
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
@@ -1762,6 +1765,7 @@ fn App() -> impl IntoView {
         }
         let v = invoke("get_settings", JsValue::UNDEFINED).await;
         if let Ok(cfg) = serde_wasm_bindgen::from_value::<Settings>(v) {
+            sync_actions_available.set(project_sync_backend_configured(&cfg));
             let loc = Locale::from_code(&cfg.locale);
             locale.set(loc);
             set_document_lang(loc);
@@ -4257,6 +4261,7 @@ fn App() -> impl IntoView {
                 cfg.has_sync_relay_token = true;
                 cfg.sync_relay_token.clear();
             }
+            sync_actions_available.set(project_sync_backend_configured(&cfg));
             busy.set(false);
             show.set(false);
             status_msg.set(t(loc.get(), "status.settings_saved").into());
@@ -7612,7 +7617,7 @@ fn App() -> impl IntoView {
             state=ProjectLandingState {
                 show_projects, demo_mode, items, active_session, project_open_error,
                 demos, modal_artifact, locale, running, approval_pending,
-                command_palette_open,
+                sync_actions_available, command_palette_open,
             }
             open_project=switch_project
             open_project_session=palette_open_session
