@@ -860,7 +860,9 @@ mod tests {
             _sink: &mut dyn wisp_llm::StreamSink,
         ) -> wisp_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
-            Err(LlmError::Config("main stream must not run".into()))
+            Err(LlmError::Config(
+                "main stream failed after degraded compaction".into(),
+            ))
         }
     }
 
@@ -1030,7 +1032,9 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(error.to_string().contains("main stream must not run"));
+        assert!(error
+            .to_string()
+            .contains("main stream failed after degraded compaction"));
         assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
         assert_eq!(serde_json::to_string(&ctx.messages).unwrap(), original);
         assert!(!ctx.messages.iter().any(|message| message
