@@ -52,7 +52,7 @@ wisp-science/
 ├─ r/               optional system-R kernel worker (requires jsonlite)
 ├─ skills/          Bundled SKILL.md catalog for reusable scientific workflows
 ├─ mcp-servers/     Bundled MCP servers (bio-tools: ~80 DB clients)
-└─ seed/            Bundled demo session recordings (CRISPR / enzyme / extremophile / immunotherapy)
+└─ seed/            Bundled demo session recordings (ESR1 / GSE153250 ×3)
 ```
 
 ## Prerequisites
@@ -533,12 +533,11 @@ animations may not match Microsoft Office exactly.
 
 ### Bundled demos
 
-`seed/` ships four pre-baked example sessions (CRISPR screen, enzyme
-engineering, extremophile, immunotherapy) recorded from the upstream agent.
-In the desktop app, **Open demo** lists them and opens one as a read-only
-User + Assistant transcript. Bundled `assets_*.tar.gz` archives are extracted
-into the workspace on open so figures and data files in the right panel preview
-correctly.
+`seed/` ships three pre-baked ESR1 / GSE153250 examples: GEO dataset discovery,
+sample-group Q&A, and RNA-seq upstream analysis (siESR1 vs siNT counts). In the
+desktop app, **Open demo** lists them and opens each as a read-only transcript
+with full tool/run history. The rnaseq demo's `assets_*.tar.gz` archive is
+extracted into the workspace on open so count-matrix files preview correctly.
 
 ## Testing
 

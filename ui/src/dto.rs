@@ -1279,13 +1279,14 @@ pub(crate) struct DemoInfo {
     pub(crate) title: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 pub(crate) struct Demo {
-    pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) request: String,
     pub(crate) response: String,
     pub(crate) thinking: Option<String>,
+    #[serde(default)]
+    pub(crate) items: Vec<LoadedItem>,
 }
 
 #[derive(Serialize)]
