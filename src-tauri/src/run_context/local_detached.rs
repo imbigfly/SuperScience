@@ -503,9 +503,11 @@ if (-not $proc) {{
 $identity = $null
 for ($i = 0; $i -lt 5; $i++) {{
   try {{
-    $cim = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $proc.Id)
-    if ($cim -and $cim.CreationDate) {{
-      $identity = $cim.CreationDate.ToString('o')
+    # Start-Process -PassThru already owns the authoritative process object.
+    # CIM can be unavailable, and a fast command can exit before a separate
+    # Win32_Process lookup observes it, even though launch succeeded.
+    if ($proc.StartTime) {{
+      $identity = [string]$proc.StartTime.ToUniversalTime().Ticks
       break
     }}
   }} catch {{ }}
@@ -638,14 +640,26 @@ if (-not (Test-Path -LiteralPath $submitted)) {{
   if ($acquired) {{
     Set-Content -LiteralPath $ownerPath -Value ([string]$PID) -Encoding ascii
     $supervisor = Join-Path $workdir 'supervisor.ps1'
-    Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile','-NonInteractive','-File', $supervisor) -WindowStyle Hidden | Out-Null
+    $supervisorStdout = Join-Path $workdir 'supervisor.stdout.log'
+    $supervisorStderr = Join-Path $workdir 'supervisor.stderr.log'
+    Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile','-NonInteractive','-File', $supervisor) -WindowStyle Hidden -RedirectStandardOutput $supervisorStdout -RedirectStandardError $supervisorStderr | Out-Null
   }}
 }}
 for ($i = 0; $i -lt 10 -and -not (Test-Path -LiteralPath $submitted); $i++) {{
   Start-Sleep -Seconds 1
 }}
 if (-not (Test-Path -LiteralPath $submitted)) {{
-  Write-Error 'local supervisor did not acknowledge launch'
+  $detail = ''
+  $statusPath = Join-Path $workdir '_status'
+  $supervisorStderr = Join-Path $workdir 'supervisor.stderr.log'
+  if (Test-Path -LiteralPath $statusPath) {{
+    $detail = (Get-Content -LiteralPath $statusPath -Raw -ErrorAction SilentlyContinue).Trim()
+  }}
+  if (-not $detail -and (Test-Path -LiteralPath $supervisorStderr)) {{
+    $detail = (Get-Content -LiteralPath $supervisorStderr -Raw -ErrorAction SilentlyContinue).Trim()
+  }}
+  if ($detail) {{ Write-Error ('local supervisor did not acknowledge launch: ' + $detail) }}
+  else {{ Write-Error 'local supervisor did not acknowledge launch' }}
   exit 70
 }}
 Write-Output ('__WISP_HANDLE__:' + (Get-Content -LiteralPath $submitted -Raw).Trim())
@@ -676,9 +690,8 @@ $workdir = Join-Path $env:USERPROFILE '{workdir_win}'
 $state = 'lost:control directory missing'
 function Same-Identity {{
   try {{
-    $cim = Get-CimInstance Win32_Process -Filter 'ProcessId={pgid}'
-    if (-not $cim -or -not $cim.CreationDate) {{ return $false }}
-    return $cim.CreationDate.ToString('o') -eq {identity_q}
+    $process = Get-Process -Id {pgid} -ErrorAction Stop
+    return ([string]$process.StartTime.ToUniversalTime().Ticks) -eq {identity_q}
   }} catch {{ return $false }}
 }}
 function Read-Status {{
@@ -757,9 +770,8 @@ pub(super) fn windows_cancel_payload(handle: &RemoteRunHandle) -> Result<String,
 $workdir = Join-Path $env:USERPROFILE '{workdir_win}'
 function Same-Identity {{
   try {{
-    $cim = Get-CimInstance Win32_Process -Filter 'ProcessId={pgid}'
-    if (-not $cim -or -not $cim.CreationDate) {{ return $false }}
-    return $cim.CreationDate.ToString('o') -eq {identity_q}
+    $process = Get-Process -Id {pgid} -ErrorAction Stop
+    return ([string]$process.StartTime.ToUniversalTime().Ticks) -eq {identity_q}
   }} catch {{ return $false }}
 }}
 function Terminal-Status {{

@@ -1287,6 +1287,39 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                 duration_ms,
                 ..
             } => {
+                // These successful tool results are complete UI cards. Live
+                // rendering suppresses their call rows and does the same
+                // conversion; replay must mirror that path or a refresh turns
+                // the card back into a raw tool row (and loses its actions).
+                let card_role = match name.as_str() {
+                    wisp_tools::plan::PROPOSE_PLAN if *ok => Some("plan"),
+                    wisp_tools::ask_user::ASK_USER if *ok => Some("question"),
+                    _ => None,
+                };
+                if let Some(role) = card_role {
+                    if let Some(index) = items.iter().rposition(|item| {
+                        item.role == "tool"
+                            && item.tool_name.as_deref() == Some(name)
+                            && item.ok.is_none()
+                    }) {
+                        items.remove(index);
+                    }
+                    items.push(UiItem {
+                        role: role.into(),
+                        text: content.clone(),
+                        tool_name: None,
+                        ok: None,
+                        duration_ms: None,
+                        input: None,
+                        model_name: None,
+                        call_id: None,
+                        kind: None,
+                        status: None,
+                        locations: None,
+                        resources: Vec::new(),
+                    });
+                    continue;
+                }
                 if let Some(item) = items.iter_mut().rev().find(|item| {
                     item.role == "tool"
                         && item.tool_name.as_deref() == Some(name)
