@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tauri::State;
 
-use crate::AppState;
 use crate::resource_refs;
+use crate::AppState;
 
 /// Bundled demo manifests (`seed/`).
 pub fn bundled_dir() -> Option<PathBuf> {
@@ -237,7 +237,11 @@ mod tests {
     #[test]
     fn lists_and_loads_bundled_demos() {
         let demos = list_demos();
-        assert_eq!(demos.len(), 5, "bundled seed should ship the five ESR1 demos");
+        assert_eq!(
+            demos.len(),
+            5,
+            "bundled seed should ship the five ESR1 demos"
+        );
         assert_eq!(
             demos.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
             [
@@ -253,7 +257,11 @@ mod tests {
             assert!(!demo.request.is_empty());
             assert!(!demo.request.contains("English reply"));
             assert!(!demo.request.to_ascii_lowercase().contains("guotosky"));
-            assert!(!demo.items.is_empty(), "{} should ship transcript items", info.id);
+            assert!(
+                !demo.items.is_empty(),
+                "{} should ship transcript items",
+                info.id
+            );
             assert!(
                 demo.items.iter().any(|i| i.role == "tool"),
                 "{} should include tool operation records",
