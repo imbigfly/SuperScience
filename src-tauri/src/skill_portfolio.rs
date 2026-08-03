@@ -137,7 +137,7 @@ fn workflow_draft(plan: &PortfolioPlan) -> dynamic_workflow::DynamicAgentWorkflo
     }
 }
 
-fn capabilities_for(side_effects: SkillSideEffects) -> Vec<String> {
+pub(crate) fn capabilities_for(side_effects: SkillSideEffects) -> Vec<String> {
     match side_effects {
         SkillSideEffects::ReadOnly => vec!["reasoning".into()],
         SkillSideEffects::Network => vec!["literature_search".into()],
