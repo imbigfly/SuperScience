@@ -2,6 +2,7 @@
 //! agent loop, markdown memory, and memory tools.
 
 pub mod agent;
+pub mod archive;
 pub mod context;
 pub mod delegation;
 pub mod delegation_policy;
@@ -100,9 +101,10 @@ impl Agent {
         // The explore subagent shares the primary model but runs in its own
         // context; only its anchor (stats + conclusion + trace path) lands in
         // the main context.
-        tools.add(Box::new(subagent::ExploreTool::new(Arc::from(
-            wisp_llm::build(cfg),
-        ))));
+        tools.add(Box::new(subagent::ExploreTool::new(
+            Arc::from(wisp_llm::build(cfg)),
+            max_context,
+        )));
         let session_path = root.join(".wisp").join("session.json");
         let mut ctx = ContextManager::new(max_context);
         ctx.load(&session_path);
