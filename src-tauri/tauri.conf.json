@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "wisp science",
+  "productName": "wisp-science",
   "version": "0.32.0",
   "identifier": "science.wisp-science",
   "build": {
