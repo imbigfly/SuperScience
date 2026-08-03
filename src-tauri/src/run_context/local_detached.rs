@@ -22,6 +22,9 @@ pub(super) fn transport_script_command(
                 stdin: Some(payload),
                 envs: Vec::new(),
             }),
+            // `-Command -` parses stdin line-by-line like an interactive
+            // session in Windows PowerShell 5.1; read the whole payload and
+            // execute it as one script instead.
             LocalTransport::Windows { context_id } => Ok(RunCommand {
                 context_id: context_id.clone(),
                 program: "powershell".into(),
@@ -29,7 +32,7 @@ pub(super) fn transport_script_command(
                     "-NoProfile".into(),
                     "-NonInteractive".into(),
                     "-Command".into(),
-                    "-".into(),
+                    "[Console]::In.ReadToEnd() | Invoke-Expression".into(),
                 ],
                 script: label.into(),
                 cwd: None,
@@ -68,6 +71,7 @@ fn b64(value: &str) -> String {
 
 pub(super) fn posix_prepare_payload(remote: &RemoteRun) -> String {
     let RemoteRunHandle::LocalDetached {
+        transport,
         workdir,
         token,
         command_cwd,
@@ -76,8 +80,18 @@ pub(super) fn posix_prepare_payload(remote: &RemoteRun) -> String {
     else {
         unreachable!("posix prepare requires LocalDetached");
     };
+    let is_wsl = matches!(
+        transport,
+        LocalTransport::Posix { context_id, .. } if context_id.starts_with("wsl:")
+    );
     let delimiter = command_delimiter(token, &remote.command);
     let cd_line = match command_cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
+        // WSL stores the Windows project root; translate it inside the distro
+        // so project-relative commands and output harvest keep working.
+        Some(cwd) if is_wsl => format!(
+            "if command -v wslpath >/dev/null 2>&1; then\n  cd \"$(wslpath {})\" || exit 125\nfi\n",
+            shell_single_quote(cwd)
+        ),
         Some(cwd) => format!("cd {} || exit 125\n", shell_single_quote(cwd)),
         None => String::new(),
     };
@@ -127,6 +141,10 @@ stop_tree() {{
   kill "-$signal" "-$pid" 2>/dev/null || true
   kill "-$signal" "$pid" 2>/dev/null || true
 }}
+if [ -f _submitted ]; then
+  # A supervisor already ran for this workdir; never launch the command twice.
+  exit 0
+fi
 if ! command -v bash >/dev/null 2>&1; then
   write_state _status 'lost:local detached Run requires bash'
   exit 69
@@ -136,12 +154,13 @@ if ! command -v nohup >/dev/null 2>&1; then
   exit 69
 fi
 rm -f _command_exit _cancel_requested
-# Prefer setsid so the command owns an independent process group. macOS and
-# other hosts without setsid fall back to PID tracking; kill tries both the
-# process and its process group.
+# Prefer setsid so the command owns an independent process group. macOS lacks
+# setsid; enable job control there so the background job still gets its own
+# process group and group kill reaches the whole command tree.
 if command -v setsid >/dev/null 2>&1; then
   setsid sh -c 'bash -l "$1"; rc=$?; tmp="$2.tmp.$$"; printf "%s\n" "$rc" > "$tmp" && mv "$tmp" "$2"; exit "$rc"' sh "$PWD/command.sh" "$PWD/_command_exit" >stdout.log 2>stderr.log &
 else
+  set -m 2>/dev/null || true
   (
     bash -l "$PWD/command.sh"
     rc=$?
@@ -149,6 +168,7 @@ else
     printf '%s\n' "$rc" > "$tmp" && mv "$tmp" "$PWD/_command_exit"
     exit "$rc"
   ) >stdout.log 2>stderr.log &
+  set +m 2>/dev/null || true
 fi
 pgid=$!
 i=0
@@ -249,7 +269,13 @@ if [ ! -f "$workdir/_submitted" ] && mkdir "$lock" 2>/dev/null; then
   printf '%s:%s\n' "$$" "$lock_start" > "$lock/owner"
   command -v nohup >/dev/null 2>&1 || {{ echo 'local detached Runs require nohup' >&2; exit 69; }}
   command -v bash >/dev/null 2>&1 || {{ echo 'local detached Runs require bash' >&2; exit 69; }}
-  nohup sh "$workdir/supervisor.sh" </dev/null >/dev/null 2>&1 &
+  # Detach the supervisor into its own session when possible so signals sent
+  # to the app's process group cannot kill it while the command keeps running.
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid sh "$workdir/supervisor.sh" </dev/null >/dev/null 2>&1 &
+  else
+    nohup sh "$workdir/supervisor.sh" </dev/null >/dev/null 2>&1 &
+  fi
 fi
 if [ ! -f "$workdir/_submitted" ]; then
   i=0
@@ -451,6 +477,9 @@ function Write-State([string]$Path, [string]$Value) {{
   Set-Content -LiteralPath $tmp -Value $Value -Encoding ascii
   Move-Item -LiteralPath $tmp -Destination $Path -Force
 }}
+if (Test-Path -LiteralPath (Join-Path $workdir '_submitted')) {{
+  exit 0
+}}
 Remove-Item -LiteralPath (Join-Path $workdir '_command_exit') -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $workdir '_cancel_requested') -ErrorAction SilentlyContinue
 $stdout = Join-Path $workdir 'stdout.log'
@@ -475,7 +504,10 @@ $identity = $null
 for ($i = 0; $i -lt 5; $i++) {{
   try {{
     $cim = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $proc.Id)
-    if ($cim -and $cim.CreationDate) {{ $identity = [string]$cim.CreationDate; break }}
+    if ($cim -and $cim.CreationDate) {{
+      $identity = $cim.CreationDate.ToString('o')
+      break
+    }}
   }} catch {{ }}
   Start-Sleep -Seconds 1
 }}
@@ -582,12 +614,29 @@ if (-not (Test-Path -LiteralPath $tokenPath) -or ((Get-Content -LiteralPath $tok
 }}
 $submitted = Join-Path $workdir '_submitted'
 $lock = Join-Path $workdir '_launch_lock'
+$ownerPath = Join-Path $lock 'owner'
 if ((Test-Path -LiteralPath $lock) -and -not (Test-Path -LiteralPath $submitted)) {{
-  Remove-Item -LiteralPath $lock -Recurse -Force -ErrorAction SilentlyContinue
+  # Only clear the lock when its recorded owner process is gone; a live owner
+  # is still mid-launch and must not be raced.
+  $ownerAlive = $false
+  try {{
+    $ownerId = [int]((Get-Content -LiteralPath $ownerPath -Raw -ErrorAction Stop).Trim())
+    if ($ownerId -gt 0 -and (Get-Process -Id $ownerId -ErrorAction SilentlyContinue)) {{
+      $ownerAlive = $true
+    }}
+  }} catch {{ }}
+  if (-not $ownerAlive) {{
+    Remove-Item -LiteralPath $lock -Recurse -Force -ErrorAction SilentlyContinue
+  }}
 }}
 if (-not (Test-Path -LiteralPath $submitted)) {{
-  New-Item -ItemType Directory -Path $lock -ErrorAction SilentlyContinue | Out-Null
-  if (Test-Path -LiteralPath $lock) {{
+  $acquired = $false
+  try {{
+    New-Item -ItemType Directory -Path $lock -ErrorAction Stop | Out-Null
+    $acquired = $true
+  }} catch {{ }}
+  if ($acquired) {{
+    Set-Content -LiteralPath $ownerPath -Value ([string]$PID) -Encoding ascii
     $supervisor = Join-Path $workdir 'supervisor.ps1'
     Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile','-NonInteractive','-File', $supervisor) -WindowStyle Hidden | Out-Null
   }}
@@ -628,8 +677,8 @@ $state = 'lost:control directory missing'
 function Same-Identity {{
   try {{
     $cim = Get-CimInstance Win32_Process -Filter 'ProcessId={pgid}'
-    if (-not $cim) {{ return $false }}
-    return ([string]$cim.CreationDate) -eq {identity_q}
+    if (-not $cim -or -not $cim.CreationDate) {{ return $false }}
+    return $cim.CreationDate.ToString('o') -eq {identity_q}
   }} catch {{ return $false }}
 }}
 function Read-Status {{
@@ -641,6 +690,24 @@ function Read-Status {{
   if ($status -eq 'cancelled') {{ $script:state = 'cancelled'; return $true }}
   if ($status -like 'lost:*') {{ $script:state = $status; return $true }}
   return $false
+}}
+function Read-Tail([string]$Path) {{
+  # The command still holds the log open for writing, so share read+write and
+  # only pull the last 4000 bytes instead of loading the whole file.
+  if (-not (Test-Path -LiteralPath $Path)) {{ return '' }}
+  try {{
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    try {{
+      $take = [int][Math]::Min($fs.Length, 4000)
+      if ($take -le 0) {{ return '' }}
+      $fs.Seek(-$take, [System.IO.SeekOrigin]::End) | Out-Null
+      $buffer = New-Object byte[] $take
+      $read = $fs.Read($buffer, 0, $take)
+      return [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)
+    }} finally {{
+      $fs.Dispose()
+    }}
+  }} catch {{ return '' }}
 }}
 $tokenPath = Join-Path $workdir 'token'
 if ((Test-Path -LiteralPath $tokenPath) -and ((Get-Content -LiteralPath $tokenPath -Raw).Trim() -eq '{token}')) {{
@@ -660,20 +727,10 @@ if ((Test-Path -LiteralPath $tokenPath) -and ((Get-Content -LiteralPath $tokenPa
 }}
 Write-Output ('__WISP_RUN_STATUS__:' + $state)
 Write-Output '__WISP_STDOUT__'
-$stdout = Join-Path $workdir 'stdout.log'
-if (Test-Path -LiteralPath $stdout) {{
-  $bytes = [System.IO.File]::ReadAllBytes($stdout)
-  if ($bytes.Length -gt 4000) {{ $bytes = $bytes[($bytes.Length-4000)..($bytes.Length-1)] }}
-  [Console]::Out.Write([System.Text.Encoding]::UTF8.GetString($bytes))
-}}
+[Console]::Out.Write((Read-Tail (Join-Path $workdir 'stdout.log')))
 Write-Output ''
 Write-Output '__WISP_STDERR__'
-$stderr = Join-Path $workdir 'stderr.log'
-if (Test-Path -LiteralPath $stderr) {{
-  $bytes = [System.IO.File]::ReadAllBytes($stderr)
-  if ($bytes.Length -gt 4000) {{ $bytes = $bytes[($bytes.Length-4000)..($bytes.Length-1)] }}
-  [Console]::Out.Write([System.Text.Encoding]::UTF8.GetString($bytes))
-}}
+[Console]::Out.Write((Read-Tail (Join-Path $workdir 'stderr.log')))
 "#,
     ))
 }
@@ -701,8 +758,8 @@ $workdir = Join-Path $env:USERPROFILE '{workdir_win}'
 function Same-Identity {{
   try {{
     $cim = Get-CimInstance Win32_Process -Filter 'ProcessId={pgid}'
-    if (-not $cim) {{ return $false }}
-    return ([string]$cim.CreationDate) -eq {identity_q}
+    if (-not $cim -or -not $cim.CreationDate) {{ return $false }}
+    return $cim.CreationDate.ToString('o') -eq {identity_q}
   }} catch {{ return $false }}
 }}
 function Terminal-Status {{
