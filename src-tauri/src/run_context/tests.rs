@@ -1200,7 +1200,18 @@ fn remote_control_payloads_are_valid_posix_shell() {
         input_refs: Vec::new(),
         output_specs: Vec::new(),
         harvest_root: None,
-        handle: test_local_handle("local-payload", true, None),
+        handle: test_local_handle("local-payload", true, Some("/home/user/project")),
+    };
+    let wsl = RemoteRun {
+        run_id: "wsl-payload".into(),
+        project_id: "p".into(),
+        frame_id: None,
+        command: "printf '%s\\n' ok".into(),
+        timeout: Duration::from_secs(60),
+        input_refs: Vec::new(),
+        output_specs: Vec::new(),
+        harvest_root: None,
+        handle: test_wsl_handle("wsl-payload", true, Some(r"C:\Users\me\project")),
     };
     let scripts = [
         prepare_payload(&remote),
@@ -1211,6 +1222,10 @@ fn remote_control_payloads_are_valid_posix_shell() {
         launch_payload(&local.handle),
         poll_payload(&local.handle).unwrap(),
         cancel_payload(&local.handle).unwrap(),
+        prepare_payload(&wsl),
+        launch_payload(&wsl.handle),
+        poll_payload(&wsl.handle).unwrap(),
+        cancel_payload(&wsl.handle).unwrap(),
     ];
     for script in scripts {
         let mut child = std::process::Command::new("sh")
@@ -1226,8 +1241,18 @@ fn remote_control_payloads_are_valid_posix_shell() {
             .unwrap();
         assert!(child.wait().unwrap().success(), "invalid shell payload");
     }
-    assert!(prepare_payload(&local).contains("sleep 60"));
-    assert!(!prepare_payload(&local).contains("setsid timeout"));
+    let local_prepare = prepare_payload(&local);
+    assert!(local_prepare.contains("sleep 60"));
+    assert!(!local_prepare.contains("setsid timeout"));
+    // A relaunched supervisor must never rerun the command.
+    assert!(local_prepare.contains("if [ -f _submitted ]; then"));
+    // The local project root is entered directly; WSL goes through wslpath.
+    assert!(local_prepare.contains("cd '/home/user/project' || exit 125"));
+    assert!(!local_prepare.contains("wslpath"));
+    let wsl_prepare = prepare_payload(&wsl);
+    assert!(wsl_prepare.contains(r#"cd "$(wslpath 'C:\Users\me\project')" || exit 125"#));
+    // Signals to the app's process group must not reach a detached supervisor.
+    assert!(launch_payload(&local.handle).contains("nohup setsid sh"));
 }
 
 #[test]
@@ -1583,6 +1608,28 @@ fn test_local_handle(run_id: &str, confirmed: bool, command_cwd: Option<&str>) -
     }
 }
 
+fn test_wsl_handle(run_id: &str, confirmed: bool, command_cwd: Option<&str>) -> RemoteRunHandle {
+    RemoteRunHandle::LocalDetached {
+        transport: LocalTransport::Posix {
+            context_id: "wsl:Ubuntu".into(),
+            program: "wsl.exe".into(),
+            args: vec![
+                "-d".into(),
+                "Ubuntu".into(),
+                "--".into(),
+                "sh".into(),
+                "-s".into(),
+            ],
+        },
+        workdir: format!(".wisp-science/runs/{run_id}"),
+        token: "test-token".into(),
+        inputs_staged: true,
+        pgid: confirmed.then_some(4242),
+        start_identity: confirmed.then(|| "999".into()),
+        command_cwd: command_cwd.map(str::to_string),
+    }
+}
+
 #[test]
 fn permanent_remote_start_errors_require_user_intervention() {
     for error in [
@@ -1873,17 +1920,89 @@ fn windows_control_payloads_contain_process_identity_and_timeout() {
             command_cwd: Some(r"C:\project".into()),
         },
     };
+    use base64::Engine as _;
     let prepare = prepare_payload(&remote);
     assert!(prepare.contains("FromBase64String"));
     assert!(prepare.contains("__WISP_PREPARED__"));
+    let supervisor = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(
+                prepare
+                    .lines()
+                    .find(|line| line.starts_with("[System.IO.File]::WriteAllText($supervisorPath"))
+                    .and_then(|line| line.split("FromBase64String('").nth(1))
+                    .and_then(|rest| rest.split('\'').next())
+                    .expect("supervisor base64 in prepare payload"),
+            )
+            .expect("valid supervisor base64"),
+    )
+    .expect("utf8 supervisor script");
+    // The supervisor must be idempotent and use a culture-stable identity.
+    assert!(supervisor.contains("if (Test-Path -LiteralPath (Join-Path $workdir '_submitted'))"));
+    assert!(supervisor.contains(".ToString('o')"));
     let launch = launch_payload(&remote.handle);
     assert!(launch.contains("Start-Process"));
+    // Only the launcher that created the lock may start the supervisor, and a
+    // live lock owner must not be raced.
+    assert!(launch.contains("if ($acquired)"));
+    assert!(launch.contains("Get-Process -Id $ownerId"));
     let poll = poll_payload(&remote.handle).unwrap();
     assert!(poll.contains("Win32_Process"));
     assert!(poll.contains("__WISP_RUN_STATUS__"));
+    assert!(poll.contains(".ToString('o')"));
+    // Log tails must share the writer's handle and stay bounded.
+    assert!(poll.contains("[System.IO.FileShare]::ReadWrite"));
+    assert!(!poll.contains("ReadAllBytes"));
     let cancel = cancel_payload(&remote.handle).unwrap();
     assert!(cancel.contains("taskkill.exe"));
     assert!(cancel.contains("__WISP_CANCEL__"));
+    assert!(cancel.contains(".ToString('o')"));
+}
+
+#[test]
+fn windows_transport_executes_stdin_as_one_script() {
+    let handle = RemoteRunHandle::LocalDetached {
+        transport: LocalTransport::Windows {
+            context_id: "local".into(),
+        },
+        workdir: ".wisp-science/runs/win".into(),
+        token: "test-token".into(),
+        inputs_staged: true,
+        pgid: None,
+        start_identity: None,
+        command_cwd: None,
+    };
+    let command =
+        local_detached::transport_script_command(&handle, "prepare local Run", "exit 0".into())
+            .unwrap();
+    assert_eq!(command.program, "powershell");
+    // `-Command -` parses stdin line-by-line like an interactive session on
+    // Windows PowerShell 5.1, so the payload is executed as a single script.
+    assert!(!command.args.contains(&"-".to_string()));
+    assert!(command
+        .args
+        .contains(&"[Console]::In.ReadToEnd() | Invoke-Expression".to_string()));
+    assert_eq!(command.stdin.as_deref(), Some("exit 0"));
+}
+
+#[test]
+fn handle_ack_preserves_identities_containing_colons_and_spaces() {
+    let handle = test_local_handle("mac", false, None);
+    let confirmed = remote::handle_from_ack(
+        &handle,
+        "__WISP_HANDLE__:test-token:4242:Mon Aug  3 10:55:00 2026\n",
+    )
+    .unwrap();
+    let RemoteRunHandle::LocalDetached {
+        pgid,
+        start_identity,
+        ..
+    } = confirmed
+    else {
+        panic!("expected LocalDetached");
+    };
+    assert_eq!(pgid, Some(4242));
+    assert_eq!(start_identity.as_deref(), Some("Mon Aug  3 10:55:00 2026"));
 }
 
 #[cfg(unix)]

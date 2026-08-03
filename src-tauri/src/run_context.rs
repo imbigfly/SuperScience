@@ -594,6 +594,7 @@ const REMOTE_START_LEASE_SECS: i64 = 360;
 const ACTIVE_LEASE_SECS: i64 = 30;
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 const SSH_RETRY_STOPPED_MARKER: &str = "SSH automatic retry stopped";
+const LOCAL_RETRY_STOPPED_MARKER: &str = "Automatic Run retry stopped";
 
 impl RunManager {
     pub async fn has_in_flight_project(
@@ -2122,12 +2123,11 @@ fn local_detached_handle_for(
             return Err("local detached handle requires a local or WSL context".into());
         }
     };
-    let command_cwd = match ctx.kind {
-        wisp_store::ExecutionContextKind::Local => cwd
-            .map(|path| path.to_string_lossy().into_owned())
-            .filter(|path| !path.is_empty()),
-        _ => None,
-    };
+    // Local commands run in the project root directly; WSL stores the Windows
+    // project root and translates it through wslpath inside the distro.
+    let command_cwd = cwd
+        .map(|path| path.to_string_lossy().into_owned())
+        .filter(|path| !path.is_empty());
     Ok(RemoteRunHandle::LocalDetached {
         transport,
         workdir: format!(".wisp-science/runs/{run_id}"),
@@ -2197,16 +2197,19 @@ async fn finish_remote_run(
 }
 
 fn retry_stopped_error(handle: &RemoteRunHandle, error: &str) -> String {
-    if error.contains(SSH_RETRY_STOPPED_MARKER) {
+    let marker = if handle.is_local_detached() {
+        LOCAL_RETRY_STOPPED_MARKER
+    } else {
+        SSH_RETRY_STOPPED_MARKER
+    };
+    if error.contains(marker) {
         return error.to_string();
     }
     if handle.is_local_detached() {
-        format!(
-            "{SSH_RETRY_STOPPED_MARKER} after the first failed start attempt. Manual retry is required. {error}"
-        )
+        format!("{marker} after the first failed start attempt. Manual retry is required. {error}")
     } else {
         format!(
-            "{SSH_RETRY_STOPPED_MARKER} after the first failed attempt to protect the server. Manual retry is required. {error}"
+            "{marker} after the first failed attempt to protect the server. Manual retry is required. {error}"
         )
     }
 }
