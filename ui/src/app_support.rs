@@ -3583,6 +3583,40 @@ pub(super) fn normalized_settings(mut cfg: Settings) -> Settings {
     cfg
 }
 
+pub(super) fn project_sync_backend_configured(cfg: &Settings) -> bool {
+    match cfg.sync_backend.as_str() {
+        "folder" => !cfg.sync_folder.trim().is_empty(),
+        "relay" => {
+            !cfg.sync_relay_url.trim().is_empty()
+                && (cfg.has_sync_relay_token || !cfg.sync_relay_token.trim().is_empty())
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod project_sync_backend_tests {
+    use super::{project_sync_backend_configured, Settings};
+
+    #[test]
+    fn requires_a_complete_configuration_for_the_selected_backend() {
+        let mut settings = Settings::default();
+        assert!(!project_sync_backend_configured(&settings));
+
+        settings.sync_relay_url = "https://relay.example.test".into();
+        assert!(!project_sync_backend_configured(&settings));
+
+        settings.has_sync_relay_token = true;
+        assert!(project_sync_backend_configured(&settings));
+
+        settings.sync_backend = "folder".into();
+        assert!(!project_sync_backend_configured(&settings));
+
+        settings.sync_folder = "C:\\Wisp Sync".into();
+        assert!(project_sync_backend_configured(&settings));
+    }
+}
+
 pub(super) fn settings_required_error_key(cfg: &Settings, key: &str) -> Option<&'static str> {
     if cfg.api_url.trim().is_empty() {
         return Some("err.api_url_required");
@@ -10308,6 +10342,7 @@ pub(super) fn ProjectsScreen(
     locale: RwSignal<Locale>,
     running: RwSignal<HashSet<String>>,
     approval_pending: ReadSignal<HashSet<String>>,
+    sync_actions_available: ReadSignal<bool>,
     open_error: RwSignal<Option<String>>,
     on_open: Callback<String>,
     on_open_session: Callback<(String, String)>,
@@ -10915,6 +10950,7 @@ pub(super) fn ProjectsScreen(
                     {move || {
                         let loc = locale.get();
                         let list = projects.get();
+                        let show_sync_actions = sync_actions_available.get();
                         if list.is_empty() && !creating.get() {
                             return view! {}.into_view();
                         }
@@ -10964,72 +11000,74 @@ pub(super) fn ProjectsScreen(
                                     </div>
                                     </button>
                                     <div class="pc-actions">
-                                    <button class="pc-sync" title=t(loc, "projects.sync.now")
-                                        aria-label=t(loc, "projects.sync.now")
-                                        disabled=move || syncing_projects.with(|ids| ids.contains(&id_sync_disabled))
-                                        on:click=move |e| {
-                                            e.stop_propagation();
-                                            let id = id_sync.clone();
-                                            if syncing_projects.with(|ids| ids.contains(&id)) { return; }
-                                            syncing_projects.update(|ids| { ids.insert(id.clone()); });
-                                            sync_notice.set(Some((true, t(locale.get_untracked(), "projects.sync.running").into())));
-                                            open_error.set(None);
-                                            spawn_local(async move {
-                                                let args = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
-                                                match invoke_checked("sync_project", args).await {
-                                                    Ok(value) => {
-                                                        if let Ok(result) = serde_wasm_bindgen::from_value::<ProjectSyncResult>(value) {
-                                                            let loc = locale.get_untracked();
-                                                            let text = match result.direction.as_str() {
-                                                                "push" => tf(loc, "projects.sync.pushed", &[("n", &result.uploaded_files.to_string())]),
-                                                                "pull" => tf(loc, "projects.sync.pulled", &[("n", &result.downloaded_files.to_string())]),
-                                                                _ => t(loc, "projects.sync.current").into(),
-                                                            };
-                                                            let text = if result.skipped_paths.is_empty() {
-                                                                text
-                                                            } else {
-                                                                format!("{text} {}", tf(loc, "projects.sync.skipped", &[("n", &result.skipped_paths.len().to_string())]))
-                                                            };
-                                                            sync_notice.set(Some((true, text)));
+                                    {show_sync_actions.then(|| view! {
+                                        <button class="pc-sync" title=t(loc, "projects.sync.now")
+                                            aria-label=t(loc, "projects.sync.now")
+                                            disabled=move || syncing_projects.with(|ids| ids.contains(&id_sync_disabled))
+                                            on:click=move |e| {
+                                                e.stop_propagation();
+                                                let id = id_sync.clone();
+                                                if syncing_projects.with(|ids| ids.contains(&id)) { return; }
+                                                syncing_projects.update(|ids| { ids.insert(id.clone()); });
+                                                sync_notice.set(Some((true, t(locale.get_untracked(), "projects.sync.running").into())));
+                                                open_error.set(None);
+                                                spawn_local(async move {
+                                                    let args = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
+                                                    match invoke_checked("sync_project", args).await {
+                                                        Ok(value) => {
+                                                            if let Ok(result) = serde_wasm_bindgen::from_value::<ProjectSyncResult>(value) {
+                                                                let loc = locale.get_untracked();
+                                                                let text = match result.direction.as_str() {
+                                                                    "push" => tf(loc, "projects.sync.pushed", &[("n", &result.uploaded_files.to_string())]),
+                                                                    "pull" => tf(loc, "projects.sync.pulled", &[("n", &result.downloaded_files.to_string())]),
+                                                                    _ => t(loc, "projects.sync.current").into(),
+                                                                };
+                                                                let text = if result.skipped_paths.is_empty() {
+                                                                    text
+                                                                } else {
+                                                                    format!("{text} {}", tf(loc, "projects.sync.skipped", &[("n", &result.skipped_paths.len().to_string())]))
+                                                                };
+                                                                sync_notice.set(Some((true, text)));
+                                                            }
+                                                            reload();
                                                         }
-                                                        reload();
+                                                        Err(error) => {
+                                                            sync_notice.set(None);
+                                                            let raw = js_error_text(error);
+                                                            if raw.contains("Sync conflict") {
+                                                                sync_conflict_project.set(Some(id.clone()));
+                                                            } else {
+                                                                let message = localize_backend(locale.get_untracked(), &raw);
+                                                                open_error.set(Some(message));
+                                                            }
+                                                        }
                                                     }
-                                                    Err(error) => {
-                                                        sync_notice.set(None);
-                                                        let raw = js_error_text(error);
-                                                        if raw.contains("Sync conflict") {
-                                                            sync_conflict_project.set(Some(id.clone()));
-                                                        } else {
-                                                            let message = localize_backend(locale.get_untracked(), &raw);
+                                                    syncing_projects.update(|ids| { ids.remove(&id); });
+                                                });
+                                            }>{compose_icon("sync")}</button>
+                                        <button class="pc-sync-code" title=t(loc, "projects.sync.copy_code")
+                                            aria-label=t(loc, "projects.sync.copy_code")
+                                            on:click=move |e| {
+                                                e.stop_propagation();
+                                                let id = id_code.clone();
+                                                open_error.set(None);
+                                                spawn_local(async move {
+                                                    let args = to_value(&serde_json::json!({ "id": id })).unwrap();
+                                                    match invoke_checked("project_sync_code", args).await {
+                                                        Ok(value) => {
+                                                            if let Ok(code) = serde_wasm_bindgen::from_value::<String>(value) {
+                                                                copy_text(code);
+                                                                sync_notice.set(Some((true, t(locale.get_untracked(), "projects.sync.code_copied").into())));
+                                                            }
+                                                        }
+                                                        Err(error) => {
+                                                            let message = localize_backend(locale.get_untracked(), &js_error_text(error));
                                                             open_error.set(Some(message));
                                                         }
                                                     }
-                                                }
-                                                syncing_projects.update(|ids| { ids.remove(&id); });
-                                            });
-                                        }>{compose_icon("sync")}</button>
-                                    <button class="pc-sync-code" title=t(loc, "projects.sync.copy_code")
-                                        aria-label=t(loc, "projects.sync.copy_code")
-                                        on:click=move |e| {
-                                            e.stop_propagation();
-                                            let id = id_code.clone();
-                                            open_error.set(None);
-                                            spawn_local(async move {
-                                                let args = to_value(&serde_json::json!({ "id": id })).unwrap();
-                                                match invoke_checked("project_sync_code", args).await {
-                                                    Ok(value) => {
-                                                        if let Ok(code) = serde_wasm_bindgen::from_value::<String>(value) {
-                                                            copy_text(code);
-                                                            sync_notice.set(Some((true, t(locale.get_untracked(), "projects.sync.code_copied").into())));
-                                                        }
-                                                    }
-                                                    Err(error) => {
-                                                        let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                                                        open_error.set(Some(message));
-                                                    }
-                                                }
-                                            });
-                                        }>{compose_icon("link")}</button>
+                                                });
+                                            }>{compose_icon("link")}</button>
+                                    })}
                                     <button class="pc-export" title=t(loc, "projects.export")
                                         aria-label=t(loc, "projects.export")
                                         on:click=move |e| {
