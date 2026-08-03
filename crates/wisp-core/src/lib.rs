@@ -205,7 +205,12 @@ impl Agent {
             .join(".wisp")
             .join("history")
             .join(format!("session-{}.json", chrono::Utc::now().timestamp()));
-        let (before, after) = self.ctx.compact(self.provider.as_ref(), &archive).await?;
+        let schemas = self.tools.schemas();
+        let fixed_tokens = ContextManager::estimated_tool_tokens(&schemas);
+        let (before, after) = self
+            .ctx
+            .compact_with_reserve(self.provider.as_ref(), &archive, fixed_tokens)
+            .await?;
         Ok((before, after, archive))
     }
 

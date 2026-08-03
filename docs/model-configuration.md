@@ -88,14 +88,21 @@ turns while preserving an archive of the full history.
 **Settings → General → Automatically compact long conversations** is enabled by
 default. Following mangopi-cli's model-boundary approach, Wisp checks the
 estimated context before every native-agent model call, including later calls
-after large tool results. At 80% it archives the complete pre-compact history,
-folds older turns while protecting recent turns, and uses an LLM summary only
-if the deterministic folds are still too large. Each automatic or manual
-rewrite leaves a persistent **Context automatically compacted** / **Context
-compacted** flag in the conversation with the before and after token estimates.
-Turning the setting off keeps the warning, manual `/compact`, and overflow
-recovery dialog available. ACP agents are not modified because their remote
-transcripts are owned by the ACP process.
+after large tool results and ephemeral host/reviewer injections. At 80% it
+archives the complete pre-compact history and targets 60%, leaving headroom so
+the next ordinary result does not immediately trigger another rewrite. Older
+turns are folded first; oversized recent tool payloads become bounded excerpts
+that point to the archive; an LLM summary is the last resort. The internal
+summary instruction is never added to the conversation, and a failed
+compaction stops before Wisp can send the known-oversized main request. Tool
+results are also capped to a 16 KiB head/tail excerpt when they enter model
+context (the full result is still shown in the tool event), preventing one
+read, grep, browser, or MCP response from consuming the whole window. Each
+automatic or manual rewrite leaves a persistent **Context automatically
+compacted** / **Context compacted** flag in the conversation with the before
+and after request-token estimates. Turning the setting off keeps the warning,
+manual `/compact`, and overflow recovery dialog available. ACP agents are not
+modified because their remote transcripts are owned by the ACP process.
 
 When the provider explicitly rejects a built-in Wisp-agent request for
 exceeding its context window, the conversation opens a recovery dialog instead
