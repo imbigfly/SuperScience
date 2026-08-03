@@ -271,6 +271,9 @@ mod tests {
             assert!(!blob.to_ascii_lowercase().contains("guotosky"));
             assert!(!blob.contains("10.10.10."));
             assert!(!blob.contains(":7897"));
+            assert!(!blob.to_ascii_lowercase().contains("proxy configured"));
+            assert!(!blob.to_ascii_lowercase().contains("proxy settings"));
+            assert!(!blob.to_ascii_lowercase().contains("bashrc"));
             assert!(!blob.contains("{{artifact:"));
         }
 
