@@ -2,6 +2,7 @@
 //! or calls `attempt_completion`. Ported from mangopi-cli's `agent_loop`,
 //! retuned for streaming + the shared `Output` sink.
 
+use crate::archive::{prune_dir, ArchiveRetention};
 use crate::context::{image_content, ContextManager};
 use crate::output::{StreamSinkAdapter, ToolEnvAdapter};
 use crate::provenance;
@@ -46,28 +47,51 @@ fn auto_compact_archive_path(root: &Path) -> PathBuf {
     ))
 }
 
-/// Head/tail-truncate a tool's text result to the ingestion budget,
-/// with a marker telling the model what was elided and how to get it back.
-fn budget_tool_result(tool_name: &str, content: Content) -> Content {
+/// Head/tail-truncate a tool's text result to the ingestion budget. The full
+/// text is written under `.wisp/tool-output/` so the model can read/grep it back.
+fn budget_tool_result(root: &Path, tool_name: &str, content: Content) -> Content {
     let budget = std::env::var("WISP_TOOL_RESULT_BUDGET")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(DEFAULT_STREAM_RESULT_BUDGET);
-    budget_tool_result_with_limit(tool_name, content, budget)
+    budget_tool_result_with_limit(root, tool_name, content, budget)
 }
 
-fn budget_tool_result_with_limit(tool_name: &str, content: Content, budget: usize) -> Content {
+fn budget_tool_result_with_limit(
+    root: &Path,
+    tool_name: &str,
+    content: Content,
+    budget: usize,
+) -> Content {
     let Content::Text(text) = &content else {
         return content;
     };
     if budget == 0 || text.len() <= budget {
         return content;
     }
+    let spill_dir = root.join(".wisp").join("tool-output");
+    let safe_name = tool_name.replace(['/', '\\'], "_");
+    let spill_path = spill_dir.join(format!(
+        "{safe_name}-{}.txt",
+        chrono::Utc::now().timestamp_millis()
+    ));
+    if std::fs::create_dir_all(&spill_dir).is_ok() {
+        let _ = std::fs::write(&spill_path, text.as_bytes());
+        prune_dir(&spill_dir, ArchiveRetention::default());
+    }
     let half = budget / 2;
-    let marker = format!(
-        "[... ~{} bytes omitted from {tool_name} to fit the model-context budget; the full output was shown to the user. Re-run with narrower ranges or filters for omitted details. ...]",
-        text.len() - budget
-    );
+    let marker = if spill_path.is_file() {
+        format!(
+            "[... ~{} bytes omitted from {tool_name}; full output at {} — read/grep narrow ranges; do not load the whole file ...]",
+            text.len().saturating_sub(budget),
+            spill_path.display()
+        )
+    } else {
+        format!(
+            "[... ~{} bytes omitted from {tool_name} to fit the model-context budget; the full output was shown to the user. Re-run with narrower ranges or filters for omitted details. ...]",
+            text.len().saturating_sub(budget)
+        )
+    };
     Content::text(ContextManager::truncate_middle(text, half, half, &marker))
 }
 
@@ -270,23 +294,41 @@ async fn agent_loop_inner(
                         archive = %archive.display(),
                         "automatic context compaction failed: {error}"
                     );
-                    anyhow::bail!(
-                        "automatic context compaction failed before the model call: {error}"
-                    );
                 }
             }
         }
-        let messages = ctx.prepare_for_api_with_reserve(output, fixed_request_tokens);
         let mut sink = match cancel {
             Some(c) => StreamSinkAdapter::with_cancel(output, c),
             None => StreamSinkAdapter::new(output),
         };
-        let comp = match stream_with_retry(provider, &messages, &schemas, &mut sink, cancel).await {
-            // ponytail: no auto-retry after a cut — re-streaming would duplicate the
-            // already-emitted deltas in the UI; add a sink reset event if this recurs.
-            Err(LlmError::Incomplete) => anyhow::bail!(STREAM_CUT_MESSAGE),
-            r => r?,
+        let mut overflow_recovery_used = false;
+        let comp = loop {
+            let messages = ctx.prepare_for_api_with_reserve(output, fixed_request_tokens);
+            match stream_with_retry(provider, &messages, &schemas, &mut sink, cancel).await {
+                Ok(comp) => break comp,
+                Err(LlmError::Incomplete) => anyhow::bail!(STREAM_CUT_MESSAGE),
+                Err(error) if error.is_context_overflow() && !overflow_recovery_used => {
+                    overflow_recovery_used = true;
+                    let archive = auto_compact_archive_path(root);
+                    match ctx
+                        .compact_with_reserve(provider, &archive, fixed_request_tokens)
+                        .await
+                    {
+                        Ok((before, after)) => output.compaction(before, after, "overflow"),
+                        Err(compact_error) => {
+                            anyhow::bail!(
+                                "context overflow recovery failed: {compact_error} (original: {error})"
+                            );
+                        }
+                    }
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            }
         };
+        if comp.usage.input_tokens > 0 {
+            ctx.calibrate(comp.usage.input_tokens, ctx.last_request_estimated_tokens());
+        }
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
             anyhow::bail!("stopped by user");
         }
@@ -431,7 +473,11 @@ async fn agent_loop_inner(
                 )
             };
             output.tool_result(&tools.event_name(&name, &args), ok, &tool_text, duration_ms);
-            ctx.append_tool(&tc.id, &name, budget_tool_result(&name, content));
+            ctx.append_tool(
+                &tc.id,
+                &name,
+                budget_tool_result(env.project_root(), &name, content),
+            );
             if let Some(m) = ctx.messages.last() {
                 output.on_message(m);
             }
@@ -624,19 +670,29 @@ mod tests {
 
     #[test]
     fn every_text_tool_result_is_bounded_before_it_enters_model_context() {
+        let root = std::env::temp_dir().join(format!("wisp-budget-tool-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
         let raw = format!("BEGIN\n{}\nEND", "界".repeat(20_000));
         let original_len = raw.len();
 
-        let bounded = budget_tool_result_with_limit("read", Content::text(raw), 16 * 1024);
+        let bounded =
+            budget_tool_result_with_limit(&root, "read", Content::text(raw.clone()), 16 * 1024);
         let text = bounded.as_text();
 
         assert!(text.len() < original_len);
-        assert!(text.contains("bytes omitted from read"));
+        assert!(text.contains("full output at"));
         assert!(text.starts_with("BEGIN"));
         assert!(text.ends_with("END"));
         assert!(
             ContextManager::estimated_tokens(&Message::tool("call-read", "read", text)) < 5_000
         );
+        let spill = std::fs::read_dir(root.join(".wisp/tool-output"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(spill.path()).unwrap(), raw);
+        std::fs::remove_dir_all(&root).ok();
     }
 
     struct FixedProvider {
@@ -683,6 +739,59 @@ mod tests {
 
     struct AutoCompactProvider {
         stream_calls: AtomicUsize,
+    }
+
+    struct OverflowRecoverProvider {
+        stream_calls: AtomicUsize,
+        complete_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for OverflowRecoverProvider {
+        fn name(&self) -> &str {
+            "overflow-recover"
+        }
+
+        fn model(&self) -> &str {
+            "overflow-recover"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            self.complete_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Completion {
+                content: "Objective\nRecovered after overflow.".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            })
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            let call = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                return Err(LlmError::Api {
+                    status: 400,
+                    body: "maximum context length exceeded".into(),
+                });
+            }
+            Ok(Completion {
+                content: "continued after overflow recovery".into(),
+                finish_reason: Some("stop".into()),
+                usage: wisp_llm::Usage {
+                    input_tokens: 1_000,
+                    ..Default::default()
+                },
+                ..Completion::default()
+            })
+        }
     }
 
     #[async_trait]
@@ -751,7 +860,9 @@ mod tests {
             _sink: &mut dyn wisp_llm::StreamSink,
         ) -> wisp_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
-            Err(LlmError::Config("main stream must not run".into()))
+            Err(LlmError::Config(
+                "main stream failed after degraded compaction".into(),
+            ))
         }
     }
 
@@ -892,7 +1003,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_auto_compaction_never_sends_the_oversized_main_request() {
+    async fn failed_auto_compaction_still_attempts_the_main_request() {
         let root = std::env::temp_dir().join(format!(
             "wisp_auto_compact_failure_{}",
             uuid::Uuid::new_v4().simple()
@@ -923,14 +1034,60 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("automatic context compaction failed before the model call"));
-        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 0);
+            .contains("main stream failed after degraded compaction"));
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
         assert_eq!(serde_json::to_string(&ctx.messages).unwrap(), original);
         assert!(!ctx.messages.iter().any(|message| message
             .content
             .as_text()
             .contains("Return only the updated checkpoint")));
         assert_eq!(provider.complete_requests.lock().unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn context_overflow_triggers_one_forced_compaction_and_retries() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp_overflow_recover_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = OverflowRecoverProvider {
+            stream_calls: AtomicUsize::new(0),
+            complete_calls: AtomicUsize::new(0),
+        };
+        let mut ctx = ContextManager::new(10_000);
+        ctx.set_auto_compact(false);
+        for turn in 0..12 {
+            ctx.append_user(format!("question {turn} {}", "u".repeat(1_500)));
+            ctx.append_assistant(format!("answer {turn} {}", "a".repeat(1_500)), vec![], None);
+        }
+        let tools = Registry::builtins().filtered(&[]);
+
+        agent_loop_continue(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            0,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 2);
+        assert!(provider.complete_calls.load(Ordering::SeqCst) >= 1);
+        assert!(ctx.messages.iter().any(|message| {
+            message
+                .content
+                .as_text()
+                .contains("continued after overflow recovery")
+        }));
+        assert!(ctx.compaction_revision() >= 1);
 
         let _ = std::fs::remove_dir_all(root);
     }

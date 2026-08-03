@@ -40,6 +40,11 @@ const SUMMARY_INPUT_PERCENT: usize = 70;
 const SUMMARY_OUTPUT_MAX_TOKENS: usize = 4_096;
 const SUMMARY_TRANSCRIPT_TEXT_MAX_BYTES: usize = 32 * 1024;
 const SUMMARY_TRANSCRIPT_TOOL_MAX_BYTES: usize = 2_000;
+/// Each folded user message kept verbatim inside a summary checkpoint.
+const CHECKPOINT_USER_EXCERPT_BYTES: usize = 500;
+/// Total byte cap for all user intent excerpts inside one checkpoint, so many
+/// folded turns cannot crowd out the semantic summary.
+const CHECKPOINT_USER_EXCERPTS_TOTAL_BYTES: usize = 2_000;
 /// Prefix of every tombstone `/compact` writes. Also the "already compacted"
 /// marker: a later `/compact` must not overwrite an old tombstone, or it would
 /// repoint at a newer archive that itself only contains tombstones.
@@ -101,6 +106,10 @@ pub struct ContextManager {
     /// every agent-loop iteration.
     last_request_message_count: Option<usize>,
     last_request_runtime_injections: Vec<Message>,
+    /// Session-level multiplier applied to heuristic token estimates after
+    /// comparing them to provider-reported input usage.
+    token_estimate_factor: f64,
+    last_request_estimated_tokens: usize,
 }
 
 impl ContextManager {
@@ -116,6 +125,8 @@ impl ContextManager {
             supports_vision: true,
             last_request_message_count: None,
             last_request_runtime_injections: vec![],
+            token_estimate_factor: 1.0,
+            last_request_estimated_tokens: 0,
         }
     }
 
@@ -153,6 +164,35 @@ impl ContextManager {
 
     pub fn compaction_revision(&self) -> u64 {
         self.compaction_revision
+    }
+
+    pub fn token_estimate_factor(&self) -> f64 {
+        self.token_estimate_factor
+    }
+
+    pub fn last_request_estimated_tokens(&self) -> usize {
+        self.last_request_estimated_tokens
+    }
+
+    /// Blend provider-reported input usage into the session token estimator.
+    /// `estimated_input_tokens` is the (already scaled) estimate captured when
+    /// the request was prepared; the raw estimate is recovered through the
+    /// current factor so the blend converges to actual/raw, not its square root.
+    pub fn calibrate(&mut self, actual_input_tokens: u64, estimated_input_tokens: usize) {
+        if actual_input_tokens == 0 || estimated_input_tokens == 0 {
+            return;
+        }
+        let raw = estimated_input_tokens as f64 / self.token_estimate_factor;
+        if raw <= 0.0 {
+            return;
+        }
+        let target = actual_input_tokens as f64 / raw;
+        self.token_estimate_factor =
+            (self.token_estimate_factor * 0.7 + target * 0.3).clamp(0.5, 3.0);
+    }
+
+    fn scaled_tokens(raw: usize, factor: f64) -> usize {
+        ((raw as f64) * factor).ceil() as usize
     }
 
     pub fn append_system(&mut self, content: impl Into<String>) {
@@ -239,6 +279,60 @@ impl ContextManager {
         let _ = std::fs::write(path, s);
     }
 
+    /// Plain-text transcript for read/grep retrieval. Images become labels only.
+    pub fn save_transcript(&self, path: &Path) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut out = String::new();
+        for (index, message) in self.messages.iter().enumerate() {
+            let role = match message.role {
+                Role::System => "SYSTEM",
+                Role::User => "USER",
+                Role::Assistant => "ASSISTANT",
+                Role::Tool => "TOOL",
+            };
+            out.push_str(&format!("=== [{index}] {role}"));
+            if let Some(name) = &message.tool_name {
+                out.push_str(" (");
+                out.push_str(name);
+                out.push(')');
+            }
+            out.push_str(" ===\n");
+            out.push_str(&Self::transcript_body(message));
+            if let Some(reasoning) = &message.reasoning {
+                if !reasoning.trim().is_empty() {
+                    out.push_str("\n[reasoning]\n");
+                    out.push_str(reasoning);
+                }
+            }
+            for call in &message.tool_calls {
+                out.push_str("\n[tool_call ");
+                out.push_str(&call.function.name);
+                out.push_str("]\n");
+                out.push_str(&call.function.arguments);
+            }
+            out.push_str("\n\n");
+        }
+        let _ = std::fs::write(path, out);
+    }
+
+    fn transcript_body(message: &Message) -> String {
+        match &message.content {
+            Content::Text(text) => text.clone(),
+            Content::Parts(parts) => parts
+                .iter()
+                .map(|part| match part {
+                    Part::Text { text, .. } => text.clone(),
+                    Part::Image { .. } => {
+                        "[image omitted from transcript; see JSON archive if present]".into()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+
     pub fn backup(&self, path: &Path) {
         if !path.exists() {
             return;
@@ -300,12 +394,15 @@ impl ContextManager {
     /// Estimated tokens in the actual next provider request: durable history
     /// plus ephemeral host/reviewer/attachment injections.
     pub fn request_tokens(&self) -> usize {
-        self.total_tokens()
-            + self
-                .runtime_injections
-                .iter()
-                .map(Self::estimated_tokens)
-                .sum::<usize>()
+        Self::scaled_tokens(
+            self.total_tokens()
+                + self
+                    .runtime_injections
+                    .iter()
+                    .map(Self::estimated_tokens)
+                    .sum::<usize>(),
+            self.token_estimate_factor,
+        )
     }
 
     pub fn request_tokens_with_reserve(&self, fixed_tokens: usize) -> usize {
@@ -829,6 +926,62 @@ impl ContextManager {
         selected.into_iter().flatten().collect()
     }
 
+    fn folded_user_intent_excerpts(
+        original_messages: &[Message],
+        tail: &[Message],
+        max_bytes_per: usize,
+        max_total_bytes: usize,
+    ) -> String {
+        let all_turns: Vec<_> = Self::split_turns_from(original_messages)
+            .into_iter()
+            .filter(|turn| !turn.iter().any(Self::is_summary_checkpoint))
+            .collect();
+        let tail_turns = Self::split_turns_from(tail).len();
+        let fold_count = all_turns.len().saturating_sub(tail_turns);
+        let mut excerpts = Vec::new();
+        let mut used = 0usize;
+        let mut omitted = 0usize;
+        for turn in all_turns.into_iter().take(fold_count) {
+            for message in turn {
+                if message.role != Role::User {
+                    continue;
+                }
+                let text = message.content.as_text();
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let excerpt = Self::bound_text_to_bytes(
+                    &text,
+                    max_bytes_per,
+                    "[... user message truncated; see archive ...]",
+                );
+                if used.saturating_add(excerpt.len()) > max_total_bytes {
+                    omitted += 1;
+                    continue;
+                }
+                used += excerpt.len();
+                excerpts.push(excerpt);
+            }
+        }
+        if excerpts.is_empty() {
+            return String::new();
+        }
+        let omitted_note = if omitted > 0 {
+            format!("\n- [... {omitted} more user message(s) omitted; see archive ...]")
+        } else {
+            String::new()
+        };
+        format!(
+            "\n\nUser intent excerpts:\n{}{omitted_note}",
+            excerpts
+                .into_iter()
+                .enumerate()
+                .map(|(index, excerpt)| format!("- {index}: {excerpt}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    }
+
     fn install_summary_checkpoint(
         &mut self,
         original_messages: &[Message],
@@ -872,18 +1025,61 @@ impl ContextManager {
         if summary_bytes < 128 {
             return Err("durable compaction target leaves no room for a semantic summary".into());
         }
+        // Excerpts are strictly subordinate to the semantic summary: capped at
+        // a fixed total and at a quarter of the summary budget, whichever is
+        // smaller, and dropped entirely if the candidate still exceeds target.
+        let excerpt_cap = CHECKPOINT_USER_EXCERPTS_TOTAL_BYTES.min(summary_bytes / 4);
+        let user_excerpts = Self::folded_user_intent_excerpts(
+            original_messages,
+            &tail,
+            CHECKPOINT_USER_EXCERPT_BYTES,
+            excerpt_cap,
+        );
+        let excerpt_tokens = if user_excerpts.is_empty() {
+            0
+        } else {
+            Self::estimated_tokens(&Message::user(&user_excerpts))
+        };
+        // Drop excerpts outright when their envelope would squeeze the summary
+        // below a useful minimum.
+        let remaining_summary_bytes =
+            summary_bytes.saturating_sub(excerpt_tokens.saturating_mul(4));
+        let user_excerpts = if remaining_summary_bytes < 128 {
+            String::new()
+        } else {
+            user_excerpts
+        };
         let bounded_summary = Self::bound_text_to_bytes(
             summary.trim(),
-            summary_bytes,
+            if user_excerpts.is_empty() {
+                summary_bytes
+            } else {
+                remaining_summary_bytes
+            },
             "[... summary checkpoint truncated; see archive ...]",
         );
         let checkpoint = Message::user(format!(
-            "{COMPACTION_SUMMARY_PREFIX}\n\n{bounded_summary}\n\n{archive_note}"
+            "{COMPACTION_SUMMARY_PREFIX}\n\n{bounded_summary}{user_excerpts}\n\n{archive_note}"
         ));
-        let mut candidate = systems;
+        let mut candidate = systems.clone();
         candidate.push(checkpoint);
-        candidate.extend(tail);
-        let candidate_tokens = candidate.iter().map(Self::estimated_tokens).sum::<usize>();
+        candidate.extend(tail.clone());
+        let mut candidate_tokens = candidate.iter().map(Self::estimated_tokens).sum::<usize>();
+        if candidate_tokens > durable_target && !user_excerpts.is_empty() {
+            // Rebuild without excerpts, restoring the summary's full budget.
+            let full_summary = Self::bound_text_to_bytes(
+                summary.trim(),
+                summary_bytes,
+                "[... summary checkpoint truncated; see archive ...]",
+            );
+            let checkpoint = Message::user(format!(
+                "{COMPACTION_SUMMARY_PREFIX}\n\n{full_summary}\n\n{archive_note}"
+            ));
+            candidate = systems;
+            candidate.push(checkpoint);
+            candidate.extend(tail);
+            candidate_tokens = candidate.iter().map(Self::estimated_tokens).sum();
+        }
         if candidate_tokens > durable_target {
             return Err(format!(
                 "summary checkpoint exceeded the durable compaction target ({candidate_tokens} > {durable_target})"
@@ -941,7 +1137,13 @@ impl ContextManager {
             .iter()
             .map(Self::estimated_tokens)
             .sum::<usize>();
-        let durable_target = target.saturating_sub(injection_tokens.saturating_add(fixed_tokens));
+        // `install_summary_checkpoint` budgets with raw (unscaled) estimates;
+        // convert the real-token target into that space so a calibrated factor
+        // above 1.0 cannot let the checkpoint overshoot and trip the final
+        // warn-threshold rollback.
+        let raw_target = ((target as f64) / self.token_estimate_factor).floor() as usize;
+        let durable_target =
+            raw_target.saturating_sub(injection_tokens.saturating_add(fixed_tokens));
         self.prune_old_noise(PRUNE_PROTECT_TURNS, &tombstone);
         if self.request_tokens_with_reserve(fixed_tokens) > target {
             self.fold_oversized_tool_results(target, fixed_tokens, &tombstone);
@@ -1009,6 +1211,7 @@ impl ContextManager {
             self.warned = true;
             output.context_warning(total, self.max_context);
         }
+        self.last_request_estimated_tokens = total;
         self.last_request_message_count = Some(self.messages.len());
         self.last_request_runtime_injections
             .clone_from(&self.runtime_injections);
@@ -1734,5 +1937,111 @@ mod tests {
         };
 
         assert!(ContextManager::estimated_tokens(&message) < 3_000);
+    }
+
+    #[test]
+    fn calibrate_scales_future_request_estimates() {
+        let mut ctx = ContextManager::new(10_000);
+        ctx.append_user("x".repeat(4_000));
+        let estimated = ctx.request_tokens();
+        ctx.calibrate((estimated as u64).saturating_mul(2), estimated);
+        assert!(ctx.request_tokens() > estimated);
+        assert!(ctx.token_estimate_factor() > 1.0);
+    }
+
+    // The blend must converge to actual/raw. A naive blend against the
+    // residual ratio (actual / scaled-estimate) converges to sqrt(actual/raw)
+    // instead — with a 2x underestimate the factor would stall near 1.41.
+    #[test]
+    fn calibrate_converges_to_the_actual_ratio() {
+        let mut ctx = ContextManager::new(100_000);
+        ctx.append_user("x".repeat(8_000));
+        let raw = ctx.request_tokens();
+        for _ in 0..20 {
+            let estimated = ctx.request_tokens();
+            ctx.calibrate((raw as u64).saturating_mul(2), estimated);
+        }
+        let factor = ctx.token_estimate_factor();
+        assert!(
+            (1.9..=2.1).contains(&factor),
+            "factor {factor} should approach 2.0, not sqrt(2)"
+        );
+    }
+
+    #[test]
+    fn save_transcript_is_plain_text_and_grep_friendly() {
+        let mut ctx = ContextManager::new(10_000);
+        ctx.append_user("USER_FACT=alpha");
+        ctx.append_tool("call-1", "read", Content::text("TOOL_BODY=beta"));
+        let path = std::env::temp_dir().join(format!("wisp-transcript-{}", std::process::id()));
+        ctx.save_transcript(&path);
+        let transcript = std::fs::read_to_string(&path).unwrap();
+        assert!(transcript.contains("=== [0] USER ==="));
+        assert!(transcript.contains("USER_FACT=alpha"));
+        assert!(transcript.contains("TOOL (read)"));
+        assert!(transcript.contains("TOOL_BODY=beta"));
+        assert!(!transcript.contains("\\n"));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[tokio::test]
+    async fn semantic_checkpoint_keeps_folded_user_intent_excerpts() {
+        let mut ctx = ContextManager::new(10_000);
+        for turn in 0..12 {
+            let fact = if turn == 0 {
+                "USER_INTENT=keep-me"
+            } else {
+                "ordinary question"
+            };
+            ctx.append_user(format!("{fact} {turn} {}", "u".repeat(1_400)));
+            ctx.append_assistant(format!("answer {turn} {}", "a".repeat(1_400)), vec![], None);
+        }
+        let provider = RecordingSummaryProvider::new("Objective\nContinue.");
+        ctx.compact(&provider, &archive_path("user-intent-excerpts.json"))
+            .await
+            .unwrap();
+        let checkpoint = ctx
+            .messages
+            .iter()
+            .find(|message| ContextManager::is_summary_checkpoint(message))
+            .expect("summary checkpoint");
+        assert!(checkpoint
+            .content
+            .as_text()
+            .contains("User intent excerpts"));
+        assert!(checkpoint.content.as_text().contains("USER_INTENT=keep-me"));
+    }
+
+    // Excerpts are strictly subordinate: a fixed total cap keeps a long
+    // history of large user messages from crowding out the semantic summary.
+    #[tokio::test]
+    async fn user_intent_excerpts_are_capped_and_keep_the_summary() {
+        let mut ctx = ContextManager::new(10_000);
+        for turn in 0..30 {
+            ctx.append_user(format!("q {turn} {}", "u".repeat(1_400)));
+            ctx.append_assistant(format!("a {turn} {}", "a".repeat(1_400)), vec![], None);
+        }
+        let provider =
+            RecordingSummaryProvider::new("Objective\nSEMANTIC_SUMMARY_MARKER survives.");
+        ctx.compact(&provider, &archive_path("excerpt-cap.json"))
+            .await
+            .unwrap();
+        let checkpoint = ctx
+            .messages
+            .iter()
+            .find(|message| ContextManager::is_summary_checkpoint(message))
+            .expect("summary checkpoint");
+        let text = checkpoint.content.as_text();
+        assert!(text.contains("SEMANTIC_SUMMARY_MARKER"));
+        assert!(text.contains("more user message(s) omitted"));
+        let excerpt_section = text
+            .split("User intent excerpts:")
+            .nth(1)
+            .expect("excerpt section");
+        assert!(
+            excerpt_section.len() < 4_000,
+            "excerpts must stay bounded, got {} bytes",
+            excerpt_section.len()
+        );
     }
 }
