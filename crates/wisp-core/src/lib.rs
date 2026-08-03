@@ -197,7 +197,8 @@ impl Agent {
     }
 
     /// User-triggered `/compact`: archive the full history under
-    /// `.wisp/history/`, then fold old turns (see `ContextManager::compact`).
+    /// `.wisp/history/`, then safely prune noise or install a semantic summary
+    /// checkpoint plus a bounded recent tail (see `ContextManager::compact`).
     /// Returns (before, after) estimated tokens and the archive path.
     pub async fn compact(&mut self) -> Result<(usize, usize, PathBuf), String> {
         let archive = self
