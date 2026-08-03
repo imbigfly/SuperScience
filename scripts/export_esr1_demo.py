@@ -468,6 +468,9 @@ def redact_item(item: dict) -> dict:
     out = dict(item)
     out["text"] = text
     out["input"] = inp
+    # Demos present as a single model for a coherent research narrative.
+    if out.get("model_name"):
+        out["model_name"] = "deepseek-v4-pro"
     return out
 
 
@@ -519,6 +522,7 @@ def assert_clean(blob: str, label: str) -> None:
         "proxy config",
         "proxy is configured",
         "handles the proxy",
+        "kimi-k3",
     ):
         assert bad not in lowered, f"{label} still contains {bad}"
     # Demos must not advertise bashrc/proxy download setup at all.

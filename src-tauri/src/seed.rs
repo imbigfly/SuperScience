@@ -274,7 +274,17 @@ mod tests {
             assert!(!blob.to_ascii_lowercase().contains("proxy configured"));
             assert!(!blob.to_ascii_lowercase().contains("proxy settings"));
             assert!(!blob.to_ascii_lowercase().contains("bashrc"));
+            assert!(!blob.contains("kimi-k3"));
             assert!(!blob.contains("{{artifact:"));
+            assert!(
+                demo
+                    .items
+                    .iter()
+                    .filter_map(|i| i.model_name.as_deref())
+                    .all(|m| m == "deepseek-v4-pro"),
+                "{} should use deepseek-v4-pro for all model labels",
+                info.id
+            );
         }
 
         let datasets = load_demo("manifest_esr1_01_datasets").expect("datasets demo");
