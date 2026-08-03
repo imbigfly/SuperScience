@@ -277,8 +277,7 @@ mod tests {
             assert!(!blob.contains("kimi-k3"));
             assert!(!blob.contains("{{artifact:"));
             assert!(
-                demo
-                    .items
+                demo.items
                     .iter()
                     .filter_map(|i| i.model_name.as_deref())
                     .all(|m| m == "deepseek-v4-pro"),

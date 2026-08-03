@@ -1916,7 +1916,7 @@ fn windows_control_payloads_contain_process_identity_and_timeout() {
             token: "test-token".into(),
             inputs_staged: true,
             pgid: Some(4242),
-            start_identity: Some("20260803105500.000000-000".into()),
+            start_identity: Some("639000105000000000".into()),
             command_cwd: Some(r"C:\project".into()),
         },
     };
@@ -1937,26 +1937,30 @@ fn windows_control_payloads_contain_process_identity_and_timeout() {
             .expect("valid supervisor base64"),
     )
     .expect("utf8 supervisor script");
-    // The supervisor must be idempotent and use a culture-stable identity.
+    // The supervisor must be idempotent and use a culture-stable identity
+    // directly from Start-Process; CIM can be unavailable or miss fast exits.
     assert!(supervisor.contains("if (Test-Path -LiteralPath (Join-Path $workdir '_submitted'))"));
-    assert!(supervisor.contains(".ToString('o')"));
+    assert!(supervisor.contains("$proc.StartTime.ToUniversalTime().Ticks"));
+    assert!(!supervisor.contains("Get-CimInstance"));
     let launch = launch_payload(&remote.handle);
     assert!(launch.contains("Start-Process"));
     // Only the launcher that created the lock may start the supervisor, and a
     // live lock owner must not be raced.
     assert!(launch.contains("if ($acquired)"));
     assert!(launch.contains("Get-Process -Id $ownerId"));
+    assert!(launch.contains("supervisor.stderr.log"));
+    assert!(launch.contains("local supervisor did not acknowledge launch: "));
     let poll = poll_payload(&remote.handle).unwrap();
-    assert!(poll.contains("Win32_Process"));
+    assert!(poll.contains("Get-Process -Id 4242"));
     assert!(poll.contains("__WISP_RUN_STATUS__"));
-    assert!(poll.contains(".ToString('o')"));
+    assert!(poll.contains("StartTime.ToUniversalTime().Ticks"));
     // Log tails must share the writer's handle and stay bounded.
     assert!(poll.contains("[System.IO.FileShare]::ReadWrite"));
     assert!(!poll.contains("ReadAllBytes"));
     let cancel = cancel_payload(&remote.handle).unwrap();
     assert!(cancel.contains("taskkill.exe"));
     assert!(cancel.contains("__WISP_CANCEL__"));
-    assert!(cancel.contains(".ToString('o')"));
+    assert!(cancel.contains("StartTime.ToUniversalTime().Ticks"));
 }
 
 #[test]

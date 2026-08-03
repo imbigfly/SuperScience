@@ -439,6 +439,49 @@ fn persisted_ui_events_keep_live_step_order_and_boundaries() {
 }
 
 #[test]
+fn persisted_ui_events_restore_native_plan_and_question_cards() {
+    let frame_id = "f".to_string();
+    let events = vec![
+        AgentEvent::ToolCall {
+            frame_id: frame_id.clone(),
+            name: wisp_tools::plan::PROPOSE_PLAN.into(),
+            preview: "1 steps".into(),
+        },
+        AgentEvent::ToolResult {
+            frame_id: frame_id.clone(),
+            name: wisp_tools::plan::PROPOSE_PLAN.into(),
+            ok: true,
+            content: r#"{"v":1,"source":"native","entries":[{"content":"Fix replay","status":"pending","priority":"high"}]}"#.into(),
+            duration_ms: 1,
+        },
+        AgentEvent::ToolCall {
+            frame_id: frame_id.clone(),
+            name: wisp_tools::ask_user::ASK_USER.into(),
+            preview: "Which option?".into(),
+        },
+        AgentEvent::ToolResult {
+            frame_id,
+            name: wisp_tools::ask_user::ASK_USER.into(),
+            ok: true,
+            content: r#"{"v":1,"source":"native","question":"Which option?","options":[]}"#.into(),
+            duration_ms: 1,
+        },
+    ];
+
+    let (items, _) = events_to_items(&events);
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.role.as_str())
+            .collect::<Vec<_>>(),
+        vec!["plan", "question"]
+    );
+    assert!(items[0].text.contains("Fix replay"));
+    assert!(items[1].text.contains("Which option?"));
+    assert!(items.iter().all(|item| item.tool_name.is_none()));
+}
+
+#[test]
 fn persisted_usage_folds_per_turn_and_floats_to_tail() {
     let frame_id = "f".to_string();
     let usage = |round, input, output, cached| AgentEvent::Usage {
