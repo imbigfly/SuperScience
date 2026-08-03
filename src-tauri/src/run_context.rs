@@ -9,18 +9,20 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+mod local_detached;
 mod remote;
 mod tools;
 mod transfer;
 
 #[cfg(all(test, windows))]
 use remote::scp_local_path;
-#[cfg(all(test, unix))]
+#[cfg(test)]
 use remote::{cancel_payload, launch_payload, poll_payload, prepare_payload};
 use remote::{
     cancel_remote, checked_output, ensure_remote_started, permanent_remote_start_error,
-    poll_remote, prepare_remote, remote_poll_interval, remote_terminal_status, resolve_input_paths,
-    ssh_script_command, PrepareRemote, RemoteCancel, RemotePollState,
+    poll_remote, prepare_remote, remote_poll_interval, remote_poll_interval_for,
+    remote_terminal_status, resolve_input_paths, ssh_script_command, PrepareRemote, RemoteCancel,
+    RemotePollState,
 };
 #[cfg(test)]
 use remote::{parse_input_progress, remote_poll_delay_secs};
@@ -467,6 +469,21 @@ const REMOTE_RPC_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum LocalTransport {
+    Posix {
+        context_id: String,
+        program: String,
+        /// Full argv after `program`, including the shell entrypoint
+        /// (e.g. `["-s"]` locally or `["-d", "Ubuntu", "--", "sh", "-s"]` for WSL).
+        args: Vec<String>,
+    },
+    Windows {
+        context_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 enum RemoteRunHandle {
     SshDirect {
         connection: crate::ssh_hosts::SshConnection,
@@ -477,6 +494,18 @@ enum RemoteRunHandle {
         pgid: Option<i64>,
         start_time: Option<u64>,
     },
+    LocalDetached {
+        transport: LocalTransport,
+        workdir: String,
+        token: String,
+        #[serde(default)]
+        inputs_staged: bool,
+        pgid: Option<i64>,
+        /// Process start identity: /proc starttime, macOS lstart, or Windows CreationDate.
+        start_identity: Option<String>,
+        /// Absolute path for command cwd; None keeps the transport default.
+        command_cwd: Option<String>,
+    },
 }
 
 impl RemoteRunHandle {
@@ -485,25 +514,53 @@ impl RemoteRunHandle {
             Self::SshDirect {
                 pgid, start_time, ..
             } => pgid.is_some() && start_time.is_some(),
+            Self::LocalDetached {
+                pgid,
+                start_identity,
+                ..
+            } => {
+                pgid.is_some()
+                    && start_identity
+                        .as_ref()
+                        .is_some_and(|value| !value.is_empty())
+            }
         }
     }
 
     fn inputs_staged(&self) -> bool {
         match self {
-            Self::SshDirect { inputs_staged, .. } => *inputs_staged,
+            Self::SshDirect { inputs_staged, .. } | Self::LocalDetached { inputs_staged, .. } => {
+                *inputs_staged
+            }
         }
     }
 
     fn mark_inputs_staged(&mut self) {
         match self {
-            Self::SshDirect { inputs_staged, .. } => *inputs_staged = true,
+            Self::SshDirect { inputs_staged, .. } | Self::LocalDetached { inputs_staged, .. } => {
+                *inputs_staged = true
+            }
         }
     }
 
     fn display_workdir(&self) -> String {
         match self {
-            Self::SshDirect { workdir, .. } => format!("~/{workdir}"),
+            Self::SshDirect { workdir, .. }
+            | Self::LocalDetached {
+                transport: LocalTransport::Posix { .. },
+                workdir,
+                ..
+            } => format!("~/{workdir}"),
+            Self::LocalDetached {
+                transport: LocalTransport::Windows { .. },
+                workdir,
+                ..
+            } => format!("~\\{}", workdir.replace('/', "\\")),
         }
+    }
+
+    fn is_local_detached(&self) -> bool {
+        matches!(self, Self::LocalDetached { .. })
     }
 }
 
@@ -1921,14 +1978,17 @@ async fn create_run_record(
             ctx.kind == wisp_store::ExecutionContextKind::Ssh,
         )?
     };
-    let timeout = match ctx.kind {
-        wisp_store::ExecutionContextKind::Ssh => Duration::from_secs(
-            request
-                .timeout_secs
-                .unwrap_or(4 * 60 * 60)
-                .clamp(1, 7 * 24 * 60 * 60),
-        ),
-        _ => Duration::from_secs(request.timeout_secs.unwrap_or(60).clamp(1, 300)),
+    let timeout = Duration::from_secs(
+        request
+            .timeout_secs
+            .unwrap_or(4 * 60 * 60)
+            .clamp(1, 7 * 24 * 60 * 60),
+    );
+    let runner_kind = match ctx.kind {
+        wisp_store::ExecutionContextKind::Ssh => "ssh_direct",
+        wisp_store::ExecutionContextKind::Local | wisp_store::ExecutionContextKind::Wsl => {
+            "local_detached"
+        }
     };
     let mut run = wisp_store::RunRecord::new(
         &run_id,
@@ -1939,11 +1999,7 @@ async fn create_run_record(
             .as_deref()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(&command),
-        if ctx.kind == wisp_store::ExecutionContextKind::Ssh {
-            "ssh_direct"
-        } else {
-            "command"
-        },
+        runner_kind,
     );
     run.frame_id = frame_id.map(Into::into);
     run.command = Some(command.clone());
@@ -1955,40 +2011,43 @@ async fn create_run_record(
     persisted_environment["preflight"] = serde_json::to_value(preflight).unwrap_or_default();
     run.env_snapshot_json = wisp_store::canonical_json(&persisted_environment);
 
-    let remote = if ctx.kind == wisp_store::ExecutionContextKind::Ssh {
-        if output_specs
-            .iter()
-            .any(|spec| !spec.glob.starts_with("ssh://"))
-        {
-            return Err(
-                "SSH direct output_specs must be explicit ssh:// references; remote glob harvest is not available yet"
-                    .into(),
-            );
+    let handle = match ctx.kind {
+        wisp_store::ExecutionContextKind::Ssh => {
+            if output_specs
+                .iter()
+                .any(|spec| !spec.glob.starts_with("ssh://"))
+            {
+                return Err(
+                    "SSH direct output_specs must be explicit ssh:// references; remote glob harvest is not available yet"
+                        .into(),
+                );
+            }
+            RemoteRunHandle::SshDirect {
+                connection: crate::ssh_hosts::SshConnection::from_execution_context(&ctx)?,
+                workdir: format!(".wisp-science/runs/{run_id}"),
+                token: uuid::Uuid::new_v4().to_string(),
+                inputs_staged: false,
+                pgid: None,
+                start_time: None,
+            }
         }
-        let handle = RemoteRunHandle::SshDirect {
-            connection: crate::ssh_hosts::SshConnection::from_execution_context(&ctx)?,
-            workdir: format!(".wisp-science/runs/{run_id}"),
-            token: uuid::Uuid::new_v4().to_string(),
-            inputs_staged: false,
-            pgid: None,
-            start_time: None,
-        };
-        run.remote_workdir = Some(handle.display_workdir());
-        run.remote_handle_json = Some(serde_json::to_string(&handle).map_err(|e| e.to_string())?);
-        Some(RemoteRun {
-            run_id: run_id.clone(),
-            project_id: project_id.into(),
-            frame_id: frame_id.map(Into::into),
-            command: command.clone(),
-            timeout,
-            input_refs: input_refs.clone(),
-            output_specs: output_specs.clone(),
-            harvest_root: cwd.clone(),
-            handle,
-        })
-    } else {
-        None
+        wisp_store::ExecutionContextKind::Local | wisp_store::ExecutionContextKind::Wsl => {
+            local_detached_handle_for(&ctx, &run_id, cwd.as_deref())?
+        }
     };
+    run.remote_workdir = Some(handle.display_workdir());
+    run.remote_handle_json = Some(serde_json::to_string(&handle).map_err(|e| e.to_string())?);
+    let remote = Some(RemoteRun {
+        run_id: run_id.clone(),
+        project_id: project_id.into(),
+        frame_id: frame_id.map(Into::into),
+        command: command.clone(),
+        timeout,
+        input_refs: input_refs.clone(),
+        output_specs: output_specs.clone(),
+        harvest_root: cwd.clone(),
+        handle,
+    });
     store.create_run(&run).await.map_err(|e| e.to_string())?;
     record_created_run_lineage(
         store,
@@ -2019,6 +2078,67 @@ async fn create_run_record(
     })
 }
 
+fn local_detached_handle_for(
+    ctx: &wisp_store::ExecutionContext,
+    run_id: &str,
+    cwd: Option<&Path>,
+) -> Result<RemoteRunHandle, String> {
+    let transport = match ctx.kind {
+        wisp_store::ExecutionContextKind::Wsl => {
+            let cfg: serde_json::Value = serde_json::from_str(&ctx.config_json).unwrap_or_default();
+            let distro = cfg
+                .get("distro")
+                .and_then(|value| value.as_str())
+                .unwrap_or_else(|| ctx.id.strip_prefix("wsl:").unwrap_or(&ctx.id));
+            LocalTransport::Posix {
+                context_id: ctx.id.clone(),
+                program: "wsl.exe".into(),
+                args: vec![
+                    "-d".into(),
+                    distro.into(),
+                    "--".into(),
+                    "sh".into(),
+                    "-s".into(),
+                ],
+            }
+        }
+        wisp_store::ExecutionContextKind::Local => {
+            #[cfg(windows)]
+            {
+                LocalTransport::Windows {
+                    context_id: ctx.id.clone(),
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                LocalTransport::Posix {
+                    context_id: ctx.id.clone(),
+                    program: "sh".into(),
+                    args: vec!["-s".into()],
+                }
+            }
+        }
+        wisp_store::ExecutionContextKind::Ssh => {
+            return Err("local detached handle requires a local or WSL context".into());
+        }
+    };
+    let command_cwd = match ctx.kind {
+        wisp_store::ExecutionContextKind::Local => cwd
+            .map(|path| path.to_string_lossy().into_owned())
+            .filter(|path| !path.is_empty()),
+        _ => None,
+    };
+    Ok(RemoteRunHandle::LocalDetached {
+        transport,
+        workdir: format!(".wisp-science/runs/{run_id}"),
+        token: uuid::Uuid::new_v4().to_string(),
+        inputs_staged: true,
+        pgid: None,
+        start_identity: None,
+        command_cwd,
+    })
+}
+
 async fn finish_remote_run(
     store: &wisp_store::Store,
     owner_id: &str,
@@ -2028,12 +2148,21 @@ async fn finish_remote_run(
 ) -> Result<(), String> {
     if status == wisp_store::RunStatus::Succeeded {
         if let Some(frame_id) = remote.frame_id.as_deref() {
-            let references: Vec<_> = remote
-                .output_specs
-                .iter()
-                .filter(|spec| spec.glob.starts_with("ssh://"))
-                .cloned()
-                .collect();
+            let references: Vec<_> = if remote.handle.is_local_detached() {
+                remote
+                    .output_specs
+                    .iter()
+                    .filter(|spec| !spec.glob.starts_with("ssh://"))
+                    .cloned()
+                    .collect()
+            } else {
+                remote
+                    .output_specs
+                    .iter()
+                    .filter(|spec| spec.glob.starts_with("ssh://"))
+                    .cloned()
+                    .collect()
+            };
             if !references.is_empty() {
                 let fallback = PathBuf::from(".");
                 if let Err(error) = crate::harvest::harvest_run_outputs(
@@ -2067,9 +2196,14 @@ async fn finish_remote_run(
     Ok(())
 }
 
-fn ssh_retry_stopped_error(error: &str) -> String {
+fn retry_stopped_error(handle: &RemoteRunHandle, error: &str) -> String {
     if error.contains(SSH_RETRY_STOPPED_MARKER) {
-        error.to_string()
+        return error.to_string();
+    }
+    if handle.is_local_detached() {
+        format!(
+            "{SSH_RETRY_STOPPED_MARKER} after the first failed start attempt. Manual retry is required. {error}"
+        )
     } else {
         format!(
             "{SSH_RETRY_STOPPED_MARKER} after the first failed attempt to protect the server. Manual retry is required. {error}"
@@ -2139,10 +2273,11 @@ async fn remote_lifecycle(
             && run.status == wisp_store::RunStatus::Submitted
             && run.last_poll_error.is_some()
         {
-            let error = ssh_retry_stopped_error(
+            let error = retry_stopped_error(
+                &remote.handle,
                 run.last_poll_error
                     .as_deref()
-                    .unwrap_or("unknown SSH error"),
+                    .unwrap_or("unknown start error"),
             );
             fail_remote_start(store, owner_id, &remote, &error).await?;
             return Ok(());
@@ -2197,7 +2332,7 @@ async fn remote_lifecycle(
                 match ensure_remote_started(store, owner_id, runner, &mut remote).await {
                     Ok(handle) => remote.handle = handle,
                     Err(error) => {
-                        let error = ssh_retry_stopped_error(&error);
+                        let error = retry_stopped_error(&remote.handle, &error);
                         fail_remote_start(store, owner_id, &remote, &error).await?;
                         return Ok(());
                     }
@@ -2273,7 +2408,7 @@ async fn remote_lifecycle(
                 }
                 Err(error) => {
                     if permanent_remote_start_error(&error) {
-                        let error = ssh_retry_stopped_error(&error);
+                        let error = retry_stopped_error(&remote.handle, &error);
                         store
                             .record_run_poll_owned(
                                 &remote.run_id,
@@ -2375,7 +2510,7 @@ async fn remote_lifecycle(
                 }
                 Err(error) => {
                     if permanent_remote_start_error(&error) {
-                        let error = ssh_retry_stopped_error(&error);
+                        let error = retry_stopped_error(&remote.handle, &error);
                         store
                             .record_run_poll_owned(
                                 &remote.run_id,
@@ -2406,7 +2541,11 @@ async fn remote_lifecycle(
                 }
             }
         }
-        tokio::time::sleep(remote_poll_interval(consecutive_transport_errors)).await;
+        tokio::time::sleep(remote_poll_interval_for(
+            &remote.handle,
+            consecutive_transport_errors,
+        ))
+        .await;
     }
 }
 

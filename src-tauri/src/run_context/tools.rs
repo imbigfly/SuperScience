@@ -43,7 +43,7 @@ impl Tool for RunInContextTool {
                     "context_id": { "type": "string", "description": "Execution context id, e.g. local, ssh:gpu, wsl:Ubuntu" },
                     "command": { "type": "string", "description": "Command to execute in that context" },
                     "title": { "type": "string", "description": "Short run title" },
-                    "timeout_secs": { "type": "integer", "description": "Job wall timeout. SSH: 1s..7d (default 4h); local/WSL: 1s..300s" },
+                    "timeout_secs": { "type": "integer", "description": "Job wall timeout in seconds: 1s..7d (default 4h) for local, WSL, and SSH" },
                     "wait_for_completion": { "type": "boolean", "description": "Suspend this tool until the Run reaches a terminal state, without consuming model tokens or repeatedly calling get_run (default false)" },
                     "preflight": {
                         "type": "object",

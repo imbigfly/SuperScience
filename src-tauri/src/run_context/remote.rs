@@ -97,15 +97,18 @@ pub(super) enum PrepareRemote {
     Existing(RemoteRunHandle),
 }
 
-pub(super) fn remote_parts(
+pub(super) fn ssh_parts(
     handle: &RemoteRunHandle,
-) -> (
-    &crate::ssh_hosts::SshConnection,
-    &str,
-    &str,
-    Option<i64>,
-    Option<u64>,
-) {
+) -> Result<
+    (
+        &crate::ssh_hosts::SshConnection,
+        &str,
+        &str,
+        Option<i64>,
+        Option<u64>,
+    ),
+    String,
+> {
     match handle {
         RemoteRunHandle::SshDirect {
             connection,
@@ -114,34 +117,40 @@ pub(super) fn remote_parts(
             pgid,
             start_time,
             ..
-        } => (connection, workdir, token, *pgid, *start_time),
+        } => Ok((connection, workdir, token, *pgid, *start_time)),
+        RemoteRunHandle::LocalDetached { .. } => {
+            Err("SSH helper called for a local detached handle".into())
+        }
     }
+}
+
+fn parse_handle_ack(stdout: &str) -> Result<(String, i64, String), String> {
+    const PREFIX: &str = "__WISP_HANDLE__:";
+    let line = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(PREFIX))
+        .ok_or_else(|| "launcher did not return a remote handle".to_string())?;
+    let (ack_token, rest) = line
+        .trim()
+        .split_once(':')
+        .ok_or_else(|| "launcher omitted PGID".to_string())?;
+    let (pgid_str, start_identity) = rest
+        .split_once(':')
+        .ok_or_else(|| "launcher omitted process start identity".to_string())?;
+    let pgid = pgid_str
+        .parse::<i64>()
+        .map_err(|_| "launcher returned an invalid PGID".to_string())?;
+    if pgid <= 1 || start_identity.is_empty() {
+        return Err("launcher returned a malformed remote handle".into());
+    }
+    Ok((ack_token.to_string(), pgid, start_identity.to_string()))
 }
 
 pub(super) fn handle_from_ack(
     handle: &RemoteRunHandle,
     stdout: &str,
 ) -> Result<RemoteRunHandle, String> {
-    const PREFIX: &str = "__WISP_HANDLE__:";
-    let line = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix(PREFIX))
-        .ok_or_else(|| "SSH launcher did not return a remote handle".to_string())?;
-    let mut fields = line.trim().split(':');
-    let ack_token = fields.next().unwrap_or_default();
-    let pgid = fields
-        .next()
-        .ok_or_else(|| "SSH launcher omitted PGID".to_string())?
-        .parse::<i64>()
-        .map_err(|_| "SSH launcher returned an invalid PGID".to_string())?;
-    let start_time = fields
-        .next()
-        .ok_or_else(|| "SSH launcher omitted process start time".to_string())?
-        .parse::<u64>()
-        .map_err(|_| "SSH launcher returned an invalid process start time".to_string())?;
-    if fields.next().is_some() || pgid <= 1 {
-        return Err("SSH launcher returned a malformed remote handle".into());
-    }
+    let (ack_token, pgid, start_identity) = parse_handle_ack(stdout)?;
     match handle {
         RemoteRunHandle::SshDirect {
             connection,
@@ -149,15 +158,36 @@ pub(super) fn handle_from_ack(
             token,
             inputs_staged,
             ..
-        } if token == ack_token => Ok(RemoteRunHandle::SshDirect {
-            connection: connection.clone(),
+        } if token == &ack_token => {
+            let start_time = start_identity
+                .parse::<u64>()
+                .map_err(|_| "SSH launcher returned an invalid process start time".to_string())?;
+            Ok(RemoteRunHandle::SshDirect {
+                connection: connection.clone(),
+                workdir: workdir.clone(),
+                token: token.clone(),
+                inputs_staged: *inputs_staged,
+                pgid: Some(pgid),
+                start_time: Some(start_time),
+            })
+        }
+        RemoteRunHandle::LocalDetached {
+            transport,
+            workdir,
+            token,
+            inputs_staged,
+            command_cwd,
+            ..
+        } if token == &ack_token => Ok(RemoteRunHandle::LocalDetached {
+            transport: transport.clone(),
             workdir: workdir.clone(),
             token: token.clone(),
             inputs_staged: *inputs_staged,
             pgid: Some(pgid),
-            start_time: Some(start_time),
+            start_identity: Some(start_identity),
+            command_cwd: command_cwd.clone(),
         }),
-        _ => Err("SSH launcher token does not match this Run".into()),
+        _ => Err("launcher token does not match this Run".into()),
     }
 }
 
@@ -170,7 +200,21 @@ pub(super) fn command_delimiter(token: &str, command: &str) -> String {
 }
 
 pub(super) fn prepare_payload(remote: &RemoteRun) -> String {
-    let (_, workdir, token, _, _) = remote_parts(&remote.handle);
+    match &remote.handle {
+        RemoteRunHandle::SshDirect { .. } => ssh_prepare_payload(remote),
+        RemoteRunHandle::LocalDetached {
+            transport: super::LocalTransport::Posix { .. },
+            ..
+        } => super::local_detached::posix_prepare_payload(remote),
+        RemoteRunHandle::LocalDetached {
+            transport: super::LocalTransport::Windows { .. },
+            ..
+        } => super::local_detached::windows_prepare_payload(remote),
+    }
+}
+
+fn ssh_prepare_payload(remote: &RemoteRun) -> String {
+    let (_, workdir, token, _, _) = ssh_parts(&remote.handle).expect("ssh prepare");
     let delimiter = command_delimiter(token, &remote.command);
     format!(
         r#"set -eu
@@ -252,16 +296,31 @@ printf '__WISP_PREPARED__\n'
     )
 }
 
+fn script_command_for(
+    handle: &RemoteRunHandle,
+    label: &str,
+    payload: String,
+) -> Result<RunCommand, String> {
+    match handle {
+        RemoteRunHandle::SshDirect { connection, .. } => {
+            ssh_script_command(connection, label, payload)
+        }
+        RemoteRunHandle::LocalDetached { .. } => {
+            super::local_detached::transport_script_command(handle, label, payload)
+        }
+    }
+}
+
 pub(super) async fn prepare_remote(
     runner: &dyn RunCommandRunner,
     remote: &RemoteRun,
 ) -> Result<PrepareRemote, String> {
-    let (connection, _, _, _, _) = remote_parts(&remote.handle);
+    let label = super::local_detached::rpc_action_label(&remote.handle, "prepare");
     let output = checked_output(
-        "SSH prepare",
+        &label,
         runner
             .run(
-                ssh_script_command(connection, "prepare SSH Run", prepare_payload(remote))?,
+                script_command_for(&remote.handle, &label, prepare_payload(remote))?,
                 REMOTE_RPC_TIMEOUT,
             )
             .await,
@@ -326,7 +385,7 @@ pub(super) async fn stage_remote_inputs(
     {
         return Err("SSH lifecycle lease expired before input staging".into());
     }
-    let (connection, workdir, _, _, _) = remote_parts(&remote.handle);
+    let (connection, workdir, _, _, _) = ssh_parts(&remote.handle)?;
     let mut args = connection.scp_option_args()?;
     args.extend(input_paths.iter().map(|path| scp_local_path(path)));
     args.push(format!("{}:{workdir}/inputs/", connection.target()?));
@@ -473,7 +532,21 @@ pub(super) fn scp_local_path(path: &Path) -> String {
 }
 
 pub(super) fn launch_payload(handle: &RemoteRunHandle) -> String {
-    let (_, workdir, token, _, _) = remote_parts(handle);
+    match handle {
+        RemoteRunHandle::SshDirect { .. } => ssh_launch_payload(handle),
+        RemoteRunHandle::LocalDetached {
+            transport: super::LocalTransport::Posix { .. },
+            ..
+        } => super::local_detached::posix_launch_payload(handle),
+        RemoteRunHandle::LocalDetached {
+            transport: super::LocalTransport::Windows { .. },
+            ..
+        } => super::local_detached::windows_launch_payload(handle),
+    }
+}
+
+fn ssh_launch_payload(handle: &RemoteRunHandle) -> String {
+    let (_, workdir, token, _, _) = ssh_parts(handle).expect("ssh launch");
     format!(
         r#"set -eu
 workdir="$HOME/{workdir}"
@@ -516,12 +589,12 @@ pub(super) async fn launch_remote(
     runner: &dyn RunCommandRunner,
     handle: &RemoteRunHandle,
 ) -> Result<RemoteRunHandle, String> {
-    let (connection, _, _, _, _) = remote_parts(handle);
+    let label = super::local_detached::rpc_action_label(handle, "launch");
     let output = checked_output(
-        "SSH launch",
+        &label,
         runner
             .run(
-                ssh_script_command(connection, "launch SSH Run", launch_payload(handle))?,
+                script_command_for(handle, &label, launch_payload(handle))?,
                 REMOTE_RPC_TIMEOUT,
             )
             .await,
@@ -544,7 +617,10 @@ pub(super) async fn ensure_remote_started(
             Ok(handle)
         }
         PrepareRemote::Prepared => {
-            if !remote.input_refs.is_empty() && !remote.handle.inputs_staged() {
+            if matches!(remote.handle, RemoteRunHandle::SshDirect { .. })
+                && !remote.input_refs.is_empty()
+                && !remote.handle.inputs_staged()
+            {
                 stage_remote_inputs(store, owner_id, runner, remote).await?;
                 remote.handle.mark_inputs_staged();
                 let handle_json =
@@ -568,14 +644,14 @@ pub(super) async fn ensure_remote_started(
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("Run not found: {}", remote.run_id))?;
             if run.status == wisp_store::RunStatus::Cancelling {
-                return Err("SSH Run was cancelled before launch".into());
+                return Err("Run was cancelled before launch".into());
             }
             if !store
                 .renew_run_lifecycle(&remote.run_id, owner_id, REMOTE_START_LEASE_SECS)
                 .await
                 .map_err(|e| e.to_string())?
             {
-                return Err("SSH lifecycle lease expired before launch".into());
+                return Err("lifecycle lease expired before launch".into());
             }
             launch_remote(runner, &remote.handle).await
         }
@@ -599,7 +675,21 @@ pub(super) struct RemotePoll {
 }
 
 pub(super) fn poll_payload(handle: &RemoteRunHandle) -> Result<String, String> {
-    let (_, workdir, token, pgid, start_time) = remote_parts(handle);
+    match handle {
+        RemoteRunHandle::SshDirect { .. } => ssh_poll_payload(handle),
+        RemoteRunHandle::LocalDetached {
+            transport: super::LocalTransport::Posix { .. },
+            ..
+        } => super::local_detached::posix_poll_payload(handle),
+        RemoteRunHandle::LocalDetached {
+            transport: super::LocalTransport::Windows { .. },
+            ..
+        } => super::local_detached::windows_poll_payload(handle),
+    }
+}
+
+fn ssh_poll_payload(handle: &RemoteRunHandle) -> Result<String, String> {
+    let (_, workdir, token, pgid, start_time) = ssh_parts(handle)?;
     let (pgid, start_time) = pgid
         .zip(start_time)
         .ok_or_else(|| "SSH Run handle has not been confirmed".to_string())?;
@@ -696,12 +786,12 @@ pub(super) async fn poll_remote(
     runner: &dyn RunCommandRunner,
     handle: &RemoteRunHandle,
 ) -> Result<RemotePoll, String> {
-    let (connection, _, _, _, _) = remote_parts(handle);
+    let label = super::local_detached::rpc_action_label(handle, "poll");
     let output = checked_output(
-        "SSH poll",
+        &label,
         runner
             .run(
-                ssh_script_command(connection, "poll SSH Run", poll_payload(handle)?)?,
+                script_command_for(handle, &label, poll_payload(handle)?)?,
                 REMOTE_RPC_TIMEOUT,
             )
             .await,
@@ -718,7 +808,21 @@ pub(super) enum RemoteCancel {
 }
 
 pub(super) fn cancel_payload(handle: &RemoteRunHandle) -> Result<String, String> {
-    let (_, workdir, token, pgid, start_time) = remote_parts(handle);
+    match handle {
+        RemoteRunHandle::SshDirect { .. } => ssh_cancel_payload(handle),
+        RemoteRunHandle::LocalDetached {
+            transport: super::LocalTransport::Posix { .. },
+            ..
+        } => super::local_detached::posix_cancel_payload(handle),
+        RemoteRunHandle::LocalDetached {
+            transport: super::LocalTransport::Windows { .. },
+            ..
+        } => super::local_detached::windows_cancel_payload(handle),
+    }
+}
+
+fn ssh_cancel_payload(handle: &RemoteRunHandle) -> Result<String, String> {
+    let (_, workdir, token, pgid, start_time) = ssh_parts(handle)?;
     let (pgid, start_time) = pgid
         .zip(start_time)
         .ok_or_else(|| "SSH Run handle has not been confirmed".to_string())?;
@@ -810,12 +914,12 @@ pub(super) async fn cancel_remote(
     runner: &dyn RunCommandRunner,
     handle: &RemoteRunHandle,
 ) -> Result<RemoteCancel, String> {
-    let (connection, _, _, _, _) = remote_parts(handle);
+    let label = super::local_detached::rpc_action_label(handle, "cancel");
     let output = checked_output(
-        "SSH cancel",
+        &label,
         runner
             .run(
-                ssh_script_command(connection, "cancel SSH Run", cancel_payload(handle)?)?,
+                script_command_for(handle, &label, cancel_payload(handle)?)?,
                 REMOTE_RPC_TIMEOUT,
             )
             .await,
@@ -838,6 +942,29 @@ pub(super) fn remote_poll_delay_secs(consecutive_transport_errors: u32) -> u64 {
     }
 }
 
+pub(super) fn local_poll_delay_secs(consecutive_transport_errors: u32) -> u64 {
+    match consecutive_transport_errors {
+        0 | 1 => 1,
+        2 => 2,
+        _ => 5,
+    }
+}
+
+pub(super) fn remote_poll_interval_for(
+    handle: &RemoteRunHandle,
+    consecutive_transport_errors: u32,
+) -> Duration {
+    if cfg!(test) {
+        return Duration::from_millis(10);
+    }
+    let secs = if handle.is_local_detached() {
+        local_poll_delay_secs(consecutive_transport_errors)
+    } else {
+        remote_poll_delay_secs(consecutive_transport_errors)
+    };
+    Duration::from_secs(secs)
+}
+
 pub(super) fn remote_poll_interval(consecutive_transport_errors: u32) -> Duration {
     if cfg!(test) {
         Duration::from_millis(10)
@@ -852,7 +979,10 @@ pub(super) fn permanent_remote_start_error(error: &str) -> bool {
         "requires setsid",
         "requires timeout",
         "requires bash",
+        "requires nohup",
+        "requires powershell",
         "process group did not start",
+        "command process did not start",
         "permission denied",
         "too many authentication failures",
         "host key verification failed",

@@ -178,9 +178,15 @@ async fn run_in_context_can_suspend_until_terminal_without_get_run_calls() {
         .create_project("p", "project", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let manager = RunManager::with_runner(Arc::new(FakeRunRunner {
-        output: ok_output("finished\n"),
-    }));
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output("__WISP_HANDLE__:token-will-be-replaced"),
+        ok_output(&poll_response("finished:0", "finished", "")),
+    ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let manager = RunManager::with_runner(runner);
     let tool = RunInContextTool::new(store, manager, "p".into(), None);
     let result = tool
         .run(
@@ -196,7 +202,7 @@ async fn run_in_context_can_suspend_until_terminal_without_get_run_calls() {
     assert!(result.success, "{}", result.content);
     let run: wisp_store::RunRecord = serde_json::from_str(&result.content).unwrap();
     assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
-    assert_eq!(run.stdout_tail.as_deref(), Some("finished\n"));
+    assert_eq!(run.stdout_tail.as_deref(), Some("finished"));
     let _ = std::fs::remove_dir_all(tmp);
 }
 
@@ -212,13 +218,19 @@ async fn run_in_context_wait_reports_a_failed_run_as_a_failed_tool_call() {
         .create_project("p", "project", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let manager = RunManager::with_runner(Arc::new(FakeRunRunner {
-        output: Ok(RunCommandOutput {
-            exit_code: 127,
-            stdout: String::new(),
-            stderr: "python: command not found".into(),
-        }),
-    }));
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output("__WISP_HANDLE__:token-will-be-replaced"),
+        ok_output(&poll_response(
+            "finished:127",
+            "",
+            "python: command not found",
+        )),
+    ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let manager = RunManager::with_runner(runner);
     let tool = RunInContextTool::new(store, manager, "p".into(), None);
     let result = tool
         .run(
@@ -298,8 +310,13 @@ async fn run_in_context_preflight_is_structured_and_persisted_with_the_run() {
         .unwrap();
     let runner = Arc::new(ScriptedRunRunner::new(vec![
         ok_output("3.12.4\n"),
-        ok_output("analysis complete\n"),
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output("__WISP_HANDLE__:token-will-be-replaced"),
+        ok_output(&poll_response("finished:0", "analysis complete", "")),
     ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let manager = RunManager::with_runner(runner.clone());
     let tool = RunInContextTool::new(store.clone(), manager, "p".into(), None);
 
@@ -331,7 +348,12 @@ async fn run_in_context_preflight_is_structured_and_persisted_with_the_run() {
         .any(|check| check["name"] == "packages" && check["status"] == "passed"));
     let commands = runner.commands.lock().unwrap();
     assert_eq!(commands[0].script, "python interpreter/package preflight");
-    assert_eq!(commands[1].script, "python analysis.py");
+    assert!(commands[1].script.starts_with("prepare "));
+    assert!(commands[1]
+        .stdin
+        .as_deref()
+        .unwrap()
+        .contains("python analysis.py"));
     let _ = std::fs::remove_dir_all(tmp);
 }
 
@@ -687,35 +709,36 @@ async fn background_run_can_be_cancelled_without_waiting_for_the_command() {
     ));
     let store = wisp_store::Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    let manager = RunManager::with_runner(Arc::new(PendingRunRunner));
+    let mut run = wisp_store::RunRecord::new("local-run", "p", "local", "Local", "local_detached");
+    run.command = Some("long-running-analysis".into());
+    run.timeout_secs = Some(60);
+    run.remote_workdir = Some("~/.wisp-science/runs/local-run".into());
+    run.remote_handle_json =
+        Some(serde_json::to_string(&test_local_handle("local-run", true, None)).unwrap());
+    run.status = wisp_store::RunStatus::Running;
+    store.create_run(&run).await.unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(
+        "__WISP_CANCEL__:cancelled\n",
+    )]));
+    let cancel_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *runner.rpc_gate.lock().unwrap() = Some(cancel_gate.clone());
+    let manager = RunManager::with_runner(runner);
 
-    let submitted = manager
-        .submit(
-            store.clone(),
-            "p".into(),
-            None,
-            SubmitRunRequest {
-                context_id: "local".into(),
-                command: "long-running-analysis".into(),
-                title: None,
-                timeout_secs: Some(60),
-                input_paths: None,
-                output_specs: None,
-            },
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(submitted.status, wisp_store::RunStatus::Submitted);
+    manager.cancel(&store, "local-run").await.unwrap();
+    assert_eq!(
+        store.get_run("local-run").await.unwrap().unwrap().status,
+        wisp_store::RunStatus::Cancelling
+    );
     assert!(manager.has_in_flight_project(&store, "p").await.unwrap());
     assert!(!manager
         .has_in_flight_project(&store, "other-project")
         .await
         .unwrap());
-
-    manager.cancel(&store, &submitted.run_id).await.unwrap();
-    let run = store.get_run(&submitted.run_id).await.unwrap().unwrap();
-    assert_eq!(run.status, wisp_store::RunStatus::Cancelled);
+    cancel_gate.add_permits(1);
+    assert_eq!(
+        wait_for_terminal(&store, "local-run").await.status,
+        wisp_store::RunStatus::Cancelled
+    );
 
     let _ = std::fs::remove_file(&tmp);
 }
@@ -1168,11 +1191,26 @@ fn remote_control_payloads_are_valid_posix_shell() {
         harvest_root: None,
         handle: test_handle("payload", true),
     };
+    let local = RemoteRun {
+        run_id: "local-payload".into(),
+        project_id: "p".into(),
+        frame_id: None,
+        command: "printf '%s\\n' ok".into(),
+        timeout: Duration::from_secs(60),
+        input_refs: Vec::new(),
+        output_specs: Vec::new(),
+        harvest_root: None,
+        handle: test_local_handle("local-payload", true, None),
+    };
     let scripts = [
         prepare_payload(&remote),
         launch_payload(&remote.handle),
         poll_payload(&remote.handle).unwrap(),
         cancel_payload(&remote.handle).unwrap(),
+        prepare_payload(&local),
+        launch_payload(&local.handle),
+        poll_payload(&local.handle).unwrap(),
+        cancel_payload(&local.handle).unwrap(),
     ];
     for script in scripts {
         let mut child = std::process::Command::new("sh")
@@ -1188,6 +1226,8 @@ fn remote_control_payloads_are_valid_posix_shell() {
             .unwrap();
         assert!(child.wait().unwrap().success(), "invalid shell payload");
     }
+    assert!(prepare_payload(&local).contains("sleep 60"));
+    assert!(!prepare_payload(&local).contains("setsid timeout"));
 }
 
 #[test]
@@ -1329,19 +1369,6 @@ impl RunCommandRunner for FakeRunRunner {
     }
 }
 
-struct PendingRunRunner;
-
-#[async_trait::async_trait]
-impl RunCommandRunner for PendingRunRunner {
-    async fn run(
-        &self,
-        _command: RunCommand,
-        _timeout: Duration,
-    ) -> Result<RunCommandOutput, String> {
-        std::future::pending().await
-    }
-}
-
 struct ScriptedRunRunner {
     outputs: StdMutex<VecDeque<Result<RunCommandOutput, String>>>,
     commands: StdMutex<Vec<RunCommand>>,
@@ -1376,19 +1403,28 @@ impl RunCommandRunner for ScriptedRunRunner {
         command: RunCommand,
         _timeout: Duration,
     ) -> Result<RunCommandOutput, String> {
-        if matches!(command.script.as_str(), "poll SSH Run" | "cancel SSH Run") {
+        let is_poll_or_cancel =
+            command.script.starts_with("poll ") || command.script.starts_with("cancel ");
+        if is_poll_or_cancel {
             let gate = self.rpc_gate.lock().unwrap().clone();
             if let Some(gate) = gate {
                 let _permit = gate.acquire().await.unwrap();
             }
         }
-        if command.script == "prepare SSH Run" {
+        if command.script.starts_with("prepare ") {
             if let Some(payload) = command.stdin.as_deref() {
                 let token = payload
                     .lines()
                     .find_map(|line| {
                         line.strip_prefix("  printf '%s\\n' '")?
                             .strip_suffix("' > \"$workdir/token.tmp\"")
+                            .or_else(|| {
+                                line.trim()
+                                    .strip_prefix(
+                                        "Set-Content -LiteralPath ($tokenPath + '.tmp') -Value '",
+                                    )?
+                                    .strip_suffix("' -Encoding ascii")
+                            })
                     })
                     .map(str::to_string);
                 *self.token.lock().unwrap() = token;
@@ -1401,7 +1437,7 @@ impl RunCommandRunner for ScriptedRunRunner {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| Err(format!("unexpected command: {}", command.script)))?;
-        if command.script == "launch SSH Run"
+        if command.script.starts_with("launch ")
             && self
                 .synthesize_launch_ack
                 .load(std::sync::atomic::Ordering::SeqCst)
@@ -1531,6 +1567,22 @@ fn test_handle(run_id: &str, confirmed: bool) -> RemoteRunHandle {
     }
 }
 
+fn test_local_handle(run_id: &str, confirmed: bool, command_cwd: Option<&str>) -> RemoteRunHandle {
+    RemoteRunHandle::LocalDetached {
+        transport: LocalTransport::Posix {
+            context_id: "local".into(),
+            program: "sh".into(),
+            args: vec!["-s".into()],
+        },
+        workdir: format!(".wisp-science/runs/{run_id}"),
+        token: "test-token".into(),
+        inputs_staged: true,
+        pgid: confirmed.then_some(4242),
+        start_identity: confirmed.then(|| "999".into()),
+        command_cwd: command_cwd.map(str::to_string),
+    }
+}
+
 #[test]
 fn permanent_remote_start_errors_require_user_intervention() {
     for error in [
@@ -1619,4 +1671,274 @@ async fn wait_for_terminal(store: &wisp_store::Store, run_id: &str) -> wisp_stor
     })
     .await
     .unwrap()
+}
+
+#[tokio::test]
+async fn local_and_wsl_timeout_accepts_values_above_300s() {
+    let tmp = std::env::temp_dir().join(format!("wisp_timeout_clamp_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+        .await
+        .unwrap();
+    let mut wsl = wisp_store::ExecutionContext::new("wsl:Ubuntu", "Ubuntu").unwrap();
+    wsl.config_json = serde_json::json!({ "distro": "Ubuntu" }).to_string();
+    store.upsert_execution_context(&wsl).await.unwrap();
+    store
+        .set_session_execution_context_enabled("f", "wsl:Ubuntu", true)
+        .await
+        .unwrap();
+
+    for (context_id, frame_id) in [("local", None), ("wsl:Ubuntu", Some("f"))] {
+        let prepared = create_run_record(
+            &store,
+            "p",
+            frame_id,
+            SubmitRunRequest {
+                context_id: context_id.into(),
+                command: "sleep 1".into(),
+                title: None,
+                timeout_secs: Some(3600),
+                input_paths: None,
+                output_specs: None,
+            },
+            Some(tmp.clone()),
+            wisp_store::RunStatus::Submitted,
+            "owner",
+            REMOTE_START_LEASE_SECS,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared.timeout, Duration::from_secs(3600));
+        let run = store.get_run(&prepared.run_id).await.unwrap().unwrap();
+        assert_eq!(run.timeout_secs, Some(3600));
+        assert_eq!(run.kind, "local_detached");
+        assert!(run
+            .remote_handle_json
+            .as_deref()
+            .unwrap()
+            .contains("local_detached"));
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn local_detached_run_finishes_from_poller() {
+    let tmp = std::env::temp_dir().join(format!("wisp_local_lifecycle_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store
+        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+        .await
+        .unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output("__WISP_HANDLE__:token-will-be-replaced"),
+    ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    runner.push(ok_output(&poll_response("finished:0", "local-done", "")));
+    let poll_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *runner.rpc_gate.lock().unwrap() = Some(poll_gate.clone());
+    let manager = RunManager::with_runner(runner.clone());
+    let submitted = manager
+        .submit(
+            store.clone(),
+            "p".into(),
+            None,
+            SubmitRunRequest {
+                context_id: "local".into(),
+                command: "printf done".into(),
+                title: Some("Local analysis".into()),
+                timeout_secs: Some(7200),
+                input_paths: None,
+                output_specs: None,
+            },
+            Some(tmp.clone()),
+        )
+        .await
+        .unwrap();
+    assert!(submitted
+        .remote_workdir
+        .as_deref()
+        .unwrap()
+        .starts_with("~/.wisp-science/runs/"));
+    poll_gate.add_permits(1);
+    let finished = wait_for_terminal(&store, &submitted.run_id).await;
+    assert_eq!(finished.status, wisp_store::RunStatus::Succeeded);
+    assert_eq!(finished.stdout_tail.as_deref(), Some("local-done"));
+    assert_eq!(finished.timeout_secs, Some(7200));
+    let commands = runner.commands.lock().unwrap();
+    assert!(commands.iter().any(|command| command.program == "sh"));
+    assert!(commands[0].stdin.as_deref().unwrap().contains("sleep 7200"));
+    assert!(!commands[0]
+        .stdin
+        .as_deref()
+        .unwrap()
+        .contains("setsid timeout"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn wsl_detached_run_uses_wsl_transport_and_finishes() {
+    let tmp = std::env::temp_dir().join(format!("wisp_wsl_lifecycle_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    let mut wsl = wisp_store::ExecutionContext::new("wsl:Ubuntu", "Ubuntu").unwrap();
+    wsl.config_json = serde_json::json!({ "distro": "Ubuntu" }).to_string();
+    store.upsert_execution_context(&wsl).await.unwrap();
+    store
+        .set_session_execution_context_enabled("f", "wsl:Ubuntu", true)
+        .await
+        .unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output("__WISP_HANDLE__:token-will-be-replaced"),
+        ok_output(&poll_response("finished:0", "wsl-done", "")),
+    ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let manager = RunManager::with_runner(runner.clone());
+    let submitted = manager
+        .submit(
+            store.clone(),
+            "p".into(),
+            Some("f".into()),
+            SubmitRunRequest {
+                context_id: "wsl:Ubuntu".into(),
+                command: "sleep 1 && echo done".into(),
+                title: None,
+                timeout_secs: Some(600),
+                input_paths: None,
+                output_specs: None,
+            },
+            Some(tmp.clone()),
+        )
+        .await
+        .unwrap();
+    let finished = wait_for_terminal(&store, &submitted.run_id).await;
+    assert_eq!(finished.status, wisp_store::RunStatus::Succeeded);
+    assert_eq!(finished.timeout_secs, Some(600));
+    let commands = runner.commands.lock().unwrap();
+    assert!(commands.iter().all(|command| command.program == "wsl.exe"));
+    assert!(commands[0].args.contains(&"-d".to_string()));
+    assert!(commands[0].args.contains(&"Ubuntu".to_string()));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn windows_control_payloads_contain_process_identity_and_timeout() {
+    let remote = RemoteRun {
+        run_id: "win".into(),
+        project_id: "p".into(),
+        frame_id: None,
+        command: "Write-Output ok".into(),
+        timeout: Duration::from_secs(120),
+        input_refs: Vec::new(),
+        output_specs: Vec::new(),
+        harvest_root: None,
+        handle: RemoteRunHandle::LocalDetached {
+            transport: LocalTransport::Windows {
+                context_id: "local".into(),
+            },
+            workdir: ".wisp-science/runs/win".into(),
+            token: "test-token".into(),
+            inputs_staged: true,
+            pgid: Some(4242),
+            start_identity: Some("20260803105500.000000-000".into()),
+            command_cwd: Some(r"C:\project".into()),
+        },
+    };
+    let prepare = prepare_payload(&remote);
+    assert!(prepare.contains("FromBase64String"));
+    assert!(prepare.contains("__WISP_PREPARED__"));
+    let launch = launch_payload(&remote.handle);
+    assert!(launch.contains("Start-Process"));
+    let poll = poll_payload(&remote.handle).unwrap();
+    assert!(poll.contains("Win32_Process"));
+    assert!(poll.contains("__WISP_RUN_STATUS__"));
+    let cancel = cancel_payload(&remote.handle).unwrap();
+    assert!(cancel.contains("taskkill.exe"));
+    assert!(cancel.contains("__WISP_CANCEL__"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_detached_real_shell_lifecycle() {
+    let tmp = std::env::temp_dir().join(format!("wisp_local_real_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store
+        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+        .await
+        .unwrap();
+    let manager = RunManager::new();
+    let submitted = manager
+        .submit(
+            store.clone(),
+            "p".into(),
+            None,
+            SubmitRunRequest {
+                context_id: "local".into(),
+                command: "printf 'real-shell-ok\\n'".into(),
+                title: Some("Real local".into()),
+                timeout_secs: Some(60),
+                input_paths: None,
+                output_specs: None,
+            },
+            Some(tmp.clone()),
+        )
+        .await
+        .unwrap();
+    let finished = wait_for_terminal(&store, &submitted.run_id).await;
+    assert_eq!(
+        finished.status,
+        wisp_store::RunStatus::Succeeded,
+        "stderr={:?} poll_error={:?} handle={:?}",
+        finished.stderr_tail,
+        finished.last_poll_error,
+        finished.remote_handle_json
+    );
+    assert_eq!(finished.exit_code, Some(0));
+    assert!(finished
+        .stdout_tail
+        .as_deref()
+        .unwrap_or_default()
+        .contains("real-shell-ok"));
+    if let Some(workdir) = finished.remote_workdir.as_deref() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let path = workdir.replacen("~", &home, 1);
+        let _ = std::fs::remove_dir_all(path);
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
 }
