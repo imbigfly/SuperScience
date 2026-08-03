@@ -108,6 +108,21 @@
 .confirm-modal { overflow: hidden; }
 .confirm-modal .hint { flex: 1 1 auto; min-height: 0; overflow-y: auto; white-space: pre-wrap; }
 .confirm-modal .row { flex: 0 0 auto; }
+.project-delete-choice-modal { max-width: 560px; }
+.project-delete-choice-modal .delete-with-data {
+  color: var(--err); border-color: color-mix(in srgb, var(--err) 42%, var(--border-strong));
+}
+.project-delete-choice-modal .delete-with-data:hover:not(:disabled) {
+  color: var(--err); border-color: var(--err);
+  background: color-mix(in srgb, var(--err) 8%, var(--bg-input));
+}
+.project-delete-data-modal { max-width: 520px; }
+.project-delete-data-modal .project-delete-warning { color: var(--err); font-weight: 600; }
+.project-delete-path {
+  display: block; padding: 9px 11px; border: 1px solid var(--border);
+  border-radius: var(--radius-xs); background: var(--bg-input); color: var(--text-muted);
+  font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; user-select: text;
+}
 .turn-undo-modal { max-width: 560px; }
 .turn-undo-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
 .turn-undo-body, .turn-undo-empty { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.55; }

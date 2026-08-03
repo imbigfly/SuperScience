@@ -1341,6 +1341,33 @@ fn project_window_url_carries_the_target_session() {
     );
 }
 
+#[tokio::test]
+async fn project_workspace_data_deletion_removes_only_the_resolved_project_directory() {
+    let root = std::env::temp_dir().join(format!("wisp_project_delete_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("data")).unwrap();
+    std::fs::write(root.join("data").join("results.csv"), b"value\n1\n").unwrap();
+
+    let target =
+        super::project_commands::project_workspace_delete_target(root.to_string_lossy().as_ref())
+            .unwrap()
+            .unwrap();
+    super::project_commands::delete_project_workspace_data(target)
+        .await
+        .unwrap();
+
+    assert!(!root.exists());
+}
+
+#[test]
+fn project_workspace_data_deletion_rejects_filesystem_root() {
+    let temp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let root = temp.ancestors().last().unwrap();
+    let error =
+        super::project_commands::project_workspace_delete_target(root.to_string_lossy().as_ref())
+            .unwrap_err();
+    assert_eq!(error, "Refusing to delete a filesystem root.");
+}
+
 #[test]
 fn app_activation_restores_workspace_windows_but_not_the_pet() {
     assert!(should_activate_workspace_window("main"));

@@ -1826,7 +1826,16 @@ Do not leave generated files in the project root.",
         (Locale::En, "projects.example_tag") => Some("Example"),
         (Locale::En, "projects.delete") => Some("Delete"),
         (Locale::En, "projects.new_window") => Some("Open in new window"),
-        (Locale::En, "projects.delete_confirm") => Some("Remove this project from Wisp? Your files on disk are kept."),
+        (Locale::En, "projects.delete_confirm") => Some("Choose whether to keep the project directory on disk or permanently delete it with the project."),
+        (Locale::En, "projects.remove_only") => Some("Remove from Wisp only"),
+        (Locale::En, "projects.remove_with_data") => Some("Delete project and local data"),
+        (Locale::En, "projects.delete_data_title") => Some("Permanently delete the project and local data?"),
+        (Locale::En, "projects.delete_data_warning") => Some("Every file in the project directory will be permanently deleted. This cannot be undone."),
+        (Locale::En, "projects.delete_data_path") => Some("Project directory: {path}"),
+        (Locale::En, "projects.delete_data_confirm") => Some("Permanently delete"),
+        (Locale::En, "projects.delete_data_countdown") => Some("Permanently delete ({n}s)"),
+        (Locale::En, "err.project_delete_workspace_empty") => Some("The project directory is empty, so Wisp refused to delete local data."),
+        (Locale::En, "err.project_delete_root") => Some("Wisp refused to delete a filesystem root."),
         (Locale::En, "projects.open_failed") => Some("Could not open the project: {msg}"),
         (Locale::En, "projects.star_hint") => Some("If Wisp is helpful to your work, please"),
         (Locale::En, "projects.star_link") => Some("give us a star on GitHub ★"),
@@ -3609,7 +3618,16 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "projects.example_tag") => Some("示例"),
         (Locale::Zh, "projects.delete") => Some("删除"),
         (Locale::Zh, "projects.new_window") => Some("在新窗口打开"),
-        (Locale::Zh, "projects.delete_confirm") => Some("从 Wisp 移除该项目？磁盘上的文件会保留。"),
+        (Locale::Zh, "projects.delete_confirm") => Some("请选择保留磁盘上的项目目录，或将其与项目一起永久删除。"),
+        (Locale::Zh, "projects.remove_only") => Some("仅从 Wisp 移除"),
+        (Locale::Zh, "projects.remove_with_data") => Some("删除项目及本地数据"),
+        (Locale::Zh, "projects.delete_data_title") => Some("永久删除项目及本地数据？"),
+        (Locale::Zh, "projects.delete_data_warning") => Some("项目目录中的所有文件都将被永久删除，删除后不可恢复。"),
+        (Locale::Zh, "projects.delete_data_path") => Some("项目目录：{path}"),
+        (Locale::Zh, "projects.delete_data_confirm") => Some("确认永久删除"),
+        (Locale::Zh, "projects.delete_data_countdown") => Some("确认永久删除（{n} 秒）"),
+        (Locale::Zh, "err.project_delete_workspace_empty") => Some("项目目录为空，Wisp 已拒绝删除本地数据。"),
+        (Locale::Zh, "err.project_delete_root") => Some("Wisp 已拒绝删除文件系统根目录。"),
         (Locale::Zh, "projects.open_failed") => Some("无法打开项目：{msg}"),
         (Locale::Zh, "projects.star_hint") => Some("如果 Wisp 对你的工作有帮助，欢迎到"),
         (Locale::Zh, "projects.star_link") => Some("GitHub 点个 Star ★"),
@@ -3708,6 +3726,40 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
             t(locale, "err.session_transfer_same_project")
         }
         "Target project not found." => t(locale, "err.session_transfer_target_missing"),
+        "Project workspace is empty; refusing to delete data." => {
+            t(locale, "err.project_delete_workspace_empty")
+        }
+        "Refusing to delete a filesystem root." => t(locale, "err.project_delete_root"),
+        m if m.starts_with("Project workspace is not a directory: ") => {
+            if locale == Locale::Zh {
+                format!(
+                    "项目目录不是文件夹：{}",
+                    m.trim_start_matches("Project workspace is not a directory: ")
+                )
+            } else {
+                msg.to_string()
+            }
+        }
+        m if m.starts_with("Failed to inspect project workspace ") => {
+            if locale == Locale::Zh {
+                format!(
+                    "无法检查项目目录：{}",
+                    m.trim_start_matches("Failed to inspect project workspace ")
+                )
+            } else {
+                msg.to_string()
+            }
+        }
+        m if m.starts_with("Failed to delete project data at ") => {
+            if locale == Locale::Zh {
+                format!(
+                    "无法删除项目本地数据：{}",
+                    m.trim_start_matches("Failed to delete project data at ")
+                )
+            } else {
+                msg.to_string()
+            }
+        }
         "Wait for every task in this project to finish before synchronizing."
         | "Wait for every task and run in this project to finish before synchronizing." => {
             t(locale, "err.sync_busy")
