@@ -317,13 +317,15 @@
             };
           case "list_demos":
             return [
-              { id: "manifest_esr1_datasets", title: "Help me find RNA-seq knockdown datasets involving ESR1" },
-              { id: "manifest_esr1_rnaseq", title: "Connect to the remote compute host, locate the FASTQ data for GSE153250" },
-              { id: "manifest_esr1_samples", title: "What specific samples are included in GSE153250" },
+              { id: "manifest_esr1_01_datasets", title: "Help me find RNA-seq knockdown datasets involving ESR1" },
+              { id: "manifest_esr1_02_samples", title: "What specific samples are included in GSE153250" },
+              { id: "manifest_esr1_03_rnaseq", title: "Connect to the remote compute host, locate the FASTQ data for GSE153250" },
+              { id: "manifest_esr1_04_downstream", title: "Based on the upstream Counts data from GSE153250, perform transcriptome" },
+              { id: "manifest_esr1_05_hypotheses", title: "Based on the Counts data from our study, along with the differential e" },
             ];
           case "load_demo":
             return {
-              id: "manifest_esr1_rnaseq",
+              id: "manifest_esr1_03_rnaseq",
               title: "ESR1 RNA-seq",
               request: "Connect to the remote compute host, locate the FASTQ data for GSE153250, keep only the siESR1 and siNT groups.",
               response: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.",

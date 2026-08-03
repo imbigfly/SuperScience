@@ -1,7 +1,8 @@
-"""Export ESR1 sessions to bundled seed manifests with redaction."""
+"""Export ESR1 example sessions to ordered, redacted seed manifests."""
 
 from __future__ import annotations
 
+import csv
 import json
 import re
 import sqlite3
@@ -10,48 +11,168 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SEED = ROOT / "seed"
-SRC = Path(r"D:\Wisp-Science\ESR1_ws")
+SRC_UP = Path(r"D:\Wisp-Science\ESR1_ws")
+SRC_DOWN = Path(r"D:\Wisp-Science\ESR1_downstream")
 DB = Path(
     r"C:\Users\xuzhougeng\AppData\Roaming\science.wisp-science\wisp-science\wisp.sqlite"
 )
 MAX_TOOL_TEXT = 6000
 MAX_REASONING = 4000
 
-# frame_id -> (manifest stem without .json, demo root id)
+# Narrative order: find → inspect → upstream → downstream → hypotheses
 SESSIONS = [
     (
-        "0a662fc6-da20-4a60-bda7-1a15c6d2fe5a",
-        "manifest_esr1_rnaseq",
-        "demo-esr1-rnaseq",
-    ),
-    (
         "5602d6f7-80d1-447f-9ef3-56e1eb4d99eb",
-        "manifest_esr1_datasets",
-        "demo-esr1-datasets",
+        "manifest_esr1_01_datasets",
+        "demo-esr1-01-datasets",
+        None,
     ),
     (
         "3670bb53-ed32-44e5-9ee3-e8ca741ed8ec",
-        "manifest_esr1_samples",
-        "demo-esr1-samples",
+        "manifest_esr1_02_samples",
+        "demo-esr1-02-samples",
+        None,
+    ),
+    (
+        "0a662fc6-da20-4a60-bda7-1a15c6d2fe5a",
+        "manifest_esr1_03_rnaseq",
+        "demo-esr1-03-rnaseq",
+        "rnaseq",
+    ),
+    (
+        "5cc30adb-22ac-4894-af5c-ac108c758bad",
+        "manifest_esr1_04_downstream",
+        "demo-esr1-04-downstream",
+        "downstream",
+    ),
+    (
+        "78af9873-42bb-4a76-a051-c76720ff58a2",
+        "manifest_esr1_05_hypotheses",
+        "demo-esr1-05-hypotheses",
+        None,
     ),
 ]
 
+# Explicit cleaned first-user prompts (privacy + narrative).
+REQUEST_OVERRIDES = {
+    "manifest_esr1_01_datasets": (
+        "Help me find RNA-seq knockdown datasets involving ESR1 and its "
+        "coregulatory factors in MCF7 cells. Prefer datasets that include "
+        "multiple knockdown conditions within the same study."
+    ),
+    "manifest_esr1_02_samples": (
+        "What specific samples are included in GSE153250? Please organize them "
+        "by treatment group."
+    ),
+    "manifest_esr1_03_rnaseq": (
+        "Connect to the remote compute host, locate the FASTQ data for GSE153250, "
+        "keep only the siESR1 and siNT groups, and exclude all other groups. "
+        "Perform transcriptome upstream analysis to obtain the Counts data."
+    ),
+    "manifest_esr1_04_downstream": (
+        "Based on the upstream Counts data from GSE153250, perform transcriptome "
+        "downstream analysis: differential expression, enrichment analysis, and "
+        "GSEA. Download Enrichr libraries for human gene sets as needed and use "
+        "them as GMT files for enrichment."
+    ),
+    "manifest_esr1_05_hypotheses": (
+        "Based on the Counts data from our study, along with the differential "
+        "expression analysis and pathway enrichment analysis results, design 10 "
+        "research projects. For each project, clearly state the core findings/"
+        "evidence basis, scientific question, clinical significance, study design, "
+        "and key highlights/novelty. Use literature retrieval if necessary to "
+        "support your hypotheses."
+    ),
+}
+
 REDACT = [
-    (re.compile(r"English reply\.\s*", re.I), ""),
+    (re.compile(r"English (?:reply|instruction)[.,、]?\s*", re.I), ""),
+    (re.compile(r"Attached sessions:.*?(?=\n\n|\Z)", re.I | re.S), ""),
+    (
+        re.compile(
+            r"first test the network speed using the proxy configured in ~/.bashrc,\s*",
+            re.I,
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"(?:test|check|probe|using|via|with)\s+(?:the\s+)?(?:configured\s+)?proxy"
+            r"[^.]*\.\s*",
+            re.I,
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"(?:Use|using)\s+the\s+proxy\s+configured\s+in\s+~/.bashrc[^.]*\.\s*",
+            re.I,
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"^-?\s*\*\*Proxy\*\*.*$",
+            re.I | re.M,
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"(?:export\s+)?(?:https?|all|ftp)_proxy\s*=\s*\S+",
+            re.I,
+        ),
+        "",
+    ),
     (re.compile(r"guotosky", re.I), "remote-host"),
+    (re.compile(r"guozi-server\d*", re.I), "remote-host"),
     (re.compile(r"ssh:remote-host", re.I), "ssh:remote-host"),
-    (re.compile(r"10\.10\.10\.\d+(:\d+)?"), "configured-proxy"),
-    (re.compile(r"http://10\.10\.10\.\d+(:\d+)?"), "configured-proxy"),
+    (re.compile(r"`?https?://[^`\s]+`?", re.I), ""),
+    (re.compile(r"socks5?://\S+", re.I), ""),
+    (re.compile(r"\b\d{1,3}(?:\.\d{1,3}){2,3}(?::\d+)?\b"), ""),
+    (re.compile(r"\b7897\b"), ""),
+    (re.compile(r"configured-proxy", re.I), ""),
+    (re.compile(r"\bwith(?:out)?\s+proxy\b[^.`\n]*[`']?", re.I), ""),
+    (re.compile(r"\bvia\s+proxy\b[^.`\n]*[`']?", re.I), ""),
+    (re.compile(r"\busing\s+(?:the\s+)?(?:configured\s+)?proxy\b[^.`\n]*[`']?", re.I), ""),
+    (
+        re.compile(
+            r"(?im)^[^\n]*(?:http_proxy|https_proxy|all_proxy|ftp_proxy|PROXY for downloads|Mihomo Proxy|Check proxy config)[^\n]*\n?"
+        ),
+        "",
+    ),
+    # Also scrub proxy env assignments embedded in JSON/command strings.
+    (
+        re.compile(
+            r"(?:export\s+)?(?:HTTPS?|ALL|FTP)_PROXY\s*=\s*\S+",
+            re.I,
+        ),
+        "",
+    ),
+    (re.compile(r"trojan_(?:http_proxy|socks5)\.py", re.I), "tool_helper.py"),
+    (re.compile(r"Check proxy config in bashrc", re.I), "Check shell environment"),
+    (re.compile(r"The proxy is configured[^.]*\.", re.I), ""),
+    (re.compile(r"\*\*Proxy\*\*[^\n]*", re.I), ""),
+    (re.compile(r"Proxy:\s*`?[^`\n]+`?", re.I), ""),
+    (re.compile(r"[ \t]{2,}"), " "),
+    (re.compile(r" +\."), "."),
     (re.compile(r"D:\\\\ESR1_project", re.I), "data"),
     (re.compile(r"D:/ESR1_project", re.I), "data"),
-    (re.compile(r"D:\\Wisp-Science\\ESR1_ws", re.I), "."),
-    (re.compile(r"D:/Wisp-Science/ESR1_ws", re.I), "."),
+    (re.compile(r"D:\\Wisp-Science\\ESR1_(?:ws|downstream)", re.I), "."),
+    (re.compile(r"D:/Wisp-Science/ESR1_(?:ws|downstream)", re.I), "."),
     (re.compile(r"~/GSE153250_ESR1", re.I), "~/workspace/GSE153250"),
     (re.compile(r"miniconda3", re.I), "conda-tools"),
     (re.compile(r"~/bin/(\w+)", re.I), r"~/tools/\1"),
     (re.compile(r"~/.local/bin/(\w+)", re.I), r"~/tools/\1"),
     (re.compile(r"/home/data/gz0548/", re.I), "~/"),
     (re.compile(r"/home/data/gz0548", re.I), "~"),
+    (re.compile(r"\bgz0548\b", re.I), "user"),
+    (re.compile(r"\bgz05\b", re.I), "user"),
+    (re.compile(r"RTX\s*\d+", re.I), "GPU"),
+    (re.compile(r"\b256\s*cores\b", re.I), "many cores"),
+    (re.compile(r"GPU-[0-9a-f-]{20,}", re.I), "GPU-REDACTED"),
+    (re.compile(r'"auth_method"\s*:\s*"password"', re.I), '"auth_method":"key"'),
+    (re.compile(r"\n{3,}"), "\n\n"),
 ]
 
 
@@ -61,7 +182,10 @@ def redact(s: str) -> str:
     out = s
     for pat, repl in REDACT:
         out = pat.sub(repl, out)
-    return out
+    # Collapse leftover empty proxy/env noise lines.
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
 
 
 def truncate(s: str, limit: int) -> str:
@@ -71,7 +195,6 @@ def truncate(s: str, limit: int) -> str:
 
 
 def unwrap_text(raw: str) -> str:
-    """Unwrap JSON-encoded string layers from SQLite message content."""
     if not raw:
         return ""
     s = raw.strip()
@@ -103,10 +226,6 @@ def unwrap_text(raw: str) -> str:
     return s
 
 
-def parse_message_content(raw: str) -> str:
-    return unwrap_text(raw)
-
-
 def is_run_json(text: str) -> bool:
     if not text.startswith("{"):
         return False
@@ -120,13 +239,10 @@ def is_run_json(text: str) -> bool:
 def messages_to_ui_items(rows: list[sqlite3.Row]) -> list[dict]:
     tool_inputs: dict[str, str] = {}
     for row in rows:
-        if row["role"] != "assistant":
-            continue
-        tc = row["tool_calls"]
-        if not tc:
+        if row["role"] != "assistant" or not row["tool_calls"]:
             continue
         try:
-            calls = json.loads(tc)
+            calls = json.loads(row["tool_calls"])
         except json.JSONDecodeError:
             continue
         for call in calls if isinstance(calls, list) else []:
@@ -151,13 +267,11 @@ def messages_to_ui_items(rows: list[sqlite3.Row]) -> list[dict]:
     items: list[dict] = []
     for row in rows:
         role = row["role"]
-        text = parse_message_content(row["content"] or "")
+        text = unwrap_text(row["content"] or "")
         tool_name = row["tool_name"]
         tool_call_id = row["tool_call_id"]
-
         if role == "system":
             continue
-
         if role == "user":
             t = text.strip()
             if not t:
@@ -174,7 +288,6 @@ def messages_to_ui_items(rows: list[sqlite3.Row]) -> list[dict]:
                 }
             )
             continue
-
         if role == "assistant":
             reasoning_raw = row["reasoning"]
             if reasoning_raw and str(reasoning_raw).strip():
@@ -204,7 +317,6 @@ def messages_to_ui_items(rows: list[sqlite3.Row]) -> list[dict]:
                     }
                 )
             continue
-
         if role == "tool":
             if tool_name == "attempt_completion":
                 if text.strip():
@@ -233,20 +345,17 @@ def messages_to_ui_items(rows: list[sqlite3.Row]) -> list[dict]:
                     }
                 )
                 continue
-
-            inp = tool_call_id and tool_inputs.get(tool_call_id)
             items.append(
                 {
                     "role": "tool",
                     "text": text,
                     "tool_name": tool_name,
                     "ok": True,
-                    "input": inp,
+                    "input": tool_call_id and tool_inputs.get(tool_call_id),
                     "model_name": None,
                     "resources": [],
                 }
             )
-
     return items
 
 
@@ -265,6 +374,16 @@ def redact_item(item: dict) -> dict:
     return out
 
 
+def apply_request_override(items: list[dict], manifest_id: str) -> None:
+    override = REQUEST_OVERRIDES.get(manifest_id)
+    if not override:
+        return
+    for item in items:
+        if item["role"] == "user":
+            item["text"] = override
+            break
+
+
 def derive_summary(items: list[dict]) -> tuple[str, str, str | None]:
     request = next((i["text"] for i in items if i["role"] == "user"), "")
     response = ""
@@ -278,6 +397,23 @@ def derive_summary(items: list[dict]) -> tuple[str, str, str | None]:
             thinking = i["text"]
             break
     return request, response, thinking
+
+
+def assert_clean(blob: str, label: str) -> None:
+    lowered = blob.lower()
+    for bad in (
+        "guotosky",
+        "10.10.10.",
+        "english reply",
+        "english instruction",
+        ":7897",
+        "gz0548",
+        "guozi-server",
+        "http_proxy=",
+        "https_proxy=",
+        "all_proxy=",
+    ):
+        assert bad not in lowered, f"{label} still contains {bad}"
 
 
 def export_session(
@@ -298,7 +434,11 @@ def export_session(
         raise SystemExit(f"no messages for frame {frame_id}")
 
     items = [redact_item(i) for i in messages_to_ui_items(rows)]
+    apply_request_override(items, manifest_id)
     request, response, thinking = derive_summary(items)
+    # Prefer override as request field too.
+    request = REQUEST_OVERRIDES.get(manifest_id, request)
+
     manifest = {
         "root_frame": {
             "id": demo_id,
@@ -319,56 +459,142 @@ def export_session(
     print(
         "wrote",
         path.name,
-        path.stat().st_size,
-        "msgs",
-        len(rows),
+        f"{path.stat().st_size/1024:.1f}KiB",
         "items",
         len(items),
         "tools",
         sum(1 for i in items if i["role"] == "tool"),
     )
-    blob = path.read_text(encoding="utf-8")
-    for bad in ("guotosky", "10.10.10.", "English reply"):
-        assert bad.lower() not in blob.lower(), f"{path.name} still contains {bad}"
+    assert_clean(path.read_text(encoding="utf-8"), path.name)
     return path
 
 
-def build_rnaseq_assets() -> None:
-    assets = [
+def write_slim_deg(src: Path, dest: Path, n: int = 200) -> None:
+    with src.open(encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    # Prefer significant rows when padj present.
+    if rows and "padj" in rows[0]:
+        def padj_key(r: dict) -> float:
+            try:
+                return float(r.get("padj") or "nan")
+            except ValueError:
+                return float("inf")
+
+        rows = sorted(rows, key=padj_key)[:n]
+    else:
+        rows = rows[:n]
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else [])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def build_assets() -> None:
+    # Upstream counts (shared with step 3).
+    rnaseq_assets = [
         (
-            "example_esr1_rnaseq/GSE153250_counts_matrix.tsv",
-            SRC / "data" / "processed" / "GSE153250_counts_matrix.tsv",
+            "example_esr1_03_rnaseq/GSE153250_counts_matrix.tsv",
+            SRC_UP / "data" / "processed" / "GSE153250_counts_matrix.tsv",
         ),
         (
-            "example_esr1_rnaseq/GSE153250_sample_groups.txt",
-            SRC / "data" / "processed" / "GSE153250_sample_groups.txt",
+            "example_esr1_03_rnaseq/GSE153250_sample_groups.txt",
+            SRC_UP / "data" / "processed" / "GSE153250_sample_groups.txt",
         ),
         (
-            "example_esr1_rnaseq/GSE153250_featureCounts_summary.txt",
-            SRC / "data" / "processed" / "GSE153250_featureCounts_summary.txt",
+            "example_esr1_03_rnaseq/GSE153250_featureCounts_summary.txt",
+            SRC_UP / "data" / "processed" / "GSE153250_featureCounts_summary.txt",
         ),
     ]
-    tar_path = SEED / "assets_esr1_rnaseq.tar.gz"
+    tar_path = SEED / "assets_esr1_03_rnaseq.tar.gz"
     with tarfile.open(tar_path, "w:gz", compresslevel=9) as tar:
-        for arcname, src in assets:
+        for arcname, src in rnaseq_assets:
             if not src.is_file():
                 raise SystemExit(f"missing asset: {src}")
             tar.add(src, arcname=arcname)
-    print("wrote", tar_path.name, tar_path.stat().st_size)
+    print("wrote", tar_path.name, f"{tar_path.stat().st_size/1024:.1f}KiB")
+
+    # Downstream: small figures + key tables + research report. Skip multi-MB PDFs/CSVs.
+    slim_deg = SEED / "_tmp_DESeq2_top200.csv"
+    write_slim_deg(SRC_DOWN / "results" / "tables" / "DESeq2_full_results.csv", slim_deg)
+
+    down_assets: list[tuple[str, Path]] = [
+        ("example_esr1_04_downstream/DESeq2_top200.csv", slim_deg),
+        (
+            "example_esr1_04_downstream/GSEA_MSigDB_Hallmark_2020.csv",
+            SRC_DOWN / "results" / "tables" / "GSEA_MSigDB_Hallmark_2020.csv",
+        ),
+        (
+            "example_esr1_04_downstream/ORA_up_MSigDB_Hallmark_2020.csv",
+            SRC_DOWN / "results" / "tables" / "ORA_up_MSigDB_Hallmark_2020.csv",
+        ),
+        (
+            "example_esr1_04_downstream/ORA_down_MSigDB_Hallmark_2020.csv",
+            SRC_DOWN / "results" / "tables" / "ORA_down_MSigDB_Hallmark_2020.csv",
+        ),
+        (
+            "example_esr1_04_downstream/ORA_up_KEGG_2026.csv",
+            SRC_DOWN / "results" / "tables" / "ORA_up_KEGG_2026.csv",
+        ),
+        (
+            "example_esr1_04_downstream/research_projects.md",
+            SRC_DOWN / "results" / "reports" / "research_projects.md",
+        ),
+        (
+            "example_esr1_04_downstream/PCA_plot.pdf",
+            SRC_DOWN / "figures" / "PCA_plot.pdf",
+        ),
+        (
+            "example_esr1_04_downstream/GSEA_dot_MSigDB_Hallmark_2020.pdf",
+            SRC_DOWN / "figures" / "GSEA_dot_MSigDB_Hallmark_2020.pdf",
+        ),
+        (
+            "example_esr1_04_downstream/ORA_bar_MSigDB_Hallmark_2020_up.pdf",
+            SRC_DOWN / "figures" / "ORA_bar_MSigDB_Hallmark_2020_up.pdf",
+        ),
+        (
+            "example_esr1_04_downstream/ORA_bar_MSigDB_Hallmark_2020_down.pdf",
+            SRC_DOWN / "figures" / "ORA_bar_MSigDB_Hallmark_2020_down.pdf",
+        ),
+    ]
+    tar_path = SEED / "assets_esr1_04_downstream.tar.gz"
+    with tarfile.open(tar_path, "w:gz", compresslevel=9) as tar:
+        for arcname, src in down_assets:
+            if not src.is_file():
+                raise SystemExit(f"missing asset: {src}")
+            tar.add(src, arcname=arcname)
+    print("wrote", tar_path.name, f"{tar_path.stat().st_size/1024:.1f}KiB")
+    slim_deg.unlink(missing_ok=True)
+
+
+def cleanup_old_seed_files() -> None:
+    for p in SEED.glob("manifest_*.json"):
+        if p.name not in {f"{m}.json" for _, m, _, _ in SESSIONS}:
+            p.unlink()
+            print("removed", p.name)
+    for p in SEED.glob("assets_*.tar.gz"):
+        keep = {
+            "assets_esr1_03_rnaseq.tar.gz",
+            "assets_esr1_04_downstream.tar.gz",
+        }
+        if p.name not in keep:
+            p.unlink()
+            print("removed", p.name)
 
 
 def main() -> None:
     if not DB.is_file():
         raise SystemExit(f"database not found: {DB}")
-
     SEED.mkdir(exist_ok=True)
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
-    for frame_id, manifest_id, demo_id in SESSIONS:
+    for frame_id, manifest_id, demo_id, _assets in SESSIONS:
         export_session(con, frame_id, manifest_id, demo_id)
-    build_rnaseq_assets()
+    build_assets()
+    cleanup_old_seed_files()
     total = sum(p.stat().st_size for p in SEED.iterdir() if p.is_file())
-    print(f"seed total {total/1024:.1f} KiB")
+    print(f"seed total {total/1024:.1f} KiB ({total/1024/1024:.2f} MiB)")
 
 
 if __name__ == "__main__":
