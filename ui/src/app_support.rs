@@ -10378,6 +10378,38 @@ pub(super) fn ProjectsScreen(
     // implement the JS confirm panel), so it always returned false and the ✕
     // did nothing — use an in-app modal instead.
     let pending_delete = create_rw_signal(None::<String>);
+    let confirm_delete_data = create_rw_signal(false);
+    let delete_data_countdown = create_rw_signal(0_u8);
+    let delete_data_unlock_at = Rc::new(Cell::new(0_f64));
+
+    // The destructive confirmation unlocks only after five full seconds. Keep
+    // one owner-scoped timer and make it inert whenever that second layer is
+    // closed, so reopening always starts from five again.
+    let countdown_deadline = Rc::clone(&delete_data_unlock_at);
+    let countdown_tick = Closure::wrap(Box::new(move || {
+        if confirm_delete_data.get_untracked() {
+            let milliseconds = (countdown_deadline.get() - js_sys::Date::now()).max(0.0);
+            let remaining = (milliseconds / 1_000.0).ceil() as u8;
+            if delete_data_countdown.get_untracked() != remaining {
+                delete_data_countdown.set(remaining);
+            }
+        }
+    }) as Box<dyn FnMut()>);
+    let countdown_window = web_sys::window();
+    let countdown_interval = countdown_window.as_ref().and_then(|window| {
+        window
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                countdown_tick.as_ref().unchecked_ref(),
+                100,
+            )
+            .ok()
+    });
+    on_cleanup(move || {
+        if let (Some(window), Some(interval)) = (countdown_window, countdown_interval) {
+            window.clear_interval_with_handle(interval);
+        }
+        drop(countdown_tick);
+    });
 
     let reload = move || {
         spawn_local(async move {
@@ -10551,17 +10583,25 @@ pub(super) fn ProjectsScreen(
         });
     };
 
-    let delete = move |id: String| {
+    let delete = Callback::new(move |(id, delete_data): (String, bool)| {
         spawn_local(async move {
-            let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
-            let _ = invoke("delete_project", arg).await;
-            let v = invoke("list_projects", JsValue::UNDEFINED).await;
-            if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(v) {
-                projects.set(list);
+            let arg =
+                to_value(&serde_json::json!({ "id": id, "deleteData": delete_data })).unwrap();
+            match invoke_checked("delete_project", arg).await {
+                Ok(_) => {
+                    let v = invoke("list_projects", JsValue::UNDEFINED).await;
+                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(v) {
+                        projects.set(list);
+                    }
+                }
+                Err(error) => {
+                    let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                    open_error.set(Some(message));
+                }
             }
         });
-    };
-    let delete_confirmed = delete.clone(); // used by the confirm modal below
+    });
+    let delete_confirmed = delete; // used by the confirm modal below
 
     let import_project = move |_| {
         if importing.get_untracked() {
@@ -10649,6 +10689,12 @@ pub(super) fn ProjectsScreen(
             return;
         };
         if ev.key() != "Escape" || ev.default_prevented() || ime_composing(ev) {
+            return;
+        }
+        if confirm_delete_data.get() {
+            ev.prevent_default();
+            confirm_delete_data.set(false);
+            delete_data_countdown.set(0);
             return;
         }
         if pending_delete.get().is_some() {
@@ -11094,6 +11140,8 @@ pub(super) fn ProjectsScreen(
                                     <button class="pc-del" title=t(loc, "projects.delete")
                                         on:click=move |e| {
                                             e.stop_propagation();
+                                            confirm_delete_data.set(false);
+                                            delete_data_countdown.set(0);
                                             pending_delete.set(Some(id_del.clone()));
                                         }>{compose_icon("close")}</button>
                                     </div>
@@ -11153,25 +11201,91 @@ pub(super) fn ProjectsScreen(
                     </div>
                 }
             })}
-            {move || pending_delete.get().map(|id| {
-                let confirm_del = delete_confirmed.clone();
-                view! {
-                    <div class="overlay">
-                        <div class="modal confirm-modal">
-                            <h2>{move || t(locale.get(), "confirm.title")}</h2>
-                            <div class="hint">{move || t(locale.get(), "projects.delete_confirm")}</div>
-                            <div class="row">
-                                <button on:click=move |_| pending_delete.set(None)>
-                                    {move || t(locale.get(), "settings.cancel")}</button>
-                                <button class="primary" on:click=move |_| {
-                                    pending_delete.set(None);
-                                    confirm_del(id.clone());
-                                }>{move || t(locale.get(), "confirm.approve")}</button>
+            {move || {
+                let delete_data_unlock_at = Rc::clone(&delete_data_unlock_at);
+                pending_delete.get().map(|id| {
+                if confirm_delete_data.get() {
+                    let confirm_del = delete_confirmed;
+                    let delete_id = id.clone();
+                    let workspace_dir = projects
+                        .get()
+                        .into_iter()
+                        .find(|project| project.id == id)
+                        .map(|project| project.workspace_dir)
+                        .unwrap_or_default();
+                    view! {
+                        <div class="overlay project-delete-data-overlay">
+                            <div class="modal confirm-modal project-delete-data-modal"
+                                role="alertdialog" aria-modal="true"
+                                aria-label=move || t(locale.get(), "projects.delete_data_title")>
+                                <h2>{move || t(locale.get(), "projects.delete_data_title")}</h2>
+                                <div class="hint project-delete-warning">
+                                    {move || t(locale.get(), "projects.delete_data_warning")}
+                                </div>
+                                <code class="project-delete-path">{move || tf(
+                                    locale.get(),
+                                    "projects.delete_data_path",
+                                    &[("path", &workspace_dir)],
+                                )}</code>
+                                <div class="row">
+                                    <button type="button" on:click=move |_| {
+                                        confirm_delete_data.set(false);
+                                        delete_data_countdown.set(0);
+                                    }>{move || t(locale.get(), "settings.back")}</button>
+                                    <button type="button" class="primary danger"
+                                        aria-live="polite"
+                                        disabled=move || delete_data_countdown.get() != 0
+                                        on:click=move |_| {
+                                            if delete_data_countdown.get_untracked() == 0 {
+                                                confirm_delete_data.set(false);
+                                                delete_data_countdown.set(0);
+                                                pending_delete.set(None);
+                                                confirm_del.call((delete_id.clone(), true));
+                                            }
+                                        }>{move || {
+                                            let remaining = delete_data_countdown.get();
+                                            if remaining > 0 {
+                                                tf(
+                                                    locale.get(),
+                                                    "projects.delete_data_countdown",
+                                                    &[("n", &remaining.to_string())],
+                                                )
+                                            } else {
+                                                t(locale.get(), "projects.delete_data_confirm").into()
+                                            }
+                                        }}</button>
+                                </div>
                             </div>
                         </div>
-                    </div>
+                    }.into_view()
+                } else {
+                    let confirm_del = delete_confirmed;
+                    let remove_id = id.clone();
+                    view! {
+                        <div class="overlay">
+                            <div class="modal confirm-modal project-delete-choice-modal"
+                                role="dialog" aria-modal="true"
+                                aria-label=move || t(locale.get(), "confirm.title")>
+                                <h2>{move || t(locale.get(), "confirm.title")}</h2>
+                                <div class="hint">{move || t(locale.get(), "projects.delete_confirm")}</div>
+                                <div class="row">
+                                    <button type="button" on:click=move |_| pending_delete.set(None)>
+                                        {move || t(locale.get(), "settings.cancel")}</button>
+                                    <button type="button" class="primary" on:click=move |_| {
+                                        pending_delete.set(None);
+                                        confirm_del.call((remove_id.clone(), false));
+                                    }>{move || t(locale.get(), "projects.remove_only")}</button>
+                                    <button type="button" class="delete-with-data" on:click=move |_| {
+                                        delete_data_unlock_at.set(js_sys::Date::now() + 5_000.0);
+                                        delete_data_countdown.set(5);
+                                        confirm_delete_data.set(true);
+                                    }>{move || t(locale.get(), "projects.remove_with_data")}</button>
+                                </div>
+                            </div>
+                        </div>
+                    }.into_view()
                 }
-            })}
+            })}}
         </div>
     }
 }

@@ -6999,18 +6999,70 @@ test("queued follow-ups can be reordered up and down (#433)", async ({ page }) =
   )).toEqual(["move_up", "move_down"]);
 });
 
-test("deleting a project uses an in-app confirm modal, not native confirm (#96)", async ({ page }) => {
+test("project removal offers a files-preserving action in the in-app dialog (#96)", async ({ page }) => {
   // Native window.confirm() is a no-op in this webview (wry's WKUIDelegate has
   // no JS confirm panel), so the ✕ silently did nothing. Deletion now goes
   // through an in-app modal.
   await page.goto("/");
   await page.locator(".proj-card:not(.proj-example) .pc-del").first().click();
-  const modal = page.locator(".confirm-modal");
+  const modal = page.locator(".project-delete-choice-modal");
   await expect(modal).toBeVisible();
-  await modal.locator("button.primary").click();
+  await expect(modal.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+  await expect(modal.getByRole("button", { name: "Remove from Wisp only", exact: true })).toBeVisible();
+  await expect(modal.getByRole("button", { name: "Delete project and local data", exact: true })).toBeVisible();
+
+  // Escape works immediately after opening; it does not depend on modal focus.
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  await page.locator(".proj-card:not(.proj-example) .pc-del").first().click();
+  await page.locator(".project-delete-choice-modal")
+    .getByRole("button", { name: "Remove from Wisp only", exact: true })
+    .click();
   await expect.poll(async () => page.evaluate(() =>
-    ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "delete_project"),
-  )).toBe(true);
+    ((window as any).__skillInvokeLog ?? [])
+      .filter((c: any) => c.cmd === "delete_project")
+      .map((c: any) => c.args instanceof Map ? c.args.get("deleteData") : c.args?.deleteData),
+  )).toContain(false);
+});
+
+test("deleting project data requires a second confirmation and five-second countdown", async ({ page }) => {
+  await page.clock.install();
+  await page.goto("/");
+  const deleteButton = page.locator(".proj-card:not(.proj-example) .pc-del").first();
+  await deleteButton.click();
+  await page.getByRole("button", { name: "Delete project and local data", exact: true }).click();
+
+  const destructiveModal = page.locator(".project-delete-data-modal");
+  await expect(destructiveModal).toBeVisible();
+  await expect(destructiveModal).toContainText("This cannot be undone");
+  const permanentDelete = destructiveModal.getByRole("button", { name: /Permanently delete/ });
+  expect(await permanentDelete.textContent()).toBe("Permanently delete (5s)");
+  await expect(permanentDelete).toBeDisabled();
+
+  // One Escape closes only the topmost confirmation and returns to the choice
+  // dialog. A second press closes that parent dialog.
+  await page.keyboard.press("Escape");
+  await expect(destructiveModal).toHaveCount(0);
+  await expect(page.locator(".project-delete-choice-modal")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".project-delete-choice-modal")).toHaveCount(0);
+
+  await deleteButton.click();
+  await page.getByRole("button", { name: "Delete project and local data", exact: true }).click();
+  const confirmedDelete = page.locator(".project-delete-data-modal")
+    .getByRole("button", { name: /Permanently delete/ });
+  await page.clock.fastForward(4_900);
+  await expect(confirmedDelete).toBeDisabled();
+  await page.clock.fastForward(200);
+  await expect(confirmedDelete).toBeEnabled();
+  await expect(confirmedDelete).toHaveText("Permanently delete");
+  await confirmedDelete.click();
+
+  await expect.poll(async () => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? [])
+      .filter((c: any) => c.cmd === "delete_project")
+      .map((c: any) => c.args instanceof Map ? c.args.get("deleteData") : c.args?.deleteData),
+  )).toContain(true);
 });
 
 test("external links open in the system browser, not the app webview (#97)", async ({ page }) => {
