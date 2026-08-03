@@ -567,11 +567,12 @@ and enrichment result files preview correctly.
 - **Agent loop** (`wisp-core::agent`): read → think → tool-call → verify,
   streaming tokens to an `Output` sink. Stops on `attempt_completion` or when
   the model returns no tool calls.
-- **Context compaction** (`wisp-core::context`): three tiers fire before each
-  model call at 80% of the context budget — micro-compact oversized tool
-  output, drop old turns, then an LLM-driven full summary as a last resort.
-  Skill catalogs and MCP schemas use progressive disclosure instead of living
-  in the baseline prompt.
+- **Context compaction** (`wisp-core::context`): an archive-first pipeline fires
+  before each model call at 80% of the context budget — safely prune tool/media
+  noise, then summarize the sanitized original history before replacing any
+  semantic turns. The result is one incremental checkpoint plus an 8K-token
+  recent tail; old turns are never silently dropped. Skill catalogs and MCP
+  schemas use progressive disclosure instead of living in the baseline prompt.
 - **Providers** (`wisp-llm`): one trait, two wire formats (OpenAI
   `/chat/completions` and Anthropic `/v1/messages`), both with SSE streaming.
   `RoutedProvider` picks a low/medium/high tier per turn from the last user

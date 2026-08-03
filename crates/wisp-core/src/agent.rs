@@ -681,6 +681,47 @@ mod tests {
         stream_calls: AtomicUsize,
     }
 
+    struct AutoCompactProvider {
+        stream_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for AutoCompactProvider {
+        fn name(&self) -> &str {
+            "auto-compact"
+        }
+
+        fn model(&self) -> &str {
+            "auto-compact"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            Ok(Completion {
+                content: "Objective\nContinue the current conversation after compaction.".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            })
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Completion {
+                content: "continued after compacting".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            })
+        }
+    }
+
     #[async_trait]
     impl Provider for FailingCompactProvider {
         fn name(&self) -> &str {
@@ -819,11 +860,9 @@ mod tests {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let provider = SequenceProvider::new([Completion {
-            content: "continued after compacting".into(),
-            finish_reason: Some("stop".into()),
-            ..Completion::default()
-        }]);
+        let provider = AutoCompactProvider {
+            stream_calls: AtomicUsize::new(0),
+        };
         let output = CompactionCounter(AtomicUsize::new(0));
         let mut ctx = ContextManager::new(1_000);
         let tools = Registry::builtins().filtered(&[]);
@@ -890,7 +929,7 @@ mod tests {
         assert!(!ctx.messages.iter().any(|message| message
             .content
             .as_text()
-            .contains("Create a detailed summary of the conversation so far")));
+            .contains("Return only the updated checkpoint")));
         assert_eq!(provider.complete_requests.lock().unwrap().len(), 1);
 
         let _ = std::fs::remove_dir_all(root);

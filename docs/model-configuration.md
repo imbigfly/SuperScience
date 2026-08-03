@@ -91,10 +91,15 @@ estimated context before every native-agent model call, including later calls
 after large tool results and ephemeral host/reviewer injections. At 80% it
 archives the complete pre-compact history and targets 60%, leaving headroom so
 the next ordinary result does not immediately trigger another rewrite. Older
-turns are folded first; oversized recent tool payloads become bounded excerpts
-that point to the archive; an LLM summary is the last resort. The internal
-summary instruction is never added to the conversation, and a failed
-compaction stops before Wisp can send the known-oversized main request. Tool
+tool output, reasoning, and images are safely pruned first without shortening
+user messages or visible assistant answers; oversized recent tool payloads
+become bounded excerpts that point to the archive. If semantic turns must be
+removed, Wisp summarizes a sanitized projection of the original history before
+deleting them, then retains one incrementally updated summary checkpoint plus
+at most two recent turns in an 8K-token tail. Raw images and large tool results
+are not replayed to the summary model. The internal summary instruction is
+never added to the conversation, and a failed compaction rolls back the rewrite
+and stops before Wisp can send the known-oversized main request. Tool
 results are also capped to a 16 KiB head/tail excerpt when they enter model
 context (the full result is still shown in the tool event), preventing one
 read, grep, browser, or MCP response from consuming the whole window. Each
