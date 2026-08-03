@@ -78,6 +78,24 @@ const THEME_STORAGE_KEY: &str = "wisp-theme";
 const SIDE_CHAT_SCROLLER_ID: &str = "side-chat-scroller";
 const SIDE_CHAT_INPUT_ID: &str = "side-chat-input";
 
+fn project_transfer_stage_label(locale: Locale, stage: &str) -> String {
+    let key = match stage {
+        "selecting_export_destination" => "projects.transfer.selecting_export_destination",
+        "selecting_import_destination" => "projects.transfer.selecting_import_destination",
+        "selecting_archive" => "projects.transfer.selecting_archive",
+        "preparing" => "projects.transfer.preparing",
+        "scanning" => "projects.transfer.scanning",
+        "writing" => "projects.transfer.writing",
+        "validating" => "projects.transfer.validating",
+        "publishing" => "projects.transfer.publishing",
+        "reading" => "projects.transfer.reading",
+        "extracting" => "projects.transfer.extracting",
+        "registering" => "projects.transfer.registering",
+        _ => "projects.transfer.preparing",
+    };
+    t(locale, key)
+}
+
 /// Let component-owned inner surfaces consume Escape before the app-level
 /// stack sees it. The listener is capture-phase and owner-scoped, so it does
 /// not depend on focus landing inside the surface and is removed on cleanup.
@@ -871,6 +889,7 @@ fn App() -> impl IntoView {
     let demo_mode = create_rw_signal(false); // true = the synthetic "Example project" is open
     let scratch_open = create_rw_signal(false); // ephemeral scratch chat overlay
     let project_open_error = create_rw_signal(None::<String>);
+    let project_transfer = create_rw_signal(None::<ProjectTransferProgress>);
     let app_shell_entering = create_rw_signal(false);
     let project_transition_epoch = Rc::new(Cell::new(0u64));
     let project_transition_target = Rc::new(RefCell::new(None::<String>));
@@ -2720,6 +2739,21 @@ fn App() -> impl IntoView {
     acp_update_cb.forget();
     spawn_local(async move {
         let _ = listen("acp-session-update", &acp_update_js).await;
+    });
+
+    let project_transfer_cb = Closure::wrap(Box::new(move |payload: JsValue| {
+        let Ok(progress) = serde_wasm_bindgen::from_value::<ProjectTransferProgress>(payload) else {
+            return;
+        };
+        project_transfer.set(Some(progress));
+    }) as Box<dyn FnMut(JsValue)>);
+    let project_transfer_js: js_sys::Function = project_transfer_cb
+        .as_ref()
+        .unchecked_ref::<js_sys::Function>()
+        .clone();
+    project_transfer_cb.forget();
+    spawn_local(async move {
+        let _ = listen_current_window("project-transfer-progress", &project_transfer_js).await;
     });
 
     let acp_state_cb = Closure::wrap(Box::new(move |payload: JsValue| {
@@ -6443,6 +6477,14 @@ fn App() -> impl IntoView {
         if ev.key() != "Escape" || ev.default_prevented() || ime_composing(ev) {
             return;
         }
+        if let Some(transfer) = project_transfer.get() {
+            if transfer.is_complete() {
+                project_transfer.set(None);
+            }
+            ev.prevent_default();
+            ev.stop_propagation();
+            return;
+        }
         if context_recovery_dialog.get().is_some() {
             ev.prevent_default();
             if !context_recovery_busy.get() {
@@ -7367,16 +7409,30 @@ fn App() -> impl IntoView {
         if show_projects.get_untracked() || demo_mode.get_untracked() {
             return;
         }
+        if project_transfer.get_untracked().is_some() {
+            return;
+        }
         let Some(id) = project_info.get_untracked().map(|project| project.id) else {
             return;
         };
         project_open_error.set(None);
+        project_transfer.set(Some(ProjectTransferProgress::selecting("export")));
         spawn_local(async move {
             let args = to_value(&serde_json::json!({ "id": id })).unwrap();
-            if let Err(error) = invoke_checked("export_project", args).await {
-                let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                status.set(message.clone());
-                project_open_error.set(Some(message));
+            match invoke_checked("export_project", args).await {
+                Ok(value) => {
+                    if let Ok(Some(path)) = serde_wasm_bindgen::from_value::<Option<String>>(value) {
+                        project_transfer.set(Some(ProjectTransferProgress::complete("export", Some(path))));
+                    } else {
+                        project_transfer.set(None);
+                    }
+                }
+                Err(error) => {
+                    project_transfer.set(None);
+                    let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                    status.set(message.clone());
+                    project_open_error.set(Some(message));
+                }
             }
         });
     });
@@ -7613,11 +7669,88 @@ fn App() -> impl IntoView {
             on_new_session=palette_new_session on_open_scratch=open_scratch
             on_project_settings=palette_project_settings
             on_manage_skills=palette_manage_skills on_attach=palette_attach />
+        {move || project_transfer.get().map(|transfer| {
+            let complete = transfer.is_complete();
+            let title = if complete {
+                t(
+                    locale.get(),
+                    if transfer.direction == "export" {
+                        "projects.transfer.export_complete"
+                    } else {
+                        "projects.transfer.import_complete"
+                    },
+                )
+            } else if transfer.direction == "export" {
+                t(locale.get(), "projects.transfer.export_title")
+            } else {
+                t(locale.get(), "projects.transfer.import_title")
+            };
+            let stage = if complete {
+                String::new()
+            } else {
+                project_transfer_stage_label(locale.get(), &transfer.stage)
+            };
+            let byte_progress = transfer.total_bytes.map(|total| {
+                format!(
+                    "{} / {}",
+                    format_bytes(transfer.completed_bytes),
+                    format_bytes(total),
+                )
+            });
+            let file_progress = transfer.total_files.map(|total| {
+                tf(
+                    locale.get(),
+                    "projects.transfer.files",
+                    &[
+                        ("done", &transfer.completed_files.to_string()),
+                        ("total", &total.to_string()),
+                    ],
+                )
+            });
+            let detail = transfer.current_path.clone();
+            let import_hint = (!complete && transfer.direction == "import")
+                .then(|| t(locale.get(), "projects.transfer.import_destination_hint"));
+            let max = transfer.total_bytes.unwrap_or(1).to_string();
+            let value = transfer.total_bytes.map(|_| transfer.completed_bytes.to_string());
+            view! {
+                <div class="overlay project-transfer-overlay">
+                    <div class="modal confirm-modal project-transfer-modal"
+                        data-testid="project-transfer-modal"
+                        role="dialog" aria-modal="true" aria-live="polite">
+                        <h2>{title}</h2>
+                        {(!complete).then(|| view! {
+                            <div class="project-transfer-progress" role="status">
+                                <span class="project-transfer-stage">{stage}</span>
+                                <progress max=max value=value></progress>
+                                <div class="project-transfer-meta">
+                                    {byte_progress.map(|progress| view! { <span>{progress}</span> })}
+                                    {file_progress.map(|progress| view! { <span>{progress}</span> })}
+                                </div>
+                            </div>
+                        })}
+                        {import_hint.map(|hint| view! {
+                            <div class="project-transfer-hint">{hint}</div>
+                        })}
+                        {detail.map(|path| view! {
+                            <div class="project-transfer-path" title=path.clone()>{path}</div>
+                        })}
+                        {complete.then(|| view! {
+                            <div class="row">
+                                <button type="button" class="primary"
+                                    on:click=move |_| project_transfer.set(None)>
+                                    {move || t(locale.get(), "projects.transfer.done")}
+                                </button>
+                            </div>
+                        })}
+                    </div>
+                </div>
+            }
+        })}
         <ProjectLanding
             state=ProjectLandingState {
                 show_projects, demo_mode, items, active_session, project_open_error,
                 demos, modal_artifact, locale, running, approval_pending,
-                sync_actions_available, command_palette_open,
+                sync_actions_available, command_palette_open, project_transfer,
             }
             open_project=switch_project
             open_project_session=palette_open_session

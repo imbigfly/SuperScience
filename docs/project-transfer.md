@@ -13,6 +13,12 @@ To move a project from Windows to macOS:
 4. Pick a parent folder. Wisp creates a new folder named after the project and
    opens the imported project.
 
+During both operations, Wisp keeps a progress dialog open with the current
+stage, files, bytes, and path being processed. An export is published as the
+selected ZIP only after its completed archive has been checked against its
+manifest; while it is running, do not use the temporary or still-empty archive
+file as a transfer copy.
+
 ## Path rules
 
 The ZIP never treats the source `workspace_dir` as the destination. Workspace
