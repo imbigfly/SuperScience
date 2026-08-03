@@ -232,7 +232,9 @@ test("Example project shows bundled demos as read-only transcripts", async ({ pa
   await page.getByText("Example project").click();
   await expect(page.getByText("Help me find RNA-seq knockdown datasets")).toBeVisible();
   await expect(page.getByText("What specific samples are included in GSE153250")).toBeVisible();
-  await page.getByText("Connect to the remote compute host").click();
+  await expect(page.getByText("Based on the upstream Counts data from GSE153250")).toBeVisible();
+  await expect(page.getByText("Based on the Counts data from our study")).toBeVisible();
+  await page.getByText("Connect to the remote compute host, locate the FASTQ data").click();
 
   // The demo request renders as the user turn…
   await expect(

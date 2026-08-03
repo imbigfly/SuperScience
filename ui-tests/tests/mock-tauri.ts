@@ -49,12 +49,24 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   ];
   const demoRunJson = JSON.stringify({
     id: "demo-run-001",
+    frame_id: null,
     context_id: "ssh:remote-host",
     title: "Re-run pipeline with fixed STAR index",
     kind: "ssh_direct",
     status: "succeeded",
     command: "cd ~/workspace/GSE153250 && bash pipeline.sh",
+    created_at: 1_700_000_000,
+    started_at: 1_700_000_001,
+    ended_at: 1_700_000_120,
+    exit_code: 0,
     stdout_tail: "Pipeline finished: 38606 genes, 12 samples",
+    stderr_tail: "",
+    remote_workdir: null,
+    timeout_secs: null,
+    last_polled_at: 1_700_000_120,
+    last_poll_error: null,
+    progress_json: "{}",
+    env_snapshot_json: "{}",
   });
   const demo = {
     id: "manifest_esr1_03_rnaseq",
