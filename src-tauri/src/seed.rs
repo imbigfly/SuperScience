@@ -124,7 +124,8 @@ pub fn list_demos() -> Vec<DemoInfo> {
             out.push(DemoInfo { id: stem, title });
         }
     }
-    out.sort_by(|a, b| a.title.cmp(&b.title));
+    // Numeric id prefixes (manifest_esr1_01_…) keep the research narrative order.
+    out.sort_by(|a, b| a.id.cmp(&b.id));
     out
 }
 
@@ -170,7 +171,7 @@ fn clean_item(mut item: DemoUiItem) -> DemoUiItem {
     item
 }
 
-/// Load one demo by id (the manifest file stem, e.g. `manifest_esr1_rnaseq`).
+/// Load one demo by id (the manifest file stem, e.g. `manifest_esr1_03_rnaseq`).
 pub fn load_demo(id: &str) -> Option<Demo> {
     let dir = bundled_dir()?;
     let path = dir.join(format!("{id}.json"));
@@ -217,24 +218,37 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("wisp-seed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        let id = "manifest_esr1_rnaseq";
-        extract_demo_assets(id, &tmp).expect("extract ESR1 demo assets");
+
+        extract_demo_assets("manifest_esr1_03_rnaseq", &tmp).expect("extract rnaseq assets");
         assert!(tmp.join("GSE153250_counts_matrix.tsv").is_file());
         assert!(tmp.join("GSE153250_sample_groups.txt").is_file());
         assert!(tmp.join("GSE153250_featureCounts_summary.txt").is_file());
+
+        let down = tmp.join("downstream");
+        std::fs::create_dir_all(&down).unwrap();
+        extract_demo_assets("manifest_esr1_04_downstream", &down)
+            .expect("extract downstream assets");
+        assert!(down.join("DESeq2_top200.csv").is_file());
+        assert!(down.join("research_projects.md").is_file());
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn lists_and_loads_bundled_demos() {
         let demos = list_demos();
-        assert_eq!(demos.len(), 3, "bundled seed should ship the three ESR1 demos");
+        assert_eq!(demos.len(), 5, "bundled seed should ship the five ESR1 demos");
+        assert_eq!(
+            demos.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+            [
+                "manifest_esr1_01_datasets",
+                "manifest_esr1_02_samples",
+                "manifest_esr1_03_rnaseq",
+                "manifest_esr1_04_downstream",
+                "manifest_esr1_05_hypotheses",
+            ]
+        );
         for info in &demos {
-            assert!(
-                info.id.starts_with("manifest_esr1_"),
-                "unexpected demo id {}",
-                info.id
-            );
             let demo = load_demo(&info.id).expect("load demo");
             assert!(!demo.request.is_empty());
             assert!(!demo.request.contains("English reply"));
@@ -248,10 +262,23 @@ mod tests {
             let blob = serde_json::to_string(&demo).unwrap();
             assert!(!blob.to_ascii_lowercase().contains("guotosky"));
             assert!(!blob.contains("10.10.10."));
+            assert!(!blob.contains(":7897"));
             assert!(!blob.contains("{{artifact:"));
         }
 
-        let rnaseq = load_demo("manifest_esr1_rnaseq").expect("rnaseq demo");
+        let datasets = load_demo("manifest_esr1_01_datasets").expect("datasets demo");
+        assert!(
+            datasets.request.contains("MCF7") || datasets.request.contains("ESR1"),
+            "datasets demo request should mention ESR1/MCF7"
+        );
+
+        let samples = load_demo("manifest_esr1_02_samples").expect("samples demo");
+        assert!(
+            samples.request.contains("GSE153250"),
+            "samples demo request should mention GSE153250"
+        );
+
+        let rnaseq = load_demo("manifest_esr1_03_rnaseq").expect("rnaseq demo");
         assert!(
             rnaseq
                 .items
@@ -264,16 +291,19 @@ mod tests {
             "rnaseq response should mention the study"
         );
 
-        let datasets = load_demo("manifest_esr1_datasets").expect("datasets demo");
+        let downstream = load_demo("manifest_esr1_04_downstream").expect("downstream demo");
         assert!(
-            datasets.request.contains("MCF7") || datasets.request.contains("ESR1"),
-            "datasets demo request should mention ESR1/MCF7"
+            downstream.request.contains("differential")
+                || downstream.request.contains("GSEA")
+                || downstream.request.contains("Enrichr"),
+            "downstream demo request should mention enrichment/DEG"
         );
 
-        let samples = load_demo("manifest_esr1_samples").expect("samples demo");
+        let hypotheses = load_demo("manifest_esr1_05_hypotheses").expect("hypotheses demo");
         assert!(
-            samples.request.contains("GSE153250"),
-            "samples demo request should mention GSE153250"
+            hypotheses.request.contains("research projects")
+                || hypotheses.request.contains("scientific"),
+            "hypotheses demo request should ask for research projects"
         );
     }
 }
