@@ -3926,31 +3926,27 @@ test("runtime inspector lists object metadata without loading object contents", 
     .toHaveAttribute("aria-pressed", "true");
 
   const beforeDrag = await rEnvironment.boundingBox();
-  await rEnvironment.locator(".runtime-environment-title").evaluate((handle) => {
-    const rect = handle.getBoundingClientRect();
-    const startX = rect.left + rect.width / 2;
-    const startY = rect.top + rect.height / 2;
-    handle.dispatchEvent(new PointerEvent("pointerdown", {
-      bubbles: true,
-      button: 0,
-      pointerId: 7,
-      clientX: startX,
-      clientY: startY,
-    }));
-    handle.dispatchEvent(new PointerEvent("pointermove", {
-      bubbles: true,
-      buttons: 1,
-      pointerId: 7,
-      clientX: startX - 120,
-      clientY: startY + 48,
-    }));
-    handle.dispatchEvent(new PointerEvent("pointerup", {
-      bubbles: true,
-      button: 0,
-      pointerId: 7,
-      clientX: startX - 120,
-      clientY: startY + 48,
-    }));
+  const dragHandle = rEnvironment.locator(".runtime-environment-title");
+  const dragBox = await dragHandle.boundingBox();
+  expect(dragBox).not.toBeNull();
+  const startX = dragBox!.x + dragBox!.width / 2;
+  const startY = dragBox!.y + dragBox!.height / 2;
+  // Dispatch each pointer phase separately and wait for the drag state before
+  // moving. Sending all three events in one evaluate callback lets Leptos batch
+  // the state transitions on a busy CI worker, so the move can observe no
+  // active drag even though the same sequence passes locally.
+  await dragHandle.dispatchEvent("pointerdown", {
+    button: 0,
+    pointerId: 7,
+    clientX: startX,
+    clientY: startY,
+  });
+  await expect(rEnvironment).toHaveClass(/is-dragging/);
+  await dragHandle.dispatchEvent("pointermove", {
+    buttons: 1,
+    pointerId: 7,
+    clientX: startX - 120,
+    clientY: startY + 48,
   });
   await expect.poll(async () => {
     const afterDrag = await rEnvironment.boundingBox();
@@ -3960,6 +3956,13 @@ test("runtime inspector lists object metadata without loading object contents", 
     const afterDrag = await rEnvironment.boundingBox();
     return beforeDrag && afterDrag ? Math.round(afterDrag.y - beforeDrag.y) : 0;
   }).toBeGreaterThan(30);
+  await dragHandle.dispatchEvent("pointerup", {
+    button: 0,
+    pointerId: 7,
+    clientX: startX - 120,
+    clientY: startY + 48,
+  });
+  await expect(rEnvironment).not.toHaveClass(/is-dragging/);
 
   await page.keyboard.press("Escape");
   await expect(rEnvironment).toHaveCount(0);
