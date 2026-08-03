@@ -11,6 +11,55 @@ use crate::i18n::Locale;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Progress emitted by the native project archive importer/exporter. Mirrors
+/// `ProjectTransferProgress` in `src-tauri/src/project_transfer.rs`.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectTransferProgress {
+    pub(crate) direction: String,
+    pub(crate) stage: String,
+    pub(crate) completed_files: u64,
+    pub(crate) total_files: Option<u64>,
+    pub(crate) completed_bytes: u64,
+    pub(crate) total_bytes: Option<u64>,
+    #[serde(default)]
+    pub(crate) current_path: Option<String>,
+}
+
+impl ProjectTransferProgress {
+    pub(crate) fn selecting(direction: &str) -> Self {
+        Self {
+            direction: direction.into(),
+            stage: if direction == "export" {
+                "selecting_export_destination".into()
+            } else {
+                "selecting_archive".into()
+            },
+            completed_files: 0,
+            total_files: None,
+            completed_bytes: 0,
+            total_bytes: None,
+            current_path: None,
+        }
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        self.stage == "complete"
+    }
+
+    pub(crate) fn complete(direction: &str, current_path: Option<String>) -> Self {
+        Self {
+            direction: direction.into(),
+            stage: "complete".into(),
+            completed_files: 0,
+            total_files: None,
+            completed_bytes: 0,
+            total_bytes: None,
+            current_path,
+        }
+    }
+}
+
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CustomCredentialStatus {

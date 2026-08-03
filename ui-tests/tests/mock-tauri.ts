@@ -142,6 +142,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const nextProjectOpenDelayMs: Record<string, number> = {};
   let nextProbeDelayMs = 0;
   let nextSessionImportDelayMs = 0;
+  const nextProjectTransferDelayMs: Record<string, number> = {};
   let failNextProjectOpenId: string | null = null;
   (window as any).__delayNextProjectOpen = (projectId: string, milliseconds: number) => {
     nextProjectOpenDelayMs[String(projectId)] = Math.max(0, Number(milliseconds) || 0);
@@ -151,6 +152,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   };
   (window as any).__delayNextSessionImport = (milliseconds: number) => {
     nextSessionImportDelayMs = Math.max(0, Number(milliseconds) || 0);
+  };
+  (window as any).__delayNextProjectTransfer = (direction: string, milliseconds: number) => {
+    nextProjectTransferDelayMs[String(direction)] = Math.max(0, Number(milliseconds) || 0);
   };
   (window as any).__failNextProjectOpen = (projectId: string) => {
     failNextProjectOpenId = String(projectId);
@@ -1803,12 +1807,29 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "create_project":
             activeProjectId = "default";
             return { id: "default", name: project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
-          case "import_project":
+          case "import_project": {
+            const delay = nextProjectTransferDelayMs.import ?? 0;
+            delete nextProjectTransferDelayMs.import;
+            if (delay > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(delay, 40)));
+            emit("project-transfer-progress", {
+              direction: "import", stage: "extracting", completedFiles: 1, totalFiles: 2,
+              completedBytes: 512, totalBytes: 1024, currentPath: "workspace/data/example.tsv",
+            });
+            if (delay > 40) await new Promise((resolve) => setTimeout(resolve, delay - 40));
             return { id: "default", name: project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
+          }
           case "join_synced_project":
             return { id: "other", name: "Other project", workspace_dir: "/mock/other", session_count: 1, updated_at: 2, running_count: 0, needs_you_count: 0 };
-          case "export_project":
+          case "export_project": {
+            const delay = nextProjectTransferDelayMs.export ?? 0;
+            delete nextProjectTransferDelayMs.export;
+            emit("project-transfer-progress", {
+              direction: "export", stage: "writing", completedFiles: 1, totalFiles: 2,
+              completedBytes: 512, totalBytes: 1024, currentPath: "data/example.tsv",
+            });
+            if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
             return "/mock/wisp-project.zip";
+          }
           case "sync_project":
             if ((window as any).__failSyncConflict) {
               (window as any).__failSyncConflict = false;

@@ -19,6 +19,7 @@ pub(super) struct ProjectLandingState {
     pub(super) running: RwSignal<HashSet<String>>,
     pub(super) approval_pending: RwSignal<HashSet<String>>,
     pub(super) command_palette_open: RwSignal<bool>,
+    pub(super) project_transfer: RwSignal<Option<ProjectTransferProgress>>,
 }
 #[component]
 pub(super) fn ProjectLanding(
@@ -41,6 +42,7 @@ pub(super) fn ProjectLanding(
         running,
         approval_pending,
         command_palette_open,
+        project_transfer,
     } = state;
 
     move || {
@@ -77,6 +79,7 @@ pub(super) fn ProjectLanding(
                     on_open_demo=on_open_demo
                     on_open_scratch=open_scratch
                     on_search=Callback::new(move |_| command_palette_open.set(true))
+                    project_transfer=project_transfer
                 />
             }
         })

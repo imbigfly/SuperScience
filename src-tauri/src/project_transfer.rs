@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 const ARCHIVE_KIND: &str = "wisp-project";
 const ARCHIVE_VERSION: u32 = 1;
@@ -11,6 +11,61 @@ const MANIFEST_PATH: &str = "manifest.json";
 const DATABASE_PATH: &str = "metadata/project.sqlite";
 const WORKSPACE_PREFIX: &str = "workspace";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+const PROJECT_TRANSFER_PROGRESS_EVENT: &str = "project-transfer-progress";
+const COPY_PROGRESS_INTERVAL: u64 = 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectTransferProgress {
+    direction: &'static str,
+    stage: &'static str,
+    completed_files: u64,
+    total_files: Option<u64>,
+    completed_bytes: u64,
+    total_bytes: Option<u64>,
+    current_path: Option<String>,
+}
+
+#[derive(Clone)]
+struct TransferReporter {
+    app: AppHandle,
+    window_label: String,
+    direction: &'static str,
+}
+
+impl TransferReporter {
+    fn new(app: AppHandle, window: &WebviewWindow, direction: &'static str) -> Self {
+        Self {
+            app,
+            window_label: window.label().to_string(),
+            direction,
+        }
+    }
+
+    fn report(
+        &self,
+        stage: &'static str,
+        completed_files: u64,
+        total_files: Option<u64>,
+        completed_bytes: u64,
+        total_bytes: Option<u64>,
+        current_path: Option<&str>,
+    ) {
+        let _ = self.app.emit_to(
+            &self.window_label,
+            PROJECT_TRANSFER_PROGRESS_EVENT,
+            ProjectTransferProgress {
+                direction: self.direction,
+                stage,
+                completed_files,
+                total_files,
+                completed_bytes,
+                total_bytes,
+                current_path: current_path.map(str::to_owned),
+            },
+        );
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ProjectArchiveManifest {
@@ -264,14 +319,67 @@ fn zip_options(mode: Option<u32>, large: bool) -> zip::write::SimpleFileOptions 
         .unix_permissions(mode.unwrap_or(0o644))
 }
 
+fn copy_with_progress<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    reporter: Option<&TransferReporter>,
+    stage: &'static str,
+    current_path: &str,
+    completed_files: u64,
+    total_files: u64,
+    completed_bytes: u64,
+    total_bytes: u64,
+) -> std::io::Result<u64> {
+    let mut buffer = [0u8; 64 * 1024];
+    let mut copied = 0u64;
+    let mut last_reported = 0u64;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..read])?;
+        copied = copied.saturating_add(read as u64);
+        if copied.saturating_sub(last_reported) >= COPY_PROGRESS_INTERVAL {
+            if let Some(reporter) = reporter {
+                reporter.report(
+                    stage,
+                    completed_files,
+                    Some(total_files),
+                    completed_bytes.saturating_add(copied),
+                    Some(total_bytes),
+                    Some(current_path),
+                );
+            }
+            last_reported = copied;
+        }
+    }
+    Ok(copied)
+}
+
 fn write_project_archive(
     destination: &Path,
     database: &Path,
     workspace: &Path,
+    excluded: &Path,
     project: ArchivedProject,
     stats: &wisp_store::ProjectTransferStats,
+    reporter: Option<&TransferReporter>,
 ) -> Result<(), String> {
-    let collected = collect_workspace(workspace, destination)?;
+    if let Some(reporter) = reporter {
+        reporter.report("scanning", 0, None, 0, None, None);
+    }
+    let collected = collect_workspace(workspace, excluded)?;
+    let total_files = collected
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, WorkspaceEntryKind::File))
+        .count() as u64;
+    let total_bytes = collected
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, WorkspaceEntryKind::File))
+        .fold(0u64, |bytes, entry| bytes.saturating_add(entry.size));
     let result = (|| -> Result<(), String> {
         let output = std::fs::File::create(destination)
             .map_err(|error| format!("cannot create export: {error}"))?;
@@ -289,6 +397,9 @@ fn write_project_archive(
 
         let mut workspace_files = 0u64;
         let mut workspace_bytes = 0u64;
+        if let Some(reporter) = reporter {
+            reporter.report("writing", 0, Some(total_files), 0, Some(total_bytes), None);
+        }
         for entry in &collected.entries {
             let archive_path = format!("{WORKSPACE_PREFIX}/{}", entry.archive_path);
             match entry.kind {
@@ -308,11 +419,32 @@ fn write_project_archive(
                     let mut source = std::fs::File::open(&entry.source).map_err(|error| {
                         format!("cannot read {}: {error}", entry.source.display())
                     })?;
-                    let copied = std::io::copy(&mut source, &mut zip).map_err(|error| {
+                    let copied = copy_with_progress(
+                        &mut source,
+                        &mut zip,
+                        reporter,
+                        "writing",
+                        &entry.archive_path,
+                        workspace_files,
+                        total_files,
+                        workspace_bytes,
+                        total_bytes,
+                    )
+                    .map_err(|error| {
                         format!("cannot archive {}: {error}", entry.source.display())
                     })?;
                     workspace_files += 1;
                     workspace_bytes = workspace_bytes.saturating_add(copied);
+                    if let Some(reporter) = reporter {
+                        reporter.report(
+                            "writing",
+                            workspace_files,
+                            Some(total_files),
+                            workspace_bytes,
+                            Some(total_bytes),
+                            Some(&entry.archive_path),
+                        );
+                    }
                 }
             }
         }
@@ -384,15 +516,14 @@ fn read_manifest(archive_path: &Path) -> Result<ProjectArchiveManifest, String> 
     Ok(manifest)
 }
 
-fn is_symlink_mode(mode: Option<u32>) -> bool {
-    mode.is_some_and(|mode| mode & 0o170000 == 0o120000)
-}
-
-fn extract_project_archive(
+/// Reopen a newly written archive and consume every entry before publishing it.
+/// This catches a ZIP that was successfully closed but whose final directory or
+/// payload does not agree with its manifest, without exposing it at the
+/// user-selected filename first.
+fn verify_project_archive(
     archive_path: &Path,
-    staging_workspace: &Path,
-    database_path: &Path,
     manifest: &ProjectArchiveManifest,
+    reporter: Option<&TransferReporter>,
 ) -> Result<(), String> {
     let input = std::fs::File::open(archive_path).map_err(|error| error.to_string())?;
     let mut zip = zip::ZipArchive::new(input)
@@ -402,6 +533,131 @@ fn extract_project_archive(
     let mut database_found = false;
     let mut workspace_files = 0u64;
     let mut workspace_bytes = 0u64;
+    let total_files = manifest.contents.workspace_files;
+    let total_bytes = manifest.contents.workspace_bytes;
+
+    if let Some(reporter) = reporter {
+        reporter.report(
+            "validating",
+            0,
+            Some(total_files),
+            0,
+            Some(total_bytes),
+            None,
+        );
+    }
+
+    for index in 0..zip.len() {
+        let mut file = zip.by_index(index).map_err(|error| error.to_string())?;
+        let name = file.name().to_string();
+        if name.contains('\\') {
+            return Err("project archive contains a non-portable entry name".into());
+        }
+        if name == MANIFEST_PATH {
+            if manifest_found || file.is_dir() || is_symlink_mode(file.unix_mode()) {
+                return Err("project archive has an invalid manifest entry".into());
+            }
+            manifest_found = true;
+            std::io::copy(&mut file, &mut std::io::sink()).map_err(|error| error.to_string())?;
+            continue;
+        }
+        if name == DATABASE_PATH {
+            if database_found || file.is_dir() || is_symlink_mode(file.unix_mode()) {
+                return Err("project archive has invalid metadata".into());
+            }
+            database_found = true;
+            std::io::copy(&mut file, &mut std::io::sink()).map_err(|error| error.to_string())?;
+            continue;
+        }
+
+        let enclosed = file
+            .enclosed_name()
+            .ok_or_else(|| "project archive contains an unsafe path".to_string())?;
+        let relative = enclosed
+            .strip_prefix(WORKSPACE_PREFIX)
+            .map_err(|_| format!("unexpected project archive entry: {name}"))?;
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        if !seen.insert(relative.to_path_buf()) || is_symlink_mode(file.unix_mode()) {
+            return Err("project archive contains a duplicate or linked workspace path".into());
+        }
+        if relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err("project archive contains an unsafe workspace path".into());
+        }
+        if file.is_dir() {
+            continue;
+        }
+        let relative_display = relative.to_string_lossy();
+        let mut sink = std::io::sink();
+        let copied = copy_with_progress(
+            &mut file,
+            &mut sink,
+            reporter,
+            "validating",
+            &relative_display,
+            workspace_files,
+            total_files,
+            workspace_bytes,
+            total_bytes,
+        )
+        .map_err(|error| error.to_string())?;
+        workspace_files += 1;
+        workspace_bytes = workspace_bytes.saturating_add(copied);
+        if let Some(reporter) = reporter {
+            reporter.report(
+                "validating",
+                workspace_files,
+                Some(total_files),
+                workspace_bytes,
+                Some(total_bytes),
+                Some(&relative_display),
+            );
+        }
+    }
+    if !manifest_found || !database_found {
+        return Err("project archive is missing its manifest or metadata database".into());
+    }
+    if workspace_files != total_files || workspace_bytes != total_bytes {
+        return Err("project archive workspace is incomplete or inconsistent".into());
+    }
+    Ok(())
+}
+
+fn is_symlink_mode(mode: Option<u32>) -> bool {
+    mode.is_some_and(|mode| mode & 0o170000 == 0o120000)
+}
+
+fn extract_project_archive(
+    archive_path: &Path,
+    staging_workspace: &Path,
+    database_path: &Path,
+    manifest: &ProjectArchiveManifest,
+    reporter: Option<&TransferReporter>,
+) -> Result<(), String> {
+    let input = std::fs::File::open(archive_path).map_err(|error| error.to_string())?;
+    let mut zip = zip::ZipArchive::new(input)
+        .map_err(|error| format!("not a valid project archive: {error}"))?;
+    let mut seen = HashSet::<PathBuf>::new();
+    let mut manifest_found = false;
+    let mut database_found = false;
+    let mut workspace_files = 0u64;
+    let mut workspace_bytes = 0u64;
+    let total_files = manifest.contents.workspace_files;
+    let total_bytes = manifest.contents.workspace_bytes;
+    if let Some(reporter) = reporter {
+        reporter.report(
+            "extracting",
+            0,
+            Some(total_files),
+            0,
+            Some(total_bytes),
+            None,
+        );
+    }
     for index in 0..zip.len() {
         let mut file = zip.by_index(index).map_err(|error| error.to_string())?;
         let name = file.name().to_string();
@@ -453,9 +709,31 @@ fn extract_project_archive(
         }
         let mut output = std::fs::File::create(&destination)
             .map_err(|error| format!("cannot extract {}: {error}", destination.display()))?;
-        let copied = std::io::copy(&mut file, &mut output).map_err(|error| error.to_string())?;
+        let relative_display = relative.to_string_lossy();
+        let copied = copy_with_progress(
+            &mut file,
+            &mut output,
+            reporter,
+            "extracting",
+            &relative_display,
+            workspace_files,
+            total_files,
+            workspace_bytes,
+            total_bytes,
+        )
+        .map_err(|error| error.to_string())?;
         workspace_files += 1;
         workspace_bytes = workspace_bytes.saturating_add(copied);
+        if let Some(reporter) = reporter {
+            reporter.report(
+                "extracting",
+                workspace_files,
+                Some(total_files),
+                workspace_bytes,
+                Some(total_bytes),
+                Some(&relative_display),
+            );
+        }
         #[cfg(unix)]
         if let Some(mode) = file.unix_mode() {
             use std::os::unix::fs::PermissionsExt;
@@ -471,6 +749,49 @@ fn extract_project_archive(
     {
         return Err("project archive workspace is incomplete or inconsistent".into());
     }
+    Ok(())
+}
+
+fn temporary_archive_path(destination: &Path) -> Result<PathBuf, String> {
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let filename = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "the export destination must include a file name".to_string())?;
+    Ok(parent.join(format!(".{filename}.{}.partial", uuid::Uuid::new_v4())))
+}
+
+/// Publish a completed archive only after it has passed verification. If a
+/// previous archive exists, keep it as a short-lived backup until the rename
+/// succeeds so a failed publish cannot replace a known-good export.
+fn publish_archive(temporary: &Path, destination: &Path) -> Result<(), String> {
+    if !destination.exists() {
+        return std::fs::rename(temporary, destination)
+            .map_err(|error| format!("cannot publish project archive: {error}"));
+    }
+
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let filename = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "the export destination must include a file name".to_string())?;
+    let backup = parent.join(format!(".{filename}.{}.backup", uuid::Uuid::new_v4()));
+    std::fs::rename(destination, &backup).map_err(|error| {
+        format!("cannot prepare existing project archive for replacement: {error}")
+    })?;
+    if let Err(error) = std::fs::rename(temporary, destination) {
+        let _ = std::fs::rename(&backup, destination);
+        return Err(format!("cannot publish project archive: {error}"));
+    }
+    let _ = std::fs::remove_file(backup);
     Ok(())
 }
 
@@ -525,10 +846,13 @@ pub(super) async fn pick_import_parent(app: &AppHandle) -> Result<Option<PathBuf
 pub(super) async fn export_project(
     app: AppHandle,
     state: State<'_, AppState>,
+    window: WebviewWindow,
     id: String,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
+    let reporter = TransferReporter::new(app.clone(), &window, "export");
+    reporter.report("selecting_export_destination", 0, None, 0, None, None);
     let _project_activity = state.begin_project_activity(&id)?;
     let (name, description, workspace_dir) = state
         .store
@@ -580,6 +904,7 @@ pub(super) async fn export_project(
         return Ok(None);
     };
 
+    reporter.report("preparing", 0, None, 0, None, None);
     std::fs::create_dir_all(&state.app_data).map_err(|error| error.to_string())?;
     let database = TempFile(
         state
@@ -597,18 +922,28 @@ pub(super) async fn export_project(
         name,
         description,
     };
+    let temporary = temporary_archive_path(&destination)?;
+    let _temporary_archive = TempFile(temporary.clone());
     let destination_for_task = destination.clone();
+    let reporter_for_task = reporter.clone();
     tokio::task::spawn_blocking(move || {
         write_project_archive(
-            &destination_for_task,
+            &temporary,
             &database.0,
             &workspace,
+            &destination_for_task,
             project,
             &stats,
-        )
+            Some(&reporter_for_task),
+        )?;
+        let manifest = read_manifest(&temporary)?;
+        verify_project_archive(&temporary, &manifest, Some(&reporter_for_task))?;
+        reporter_for_task.report("publishing", 0, None, 0, None, None);
+        publish_archive(&temporary, &destination_for_task)
     })
     .await
     .map_err(|error| error.to_string())??;
+    reporter.report("complete", 0, None, 0, None, None);
     Ok(Some(destination.to_string_lossy().into_owned()))
 }
 
@@ -616,10 +951,14 @@ pub(super) async fn export_project(
 pub(super) async fn import_project(
     app: AppHandle,
     state: State<'_, AppState>,
+    window: WebviewWindow,
 ) -> Result<Option<ProjectSummary>, String> {
+    let reporter = TransferReporter::new(app.clone(), &window, "import");
+    reporter.report("selecting_archive", 0, None, 0, None, None);
     let Some(archive_path) = pick_archive(&app).await? else {
         return Ok(None);
     };
+    reporter.report("reading", 0, None, 0, None, None);
     let archive_for_manifest = archive_path.clone();
     let manifest = tokio::task::spawn_blocking(move || read_manifest(&archive_for_manifest))
         .await
@@ -633,6 +972,7 @@ pub(super) async fn import_project(
     {
         return Err("This project is already present on this device.".into());
     }
+    reporter.report("selecting_import_destination", 0, None, 0, None, None);
     let Some(parent) = pick_import_parent(&app).await? else {
         return Ok(None);
     };
@@ -650,17 +990,20 @@ pub(super) async fn import_project(
     let staging_for_extract = staging.0.clone();
     let database_for_extract = database.0.clone();
     let manifest_for_extract = manifest.clone();
+    let reporter_for_extract = reporter.clone();
     tokio::task::spawn_blocking(move || {
         extract_project_archive(
             &archive_for_extract,
             &staging_for_extract,
             &database_for_extract,
             &manifest_for_extract,
+            Some(&reporter_for_extract),
         )
     })
     .await
     .map_err(|error| error.to_string())??;
 
+    reporter.report("registering", 0, None, 0, None, None);
     std::fs::rename(&staging.0, &destination)
         .map_err(|error| format!("cannot place imported project: {error}"))?;
     if let Err(error) = workspace_manifest::init_workspace_layout(
@@ -679,9 +1022,9 @@ pub(super) async fn import_project(
         let _ = std::fs::remove_dir_all(&destination);
         return Err(error.to_string());
     }
-    Ok(Some(
-        build_project_summary(&state, &manifest.project.id).await,
-    ))
+    let summary = build_project_summary(&state, &manifest.project.id).await;
+    reporter.report("complete", 0, None, 0, None, None);
+    Ok(Some(summary))
 }
 
 #[cfg(test)]
@@ -733,16 +1076,20 @@ mod tests {
             &archive,
             &database,
             &workspace,
+            &archive,
             sample_manifest().project,
             &stats,
+            None,
         )
         .unwrap();
         let manifest = read_manifest(&archive).unwrap();
         assert_eq!(manifest.source_os, std::env::consts::OS);
         assert_eq!(manifest.contents.workspace_files, 3);
         assert_eq!(manifest.contents.workspace_bytes, 21);
+        verify_project_archive(&archive, &manifest, None).unwrap();
         std::fs::create_dir_all(&extracted).unwrap();
-        extract_project_archive(&archive, &extracted, &extracted_database, &manifest).unwrap();
+        extract_project_archive(&archive, &extracted, &extracted_database, &manifest, None)
+            .unwrap();
         assert_eq!(
             std::fs::read(extracted.join("figures/plot.txt")).unwrap(),
             b"plot"
@@ -759,6 +1106,57 @@ mod tests {
         assert_eq!(
             std::fs::read(extracted_database).unwrap(),
             b"sqlite-placeholder"
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn temporary_archive_is_hidden_beside_the_final_destination() {
+        let destination = Path::new("C:/exports/wisp-project-study.zip");
+        let temporary = temporary_archive_path(destination).unwrap();
+        assert_eq!(temporary.parent(), destination.parent());
+        assert!(temporary
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(".wisp-project-study.zip."));
+        assert!(temporary
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".partial"));
+    }
+
+    #[test]
+    fn verification_rejects_a_manifest_that_does_not_match_the_workspace() {
+        let base = std::env::temp_dir().join(format!(
+            "wisp_project_archive_mismatch_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("mismatch.zip");
+        let mut manifest = sample_manifest();
+        manifest.contents.workspace_files = 2;
+        manifest.contents.workspace_bytes = 2;
+
+        let output = std::fs::File::create(&archive).unwrap();
+        let mut zip = zip::ZipWriter::new(output);
+        zip.start_file(DATABASE_PATH, zip_options(None, false))
+            .unwrap();
+        zip.write_all(b"sqlite").unwrap();
+        zip.start_file("workspace/figures/plot.txt", zip_options(None, false))
+            .unwrap();
+        zip.write_all(b"x").unwrap();
+        zip.start_file(MANIFEST_PATH, zip_options(None, false))
+            .unwrap();
+        zip.write_all(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        zip.finish().unwrap();
+
+        let manifest = read_manifest(&archive).unwrap();
+        assert_eq!(
+            verify_project_archive(&archive, &manifest, None).unwrap_err(),
+            "project archive workspace is incomplete or inconsistent"
         );
         let _ = std::fs::remove_dir_all(base);
     }

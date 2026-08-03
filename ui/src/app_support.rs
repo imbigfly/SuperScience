@@ -10317,6 +10317,7 @@ pub(super) fn ProjectsScreen(
     on_open_demo: Callback<()>,
     on_open_scratch: Callback<()>,
     on_search: Callback<()>,
+    project_transfer: RwSignal<Option<ProjectTransferProgress>>,
 ) -> impl IntoView {
     let projects = create_rw_signal(Vec::<ProjectSummary>::new());
     let recent = create_rw_signal(Vec::<RecentSession>::new());
@@ -10529,10 +10530,11 @@ pub(super) fn ProjectsScreen(
     let delete_confirmed = delete.clone(); // used by the confirm modal below
 
     let import_project = move |_| {
-        if importing.get_untracked() {
+        if importing.get_untracked() || project_transfer.get_untracked().is_some() {
             return;
         }
         importing.set(true);
+        project_transfer.set(Some(ProjectTransferProgress::selecting("import")));
         open_error.set(None);
         spawn_local(async move {
             match invoke_checked("import_project", JsValue::UNDEFINED).await {
@@ -10540,10 +10542,17 @@ pub(super) fn ProjectsScreen(
                     if let Ok(Some(project)) =
                         serde_wasm_bindgen::from_value::<Option<ProjectSummary>>(value)
                     {
+                        project_transfer.set(Some(ProjectTransferProgress::complete(
+                            "import",
+                            Some(project.name.clone()),
+                        )));
                         on_open.call(project.id);
+                    } else {
+                        project_transfer.set(None);
                     }
                 }
                 Err(error) => {
+                    project_transfer.set(None);
                     let message = localize_backend(locale.get_untracked(), &js_error_text(error));
                     open_error.set(Some(message));
                 }
@@ -10669,7 +10678,7 @@ pub(super) fn ProjectsScreen(
                         {move || t(locale.get(), "scratch.open")}
                     </button>
                     <button type="button" class="btn-ghost projects-import"
-                        disabled=move || importing.get()
+                        disabled=move || importing.get() || project_transfer.get().is_some()
                         on:click=import_project>
                         {compose_icon("upload")}<span>{move || t(locale.get(), "projects.import")}</span>
                     </button>
@@ -11032,15 +11041,28 @@ pub(super) fn ProjectsScreen(
                                         }>{compose_icon("link")}</button>
                                     <button class="pc-export" title=t(loc, "projects.export")
                                         aria-label=t(loc, "projects.export")
+                                        disabled=move || project_transfer.get().is_some()
                                         on:click=move |e| {
                                             e.stop_propagation();
+                                            if project_transfer.get_untracked().is_some() { return; }
                                             open_error.set(None);
+                                            project_transfer.set(Some(ProjectTransferProgress::selecting("export")));
                                             let id = id_export.clone();
                                             spawn_local(async move {
                                                 let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
-                                                if let Err(error) = invoke_checked("export_project", arg).await {
-                                                    let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                                                    open_error.set(Some(message));
+                                                match invoke_checked("export_project", arg).await {
+                                                    Ok(value) => {
+                                                        if let Ok(Some(path)) = serde_wasm_bindgen::from_value::<Option<String>>(value) {
+                                                            project_transfer.set(Some(ProjectTransferProgress::complete("export", Some(path))));
+                                                        } else {
+                                                            project_transfer.set(None);
+                                                        }
+                                                    }
+                                                    Err(error) => {
+                                                        project_transfer.set(None);
+                                                        let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                                                        open_error.set(Some(message));
+                                                    }
                                                 }
                                             });
                                         }>{compose_icon("download")}</button>
