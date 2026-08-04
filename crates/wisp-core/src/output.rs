@@ -28,6 +28,7 @@ pub trait Output: Send + Sync {
         _cached: u64,
         _ctx_tokens: usize,
         _max_context: usize,
+        _context_usage: crate::ContextUsage,
     ) {
     }
     fn compaction(&self, _before: usize, _after: usize, _strategy: &str) {}

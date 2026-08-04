@@ -29,6 +29,35 @@ pub use tool::Tool;
 use serde_json::Value;
 use wisp_llm::ToolSchema;
 
+/// Where a schema in the model request comes from. This is intentionally a
+/// request-time view rather than tool metadata: deferred MCP tools collapse
+/// into the two dynamic search/dispatch schemas below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSchemaOrigin {
+    BuiltIn,
+    Dynamic,
+    Subagent,
+}
+
+const BUILT_IN_SCHEMA_NAMES: &[&str] = &[
+    "read",
+    "write",
+    "edit",
+    "search",
+    "grep",
+    "shell",
+    "view_image",
+    "update_plan",
+    "attempt_completion",
+    "list_skill_catalog",
+    "search_skills",
+    "use_skill",
+    "search_memory",
+    "append_memory",
+];
+
+const SUBAGENT_SCHEMA_NAMES: &[&str] = &["explore", "delegate_tasks", "get_delegated_result"];
+
 const SEARCH_MCP_TOOLS: &str = "search_mcp_tools";
 const USE_MCP_TOOL: &str = "use_mcp_tool";
 /// Prefix on tool *event* names (not schemas) marking MCP-backed tools, so
@@ -125,17 +154,32 @@ impl Registry {
     }
 
     pub fn schemas(&self) -> Vec<ToolSchema> {
-        let mut schemas: Vec<_> = self
-            .tools
-            .iter()
-            .filter(|tool| !tool.defer_schema())
-            .map(|tool| tool.schema())
-            .collect();
+        self.schemas_with_origins().0
+    }
+
+    /// Return the exact schema list sent to the provider plus one aligned
+    /// origin per schema, so context accounting can explain the fixed payload
+    /// without rebuilding or guessing at it in the UI.
+    pub fn schemas_with_origins(&self) -> (Vec<ToolSchema>, Vec<ToolSchemaOrigin>) {
+        let mut schemas = Vec::new();
+        let mut origins = Vec::new();
+        for tool in self.tools.iter().filter(|tool| !tool.defer_schema()) {
+            schemas.push(tool.schema());
+            origins.push(if SUBAGENT_SCHEMA_NAMES.contains(&tool.name()) {
+                ToolSchemaOrigin::Subagent
+            } else if BUILT_IN_SCHEMA_NAMES.contains(&tool.name()) {
+                ToolSchemaOrigin::BuiltIn
+            } else {
+                ToolSchemaOrigin::Dynamic
+            });
+        }
         if self.tools.iter().any(|tool| tool.defer_schema()) {
             schemas.push(search_mcp_tools_schema());
+            origins.push(ToolSchemaOrigin::Dynamic);
             schemas.push(use_mcp_tool_schema());
+            origins.push(ToolSchemaOrigin::Dynamic);
         }
-        schemas
+        (schemas, origins)
     }
 
     pub fn names(&self) -> Vec<&str> {
@@ -864,14 +908,24 @@ mod approval_tests {
         reg.add(Box::new(SpyTool(&SPY_FOR_SCHEMA_TEST)));
         reg.add(Box::new(DeferredTool));
 
-        let names: Vec<_> = reg
-            .schemas()
+        let (schemas, origins) = reg.schemas_with_origins();
+        let names: Vec<_> = schemas
             .into_iter()
             .map(|schema| schema.function.name)
             .collect();
 
         assert_eq!(names, ["spy", SEARCH_MCP_TOOLS, USE_MCP_TOOL]);
+        assert_eq!(origins, vec![ToolSchemaOrigin::Dynamic; 3]);
         assert!(!names.contains(&"pubmed_search_articles".to_string()));
+    }
+
+    #[test]
+    fn built_in_schemas_are_marked_for_context_accounting() {
+        let (_, origins) = Registry::builtins().schemas_with_origins();
+        assert!(!origins.is_empty());
+        assert!(origins
+            .iter()
+            .all(|origin| *origin == ToolSchemaOrigin::BuiltIn));
     }
 
     static SPY_FOR_SCHEMA_TEST: AtomicBool = AtomicBool::new(false);

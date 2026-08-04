@@ -14,8 +14,10 @@
 //!    recent tail. A later compaction explicitly updates that checkpoint.
 
 use crate::output::Output;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use wisp_llm::{Content, Message, Part, Provider, Role, ToolCall, ToolSchema};
+use wisp_tools::ToolSchemaOrigin;
 
 /// Recent turns protected from the safe tool/media pruning pass.
 const PRUNE_PROTECT_TURNS: usize = 10;
@@ -61,6 +63,100 @@ const SUMMARY_UPDATE_PROMPT: &str = "Return only the updated checkpoint using th
 /// Stands in for an image part when the target model cannot read images.
 pub const IMAGE_UNSUPPORTED_NOTE: &str =
     "[image omitted: the active model does not accept image input]";
+
+/// Estimated composition of the next native-agent request. The buckets are
+/// mutually exclusive and always add up to the same total used by compaction
+/// and context warnings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextUsage {
+    pub system_prompt: usize,
+    pub tool_definitions: usize,
+    pub rules: usize,
+    pub skills: usize,
+    pub mcp_dynamic_tools: usize,
+    pub subagent_definitions: usize,
+    pub conversation: usize,
+}
+
+impl ContextUsage {
+    pub fn total(self) -> usize {
+        self.system_prompt
+            .saturating_add(self.tool_definitions)
+            .saturating_add(self.rules)
+            .saturating_add(self.skills)
+            .saturating_add(self.mcp_dynamic_tools)
+            .saturating_add(self.subagent_definitions)
+            .saturating_add(self.conversation)
+    }
+}
+
+const SYSTEM_BUCKET: usize = 0;
+const RULES_BUCKET: usize = 1;
+const SKILLS_BUCKET: usize = 2;
+const SUBAGENT_BUCKET: usize = 3;
+const CONVERSATION_BUCKET: usize = 4;
+
+fn apportioned(raw: [usize; 5], target: usize) -> [usize; 5] {
+    let total: usize = raw.iter().sum();
+    if total == 0 {
+        let mut out = [0; 5];
+        out[SYSTEM_BUCKET] = target;
+        return out;
+    }
+    let mut out = [0; 5];
+    let mut remainders = [(0usize, 0usize); 5];
+    for i in 0..5 {
+        let product = (raw[i] as u128) * (target as u128);
+        out[i] = (product / total as u128) as usize;
+        remainders[i] = (i, (product % total as u128) as usize);
+    }
+    remainders.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
+    for (index, _) in remainders
+        .into_iter()
+        .take(target.saturating_sub(out.iter().sum()))
+    {
+        out[index] += 1;
+    }
+    out
+}
+
+fn system_text_weights(text: &str) -> [usize; 5] {
+    let mut weights = [0; 5];
+    let mut bucket = SYSTEM_BUCKET;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim();
+        bucket = if trimmed == "<delegation_capability>" || trimmed.starts_with("## Specialist") {
+            SUBAGENT_BUCKET
+        } else if trimmed == "<plan_mode>"
+            || matches!(trimmed, "## Safety" | "## Built-in Rules" | "## User Rules")
+        {
+            RULES_BUCKET
+        } else if matches!(
+            trimmed,
+            "## Skills Selection Guidelines" | "## Scientific Deliverables"
+        ) {
+            SKILLS_BUCKET
+        } else if trimmed.starts_with("## ") {
+            SYSTEM_BUCKET
+        } else {
+            bucket
+        };
+        weights[bucket] += line.len();
+        if matches!(trimmed, "</delegation_capability>" | "</plan_mode>") {
+            bucket = SYSTEM_BUCKET;
+        }
+    }
+    weights
+}
+
+fn is_skill_context(message: &Message) -> bool {
+    message.tool_name.as_deref() == Some("use_skill")
+        || message
+            .content
+            .as_text()
+            .trim_start()
+            .starts_with("The user explicitly selected these skills for this turn.")
+}
 
 /// Largest char boundary `<= i` (std's `floor_char_boundary` is still unstable).
 fn floor_char_boundary(s: &str, mut i: usize) -> usize {
@@ -407,6 +503,68 @@ impl ContextManager {
 
     pub fn request_tokens_with_reserve(&self, fixed_tokens: usize) -> usize {
         self.request_tokens().saturating_add(fixed_tokens)
+    }
+
+    /// Break down the same estimate returned by
+    /// [`request_tokens_with_reserve`](Self::request_tokens_with_reserve).
+    /// Message buckets share the session's provider-calibrated multiplier;
+    /// schema buckets remain the fixed reserve used by the request path.
+    pub fn context_usage(
+        &self,
+        schemas: &[ToolSchema],
+        origins: &[ToolSchemaOrigin],
+    ) -> ContextUsage {
+        let mut raw = [0usize; 5];
+        for message in self.messages.iter().chain(&self.runtime_injections) {
+            let tokens = Self::estimated_tokens(message);
+            if message.role == Role::System {
+                let weights = match &message.content {
+                    Content::Text(text) => system_text_weights(text),
+                    Content::Parts(_) => {
+                        let mut weights = [0; 5];
+                        weights[SYSTEM_BUCKET] = 1;
+                        weights
+                    }
+                };
+                let split = apportioned(weights, tokens);
+                for i in 0..5 {
+                    raw[i] = raw[i].saturating_add(split[i]);
+                }
+            } else if is_skill_context(message) {
+                raw[SKILLS_BUCKET] = raw[SKILLS_BUCKET].saturating_add(tokens);
+            } else {
+                raw[CONVERSATION_BUCKET] = raw[CONVERSATION_BUCKET].saturating_add(tokens);
+            }
+        }
+
+        let scaled = apportioned(raw, self.request_tokens());
+        let mut usage = ContextUsage {
+            system_prompt: scaled[SYSTEM_BUCKET],
+            rules: scaled[RULES_BUCKET],
+            skills: scaled[SKILLS_BUCKET],
+            subagent_definitions: scaled[SUBAGENT_BUCKET],
+            conversation: scaled[CONVERSATION_BUCKET],
+            ..ContextUsage::default()
+        };
+        for (index, schema) in schemas.iter().enumerate() {
+            let tokens = Self::estimated_tool_schema_tokens(schema);
+            match origins
+                .get(index)
+                .copied()
+                .unwrap_or(ToolSchemaOrigin::Dynamic)
+            {
+                ToolSchemaOrigin::BuiltIn => {
+                    usage.tool_definitions = usage.tool_definitions.saturating_add(tokens)
+                }
+                ToolSchemaOrigin::Dynamic => {
+                    usage.mcp_dynamic_tools = usage.mcp_dynamic_tools.saturating_add(tokens)
+                }
+                ToolSchemaOrigin::Subagent => {
+                    usage.subagent_definitions = usage.subagent_definitions.saturating_add(tokens)
+                }
+            }
+        }
+        usage
     }
 
     /// Use one estimator everywhere Wisp reports or budgets tool definitions,
@@ -1260,6 +1418,42 @@ pub fn image_content(label: &str, data_url: &str) -> wisp_llm::Content {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_usage_categories_sum_to_the_request_estimate() {
+        let mut context = ContextManager::new(300_000);
+        context.append_system(
+            "You are Wisp.\n\n## Safety\n\nKeep data safe.\n\n## Skills Selection Guidelines\n\nLoad relevant skills.\n\n<delegation_capability>\nDelegate independent work.\n</delegation_capability>\n\n## Environment\nLocal.",
+        );
+        context.append_user("Analyze the dataset.");
+        context.inject_user(
+            "The user explicitly selected these skills for this turn. Follow their guidance:\n\n# Skill: analysis-workflow\nKeep a manifest.",
+        );
+        let schemas = vec![
+            ToolSchema::new("read", "Read a file", serde_json::json!({})),
+            ToolSchema::new("python", "Run Python", serde_json::json!({})),
+            ToolSchema::new("explore", "Delegate reading", serde_json::json!({})),
+        ];
+        let origins = vec![
+            ToolSchemaOrigin::BuiltIn,
+            ToolSchemaOrigin::Dynamic,
+            ToolSchemaOrigin::Subagent,
+        ];
+
+        let usage = context.context_usage(&schemas, &origins);
+
+        assert!(usage.system_prompt > 0);
+        assert!(usage.rules > 0);
+        assert!(usage.skills > 0);
+        assert!(usage.tool_definitions > 0);
+        assert!(usage.mcp_dynamic_tools > 0);
+        assert!(usage.subagent_definitions > 0);
+        assert!(usage.conversation > 0);
+        assert_eq!(
+            usage.total(),
+            context.request_tokens_with_reserve(ContextManager::estimated_tool_tokens(&schemas))
+        );
+    }
 
     // #45: with panic=abort, a mid-UTF-8 slice during compaction crashes the
     // whole app ("闪退"). compact_text must snap its byte budgets to char

@@ -226,6 +226,7 @@ impl Output for CliOutput {
         cached: u64,
         ctx_tokens: usize,
         max_context: usize,
+        _context_usage: wisp_core::ContextUsage,
     ) {
         let pct = if max_context > 0 {
             (ctx_tokens * 100 / max_context).min(100)
@@ -387,6 +388,7 @@ impl<W: Write + Send> Output for JsonlOutput<W> {
         cached: u64,
         ctx_tokens: usize,
         max_context: usize,
+        _context_usage: wisp_core::ContextUsage,
     ) {
         self.emit(serde_json::json!({
             "type": "usage",
@@ -914,7 +916,7 @@ mod tests {
         output.assistant_text("hello\nworld");
         output.tool_call("read", "README.md");
         output.tool_result("read", true, "contents", 12);
-        output.usage(2, 10, 20, 3, 4, 30, 100);
+        output.usage(2, 10, 20, 3, 4, 30, 100, wisp_core::ContextUsage::default());
         assert!(!output.confirm("delete file?"));
         output.done();
 

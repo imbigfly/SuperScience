@@ -16,7 +16,7 @@ pub mod subagent;
 pub mod system_prompt;
 
 pub use agent::{agent_loop, agent_loop_continue, GuidanceQueue};
-pub use context::ContextManager;
+pub use context::{ContextManager, ContextUsage};
 pub use delegation::{
     degraded_delivery_marker, is_degraded_delivery, AgentArtifact, AgentAuthorizationSnapshot,
     AgentBackend, AgentBudget, AgentDelegationLineage, AgentDelegationRequest,

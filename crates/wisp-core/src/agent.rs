@@ -275,7 +275,7 @@ async fn agent_loop_inner(
             }
         }
         iteration += 1;
-        let schemas = tools.schemas();
+        let (schemas, schema_origins) = tools.schemas_with_origins();
         let fixed_request_tokens = ContextManager::estimated_tool_tokens(&schemas);
         // Match the long-context behaviour used by mangopi-cli: check the
         // budget at every model boundary, not only when the user first sends a
@@ -342,14 +342,21 @@ async fn agent_loop_inner(
         // resumably instead: tool results already appended to the context stay
         // intact, so Resume asks only for the missing final response.
         if comp.content.trim().is_empty() && comp.tool_calls.is_empty() {
+            let context_usage = ctx.context_usage(&schemas, &schema_origins);
+            let context_tokens = context_usage.total();
+            debug_assert_eq!(
+                context_tokens,
+                ctx.request_tokens_with_reserve(fixed_request_tokens)
+            );
             output.usage(
                 iteration,
                 comp.usage.input_tokens,
                 comp.usage.output_tokens,
                 comp.usage.reasoning_tokens,
                 comp.usage.cached_input_tokens,
-                ctx.request_tokens_with_reserve(fixed_request_tokens),
+                context_tokens,
                 ctx.max_context,
+                context_usage,
             );
             anyhow::bail!(EMPTY_RESPONSE_MESSAGE);
         }
@@ -362,14 +369,21 @@ async fn agent_loop_inner(
         if let Some(m) = ctx.messages.last() {
             output.on_message(m);
         }
+        let context_usage = ctx.context_usage(&schemas, &schema_origins);
+        let context_tokens = context_usage.total();
+        debug_assert_eq!(
+            context_tokens,
+            ctx.request_tokens_with_reserve(fixed_request_tokens)
+        );
         output.usage(
             iteration,
             comp.usage.input_tokens,
             comp.usage.output_tokens,
             comp.usage.reasoning_tokens,
             comp.usage.cached_input_tokens,
-            ctx.request_tokens_with_reserve(fixed_request_tokens),
+            context_tokens,
             ctx.max_context,
+            context_usage,
         );
 
         if comp.tool_calls.is_empty() {

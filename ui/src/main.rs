@@ -871,6 +871,21 @@ fn App() -> impl IntoView {
     let session_model_ids = create_rw_signal::<HashMap<String, String>>(HashMap::new());
     let acp_agents = create_rw_signal::<Vec<AcpAgentProfile>>(vec![]);
     let active_acp_agent_id = create_rw_signal::<Option<String>>(None);
+    let acp_context_usage =
+        create_rw_signal::<HashMap<String, ContextUsageSnapshot>>(HashMap::new());
+    let context_usage_open = create_rw_signal(false);
+    let active_context_usage = create_memo(move |_| {
+        let session_id = active_session.get()?;
+        if active_acp_agent_id.get().is_some() {
+            acp_context_usage.with(|all| all.get(&session_id).cloned())
+        } else {
+            items.with(|rows| latest_context_usage(rows))
+        }
+    });
+    create_effect(move |_| {
+        let _ = active_session.get();
+        context_usage_open.set(false);
+    });
     // An ACP Agent can only bind an empty frame. When the picker creates that
     // frame on demand, retain the intended selection while the async binding
     // lookup still (correctly) reports None before the first prompt.
@@ -2201,6 +2216,7 @@ fn App() -> impl IntoView {
                 cached,
                 ctx_tokens,
                 max_context,
+                context_usage,
                 ..
             } => {
                 // One usage row per reply: each round's usage (one API call)
@@ -2208,26 +2224,17 @@ fn App() -> impl IntoView {
                 // it never splits the coalesced tool-steps panel.
                 flush_now();
                 route_items(active_cb, items_cb, transcripts_cb, &frame_id, |v| {
-                    upsert_turn_usage(v, input, output, reasoning, cached);
+                    upsert_turn_usage(
+                        v,
+                        input,
+                        output,
+                        reasoning,
+                        cached,
+                        ctx_tokens,
+                        max_context,
+                        context_usage,
+                    );
                 });
-                // Status bar reflects only the active session's usage.
-                if active_cb.get().as_deref() == Some(&frame_id) {
-                    let pct = if max_context > 0 {
-                        ctx_tokens * 100 / max_context
-                    } else {
-                        0
-                    };
-                    let loc = locale_cb.get();
-                    status_cb.set(tf(
-                        loc,
-                        "status.usage",
-                        &[
-                            ("in", &fmt_tokens(input)),
-                            ("out", &fmt_tokens(output)),
-                            ("pct", &pct.to_string()),
-                        ],
-                    ));
-                }
             }
             AgentEvent::Compaction {
                 frame_id,
@@ -2697,23 +2704,27 @@ fn App() -> impl IntoView {
                 });
             }
             "Usage" => {
-                if active_session.get_untracked().as_deref() == Some(update.frame_id.as_str()) {
-                    let used = update
-                        .payload
-                        .get("used")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0);
-                    let size = update
-                        .payload
-                        .get("size")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0);
-                    status.set(if size == 0 {
-                        format!("ACP context: {used} tokens")
-                    } else {
-                        format!("ACP context: {used} / {size} tokens")
-                    });
-                }
+                let used = update
+                    .payload
+                    .get("used")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let max = update
+                    .payload
+                    .get("size")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as usize;
+                acp_context_usage.update(|all| {
+                    all.insert(
+                        update.frame_id,
+                        ContextUsageSnapshot {
+                            used,
+                            max,
+                            breakdown: None,
+                            estimated: false,
+                        },
+                    );
+                });
             }
             "SessionInfo" => {
                 if active_session.get_untracked().as_deref() == Some(update.frame_id.as_str()) {
@@ -6676,6 +6687,11 @@ fn App() -> impl IntoView {
         }
 
         // --- menus / popovers ---
+        if context_usage_open.get() {
+            ev.prevent_default();
+            context_usage_open.set(false);
+            return;
+        }
         if artifact_menu.get().is_some() {
             ev.prevent_default();
             artifact_menu.set(None);
@@ -10903,17 +10919,107 @@ fn App() -> impl IntoView {
                             </div>
                         </div>
                     </div>
-                    <div class="composer-hint">{move || {
-                        if send_with_modifier.get() {
-                            tf(
-                                locale.get(),
-                                "composer.hint_modifier",
-                                &[("modifier", if is_mac() { "Cmd" } else { "Ctrl" })],
-                            )
-                        } else {
-                            t(locale.get(), "composer.hint").into()
-                        }
-                    }}</div>
+                    <div class="composer-footer">
+                        <div class="composer-hint">{move || {
+                            if send_with_modifier.get() {
+                                tf(
+                                    locale.get(),
+                                    "composer.hint_modifier",
+                                    &[("modifier", if is_mac() { "Cmd" } else { "Ctrl" })],
+                                )
+                            } else {
+                                t(locale.get(), "composer.hint").into()
+                            }
+                        }}</div>
+                        {move || active_context_usage.get().map(|snapshot| {
+                            let pct = context_percent(snapshot.used, snapshot.max);
+                            let panel_snapshot = snapshot.clone();
+                            view! {
+                                <div class="context-usage-wrap">
+                                    <button type="button" class="context-usage-trigger"
+                                        data-testid="context-usage-trigger"
+                                        title=move || t(locale.get(), "context_usage.open")
+                                        aria-label=move || t(locale.get(), "context_usage.open")
+                                        aria-expanded=move || context_usage_open.get().to_string()
+                                        aria-controls="context-usage-panel"
+                                        on:click=move |event| {
+                                            event.stop_propagation();
+                                            context_usage_open.update(|open| *open = !*open);
+                                        }>
+                                        {compose_icon("gauge")}
+                                        <span>{format!("{pct}%")}</span>
+                                    </button>
+                                    {move || context_usage_open.get().then(|| {
+                                        let snapshot = panel_snapshot.clone();
+                                        let loc = locale.get();
+                                        let pct = context_percent(snapshot.used, snapshot.max);
+                                        let used = fmt_context_tokens(snapshot.used);
+                                        let total = if snapshot.max == 0 {
+                                            tf(loc, "context_usage.total_used", &[("used", &used)])
+                                        } else {
+                                            let max = fmt_context_limit(snapshot.max);
+                                            tf(
+                                                loc,
+                                                if snapshot.estimated {
+                                                    "context_usage.total_estimated"
+                                                } else {
+                                                    "context_usage.total_exact"
+                                                },
+                                                &[("used", &used), ("max", &max)],
+                                            )
+                                        };
+                                        let rows = context_usage_rows(&snapshot, loc);
+                                        let segments = rows.clone();
+                                        let denominator = snapshot.max.max(snapshot.used).max(1);
+                                        view! {
+                                            <div class="context-usage-backdrop"
+                                                aria-hidden="true"
+                                                on:click=move |_| context_usage_open.set(false)></div>
+                                            <section id="context-usage-panel" class="context-usage-panel"
+                                                data-testid="context-usage-panel"
+                                                role="dialog" aria-modal="true"
+                                                aria-labelledby="context-usage-title"
+                                                on:click=|event| event.stop_propagation()>
+                                                <div class="context-usage-head">
+                                                    <h2 id="context-usage-title">{t(loc, "context_usage.title")}</h2>
+                                                    <button type="button" class="context-usage-close"
+                                                        title=t(loc, "context_usage.close")
+                                                        aria-label=t(loc, "context_usage.close")
+                                                        on:click=move |_| context_usage_open.set(false)>
+                                                        {compose_icon("close")}
+                                                    </button>
+                                                </div>
+                                                <div class="context-usage-summary">
+                                                    <span>{tf(loc, "context_usage.full", &[("pct", &pct.to_string())])}</span>
+                                                    <span>{total}</span>
+                                                </div>
+                                                <div class="context-usage-bar" role="img"
+                                                    aria-label=tf(loc, "context_usage.full", &[("pct", &pct.to_string())])>
+                                                    {segments.into_iter().filter(|row| row.tokens > 0).map(|row| {
+                                                        let width = row.tokens as f64 * 100.0 / denominator as f64;
+                                                        view! {
+                                                            <span class=format!("context-usage-segment {}", row.color)
+                                                                style=format!("width:{width:.4}%")></span>
+                                                        }
+                                                    }).collect_view()}
+                                                </div>
+                                                <div class="context-usage-list">
+                                                    {rows.into_iter().map(|row| view! {
+                                                        <div class="context-usage-row">
+                                                            <span class=format!("context-usage-swatch {}", row.color)
+                                                                aria-hidden="true"></span>
+                                                            <span class="context-usage-label">{row.label}</span>
+                                                            <span class="context-usage-value">{fmt_context_tokens(row.tokens)}</span>
+                                                        </div>
+                                                    }).collect_view()}
+                                                </div>
+                                            </section>
+                                        }
+                                    })}
+                                </div>
+                            }
+                        })}
+                    </div>
                 </div>
             </div>
         </main>
@@ -13200,14 +13306,99 @@ fn fmt_tokens(n: u64) -> String {
     }
 }
 
+fn context_percent(used: usize, max: usize) -> usize {
+    if max == 0 {
+        0
+    } else {
+        ((((used as u128) * 100 + (max as u128 / 2)) / max as u128) as usize).min(100)
+    }
+}
+
+fn fmt_context_tokens(tokens: usize) -> String {
+    if tokens < 1_000 {
+        tokens.to_string()
+    } else if tokens < 1_000_000 {
+        format!("{:.1}K", tokens as f64 / 1_000.0)
+    } else {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    }
+}
+
+fn fmt_context_limit(tokens: usize) -> String {
+    if tokens >= 1_000_000 && tokens % 1_000_000 == 0 {
+        format!("{}M", tokens / 1_000_000)
+    } else if tokens >= 1_000 && tokens % 1_000 == 0 {
+        format!("{}K", tokens / 1_000)
+    } else {
+        fmt_context_tokens(tokens)
+    }
+}
+
+#[derive(Clone)]
+struct ContextUsageRow {
+    label: String,
+    tokens: usize,
+    color: &'static str,
+}
+
+fn context_usage_rows(snapshot: &ContextUsageSnapshot, locale: Locale) -> Vec<ContextUsageRow> {
+    let Some(usage) = snapshot.breakdown else {
+        return vec![ContextUsageRow {
+            label: t(locale, "context_usage.remote_context").into(),
+            tokens: snapshot.used,
+            color: "conversation",
+        }];
+    };
+    [
+        ("context_usage.system_prompt", usage.system_prompt, "system"),
+        (
+            "context_usage.tool_definitions",
+            usage.tool_definitions,
+            "tools",
+        ),
+        ("context_usage.rules", usage.rules, "rules"),
+        ("context_usage.skills", usage.skills, "skills"),
+        (
+            "context_usage.mcp_dynamic_tools",
+            usage.mcp_dynamic_tools,
+            "dynamic",
+        ),
+        (
+            "context_usage.subagent_definitions",
+            usage.subagent_definitions,
+            "subagents",
+        ),
+        (
+            "context_usage.conversation",
+            usage.conversation,
+            "conversation",
+        ),
+    ]
+    .into_iter()
+    .map(|(key, tokens, color)| ContextUsageRow {
+        label: t(locale, key).into(),
+        tokens,
+        color,
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod token_format_tests {
-    use super::fmt_tokens;
+    use super::{context_percent, fmt_context_limit, fmt_context_tokens, fmt_tokens};
 
     #[test]
     fn small_counts_are_not_rounded_to_zero() {
         assert_eq!(fmt_tokens(81), "81");
         assert_eq!(fmt_tokens(136_286), "136.3k");
+    }
+
+    #[test]
+    fn context_counts_match_the_usage_panel_format() {
+        assert_eq!(context_percent(79_900, 300_000), 27);
+        assert_eq!(fmt_context_tokens(6_000), "6.0K");
+        assert_eq!(fmt_context_tokens(79_900), "79.9K");
+        assert_eq!(fmt_context_limit(300_000), "300K");
     }
 }
 
@@ -13964,7 +14155,13 @@ fn render_item(
         ChatItem::Tool { name, ok, input, output, .. } => view! {
             <ToolBlock name=name.clone() ok=*ok input=input.clone() output=output.clone() />
         }.into_view(),
-        ChatItem::Usage { input, output, reasoning, cached } => {
+        ChatItem::Usage {
+            input,
+            output,
+            reasoning,
+            cached,
+            ..
+        } => {
             let (input, output, reasoning, cached) = (*input, *output, *reasoning, *cached);
             view! {
                 <div class="usage-line" title=move || t(locale.get(), "msg.usage_title")>

@@ -3487,12 +3487,9 @@ fn retry_workflow(snapshot: AgentWorkflowSnapshot, state: AgentPanelState) {
                 Some((task, raw))
             })
             .try_fold(HashMap::new(), |mut overrides, (task, raw)| {
-                let max_tokens = raw
-                    .trim()
-                    .parse::<u32>()
-                    .map_err(|_| {
-                        "Retry token budget must be a whole number (0 = unlimited)".to_string()
-                    })?;
+                let max_tokens = raw.trim().parse::<u32>().map_err(|_| {
+                    "Retry token budget must be a whole number (0 = unlimited)".to_string()
+                })?;
                 if task.budget.max_tokens != Some(max_tokens) {
                     overrides.insert(
                         task.id.clone(),
