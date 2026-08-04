@@ -731,6 +731,28 @@ pub fn workspace_entry_action(action: &str, payload: &str) -> Option<WorkspaceEn
     }
 }
 
+fn viewport_size() -> Option<(f64, f64)> {
+    let window = web_sys::window()?;
+    Some((
+        window.inner_width().ok()?.as_f64()?,
+        window.inner_height().ok()?.as_f64()?,
+    ))
+}
+
+fn clamp_to_viewport(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    viewport_width: f64,
+    viewport_height: f64,
+) -> (f64, f64) {
+    (
+        x.max(8.0).min((viewport_width - width - 8.0).max(8.0)),
+        y.max(8.0).min((viewport_height - height - 8.0).max(8.0)),
+    )
+}
+
 #[component]
 pub fn ContextMenuPortal(
     menu: ReadSignal<Option<CtxMenu>>,
@@ -738,12 +760,70 @@ pub fn ContextMenuPortal(
     on_pick: Callback<(String, String)>,
 ) -> impl IntoView {
     let submenu_anchor = create_rw_signal(None::<SubmenuAnchor>);
+    let menu_el = create_node_ref::<html::Div>();
+    let submenu_el = create_node_ref::<html::Div>();
+    // The initial position is based on a 38px-per-item estimate, but real item
+    // heights vary with fonts, locales, and label wrapping — so after render we
+    // measure the true size and re-clamp the menu into the viewport (issue #650).
+    // Each fix is tagged with the position it was computed for so a stale fix is
+    // never applied to a newly opened menu.
+    let menu_fix = create_rw_signal(None::<(f64, f64, f64, f64)>);
+    let submenu_fix = create_rw_signal(None::<(SubmenuAnchor, f64, f64)>);
     window_capture_escape(move || {
         if submenu_anchor.get_untracked().is_none() {
             return false;
         }
         submenu_anchor.set(None);
         true
+    });
+
+    create_effect(move |_| {
+        let Some(m) = menu.get() else {
+            menu_fix.set(None);
+            return;
+        };
+        request_animation_frame(move || {
+            let Some(el) = menu_el.get() else { return };
+            let Some((viewport_width, viewport_height)) = viewport_size() else {
+                return;
+            };
+            let (left, top) = clamp_to_viewport(
+                m.x,
+                m.y,
+                f64::from(el.offset_width()),
+                f64::from(el.offset_height()),
+                viewport_width,
+                viewport_height,
+            );
+            menu_fix.set(Some((m.x, m.y, left, top)));
+        });
+    });
+
+    create_effect(move |_| {
+        if menu.get().is_none() {
+            submenu_fix.set(None);
+            return;
+        }
+        let Some(anchor) = submenu_anchor.get() else {
+            submenu_fix.set(None);
+            return;
+        };
+        request_animation_frame(move || {
+            let Some(el) = submenu_el.get() else { return };
+            let Some((viewport_width, viewport_height)) = viewport_size() else {
+                return;
+            };
+            let width = f64::from(el.offset_width());
+            let height = f64::from(el.offset_height());
+            let left = if anchor.right + width <= viewport_width - 8.0 {
+                anchor.right
+            } else {
+                (anchor.left - width).max(8.0)
+            };
+            let (_, top) =
+                clamp_to_viewport(left, anchor.top, width, height, viewport_width, viewport_height);
+            submenu_fix.set(Some((anchor, left, top)));
+        });
     });
 
     view! {
@@ -754,13 +834,22 @@ pub fn ContextMenuPortal(
             }
             let items = m.items.clone();
             let item_count = items.len() as f64;
-            let (viewport_width, viewport_height) = web_sys::window()
-                .and_then(|window| Some((window.inner_width().ok()?.as_f64()?, window.inner_height().ok()?.as_f64()?)))
+            let (viewport_width, viewport_height) = viewport_size()
                 .unwrap_or((m.x + 280.0, m.y + item_count * 38.0 + 12.0));
             let estimated_width = 280.0_f64.min((viewport_width - 16.0).max(168.0));
             let estimated_height = (item_count * 38.0 + 12.0).min((viewport_height - 16.0).max(50.0));
-            let left = m.x.max(8.0).min((viewport_width - estimated_width - 8.0).max(8.0));
-            let top = m.y.max(8.0).min((viewport_height - estimated_height - 8.0).max(8.0));
+            let (estimated_left, estimated_top) = clamp_to_viewport(
+                m.x,
+                m.y,
+                estimated_width,
+                estimated_height,
+                viewport_width,
+                viewport_height,
+            );
+            let (left, top) = match menu_fix.get() {
+                Some((x, y, left, top)) if x == m.x && y == m.y => (left, top),
+                _ => (estimated_left, estimated_top),
+            };
             Some(view! {
                 <div
                     class="ctx-backdrop"
@@ -773,6 +862,7 @@ pub fn ContextMenuPortal(
                 <div
                     class="ctx-menu"
                     role="menu"
+                    node_ref=menu_el
                     style=format!("left:{left}px;top:{top}px")
                     on:click=|ev: web_sys::MouseEvent| ev.stop_propagation()
                 >
@@ -832,8 +922,7 @@ pub fn ContextMenuPortal(
                     }
                     let items = parent.children.clone();
                     let item_count = items.len() as f64;
-                    let (viewport_width, viewport_height) = web_sys::window()
-                        .and_then(|window| Some((window.inner_width().ok()?.as_f64()?, window.inner_height().ok()?.as_f64()?)))
+                    let (viewport_width, viewport_height) = viewport_size()
                         .unwrap_or((anchor.right + 280.0, anchor.top + item_count * 38.0 + 12.0));
                     let estimated_width = 280.0_f64.min((viewport_width - 16.0).max(168.0));
                     let estimated_height = (item_count * 38.0 + 12.0).min((viewport_height - 16.0).max(50.0));
@@ -843,11 +932,16 @@ pub fn ContextMenuPortal(
                         (anchor.left - estimated_width).max(8.0)
                     };
                     let top = anchor.top.max(8.0).min((viewport_height - estimated_height - 8.0).max(8.0));
+                    let (left, top) = match submenu_fix.get() {
+                        Some((a, left, top)) if a == anchor => (left, top),
+                        _ => (left, top),
+                    };
                     Some(view! {
                         <div
                             class="ctx-menu ctx-submenu-menu"
                             role="menu"
                             aria-label=parent.label.clone()
+                            node_ref=submenu_el
                             style=format!("left:{left}px;top:{top}px;width:{estimated_width}px")
                             on:click=|ev: web_sys::MouseEvent| ev.stop_propagation()
                         >
