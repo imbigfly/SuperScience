@@ -793,6 +793,9 @@ fn App() -> impl IntoView {
     let turn_undo_dialog = create_rw_signal::<Option<TurnUndoDialog>>(None);
     let turn_undo_busy = create_rw_signal(false);
     let turn_undo_error = create_rw_signal::<Option<String>>(None);
+    // ui_index of a user message whose edit would discard later conversation;
+    // Some means the edit/branch confirm modal is open for that message.
+    let edit_confirm = create_rw_signal::<Option<usize>>(None);
     // Interrupting a running turn (especially a language runtime) is not instant, so
     // keep track of the session whose Stop click is waiting for the backend.
     let stopping_session = create_rw_signal::<Option<String>>(None);
@@ -3220,6 +3223,12 @@ fn App() -> impl IntoView {
 
     let edit_message = move |ui_index: usize| {
         if busy.get() {
+            return;
+        }
+        // Editing a message with later conversation after it would discard
+        // that conversation permanently — confirm first and offer a branch.
+        if items.with(|list| list.len() > ui_index + 1) {
+            edit_confirm.set(Some(ui_index));
             return;
         }
         rewind_to_user_item(ui_index);
@@ -6621,6 +6630,11 @@ fn App() -> impl IntoView {
             ev.prevent_default();
             turn_undo_dialog.set(None);
             turn_undo_error.set(None);
+            return;
+        }
+        if edit_confirm.get().is_some() {
+            ev.prevent_default();
+            edit_confirm.set(None);
             return;
         }
         if ui_confirm.get().is_some() {
@@ -12534,6 +12548,40 @@ fn App() -> impl IntoView {
                     </div>
                 </div>
             }.into_view()
+        })}
+
+        {move || edit_confirm.get().map(|ui_index| {
+            view! {
+                <div class="overlay">
+                    <div
+                        class="modal confirm-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="edit-confirm-title"
+                        data-testid="edit-confirm-modal"
+                    >
+                        <h2 id="edit-confirm-title">{move || t(locale.get(), "msg.edit_confirm_title")}</h2>
+                        <div class="hint">{move || t(locale.get(), "msg.edit_confirm_hint")}</div>
+                        <div class="row">
+                            <button on:click=move |_| edit_confirm.set(None)>
+                                {move || t(locale.get(), "settings.cancel")}
+                            </button>
+                            <button on:click=move |_| {
+                                edit_confirm.set(None);
+                                branch_message(ui_index);
+                            }>
+                                {move || t(locale.get(), "msg.branch")}
+                            </button>
+                            <button class="primary" class:danger=true on:click=move |_| {
+                                edit_confirm.set(None);
+                                rewind_to_user_item(ui_index);
+                            }>
+                                {move || t(locale.get(), "msg.edit")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            }
         })}
 
         {move || ui_confirm.get().map(|action| {
