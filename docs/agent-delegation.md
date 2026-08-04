@@ -129,6 +129,19 @@ boundary.
    result was truncated, `get_delegated_result` reads that task's full persisted
    result for the same conversation.
 
+Delivery parsing is tolerant. A child's final message may wrap the requested
+JSON in a Markdown fence or narrative text; Wisp extracts the embedded JSON
+payload. When a non-reviewer child finishes but its final message still cannot
+be parsed as the requested shape, or its parsed value does not satisfy the
+task's output schema, the completed work is preserved instead of discarded:
+the raw text (or non-conforming value) is delivered with a
+`delivery: {degraded, reason}` marker, the task counts as succeeded, and
+dependent tasks receive the degraded result rather than being blocked.
+Consumers must treat a degraded delivery as raw evidence, not contract-shaped
+data. Reviewer verdicts are exempt: a reviewer result that is not a JSON
+object with a summary (and, for standard reviews, a findings array) still
+fails, because review gates must not be satisfiable by unparseable output.
+
 Failed and cancelled workflows are resumable. **Retry** keeps the persisted
 workflow and every successful task result, reruns only failed/cancelled tasks
 and descendants that were blocked, then supplies the retained dependency

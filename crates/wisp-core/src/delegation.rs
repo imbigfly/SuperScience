@@ -844,6 +844,22 @@ fn matches_json_contract_at_depth(value: &Value, contract: &Value, depth: usize)
     true
 }
 
+/// Marker stored under `output.delivery` when the host preserved a completed
+/// sub-agent result whose final message failed strict delivery parsing or
+/// whose value did not satisfy the task `output_contract`. Consumers must
+/// treat such output as raw evidence rather than contract-shaped data.
+pub fn degraded_delivery_marker(reason: &str) -> Value {
+    serde_json::json!({"degraded": true, "reason": reason})
+}
+
+pub fn is_degraded_delivery(output: &Value) -> bool {
+    output
+        .get("delivery")
+        .and_then(|delivery| delivery.get("degraded"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn task_output_envelope(data: Value, response: &AgentDelegationResponse) -> Value {
     let summary = data
         .get("summary")
@@ -851,14 +867,21 @@ fn task_output_envelope(data: Value, response: &AgentDelegationResponse) -> Valu
         .filter(|summary| !summary.trim().is_empty())
         .unwrap_or("Structured task output is available in data.")
         .to_string();
-    serde_json::json!({
+    let degraded_delivery = is_degraded_delivery(&data)
+        .then(|| data.get("delivery").cloned())
+        .flatten();
+    let mut envelope = serde_json::json!({
         "summary": summary,
         "data": data,
         "artifacts": response.artifacts.clone(),
         "evidence": response.evidence.clone(),
         "tests": [],
         "risks": [],
-    })
+    });
+    if let Some(delivery) = degraded_delivery {
+        envelope["delivery"] = delivery;
+    }
+    envelope
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -894,15 +917,25 @@ pub trait AgentDelegator: Send + Sync {
             response.output = Value::Object(Default::default());
             response.error = Some(reason);
         }
-        if response.status == DelegationStatus::Succeeded
-            && !matches_json_contract(&response.output, &output_contract)
-        {
-            response.status = DelegationStatus::Failed;
-            response.output = Value::Object(Default::default());
-            response.error = Some("delegation output does not satisfy output_contract".into());
-        } else if response.status == DelegationStatus::Succeeded && task_output {
-            let data = std::mem::take(&mut response.output);
-            response.output = task_output_envelope(data, &response);
+        if response.status == DelegationStatus::Succeeded {
+            // A delivery the host already degraded advertises that it is not
+            // contract-shaped; re-checking it would discard preserved work.
+            let contract_met = is_degraded_delivery(&response.output)
+                || matches_json_contract(&response.output, &output_contract);
+            if task_output {
+                let data = std::mem::take(&mut response.output);
+                response.output = task_output_envelope(data, &response);
+            }
+            if !contract_met {
+                if let Value::Object(object) = &mut response.output {
+                    object.insert(
+                        "delivery".into(),
+                        degraded_delivery_marker(
+                            "The output did not satisfy the task output_contract; the non-conforming value is preserved.",
+                        ),
+                    );
+                }
+            }
         }
         response.validate()?;
         Ok(response)
@@ -1279,5 +1312,92 @@ mod tests {
         };
         assert!(spec.validate().is_ok());
         assert!(spec.validate_dynamic_metadata().is_err());
+    }
+
+    struct FixedOutputDelegator(Value);
+
+    #[async_trait]
+    impl AgentDelegator for FixedOutputDelegator {
+        async fn delegate_validated(
+            &self,
+            request: ValidatedAgentDelegationRequest,
+        ) -> anyhow::Result<AgentDelegationResponse> {
+            Ok(AgentDelegationResponse {
+                request_id: request.as_request().request_id.clone(),
+                status: DelegationStatus::Succeeded,
+                output: self.0.clone(),
+                artifact_ids: vec![],
+                artifacts: vec![],
+                evidence: vec![],
+                usage: AgentUsage::default(),
+                agent_session_id: None,
+                child_frame_id: None,
+                error: None,
+                nested_results: vec![],
+            })
+        }
+    }
+
+    fn task_request(output_contract: Value) -> ValidatedAgentDelegationRequest {
+        ValidatedAgentDelegationRequest {
+            inner: AgentDelegationRequest {
+                request_id: "request".into(),
+                workflow_id: "workflow".into(),
+                step_id: "step".into(),
+                spec: AgentSpec {
+                    role: AgentRole::Custom("worker".into()),
+                    output_contract,
+                    output_schema_source: AgentOutputSchemaSource::Task,
+                    ..test_spec("structured")
+                },
+                input: serde_json::json!({}),
+                lineage: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn conforming_task_output_is_delivered_without_degradation() {
+        let contract = serde_json::json!({"type": "object", "required": ["rows"]});
+        let delegator = FixedOutputDelegator(serde_json::json!({"rows": [1]}));
+        let response = delegator
+            .delegate_authorized(task_request(contract))
+            .await
+            .unwrap();
+        assert_eq!(response.status, DelegationStatus::Succeeded);
+        assert_eq!(response.output["data"]["rows"], serde_json::json!([1]));
+        assert!(!is_degraded_delivery(&response.output));
+    }
+
+    #[tokio::test]
+    async fn contract_mismatch_preserves_the_output_as_degraded_delivery() {
+        let contract = serde_json::json!({"type": "object", "required": ["rows"]});
+        let delegator = FixedOutputDelegator(serde_json::json!({"count": 3}));
+        let response = delegator
+            .delegate_authorized(task_request(contract))
+            .await
+            .unwrap();
+        assert_eq!(response.status, DelegationStatus::Succeeded);
+        assert_eq!(response.error, None);
+        assert_eq!(response.output["data"]["count"], 3);
+        assert!(is_degraded_delivery(&response.output));
+        assert!(response.output["delivery"]["reason"].is_string());
+    }
+
+    #[tokio::test]
+    async fn already_degraded_deliveries_skip_the_contract_check() {
+        let contract = serde_json::json!({"type": "object", "required": ["rows"]});
+        let delegator = FixedOutputDelegator(serde_json::json!({
+            "summary": "raw narrative text",
+            "delivery": degraded_delivery_marker("parse fallback"),
+        }));
+        let response = delegator
+            .delegate_authorized(task_request(contract))
+            .await
+            .unwrap();
+        assert_eq!(response.status, DelegationStatus::Succeeded);
+        assert_eq!(response.output["summary"], "raw narrative text");
+        assert_eq!(response.output["data"]["summary"], "raw narrative text");
+        assert!(is_degraded_delivery(&response.output));
     }
 }
