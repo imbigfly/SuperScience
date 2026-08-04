@@ -3325,7 +3325,7 @@ pub(super) fn review_message_ui_index(items: &[ChatItem], message_index: usize) 
 #[cfg(test)]
 mod review_jump_tests {
     use super::review_message_ui_index;
-    use crate::dto::{ChatItem, ReviewTransitionPhase};
+    use crate::dto::{ChatItem, ContextUsage, ReviewTransitionPhase};
 
     fn assistant(text: &str) -> ChatItem {
         ChatItem::Assistant {
@@ -3345,6 +3345,9 @@ mod review_jump_tests {
                 output: 2,
                 reasoning: 0,
                 cached: 0,
+                ctx_tokens: 0,
+                max_context: 0,
+                context_usage: ContextUsage::default(),
             },
             ChatItem::ReviewTransition {
                 phase: ReviewTransitionPhase::Reviewing,
@@ -4397,7 +4400,7 @@ mod start_user_turn_tests {
         runtime_object_quote, selection_targets_center_file, start_user_turn, trailing_queue_start,
         ComposerQuote, ComposerReferenceChip,
     };
-    use crate::dto::ChatItem;
+    use crate::dto::{ChatItem, ContextUsage};
 
     #[test]
     fn message_with_attachments_appends_suffix() {
@@ -4787,6 +4790,9 @@ mod start_user_turn_tests {
                 output: 2,
                 reasoning: 0,
                 cached: 0,
+                ctx_tokens: 0,
+                max_context: 0,
+                context_usage: ContextUsage::default(),
             },
             ChatItem::QueuedUser {
                 id: 1,
@@ -6919,6 +6925,9 @@ pub(super) fn upsert_turn_usage(
     output: u64,
     reasoning: u64,
     cached: u64,
+    ctx_tokens: usize,
+    max_context: usize,
+    context_usage: ContextUsage,
 ) {
     let turn_start = items
         .iter()
@@ -6935,6 +6944,7 @@ pub(super) fn upsert_turn_usage(
             output: b,
             reasoning: c,
             cached: d,
+            ..
         } = items.remove(turn_start + i)
         {
             in_sum += a;
@@ -6951,8 +6961,31 @@ pub(super) fn upsert_turn_usage(
             output: out_sum,
             reasoning: r_sum,
             cached: c_sum,
+            ctx_tokens,
+            max_context,
+            context_usage,
         },
     );
+}
+
+pub(super) fn latest_context_usage(items: &[ChatItem]) -> Option<ContextUsageSnapshot> {
+    items.iter().rev().find_map(|item| {
+        let ChatItem::Usage {
+            ctx_tokens,
+            max_context,
+            context_usage,
+            ..
+        } = item
+        else {
+            return None;
+        };
+        (*ctx_tokens > 0 || *max_context > 0).then_some(ContextUsageSnapshot {
+            used: *ctx_tokens,
+            max: *max_context,
+            breakdown: (context_usage.total() > 0).then_some(*context_usage),
+            estimated: true,
+        })
+    })
 }
 
 #[cfg(test)]
@@ -6969,7 +7002,16 @@ mod usage_row_tests {
                 resources: Vec::new(),
             },
         ];
-        upsert_turn_usage(&mut items, 100, 10, 5, 40);
+        upsert_turn_usage(
+            &mut items,
+            100,
+            10,
+            5,
+            40,
+            1_000,
+            8_000,
+            ContextUsage::default(),
+        );
         items.push(ChatItem::Tool {
             name: "python".into(),
             ok: Some(true),
@@ -6978,7 +7020,16 @@ mod usage_row_tests {
             started_at_ms: None,
             duration_ms: None,
         });
-        upsert_turn_usage(&mut items, 200, 20, 0, 60);
+        upsert_turn_usage(
+            &mut items,
+            200,
+            20,
+            0,
+            60,
+            1_500,
+            8_000,
+            ContextUsage::default(),
+        );
         // Single cumulative row at the tail, prior turns untouched.
         assert!(matches!(
             items.last(),
@@ -6986,7 +7037,10 @@ mod usage_row_tests {
                 input: 300,
                 output: 30,
                 reasoning: 5,
-                cached: 100
+                cached: 100,
+                ctx_tokens: 1_500,
+                max_context: 8_000,
+                ..
             })
         ));
         assert_eq!(
@@ -6996,16 +7050,30 @@ mod usage_row_tests {
                 .count(),
             1
         );
+        let context = latest_context_usage(&items).expect("latest context snapshot");
+        assert_eq!((context.used, context.max), (1_500, 8_000));
         // A new user turn starts a fresh row.
         items.push(ChatItem::User("q2".into()));
-        upsert_turn_usage(&mut items, 50, 5, 0, 0);
+        upsert_turn_usage(
+            &mut items,
+            50,
+            5,
+            0,
+            0,
+            2_000,
+            8_000,
+            ContextUsage::default(),
+        );
         assert!(matches!(
             items.last(),
             Some(ChatItem::Usage {
                 input: 50,
                 output: 5,
                 reasoning: 0,
-                cached: 0
+                cached: 0,
+                ctx_tokens: 2_000,
+                max_context: 8_000,
+                ..
             })
         ));
     }
@@ -7049,7 +7117,7 @@ pub(super) fn promote_assistant_text(items: &mut Vec<ChatItem>, text: &str) {
 #[cfg(test)]
 mod promote_assistant_text_tests {
     use super::{is_commentary_at, promote_assistant_text};
-    use crate::dto::ChatItem;
+    use crate::dto::{ChatItem, ContextUsage};
 
     fn tool(name: &str) -> ChatItem {
         ChatItem::Tool {
@@ -7096,6 +7164,9 @@ mod promote_assistant_text_tests {
                 output: 1,
                 reasoning: 0,
                 cached: 0,
+                ctx_tokens: 0,
+                max_context: 0,
+                context_usage: ContextUsage::default(),
             },
         ];
         promote_assistant_text(&mut items, "final answer");
@@ -9345,6 +9416,7 @@ pub(super) fn compose_icon(kind: &str) -> impl IntoView {
         "doc" => view! { <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/> }.into_view(),
         "image" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/> }.into_view(),
         "review" => view! { <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/> }.into_view(),
+        "gauge" => view! { <path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/> }.into_view(),
         "controls" => view! { <path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/> }.into_view(),
         "adjustments" => view! { <path d="M4 7h9"/><path d="M17 7h3"/><circle cx="15" cy="7" r="2"/><path d="M4 17h3"/><path d="M11 17h9"/><circle cx="9" cy="17" r="2"/> }.into_view(),
         "check" => view! { <path d="m20 6-11 11-5-5"/> }.into_view(),

@@ -151,6 +151,8 @@ enum AgentEvent {
         cached: u64,
         ctx_tokens: usize,
         max_context: usize,
+        #[serde(default)]
+        context_usage: wisp_core::ContextUsage,
     },
     Compaction {
         frame_id: String,
@@ -1182,12 +1184,12 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
     // Per-round usage folds into one row per turn, floated to the turn's tail —
     // same shape the live UI produces via `upsert_turn_usage`. Flushed when the
     // next user turn starts and again at the end of the stream.
-    let mut turn_usage: Option<(u64, u64, u64, u64)> = None;
+    let mut turn_usage: Option<(u64, u64, u64, u64, usize, usize, wisp_core::ContextUsage)> = None;
     for event in events {
         match event {
             AgentEvent::User { text, .. } => {
-                if let Some((i, o, r, c)) = turn_usage.take() {
-                    items.push(usage_item(i, o, r, c));
+                if let Some((i, o, r, c, used, max, context)) = turn_usage.take() {
+                    items.push(usage_item(i, o, r, c, used, max, context));
                 }
                 items.push(UiItem {
                     role: "user".into(),
@@ -1209,13 +1211,27 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                 output,
                 reasoning,
                 cached,
+                ctx_tokens,
+                max_context,
+                context_usage,
                 ..
             } => {
-                let acc = turn_usage.get_or_insert((0, 0, 0, 0));
+                let acc = turn_usage.get_or_insert((
+                    0,
+                    0,
+                    0,
+                    0,
+                    *ctx_tokens,
+                    *max_context,
+                    *context_usage,
+                ));
                 acc.0 += input;
                 acc.1 += output;
                 acc.2 += reasoning;
                 acc.3 += cached;
+                acc.4 = *ctx_tokens;
+                acc.5 = *max_context;
+                acc.6 = *context_usage;
             }
             AgentEvent::Compaction {
                 before,
@@ -1385,15 +1401,23 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
             _ => {}
         }
     }
-    if let Some((i, o, r, c)) = turn_usage.take() {
-        items.push(usage_item(i, o, r, c));
+    if let Some((i, o, r, c, used, max, context)) = turn_usage.take() {
+        items.push(usage_item(i, o, r, c, used, max, context));
     }
     (items, boundaries)
 }
 
 /// Encode a folded per-turn usage total as a transcript row the UI decodes back
 /// into `ChatItem::Usage` (numbers packed as JSON in `text`).
-fn usage_item(input: u64, output: u64, reasoning: u64, cached: u64) -> UiItem {
+fn usage_item(
+    input: u64,
+    output: u64,
+    reasoning: u64,
+    cached: u64,
+    ctx_tokens: usize,
+    max_context: usize,
+    context_usage: wisp_core::ContextUsage,
+) -> UiItem {
     UiItem {
         role: "usage".into(),
         text: serde_json::json!({
@@ -1401,6 +1425,9 @@ fn usage_item(input: u64, output: u64, reasoning: u64, cached: u64) -> UiItem {
             "output": output,
             "reasoning": reasoning,
             "cached": cached,
+            "ctx_tokens": ctx_tokens,
+            "max_context": max_context,
+            "context_usage": context_usage,
         })
         .to_string(),
         tool_name: None,
@@ -2363,6 +2390,7 @@ impl Output for TauriOutput {
         cached: u64,
         ctx_tokens: usize,
         max_context: usize,
+        context_usage: wisp_core::ContextUsage,
     ) {
         self.emit(AgentEvent::Usage {
             frame_id: self.frame_id.clone(),
@@ -2373,6 +2401,7 @@ impl Output for TauriOutput {
             cached,
             ctx_tokens,
             max_context,
+            context_usage,
         });
     }
     fn compaction(&self, before: usize, after: usize, strategy: &str) {

@@ -491,8 +491,12 @@ fn persisted_usage_folds_per_turn_and_floats_to_tail() {
         output,
         reasoning: 0,
         cached,
-        ctx_tokens: 0,
-        max_context: 0,
+        ctx_tokens: input as usize,
+        max_context: 1_000,
+        context_usage: wisp_core::ContextUsage {
+            conversation: input as usize,
+            ..wisp_core::ContextUsage::default()
+        },
     };
     let events = vec![
         AgentEvent::User {
@@ -529,6 +533,9 @@ fn persisted_usage_folds_per_turn_and_floats_to_tail() {
     assert_eq!(first["input"], 300); // 100 + 200 folded
     assert_eq!(first["output"], 30);
     assert_eq!(first["cached"], 80);
+    assert_eq!(first["ctx_tokens"], 200); // latest round snapshot, not a sum
+    assert_eq!(first["max_context"], 1_000);
+    assert_eq!(first["context_usage"]["conversation"], 200);
     let second: serde_json::Value = serde_json::from_str(&items[5].text).unwrap();
     assert_eq!(second["input"], 50);
 }

@@ -3547,6 +3547,34 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               }, 30);
               return fid;
             }
+            if (String(arg("message") ?? "").includes("CONTEXTUSAGE")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Context usage is ready." });
+                emit("agent", {
+                  kind: "Usage",
+                  frame_id: fid,
+                  round: 1,
+                  input: 79_200,
+                  output: 700,
+                  reasoning: 0,
+                  cached: 50_000,
+                  ctx_tokens: 79_900,
+                  max_context: 300_000,
+                  context_usage: {
+                    system_prompt: 6_000,
+                    tool_definitions: 22_700,
+                    rules: 2_200,
+                    skills: 6_100,
+                    mcp_dynamic_tools: 4_200,
+                    subagent_definitions: 2_400,
+                    conversation: 36_300,
+                  },
+                });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
             if (String(arg("message") ?? "").includes("AUTOREVIEWUNREVIEWABLE")) {
               const incompleteReport = {
                 id: "review-auto-unreviewable",

@@ -655,7 +655,15 @@ test("ACP turn maps config, overlapping tools, plan, usage, and exact permission
     requestId: "permission-1", optionId: "allow",
   });
   await expect(permission).toHaveCount(0);
-  await expect(page.getByText("ACP context: 1200 / 8000 tokens")).toBeVisible();
+  const contextTrigger = page.getByTestId("context-usage-trigger");
+  await expect(contextTrigger).toContainText("15%");
+  await expect(page.locator(".topbar .hint")).toHaveCount(0);
+  await contextTrigger.click();
+  const contextPanel = page.getByTestId("context-usage-panel");
+  await expect(contextPanel).toContainText("1.2K / 8K Tokens");
+  await expect(contextPanel).toContainText("Agent-managed context");
+  await page.keyboard.press("Escape");
+  await expect(contextPanel).toHaveCount(0);
 
   await page.locator(".model-picker-btn").click();
   await expect(page.getByRole("button", { name: /deepseek-v4-pro/ })).toBeDisabled();
@@ -1384,6 +1392,34 @@ test("topbar groups chrome actions and hides an empty status hint", async ({ pag
   await expect(actions.getByRole("button", { name: "Toggle panel" })).toHaveCount(1);
   // Idle sessions leave the status slot empty so tabs keep the width.
   await expect(page.locator(".topbar .hint")).toHaveCount(0);
+});
+
+test("context usage moves out of the topbar and opens a categorized detail panel", async ({ page }) => {
+  await page.setViewportSize({ width: 1516, height: 671 });
+  await enterApp(page);
+  await page.locator("#composer-input").fill("CONTEXTUSAGE");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect(trigger).toContainText("27%");
+  await expect(page.locator(".topbar .hint")).toHaveCount(0);
+
+  await trigger.click();
+  const panel = page.getByTestId("context-usage-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "Context Usage" })).toBeVisible();
+  await expect(panel).toContainText("27% Full");
+  await expect(panel).toContainText("~79.9K / 300K Tokens");
+  await expect(panel.locator(".context-usage-row")).toHaveCount(7);
+  await expect(panel.locator(".context-usage-segment")).toHaveCount(7);
+  await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
+  await expect(panel.getByText("36.3K", { exact: true })).toBeVisible();
+
+  // Window-level Escape must work immediately; focus never moves into the panel.
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveCount(0);
+  await expect(page.locator(".composer-inner")).toBeVisible();
+  await expect(trigger).toBeVisible();
 });
 
 test("artifact type badges stay neutral instead of rainbow pills", async ({ page }) => {

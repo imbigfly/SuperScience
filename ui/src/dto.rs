@@ -11,6 +11,44 @@ use crate::i18n::Locale;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+pub(crate) struct ContextUsage {
+    #[serde(default)]
+    pub(crate) system_prompt: usize,
+    #[serde(default)]
+    pub(crate) tool_definitions: usize,
+    #[serde(default)]
+    pub(crate) rules: usize,
+    #[serde(default)]
+    pub(crate) skills: usize,
+    #[serde(default)]
+    pub(crate) mcp_dynamic_tools: usize,
+    #[serde(default)]
+    pub(crate) subagent_definitions: usize,
+    #[serde(default)]
+    pub(crate) conversation: usize,
+}
+
+impl ContextUsage {
+    pub(crate) fn total(self) -> usize {
+        self.system_prompt
+            .saturating_add(self.tool_definitions)
+            .saturating_add(self.rules)
+            .saturating_add(self.skills)
+            .saturating_add(self.mcp_dynamic_tools)
+            .saturating_add(self.subagent_definitions)
+            .saturating_add(self.conversation)
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(crate) struct ContextUsageSnapshot {
+    pub(crate) used: usize,
+    pub(crate) max: usize,
+    pub(crate) breakdown: Option<ContextUsage>,
+    pub(crate) estimated: bool,
+}
+
 /// Progress emitted by the native project archive importer/exporter. Mirrors
 /// `ProjectTransferProgress` in `src-tauri/src/project_transfer.rs`.
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -140,6 +178,8 @@ pub(crate) enum AgentEvent {
         cached: u64,
         ctx_tokens: usize,
         max_context: usize,
+        #[serde(default)]
+        context_usage: ContextUsage,
     },
     Compaction {
         frame_id: String,
@@ -294,6 +334,9 @@ pub(crate) enum ChatItem {
         output: u64,
         reasoning: u64,
         cached: u64,
+        ctx_tokens: usize,
+        max_context: usize,
+        context_usage: ContextUsage,
     },
     /// Persistent timeline marker emitted whenever the model context is
     /// rewritten. `strategy == "auto"` distinguishes the default 80%
@@ -391,7 +434,20 @@ impl ChatItem {
                 output,
                 reasoning,
                 cached,
-            } => (8u8, input, output, reasoning, cached).hash(&mut h),
+                ctx_tokens,
+                max_context,
+                context_usage,
+            } => (
+                8u8,
+                input,
+                output,
+                reasoning,
+                cached,
+                ctx_tokens,
+                max_context,
+                context_usage,
+            )
+                .hash(&mut h),
             Self::Compaction {
                 before,
                 after,
@@ -1609,6 +1665,13 @@ impl LoadedItem {
                     output: n("output"),
                     reasoning: n("reasoning"),
                     cached: n("cached"),
+                    ctx_tokens: n("ctx_tokens") as usize,
+                    max_context: n("max_context") as usize,
+                    context_usage: v
+                        .get("context_usage")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .unwrap_or_default(),
                 }
             }
             "compaction" => {
