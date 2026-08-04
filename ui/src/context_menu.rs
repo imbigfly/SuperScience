@@ -820,8 +820,14 @@ pub fn ContextMenuPortal(
             } else {
                 (anchor.left - width).max(8.0)
             };
-            let (_, top) =
-                clamp_to_viewport(left, anchor.top, width, height, viewport_width, viewport_height);
+            let (_, top) = clamp_to_viewport(
+                left,
+                anchor.top,
+                width,
+                height,
+                viewport_width,
+                viewport_height,
+            );
             submenu_fix.set(Some((anchor, left, top)));
         });
     });
