@@ -3082,11 +3082,33 @@ fn delegation_result_instructions(request: &AgentDelegationRequest) -> anyhow::R
 }
 
 fn parse_agent_result(raw: &str, request: &AgentDelegationRequest) -> Result<Value, String> {
-    if request.spec.output_schema_source == AgentOutputSchemaSource::Task {
-        return serde_json::from_str(raw.trim())
-            .map_err(|error| format!("Agent returned invalid task JSON: {error}"));
+    if raw.trim().is_empty() {
+        return Err("Agent returned an empty final message".into());
     }
-    parse_result_object(raw)
+    let reviewer = is_reviewer(request);
+    let candidates = extract_json_candidates(raw);
+    if request.spec.output_schema_source == AgentOutputSchemaSource::Task {
+        if let Some(value) = largest_candidate(candidates) {
+            return Ok(value);
+        }
+        if reviewer {
+            return Err("Reviewer returned no parseable JSON task result".into());
+        }
+        return Ok(degraded_result_envelope(
+            raw,
+            "The final message contained no parseable JSON value; the raw text is preserved in summary.",
+        ));
+    }
+    if let Some(object) = envelope_candidate(candidates) {
+        return Ok(normalize_result_envelope(object));
+    }
+    if reviewer {
+        return Err("Reviewer returned no JSON result object with a summary string".into());
+    }
+    Ok(degraded_result_envelope(
+        raw,
+        "The final message contained no JSON object with a summary string; the raw text is preserved in summary.",
+    ))
 }
 
 async fn reviewer_host_evidence(project_root: &std::path::Path) -> String {
@@ -4352,31 +4374,92 @@ fn delegation_prompt(request: &AgentDelegationRequest) -> anyhow::Result<String>
     ))
 }
 
-fn parse_result_object(raw: &str) -> Result<Value, String> {
-    let start = raw
-        .find('{')
-        .ok_or_else(|| "Agent returned no JSON object".to_string())?;
-    let end = raw
-        .rfind('}')
-        .filter(|end| *end >= start)
-        .ok_or_else(|| "Agent returned an incomplete JSON object".to_string())?;
-    let value: Value = serde_json::from_str(&raw[start..=end])
-        .map_err(|error| format!("Agent returned invalid JSON: {error}"))?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| "Agent result must be an object".to_string())?;
-    if !object.get("summary").is_some_and(Value::is_string) {
-        return Err("Agent result is missing the summary string".into());
+/// Every JSON value that can be recovered from the Agent's final message.
+/// Models frequently wrap the requested JSON in Markdown fences or narrative
+/// text, so after a strict whole-message parse this scans for embedded
+/// balanced JSON values and skips past each recovered one.
+fn extract_json_candidates(raw: &str) -> Vec<Value> {
+    let trimmed = raw.trim();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return vec![value];
     }
+    let mut candidates = Vec::new();
+    let bytes = trimmed.as_bytes();
+    let mut index = 0;
+    let mut failed_attempts = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'{' && bytes[index] != b'[' {
+            index += 1;
+            continue;
+        }
+        let mut stream = serde_json::Deserializer::from_str(&trimmed[index..]).into_iter::<Value>();
+        match stream.next() {
+            Some(Ok(value)) => {
+                index += stream.byte_offset().max(1);
+                candidates.push(value);
+            }
+            _ => {
+                // Bound quadratic rescans of pathological brace-heavy text.
+                failed_attempts += 1;
+                if failed_attempts > 1_000 {
+                    break;
+                }
+                index += 1;
+            }
+        }
+    }
+    candidates
+}
+
+fn largest_candidate(candidates: Vec<Value>) -> Option<Value> {
+    candidates.into_iter().max_by_key(|value| {
+        serde_json::to_string(value)
+            .map(|serialized| serialized.len())
+            .unwrap_or(0)
+    })
+}
+
+fn envelope_candidate(candidates: Vec<Value>) -> Option<Map<String, Value>> {
+    largest_candidate(
+        candidates
+            .into_iter()
+            .filter(|value| value.get("summary").is_some_and(Value::is_string))
+            .collect(),
+    )
+    .and_then(|value| match value {
+        Value::Object(object) => Some(object),
+        _ => None,
+    })
+}
+
+/// Fill optional envelope fields so downstream consumers can rely on their
+/// presence; only the summary string is required from the Agent itself.
+fn normalize_result_envelope(mut object: Map<String, Value>) -> Value {
     if !object.get("diff_summary").is_some_and(Value::is_string) {
-        return Err("Agent result is missing the diff_summary string".into());
+        object.insert("diff_summary".into(), json!(""));
     }
     for field in ["files_changed", "artifacts", "evidence", "tests", "risks"] {
         if !object.get(field).is_some_and(Value::is_array) {
-            return Err(format!("Agent result is missing the {field} array"));
+            object.insert(field.into(), json!([]));
         }
     }
-    Ok(value)
+    Value::Object(object)
+}
+
+/// Preserve the Agent's completed work instead of discarding it when the
+/// final message is not the requested JSON shape. The raw text becomes the
+/// summary and the delivery marker records why the result was degraded.
+fn degraded_result_envelope(raw: &str, reason: &str) -> Value {
+    json!({
+        "summary": bounded_text(raw.trim(), 60_000),
+        "files_changed": [],
+        "diff_summary": "",
+        "artifacts": [],
+        "evidence": [],
+        "tests": [],
+        "risks": [],
+        "delivery": wisp_core::degraded_delivery_marker(reason),
+    })
 }
 
 fn evidence_from_output(output: &Value) -> Vec<AgentEvidence> {
@@ -5342,36 +5425,127 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn structured_result_parser_rejects_prose_and_incomplete_results() {
-        assert!(parse_result_object("done").is_err());
-        assert!(parse_result_object(r#"{"summary":"done"}"#).is_err());
-        assert!(parse_result_object(r#"{"summary":"done","files_changed":[],"diff_summary":"","artifacts":[],"evidence":[],"tests":[],"risks":[]}"#)
-        .is_ok());
-
-        let request = AgentDelegationRequest {
+    fn parse_request(spec: Value) -> AgentDelegationRequest {
+        AgentDelegationRequest {
             request_id: "request".into(),
             workflow_id: "workflow".into(),
             step_id: "step".into(),
-            spec: serde_json::from_value(json!({
-                "agent_id": "structured",
-                "name": "Structured Agent",
-                "goal": "Return rows",
-                "role": "temporary",
-                "backend": "local",
-                "prompt_template": "Return structured data.",
-                "output_contract": {"type": "array"},
-                "output_schema_source": "task"
-            }))
-            .unwrap(),
+            spec: serde_json::from_value(spec).unwrap(),
             input: json!({}),
             lineage: None,
-        };
+        }
+    }
+
+    fn standard_parse_request() -> AgentDelegationRequest {
+        parse_request(json!({
+            "agent_id": "worker",
+            "name": "Worker Agent",
+            "goal": "Do the work",
+            "role": "temporary",
+            "backend": "local",
+            "prompt_template": "Work."
+        }))
+    }
+
+    fn task_parse_request() -> AgentDelegationRequest {
+        parse_request(json!({
+            "agent_id": "structured",
+            "name": "Structured Agent",
+            "goal": "Return rows",
+            "role": "temporary",
+            "backend": "local",
+            "prompt_template": "Return structured data.",
+            "output_contract": {"type": "array"},
+            "output_schema_source": "task"
+        }))
+    }
+
+    fn reviewer_parse_request() -> AgentDelegationRequest {
+        parse_request(json!({
+            "agent_id": "temporary-reviewer",
+            "name": "Independent reviewer",
+            "goal": "Review the work",
+            "role": "reviewer",
+            "backend": "local",
+            "prompt_template": "Review only."
+        }))
+    }
+
+    #[test]
+    fn result_parser_tolerates_fences_and_narrative_around_the_payload() {
+        let request = task_parse_request();
         assert_eq!(
             parse_agent_result("[1,2]", &request).unwrap(),
             json!([1, 2])
         );
-        assert!(parse_agent_result("not JSON", &request).is_err());
+        assert_eq!(
+            parse_agent_result("```json\n{\"rows\":[1]}\n```", &request).unwrap(),
+            json!({"rows": [1]})
+        );
+        assert_eq!(
+            parse_agent_result(
+                "Here is the final result you asked for:\n{\"rows\":[1,2]}\nDone.",
+                &request
+            )
+            .unwrap(),
+            json!({"rows": [1, 2]})
+        );
+
+        let request = standard_parse_request();
+        let envelope = r#"{"summary":"done","files_changed":[],"diff_summary":"","artifacts":[],"evidence":[],"tests":[],"risks":[]}"#;
+        assert_eq!(
+            parse_agent_result(envelope, &request).unwrap()["summary"],
+            "done"
+        );
+        // Stray braces in surrounding prose must not break payload extraction.
+        let noisy = format!("I produced {{almost}} everything requested.\n{envelope}");
+        assert_eq!(
+            parse_agent_result(&noisy, &request).unwrap()["summary"],
+            "done"
+        );
+        // Optional envelope fields are normalized instead of rejected.
+        let minimal = parse_agent_result(r#"{"summary":"done"}"#, &request).unwrap();
+        assert_eq!(minimal["summary"], "done");
+        assert_eq!(minimal["files_changed"], json!([]));
+        assert_eq!(minimal["diff_summary"], "");
+        assert!(minimal.get("delivery").is_none());
+    }
+
+    #[test]
+    fn result_parser_degrades_unparseable_deliveries_instead_of_discarding_them() {
+        let request = standard_parse_request();
+        let narrative = "A long narrative report without any JSON envelope.";
+        let degraded = parse_agent_result(narrative, &request).unwrap();
+        assert_eq!(degraded["summary"], narrative);
+        assert_eq!(degraded["delivery"]["degraded"], true);
+        assert!(degraded["delivery"]["reason"].is_string());
+
+        // A JSON object without the required summary keeps the raw text too.
+        let custom = r#"{"skill_source":"bear-review","findings":[],"limitations":[]}"#;
+        let degraded = parse_agent_result(custom, &request).unwrap();
+        assert_eq!(degraded["delivery"]["degraded"], true);
+        assert_eq!(degraded["summary"], custom);
+
+        let request = task_parse_request();
+        let degraded = parse_agent_result("not JSON", &request).unwrap();
+        assert_eq!(degraded["summary"], "not JSON");
+        assert_eq!(degraded["delivery"]["degraded"], true);
+
+        assert!(parse_agent_result("  \n ", &request).is_err());
+    }
+
+    #[test]
+    fn result_parser_keeps_reviewer_deliveries_strict() {
+        let request = reviewer_parse_request();
+        assert!(is_reviewer(&request));
+        assert_eq!(
+            parse_agent_result("plain prose verdict", &request).unwrap_err(),
+            "Reviewer returned no JSON result object with a summary string"
+        );
+        let envelope = r#"{"summary":"ok","findings":[]}"#;
+        let parsed = parse_agent_result(envelope, &request).unwrap();
+        assert_eq!(parsed["summary"], "ok");
+        assert_eq!(parsed["findings"], json!([]));
     }
 
     #[test]

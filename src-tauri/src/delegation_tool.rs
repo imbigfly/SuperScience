@@ -891,7 +891,7 @@ pub(crate) fn compact_execution_result(
                 .output
                 .get("data")
                 .unwrap_or(&response.output);
-            json!({
+            let mut entry = json!({
                 "id": id,
                 "status": response.status,
                 "summary": summary,
@@ -910,7 +910,11 @@ pub(crate) fn compact_execution_result(
                     "workflow_id": execution.workflow_id,
                     "task_id": id,
                 }
-            })
+            });
+            if wisp_core::is_degraded_delivery(&response.output) {
+                entry["delivery"] = response.output["delivery"].clone();
+            }
+            entry
         })
         .collect::<Vec<_>>();
     let resumable = execution.status != wisp_core::DelegationExecutionStatus::Succeeded;
@@ -2103,7 +2107,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_output_schema_is_enforced_and_full_result_can_be_loaded() {
+    async fn task_output_schema_violations_degrade_and_full_result_can_be_loaded() {
         let (store, project, root) = fixture().await;
         enable_delegation(&store).await;
         let delegator = Arc::new(FakeDelegator::new(&[], &["invalid"]));
@@ -2143,8 +2147,13 @@ mod tests {
         let results = value["results"].as_array().unwrap();
         assert_eq!(results[0]["status"], "succeeded");
         assert_eq!(results[0]["data"]["score"], 7);
-        assert_eq!(results[1]["status"], "failed");
-        assert!(results[1]["error"]
+        assert!(results[0].get("delivery").is_none());
+        // A schema violation preserves the completed output as a degraded
+        // delivery instead of discarding it.
+        assert_eq!(results[1]["status"], "succeeded");
+        assert_eq!(results[1]["data"]["score"], "invalid");
+        assert_eq!(results[1]["delivery"]["degraded"], true);
+        assert!(results[1]["delivery"]["reason"]
             .as_str()
             .unwrap()
             .contains("output_contract"));
