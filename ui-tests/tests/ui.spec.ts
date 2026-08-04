@@ -2413,6 +2413,93 @@ test("branch on an earlier user message opens a new session from that point", as
   });
 });
 
+test("editing a middle message asks for confirmation before rewinding", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("first idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+
+  await composer(page).fill("second idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  const firstUser = page.locator(".msg.user", { hasText: "first idea" });
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
+  await expect(page.locator(".msg.assistant")).toHaveCount(2, { timeout: 10_000 });
+  await expect(firstUser.getByRole("button", { name: "Edit" })).toBeEnabled();
+
+  const modal = page.getByTestId("edit-confirm-modal");
+  await firstUser.getByRole("button", { name: "Edit" }).click();
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("permanently deletes all conversation after this message");
+  // While the modal is open nothing is rewound and the transcript is intact.
+  expect(await lastInvokeArgs(page, "rewind_session")).toBeNull();
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
+
+  // Confirming Edit runs the destructive rewind to the first message.
+  await modal.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect(modal).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "rewind_session")).toMatchObject({
+    sessionId: expect.stringMatching(/^s-/),
+    userIndex: 0,
+  });
+  await expect(composer(page)).toHaveValue("first idea");
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toHaveCount(0);
+  await expect(page.locator(".msg.assistant")).toHaveCount(0);
+});
+
+test("edit confirmation can branch instead of rewinding", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("first idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+
+  await composer(page).fill("second idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  const firstUser = page.locator(".msg.user", { hasText: "first idea" });
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
+  await expect(page.locator(".msg.assistant")).toHaveCount(2, { timeout: 10_000 });
+  await expect(firstUser.getByRole("button", { name: "Edit" })).toBeEnabled();
+
+  const modal = page.getByTestId("edit-confirm-modal");
+  await firstUser.getByRole("button", { name: "Edit" }).click();
+  await expect(modal).toBeVisible();
+  await modal.getByRole("button", { name: "Branch" }).click();
+  await expect(modal).toHaveCount(0);
+
+  await expect.poll(() => lastInvokeArgs(page, "branch_session")).toMatchObject({
+    sessionId: expect.stringMatching(/^s-/),
+    title: "first idea",
+    userIndex: 0,
+  });
+  // Branching is non-destructive: no rewind happened.
+  expect(await lastInvokeArgs(page, "rewind_session")).toBeNull();
+  await expect(composer(page)).toHaveValue("first idea");
+});
+
+test("Escape closes only the edit confirmation modal and keeps the transcript", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("first idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+
+  await composer(page).fill("second idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  const firstUser = page.locator(".msg.user", { hasText: "first idea" });
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
+  await expect(page.locator(".msg.assistant")).toHaveCount(2, { timeout: 10_000 });
+  await expect(firstUser.getByRole("button", { name: "Edit" })).toBeEnabled();
+
+  const modal = page.getByTestId("edit-confirm-modal");
+  await firstUser.getByRole("button", { name: "Edit" }).click();
+  await expect(modal).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  // One Escape closed the modal only — no rewind, no branch, transcript intact.
+  expect(await lastInvokeArgs(page, "rewind_session")).toBeNull();
+  expect(await lastInvokeArgs(page, "branch_session")).toBeNull();
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
+  await expect(page.locator(".msg.assistant")).toHaveCount(2);
+});
+
 test("generic content menus do not expose session export", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("hello there");
