@@ -11168,6 +11168,7 @@ fn App() -> impl IntoView {
                                                 let (p, n, k) = (path.clone(), vn.clone(), fkind.clone());
                                                 let (mv, sp, dw) = (p.clone(), p.clone(), p.clone());
                                                 let rv = p.clone();
+                                                let at = p.clone();
                                                 let oc = CenterFileTab::new(p.clone(), n.clone(), k.clone());
                                                 let (mvn, mvk) = (n.clone(), k.clone());
                                                 view! {
@@ -11188,6 +11189,13 @@ fn App() -> impl IntoView {
                                                                 center_file.set(Some(oc.path.clone()));
                                                             }>
                                                             {move || t(locale.get(), "center.open_file")}</button>
+                                                        <button type="button" class="rp-tile-menu-item"
+                                                            on:click=move |_| {
+                                                                artifact_menu.set(None);
+                                                                let _ = attach_ready_path(attachments, at.clone());
+                                                                focus_composer();
+                                                            }>
+                                                            {move || t(locale.get(), "ctx.attach_file")}</button>
                                                         <button type="button" class="rp-tile-menu-item"
                                                             on:click=move |_| {
                                                                 artifact_menu.set(None);

@@ -2511,6 +2511,28 @@ test("workspace file context menu attaches its path to the composer", async ({ p
   await expect(composer(page)).toHaveValue("");
 });
 
+test("artifact tile attaches to the chat from its context and more menus", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("make a volcano plot volcano.png");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+
+  const tile = page.locator('.rp-tile[data-artifact-name="volcano.png"]');
+  await expect(tile).toBeVisible();
+
+  // Right-click → "Attach to chat" drops the artifact path into the composer.
+  await tile.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Attach to chat" }).click();
+  await expect(page.locator(".composer-attachment.ready")).toHaveText("volcano.png");
+  await expect(composer(page)).toHaveValue("");
+
+  // The "More" menu offers the same handoff; re-attaching dedupes to one chip.
+  await tile.getByRole("button", { name: "More" }).click();
+  await page.locator(".rp-tile-menu").getByRole("button", { name: "Attach to chat" }).click();
+  await expect(page.locator(".composer-attachment.ready")).toHaveCount(1);
+});
+
 test("workspace Files panel navigates deeply nested analysis modules", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Files" }).click();

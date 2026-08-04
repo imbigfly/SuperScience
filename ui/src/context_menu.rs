@@ -463,6 +463,14 @@ pub fn build(
                         path.clone(),
                     ),
                 );
+                items.insert(
+                    1,
+                    item(
+                        "attachWorkspaceFile",
+                        i18n::t(locale, "ctx.attach_file"),
+                        path.clone(),
+                    ),
+                );
                 items.push(item(
                     "downloadFile",
                     i18n::t(locale, "artifact.download"),
