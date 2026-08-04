@@ -165,6 +165,11 @@ impl ContextPolicy {
     }
 }
 
+/// Resource limits for one delegated Agent run. Every dimension is optional:
+/// `None` (or `Some(0)`, normalized to `None` at resolution time) means the
+/// dimension is unlimited. Budgets are an advanced tuning knob — delegated
+/// tasks run unlimited by default, and a finite value is only checked after
+/// the run as a policy guard, never as a mid-run abort.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentBudget {
     #[serde(default)]
@@ -402,12 +407,8 @@ impl AgentSpec {
                 }
             }
         }
-        if self.context_policy.max_tokens == Some(0)
-            || self.budget.max_tokens == Some(0)
-            || self.budget.max_tool_calls == Some(0)
-            || self.budget.max_cost_microunits == Some(0)
-        {
-            anyhow::bail!("agent budgets must be positive");
+        if self.context_policy.max_tokens == Some(0) {
+            anyhow::bail!("context token limits must be positive");
         }
         Ok(())
     }
@@ -927,7 +928,7 @@ fn budget_violation(usage: &AgentUsage, budget: &AgentBudget) -> Option<String> 
     let total_tokens = usage.input_tokens.saturating_add(usage.output_tokens);
     if budget
         .max_tokens
-        .is_some_and(|limit| total_tokens > u64::from(limit))
+        .is_some_and(|limit| limit > 0 && total_tokens > u64::from(limit))
     {
         return Some(format!(
             "Agent exceeded its token budget ({total_tokens} tokens)"
@@ -935,7 +936,7 @@ fn budget_violation(usage: &AgentUsage, budget: &AgentBudget) -> Option<String> 
     }
     if budget
         .max_tool_calls
-        .is_some_and(|limit| usage.tool_calls > u64::from(limit))
+        .is_some_and(|limit| limit > 0 && usage.tool_calls > u64::from(limit))
     {
         return Some(format!(
             "Agent exceeded its tool-call budget ({} calls)",
@@ -944,7 +945,7 @@ fn budget_violation(usage: &AgentUsage, budget: &AgentBudget) -> Option<String> 
     }
     if budget
         .max_cost_microunits
-        .is_some_and(|limit| usage.cost_microunits > limit)
+        .is_some_and(|limit| limit > 0 && usage.cost_microunits > limit)
     {
         return Some(format!(
             "Agent exceeded its cost budget ({} microunits)",
@@ -1049,6 +1050,33 @@ mod tests {
             ..test_spec("a")
         };
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn zero_budget_dimensions_are_valid_and_mean_unlimited() {
+        let spec = AgentSpec {
+            budget: AgentBudget {
+                max_tokens: Some(0),
+                max_tool_calls: Some(0),
+                max_cost_microunits: Some(0),
+            },
+            ..test_spec("a")
+        };
+        assert!(spec.validate().is_ok());
+
+        let usage = AgentUsage {
+            input_tokens: 900_000,
+            output_tokens: 100_000,
+            tool_calls: 10_000,
+            cost_microunits: u64::MAX,
+        };
+        assert_eq!(budget_violation(&usage, &spec.budget), None);
+        assert_eq!(budget_violation(&usage, &AgentBudget::default()), None);
+        let capped = AgentBudget {
+            max_tokens: Some(50_000),
+            ..AgentBudget::default()
+        };
+        assert!(budget_violation(&usage, &capped).is_some());
     }
 
     #[test]

@@ -161,9 +161,9 @@ impl DynamicTaskForm {
                     .map_err(|error| format!("Task {} output schema: {error}", self.id))?,
             )
         };
-        let max_tokens = parse_optional_u32(&self.max_tokens, "token budget")?;
-        let max_tool_calls = parse_optional_u32(&self.max_tool_calls, "tool-call budget")?;
-        let max_cost_microunits = parse_optional_u64(&self.max_cost_microunits, "cost budget")?;
+        let max_tokens = parse_budget_u32(&self.max_tokens, "token budget")?;
+        let max_tool_calls = parse_budget_u32(&self.max_tool_calls, "tool-call budget")?;
+        let max_cost_microunits = parse_budget_u64(&self.max_cost_microunits, "cost budget")?;
         let budget =
             (max_tokens.is_some() || max_tool_calls.is_some() || max_cost_microunits.is_some())
                 .then_some(AgentBudgetProposal {
@@ -527,8 +527,6 @@ impl DynamicWorkflowForm {
             let mut task = DynamicTaskForm::blank(next_key, id.clone());
             next_key += 1;
             task.instruction.clone_from(&opening_instruction);
-            task.max_tokens = "16000".into();
-            task.max_tool_calls = "16".into();
             template.participants[index].apply_to(&mut task);
             tasks.push(task);
         }
@@ -538,8 +536,6 @@ impl DynamicWorkflowForm {
             next_key += 1;
             task.instruction.clone_from(&review_instruction);
             task.depends_on.clone_from(&opening_ids);
-            task.max_tokens = "16000".into();
-            task.max_tool_calls = "16".into();
             template.participants[index].apply_to(&mut task);
             tasks.push(task);
         }
@@ -548,8 +544,6 @@ impl DynamicWorkflowForm {
         next_key += 1;
         chair.instruction = chair_instruction;
         chair.depends_on = review_ids;
-        chair.max_tokens = "16000".into();
-        chair.max_tool_calls = "16".into();
         template.chair.apply_to(&mut chair);
         tasks.push(chair);
 
@@ -871,6 +865,28 @@ fn parse_optional_u32(value: &str, label: &str) -> Result<Option<u32>, String> {
                 .ok()
                 .filter(|value| *value > 0)
                 .ok_or_else(|| format!("{label} must be a positive whole number"))
+        })
+        .transpose()
+}
+
+/// Budget fields accept 0 as an explicit "unlimited" (normalized downstream);
+/// empty stays unset, which is also unlimited.
+fn parse_budget_u32(value: &str, label: &str) -> Result<Option<u32>, String> {
+    nonempty(value)
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|_| format!("{label} must be a whole number (0 = unlimited)"))
+        })
+        .transpose()
+}
+
+fn parse_budget_u64(value: &str, label: &str) -> Result<Option<u64>, String> {
+    nonempty(value)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| format!("{label} must be a whole number (0 = unlimited)"))
         })
         .transpose()
 }
@@ -2903,8 +2919,8 @@ pub(super) fn workflow_studio(
     let portfolio_open = create_rw_signal(false);
     let portfolio_request = create_rw_signal(String::new());
     let portfolio_tier = create_rw_signal("standard".to_string());
-    let portfolio_total = create_rw_signal("96000".to_string());
-    let portfolio_reserve = create_rw_signal("16000".to_string());
+    let portfolio_total = create_rw_signal("0".to_string());
+    let portfolio_reserve = create_rw_signal("0".to_string());
     let portfolio_draft = create_rw_signal::<Option<SkillPortfolioDraft>>(None);
     let portfolio_loading = create_rw_signal(false);
 
@@ -2923,9 +2939,12 @@ pub(super) fn workflow_studio(
             .get_untracked()
             .parse::<u32>()
             .unwrap_or(0);
-        if request_text.is_empty() || total == 0 || reserve == 0 {
+        // Budgets are an advanced override: 0 means unlimited. A bounded
+        // total still has to leave room for the synthesis reserve.
+        if request_text.is_empty() || (total > 0 && (reserve == 0 || reserve >= total)) {
             state.error.set(Some(
-                "Research request and positive budgets are required.".into(),
+                "Research request is required; a bounded total budget must exceed the synthesis reserve (0 = unlimited)."
+                    .into(),
             ));
             return;
         }
@@ -3395,10 +3414,10 @@ pub(super) fn workflow_studio(
                                     <option value="deep">{"Deep"}</option>
                                 </select>
                             </label>
-                            <label><span>{"Total tokens"}</span><input data-testid="portfolio-total" type="number"
+                            <label><span>{"Total tokens (0 = unlimited)"}</span><input data-testid="portfolio-total" type="number" min="0"
                                 prop:value=move || portfolio_total.get()
                                 on:input=move |event| portfolio_total.set(event_target_value(&event)) /></label>
-                            <label><span>{"Synthesis reserve"}</span><input data-testid="portfolio-reserve" type="number"
+                            <label><span>{"Synthesis reserve"}</span><input data-testid="portfolio-reserve" type="number" min="0"
                                 prop:value=move || portfolio_reserve.get()
                                 on:input=move |event| portfolio_reserve.set(event_target_value(&event)) /></label>
                         </div>
@@ -3412,7 +3431,11 @@ pub(super) fn workflow_studio(
                             view! {
                                 <section data-testid="portfolio-plan-card">
                                     <strong>{format!("{} Skills · {} batches · max {} parallel", plan.selected.len(), plan.estimated_batches, plan.max_parallel)}</strong>
-                                    <p>{format!("{} total · {} node tokens · {} synthesis reserve", plan.total_token_budget, plan.selected_node_budget, plan.synthesis_reserve)}</p>
+                                    <p>{if plan.total_token_budget == 0 {
+                                        format!("unlimited budget · est. {} node tokens", plan.selected_node_budget)
+                                    } else {
+                                        format!("{} total · {} node tokens · {} synthesis reserve", plan.total_token_budget, plan.selected_node_budget, plan.synthesis_reserve)
+                                    }}</p>
                                     <ul>{plan.selected.into_iter().map(|item| view! {
                                         <li><code>{format!("{}:{}", item.scope, item.skill_id)}</code>
                                             {format!(" · {} tokens · {}", item.node_budget, item.reasons.join("; "))}</li>
@@ -3467,10 +3490,8 @@ fn retry_workflow(snapshot: AgentWorkflowSnapshot, state: AgentPanelState) {
                 let max_tokens = raw
                     .trim()
                     .parse::<u32>()
-                    .ok()
-                    .filter(|value| *value > 0)
-                    .ok_or_else(|| {
-                        "Retry token budget must be a positive whole number".to_string()
+                    .map_err(|_| {
+                        "Retry token budget must be a whole number (0 = unlimited)".to_string()
                     })?;
                 if task.budget.max_tokens != Some(max_tokens) {
                     overrides.insert(
@@ -4511,11 +4532,9 @@ mod tests {
             proposal.tasks[4].depends_on,
             ["seat_1_review", "seat_2_review"]
         );
-        assert!(proposal.tasks.iter().all(|task| {
-            task.budget.as_ref().is_some_and(|budget| {
-                budget.max_tokens == Some(16_000) && budget.max_tool_calls == Some(16)
-            })
-        }));
+        // Budgets are an advanced override: the template leaves them unset,
+        // which resolves to unlimited at planning time.
+        assert!(proposal.tasks.iter().all(|task| task.budget.is_none()));
 
         for task in [&proposal.tasks[0], &proposal.tasks[2]] {
             assert_eq!(task.specialist_id.as_deref(), Some("reader"));
@@ -4720,5 +4739,14 @@ mod tests {
         assert!(parse_optional_u32("0", "token budget").is_err());
         assert!(parse_optional_u64("0", "cost budget").is_err());
         assert_eq!(parse_optional_u32("42", "token budget").unwrap(), Some(42));
+    }
+
+    #[test]
+    fn task_budget_fields_accept_zero_as_unlimited() {
+        assert_eq!(parse_budget_u32("0", "token budget").unwrap(), Some(0));
+        assert_eq!(parse_budget_u64("0", "cost budget").unwrap(), Some(0));
+        assert_eq!(parse_budget_u32("", "token budget").unwrap(), None);
+        assert_eq!(parse_budget_u32("42", "token budget").unwrap(), Some(42));
+        assert!(parse_budget_u32("nope", "token budget").is_err());
     }
 }

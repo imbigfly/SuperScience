@@ -1499,11 +1499,9 @@ async fn build_dynamic_delegation_policy(
             include_artifacts: true,
             max_tokens: Some(32_000),
         },
-        budget_ceiling: AgentBudget {
-            max_tokens: Some(64_000),
-            max_tool_calls: Some(64),
-            max_cost_microunits: Some(1_000_000),
-        },
+        // Run budgets are unlimited by default: the host does not cap tokens,
+        // tool calls, or cost unless the user sets a per-task budget.
+        budget_ceiling: AgentBudget::default(),
         default_timeout_secs: Some(600),
         timeout_ceiling_secs: Some(1_800),
         auto_safe: true,
@@ -3916,12 +3914,12 @@ impl AcpUsage {
     }
 
     fn missing_budget_dimension(&self, budget: &AgentBudget) -> Option<String> {
-        if budget.max_tokens.is_some() && !self.tokens_reported {
+        if budget.max_tokens.is_some_and(|limit| limit > 0) && !self.tokens_reported {
             return Some(
                 "ACP Agent did not report usage required to enforce its token budget".into(),
             );
         }
-        if budget.max_cost_microunits.is_some() && !self.cost_reported {
+        if budget.max_cost_microunits.is_some_and(|limit| limit > 0) && !self.cost_reported {
             return Some(
                 "ACP Agent did not report cost required to enforce its cost budget".into(),
             );
@@ -3934,7 +3932,7 @@ fn runtime_budget_violation(usage: &AgentUsage, budget: &AgentBudget) -> Option<
     let total_tokens = usage.input_tokens.saturating_add(usage.output_tokens);
     if budget
         .max_tokens
-        .is_some_and(|limit| total_tokens > u64::from(limit))
+        .is_some_and(|limit| limit > 0 && total_tokens > u64::from(limit))
     {
         return Some(format!(
             "Agent exceeded its token budget ({total_tokens} tokens)"
@@ -3942,7 +3940,7 @@ fn runtime_budget_violation(usage: &AgentUsage, budget: &AgentBudget) -> Option<
     }
     if budget
         .max_tool_calls
-        .is_some_and(|limit| usage.tool_calls > u64::from(limit))
+        .is_some_and(|limit| limit > 0 && usage.tool_calls > u64::from(limit))
     {
         return Some(format!(
             "Agent exceeded its tool-call budget ({} calls)",
@@ -3951,7 +3949,7 @@ fn runtime_budget_violation(usage: &AgentUsage, budget: &AgentBudget) -> Option<
     }
     if budget
         .max_cost_microunits
-        .is_some_and(|limit| usage.cost_microunits > limit)
+        .is_some_and(|limit| limit > 0 && usage.cost_microunits > limit)
     {
         return Some(format!(
             "Agent exceeded its cost budget ({} microunits)",
@@ -6930,6 +6928,26 @@ mod tests {
             &budget
         )
         .is_some());
+    }
+
+    #[test]
+    fn runtime_budget_checks_treat_zero_dimensions_as_unlimited() {
+        let budget = AgentBudget {
+            max_tokens: Some(0),
+            max_tool_calls: Some(0),
+            max_cost_microunits: Some(0),
+        };
+        let usage = AgentUsage {
+            input_tokens: 900_000,
+            output_tokens: 100_000,
+            tool_calls: 10_000,
+            cost_microunits: u64::MAX,
+        };
+        assert_eq!(runtime_budget_violation(&usage, &budget), None);
+        assert_eq!(
+            runtime_budget_violation(&usage, &AgentBudget::default()),
+            None
+        );
     }
 
     struct SuccessfulDelegator;

@@ -60,6 +60,9 @@ pub struct PortfolioCandidate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortfolioConfig {
     pub tier: PortfolioTier,
+    /// Total token allowance shared by the selected nodes. `0` (the default
+    /// stance) means unlimited — per-node budgets are then only estimates
+    /// shown in the plan, not enforced limits.
     pub total_token_budget: u32,
     pub synthesis_reserve: u32,
     pub node_output_tokens: u32,
@@ -109,13 +112,21 @@ pub fn plan_portfolio(
     config: PortfolioConfig,
 ) -> Result<PortfolioPlan, String> {
     normalize_intent(&mut intent);
-    if config.total_token_budget <= config.synthesis_reserve {
+    // A total budget of 0 means unlimited: budgets are an advanced tuning
+    // knob, so by default the planner must not defer skills over a guessed
+    // allowance. Bounded mode still requires room for the synthesis reserve.
+    let bounded = config.total_token_budget > 0;
+    if bounded && config.total_token_budget <= config.synthesis_reserve {
         return Err("total token budget must exceed the synthesis reserve".into());
     }
     if config.node_output_tokens == 0 {
         return Err("node output token budget must be greater than zero".into());
     }
-    let child_token_budget = config.total_token_budget - config.synthesis_reserve;
+    let child_token_budget = if bounded {
+        config.total_token_budget - config.synthesis_reserve
+    } else {
+        0
+    };
     let request_tokens = estimate_tokens(&intent.request);
     let mut ranked = candidates
         .iter()
@@ -154,7 +165,7 @@ pub fn plan_portfolio(
         let adjusted_score = score - if duplicate_role { 2 } else { 0 };
         if selected.len() >= config.tier.skill_limit() {
             deferred.push(deferral(candidate, adjusted_score, "tier_limit"));
-        } else if used.saturating_add(node_budget) > child_token_budget {
+        } else if bounded && used.saturating_add(node_budget) > child_token_budget {
             deferred.push(deferral(
                 candidate,
                 adjusted_score,
@@ -426,5 +437,42 @@ mod tests {
         assert_eq!(plan.max_parallel, 2);
         assert_eq!(plan.estimated_batches, 2);
         assert!(plan.requires_confirmation);
+    }
+
+    #[test]
+    fn zero_total_budget_means_unlimited_and_never_defers_on_tokens() {
+        let candidates = (0..4)
+            .map(|index| candidate(&format!("skill-{index}"), "analyst", 400))
+            .collect::<Vec<_>>();
+        let plan = plan_portfolio(
+            ResearchIntent {
+                request: "oncology omics analysis".into(),
+                domains: vec!["oncology".into()],
+                research_stages: vec!["analysis".into()],
+                roles: vec!["analyst".into()],
+                evidence_types: vec!["omics".into()],
+                outputs: vec!["analysis-module".into()],
+            },
+            &candidates,
+            PortfolioConfig {
+                tier: PortfolioTier::Deep,
+                total_token_budget: 0,
+                synthesis_reserve: 0,
+                node_output_tokens: 300,
+                user_parallel_limit: 4,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.child_token_budget, 0);
+        assert!(plan
+            .deferred
+            .iter()
+            .all(|item| item.reason != "insufficient_token_budget"));
+        assert_eq!(plan.selected.len(), 4);
+        // Node budgets stay as estimates for display even when unbounded.
+        assert_eq!(
+            plan.selected[0].node_budget,
+            plan.selected[0].instruction_tokens + 300 + NODE_AGENT_OVERHEAD_TOKENS
+        );
     }
 }

@@ -109,14 +109,17 @@ boundary.
 3. The call describes an overall goal, bounded shared context, and up to eight
    tasks. Each task has its own instruction, dependency IDs, capability IDs,
    optional Specialist, optional JSON output schema, optional isolation
-   request, and optional per-task token/tool/cost budget.
+   request, and optional per-task token/tool/cost budget. Budgets are an
+   advanced tuning knob: tasks run unlimited by default, and an omitted or
+   zero dimension stays unlimited.
 4. Wisp resolves every capability through host policy into an exact model,
    executor, tool set, project scope, workspace policy, budget, and timeout.
    The model cannot grant raw tools or permissions to a child.
 5. Safe read-only tasks run immediately. A batch that can write, execute code,
-   use an external service, request isolation, or exceed normal budgets uses
-   the existing approval prompt. Rejecting it starts no child and returns the
-   feedback to the main Agent so it can revise the batch.
+   use an external service, request isolation, or explicitly request an
+   elevated budget uses the existing approval prompt. Rejecting it starts no
+   child and returns the feedback to the main Agent so it can revise the
+   batch.
 6. Independent tasks run concurrently up to the batch limit. A dependent task
    starts only after its direct dependencies succeed and receives their
    structured results. An unrelated branch continues after another branch
@@ -131,9 +134,10 @@ workflow and every successful task result, reruns only failed/cancelled tasks
 and descendants that were blocked, then supplies the retained dependency
 results to those descendants. A failed task exposes its current token limit in
 the activity card; changing **Retry max tokens** before retrying revises only
-that task's authorized budget on the same workflow. The new value is still
-checked against capability and host ceilings (64k tokens per task); a rejected
-budget names the triggered limit, the requested value, and the ceiling.
+that task's authorized budget on the same workflow (0 makes the task
+unlimited). A finite value is still checked against capability and host
+ceilings; a rejected budget names the triggered limit, the requested value,
+and the ceiling.
 
 Omitting `specialist_id` creates a generic temporary Agent. Selecting a
 Specialist reuses its persona, model preference, skills, and connector
@@ -443,11 +447,13 @@ the coordination paths.
 
 Workflow Studio can generate a draft from the current effective Skill Catalog. The planner
 normalizes the research request, applies deterministic lexical and `wisp` metadata scoring, and
-selects a compact, standard, or deep complementary portfolio. Its preflight budgets each node for
-the rendered Skill instruction plus the request, a fixed sub-Agent loop allowance (system prompt,
-tool round trips, and search results), and the node output allowance; it reserves synthesis tokens
-before selecting child nodes and defers lower-ranked optional candidates when the remaining child
-budget is insufficient.
+selects a compact, standard, or deep complementary portfolio. Budgets are an advanced override: a
+total budget of 0 (the default) leaves every node unlimited, and the preflight numbers are shown
+as estimates only. With a bounded total, preflight budgets each node for the rendered Skill
+instruction plus the request, a fixed sub-Agent loop allowance (system prompt, tool round trips,
+and search results), and the node output allowance; it reserves synthesis tokens before selecting
+child nodes and defers lower-ranked optional candidates when the remaining child budget is
+insufficient.
 
 The confirmation card shows exact Skill sources and reasons, selected and deferred nodes, node and
 total budgets, the synthesis reserve, the runtime maximum of two parallel Agents, and estimated DAG
