@@ -333,6 +333,10 @@ the existing “inherit project settings” behavior; an explicit list narrows i
 The resulting exact resource IDs are installed directly in a Native child or
 encoded as private allowlist tokens for that ACP child's filtered Wisp MCP
 bridge. They are not inferred from an ACP vendor, command name, or Agent label.
+Native children discover granted MCP tools through `search_mcp_tools` and call
+them through `use_mcp_tool`; the child approval boundary authorizes both those
+gateway names and the exact hidden tool targets from the resolved connector
+grant.
 
 ACP profiles remain available to workflows that explicitly resolve to an ACP
 executor. Every configured profile whose command is currently available is

@@ -27,6 +27,7 @@ pub use env::{
 pub use tool::Tool;
 
 use serde_json::Value;
+use std::collections::HashSet;
 use wisp_llm::ToolSchema;
 
 /// Where a schema in the model request comes from. This is intentionally a
@@ -184,6 +185,20 @@ impl Registry {
 
     pub fn names(&self) -> Vec<&str> {
         self.tools.iter().map(|t| t.name()).collect()
+    }
+
+    /// Every name the approval gate may see: registered tool targets plus
+    /// virtual schemas such as the deferred MCP search/dispatch gateway.
+    pub fn approval_names(&self) -> HashSet<String> {
+        self.tools
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .chain(
+                self.schemas()
+                    .into_iter()
+                    .map(|schema| schema.function.name),
+            )
+            .collect()
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
@@ -926,6 +941,21 @@ mod approval_tests {
         assert!(origins
             .iter()
             .all(|origin| *origin == ToolSchemaOrigin::BuiltIn));
+    }
+
+    #[test]
+    fn deferred_gateway_and_target_names_share_one_approval_set() {
+        let mut registry = Registry { tools: vec![] };
+        registry.add(Box::new(DeferredTool));
+
+        assert_eq!(
+            registry.approval_names(),
+            HashSet::from([
+                "pubmed_search_articles".to_string(),
+                SEARCH_MCP_TOOLS.to_string(),
+                USE_MCP_TOOL.to_string(),
+            ])
+        );
     }
 
     static SPY_FOR_SCHEMA_TEST: AtomicBool = AtomicBool::new(false);
