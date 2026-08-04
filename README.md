@@ -31,6 +31,19 @@ desktop app or a headless CLI.
 > Python/R REPLs, SQLite store, MCP client, and Leptos UI all build and run.
 > See [Roadmap](#roadmap) for what is deferred.
 
+## What does WISP stand for?
+
+**WISP = Workspace for Intelligent Scientific Practice**
+（中文：面向智能科研实践的工作空间）
+
+The name captures the project's positioning:
+
+- **Workspace** — not a single analysis tool, but a complete research workspace.
+- **Intelligent** — AI agents, models, and automation are built in.
+- **Scientific** — explicitly built to serve scientific research.
+- **Practice** — covers real research practice: literature search, analysis,
+  computation, writing, and task management.
+
 ## Layout
 
 ```

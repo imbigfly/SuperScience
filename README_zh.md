@@ -29,6 +29,19 @@ Wisp Science 使用 Rust、Tauri v2 和 Leptos 构建，可作为跨平台桌面
 > REPL、SQLite 存储、MCP 客户端和 Leptos UI 均可构建并运行。尚未完成的
 > 内容见[路线图](#路线图mvp-之后)。
 
+## WISP 是什么的缩写？
+
+**WISP = Workspace for Intelligent Scientific Practice**
+（面向智能科研实践的工作空间）
+
+这个名字体现了项目的定位：
+
+- **Workspace（工作空间）** —— 不是单个分析工具，而是完整的科研工作空间。
+- **Intelligent（智能）** —— 内置 AI Agent、模型与自动化能力。
+- **Scientific（科学）** —— 明确服务于科学研究。
+- **Practice（实践）** —— 覆盖真实科研实践：文献检索、分析、计算、写作、
+  任务管理等。
+
 ## 目录结构
 
 ```text
