@@ -739,10 +739,24 @@ tail -c 4000 "$workdir/stderr.log" 2>/dev/null || true
     ))
 }
 
+fn parse_status_exit_code(code: &str, kind: &str) -> Result<i64, String> {
+    let code = code.trim();
+    // Older Windows supervisors could write `done:` with a null ExitCode before
+    // WaitForExit; treat the empty code as 0 so recovery can finish the Run.
+    if code.is_empty() {
+        return Ok(0);
+    }
+    code.parse::<i64>()
+        .map_err(|_| format!("SSH poll returned an invalid {kind} code"))
+}
+
 pub(super) fn parse_remote_poll(stdout: &str) -> Result<RemotePoll, String> {
     const STATUS: &str = "__WISP_RUN_STATUS__:";
     const STDOUT: &str = "__WISP_STDOUT__\n";
     const STDERR: &str = "\n__WISP_STDERR__\n";
+    // Windows PowerShell Write-Output emits CRLF; normalize before marker splits
+    // so local_detached polls are not stuck as transport errors forever.
+    let stdout = stdout.replace("\r\n", "\n").replace('\r', "\n");
     let start = stdout
         .find(STATUS)
         .ok_or_else(|| "SSH poll response omitted status".to_string())?;
@@ -761,15 +775,9 @@ pub(super) fn parse_remote_poll(stdout: &str) -> Result<RemotePoll, String> {
     } else if status == "cancelled" {
         RemotePollState::Cancelled
     } else if let Some(code) = status.strip_prefix("finished:") {
-        RemotePollState::Finished(
-            code.parse::<i64>()
-                .map_err(|_| "SSH poll returned an invalid exit code".to_string())?,
-        )
+        RemotePollState::Finished(parse_status_exit_code(code, "exit")?)
     } else if let Some(code) = status.strip_prefix("timed_out:") {
-        RemotePollState::TimedOut(
-            code.parse::<i64>()
-                .map_err(|_| "SSH poll returned an invalid timeout code".to_string())?,
-        )
+        RemotePollState::TimedOut(parse_status_exit_code(code, "timeout")?)
     } else if let Some(reason) = status.strip_prefix("lost:") {
         RemotePollState::Lost(reason.into())
     } else {
@@ -889,6 +897,7 @@ printf '__WISP_CANCEL__:cancelled\n'
 
 pub(super) fn parse_remote_cancel(stdout: &str) -> Result<RemoteCancel, String> {
     const PREFIX: &str = "__WISP_CANCEL__:";
+    let stdout = stdout.replace("\r\n", "\n").replace('\r', "\n");
     let value = stdout
         .lines()
         .find_map(|line| line.strip_prefix(PREFIX))
@@ -896,12 +905,12 @@ pub(super) fn parse_remote_cancel(stdout: &str) -> Result<RemoteCancel, String> 
     if value == "cancelled" {
         Ok(RemoteCancel::Cancelled)
     } else if let Some(code) = value.strip_prefix("finished:") {
-        Ok(RemoteCancel::Finished(code.parse::<i64>().map_err(
-            |_| "SSH cancel returned an invalid exit code".to_string(),
+        Ok(RemoteCancel::Finished(parse_status_exit_code(
+            code, "exit",
         )?))
     } else if let Some(code) = value.strip_prefix("timed_out:") {
-        Ok(RemoteCancel::TimedOut(code.parse::<i64>().map_err(
-            |_| "SSH cancel returned an invalid timeout code".to_string(),
+        Ok(RemoteCancel::TimedOut(parse_status_exit_code(
+            code, "timeout",
         )?))
     } else if let Some(reason) = value.strip_prefix("lost:") {
         Ok(RemoteCancel::Lost(reason.into()))

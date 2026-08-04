@@ -1308,8 +1308,7 @@ fn App() -> impl IntoView {
     let research_graph = create_rw_signal(ResearchGraph::default());
     let show_research_graph = create_rw_signal(false);
     let show_publication_workspace = create_rw_signal(false);
-    let publication_binding_source =
-        create_rw_signal::<Option<PublicationEvidenceSource>>(None);
+    let publication_binding_source = create_rw_signal::<Option<PublicationEvidenceSource>>(None);
     create_effect(move |_| {
         side_chat_items.with(|items| items.len());
         if !show_right.get() || right_tab.get() != RightTab::SideChat {
@@ -2742,7 +2741,8 @@ fn App() -> impl IntoView {
     });
 
     let project_transfer_cb = Closure::wrap(Box::new(move |payload: JsValue| {
-        let Ok(progress) = serde_wasm_bindgen::from_value::<ProjectTransferProgress>(payload) else {
+        let Ok(progress) = serde_wasm_bindgen::from_value::<ProjectTransferProgress>(payload)
+        else {
             return;
         };
         project_transfer.set(Some(progress));
@@ -7427,8 +7427,12 @@ fn App() -> impl IntoView {
             let args = to_value(&serde_json::json!({ "id": id })).unwrap();
             match invoke_checked("export_project", args).await {
                 Ok(value) => {
-                    if let Ok(Some(path)) = serde_wasm_bindgen::from_value::<Option<String>>(value) {
-                        project_transfer.set(Some(ProjectTransferProgress::complete("export", Some(path))));
+                    if let Ok(Some(path)) = serde_wasm_bindgen::from_value::<Option<String>>(value)
+                    {
+                        project_transfer.set(Some(ProjectTransferProgress::complete(
+                            "export",
+                            Some(path),
+                        )));
                     } else {
                         project_transfer.set(None);
                     }
@@ -9518,7 +9522,15 @@ fn App() -> impl IntoView {
                     <div class="transfer-tray" aria-live="polite">
                         {transfers.into_iter().map(|(run, progress)| {
                             let run_id = run.id.clone();
-                            let cancellable = matches!(run.status.as_str(), "submitted" | "running");
+                            let cancellable = matches!(
+                                run.status.as_str(),
+                                "submitted" | "running" | "cancelling"
+                            );
+                            let cancel_label = if run.status == "cancelling" {
+                                t(locale.get(), "runs.force_cancel")
+                            } else {
+                                t(locale.get(), "runs.cancel")
+                            };
                             let direction = progress.direction.clone();
                             let icon = match direction.as_str() {
                                 "download" => "↓",
@@ -9531,10 +9543,12 @@ fn App() -> impl IntoView {
                                         <span class="transfer-card-icon">{icon}</span>
                                         <strong>{run.title}</strong>
                                         <span>{run.context_id}</span>
-                                        {cancellable.then(|| view! {
+                                        {cancellable.then(|| {
+                                            let tip = cancel_label.clone();
+                                            view! {
                                             <button type="button" class="icon-btn transfer-cancel"
-                                                title=t(locale.get(), "runs.cancel")
-                                                aria-label=t(locale.get(), "runs.cancel")
+                                                title=tip.clone()
+                                                aria-label=tip
                                                 on:click=move |_| {
                                                     let run_id = run_id.clone();
                                                     spawn_local(async move {
@@ -9543,6 +9557,7 @@ fn App() -> impl IntoView {
                                                         refresh_runs(run_records, locale);
                                                     });
                                                 }>{compose_icon("close")}</button>
+                                            }
                                         })}
                                     </div>
                                     {run_progress_meter(progress, locale.get())}
@@ -13627,7 +13642,13 @@ fn RunMonitorCard(
             let status = run.status.clone();
             let status_class = format!("run-status {status}");
             let active = matches!(status.as_str(), "submitted" | "running" | "cancelling");
-            let cancellable = matches!(status.as_str(), "submitted" | "running");
+            let cancellable = matches!(status.as_str(), "submitted" | "running" | "cancelling");
+            let force_cancel = status == "cancelling";
+            let cancel_label = if force_cancel {
+                t(locale.get(), "runs.force_cancel")
+            } else {
+                t(locale.get(), "runs.cancel")
+            };
             let started = run.started_at.unwrap_or(run.created_at);
             let ended = run.ended_at.unwrap_or_else(|| js_sys::Date::now() as i64 / 1000);
             let elapsed_value = transfer_duration(ended.saturating_sub(started) as u64);
@@ -13674,18 +13695,43 @@ fn RunMonitorCard(
                             <strong>{title}</strong>
                             <code>{lookup_id.clone()}</code>
                         </div>
-                        <span class=status_class>{run_status_label(locale.get(), &status)}</span>
-                        {cancellable.then(|| view! {
-                            <button type="button" class="icon-btn run-monitor-cancel"
-                                title=t(locale.get(), "runs.cancel")
-                                aria-label=t(locale.get(), "runs.cancel")
-                                on:click=move |_| {
-                                    let run_id = cancel_id.clone();
-                                    spawn_local(async move {
-                                        let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
-                                        let _ = invoke("cancel_run", arg).await;
-                                    });
-                                }>{compose_icon("close")}</button>
+                        {if force_cancel {
+                            let run_id = cancel_id.clone();
+                            let label = run_status_label(locale.get(), &status);
+                            let tip = cancel_label.clone();
+                            view! {
+                                <button type="button" class=status_class
+                                    title=tip.clone()
+                                    aria-label=tip
+                                    on:click=move |_| {
+                                        let run_id = run_id.clone();
+                                        spawn_local(async move {
+                                            let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+                                            let _ = invoke("cancel_run", arg).await;
+                                        });
+                                    }
+                                >{label}</button>
+                            }.into_view()
+                        } else {
+                            view! {
+                                <span class=status_class>{run_status_label(locale.get(), &status)}</span>
+                            }.into_view()
+                        }}
+                        {cancellable.then(|| {
+                            let run_id = cancel_id.clone();
+                            let tip = cancel_label.clone();
+                            view! {
+                                <button type="button" class="icon-btn run-monitor-cancel"
+                                    title=tip.clone()
+                                    aria-label=tip
+                                    on:click=move |_| {
+                                        let run_id = run_id.clone();
+                                        spawn_local(async move {
+                                            let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+                                            let _ = invoke("cancel_run", arg).await;
+                                        });
+                                    }>{compose_icon("close")}</button>
+                            }
                         })}
                     </div>
                     <div class="run-monitor-meta">{meta}</div>

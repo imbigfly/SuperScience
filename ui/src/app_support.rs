@@ -2951,7 +2951,15 @@ pub(super) fn ContextDetailsOverlay(
                                             let cancel_id = run.id.clone();
                                             let method_search = run.kind == "method_search";
                                             let cancellable = !method_search
-                                                && matches!(run.status.as_str(), "submitted" | "running");
+                                                && matches!(
+                                                    run.status.as_str(),
+                                                    "submitted" | "running" | "cancelling"
+                                                );
+                                            let cancel_label = if run.status == "cancelling" {
+                                                t(locale.get(), "runs.force_cancel")
+                                            } else {
+                                                t(locale.get(), "runs.cancel")
+                                            };
                                             let remote_workdir = run.remote_workdir.clone();
                                             let poll_error = run.last_poll_error.clone();
                                             let progress = (!method_search)
@@ -2990,10 +2998,11 @@ pub(super) fn ContextDetailsOverlay(
                                                         </button>
                                                         {cancellable.then(|| {
                                                             let run_id = cancel_id.clone();
+                                                            let tip = cancel_label.clone();
                                                             view! {
                                                                 <button type="button" class="icon-btn run-cancel"
-                                                                    title=t(locale.get(), "runs.cancel")
-                                                                    aria-label=t(locale.get(), "runs.cancel")
+                                                                    title=tip.clone()
+                                                                    aria-label=tip
                                                                     on:click=move |_| {
                                                                         let run_id = run_id.clone();
                                                                         spawn_local(async move {
