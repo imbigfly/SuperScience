@@ -1653,6 +1653,42 @@ test("conversation action button renames, transfers, and deletes sessions (#557)
   )).toBe(true);
 });
 
+test("session context menu near the window bottom stays fully visible (#650)", async ({ page }) => {
+  // Narrow + short window: labels wrap, so real item heights exceed the 38px
+  // estimate the initial placement uses — the menu must re-clamp after measuring.
+  await page.setViewportSize({ width: 180, height: 420 });
+  await page.addInitScript(parallelMock);
+  await page.goto("/");
+  await page.locator(".proj-card-main").first().click();
+  await expect(newSessionButton(page)).toBeVisible();
+
+  await composer(page).fill("ctx-bottom-edge");
+  await page.getByRole("button", { name: "Send" }).click();
+  const session = page.locator(".side-item.ses", { hasText: "ctx-bottom-edge" });
+  await expect(session).toBeVisible({ timeout: 10_000 });
+
+  // Right-click with the pointer at the very bottom edge of the window.
+  await session.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: Math.round(rect.left + 20),
+      clientY: window.innerHeight - 12,
+    }));
+  });
+
+  const menu = page.locator(".ctx-menu");
+  await expect(menu).toBeVisible();
+  await expect.poll(() => menu.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
+  })).toBe(true);
+  // The last (bottom-most) menu item must remain clickable.
+  await expect(menu.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
+});
+
 test("conversations can be selected and moved or deleted together", async ({ page }) => {
   await page.addInitScript(parallelMock);
   await page.goto("/");
