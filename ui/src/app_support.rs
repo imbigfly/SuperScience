@@ -4,7 +4,8 @@ use super::{
 };
 use crate::bindings::{
     attach_cropped_region, crop_region_to_upload, invoke, invoke_checked, is_mac, mount_preview,
-    open_external_url, schedule_highlight, upload_files, upload_input_files, upload_pasted_images,
+    open_external_url, schedule_highlight, schedule_run_output_follow, upload_files,
+    upload_input_files, upload_pasted_images,
 };
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, use_locale, Locale};
@@ -1076,6 +1077,7 @@ pub(super) fn refresh_runs(into: RwSignal<Vec<RunRecord>>, locale: RwSignal<Loca
                 initialized && added
             });
             into.set(list);
+            schedule_run_output_follow();
             RUN_REFRESH_INITIALIZED.with(|ready| ready.set(true));
             if should_toast {
                 show_warning_toast(&t(locale.get_untracked(), "runs.ssh_retry_stopped"));
@@ -3046,7 +3048,7 @@ pub(super) fn ContextDetailsOverlay(
                                                     {(!output.is_empty()).then(|| view! {
                                                         <details class="run-output">
                                                             <summary>{t(locale.get(), "runs.output")}</summary>
-                                                            <pre>{output}</pre>
+                                                            <pre data-run-output-for=run.id.clone()>{output}</pre>
                                                         </details>
                                                     })}
                                                     {(!produced.is_empty()).then(|| view! {

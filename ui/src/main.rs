@@ -13687,6 +13687,7 @@ fn RunMonitorCard(
             // (old rows, transfer runs) yield no pairs, so the block disappears.
             let env_pairs = research::metadata_pairs(&run.env_snapshot_json);
             let cancel_id = run.id.clone();
+            let output_id = run.id.clone();
             view! {
                 <article class="run-monitor-card" data-testid="run-monitor-card" data-run-id=run.id>
                     <div class="run-monitor-head">
@@ -13754,7 +13755,7 @@ fn RunMonitorCard(
                     {(!output.is_empty()).then(|| view! {
                         <div class="run-monitor-output">
                             <span>{t(locale.get(), "runs.output")}</span>
-                            <pre>{output}</pre>
+                            <pre data-run-output-for=output_id.clone()>{output}</pre>
                         </div>
                     })}
                     {(!env_pairs.is_empty()).then(|| view! {

@@ -3771,6 +3771,72 @@ test("monitor_run renders a live Run card inline without get_run polling", async
   await expect(card).toContainText("Cancelled");
 });
 
+test("run monitor output stays pinned to the tail across poll rebuilds (#654)", async ({ page }) => {
+  // Eight long logical lines wrap far past the 150px pre, so it scrolls.
+  const longOutput = (tag: string) =>
+    Array.from({ length: 8 }, (_, index) => `${tag} line ${index} ` + "x".repeat(180)).join("\n");
+  const setOutput = (tag: string) =>
+    page.evaluate((stdout) => {
+      const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+      run.stdout_tail = stdout;
+    }, longOutput(tag));
+  const bottomGap = () =>
+    page
+      .locator('[data-run-id="run-local-002"] .run-monitor-output pre')
+      .evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+
+  await enterApp(page);
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      context_id: "local",
+      title: "Scrolling pipeline",
+      kind: "local",
+      status: "running",
+      created_at: Math.floor(Date.now() / 1000) - 30,
+      started_at: Math.floor(Date.now() / 1000) - 29,
+      // Non-empty progress keeps the one-second run refresh active.
+      progress_json: "{\"tick\":1}",
+    });
+  });
+  await setOutput("batch-1");
+
+  await composer(page).fill("MONITORRUN");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const output = page.locator('[data-run-id="run-local-002"] .run-monitor-output pre');
+  await expect(output).toBeVisible();
+  await expect.poll(bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(2);
+
+  // Fresh output on the next poll rebuilds the card; the panel must re-pin.
+  await setOutput("batch-2");
+  await expect(output).toContainText("batch-2");
+  await expect.poll(bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(2);
+
+  // A scrolled-up user keeps their place instead of being yanked back down.
+  await output.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await setOutput("batch-3");
+  await expect(output).toContainText("batch-3");
+  await page.waitForTimeout(1_500);
+  expect(await output.evaluate((el) => el.scrollTop)).toBeLessThanOrEqual(2);
+
+  // Scrolling back to the bottom re-engages follow.
+  await output.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await setOutput("batch-4");
+  await expect(output).toContainText("batch-4");
+  await expect.poll(bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(2);
+
+  // Leave the run settled so its one-second refresh stops with this page.
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, { status: "succeeded", ended_at: Math.floor(Date.now() / 1000), exit_code: 0 });
+  });
+});
+
 test("reasoning details stays open while more thinking streams in", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("RZSTREAM");
