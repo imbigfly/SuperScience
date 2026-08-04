@@ -91,6 +91,7 @@ extern "C" {
     fn preserve_chat_scroll_on_prepend(scroller_id: &str, content_id: &str);
     fn jump_chat_scroll(scroller_id: &str, selector: &str);
     fn jump_chat_scroll_last_user(scroller_id: &str);
+    fn follow_run_outputs();
 }
 
 #[wasm_bindgen(module = "/src/marks.js")]
@@ -124,6 +125,12 @@ pub(crate) fn schedule_chat_follow() {
 /// Force the chat view to jump to the bottom (e.g. after switching sessions).
 pub(crate) fn force_chat_bottom() {
     force_chat_scroll_bottom(CHAT_SCROLLER_ID);
+}
+
+/// Re-pin every run output panel to the bottom after a run-list refresh
+/// rebuilt the cards (unless the user scrolled that panel up).
+pub(crate) fn schedule_run_output_follow() {
+    follow_run_outputs();
 }
 
 /// Keep the first previously visible transcript row in place after older rows

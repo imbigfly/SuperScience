@@ -153,6 +153,49 @@ export function preserve_chat_scroll_on_prepend(scrollerId, contentId) {
   });
 }
 
+// Run output panels (chat monitor card, Runs modal) are rebuilt from scratch
+// on every poll, so any per-element scroll state is lost and the view can
+// never stay pinned to the latest output (#654). Keep the follow state here,
+// keyed by run id, and re-apply it to each fresh element after a refresh.
+const runOutputFollow = new Map();
+const attachedRunOutputs = new WeakSet();
+
+export function follow_run_outputs() {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      document.querySelectorAll("[data-run-output-for]").forEach((el) => {
+        const key = el.getAttribute("data-run-output-for");
+        let state = runOutputFollow.get(key);
+        if (!state) {
+          state = { follow: true, top: 0 };
+          runOutputFollow.set(key, state);
+        }
+        if (!attachedRunOutputs.has(el)) {
+          attachedRunOutputs.add(el);
+          // Scroll anchoring would fight the explicit snap on rebuild.
+          el.style.overflowAnchor = "none";
+          el.addEventListener(
+            "scroll",
+            () => {
+              state.top = el.scrollTop;
+              state.follow = atBottom(el);
+            },
+            { passive: true },
+          );
+        }
+        if (state.follow) {
+          snapBottom(el);
+        } else {
+          // A scrolled-up user keeps their place across the rebuild; the tail
+          // buffer may have dropped lines, so clamp instead of trusting `top`.
+          const max = Math.max(0, el.scrollHeight - el.clientHeight);
+          el.scrollTop = Math.min(state.top, max);
+        }
+      });
+    });
+  });
+}
+
 /** Scroll the latest user turn into view (the floating jump pill).
  * @param {string} scrollerId */
 export function jump_chat_scroll_last_user(scrollerId) {
