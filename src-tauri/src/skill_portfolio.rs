@@ -57,6 +57,9 @@ pub(crate) async fn plan_skill_portfolio(
 }
 
 fn workflow_draft(plan: &PortfolioPlan) -> dynamic_workflow::DynamicAgentWorkflowProposal {
+    // Budgets are an advanced override: an unbounded plan (total budget 0)
+    // leaves every task unlimited instead of enforcing estimated allowances.
+    let bounded = plan.total_token_budget > 0;
     let mut tasks = plan
         .selected
         .iter()
@@ -87,7 +90,7 @@ fn workflow_draft(plan: &PortfolioPlan) -> dynamic_workflow::DynamicAgentWorkflo
             isolated: false,
             model_id: None,
             executor: None,
-            budget: Some(dynamic_workflow::AgentBudgetProposal {
+            budget: bounded.then_some(dynamic_workflow::AgentBudgetProposal {
                 max_tokens: Some(selection.node_budget),
                 max_tool_calls: Some(12),
                 max_cost_microunits: None,
@@ -116,7 +119,7 @@ fn workflow_draft(plan: &PortfolioPlan) -> dynamic_workflow::DynamicAgentWorkflo
         isolated: false,
         model_id: None,
         executor: None,
-        budget: Some(dynamic_workflow::AgentBudgetProposal {
+        budget: bounded.then_some(dynamic_workflow::AgentBudgetProposal {
             max_tokens: Some(plan.synthesis_reserve),
             max_tool_calls: Some(4),
             max_cost_microunits: None,
@@ -192,5 +195,38 @@ mod tests {
             draft.approval_policy,
             dynamic_workflow::AgentApprovalPolicy::ReviewAll
         );
+    }
+
+    #[test]
+    fn unbounded_plan_leaves_task_budgets_unset() {
+        let plan = PortfolioPlan {
+            intent: ResearchIntent {
+                request: "design a study".into(),
+                ..Default::default()
+            },
+            tier: PortfolioTier::Standard,
+            selected: vec![PortfolioSelection {
+                skill_id: "analysis-workflow".into(),
+                name: "Analysis".into(),
+                scope: "bundled".into(),
+                path: "/skill/SKILL.md".into(),
+                skill_md_sha256: "abc".into(),
+                score: 9,
+                reasons: vec!["stage: analysis".into()],
+                instruction_tokens: 200,
+                node_budget: 1_200,
+                side_effects: SkillSideEffects::ReadOnly,
+            }],
+            deferred: Vec::<PortfolioDeferral>::new(),
+            total_token_budget: 0,
+            child_token_budget: 0,
+            selected_node_budget: 1_200,
+            synthesis_reserve: 0,
+            max_parallel: 1,
+            estimated_batches: 2,
+            requires_confirmation: false,
+        };
+        let draft = workflow_draft(&plan);
+        assert!(draft.tasks.iter().all(|task| task.budget.is_none()));
     }
 }

@@ -318,11 +318,11 @@ fn build_delegate_tasks_schema(
                                 "type": "object",
                                 "additionalProperties": false,
                                 "properties": {
-                                    "max_tokens": {"type": "integer", "minimum": 1},
-                                    "max_tool_calls": {"type": "integer", "minimum": 1},
-                                    "max_cost_microunits": {"type": "integer", "minimum": 1}
+                                    "max_tokens": {"type": "integer", "minimum": 0},
+                                    "max_tool_calls": {"type": "integer", "minimum": 0},
+                                    "max_cost_microunits": {"type": "integer", "minimum": 0}
                                 },
-                                "description": "Optional per-task limits. Values are validated against capability and host ceilings; omit a dimension to use its capability default."
+                                "description": "Optional per-task limits for advanced tuning. Tasks run unlimited by default; omit a dimension or set it to 0 to leave it unlimited. Positive values are validated against capability and host ceilings."
                             }
                         },
                         "required": ["id", "instruction", "capabilities"]

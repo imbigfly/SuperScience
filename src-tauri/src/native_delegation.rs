@@ -212,12 +212,13 @@ pub(crate) async fn run_native_agent(
         .spec
         .context_policy
         .max_tokens
-        .or(request.spec.budget.max_tokens)
+        .or(request.spec.budget.max_tokens.filter(|limit| *limit > 0))
         .unwrap_or(32_000) as usize;
     let max_iterations = request
         .spec
         .budget
         .max_tool_calls
+        .filter(|limit| *limit > 0)
         .map(|limit| limit as usize + 1)
         .unwrap_or(100);
     let mut context = ContextManager::new(max_context.max(1));

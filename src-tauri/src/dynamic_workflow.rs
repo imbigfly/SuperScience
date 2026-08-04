@@ -914,14 +914,8 @@ pub(crate) fn validate_proposal(proposal: &DynamicAgentWorkflowProposal) -> Resu
                 task.id
             ));
         }
-        if let Some(budget) = &task.budget {
-            if budget.max_tokens == Some(0)
-                || budget.max_tool_calls == Some(0)
-                || budget.max_cost_microunits == Some(0)
-            {
-                return Err(format!("task {} budget limits must be positive", task.id));
-            }
-        }
+        // Budget dimensions accept 0 as an explicit unlimited (normalized at
+        // policy resolution); omitting the budget leaves the task unlimited.
     }
     for task in &proposal.tasks {
         let mut dependencies = HashSet::new();
