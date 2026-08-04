@@ -6823,6 +6823,7 @@ pub fn run() {
             session_commands::list_recent_sessions,
             project_commands::list_projects,
             app_commands::pick_directory,
+            app_commands::pick_executable_file,
             app_commands::download_file,
             app_commands::export_text_file,
             app_commands::import_json_file,

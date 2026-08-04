@@ -283,6 +283,8 @@
           }
           case "pick_directory":
             return "/Users/mock/Desktop/demo-project";
+          case "pick_executable_file":
+            return "/mock/picked/Rscript";
           case "load_session":
             return {
               items: [

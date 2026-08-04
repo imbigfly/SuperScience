@@ -2767,6 +2767,7 @@ pub(crate) struct ExecutionContext {
 pub(crate) struct RuntimeInterpreterForm {
     pub(crate) context_id: String,
     pub(crate) context_label: String,
+    pub(crate) context_kind: String,
     pub(crate) python_executable: String,
     pub(crate) rscript_executable: String,
 }
@@ -2775,11 +2776,22 @@ impl RuntimeInterpreterForm {
     pub(crate) fn from_context(context: &ExecutionContext) -> Self {
         let config =
             serde_json::from_str::<serde_json::Value>(&context.config_json).unwrap_or_default();
-        let value = |keys: &[&str]| {
+        // When no interpreter is configured explicitly, prefill from the latest
+        // probe results so the dialog shows the interpreter actually in use
+        // instead of an empty field (issue #651).
+        let capabilities = serde_json::from_str::<serde_json::Value>(&context.capabilities_json)
+            .unwrap_or_default();
+        let string_value = |value: &serde_json::Value, keys: &[&str]| {
             keys.iter()
-                .find_map(|key| config.get(*key).and_then(serde_json::Value::as_str))
+                .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let value = |config_keys: &[&str], capability_keys: &[&str]| {
+            string_value(&config, config_keys)
+                .or_else(|| string_value(&capabilities, capability_keys))
                 .unwrap_or_default()
-                .to_string()
         };
         Self {
             context_id: context.id.clone(),
@@ -2788,9 +2800,65 @@ impl RuntimeInterpreterForm {
             } else {
                 context.label.clone()
             },
-            python_executable: value(&["python_executable", "python_path"]),
-            rscript_executable: value(&["rscript_executable", "rscript_path"]),
+            context_kind: context.kind.clone(),
+            python_executable: value(
+                &["python_executable", "python_path"],
+                &["python_executable"],
+            ),
+            rscript_executable: value(
+                &["rscript_executable", "rscript_path"],
+                &["rscript_executable"],
+            ),
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_interpreter_form_tests {
+    use super::{ExecutionContext, RuntimeInterpreterForm};
+
+    fn context(config_json: &str, capabilities_json: &str) -> ExecutionContext {
+        ExecutionContext {
+            id: "local".into(),
+            kind: "local".into(),
+            label: "Local".into(),
+            config_json: config_json.into(),
+            capabilities_json: capabilities_json.into(),
+            last_probe_at: None,
+            last_probe_status: None,
+            last_probe_error: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn prefills_probed_interpreters_when_nothing_is_configured() {
+        let form = RuntimeInterpreterForm::from_context(&context(
+            "{}",
+            r#"{"python_executable":"/opt/conda/bin/python","rscript_executable":"D:\\R-4.5.2\\bin\\Rscript.exe"}"#,
+        ));
+        assert_eq!(form.python_executable, "/opt/conda/bin/python");
+        assert_eq!(form.rscript_executable, r"D:\R-4.5.2\bin\Rscript.exe");
+        assert_eq!(form.context_kind, "local");
+    }
+
+    #[test]
+    fn explicit_configuration_wins_over_probe_results() {
+        let form = RuntimeInterpreterForm::from_context(&context(
+            r#"{"rscript_executable":"/custom/Rscript"}"#,
+            r#"{"rscript_executable":"/probed/Rscript"}"#,
+        ));
+        assert_eq!(form.rscript_executable, "/custom/Rscript");
+    }
+
+    #[test]
+    fn blank_configured_values_fall_back_to_probe_results() {
+        let form = RuntimeInterpreterForm::from_context(&context(
+            r#"{"python_executable":"  "}"#,
+            r#"{"python_executable":"/probed/python"}"#,
+        ));
+        assert_eq!(form.python_executable, "/probed/python");
     }
 }
 

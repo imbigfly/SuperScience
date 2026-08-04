@@ -202,6 +202,34 @@ pub(super) fn RuntimeInterpreterOverlay(
     // Otherwise each input event (including paste) replaces the modal DOM and
     // drops focus.
     let open = create_memo(move |_| form.with(|value| value.is_some()));
+    // Native file picker for local interpreters; remote contexts keep manual
+    // entry because the path must exist on the remote host (#651).
+    let browse = move |field: &'static str| {
+        busy.set(true);
+        error.set(None);
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({})).unwrap();
+            match invoke_checked("pick_executable_file", args).await {
+                Ok(value) => {
+                    if let Some(path) = value.as_string().filter(|path| !path.is_empty()) {
+                        form.update(|current| {
+                            if let Some(current) = current {
+                                match field {
+                                    "python" => current.python_executable = path.clone(),
+                                    _ => current.rscript_executable = path.clone(),
+                                }
+                            }
+                        });
+                    }
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+            busy.set(false);
+        });
+    };
     let save = move |_| {
         let Some(current) = form.get_untracked() else {
             return;
@@ -252,25 +280,37 @@ pub(super) fn RuntimeInterpreterOverlay(
                         }</p>
                         <label>
                             {move || t(locale.get(), "runtime_config.python")}
-                            <input id="runtime-python-executable" autocomplete="off"
-                                placeholder=move || t(locale.get(), "runtime_config.python_placeholder")
-                                prop:value=move || form.get().map(|value| value.python_executable).unwrap_or_default()
-                                on:input=move |event| form.update(|value| {
-                                    if let Some(value) = value {
-                                        value.python_executable = event_target_value(&event);
-                                    }
-                                }) />
+                            <div class="runtime-config-picker">
+                                <input id="runtime-python-executable" autocomplete="off"
+                                    placeholder=move || t(locale.get(), "runtime_config.python_placeholder")
+                                    prop:value=move || form.get().map(|value| value.python_executable).unwrap_or_default()
+                                    on:input=move |event| form.update(|value| {
+                                        if let Some(value) = value {
+                                            value.python_executable = event_target_value(&event);
+                                        }
+                                    }) />
+                                {move || form.get().map(|value| value.context_kind == "local").unwrap_or(false).then(|| view! {
+                                    <button type="button" class="runtime-config-browse" disabled=move || busy.get()
+                                        on:click=move |_| browse("python")>{move || t(locale.get(), "runtime_config.browse")}</button>
+                                })}
+                            </div>
                         </label>
                         <label>
                             {move || t(locale.get(), "runtime_config.r")}
-                            <input id="runtime-rscript-executable" autocomplete="off"
-                                placeholder=move || t(locale.get(), "runtime_config.r_placeholder")
-                                prop:value=move || form.get().map(|value| value.rscript_executable).unwrap_or_default()
-                                on:input=move |event| form.update(|value| {
-                                    if let Some(value) = value {
-                                        value.rscript_executable = event_target_value(&event);
-                                    }
-                                }) />
+                            <div class="runtime-config-picker">
+                                <input id="runtime-rscript-executable" autocomplete="off"
+                                    placeholder=move || t(locale.get(), "runtime_config.r_placeholder")
+                                    prop:value=move || form.get().map(|value| value.rscript_executable).unwrap_or_default()
+                                    on:input=move |event| form.update(|value| {
+                                        if let Some(value) = value {
+                                            value.rscript_executable = event_target_value(&event);
+                                        }
+                                    }) />
+                                {move || form.get().map(|value| value.context_kind == "local").unwrap_or(false).then(|| view! {
+                                    <button type="button" class="runtime-config-browse" disabled=move || busy.get()
+                                        on:click=move |_| browse("r")>{move || t(locale.get(), "runtime_config.browse")}</button>
+                                })}
+                            </div>
                         </label>
                         <p class="runtime-config-hint">{move || t(locale.get(), "runtime_config.hint")}</p>
                         {move || error.get().map(|message| view! {
