@@ -1,24 +1,34 @@
-# Wisp Science — Local-first AI research workbench
+<div align="center">
 
-[English](README.md) | [简体中文](README_zh.md)
+<img src="docs/assets/logo.svg" alt="Wisp Science logo" width="128" />
 
-<p>
+# Wisp Science
+
+**The open-source, local-first AI research workbench.**
+
+<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/v/release/xuzhougeng/wisp-science" alt="Release"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/downloads/xuzhougeng/wisp-science/total" alt="Downloads"></a>
 <a href="https://doi.org/10.5281/zenodo.21193742"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
+<a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE"><img src="https://img.shields.io/github/license/xuzhougeng/wisp-science" alt="License"></a>
+<a href="https://github.com/xuzhougeng/wisp-science/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/wisp-science?style=social" alt="Stars"></a>
+<br>
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="Windows supported"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="macOS supported"></a>
-<a href="#build--run"><img src="https://img.shields.io/badge/Linux-source%20build-FCC624" alt="Linux source build"></a>
-<a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE"><img src="https://img.shields.io/github/license/xuzhougeng/wisp-science" alt="License"></a>
-<br>
-<a href="https://github.com/xuzhougeng/wisp-science/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/wisp-science?style=social" alt="Stars"></a>
-</p>
+<a href="#build-from-source"><img src="https://img.shields.io/badge/Linux-source%20build-FCC624" alt="Linux source build"></a>
 
-**Wisp Science** is an open-source, local-first desktop AI research assistant
-and scientific computing workbench. It connects to OpenAI-compatible and
-Anthropic models, runs persistent Python and R environments on local, SSH, WSL,
-and GPU compute, loads reusable Agent Skills (`SKILL.md`), and reaches ~80
-bioinformatics and computational biology databases through bundled Model
-Context Protocol (MCP) servers.
+[English](README.md) · [简体中文](README_zh.md) · [Documentation](#documentation) · [Releases](https://github.com/xuzhougeng/wisp-science/releases)
+
+<img src="docs/assets/app-home.png" alt="Wisp Science desktop app running a bundled RNA-seq analysis demo" width="100%" />
+
+</div>
+
+**Wisp Science** is a desktop AI research assistant and scientific computing
+workbench. It connects to OpenAI-compatible and Anthropic models, runs
+persistent Python and R environments on local, WSL, SSH, and GPU compute, loads
+reusable Agent Skills (`SKILL.md`), and reaches ~80 bioinformatics and
+computational biology databases through bundled Model Context Protocol (MCP)
+servers — while your data, conversations, and credentials stay on your own
+machines.
 
 Built with Rust, Tauri v2, and Leptos, Wisp Science runs as a cross-platform
 desktop app or a headless CLI.
@@ -27,16 +37,14 @@ desktop app or a headless CLI.
 > a scientific workbench that anyone, anywhere can use, study, improve, and
 > share.
 
-> Status: MVP vertical slice. The agent loop, streaming providers, tools,
+> **Status:** MVP vertical slice. The agent loop, streaming providers, tools,
 > Python/R REPLs, SQLite store, MCP client, and Leptos UI all build and run.
-> See [Roadmap](#roadmap) for what is deferred.
+> See [Roadmap](#roadmap-post-mvp) for what is deferred.
 
 ## What does WISP stand for?
 
 **WISP = Workspace for Intelligent Scientific Practice**
 （中文：面向智能科研实践的工作空间）
-
-The name captures the project's positioning:
 
 - **Workspace** — not a single analysis tool, but a complete research workspace.
 - **Intelligent** — AI agents, models, and automation are built in.
@@ -44,7 +52,208 @@ The name captures the project's positioning:
 - **Practice** — covers real research practice: literature search, analysis,
   computation, writing, and task management.
 
-## Layout
+## Features
+
+**An agent that does the work, not just chat**
+
+- Streams OpenAI-compatible and Anthropic models, with per-provider model
+  profiles and tiered routing from a single trait.
+- Reads, writes, searches, and runs shell commands inside a project-rooted
+  path sandbox, behind explicit approval gates; an opt-in per-conversation
+  **Full Permission** mode auto-approves after a warning.
+- Loads reusable Agent Skills (`SKILL.md`) with progressive disclosure — the
+  catalog never floods the prompt.
+- Drives external coding agents (Codex, Claude Code, …) over ACP v1, and spins
+  up reviewable sub-agent teams with [Controlled Delegation](docs/agent-delegation.md).
+
+**Real compute, from laptop to cluster**
+
+- Persistent Python and R environments per project — variables survive across
+  cells, conversations, and app restarts.
+- Local, WSL, and SSH/GPU **execution contexts** with one-connection hardware
+  and runtime probing; each context keeps its own interpreter paths.
+- Structured **Runs** for long jobs: preflight checks, per-second heartbeats,
+  and bounded log tails persisted with an environment snapshot.
+- Secrets live in the OS keyring, never in SQLite. Free-form `ssh`/`scp` is
+  replaced by registered, probed hosts; a failed connection opens a
+  connectivity gate instead of silently retrying.
+
+**Built for science**
+
+- ~80 bioinformatics databases (PubMed, GEO, …) through bundled
+  [MCP bio-tools servers](#bundled-bio-tools-mcp), discovered on demand via
+  `search_mcp_tools` instead of bloating every request.
+- Remote MCP services with OAuth (Notion and others), plus installable
+  [feature plugins](docs/feature-plugins.md) that package Skills and MCP servers.
+- Fully offline previews for Jupyter notebooks, PDF, DOCX/XLSX/PPTX, and
+  images — including region cropping straight into the composer.
+- A [Publication Workspace](docs/publication-evidence.md) that freezes
+  manuscript revisions and exports verifiable, deterministic Evidence Capsules.
+
+**A workbench that remembers**
+
+- Conversations persist to SQLite; restart and the full history is back. One
+  click **undoes** a turn's file edits with a preview of what will be restored.
+- `@` attaches artifacts, files, execution contexts, and language runtimes;
+  `#` reaches saved sessions through a cited, read-only **Reader** specialist;
+  `/` applies a skill to the next turn.
+- Ctrl+K / Ctrl+P palettes, side chat, conversation folders, a global library
+  of cells and figures, and in-app update checks.
+- [Encrypted manual sync](docs/project-sync.md) and one-click
+  [project transfer](docs/project-transfer.md) keep machines in step — nothing
+  ever syncs in the background.
+
+## Get started
+
+### Download
+
+Grab the latest installer from
+[GitHub Releases](https://github.com/xuzhougeng/wisp-science/releases):
+
+| Platform | Package | Notes |
+|----------|---------|-------|
+| Windows  | MSI / NSIS | The installer is unsigned: choose **More info → Run anyway** on SmartScreen. If the window never appears after install, **Quit** from the tray icon and repair the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section) (Evergreen Standalone Installer, run as administrator), then reopen Wisp Science. |
+| macOS    | `.dmg` (Apple Silicon + Intel) | Unsigned: right-click → **Open** on first launch, or allow it in System Settings → Privacy & Security. |
+| Linux    | — | [Build from source](#build-from-source). |
+
+### Build from source
+
+Prerequisites:
+
+- **Rust** (stable, 1.88+) with `wasm32-unknown-unknown`:
+  `rustup target add wasm32-unknown-unknown`
+- **uv** (Python environment manager): <https://docs.astral.sh/uv/>
+- **Trunk**: `cargo install --locked trunk` · **Tauri CLI v2**:
+  `cargo install tauri-cli --version "^2"`
+- Optional: **R** with `Rscript` on PATH and the `jsonlite` package for the
+  persistent `r` tool. Wisp never installs R packages automatically.
+- Windows needs the **WebView2 Runtime** (present on most Windows 10/11
+  systems; the installer acquires it when missing). macOS needs **Xcode
+  Command Line Tools** (`xcode-select --install`) and uses the system WebKit.
+
+```bash
+cargo tauri dev      # hot-reload: Trunk serves the UI, Tauri opens the window
+cargo tauri build    # installers under target/release/bundle (MSI/NSIS, .app/.dmg)
+```
+
+For a universal macOS binary (Apple Silicon + Intel):
+
+```bash
+rustup target add x86_64-apple-darwin
+cargo tauri build --target universal-apple-darwin
+```
+
+### Headless CLI
+
+```bash
+export WISP_API_KEY=<your provider key>
+export WISP_PROVIDER=openai            # openai (default) | openai_responses | anthropic
+export WISP_MODEL=deepseek-v4-pro
+cargo run -p wisp-cli                  # interactive agent in your terminal
+```
+
+Run a single prompt, or stream machine-readable events (one JSON object per
+line) for scripting:
+
+```bash
+cargo run -p wisp-cli -- run "Summarize the files in this project"
+cargo run -p wisp-cli -- run --output jsonl "Summarize the files in this project"
+```
+
+The CLI also ships a repeatable agent regression suite (six fixed file tasks,
+JSON report, pass/fail plus latency/token deltas against a baseline):
+
+```bash
+cargo run -p wisp-cli -- eval --save baseline.json
+cargo run -p wisp-cli -- eval --compare baseline.json --save current.json
+```
+
+### ACP agents (optional)
+
+Wisp can launch any installed local agent that speaks ACP v1 over stdio —
+separate from HTTP model profiles:
+
+1. Install an adapter, e.g. `npm install -g @agentclientprotocol/codex-acp`.
+2. **Settings → Models → ACP Agents** → set **Label**, **Command**, and
+   **Arguments** → **Save Agent** → **Test Connection**.
+3. Select the agent in the chat model picker and send a prompt.
+
+Full setup, Claude example, and troubleshooting:
+[docs/acp-agents.md](docs/acp-agents.md).
+
+## Configuration
+
+All optional; sensible defaults are bundled. Desktop stores API keys in the OS
+keyring and model profiles in `.wisp/wisp.sqlite` (Settings → Models); see
+[Model configuration](docs/model-configuration.md). Custom credentials map a
+display name to an environment variable and are injected only into newly
+launched local Python and bundled MCP processes — never copied to SSH/WSL
+hosts.
+
+| Variable             | Purpose                                                       |
+|----------------------|---------------------------------------------------------------|
+| `WISP_API_KEY`       | Provider API key (CLI). Desktop uses the keyring instead.     |
+| `WISP_PROVIDER`      | CLI API provider: `openai` (default), `openai_responses`, or `anthropic` |
+| `WISP_API_URL`       | API root; defaults to DeepSeek / OpenAI / Anthropic           |
+| `WISP_MODEL`         | Model name                                                    |
+| `WISP_MAX_CONTEXT`   | Context budget (default 1,000,000)                            |
+| `WISP_MAX_ITER`      | Max agent iterations per turn (default 100; 0 = unlimited)    |
+| `WISP_SKILLS_PATH`   | Extra `;`/`:`-separated SKILL.md catalog dirs                 |
+| `WISP_KERNEL_WORKER` | Override path to `kernel_worker.py` (bundled by default)      |
+| `WISP_MCP_COMMAND`   | Launch an arbitrary stdio MCP server (full command line)      |
+| `WISP_MCP_PKG`       | Launch a bundled bio-tools server, e.g. `mcp_pubmed`          |
+
+### Bundled bio-tools MCP
+
+`WISP_MCP_PKG=mcp_pubmed` launches `mcp-servers/bio-tools/run_server.py
+mcp_pubmed` inside the uv venv. Install the server's dependencies first:
+
+```bash
+uv pip install mcp requests
+# plus any server-specific deps (httpx, xmltodict, etc.) the package imports
+```
+
+The agent discovers matching tools with `search_mcp_tools` and calls the
+selected one through `use_mcp_tool`; the full server catalog is never copied
+into every model request.
+
+### Remote MCP (Notion example)
+
+**Settings → Connections → Add connection → Remote URL**, enter
+`https://mcp.notion.com/mcp`, set **Authentication** to **OAuth**, and **Test**
+or **Save** — either opens Notion's authorization page in your browser. OAuth
+tokens stay in the OS keyring; deleting the connection removes its credential.
+
+## Bundled demos
+
+`seed/` ships five pre-baked ESR1 / GSE153250 examples in research order: find
+data → inspect sample format → RNA-seq upstream (siESR1 vs siNT counts) →
+downstream DEG/ORA/GSEA → scientific hypothesis / research-project design. In
+the desktop app, **Open demo** lists them and opens each as a read-only
+transcript with full tool/run history — the fastest way to see what Wisp can
+do without an API key.
+
+## Documentation
+
+| Topic | Guide |
+|-------|-------|
+| Model profiles & providers | [docs/model-configuration.md](docs/model-configuration.md) |
+| External coding agents (ACP) | [docs/acp-agents.md](docs/acp-agents.md) |
+| Multi-agent workflows | [docs/agent-delegation.md](docs/agent-delegation.md) |
+| Skills & plugins | [docs/skills.md](docs/skills.md) · [docs/feature-plugins.md](docs/feature-plugins.md) |
+| Terminals, remote files, transfers | [docs/terminal-sessions.md](docs/terminal-sessions.md) · [docs/remote-file-browser.md](docs/remote-file-browser.md) · [docs/server-transfers.md](docs/server-transfers.md) |
+| Moving & syncing projects | [docs/project-transfer.md](docs/project-transfer.md) · [docs/project-sync.md](docs/project-sync.md) ([中文](docs/project-sync.zh-CN.md)) |
+| Publication evidence capsules | [docs/publication-evidence.md](docs/publication-evidence.md) |
+| Cross-project library | [docs/global-library.md](docs/global-library.md) |
+| IM bots (Feishu / WeChat) | [docs/channels.md](docs/channels.md) |
+| Real-browser automation | [docs/real-browser-automation.md](docs/real-browser-automation.md) |
+| StickS3 device bridge & desktop pet | [docs/sticks3-device-bridge.md](docs/sticks3-device-bridge.md) · [docs/pet.md](docs/pet.md) |
+| App updates | [docs/app-updates.md](docs/app-updates.md) |
+| UI design principles | [docs/ui-design-principles.md](docs/ui-design-principles.md) |
+
+## Development
+
+### Repository layout
 
 ```
 wisp-science/
@@ -68,544 +277,50 @@ wisp-science/
 └─ seed/            Bundled demo session recordings (ESR1 / GSE153250 ×5)
 ```
 
-## Prerequisites
-
-- **Rust** (stable, 1.88+) with `wasm32-unknown-unknown`:
-  `rustup target add wasm32-unknown-unknown`
-- **uv** (Python environment manager): <https://docs.astral.sh/uv/>
-- Optional: **R** with `Rscript` on PATH and the `jsonlite` package for the
-  persistent `r` tool. Wisp never installs R packages automatically.
-- **Trunk** (WASM frontend bundler): `cargo install --locked trunk`
-- **Tauri CLI v2**: `cargo install tauri-cli --version "^2"`
-- **WebView2 Runtime** (Windows only) — Windows 10/11 usually has the Evergreen
-  Runtime, and the installer acquires it when missing. An outdated or damaged
-  Runtime can still prevent the main window from appearing; see
-  [Windows installation and startup troubleshooting](#windows-installation-and-startup-troubleshooting).
-- **Xcode Command Line Tools** (macOS only): `xcode-select --install` — macOS
-  uses the system WebKit, so no extra runtime is needed.
-
-## Build & run
-
-### Headless CLI
-
-```powershell
-$env:WISP_API_KEY = "<your provider key>"
-$env:WISP_PROVIDER = "openai"           # openai=OpenAI-compatible Chat Completions; or openai_responses / anthropic
-$env:WISP_MODEL     = "deepseek-v4-pro" # openai_responses: gpt-5.5; anthropic: claude-sonnet-5
-cargo run -p wisp-cli
-```
-
-Run a single prompt without entering the interactive loop, or stream
-machine-readable events (one JSON object per stdout line):
-
-```powershell
-cargo run -p wisp-cli -- run "Summarize the files in this project"
-cargo run -p wisp-cli -- run --output jsonl "Summarize the files in this project"
-```
-
-JSONL output includes `start`, streamed `text`/`reasoning`, tool, usage, and
-terminal `done` or `error` events. Runtime setup diagnostics go to stderr so
-stdout remains parseable. A tool that requires interactive confirmation is
-denied in JSONL mode instead of blocking for input.
-
-The CLI also includes a small, repeatable agent regression suite:
-
-```powershell
-cargo run -p wisp-cli -- eval --save baseline.json
-cargo run -p wisp-cli -- eval --compare baseline.json --save current.json
-```
-
-Agent Eval v0 runs six fixed file tasks in separate temporary workspaces with a
-fixed tool set. It uses the configured live model, prints a JSON report, and
-records pass/fail, latency, rounds, tool calls/errors, token usage, scenario
-prompt and tool-schema hashes. `--compare` adds aggregate deltas plus scenario
-regressions and improvements. The temporary workspaces are removed after each
-scenario; automated tests exercise only fixtures and report logic and never
-call a provider.
-
-The CLI auto-loads the bundled `skills/` catalog and wires the bundled Python
-and optional system-R REPLs. Python provisions a uv venv at
-`.wisp/python/.venv` on first run; R uses `Rscript` from PATH and requires
-`jsonlite` in that R environment. In the desktop app, Python and R interpreter
-paths are saved per execution context from Settings → Environments or the agent's
-`set_runtime_interpreter` tool, so `local`, WSL, and each SSH server can use
-different environments without host environment variables. Each runtime card's
-**Configure path** action opens these per-context Python and R settings. The tool restarts
-the current project's matching REPL when needed, so a failed runtime can recover
-without restarting the Wisp app; restarting clears that REPL's in-memory state.
-Clicking a runtime's **Python** or **R** label opens its RStudio-style in-memory
-environment table beside the runtime cards with bounded object names, types,
-values/shapes, and sizes. Pinning that table moves it onto the conversation as a
-draggable window, where it remains available after the runtime dialog closes.
-The composer's agent-options menu groups Auto-review, Reviewer model, Memory,
-Specialist, and Compute controls in one place. The Capabilities panel's
-**Memory files** card opens Settings → Memory, where
-project memory notes can be added, opened, edited, saved, and deleted.
-Local compute is always available; the searchable Compute menu only lists
-configured remote servers. A server must
-be explicitly selected for the current conversation before the agent can use it,
-and selected servers are preferred for suitable work. The selection is isolated
-per conversation. Settings → Environments always shows local compute and owns
-adding, importing, removing, configuring, and probing environments; it does not
-control conversation resource selection. Probe uses the bundled
-`probe-compute-environment` skill to persist hardware, scheduler, runtime, and
-privilege facts. An SSH probe performs all checks through one authenticated
-connection. Batch SSH/SCP always enables OpenSSH `IdentitiesOnly`; configure an
-`IdentityFile` in Wisp or SSH config when using a non-default agent key. SSH hosts must be successfully probed with the configured connection settings
-before the agent can use them. Hosts can authenticate with an SSH key/agent
-(recommended) or a password stored only in the OS keyring (never SQLite).
-Enabling a host without a known-good probe opens a dialog that asks you to
-check the server and Probe first. Free-form shell `ssh`/`scp` is disabled so
-remote work always uses the registered alias, user, port, and key/password. A failed SSH probe, upload, or launch is not retried
-automatically: Wisp opens a connectivity gate for that host, fails further
-managed attempts immediately (without contacting the server), shows a warning,
-and requires a manual probe after the connection is fixed. The Environment side
-panel always shows local compute plus the remote servers selected for the
-current conversation.
-Each Python or R cell is limited to 1 MiB of source so a malformed request cannot
-exhaust the persistent worker before execution begins.
-
-`run_in_context` can perform an explicit preflight before launching Python or R
-work. The preflight checks the configured interpreter, requested packages or
-modules, project-relative paths, and script syntax without installing packages
-or executing an arbitrary dry run. Local syntax failures block submission;
-remote syntax checks are reported as warnings and require an explicit
-`allow_warnings` acknowledgement. The resulting report is stored with the Run's
-environment snapshot. Long-running local Runs stream bounded stdout/stderr tails
-into their persisted records, update once per second with a heartbeat, and appear
-automatically in their conversation while active and briefly after completion.
-The Run card shows elapsed time, heartbeat age, and the latest output without
-requiring a manual monitor call.
-
-Persistent Python/R worker failures retain a bounded stderr tail and child exit
-status. Startup and unexpected-EOF messages include that evidence plus the
-request ID, making protocol EOF, native crashes, out-of-memory exits, dependency
-conflicts, and interruptions distinguishable instead of collapsing them into a
-generic closed-stream error.
-
-Settings → Credentials includes built-in service fields and user-defined
-credentials. A custom entry maps a display name to the exact environment
-variable expected by a skill or client (for example `METASO_API_KEY`). Its
-metadata is stored in local settings, but the secret value is stored only in the
-OS keyring and is injected into newly launched local Python and bundled MCP
-processes. Custom credentials are never copied to SSH/WSL hosts.
-
-### Desktop app
-
-```powershell
-cargo tauri dev      # hot-reload: Trunk serves UI, Tauri opens WebView2
-cargo tauri build    # produce an MSI/NSIS installer under target/release/bundle
-```
-
-#### Windows installation and startup troubleshooting
-
-- If Microsoft Defender SmartScreen blocks the unsigned MSI/NSIS installer,
-  verify that it came from this repository's
-  [GitHub Releases](https://github.com/xuzhougeng/wisp-science/releases), then
-  choose **More info → Run anyway**.
-- If installation completes but the main window flashes and disappears, remains
-  invisible, or leaves only the system-tray icon, first choose **Quit** from the
-  tray menu. Download the latest architecture-matched **Evergreen Standalone
-  Installer** from Microsoft's official
-  [WebView2 download page](https://developer.microsoft.com/microsoft-edge/webview2/#download-section)
-  and run it as administrator to update or repair Microsoft Edge WebView2
-  Runtime. This asks for a current, supported Evergreen Runtime; it does not mean
-  that Wisp Science depends on one fixed major version.
-- Reopen Wisp Science after the WebView2 installer completes. If the window is
-  still missing, restart Windows and try again. If the problem persists, include
-  the `winver` result, WebView2 Runtime version, installer filename, and
-  reproduction steps in an issue. Never post API keys, tokens, passwords, or
-  private keys.
-- At startup, the desktop app normalizes trailing backslashes in `PATH` and
-  recovers affected entries from the Windows User PATH, so tools such as Pixi
-  remain available to the built-in shell.
-
-Desktop development uses port `1421`. UI tests use `1422`, and their Trunk
-outputs are isolated in `ui/dist-dev` and `ui/dist-test`; release packaging
-continues to use `ui/dist`. This prevents a running dev/test server from racing
-with `cargo tauri build` while it copies the optimized WASM bundle.
-
-Image and PDF previews can be zoomed and drag-panned whenever their content
-extends beyond the visible viewport, including at 100% zoom.
-
-On macOS, run the same commands from a shell (`cargo tauri build` emits a
-`.app` and `.dmg` under `target/release/bundle`). `src-tauri/tauri.macos.conf.json`
-is auto-merged by Tauri to replace the PowerShell `beforeBuildCommand` with a
-cross-platform vendor-runtime generation plus `trunk build`. For a universal
-binary (Apple Silicon + Intel):
-
-```bash
-rustup target add x86_64-apple-darwin
-cargo tauri build --target universal-apple-darwin
-```
-
-The `.app`/`.dmg` are unsigned — first launch needs right-click → Open (or
-allow it in System Settings → Privacy & Security).
-
-The desktop app stores API keys in the OS keyring and model profiles in
-`.wisp/wisp.sqlite` (Settings -> Models). Profiles can point at remote API
-providers. See [Model configuration](docs/model-configuration.md) for the
-provider fields. The per-turn model/tool loop limit is configurable under
-**Settings → General → Maximum agent iterations per turn** (default: 100; 0 disables the limit).
-**Settings → General → Report a problem** builds an editable local Markdown
-draft. Wisp adds only its version, OS/architecture, model profile label,
-execution-context type, and an error or Run ID entered by the user. It does not
-read transcripts, project data, API keys, environment variables, usernames,
-absolute paths, or screenshots. Copy stays local; opening a prefilled GitHub
-draft is disabled until the user explicitly reviews and confirms external
-sharing, and GitHub still requires manual submission.
-The composer **Agent options** menu includes a per-conversation **Full
-Permission** switch. Enabling it requires an explicit warning confirmation and
-then automatically approves ordinary tools, dangerous commands, and ACP
-permission requests for that conversation until it is turned off or the app is
-restarted. It does not remove project-path restrictions or override tools that
-the user explicitly blocked. Without Full Permission, a pending approval keeps
-the agent turn suspended until the user explicitly approves, rejects, or stops
-it; it never times out into an implicit rejection. Approval cards remain bound
-to their originating conversation when they arrive in the background and the
-user later switches to that conversation. Rejecting an action also
-skips any later tool calls the model placed in the same batch. `ask_user` and
-plan submission are hard turn boundaries: later batched calls do not run while
-the agent is waiting for the user's next message.
-
-Parallel built-in conversations in one project coordinate active local file
-access. Exact `read`, `write`, `edit`, and image paths use path-level leases;
-shell, Python, and R calls use a conservative project-wide lease because their
-paths can be computed dynamically. When another conversation holds a
-conflicting lease, Wisp shows a resource-conflict card even in Full Permission:
-the user can cancel the new operation or approve waiting for the active call to
-finish. These leases coordinate work started by Wisp; external editors and ACP
-agents do not participate in this in-process boundary yet.
-
-**Conversations persist to that SQLite database** — each turn's
-messages are appended to the active session frame, so restarting the app
-restores the full history. The headless CLI keeps using `.wisp/session.json` for
-portability.
-
-Projects can be moved between Windows and macOS from the Projects screen. Use
-the download action on a project card to export a versioned ZIP, then **Import
-project** on the other computer. The importer asks for a parent folder and
-creates a new project directory there; Windows drive letters are never reused.
-See [Project transfer](docs/project-transfer.md) for contents and limitations.
-
-The project sidebar also opens a **Publication Workspace** for selecting exact
-Artifact versions and Runs, freezing immutable manuscript revisions, and
-reviewing readiness findings without exporting the whole project. Frozen
-revisions can produce deterministic, visibility-filtered Evidence Capsule
-ZIPs directly from immutable snapshots, bind precise message/tool/execution
-anchors, and verify local Runs in a fresh allowlisted workspace. See
-[Publication evidence](docs/publication-evidence.md) for the workflow,
-visibility rules, verification contract, and isolation limits.
-
-Installable bundles of Skills, local MCP servers, and sandboxed MCP Apps are
-documented in [Feature plugins](docs/feature-plugins.md).
-Skill scopes, same-name precedence, and hot reload behavior are documented in
-[Skills](docs/skills.md).
-
-The experimental **StickS3 Device Bridge** is configured beside Feishu and
-WeChat under **Settings → Remote Access**. LAN mode uses authenticated HTTP
-polling on one explicitly selected IPv4 address. It exposes the current
-physical-pet state plus authenticated manifest and `120×130` PNG frame
-resources generated from the configured Codex-compatible v2 desktop Pet. A
-separate relay-server mode is reserved for a later phase. See the
-[StickS3 Device Bridge guide](docs/sticks3-device-bridge.md).
-
-Projects can also be synchronized explicitly between devices. Configure either
-a self-hosted relay or a folder managed by the Baidu Netdisk/Nutstore desktop
-client in **Settings → General**, then press **Sync now** on a project card.
-Synchronization never runs in the background and refuses to start while a task,
-approval, review, or run is active. Project contents are encrypted before they
-reach either backend; workspace files are uploaded incrementally by content.
-See [Manual project sync](docs/project-sync.md) or the
-[Chinese sync guide](docs/project-sync.zh-CN.md) for setup, device codes,
-conflicts, path behavior, relay deployment, and limitations.
-
-### Local ACP Agents
-
-Wisp can launch any already-installed local agent that speaks stable ACP v1
-over stdio. This is separate from **Settings → Models** (HTTP API profiles).
-
-Quick path:
-
-1. Install an ACP adapter, for example Codex:
-   `npm install -g @agentclientprotocol/codex-acp`
-2. Open **Settings → Models → ACP Agents**, or from the chat model picker click
-   **Add ACP Agent**. Do not put ACP launch commands in the HTTP “Add model” form.
-3. Set **Label**, **Command** (`codex-acp` or `npx` / `npx.cmd`), and
-   **Arguments** (one per line; for `npx` use `-y` then
-   `@agentclientprotocol/codex-acp`).
-4. **Save Agent** → **Test Connection** → authenticate if offered.
-5. Select the agent and send a prompt. If the current conversation already has
-   messages, Wisp starts a new empty session automatically because ACP cannot
-   rebind existing transcript history. The selection locks after the first
-   message.
-
-Do not use plain `codex` / `claude` here — they are not ACP. Use an adapter
-such as [`codex-acp`](https://github.com/agentclientprotocol/codex-acp) or
-[`claude-agent-acp`](https://github.com/agentclientprotocol/claude-agent-acp).
-
-Full setup, Claude example, Windows notes, and troubleshooting:
-[docs/acp-agents.md](docs/acp-agents.md).
-
-### Controlled Agent workflows
-
-Enable **Delegation** for the current conversation from the composer Agent
-menu, then open the right panel's **Agents** tab—or ask the main Agent to
-propose a plan—to create a persisted multi-Agent workflow. Manual mode uses an
-explicit ordered team, Assisted mode asks the active model for a reviewable
-draft, and Automatic mode starts only low-risk local read-only plans without a
-second confirmation. Review capability limits, then run, cancel, retry, or take
-over a child conversation. See
-[Controlled Agent delegation](docs/agent-delegation.md) for the lifecycle,
-safety boundary, and current limits.
-
-### Composer references and search
-
-In a desktop conversation, manually type `@` at the caret to attach a saved
-artifact, an uploaded file, an execution context, or a language runtime; `#`
-to attach a saved session (including another project) or choose `#project` to
-search every other saved session in the current project (the open conversation
-is already in the main context); or `/` to apply an enabled skill to the next
-turn. These pickers work while editing anywhere in the message and do not open
-for pasted text. Attachments are explicit, removable chips; cross-project
-artifacts stay at their original
-local path and are never copied automatically. The same references work with
-ACP Agents: selected skills and Reader evidence are sent as ACP text blocks,
-while artifacts are sent as file links.
-
-After send, execution-context and runtime references remain visible as cards
-with server or terminal icons in the user message. Their internal transcript
-markers are not exposed as plain text in the chat bubble.
-
-Session references are retrieved by the built-in, read-only **Reader** instead
-of copying complete transcripts into the main model context. Reader first
-fans out one task per session. If one session exceeds Reader's configured model
-context window, only that session is split again at user-turn boundaries; all
-chunks run under one bounded parallelism limit and merge back into a cited
-session result. Configure Reader's lower-cost model under **Settings →
-Specialists → Reader**, and set that model's context capacity under **Settings
-→ Models → Context window**. Reader returns compact summaries plus excerpts
-grounded to saved message sequence numbers; it does not create child sessions
-or use tools.
-
-Files you uploaded are artifacts too, so they already appear under `@`; they
-carry an **Upload** badge that separates them from files the agent produced.
-
-Image previews include a region-selection tool. After you drag a region, Wisp
-keeps it highlighted and asks whether to add the crop to chat while staying in
-the preview, or add it and jump back to the conversation. The crop is not
-attached until you choose an action.
-
-Text selected in a conversation or file preview can be added to the main
-composer, quoted into **Side chat**, or explained immediately in Side chat.
-Quoting opens the Side chat tab with a removable reference card and waits for
-your question before sending. Side chat remains a read-only, temporary Q&A
-surface and does not alter the main conversation or edit workspace files.
-
-`@` also reaches compute. Naming an execution context (`@CPU1`) points the turn
-at that server and turns it on for the conversation, so you do not have to
-enable it in the compute menu first — local compute needs no toggle and is
-always available. Naming a runtime (`@runtime_R`) points the turn at the
-persistent Python or R session on that context, which keeps its variables
-between calls, so the agent inspects live state instead of re-running earlier
-work. Runtime entries appear only for contexts where that interpreter is
-configured or probed. Referencing a runtime does not start it.
-
-Use Ctrl+K on Windows/Linux or Cmd+K on macOS to search projects, artifacts,
-sessions, and common commands. Enter opens the selected result in the current
-window; Ctrl+Enter (Cmd+Enter on macOS) opens a project or session in its
-project window. Shift+Enter attaches an artifact or session to the composer.
-
-The composer sends with Enter and inserts a newline with Shift+Enter by default.
-Under **Settings → General → Send and newline shortcuts**, you can instead use
-Ctrl+Enter on Windows/Linux or Cmd+Enter on macOS to send, leaving Enter for a
-newline.
-
-Saved conversations and conversation folders expose visible action buttons in
-the sidebar on macOS, Windows, and Linux. Use them to rename or delete folders,
-or to rename, organize, copy, move, export, or delete a conversation. The
-conversation action menu keeps folder destinations under **Move to**; hover
-over or activate it, then choose **Ungrouped** or a destination folder. Use
-**Select** above the conversation list to select several conversations, then
-move them to one group or delete them together. The
-sidebar loads the 100 most recently active conversations first; use **Load
-earlier sessions** to fetch older pages. Opening a conversation initially loads its newest 20 user
-turns; use **Load earlier messages** at the top of the transcript to fetch older
-complete turns without splitting tool calls from their results. The chat mounts
-at most 40 complete user turns at once; use the earlier/newer controls to move
-through already loaded history without growing the DOM unboundedly. The slim
-conversation outline on the right expands into a list of your questions; select
-one to load its transcript page when needed and jump directly to that turn.
-User messages, assistant replies, and outline entries show their saved local
-time. Every fenced code block in an assistant reply has a one-click copy
-button that preserves its original line breaks. Remote file rows also expose
-a visible download action, while secondary-click remains available as an
-alternate path. Cross-project transfer copies the saved transcript only.
-Project files and runs remain in their source project;
-conversation-linked artifact records are not transferred, and the underlying
-workspace files are never deleted.
-
-After a native Wisp turn finishes, the latest assistant reply has **Undo**
-beside **Copy**. The confirmation dialog previews which Markdown, source-code,
-CSV, JSON, and other bounded text files will be restored or removed, then
-returns the original prompt to the composer and removes artifacts owned by that
-turn. If a text file changed again after the turn, Wisp refuses to overwrite
-it. Word, Excel, PDF, images, and other binary files are listed but retained;
-binary-file and ACP-session undo are not supported yet.
-
-During an agent turn, assistant progress notes stay visible as compact
-commentary, model reasoning stays in its own collapsed disclosure, and only
-consecutive tool calls are grouped into a steps panel. When the turn finishes,
-those process layers collapse into one **Processed** disclosure while the final
-answer remains open. Reopening the conversation preserves the same compact
-completed state.
-
-On macOS, the native app menu mirrors the global desktop command surface,
-including project navigation, new-session commands, edit shortcuts, and
-`Check for Updates…`. Row-specific conversation and folder actions stay beside
-their rows. The same update check is also available from the Settings page and
-the Windows in-window Help menu. It
-now reports the result in an in-app dialog, including whether you are already
-up to date or a newer release is available. On macOS, Wisp can download the
-matching Apple Silicon or Intel package, verify its updater signature, and then
-ask separately before installing and restarting. Active agent tasks and managed
-runs block installation. Other platforms, and any failed update, retain the
-**Open Releases** fallback. See [App updates](docs/app-updates.md) for release,
-recovery, and smoke-test details.
-
-### Bundled demos
-
-## Configuration
-
-All optional; sensible defaults are bundled.
-
-| Variable             | Purpose                                                       |
-|----------------------|---------------------------------------------------------------|
-| `WISP_API_KEY`       | Provider API key (CLI). Desktop uses the keyring instead.     |
-| `WISP_PROVIDER`      | CLI API provider: `openai` (default), `openai_responses`, or `anthropic` |
-| `WISP_API_URL`       | API root; defaults to DeepSeek / OpenAI / Anthropic           |
-| `WISP_MODEL`         | Model name                                                    |
-| `WISP_MAX_CONTEXT`   | Context budget (default 1,000,000)                            |
-| `WISP_MAX_ITER`      | Max agent iterations per turn (default 100; 0 = unlimited)    |
-| `WISP_SKILLS_PATH`   | Extra `;`/`:`-separated SKILL.md catalog dirs                 |
-| `WISP_KERNEL_WORKER` | Override path to `kernel_worker.py` (bundled by default)      |
-| `WISP_MCP_COMMAND`   | Launch an arbitrary stdio MCP server (full command line)      |
-| `WISP_MCP_PKG`       | Launch a bundled bio-tools server, e.g. `mcp_pubmed`          |
-
-### Bundled bio-tools MCP
-
-`WISP_MCP_PKG=mcp_pubmed` launches `mcp-servers/bio-tools/run_server.py
-mcp_pubmed` inside the uv venv. The venv must have the server's dependencies
-installed first:
-
-```powershell
-uv pip install mcp requests
-# plus any server-specific deps (httpx, xmltodict, etc.) the package imports
-```
-
-The agent first discovers matching tools with `search_mcp_tools`, then calls the
-selected tool through `use_mcp_tool`. The full server catalog is never copied
-into every model request.
-
-### Notion MCP
-
-Notion uses the same remote-URL workflow as other hosted MCP services. Open
-**Settings → Connections → Add connection**, choose **Remote URL**, enter
-`https://mcp.notion.com/mcp`, set **Authentication** to **OAuth**, and select
-**Test** or **Save**. Either action opens Notion's authorization page in your
-browser. Test validates the connection and lists its tools without saving it;
-Save stores the connection only after authorization succeeds. Startup never
-creates or authorizes a Notion connection.
-
-OAuth access and refresh tokens are kept in the OS keyring rather than the
-project database. Deleting the saved connection removes its credential. Its
-detail page reports the service URL, enabled status, and OAuth authentication
-method.
-
-The connection applies to newly created agent sessions. Notion controls the
-workspace permissions exposed to the agent, so review write actions before
-approving them.
-
-### File previews
-
-The Files panel previews Jupyter `.ipynb` notebooks without executing them.
-Markdown and source cells are rendered alongside outputs that were saved in the
-notebook: text and tracebacks, raster images, SVG, static HTML, and LaTeX. HTML
-outputs run in a script-free sandbox with external references removed, SVG is
-loaded through an isolated image context, and large individual or aggregate
-outputs are omitted to keep the desktop WebView responsive.
-
-PDF and modern Office files are also previewed fully offline. DOCX keeps its
-document layout, XLSX opens as a read-only virtualized workbook with sheet tabs
-and a formula display, and PPTX uses lazy, windowed slide rendering. PDF and
-OOXML bytes cross the Tauri IPC boundary as raw ArrayBuffers instead of Base64.
-Office previews are bounded to 32 MiB compressed input and reject unsafe or
-excessively expanding ZIP packages; they do not execute macros, ActiveX, OLE,
-formulas, or external relationships. Complex Excel styling and PowerPoint
-animations may not match Microsoft Office exactly.
-
-### Bundled demos
-
-`seed/` ships five pre-baked ESR1 / GSE153250 examples in research order: find
-data → inspect sample format → RNA-seq upstream (siESR1 vs siNT counts) →
-downstream DEG/ORA/GSEA → scientific hypothesis / research-project design. In
-the desktop app, **Open demo** lists them and opens each as a read-only
-transcript with full tool/run history. The rnaseq and downstream demos'
-`assets_*.tar.gz` archives are extracted into the workspace on open so counts
-and enrichment result files preview correctly.
-
-## Testing
+### Testing
 
 - **Rust unit tests** — `cargo test --workspace`
   (covers `wisp-store` SQLite round-trips, the seed demo loader, etc.).
 - **MCP client smoke** — `cargo run -p wisp-mcp --example smoke` launches the
   bundled mock MCP server via `uv` and round-trips `tools/list` + `tools/call`.
-- **UI E2E (Playwright + Tauri mock)** — `ui-tests/` runs the Leptos UI
-  in a headless browser against `trunk serve`, with a mocked
-  `window.__TAURI__` so no Rust backend or API key is needed:
+- **UI E2E (Playwright + Tauri mock)** — `ui-tests/` runs the Leptos UI in a
+  headless browser against `trunk serve`, with a mocked `window.__TAURI__` so
+  no Rust backend or API key is needed:
 
-  ```powershell
+  ```bash
   cd ui-tests
   npm install
-  npx playwright install chromium      # one-time browser download
-  npx playwright test                  # serve UI + run the full mocked desktop flow suite
+  npx playwright install chromium   # one-time browser download
+  npx playwright test               # serve UI + run the full mocked desktop flow suite
   ```
 
-  The mock (`tests/mock-tauri.ts`) stubs `invoke`/`listen` with canned data
-  and even simulates a streamed assistant turn, so the tests exercise the real
-  Leptos rendering and event handling without touching the network.
-
-## Architecture
+### Architecture
 
 - **Agent loop** (`wisp-core::agent`): read → think → tool-call → verify,
   streaming tokens to an `Output` sink. Stops on `attempt_completion` or when
   the model returns no tool calls.
 - **Context compaction** (`wisp-core::context`): an archive-first pipeline fires
-  before each model call at 80% of the context budget — safely prune tool/media
-  noise, then summarize the sanitized original history before replacing any
-  semantic turns. The result is one incremental checkpoint plus an 8K-token
-  recent tail; old turns are never silently dropped. Skill catalogs and MCP
-  schemas use progressive disclosure instead of living in the baseline prompt.
+  before each model call at 80% of the context budget — prune tool/media noise,
+  then summarize sanitized history, keeping one incremental checkpoint plus an
+  8K-token recent tail. Old turns are never silently dropped.
 - **Providers** (`wisp-llm`): one trait, two wire formats (OpenAI
   `/chat/completions` and Anthropic `/v1/messages`), both with SSE streaming.
-  `RoutedProvider` picks a low/medium/high tier per turn from the last user
-  message.
+  `RoutedProvider` picks a low/medium/high tier per turn.
 - **Tools** (`wisp-tools`): filesystem + shell tools with Windows-aware
-  dangerous-command gating and a `dunce`-canonicalized path sandbox rooted at
-  the project directory.
+  dangerous-command gating and a path sandbox rooted at the project directory.
 - **Python/R REPLs** (`wisp-runtime`): one manager-owned process per
-  project/execution context/language keeps its namespace across cells and
-  conversations; local, WSL, and SSH contexts use the same versioned protocol.
-  R is optional and uses an existing `Rscript` plus `jsonlite`. The Contexts
-  panel probes interpreter capabilities; selecting a local, WSL, or SSH server
-  reveals only that context's runtimes and runs in the detail pane. Runtime
-  details include status, memory, last activity, destructive Stop/Restart
-  controls, and a read-only environment table opened from the Python/R label
-  with object names, types, shapes/sizes, and bounded metadata. The table can be
-  pinned over the conversation and dragged without interrupting the runtime.
+  project/context/language keeps its namespace across cells and conversations;
+  local, WSL, and SSH contexts share one versioned protocol.
 - **MCP** (`wisp-mcp`): a minimal newline-JSON-RPC client launches any stdio
-  MCP server. Remote schemas stay behind the fixed `search_mcp_tools` /
-  `use_mcp_tool` pair until a task needs them.
+  MCP server; remote schemas stay behind `search_mcp_tools` / `use_mcp_tool`
+  until a task needs them.
+
+## Roadmap (post-MVP)
+
+- `FlashThinking` — phase-aware structured thinking-framework injection.
+- `loop_engine` — deeper Implementer / Verifier / Updater workflows beyond the
+  bounded automatic Reviewer pass shipped today.
+- `RoutedProvider` LLM-score tier selection (keyword tier is already wired).
 
 ## Acknowledgements
 
@@ -709,20 +424,13 @@ If you use wisp-science in your research, please cite:
 @software{xu2026wisp,
   author    = {Xu, Zhougeng and hoptop},
   title     = {wisp-science: A local-first scientific computing agent},
-  version   = {v0.4.1},
+  version   = {v0.33.0},
   year      = {2026},
   publisher = {Zenodo},
   doi       = {10.5281/zenodo.21193742},
   url       = {https://doi.org/10.5281/zenodo.21193742}
 }
 ```
-
-## Roadmap (post-MVP)
-
-- `FlashThinking` — phase-aware structured thinking-framework injection.
-- `loop_engine` — deeper Implementer / Verifier / Updater workflows beyond the
-  bounded automatic Reviewer pass shipped today.
-- `RoutedProvider` LLM-score tier selection (keyword tier is already wired).
 
 ## Star History
 
