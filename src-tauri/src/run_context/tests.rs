@@ -751,6 +751,36 @@ async fn background_run_can_be_cancelled_without_waiting_for_the_command() {
 }
 
 #[tokio::test]
+async fn second_cancel_force_finishes_a_wedged_cancelling_run() {
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_force_cancel_{}.sqlite", uuid::Uuid::new_v4()));
+    let store = wisp_store::Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    let mut run = wisp_store::RunRecord::new("stuck-run", "p", "local", "Local", "local_detached");
+    run.command = Some("Write-Host stuck".into());
+    run.timeout_secs = Some(60);
+    run.remote_workdir = Some("~\\.wisp-science\\runs\\stuck-run".into());
+    run.remote_handle_json =
+        Some(serde_json::to_string(&test_local_handle("stuck-run", true, None)).unwrap());
+    run.status = wisp_store::RunStatus::Cancelling;
+    run.last_poll_error = Some("SSH cancel response omitted status".into());
+    store.create_run(&run).await.unwrap();
+    // Cancel RPC stays wedged; the second cancel must not wait on it.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![]));
+    let cancel_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *runner.rpc_gate.lock().unwrap() = Some(cancel_gate);
+    let manager = RunManager::with_runner(runner);
+
+    manager.cancel(&store, "stuck-run").await.unwrap();
+    assert_eq!(
+        store.get_run("stuck-run").await.unwrap().unwrap().status,
+        wisp_store::RunStatus::Cancelled
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
 async fn remote_run_is_rejected_when_not_selected_for_its_session() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_remote_run_selection_{}.sqlite",
@@ -1578,6 +1608,31 @@ fn parses_remote_input_progress_without_confusing_missing_files() {
     assert!(!parsed.contains_key("missing.fastq.gz"));
 }
 
+#[test]
+fn parse_remote_poll_accepts_windows_crlf_markers() {
+    // PowerShell Write-Output uses CRLF; without normalization the host keeps
+    // retrying poll forever even after the command has already finished.
+    let raw = "__WISP_RUN_STATUS__:finished:0\r\n__WISP_STDOUT__\r\nCIM/launch fix test OK\r\n\r\n__WISP_STDERR__\r\n\r\n";
+    let poll = remote::parse_remote_poll(raw).unwrap();
+    assert_eq!(poll.state, remote::RemotePollState::Finished(0));
+    assert_eq!(poll.stdout, "CIM/launch fix test OK");
+    assert_eq!(poll.stderr, "");
+}
+
+#[test]
+fn parse_remote_poll_accepts_empty_finished_exit_code() {
+    // A Windows supervisor that read ExitCode before WaitForExit wrote `done:`.
+    let raw = "__WISP_RUN_STATUS__:finished:\n__WISP_STDOUT__\nok\n__WISP_STDERR__\n\n";
+    let poll = remote::parse_remote_poll(raw).unwrap();
+    assert_eq!(poll.state, remote::RemotePollState::Finished(0));
+}
+
+#[test]
+fn parse_remote_cancel_accepts_empty_finished_exit_code() {
+    let cancel = remote::parse_remote_cancel("__WISP_CANCEL__:finished:\r\n").unwrap();
+    assert_eq!(cancel, remote::RemoteCancel::Finished(0));
+}
+
 fn poll_response(status: &str, stdout: &str, stderr: &str) -> String {
     format!("__WISP_RUN_STATUS__:{status}\n__WISP_STDOUT__\n{stdout}\n__WISP_STDERR__\n{stderr}\n")
 }
@@ -1852,9 +1907,11 @@ async fn local_detached_run_finishes_from_poller() {
     let prepare = commands[0].stdin.as_deref().unwrap();
     #[cfg(windows)]
     {
-        assert!(commands
-            .iter()
-            .any(|command| command.program == "powershell"));
+        let shell = local_detached::windows_powershell_program();
+        assert!(
+            commands.iter().any(|command| command.program == shell),
+            "expected host shell {shell}"
+        );
         // Timeout lives inside the base64-encoded supervisor.ps1 body.
         use base64::Engine as _;
         let supervisor = String::from_utf8(
@@ -1978,17 +2035,22 @@ fn windows_control_payloads_contain_process_identity_and_timeout() {
             .expect("valid supervisor base64"),
     )
     .expect("utf8 supervisor script");
-    // The supervisor must be idempotent and use a culture-stable identity
-    // directly from Start-Process; CIM can be unavailable or miss fast exits.
+    // The supervisor must be idempotent and use a culture-stable identity from
+    // System.Diagnostics.Process; CIM can be unavailable or miss fast exits.
     assert!(supervisor.contains("if (Test-Path -LiteralPath (Join-Path $workdir '_submitted'))"));
     assert!(supervisor.contains("$proc.StartTime.ToUniversalTime().Ticks"));
     assert!(!supervisor.contains("Get-CimInstance"));
-    // -File launches are blocked by the default Restricted execution policy
-    // unless the policy is bypassed for the process scope.
-    assert!(supervisor.contains("'-ExecutionPolicy','Bypass','-File'"));
+    // Start-Process -PassThru + RedirectStandard* returns a null ExitCode on
+    // Windows PowerShell 5.1; the .NET Process API works on both 5.1 and 7.
+    assert!(supervisor.contains("New-Object System.Diagnostics.ProcessStartInfo"));
+    assert!(supervisor.contains("CopyToAsync"));
+    assert!(supervisor.contains("-ExecutionPolicy Bypass"));
+    assert!(!supervisor.contains("Start-Process @startParams"));
     let launch = launch_payload(&remote.handle);
     assert!(launch.contains("Start-Process"));
     assert!(launch.contains("'-ExecutionPolicy','Bypass','-File'"));
+    // Supervisor must follow the host engine (pwsh when present, else powershell).
+    assert!(launch.contains("GetCurrentProcess().MainModule.FileName"));
     // Only the launcher that created the lock may start the supervisor, and a
     // live lock owner must not be raced.
     assert!(launch.contains("if ($acquired)"));
@@ -2024,14 +2086,34 @@ fn windows_transport_executes_stdin_as_one_script() {
     let command =
         local_detached::transport_script_command(&handle, "prepare local Run", "exit 0".into())
             .unwrap();
-    assert_eq!(command.program, "powershell");
+    assert_eq!(
+        command.program,
+        local_detached::windows_powershell_program()
+    );
     // `-Command -` parses stdin line-by-line like an interactive session on
-    // Windows PowerShell 5.1, so the payload is executed as a single script.
+    // Windows PowerShell 5.1; the same form works under pwsh.
     assert!(!command.args.contains(&"-".to_string()));
     assert!(command
         .args
         .contains(&"[Console]::In.ReadToEnd() | Invoke-Expression".to_string()));
     assert_eq!(command.stdin.as_deref(), Some("exit 0"));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_shell_prefers_pwsh_when_present_on_path() {
+    let program = local_detached::windows_powershell_program();
+    let has_pwsh = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .any(|dir| dir.join("pwsh.exe").is_file() || dir.join("pwsh").is_file())
+        })
+        .unwrap_or(false);
+    if has_pwsh {
+        assert_eq!(program, "pwsh");
+    } else {
+        assert_eq!(program, "powershell");
+    }
 }
 
 #[test]

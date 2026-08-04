@@ -1194,7 +1194,8 @@ impl RunManager {
         if run.status.is_terminal() {
             return Err(format!("Run is already {}", run.status.as_str()));
         }
-        let requested = if run.status == wisp_store::RunStatus::Cancelling {
+        let already_cancelling = run.status == wisp_store::RunStatus::Cancelling;
+        let requested = if already_cancelling {
             false
         } else {
             store
@@ -1219,7 +1220,13 @@ impl RunManager {
             if let Some(active) = self.active.lock().await.remove(run_id) {
                 active.abort.abort();
             }
-            if requested {
+            if already_cancelling {
+                mark_transfer_progress_cancelled(store, &self.owner_id, &refreshed).await;
+                let _ = store
+                    .force_finish_cancelling_run(run_id, wisp_store::RunStatus::Cancelled, None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            } else if requested {
                 mark_transfer_progress_cancelled(store, &self.owner_id, &refreshed).await;
                 let _ = store
                     .finish_active_run_owned(
@@ -1234,6 +1241,21 @@ impl RunManager {
             return Ok(());
         }
         if let Some(remote) = remote_run_from_record(store, &refreshed).await? {
+            // A second cancel while already Cancelling force-finishes the Run so
+            // a wedged cancel/poll RPC cannot leave the UI stuck forever.
+            if already_cancelling {
+                if let Some(active) = self.active.lock().await.remove(run_id) {
+                    active.abort.abort();
+                }
+                let finished = store
+                    .force_finish_cancelling_run(run_id, wisp_store::RunStatus::Cancelled, None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !finished {
+                    return Err("Run is no longer cancelling".into());
+                }
+                return Ok(());
+            }
             let uploading =
                 serde_json::from_str::<wisp_store::RunProgress>(&refreshed.progress_json)
                     .is_ok_and(|progress| progress.phase == "uploading");
@@ -1264,7 +1286,12 @@ impl RunManager {
         if let Some(active) = self.active.lock().await.remove(run_id) {
             active.abort.abort();
         }
-        if requested {
+        if already_cancelling {
+            let _ = store
+                .force_finish_cancelling_run(run_id, wisp_store::RunStatus::Cancelled, None)
+                .await
+                .map_err(|e| e.to_string())?;
+        } else if requested {
             let _ = store
                 .finish_active_run_owned(
                     run_id,
@@ -1696,7 +1723,7 @@ pub fn build_run_command(
 fn local_command(context_id: &str, script: &str, cwd: Option<PathBuf>) -> RunCommand {
     RunCommand {
         context_id: context_id.into(),
-        program: "powershell".into(),
+        program: local_detached::windows_powershell_program().into(),
         args: vec![
             "-NoProfile".into(),
             "-NonInteractive".into(),

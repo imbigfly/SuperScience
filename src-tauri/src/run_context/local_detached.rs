@@ -1,6 +1,24 @@
 use super::remote::command_delimiter;
 use super::{LocalTransport, RemoteRun, RemoteRunHandle, RunCommand};
 use base64::Engine as _;
+use std::sync::OnceLock;
+
+/// Prefer PowerShell 7 (`pwsh`) when present so local Runs match modern Windows
+/// shells; fall back to Windows PowerShell 5.1 which ships with the OS.
+pub(super) fn windows_powershell_program() -> &'static str {
+    static PROGRAM: OnceLock<&'static str> = OnceLock::new();
+    PROGRAM.get_or_init(|| {
+        let Some(path) = std::env::var_os("PATH") else {
+            return "powershell";
+        };
+        for dir in std::env::split_paths(&path) {
+            if dir.join("pwsh.exe").is_file() || dir.join("pwsh").is_file() {
+                return "pwsh";
+            }
+        }
+        "powershell"
+    })
+}
 
 pub(super) fn transport_script_command(
     handle: &RemoteRunHandle,
@@ -24,10 +42,10 @@ pub(super) fn transport_script_command(
             }),
             // `-Command -` parses stdin line-by-line like an interactive
             // session in Windows PowerShell 5.1; read the whole payload and
-            // execute it as one script instead.
+            // execute it as one script instead. The same form works in pwsh.
             LocalTransport::Windows { context_id } => Ok(RunCommand {
                 context_id: context_id.clone(),
-                program: "powershell".into(),
+                program: windows_powershell_program().into(),
                 args: vec![
                     "-NoProfile".into(),
                     "-NonInteractive".into(),
@@ -484,31 +502,47 @@ Remove-Item -LiteralPath (Join-Path $workdir '_command_exit') -ErrorAction Silen
 Remove-Item -LiteralPath (Join-Path $workdir '_cancel_requested') -ErrorAction SilentlyContinue
 $stdout = Join-Path $workdir 'stdout.log'
 $stderr = Join-Path $workdir 'stderr.log'
-$startParams = @{{
-  FilePath = 'powershell'
-  # -File is subject to the machine's execution policy (Restricted by default
-  # on Windows clients), unlike the -Command transport used by the host, so
-  # the policy must be bypassed explicitly for the process scope.
-  ArgumentList = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File', (Join-Path $workdir 'command.ps1'))
-  PassThru = $true
-  WindowStyle = 'Hidden'
-  RedirectStandardOutput = $stdout
-  RedirectStandardError = $stderr
+$commandPath = Join-Path $workdir 'command.ps1'
+# Prefer the same engine running this supervisor (pwsh or Windows PowerShell).
+# Start-Process -PassThru with RedirectStandard* returns a null ExitCode on
+# Windows PowerShell 5.1; System.Diagnostics.Process is reliable on 5.1 and 7.
+$shell = $null
+try {{ $shell = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName }} catch {{ }}
+if (-not $shell) {{
+  $shell = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') {{ 'pwsh.exe' }} else {{ 'powershell.exe' }})
 }}
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $shell
+$psi.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ($commandPath.Replace('"', '\"')) + '"'
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
 if ($null -ne $workingDirectory -and $workingDirectory -ne '') {{
-  $startParams.WorkingDirectory = $workingDirectory
+  $psi.WorkingDirectory = $workingDirectory
 }}
-$proc = Start-Process @startParams
-if (-not $proc) {{
+$proc = New-Object System.Diagnostics.Process
+$proc.StartInfo = $psi
+$outFs = $null
+$errFs = $null
+$stdoutTask = $null
+$stderrTask = $null
+try {{
+  if (-not $proc.Start()) {{
+    Write-State (Join-Path $workdir '_status') 'lost:command process did not start'
+    exit 69
+  }}
+  $outFs = [System.IO.File]::Create($stdout)
+  $errFs = [System.IO.File]::Create($stderr)
+  $stdoutTask = $proc.StandardOutput.BaseStream.CopyToAsync($outFs)
+  $stderrTask = $proc.StandardError.BaseStream.CopyToAsync($errFs)
+}} catch {{
   Write-State (Join-Path $workdir '_status') 'lost:command process did not start'
   exit 69
 }}
 $identity = $null
 for ($i = 0; $i -lt 5; $i++) {{
   try {{
-    # Start-Process -PassThru already owns the authoritative process object.
-    # CIM can be unavailable, and a fast command can exit before a separate
-    # Win32_Process lookup observes it, even though launch succeeded.
     if ($proc.StartTime) {{
       $identity = [string]$proc.StartTime.ToUniversalTime().Ticks
       break
@@ -517,6 +551,7 @@ for ($i = 0; $i -lt 5; $i++) {{
   Start-Sleep -Seconds 1
 }}
 if (-not $identity) {{
+  try {{ if (-not $proc.HasExited) {{ $proc.Kill() }} }} catch {{ }}
   Write-State (Join-Path $workdir '_status') 'lost:command process did not start'
   exit 69
 }}
@@ -527,23 +562,36 @@ while (-not $proc.HasExited) {{
   if (Test-Path -LiteralPath (Join-Path $workdir '_cancel_requested')) {{ break }}
   if ([datetime]::UtcNow -ge $deadline) {{
     Write-State (Join-Path $workdir '_status') 'timed_out:124'
-    try {{ Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }} catch {{ }}
+    try {{ $proc.Kill() }} catch {{ }}
     try {{ & taskkill.exe /PID $proc.Id /T /F | Out-Null }} catch {{ }}
     break
   }}
   Start-Sleep -Seconds 1
 }}
 if (-not $proc.HasExited) {{
-  try {{ $proc.WaitForExit(15000) | Out-Null }} catch {{ }}
+  try {{ [void]$proc.WaitForExit(15000) }} catch {{ }}
+  if (-not $proc.HasExited) {{
+    try {{ $proc.Kill() }} catch {{ }}
+    try {{ & taskkill.exe /PID $proc.Id /T /F | Out-Null }} catch {{ }}
+    try {{ [void]$proc.WaitForExit(5000) }} catch {{ }}
+  }}
 }}
+try {{
+  if ($null -ne $stdoutTask) {{ [void]$stdoutTask.Wait(30000) }}
+  if ($null -ne $stderrTask) {{ [void]$stderrTask.Wait(30000) }}
+}} catch {{ }}
+if ($null -ne $outFs) {{ try {{ $outFs.Dispose() }} catch {{ }} }}
+if ($null -ne $errFs) {{ try {{ $errFs.Dispose() }} catch {{ }} }}
 $rc = 1
-if ($proc.HasExited) {{ $rc = $proc.ExitCode }}
+try {{
+  if ($proc.HasExited) {{ $rc = [int]$proc.ExitCode }}
+}} catch {{ }}
 Write-State (Join-Path $workdir '_command_exit') ([string]$rc)
 if (Test-Path -LiteralPath (Join-Path $workdir '_cancel_requested')) {{
   Write-State (Join-Path $workdir '_status') 'cancelled'
 }} elseif ((Test-Path -LiteralPath (Join-Path $workdir '_status')) -and ((Get-Content -LiteralPath (Join-Path $workdir '_status') -Raw) -match '^timed_out:')) {{
 }} else {{
-  Write-State (Join-Path $workdir '_status') ('done:' + $rc)
+  Write-State (Join-Path $workdir '_status') ('done:' + [string]$rc)
 }}
 exit $rc
 "#,
@@ -645,10 +693,14 @@ if (-not (Test-Path -LiteralPath $submitted)) {{
     $supervisor = Join-Path $workdir 'supervisor.ps1'
     $supervisorStdout = Join-Path $workdir 'supervisor.stdout.log'
     $supervisorStderr = Join-Path $workdir 'supervisor.stderr.log'
-    # -File is subject to the machine's execution policy (Restricted by
-    # default on Windows clients), unlike the -Command transport used by the
-    # host, so the policy must be bypassed explicitly for the process scope.
-    Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File', $supervisor) -WindowStyle Hidden -RedirectStandardOutput $supervisorStdout -RedirectStandardError $supervisorStderr | Out-Null
+    # Keep the supervisor on the same engine as this launch host (pwsh or
+    # Windows PowerShell). -File still needs an explicit process-scope bypass.
+    $shell = $null
+    try {{ $shell = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName }} catch {{ }}
+    if (-not $shell) {{
+      $shell = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') {{ 'pwsh.exe' }} else {{ 'powershell.exe' }})
+    }}
+    Start-Process -FilePath $shell -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File', $supervisor) -WindowStyle Hidden -RedirectStandardOutput $supervisorStdout -RedirectStandardError $supervisorStderr | Out-Null
   }}
 }}
 for ($i = 0; $i -lt 10 -and -not (Test-Path -LiteralPath $submitted); $i++) {{
@@ -704,7 +756,12 @@ function Read-Status {{
   $statusPath = Join-Path $workdir '_status'
   if (-not (Test-Path -LiteralPath $statusPath)) {{ return $false }}
   $status = (Get-Content -LiteralPath $statusPath -Raw).Trim()
-  if ($status -like 'done:*') {{ $script:state = 'finished:' + $status.Substring(5); return $true }}
+  if ($status -like 'done:*') {{
+    $code = $status.Substring(5).Trim()
+    if ([string]::IsNullOrWhiteSpace($code)) {{ $code = '0' }}
+    $script:state = 'finished:' + $code
+    return $true
+  }}
   if ($status -like 'timed_out:*') {{ $script:state = $status; return $true }}
   if ($status -eq 'cancelled') {{ $script:state = 'cancelled'; return $true }}
   if ($status -like 'lost:*') {{ $script:state = $status; return $true }}
@@ -784,7 +841,12 @@ function Terminal-Status {{
   $statusPath = Join-Path $workdir '_status'
   if (-not (Test-Path -LiteralPath $statusPath)) {{ return $false }}
   $status = (Get-Content -LiteralPath $statusPath -Raw).Trim()
-  if ($status -like 'done:*') {{ Write-Output ('__WISP_CANCEL__:finished:' + $status.Substring(5)); return $true }}
+  if ($status -like 'done:*') {{
+    $code = $status.Substring(5).Trim()
+    if ([string]::IsNullOrWhiteSpace($code)) {{ $code = '0' }}
+    Write-Output ('__WISP_CANCEL__:finished:' + $code)
+    return $true
+  }}
   if ($status -like 'timed_out:*') {{ Write-Output ('__WISP_CANCEL__:timed_out:' + $status.Substring(10)); return $true }}
   if ($status -eq 'cancelled') {{ Write-Output '__WISP_CANCEL__:cancelled'; return $true }}
   return $false
