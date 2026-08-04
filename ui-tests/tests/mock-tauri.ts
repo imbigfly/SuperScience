@@ -994,6 +994,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       env_snapshot_json: "{}",
     },
   ];
+  if (query.get("mockLiveRunClock") === "1") {
+    const run = runs.find((item) => item.id === "run-local-002");
+    const now = Math.floor(Date.now() / 1000);
+    Object.assign(run, {
+      created_at: now - 11,
+      started_at: now - 10,
+      last_polled_at: now,
+    });
+  }
   if (query.get("mockMethodSearch") === "1") {
     runs.push({
       id: "method-search-001",

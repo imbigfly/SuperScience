@@ -4002,6 +4002,17 @@ test("active session Runs appear automatically with elapsed time and heartbeat (
   await expect(automatic).toContainText("2 of 3 stages complete");
 });
 
+test("active Run elapsed time advances without waiting for a backend refresh (#663)", async ({ page }) => {
+  await page.goto("/?mockLiveRunClock=1");
+  await page.getByTestId("recent-session-card").nth(1).click();
+
+  const meta = page.getByTestId("auto-run-monitor").locator(".run-monitor-meta");
+  const elapsed = async () => (await meta.textContent())?.match(/Elapsed ([^·]+)/)?.[1].trim();
+  await expect.poll(elapsed).toMatch(/\d+s/);
+  const initial = await elapsed();
+  await expect.poll(elapsed, { timeout: 3_000 }).not.toBe(initial);
+});
+
 test("image generation shows a placeholder and replaces it with the PNG", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("IMAGEGENPLACEHOLDER");
@@ -6220,6 +6231,35 @@ test("long transcripts load earlier turns without jumping to the new top", async
     null,
     41,
   ]);
+});
+
+test("opening a long conversation lands at the latest message and stays stable on scroll (#663)", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+  await page.getByText("Long transcript", { exact: true }).click();
+
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+
+  await scroller.hover();
+  const before = await scroller.evaluate((element) => element.scrollTop);
+  await page.mouse.wheel(0, -80);
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeLessThan(before);
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(before - 240);
+
+  const readingPosition = await scroller.evaluate((element) => element.scrollTop);
+  await page.evaluate(() => {
+    const thread = document.getElementById("chat-thread");
+    const spacer = document.createElement("div");
+    spacer.style.height = "480px";
+    spacer.style.flex = "0 0 480px";
+    thread?.prepend(spacer);
+  });
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(readingPosition + 400);
 });
 
 test("conversation outline loads and jumps to an older user question", async ({ page }) => {
