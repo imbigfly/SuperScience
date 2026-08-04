@@ -2707,7 +2707,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "pick_skill_source":
             return query.get("mockSkillImport") === "1"
-              ? "/downloads/paper-narrative/SKILL.md"
+              ? "/downloads/paper-narrative.zip"
               : null;
           case "install_skill":
             return "paper-narrative";

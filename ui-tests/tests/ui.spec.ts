@@ -5436,9 +5436,15 @@ test("skill manager updates and deletes user-added skills", async ({ page }) => 
   await openSettingsSection(page, "Skills");
 
   await page.getByText("Add skill", { exact: true }).click();
-  await page.getByRole("button", { name: "Add SKILL.md" }).click();
+  const addFile = page.getByRole("button", { name: "Add SKILL.md or ZIP" });
+  await page.keyboard.press("Escape");
+  await expect(addFile).not.toBeVisible();
+  await expect(page.locator(".settings-page")).toBeVisible();
+
+  await page.getByText("Add skill", { exact: true }).click();
+  await addFile.click();
   await expect.poll(() => lastInvokeArgs(page, "install_skill")).toMatchObject({
-    srcPath: "/downloads/paper-narrative/SKILL.md",
+    srcPath: "/downloads/paper-narrative.zip",
   });
   await expect(page.getByText("Skill added or updated.")).toBeVisible();
 

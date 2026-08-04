@@ -1229,7 +1229,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "err.cred_env_duplicate") => Some("A credential already uses environment variable {env}."),
         (Locale::En, "settings.applies_new_session") => Some("Changes apply to new sessions."),
         (Locale::En, "settings.auto_saved_new_session") => Some("Saved automatically. Changes apply to new sessions."),
-        (Locale::En, "skills.add_file") => Some("Add SKILL.md"),
+        (Locale::En, "skills.add_file") => Some("Add SKILL.md or ZIP"),
         (Locale::En, "skills.add_folder") => Some("Add folder"),
         (Locale::En, "skills.add") => Some("Add skill"),
         (Locale::En, "skills.manage") => Some("Manage skills"),
@@ -1487,7 +1487,9 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "err.validation_timeout") => Some("Validation timed out after 30s"),
         (Locale::En, "err.vision_probe_failed") => Some(" This check sent a test image because \"supports images\" is on. If the model has no vision support, turn that off and validate again."),
         (Locale::En, "err.skill_no_md") => Some("The selected folder has no SKILL.md."),
-        (Locale::En, "err.skill_pick") => Some("Select a skill folder or a SKILL.md file."),
+        (Locale::En, "err.skill_pick") => Some("Select a skill folder, a SKILL.md file, or a ZIP archive."),
+        (Locale::En, "err.skill_zip_no_md") => Some("The ZIP archive has no SKILL.md at its root or in a top-level folder."),
+        (Locale::En, "err.skill_zip_multiple") => Some("The ZIP archive contains more than one skill folder."),
         (Locale::En, "err.skill_no_frontmatter") => Some("SKILL.md has no frontmatter (--- block)."),
         (Locale::En, "err.skill_frontmatter_unclosed") => Some("SKILL.md frontmatter is not closed with ---."),
         (Locale::En, "err.skill_no_description") => Some("SKILL.md is missing a description."),
@@ -3043,7 +3045,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "err.cred_env_duplicate") => Some("环境变量 {env} 已被其他凭据使用。"),
         (Locale::Zh, "settings.applies_new_session") => Some("改动对新会话生效。"),
         (Locale::Zh, "settings.auto_saved_new_session") => Some("已自动保存；改动对新会话生效。"),
-        (Locale::Zh, "skills.add_file") => Some("添加 SKILL.md"),
+        (Locale::Zh, "skills.add_file") => Some("添加 SKILL.md 或 ZIP"),
         (Locale::Zh, "skills.add_folder") => Some("添加文件夹"),
         (Locale::Zh, "skills.add") => Some("添加技能"),
         (Locale::Zh, "skills.manage") => Some("管理技能"),
@@ -3294,7 +3296,9 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "status.demo") => Some("示例：{title}"),
         (Locale::Zh, "err.api_url_required") => Some("API 地址不能为空。"),
         (Locale::Zh, "err.skill_no_md") => Some("所选文件夹中没有 SKILL.md。"),
-        (Locale::Zh, "err.skill_pick") => Some("请选择技能文件夹或 SKILL.md 文件。"),
+        (Locale::Zh, "err.skill_pick") => Some("请选择技能文件夹、SKILL.md 文件或 ZIP 压缩包。"),
+        (Locale::Zh, "err.skill_zip_no_md") => Some("ZIP 压缩包根目录或其第一层文件夹中没有 SKILL.md。"),
+        (Locale::Zh, "err.skill_zip_multiple") => Some("ZIP 压缩包中包含多个技能文件夹。"),
         (Locale::Zh, "err.skill_no_frontmatter") => Some("SKILL.md 缺少 frontmatter（--- 块）。"),
         (Locale::Zh, "err.skill_frontmatter_unclosed") => Some("SKILL.md 的 frontmatter 没有以 --- 结束。"),
         (Locale::Zh, "err.skill_no_description") => Some("SKILL.md 缺少 description。"),
@@ -3820,7 +3824,15 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
         }
         "kernel worker closed protocol stdout" => t(locale, "runtime.worker_closed"),
         "selected folder has no SKILL.md" => t(locale, "err.skill_no_md"),
-        "select a skill folder or a SKILL.md file" => t(locale, "err.skill_pick"),
+        "select a skill folder, a SKILL.md file, or a ZIP archive" => {
+            t(locale, "err.skill_pick")
+        }
+        "skill ZIP has no SKILL.md at its root or in a top-level folder" => {
+            t(locale, "err.skill_zip_no_md")
+        }
+        "skill ZIP contains more than one skill folder" => {
+            t(locale, "err.skill_zip_multiple")
+        }
         "SKILL.md has no frontmatter (--- block)" => t(locale, "err.skill_no_frontmatter"),
         "SKILL.md frontmatter is not closed with ---" => {
             t(locale, "err.skill_frontmatter_unclosed")

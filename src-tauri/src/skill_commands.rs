@@ -167,11 +167,10 @@ pub(super) async fn set_skills_enabled(
 pub(super) async fn pick_skill_source(app: AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = tokio::sync::oneshot::channel();
-    // Let the user pick a SKILL.md; folder picking is offered via a second button
-    // in the UI that calls pick_directory (existing command).
+    // Folder picking is offered via a second button in the UI.
     app.dialog()
         .file()
-        .add_filter("SKILL.md", &["md"])
+        .add_filter("Wisp skill", &["md", "zip"])
         .pick_file(move |p| {
             let _ = tx.send(p);
         });
@@ -213,46 +212,103 @@ pub(super) async fn install_skill(
     src_path: String,
 ) -> Result<String, String> {
     let src = PathBuf::from(&src_path);
-    // Resolve the skill's source dir + the SKILL.md path.
-    let (skill_dir, skill_md) = if src.is_dir() {
+    let skills_dir = user_skills_dir()?;
+    // ZIP extraction, recursive copy, and the atomic directory swap run off
+    // the async runtime. Existing user-added skills are replaced so importing
+    // an updated package is a normal upgrade path.
+    let skill_name = tokio::task::spawn_blocking(move || install_skill_source(&src, &skills_dir))
+        .await
+        .map_err(|e| format!("{e}"))??;
+    reload_host_skill_index(&state, window.label());
+    let ap = state.active(window.label());
+    if let Some(mut enabled) = load_enabled_skill_names(&state.store, &ap.id).await {
+        enabled.insert(skill_name.clone());
+        save_enabled_skill_names(&state.store, &ap.id, &enabled).await?;
+    }
+    clear_idle_agents(&state).await;
+    Ok(skill_name)
+}
+
+struct SkillImportTempDir(PathBuf);
+
+impl Drop for SkillImportTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn install_skill_source(src: &Path, skills_dir: &Path) -> Result<String, String> {
+    let (_temp_dir, skill_dir, skill_md) = if src.is_dir() {
         let md = src.join("SKILL.md");
         if !md.is_file() {
             return Err("selected folder has no SKILL.md".into());
         }
-        (src.clone(), md)
-    } else if src.file_name().map(|n| n == "SKILL.md").unwrap_or(false) {
+        (None, src.to_path_buf(), md)
+    } else if src.file_name().is_some_and(|name| name == "SKILL.md") {
         (
+            None,
             src.parent().map(PathBuf::from).unwrap_or_default(),
-            src.clone(),
+            src.to_path_buf(),
         )
+    } else if src
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+    {
+        let temp_root =
+            std::env::temp_dir().join(format!("wisp-skill-import-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&temp_root)
+            .map_err(|error| format!("create skill ZIP staging directory: {error}"))?;
+        let temp_dir = SkillImportTempDir(temp_root.clone());
+        let fallback = src
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .filter(|name| validate_skill_name(name).is_ok())
+            .unwrap_or("skill");
+        let unpacked = temp_root.join(fallback);
+        std::fs::create_dir(&unpacked)
+            .map_err(|error| format!("create skill ZIP extraction directory: {error}"))?;
+        crate::plugins::extract_zip(src, &unpacked)?;
+        let skill_dir = find_archived_skill_dir(&unpacked)?;
+        let skill_md = skill_dir.join("SKILL.md");
+        (Some(temp_dir), skill_dir, skill_md)
     } else {
-        return Err("select a skill folder or a SKILL.md file".into());
+        return Err("select a skill folder, a SKILL.md file, or a ZIP archive".into());
     };
-    // Parse name from frontmatter (fall back to dir name), validate description.
+
     let skill = wisp_skills::parse_skill_file(&skill_md)?;
     if skill.description.trim().is_empty() {
         return Err("SKILL.md is missing a description".into());
     }
     validate_skill_name(&skill.name)?;
-    let dest = user_skills_dir()?.join(&skill.name);
-    {
-        // Recursive copy and the atomic directory swap run off the async
-        // runtime: a skill folder can be large. Existing user-added skills are
-        // replaced so importing an updated copy is a normal upgrade path.
-        let (skill_dir, dest) = (skill_dir.clone(), dest.clone());
-        tokio::task::spawn_blocking(move || install_skill_dir(&skill_dir, &dest))
-            .await
-            .map_err(|e| format!("{e}"))?
-            .map_err(|e| format!("install skill: {e}"))?;
-    }
-    reload_host_skill_index(&state, window.label());
-    let ap = state.active(window.label());
-    if let Some(mut enabled) = load_enabled_skill_names(&state.store, &ap.id).await {
-        enabled.insert(skill.name.clone());
-        save_enabled_skill_names(&state.store, &ap.id, &enabled).await?;
-    }
-    clear_idle_agents(&state).await;
+    let dest = skills_dir.join(&skill.name);
+    install_skill_dir(&skill_dir, &dest).map_err(|error| format!("install skill: {error}"))?;
     Ok(skill.name)
+}
+
+fn find_archived_skill_dir(root: &Path) -> Result<PathBuf, String> {
+    if root.join("SKILL.md").is_file() {
+        return Ok(root.to_path_buf());
+    }
+    let mut candidates = Vec::new();
+    for entry in
+        std::fs::read_dir(root).map_err(|error| format!("read skill ZIP contents: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("read skill ZIP entry: {error}"))?;
+        if entry
+            .file_type()
+            .map_err(|error| format!("inspect skill ZIP entry: {error}"))?
+            .is_dir()
+            && entry.path().join("SKILL.md").is_file()
+        {
+            candidates.push(entry.path());
+        }
+    }
+    match candidates.len() {
+        1 => Ok(candidates.remove(0)),
+        0 => Err("skill ZIP has no SKILL.md at its root or in a top-level folder".into()),
+        _ => Err("skill ZIP contains more than one skill folder".into()),
+    }
 }
 
 #[tauri::command]
@@ -377,6 +433,7 @@ fn install_skill_dir(from: &Path, to: &Path) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     struct TestDir(PathBuf);
 
@@ -429,6 +486,66 @@ mod tests {
             std::fs::read_to_string(destination.join("SKILL.md")).unwrap(),
             "old instructions"
         );
+    }
+
+    #[test]
+    fn zip_skill_import_installs_a_single_top_level_skill_folder() {
+        let temp = TestDir::new();
+        let archive_path = temp.0.join("ggtree-visualization.zip");
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(
+                "ggtree-visualization/SKILL.md",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        archive
+            .write_all(b"---\nname: ggtree-visualization\ndescription: Draw trees\n---\n# Skill")
+            .unwrap();
+        archive
+            .start_file(
+                "ggtree-visualization/assets/template.R",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        archive.write_all(b"plot(tree)").unwrap();
+        archive.finish().unwrap();
+
+        let installed = temp.0.join("installed");
+        assert_eq!(
+            install_skill_source(&archive_path, &installed),
+            Ok("ggtree-visualization".into())
+        );
+        assert!(installed.join("ggtree-visualization/SKILL.md").is_file());
+        assert_eq!(
+            std::fs::read_to_string(installed.join("ggtree-visualization/assets/template.R"))
+                .unwrap(),
+            "plot(tree)"
+        );
+    }
+
+    #[test]
+    fn zip_skill_import_rejects_multiple_skill_folders() {
+        let temp = TestDir::new();
+        let archive_path = temp.0.join("skills.zip");
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        for name in ["one", "two"] {
+            archive
+                .start_file(
+                    format!("{name}/SKILL.md"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            archive
+                .write_all(format!("---\nname: {name}\ndescription: Test\n---\n").as_bytes())
+                .unwrap();
+        }
+        archive.finish().unwrap();
+
+        let error = install_skill_source(&archive_path, &temp.0.join("installed")).unwrap_err();
+        assert_eq!(error, "skill ZIP contains more than one skill folder");
     }
 
     #[test]
