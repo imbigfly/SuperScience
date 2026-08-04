@@ -1942,8 +1942,12 @@ fn windows_control_payloads_contain_process_identity_and_timeout() {
     assert!(supervisor.contains("if (Test-Path -LiteralPath (Join-Path $workdir '_submitted'))"));
     assert!(supervisor.contains("$proc.StartTime.ToUniversalTime().Ticks"));
     assert!(!supervisor.contains("Get-CimInstance"));
+    // -File launches are blocked by the default Restricted execution policy
+    // unless the policy is bypassed for the process scope.
+    assert!(supervisor.contains("'-ExecutionPolicy','Bypass','-File'"));
     let launch = launch_payload(&remote.handle);
     assert!(launch.contains("Start-Process"));
+    assert!(launch.contains("'-ExecutionPolicy','Bypass','-File'"));
     // Only the launcher that created the lock may start the supervisor, and a
     // live lock owner must not be raced.
     assert!(launch.contains("if ($acquired)"));

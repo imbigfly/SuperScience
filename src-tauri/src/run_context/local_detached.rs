@@ -486,7 +486,10 @@ $stdout = Join-Path $workdir 'stdout.log'
 $stderr = Join-Path $workdir 'stderr.log'
 $startParams = @{{
   FilePath = 'powershell'
-  ArgumentList = @('-NoProfile','-NonInteractive','-File', (Join-Path $workdir 'command.ps1'))
+  # -File is subject to the machine's execution policy (Restricted by default
+  # on Windows clients), unlike the -Command transport used by the host, so
+  # the policy must be bypassed explicitly for the process scope.
+  ArgumentList = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File', (Join-Path $workdir 'command.ps1'))
   PassThru = $true
   WindowStyle = 'Hidden'
   RedirectStandardOutput = $stdout
@@ -642,7 +645,10 @@ if (-not (Test-Path -LiteralPath $submitted)) {{
     $supervisor = Join-Path $workdir 'supervisor.ps1'
     $supervisorStdout = Join-Path $workdir 'supervisor.stdout.log'
     $supervisorStderr = Join-Path $workdir 'supervisor.stderr.log'
-    Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile','-NonInteractive','-File', $supervisor) -WindowStyle Hidden -RedirectStandardOutput $supervisorStdout -RedirectStandardError $supervisorStderr | Out-Null
+    # -File is subject to the machine's execution policy (Restricted by
+    # default on Windows clients), unlike the -Command transport used by the
+    # host, so the policy must be bypassed explicitly for the process scope.
+    Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File', $supervisor) -WindowStyle Hidden -RedirectStandardOutput $supervisorStdout -RedirectStandardError $supervisorStderr | Out-Null
   }}
 }}
 for ($i = 0; $i -lt 10 -and -not (Test-Path -LiteralPath $submitted); $i++) {{
