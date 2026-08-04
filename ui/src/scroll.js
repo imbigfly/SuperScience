@@ -31,6 +31,10 @@ export function attach_chat_scroll(scrollerId, contentId) {
 
   let follow = true;
   let lastHeight = content.scrollHeight;
+  const setFollow = (value) => {
+    follow = value;
+    scroller.style.overflowAnchor = value ? "none" : "auto";
+  };
   // Timestamp of the last real user scroll gesture. The thread is re-rendered
   // on every streaming delta, which briefly collapses its height, clamps
   // scrollTop toward the top, and fires a spurious "scroll" event. Without this
@@ -59,13 +63,13 @@ export function attach_chat_scroll(scrollerId, contentId) {
   const syncFollow = () => {
     syncPill();
     if (atBottom(scroller)) {
-      follow = true;
+      setFollow(true);
       return;
     }
     // Not at bottom: only treat it as an intentional scroll-up if a real gesture
     // happened just now. Reflow-driven scrolls leave `follow` untouched.
     if (performance.now() - lastUserScroll < 500) {
-      follow = false;
+      setFollow(false);
       return;
     }
     // Reflow-driven clamp while following (streaming rebuilds shrink the
@@ -83,14 +87,14 @@ export function attach_chat_scroll(scrollerId, contentId) {
     syncFollow();
   };
 
-  scroller.style.overflowAnchor = "none";
+  setFollow(true);
   scroller.addEventListener("scroll", syncFollow, { passive: true });
   scroller.addEventListener(
     "wheel",
     (e) => {
       markUser();
-      if (e.deltaY < 0) follow = false;
-      else if (atBottom(scroller)) follow = true;
+      if (e.deltaY < 0) setFollow(false);
+      else if (atBottom(scroller)) setFollow(true);
     },
     { passive: true },
   );
@@ -105,17 +109,27 @@ export function attach_chat_scroll(scrollerId, contentId) {
     ro,
     onGrowth,
     unfollow: () => {
-      follow = false;
+      setFollow(false);
       lastHeight = content.scrollHeight;
     },
     snap: () => {
-      follow = true;
+      const requested = performance.now();
+      setFollow(true);
       snapBottom(scroller);
       lastHeight = content.scrollHeight;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (lastUserScroll < requested) {
+            setFollow(true);
+            snapBottom(scroller);
+            lastHeight = content.scrollHeight;
+          }
+        });
+      });
     },
   });
 
-  follow = true;
+  setFollow(true);
   snapBottom(scroller);
 }
 
@@ -136,7 +150,9 @@ export function force_chat_scroll_bottom(scrollerId) {
     return;
   }
   const scroller = document.getElementById(scrollerId);
-  if (scroller) snapBottom(scroller);
+  if (!scroller) return;
+  snapBottom(scroller);
+  requestAnimationFrame(() => requestAnimationFrame(() => snapBottom(scroller)));
 }
 
 /** @param {string} scrollerId @param {string} contentId */
@@ -146,9 +162,12 @@ export function preserve_chat_scroll_on_prepend(scrollerId, contentId) {
   if (!scroller || !content) return;
   const oldHeight = content.scrollHeight;
   const oldTop = scroller.scrollTop;
+  const oldAnchor = scroller.style.overflowAnchor;
+  scroller.style.overflowAnchor = "none";
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       scroller.scrollTop = oldTop + content.scrollHeight - oldHeight;
+      scroller.style.overflowAnchor = oldAnchor;
     });
   });
 }

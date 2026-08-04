@@ -5723,6 +5723,7 @@ fn App() -> impl IntoView {
     let runtime_object_states =
         create_rw_signal::<HashMap<String, RuntimeObjectState>>(HashMap::new());
     let run_records = create_rw_signal::<Vec<RunRecord>>(vec![]);
+    let run_clock = create_rw_signal(now_secs());
     let show_add_host = create_rw_signal(false);
     let host_alias = create_rw_signal(String::new());
     let host_hostname = create_rw_signal(String::new());
@@ -5987,6 +5988,7 @@ fn App() -> impl IntoView {
     {
         let ticks = Cell::new(0_u8);
         let refresh = Closure::wrap(Box::new(move || {
+            run_clock.set(now_secs());
             let tick = (ticks.get() + 1) % 5;
             ticks.set(tick);
             let transfer_active = run_records.get_untracked().iter().any(|run| {
@@ -9290,7 +9292,7 @@ fn App() -> impl IntoView {
                                             data-user-index=data_user_index>
                                             {render_item(
                                                 i, &item, timestamp, &arts, on_artifact_select, on_file_link,
-                                                run_records, busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, session_id,
+                                                run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, session_id,
                                                 respond_confirm, on_resume, on_queue,
                                                 step_disclosure_state,
                                                 plan_mode_active, plan_compat, on_plan_decision,
@@ -9364,6 +9366,7 @@ fn App() -> impl IntoView {
                                         <RunMonitorCard
                                             run_id=run_id
                                             runs=run_records
+                                            clock=run_clock.read_only()
                                             tool_ok=None
                                             tool_output=String::new()
                                         />
@@ -13845,6 +13848,7 @@ fn run_output_preview(run: &RunRecord) -> String {
 fn RunMonitorCard(
     run_id: String,
     runs: RwSignal<Vec<RunRecord>>,
+    clock: ReadSignal<i64>,
     tool_ok: Option<bool>,
     tool_output: String,
 ) -> impl IntoView {
@@ -13897,13 +13901,18 @@ fn RunMonitorCard(
                 t(locale.get(), "runs.cancel")
             };
             let started = run.started_at.unwrap_or(run.created_at);
-            let ended = run.ended_at.unwrap_or_else(|| js_sys::Date::now() as i64 / 1000);
+            let now = if active {
+                clock.get()
+            } else {
+                js_sys::Date::now() as i64 / 1000
+            };
+            let ended = run.ended_at.unwrap_or(now);
             let elapsed_value = transfer_duration(ended.saturating_sub(started) as u64);
             let elapsed = tf(locale.get(), "runs.elapsed", &[("time", &elapsed_value)]);
             let mut meta = format!("{} · {} · {elapsed}", run.context_id, run.kind);
             if active {
                 if let Some(last_heartbeat) = run.last_polled_at {
-                    let age = (js_sys::Date::now() as i64 / 1000).saturating_sub(last_heartbeat);
+                    let age = now.saturating_sub(last_heartbeat);
                     let age = transfer_duration(age as u64);
                     meta.push_str(" · ");
                     meta.push_str(&tf(locale.get(), "runs.heartbeat", &[("time", &age)]));
@@ -14027,6 +14036,7 @@ fn render_item(
     on_artifact: Callback<usize>,
     on_file: Callback<ModalArtifact>,
     runs: RwSignal<Vec<RunRecord>>,
+    run_clock: ReadSignal<i64>,
     busy: ReadSignal<bool>,
     compact_assistant: bool,
     can_modify: bool,
@@ -14122,6 +14132,7 @@ fn render_item(
             <RunMonitorCard
                 run_id=input.trim().to_string()
                 runs=runs
+                clock=run_clock
                 tool_ok=*ok
                 tool_output=output.clone()
             />
