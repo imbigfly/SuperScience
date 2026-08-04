@@ -125,8 +125,11 @@ Prerequisites:
 - **uv** (Python environment manager): <https://docs.astral.sh/uv/>
 - **Trunk**: `cargo install --locked trunk` · **Tauri CLI v2**:
   `cargo install tauri-cli --version "^2"`
-- Optional: **R** with `Rscript` on PATH and the `jsonlite` package for the
-  persistent `r` tool. Wisp never installs R packages automatically.
+- Optional: **R** with the `jsonlite` package for the persistent `r` tool.
+  Wisp locates `Rscript` via the interpreter configured in Settings, then
+  PATH, then well-known install locations (for example
+  `C:\Program Files\R\R-*\bin` on Windows or a conda base environment).
+  Wisp never installs R packages automatically.
 - Windows needs the **WebView2 Runtime** (present on most Windows 10/11
   systems; the installer acquires it when missing). macOS needs **Xcode
   Command Line Tools** (`xcode-select --install`) and uses the system WebKit.

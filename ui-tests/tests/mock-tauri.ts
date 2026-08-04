@@ -1840,6 +1840,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             ];
           case "pick_directory":
             return "/mock/root/new-project";
+          case "pick_executable_file":
+            return "/mock/picked/Rscript";
           case "open_project": {
             const openingProjectId = String(arg("id") ?? "default");
             const delay = nextProjectOpenDelayMs[openingProjectId] ?? 0;
@@ -3911,6 +3913,7 @@ export function parallelMock(): void {
             status: "complete",
           }));
           case "pick_directory": return "/mock/root/new-project";
+          case "pick_executable_file": return "/mock/picked/Rscript";
           case "open_project":
           case "create_project":
             return { id: "default", name: project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };

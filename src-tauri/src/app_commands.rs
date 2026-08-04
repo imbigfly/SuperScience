@@ -166,6 +166,19 @@ pub(super) async fn pick_directory(app: AppHandle) -> Result<Option<String>, Str
     Ok(picked.map(|fp| fp.to_string()))
 }
 
+/// Pick a local interpreter executable (python / Rscript) via the native open
+/// dialog. Returns the picked path, or `None` if the user cancelled.
+#[tauri::command]
+pub(super) async fn pick_executable_file(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_file(move |p| {
+        let _ = tx.send(p);
+    });
+    let picked = rx.await.map_err(|e| format!("{e}"))?;
+    Ok(picked.map(|fp| fp.to_string()))
+}
+
 /// Save UI-provided text via the native save dialog. Returns the saved path,
 /// or `None` if the user cancelled.
 #[tauri::command]

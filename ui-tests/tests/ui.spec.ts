@@ -3115,6 +3115,42 @@ test("settings manages servers and probes them with the default environment skil
   });
 });
 
+test("runtime interpreter dialog prefills probed paths and picks files (#651)", async ({ page }) => {
+  // Simulate a successful probe that found interpreters outside PATH: the
+  // context has no explicit config, only probe results. Patch the mock before
+  // the app boots so every fetch of the contexts sees the probe data.
+  await page.addInitScript(() => {
+    const local = (window as any).__mockExecutionContexts.find((item: any) => item.id === "local");
+    local.config_json = "{}";
+    local.capabilities_json = JSON.stringify({
+      python_executable: "/opt/conda/bin/python",
+      rscript_executable: "D:\\R-4.5.2\\bin\\Rscript.exe",
+      r_jsonlite: true,
+    });
+  });
+  await enterApp(page);
+  await openSettingsSection(page, "Environments");
+
+  const local = page.locator('.environment-settings-row[data-context-id="local"]');
+  await local.getByRole("button", { name: "Configure runtime interpreters" }).click();
+  const python = page.locator("#runtime-python-executable");
+  const rscript = page.locator("#runtime-rscript-executable");
+  await expect(python).toHaveValue("/opt/conda/bin/python");
+  await expect(rscript).toHaveValue("D:\\R-4.5.2\\bin\\Rscript.exe");
+
+  // The local context offers a native file picker (mocked) that fills the field.
+  const pythonPicker = page.locator(".runtime-config-picker", { has: python });
+  await pythonPicker.getByRole("button", { name: "Browse…" }).click();
+  await expect(python).toHaveValue("/mock/picked/Rscript");
+  await page.keyboard.press("Escape");
+
+  // Remote contexts have no local file picker, but still prefill probed paths.
+  const server = page.locator('.environment-settings-row[data-context-id="ssh:gpu-server"]');
+  await server.getByRole("button", { name: "Configure runtime interpreters" }).click();
+  await expect(page.locator("#runtime-rscript-executable")).toHaveValue("/opt/R/bin/Rscript");
+  await expect(page.getByRole("button", { name: "Browse…" })).toHaveCount(0);
+});
+
 test("environment probe shows progress and classifies password authentication failure", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Environments");
