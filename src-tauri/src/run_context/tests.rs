@@ -349,11 +349,18 @@ async fn run_in_context_preflight_is_structured_and_persisted_with_the_run() {
     let commands = runner.commands.lock().unwrap();
     assert_eq!(commands[0].script, "python interpreter/package preflight");
     assert!(commands[1].script.starts_with("prepare "));
-    assert!(commands[1]
-        .stdin
-        .as_deref()
-        .unwrap()
-        .contains("python analysis.py"));
+    let prepare = commands[1].stdin.as_deref().unwrap();
+    #[cfg(windows)]
+    {
+        // Windows prepare embeds the command as base64 into command.ps1.
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("python analysis.py");
+        assert!(prepare.contains(&encoded), "{prepare}");
+    }
+    #[cfg(not(windows))]
+    {
+        assert!(prepare.contains("python analysis.py"));
+    }
     let _ = std::fs::remove_dir_all(tmp);
 }
 
@@ -1438,20 +1445,21 @@ impl RunCommandRunner for ScriptedRunRunner {
         }
         if command.script.starts_with("prepare ") {
             if let Some(payload) = command.stdin.as_deref() {
-                let token = payload
-                    .lines()
-                    .find_map(|line| {
-                        line.strip_prefix("  printf '%s\\n' '")?
-                            .strip_suffix("' > \"$workdir/token.tmp\"")
-                            .or_else(|| {
-                                line.trim()
-                                    .strip_prefix(
-                                        "Set-Content -LiteralPath ($tokenPath + '.tmp') -Value '",
-                                    )?
-                                    .strip_suffix("' -Encoding ascii")
-                            })
-                    })
-                    .map(str::to_string);
+                // Posix and Windows prepare payloads both write a token; parse
+                // each form independently so a failed Posix prefix match does
+                // not short-circuit the Windows branch via `?`.
+                let token = payload.lines().find_map(|line| {
+                    line.strip_prefix("  printf '%s\\n' '")
+                        .and_then(|rest| rest.strip_suffix("' > \"$workdir/token.tmp\""))
+                        .or_else(|| {
+                            line.trim()
+                                .strip_prefix(
+                                    "Set-Content -LiteralPath ($tokenPath + '.tmp') -Value '",
+                                )
+                                .and_then(|rest| rest.strip_suffix("' -Encoding ascii"))
+                        })
+                        .map(str::to_string)
+                });
                 *self.token.lock().unwrap() = token;
             }
         }
@@ -1593,12 +1601,20 @@ fn test_handle(run_id: &str, confirmed: bool) -> RemoteRunHandle {
 }
 
 fn test_local_handle(run_id: &str, confirmed: bool, command_cwd: Option<&str>) -> RemoteRunHandle {
+    // Match the host platform's real local transport so cancel/poll helpers
+    // exercise the same payloads production uses.
+    #[cfg(windows)]
+    let transport = LocalTransport::Windows {
+        context_id: "local".into(),
+    };
+    #[cfg(not(windows))]
+    let transport = LocalTransport::Posix {
+        context_id: "local".into(),
+        program: "sh".into(),
+        args: vec!["-s".into()],
+    };
     RemoteRunHandle::LocalDetached {
-        transport: LocalTransport::Posix {
-            context_id: "local".into(),
-            program: "sh".into(),
-            args: vec!["-s".into()],
-        },
+        transport,
         workdir: format!(".wisp-science/runs/{run_id}"),
         token: "test-token".into(),
         inputs_staged: true,
@@ -1608,6 +1624,7 @@ fn test_local_handle(run_id: &str, confirmed: bool, command_cwd: Option<&str>) -
     }
 }
 
+#[cfg(unix)]
 fn test_wsl_handle(run_id: &str, confirmed: bool, command_cwd: Option<&str>) -> RemoteRunHandle {
     RemoteRunHandle::LocalDetached {
         transport: LocalTransport::Posix {
@@ -1821,24 +1838,48 @@ async fn local_detached_run_finishes_from_poller() {
         )
         .await
         .unwrap();
-    assert!(submitted
-        .remote_workdir
-        .as_deref()
-        .unwrap()
-        .starts_with("~/.wisp-science/runs/"));
+    let workdir = submitted.remote_workdir.as_deref().unwrap();
+    #[cfg(windows)]
+    assert!(workdir.starts_with("~\\.wisp-science\\runs\\"), "{workdir}");
+    #[cfg(not(windows))]
+    assert!(workdir.starts_with("~/.wisp-science/runs/"), "{workdir}");
     poll_gate.add_permits(1);
     let finished = wait_for_terminal(&store, &submitted.run_id).await;
     assert_eq!(finished.status, wisp_store::RunStatus::Succeeded);
     assert_eq!(finished.stdout_tail.as_deref(), Some("local-done"));
     assert_eq!(finished.timeout_secs, Some(7200));
     let commands = runner.commands.lock().unwrap();
-    assert!(commands.iter().any(|command| command.program == "sh"));
-    assert!(commands[0].stdin.as_deref().unwrap().contains("sleep 7200"));
-    assert!(!commands[0]
-        .stdin
-        .as_deref()
-        .unwrap()
-        .contains("setsid timeout"));
+    let prepare = commands[0].stdin.as_deref().unwrap();
+    #[cfg(windows)]
+    {
+        assert!(commands
+            .iter()
+            .any(|command| command.program == "powershell"));
+        // Timeout lives inside the base64-encoded supervisor.ps1 body.
+        use base64::Engine as _;
+        let supervisor = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(
+                    prepare
+                        .lines()
+                        .find(|line| {
+                            line.starts_with("[System.IO.File]::WriteAllText($supervisorPath")
+                        })
+                        .and_then(|line| line.split("FromBase64String('").nth(1))
+                        .and_then(|rest| rest.split('\'').next())
+                        .expect("supervisor base64 in prepare payload"),
+                )
+                .expect("valid supervisor base64"),
+        )
+        .expect("utf8 supervisor script");
+        assert!(supervisor.contains("AddSeconds(7200)"), "{supervisor}");
+    }
+    #[cfg(not(windows))]
+    {
+        assert!(commands.iter().any(|command| command.program == "sh"));
+        assert!(prepare.contains("sleep 7200"), "{prepare}");
+        assert!(!prepare.contains("setsid timeout"));
+    }
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
