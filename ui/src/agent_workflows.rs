@@ -2912,8 +2912,8 @@ pub(super) fn workflow_studio(
     let portfolio_open = create_rw_signal(false);
     let portfolio_request = create_rw_signal(String::new());
     let portfolio_tier = create_rw_signal("standard".to_string());
-    let portfolio_total = create_rw_signal("16000".to_string());
-    let portfolio_reserve = create_rw_signal("4000".to_string());
+    let portfolio_total = create_rw_signal("96000".to_string());
+    let portfolio_reserve = create_rw_signal("16000".to_string());
     let portfolio_draft = create_rw_signal::<Option<SkillPortfolioDraft>>(None);
     let portfolio_loading = create_rw_signal(false);
 
@@ -2948,7 +2948,7 @@ pub(super) fn workflow_studio(
                     tier: portfolio_tier.get_untracked(),
                     total_token_budget: total,
                     synthesis_reserve: reserve,
-                    node_output_tokens: 2_000,
+                    node_output_tokens: 4_000,
                     user_parallel_limit: 2,
                 }
             }

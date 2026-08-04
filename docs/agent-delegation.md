@@ -132,7 +132,8 @@ and descendants that were blocked, then supplies the retained dependency
 results to those descendants. A failed task exposes its current token limit in
 the activity card; changing **Retry max tokens** before retrying revises only
 that task's authorized budget on the same workflow. The new value is still
-checked against capability and host ceilings.
+checked against capability and host ceilings (64k tokens per task); a rejected
+budget names the triggered limit, the requested value, and the ceiling.
 
 Omitting `specialist_id` creates a generic temporary Agent. Selecting a
 Specialist reuses its persona, model preference, skills, and connector
@@ -442,10 +443,11 @@ the coordination paths.
 
 Workflow Studio can generate a draft from the current effective Skill Catalog. The planner
 normalizes the research request, applies deterministic lexical and `wisp` metadata scoring, and
-selects a compact, standard, or deep complementary portfolio. Its preflight uses the rendered
-Skill instruction plus request and node output allowance; it reserves synthesis tokens before
-selecting child nodes and defers lower-ranked optional candidates when the remaining child budget
-is insufficient.
+selects a compact, standard, or deep complementary portfolio. Its preflight budgets each node for
+the rendered Skill instruction plus the request, a fixed sub-Agent loop allowance (system prompt,
+tool round trips, and search results), and the node output allowance; it reserves synthesis tokens
+before selecting child nodes and defers lower-ranked optional candidates when the remaining child
+budget is insufficient.
 
 The confirmation card shows exact Skill sources and reasons, selected and deferred nodes, node and
 total budgets, the synthesis reserve, the runtime maximum of two parallel Agents, and estimated DAG

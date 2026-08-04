@@ -1500,7 +1500,7 @@ async fn build_dynamic_delegation_policy(
             max_tokens: Some(32_000),
         },
         budget_ceiling: AgentBudget {
-            max_tokens: Some(32_000),
+            max_tokens: Some(64_000),
             max_tool_calls: Some(64),
             max_cost_microunits: Some(1_000_000),
         },
