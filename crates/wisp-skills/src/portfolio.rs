@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 const RUNTIME_PARALLEL_LIMIT: usize = 2;
+/// Extra per-node allowance for the sub-Agent loop itself — system prompt,
+/// tool-call round trips, and search results — beyond the rendered Skill body
+/// and the reserved output. Measured Skill nodes consume 15k-22k tokens
+/// overall, so a budget of instruction + output alone deadlocks them.
+const NODE_AGENT_OVERHEAD_TOKENS: u32 = 12_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -118,7 +123,9 @@ pub fn plan_portfolio(
             let (score, reasons) = score_candidate(&intent, candidate);
             let instruction_tokens =
                 estimate_tokens(&candidate.rendered_instruction).saturating_add(request_tokens);
-            let node_budget = instruction_tokens.saturating_add(config.node_output_tokens);
+            let node_budget = instruction_tokens
+                .saturating_add(config.node_output_tokens)
+                .saturating_add(NODE_AGENT_OVERHEAD_TOKENS);
             (candidate, score, reasons, instruction_tokens, node_budget)
         })
         .filter(|(_, score, _, _, _)| *score > 0)
@@ -397,8 +404,8 @@ mod tests {
             &candidates,
             PortfolioConfig {
                 tier: PortfolioTier::Deep,
-                total_token_budget: 1_500,
-                synthesis_reserve: 500,
+                total_token_budget: 40_000,
+                synthesis_reserve: 15_000,
                 node_output_tokens: 300,
                 user_parallel_limit: 4,
             },
@@ -406,6 +413,12 @@ mod tests {
         .unwrap();
         assert_eq!(plan.selected.len(), 2);
         assert_eq!(plan.deferred.len(), 6);
+        // Node budgets must cover the Skill body, the sub-Agent loop overhead,
+        // and the reserved output, not just the output.
+        assert_eq!(
+            plan.selected[0].node_budget,
+            plan.selected[0].instruction_tokens + 300 + NODE_AGENT_OVERHEAD_TOKENS
+        );
         assert!(plan
             .deferred
             .iter()

@@ -20,6 +20,12 @@ use thiserror::Error;
 
 const ELEVATED_TOKEN_THRESHOLD: u32 = 20_000;
 const ELEVATED_COST_THRESHOLD_MICROUNITS: u64 = 1_000_000;
+/// Default per-task token budget and the highest token budget a delegated task
+/// may request. Skill-bound literature/review tasks routinely consume
+/// 15k-25k tokens while loading the Skill and iterating on tool results, so
+/// the ceiling must leave comfortable room above that.
+const DEFAULT_TASK_TOKEN_BUDGET: u32 = 16_000;
+const TASK_TOKEN_BUDGET_CEILING: u32 = 64_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -231,8 +237,12 @@ pub enum ResolutionError {
     NoEligibleModel,
     #[error("no eligible executor is configured")]
     NoEligibleExecutor,
-    #[error("requested task budget exceeds the capability or host ceiling")]
-    BudgetExceeded,
+    #[error("requested task budget exceeds the {field} ceiling: requested {requested}, but the capability/host policy allows at most {ceiling}")]
+    BudgetExceeded {
+        field: &'static str,
+        requested: String,
+        ceiling: u64,
+    },
     #[error("dynamic delegation snapshot is stale: {0}")]
     StaleSnapshot(String),
     #[error("dynamic delegation snapshot integrity check failed")]
@@ -993,13 +1003,38 @@ fn select_budget(
             .and_then(|value| value.max_cost_microunits)
             .or(defaults.max_cost_microunits),
     };
-    if !limit_within(selected.max_tokens, ceiling.max_tokens)
-        || !limit_within(selected.max_tool_calls, ceiling.max_tool_calls)
-        || !limit_within(selected.max_cost_microunits, ceiling.max_cost_microunits)
-    {
-        return Err(ResolutionError::BudgetExceeded);
-    }
+    check_budget_limit("max_tokens", selected.max_tokens, ceiling.max_tokens)?;
+    check_budget_limit(
+        "max_tool_calls",
+        selected.max_tool_calls,
+        ceiling.max_tool_calls,
+    )?;
+    check_budget_limit(
+        "max_cost_microunits",
+        selected.max_cost_microunits,
+        ceiling.max_cost_microunits,
+    )?;
     Ok(selected)
+}
+
+fn check_budget_limit<T: Ord + Copy + Into<u64>>(
+    field: &'static str,
+    selected: Option<T>,
+    ceiling: Option<T>,
+) -> Result<(), ResolutionError> {
+    let exceeded = match (selected, ceiling) {
+        (_, None) => false,
+        (Some(selected), Some(ceiling)) => selected > ceiling,
+        (None, Some(_)) => true,
+    };
+    if exceeded {
+        return Err(ResolutionError::BudgetExceeded {
+            field,
+            requested: selected.map_or_else(|| "unset".into(), |value| value.into().to_string()),
+            ceiling: ceiling.map_or(0, Into::into),
+        });
+    }
+    Ok(())
 }
 
 fn select_timeout(host: &DelegationHostPolicy) -> Result<Option<u64>, ResolutionError> {
@@ -1220,14 +1255,6 @@ fn insert_sorted<T: Ord + Copy>(target: &mut Vec<T>, value: T) {
     }
 }
 
-fn limit_within<T: Ord>(selected: Option<T>, ceiling: Option<T>) -> bool {
-    match (selected, ceiling) {
-        (_, None) => true,
-        (Some(selected), Some(ceiling)) => selected <= ceiling,
-        (None, Some(_)) => false,
-    }
-}
-
 fn limit_greater<T: Ord>(selected: Option<T>, defaults: Option<T>) -> bool {
     match (selected, defaults) {
         (Some(selected), Some(default)) => selected > default,
@@ -1259,8 +1286,8 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SharedReadOnly,
-            8_000,
-            16_000,
+            DEFAULT_TASK_TOKEN_BUDGET,
+            TASK_TOKEN_BUDGET_CEILING,
         ),
         capability(
             "project_read",
@@ -1275,8 +1302,8 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SharedReadOnly,
-            8_000,
-            20_000,
+            DEFAULT_TASK_TOKEN_BUDGET,
+            TASK_TOKEN_BUDGET_CEILING,
         ),
         capability(
             "project_write",
@@ -1291,8 +1318,8 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SerializedMutation,
-            10_000,
-            24_000,
+            DEFAULT_TASK_TOKEN_BUDGET,
+            TASK_TOKEN_BUDGET_CEILING,
         ),
         capability(
             "code_run",
@@ -1315,8 +1342,8 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SerializedMutation,
-            12_000,
-            32_000,
+            DEFAULT_TASK_TOKEN_BUDGET,
+            TASK_TOKEN_BUDGET_CEILING,
         ),
         capability(
             "literature_search",
@@ -1334,8 +1361,8 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &["literature"],
             AgentWorkspacePolicy::SharedReadOnly,
-            10_000,
-            32_000,
+            DEFAULT_TASK_TOKEN_BUDGET,
+            TASK_TOKEN_BUDGET_CEILING,
         ),
         capability(
             "external_research",
@@ -1350,8 +1377,8 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &["web"],
             AgentWorkspacePolicy::SharedReadOnly,
-            10_000,
-            20_000,
+            DEFAULT_TASK_TOKEN_BUDGET,
+            TASK_TOKEN_BUDGET_CEILING,
         ),
         capability(
             "visualization",
@@ -1370,8 +1397,8 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SerializedMutation,
-            12_000,
-            32_000,
+            DEFAULT_TASK_TOKEN_BUDGET,
+            TASK_TOKEN_BUDGET_CEILING,
         ),
         capability(
             "review",
@@ -1386,8 +1413,8 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SharedReadOnly,
-            8_000,
-            16_000,
+            DEFAULT_TASK_TOKEN_BUDGET,
+            TASK_TOKEN_BUDGET_CEILING,
         ),
         delegation_capability(),
         capability_with_model(
@@ -1398,8 +1425,8 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &["read", "view_image"],
             &[ExecutorFeature::ProjectRead, ExecutorFeature::Vision],
             &[ModelFeature::Vision],
-            8_000,
-            16_000,
+            DEFAULT_TASK_TOKEN_BUDGET,
+            TASK_TOKEN_BUDGET_CEILING,
         ),
     ]
 }
@@ -1418,8 +1445,8 @@ fn delegation_capability() -> CapabilityDefinition {
         &[],
         &[],
         AgentWorkspacePolicy::SharedReadOnly,
-        8_000,
-        16_000,
+        DEFAULT_TASK_TOKEN_BUDGET,
+        TASK_TOKEN_BUDGET_CEILING,
     );
     definition.approval_reason =
         Some("Task may create a bounded nested Agent batch within root-wide limits".into());
@@ -1743,7 +1770,7 @@ mod tests {
             .resolve_task(proposal("work", &["project_read", "code_run"]), &host)
             .unwrap();
         assert_eq!(resolved.risk(), CapabilityRisk::Execute);
-        assert_eq!(resolved.budget_ceiling().max_tokens, Some(20_000));
+        assert_eq!(resolved.budget_ceiling().max_tokens, Some(32_000));
         assert!(resolved
             .spec()
             .permissions
@@ -1753,13 +1780,24 @@ mod tests {
 
         let mut too_large = proposal("work", &["project_read", "code_run"]);
         too_large.budget = Some(AgentBudget {
-            max_tokens: Some(20_001),
+            max_tokens: Some(32_001),
             ..Default::default()
         });
+        let error = registry.resolve_task(too_large, &host).unwrap_err();
         assert_eq!(
-            registry.resolve_task(too_large, &host).unwrap_err(),
-            ResolutionError::BudgetExceeded
+            error,
+            ResolutionError::BudgetExceeded {
+                field: "max_tokens",
+                requested: "32001".into(),
+                ceiling: 32_000,
+            }
         );
+        // The message must name the triggered limit and both numbers so the
+        // caller knows exactly which ceiling rejected the budget.
+        let message = error.to_string();
+        assert!(message.contains("max_tokens"));
+        assert!(message.contains("32001"));
+        assert!(message.contains("32000"));
     }
 
     #[test]
@@ -2062,7 +2100,7 @@ mod tests {
 
         let mut elevated = proposal("elevated", &["reasoning"]);
         elevated.budget = Some(AgentBudget {
-            max_tokens: Some(9_000),
+            max_tokens: Some(24_000),
             ..Default::default()
         });
         assert!(registry
