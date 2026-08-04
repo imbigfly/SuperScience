@@ -10,8 +10,8 @@ use crate::window_capture_escape;
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 use std::collections::{HashMap, HashSet};
-use wasm_bindgen::JsValue;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PublicationEvidenceSource {
@@ -21,9 +21,7 @@ pub(super) struct PublicationEvidenceSource {
 }
 
 fn error_text(error: JsValue) -> String {
-    error
-        .as_string()
-        .unwrap_or_else(|| format!("{error:?}"))
+    error.as_string().unwrap_or_else(|| format!("{error:?}"))
 }
 
 fn install_workspace(
@@ -106,38 +104,32 @@ fn invoke_workspace(
     busy.set(true);
     error.set(None);
     spawn_local(async move {
-        let succeeded = match invoke_checked(
-            command,
-            to_value(&args).unwrap_or(JsValue::UNDEFINED),
-        )
-        .await
-        {
-            Ok(value) => match install_workspace(
-                value,
-                workspace,
-                publication_id,
-                revision_id,
-                selected_item_id,
-            ) {
-                Ok(()) => true,
-                Err(message) => {
-                    error.set(Some(message));
+        let succeeded =
+            match invoke_checked(command, to_value(&args).unwrap_or(JsValue::UNDEFINED)).await {
+                Ok(value) => match install_workspace(
+                    value,
+                    workspace,
+                    publication_id,
+                    revision_id,
+                    selected_item_id,
+                ) {
+                    Ok(()) => true,
+                    Err(message) => {
+                        error.set(Some(message));
+                        false
+                    }
+                },
+                Err(value) => {
+                    error.set(Some(error_text(value)));
                     false
                 }
-            },
-            Err(value) => {
-                error.set(Some(error_text(value)));
-                false
-            }
-        };
+            };
         busy.set(false);
         after(succeeded);
     });
 }
 
-pub(super) fn manuscript_rows(
-    items: &[PublicationItemInfo],
-) -> Vec<(PublicationItemInfo, usize)> {
+pub(super) fn manuscript_rows(items: &[PublicationItemInfo]) -> Vec<(PublicationItemInfo, usize)> {
     fn visit(
         parent: Option<&str>,
         children: &HashMap<Option<String>, Vec<PublicationItemInfo>>,
@@ -280,7 +272,9 @@ fn precise_evidence_source(
                 .parse::<usize>()
                 .map_err(|_| "Span end must be a byte offset.")?;
             if frame_id.trim().is_empty() || seq < 1 || start >= end {
-                return Err("MessageSpan requires a frame, message sequence, and valid range.".into());
+                return Err(
+                    "MessageSpan requires a frame, message sequence, and valid range.".into(),
+                );
             }
             Ok(PublicationEvidenceSource {
                 kind: "message_span",
@@ -1697,27 +1691,14 @@ mod tests {
             rows.iter()
                 .map(|(item, depth)| (item.id.as_str(), *depth))
                 .collect::<Vec<_>>(),
-            [
-                ("root", 0),
-                ("child", 1),
-                ("later", 0),
-                ("orphan", 0),
-            ]
+            [("root", 0), ("child", 1), ("later", 0), ("orphan", 0),]
         );
     }
 
     #[test]
     fn message_span_source_uses_canonical_exact_locator() {
-        let source = precise_evidence_source(
-            "message_span",
-            "frame",
-            "8",
-            "2",
-            "11",
-            "",
-            "",
-        )
-        .unwrap();
+        let source =
+            precise_evidence_source("message_span", "frame", "8", "2", "11", "", "").unwrap();
         assert_eq!(source.kind, "message_span");
         assert_eq!(
             source.id,

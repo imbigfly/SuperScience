@@ -118,22 +118,16 @@ impl DynamicTaskForm {
 
     fn proposal(&self) -> Result<DynamicAgentTaskProposal, String> {
         if self.task_kind == WorkflowTaskKind::RunActivity {
-            let max_candidates = parse_required_u32(
-                &self.run_activity_max_candidates,
-                "candidate budget",
-            )?;
-            let max_wall_seconds = parse_required_u64(
-                &self.run_activity_max_wall_seconds,
-                "wall-time budget",
-            )?;
+            let max_candidates =
+                parse_required_u32(&self.run_activity_max_candidates, "candidate budget")?;
+            let max_wall_seconds =
+                parse_required_u64(&self.run_activity_max_wall_seconds, "wall-time budget")?;
             let max_evaluator_seconds = parse_required_u64(
                 &self.run_activity_max_evaluator_seconds,
                 "evaluator-time budget",
             )?;
-            let max_cost_microunits = parse_required_u64(
-                &self.run_activity_max_cost_microunits,
-                "cost budget",
-            )?;
+            let max_cost_microunits =
+                parse_required_u64(&self.run_activity_max_cost_microunits, "cost budget")?;
             return Ok(DynamicAgentTaskProposal {
                 id: self.id.trim().into(),
                 instruction: self.instruction.trim().into(),
@@ -309,9 +303,10 @@ impl DynamicWorkflowForm {
         {
             return Err("Every task needs an id and instruction.".into());
         }
-        if tasks.iter().any(|task| {
-            task.task_kind == WorkflowTaskKind::Agent && task.capabilities.is_empty()
-        }) {
+        if tasks
+            .iter()
+            .any(|task| task.task_kind == WorkflowTaskKind::Agent && task.capabilities.is_empty())
+        {
             return Err("Every task needs at least one capability.".into());
         }
         Ok(DynamicAgentWorkflowProposal {
@@ -400,15 +395,9 @@ impl DynamicWorkflowForm {
         for task in &mut self.tasks {
             task.depends_on
                 .retain(|dependency| ids.contains(dependency));
-            if !task
-                .depends_on
-                .contains(&task.run_activity_input_task_id)
-            {
-                task.run_activity_input_task_id = task
-                    .depends_on
-                    .first()
-                    .cloned()
-                    .unwrap_or_default();
+            if !task.depends_on.contains(&task.run_activity_input_task_id) {
+                task.run_activity_input_task_id =
+                    task.depends_on.first().cloned().unwrap_or_default();
             }
         }
     }
@@ -451,7 +440,8 @@ impl DynamicWorkflowForm {
         if target.task_kind == WorkflowTaskKind::RunActivity
             && target.run_activity_input_task_id.is_empty()
         {
-            target.run_activity_input_task_id = target.depends_on.last().cloned().unwrap_or_default();
+            target.run_activity_input_task_id =
+                target.depends_on.last().cloned().unwrap_or_default();
         }
         Ok(true)
     }
@@ -473,7 +463,8 @@ impl DynamicWorkflowForm {
             .depends_on
             .retain(|dependency| dependency != &source_id);
         if target.run_activity_input_task_id == source_id {
-            target.run_activity_input_task_id = target.depends_on.first().cloned().unwrap_or_default();
+            target.run_activity_input_task_id =
+                target.depends_on.first().cloned().unwrap_or_default();
         }
         target.depends_on.len() != before
     }
@@ -2928,9 +2919,14 @@ pub(super) fn workflow_studio(
     let generate_portfolio = move |_| {
         let request_text = portfolio_request.get_untracked().trim().to_string();
         let total = portfolio_total.get_untracked().parse::<u32>().unwrap_or(0);
-        let reserve = portfolio_reserve.get_untracked().parse::<u32>().unwrap_or(0);
+        let reserve = portfolio_reserve
+            .get_untracked()
+            .parse::<u32>()
+            .unwrap_or(0);
         if request_text.is_empty() || total == 0 || reserve == 0 {
-            state.error.set(Some("Research request and positive budgets are required.".into()));
+            state.error.set(Some(
+                "Research request and positive budgets are required.".into(),
+            ));
             return;
         }
         portfolio_loading.set(true);
@@ -3473,7 +3469,9 @@ fn retry_workflow(snapshot: AgentWorkflowSnapshot, state: AgentPanelState) {
                     .parse::<u32>()
                     .ok()
                     .filter(|value| *value > 0)
-                    .ok_or_else(|| "Retry token budget must be a positive whole number".to_string())?;
+                    .ok_or_else(|| {
+                        "Retry token budget must be a positive whole number".to_string()
+                    })?;
                 if task.budget.max_tokens != Some(max_tokens) {
                     overrides.insert(
                         task.id.clone(),
@@ -3903,7 +3901,8 @@ impl AgentResultPresentation {
             Value::Null => vec![],
             value => vec![("result".into(), value.clone())],
         };
-        let error = result_string(response.get("error")).or_else(|| result_string(output.get("error")));
+        let error =
+            result_string(response.get("error")).or_else(|| result_string(output.get("error")));
         Self {
             summary,
             diff_summary,
@@ -4689,11 +4688,17 @@ mod tests {
 
         let result = AgentResultPresentation::from_response(&response);
 
-        assert_eq!(result.summary.as_deref(), Some("Completed the opening position."));
+        assert_eq!(
+            result.summary.as_deref(),
+            Some("Completed the opening position.")
+        );
         assert_eq!(result.artifacts.len(), 1);
         assert_eq!(result.evidence[0]["summary"], "persisted evidence");
         assert_eq!(result.tests, [serde_json::json!("Word limit checked")]);
-        assert_eq!(result.details, [("confidence".into(), serde_json::json!("medium"))]);
+        assert_eq!(
+            result.details,
+            [("confidence".into(), serde_json::json!("medium"))]
+        );
         assert!(!result
             .details
             .iter()
