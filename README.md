@@ -193,6 +193,9 @@ display name to an environment variable and are injected only into newly
 launched local Python and bundled MCP processes — never copied to SSH/WSL
 hosts.
 
+**Settings → Storage** lists workspace paths per project. Select a project to
+view that workspace's local footprint separately from shared app data.
+
 | Variable             | Purpose                                                       |
 |----------------------|---------------------------------------------------------------|
 | `WISP_API_KEY`       | Provider API key (CLI). Desktop uses the keyring instead.     |

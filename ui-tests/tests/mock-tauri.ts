@@ -1989,6 +1989,22 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "list_models":
             return mockModels;
+          case "get_storage_usage":
+            return {
+              data_dir: "C:\\mock\\AppData\\wisp-science",
+              projects: [
+                { id: "default", name: project.name, path: project.root, bytes: 96 * 1024 * 1024 },
+                { id: "other", name: "Other project", path: "/mock/other", bytes: 24 * 1024 * 1024 },
+              ],
+              entries: [
+                { key: "database", bytes: 23 * 1024 * 1024 },
+                { key: "python", bytes: 428 * 1024 * 1024 },
+                { key: "plugins", bytes: 5632 * 1024 },
+                { key: "workspace", bytes: 120 * 1024 * 1024 },
+                { key: "other", bytes: 300 * 1024 },
+              ],
+              total_bytes: (23 + 428 + 120) * 1024 * 1024 + 5632 * 1024 + 300 * 1024,
+            };
           case "get_session_model": {
             const sessionId = String(arg("sessionId") ?? "");
             return sessionModels[sessionId] ?? activeHttpModelId();

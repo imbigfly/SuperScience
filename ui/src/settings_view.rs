@@ -808,12 +808,19 @@ pub(super) fn SettingsView(
     // Storage / Usage panes fetch on every open; stale data stays visible
     // while the refresh (a blocking directory scan for storage) runs.
     let storage_usage = create_rw_signal(None::<StorageUsage>);
+    let storage_project = create_rw_signal(String::new());
     let token_usage = create_rw_signal(None::<Vec<SessionTokenUsage>>);
     create_effect(move |_| {
         if show_settings.get() && settings_section.get() == "storage" {
             spawn_local(async move {
                 if let Ok(value) = invoke_checked("get_storage_usage", JsValue::UNDEFINED).await {
                     if let Ok(usage) = serde_wasm_bindgen::from_value::<StorageUsage>(value) {
+                        let selected = storage_project.get_untracked();
+                        if !selected.is_empty()
+                            && !usage.projects.iter().any(|project| project.id == selected)
+                        {
+                            storage_project.set(String::new());
+                        }
                         storage_usage.set(Some(usage));
                     }
                 }
@@ -1532,19 +1539,87 @@ pub(super) fn SettingsView(
                                     </div>
                                 }.into_view(),
                                 Some(usage) => {
-                                    let total = usage.total_bytes.max(1);
+                                    let selected = storage_project.get();
+                                    let selected_project = usage
+                                        .projects
+                                        .iter()
+                                        .find(|project| project.id == selected)
+                                        .cloned();
+                                    let project_only = selected_project.is_some();
+                                    let (path, entries, total_bytes) = match selected_project {
+                                        Some(project) => (
+                                            project.path,
+                                            vec![StorageEntry {
+                                                key: "workspace".into(),
+                                                bytes: project.bytes,
+                                            }],
+                                            project.bytes,
+                                        ),
+                                        None => (
+                                            usage.data_dir.clone(),
+                                            usage.entries.clone(),
+                                            usage.total_bytes,
+                                        ),
+                                    };
+                                    let total = total_bytes.max(1);
+                                    let projects = usage.projects.clone();
+                                    let all_bytes = format_bytes(usage.total_bytes);
                                     let loc = locale.get();
                                     view! {
                                         <div class="span-2 storage-block">
-                                            <code class="storage-path">{usage.data_dir.clone()}</code>
-                                            {(!usage.workspace_dirs.is_empty()).then(|| view! {
+                                            {(!projects.is_empty()).then(|| view! {
+                                                <section class="storage-project-section">
+                                                    <div class="storage-project-heading">
+                                                        <strong>{t(loc, "settings.storage.projects")}</strong>
+                                                        <span>{t(loc, "settings.storage.select_project")}</span>
+                                                    </div>
+                                                    <div class="storage-project-list" data-testid="storage-project-list">
+                                                        <button type="button" class="storage-project-row"
+                                                            class:active=move || storage_project.get().is_empty()
+                                                            aria-pressed=move || storage_project.get().is_empty().to_string()
+                                                            on:click=move |_| storage_project.set(String::new())>
+                                                            <span class="storage-project-main">
+                                                                <span class="storage-project-name">
+                                                                    {t(loc, "settings.storage.all_projects")}
+                                                                </span>
+                                                            </span>
+                                                            <span class="storage-project-bytes">{all_bytes}</span>
+                                                        </button>
+                                                        {projects.into_iter().map(|project| {
+                                                            let id = project.id;
+                                                            let active_id = id.clone();
+                                                            let pressed_id = id.clone();
+                                                            let select_id = id.clone();
+                                                            let path_title = project.path.clone();
+                                                            view! {
+                                                                <button type="button" class="storage-project-row"
+                                                                    class:active=move || storage_project.get() == active_id
+                                                                    data-project-id=id
+                                                                    aria-pressed=move || (storage_project.get() == pressed_id).to_string()
+                                                                    on:click=move |_| storage_project.set(select_id.clone())>
+                                                                    <span class="storage-project-main">
+                                                                        <span class="storage-project-name">{project.name}</span>
+                                                                        <code class="storage-project-path" title=path_title>
+                                                                            {project.path}
+                                                                        </code>
+                                                                    </span>
+                                                                    <span class="storage-project-bytes">
+                                                                        {format_bytes(project.bytes)}
+                                                                    </span>
+                                                                </button>
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                </section>
+                                            })}
+                                            <code class="storage-path">{path}</code>
+                                            {project_only.then(|| view! {
                                                 <span class="settings-field-hint">
-                                                    {tf(loc, "settings.storage.workspace_hint",
-                                                        &[("dirs", &usage.workspace_dirs.join(" · "))])}
+                                                    {t(loc, "settings.storage.project_hint")}
                                                 </span>
                                             })}
                                             <div class="storage-bar">
-                                                {usage.entries.iter().filter(|entry| entry.bytes > 0).map(|entry| {
+                                                {entries.iter().filter(|entry| entry.bytes > 0).map(|entry| {
                                                     let pct = entry.bytes as f64 / total as f64 * 100.0;
                                                     view! {
                                                         <span class=format!("storage-seg storage-seg-{}", entry.key)
@@ -1555,7 +1630,7 @@ pub(super) fn SettingsView(
                                                 }).collect_view()}
                                             </div>
                                             <div class="storage-legend">
-                                                {usage.entries.iter().map(|entry| view! {
+                                                {entries.iter().map(|entry| view! {
                                                     <div class="storage-legend-row">
                                                         <span class=format!("storage-dot storage-seg-{}", entry.key) aria-hidden="true"></span>
                                                         <span class="storage-legend-label">{t(loc, storage_entry_label_key(&entry.key))}</span>
@@ -1565,7 +1640,7 @@ pub(super) fn SettingsView(
                                                 <div class="storage-legend-row storage-legend-total">
                                                     <span class="storage-dot" aria-hidden="true"></span>
                                                     <span class="storage-legend-label">{t(loc, "settings.storage.total")}</span>
-                                                    <span class="storage-legend-bytes">{format_bytes(usage.total_bytes)}</span>
+                                                    <span class="storage-legend-bytes">{format_bytes(total_bytes)}</span>
                                                 </div>
                                             </div>
                                         </div>

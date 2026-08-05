@@ -639,7 +639,8 @@ fn vision_probe_message() -> Message {
 #[cfg(test)]
 mod tests {
     use super::{
-        merged_scimaster_config, sync_scimaster_config_at, validate_max_iter, vision_probe_message,
+        collect_storage_usage, merged_scimaster_config, sync_scimaster_config_at,
+        validate_max_iter, vision_probe_message,
     };
     use std::{
         fs,
@@ -713,6 +714,48 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn storage_usage_keeps_project_workspaces_separate() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "wisp-storage-usage-test-{}-{unique}",
+            std::process::id()
+        ));
+        let app_data = root.join("app");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&app_data).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(app_data.join("wisp.sqlite"), [0u8; 3]).unwrap();
+        fs::write(workspace.join("results.csv"), [0u8; 7]).unwrap();
+
+        let usage = collect_storage_usage(
+            app_data,
+            vec![
+                ("a".into(), "Alpha".into(), workspace.clone()),
+                ("b".into(), "Beta".into(), workspace.clone()),
+            ],
+        );
+
+        assert_eq!(usage["projects"][0]["name"], "Alpha");
+        assert_eq!(usage["projects"][0]["bytes"], 7);
+        assert_eq!(usage["projects"][1]["name"], "Beta");
+        assert_eq!(usage["projects"][1]["bytes"], 7);
+        assert_eq!(
+            usage["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["key"] == "workspace")
+                .unwrap()["bytes"],
+            7
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }
 
 use super::*;
@@ -757,63 +800,83 @@ fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
+fn collect_storage_usage(
+    app_data: PathBuf,
+    projects: Vec<(String, String, PathBuf)>,
+) -> serde_json::Value {
+    let project_dirs = projects
+        .iter()
+        .map(|(_, _, root)| root.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let project_sizes = project_dirs
+        .iter()
+        .map(|root| (root.clone(), dir_size(root)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let (mut database, mut python, mut plugins, mut other) = (0u64, 0u64, 0u64, 0u64);
+    for entry in fs::read_dir(&app_data).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let bytes = if entry.path().is_dir() {
+            dir_size(&entry.path())
+        } else {
+            entry.metadata().map(|meta| meta.len()).unwrap_or(0)
+        };
+        match name.as_str() {
+            name if name.contains(".sqlite") => database += bytes,
+            "python" => python += bytes,
+            "plugins" | "plugin-staging" | "plugin-downloads" => plugins += bytes,
+            _ => other += bytes,
+        }
+    }
+    let workspace = project_dirs
+        .iter()
+        .filter(|root| !root.starts_with(&app_data))
+        .map(|root| project_sizes.get(root).copied().unwrap_or_default())
+        .sum();
+    let entries = [
+        ("database", database),
+        ("python", python),
+        ("plugins", plugins),
+        ("workspace", workspace),
+        ("other", other),
+    ];
+
+    json!({
+        "data_dir": app_data.to_string_lossy(),
+        "projects": projects
+            .into_iter()
+            .map(|(id, name, path)| json!({
+                "id": id,
+                "name": name,
+                "path": path.to_string_lossy(),
+                "bytes": project_sizes.get(&path).copied().unwrap_or_default(),
+            }))
+            .collect::<Vec<_>>(),
+        "entries": entries
+            .iter()
+            .map(|(key, bytes)| json!({ "key": key, "bytes": bytes }))
+            .collect::<Vec<_>>(),
+        "total_bytes": entries.iter().map(|(_, bytes)| bytes).sum::<u64>(),
+    })
+}
+
 #[tauri::command]
 pub(super) async fn get_storage_usage(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let app_data = state.app_data.clone();
-    // Every project workspace, deduped; roots inside app_data would double
-    // count the scan below, so they are skipped.
-    let workspace_dirs: Vec<PathBuf> = state
+    let projects = state
         .store
         .list_projects()
         .await
         .map_err(|error| error.to_string())?
         .into_iter()
-        .map(|(_, _, root, ..)| PathBuf::from(root))
-        .filter(|root| !root.as_os_str().is_empty() && !root.starts_with(&app_data))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
+        .map(|(id, name, root, ..)| (id, name, PathBuf::from(root)))
+        .filter(|(_, _, root)| !root.as_os_str().is_empty())
         .collect();
-    tokio::task::spawn_blocking(move || {
-        let (mut database, mut python, mut plugins, mut other) = (0u64, 0u64, 0u64, 0u64);
-        for entry in fs::read_dir(&app_data).into_iter().flatten().flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let bytes = if entry.path().is_dir() {
-                dir_size(&entry.path())
-            } else {
-                entry.metadata().map(|meta| meta.len()).unwrap_or(0)
-            };
-            match name.as_str() {
-                name if name.contains(".sqlite") => database += bytes,
-                "python" => python += bytes,
-                "plugins" | "plugin-staging" | "plugin-downloads" => plugins += bytes,
-                _ => other += bytes,
-            }
-        }
-        let workspace: u64 = workspace_dirs.iter().map(|dir| dir_size(dir)).sum();
-        let entries = [
-            ("database", database),
-            ("python", python),
-            ("plugins", plugins),
-            ("workspace", workspace),
-            ("other", other),
-        ];
-        Ok(json!({
-            "data_dir": app_data.to_string_lossy(),
-            "workspace_dirs": workspace_dirs
-                .iter()
-                .map(|dir| dir.to_string_lossy())
-                .collect::<Vec<_>>(),
-            "entries": entries
-                .iter()
-                .map(|(key, bytes)| json!({ "key": key, "bytes": bytes }))
-                .collect::<Vec<_>>(),
-            "total_bytes": entries.iter().map(|(_, bytes)| bytes).sum::<u64>(),
-        }))
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    tokio::task::spawn_blocking(move || collect_storage_usage(app_data, projects))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

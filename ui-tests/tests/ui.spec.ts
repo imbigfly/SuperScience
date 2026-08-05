@@ -350,6 +350,31 @@ test("language select shows the saved locale so Chinese can switch to English di
   await expect(page.getByTestId("settings-language")).toHaveValue("en");
 });
 
+test("storage separates project paths and filters usage when a project is clicked", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Storage");
+
+  const projects = page.getByTestId("storage-project-list");
+  const paths = projects.locator(".storage-project-path");
+  await expect(paths).toHaveCount(2);
+  await expect(paths.nth(0)).toHaveText("/mock/root");
+  await expect(paths.nth(1)).toHaveText("/mock/other");
+
+  const other = projects.locator('[data-project-id="other"]');
+  await other.click();
+  await expect(other).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".storage-path")).toHaveText("/mock/other");
+  await expect(page.locator(".storage-legend-row").filter({ hasText: "Workspace files" }))
+    .toContainText("24.0 MB");
+  await expect(page.locator(".storage-legend-row").filter({ hasText: "Python environment" }))
+    .toHaveCount(0);
+
+  await projects.locator(".storage-project-row").first().click();
+  await expect(page.locator(".storage-path")).toHaveText("C:\\mock\\AppData\\wisp-science");
+  await expect(page.locator(".storage-legend-row").filter({ hasText: "Workspace files" }))
+    .toContainText("120.0 MB");
+});
+
 test("problem reports stay local until a reviewed Markdown draft is explicitly opened (#596)", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await enterApp(page);
