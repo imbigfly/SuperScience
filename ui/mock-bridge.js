@@ -383,7 +383,9 @@
           case "get_storage_usage":
             return {
               data_dir: "C:\\mock\\AppData\\wisp-science",
-              workspace_dirs: ["C:\\mock\\wisp-science"],
+              projects: [
+                { id: "default", name: "wisp-science", path: "C:\\mock\\wisp-science", bytes: 96 * 1024 * 1024 },
+              ],
               entries: [
                 { key: "database", bytes: 23 * 1024 * 1024 },
                 { key: "python", bytes: 428 * 1024 * 1024 },

@@ -1158,6 +1158,14 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.storage.workspace") => Some("Workspace files"),
         (Locale::En, "settings.storage.other") => Some("Other"),
         (Locale::En, "settings.storage.total") => Some("Total"),
+        (Locale::En, "settings.storage.projects") => Some("Project workspaces"),
+        (Locale::En, "settings.storage.all_projects") => Some("All projects"),
+        (Locale::En, "settings.storage.select_project") => {
+            Some("Select a project to view its workspace usage.")
+        }
+        (Locale::En, "settings.storage.project_hint") => {
+            Some("Only this project's workspace is shown. Shared database, Python environment and plugins are included under All projects.")
+        }
         (Locale::En, "settings.usage.hint") => {
             Some("Tokens recorded per session — sub-agent turns count toward their session.")
         }
@@ -3012,6 +3020,14 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.storage.workspace") => Some("工作区文件"),
         (Locale::Zh, "settings.storage.other") => Some("其他"),
         (Locale::Zh, "settings.storage.total") => Some("总计"),
+        (Locale::Zh, "settings.storage.projects") => Some("项目工作区"),
+        (Locale::Zh, "settings.storage.all_projects") => Some("全部项目"),
+        (Locale::Zh, "settings.storage.select_project") => {
+            Some("选择项目查看其工作区占用。")
+        }
+        (Locale::Zh, "settings.storage.project_hint") => {
+            Some("仅显示该项目的工作区；共享数据库、Python 环境和插件计入「全部项目」。")
+        }
         (Locale::Zh, "settings.usage.hint") => {
             Some("按会话记录的 token 用量——子代理轮次计入所属会话。")
         }

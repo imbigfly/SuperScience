@@ -1048,10 +1048,18 @@ pub(crate) struct StorageEntry {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct ProjectStorageUsage {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) path: String,
+    pub(crate) bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct StorageUsage {
     pub(crate) data_dir: String,
     #[serde(default)]
-    pub(crate) workspace_dirs: Vec<String>,
+    pub(crate) projects: Vec<ProjectStorageUsage>,
     #[serde(default)]
     pub(crate) entries: Vec<StorageEntry>,
     pub(crate) total_bytes: u64,
