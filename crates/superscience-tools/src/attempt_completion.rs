@@ -31,6 +31,6 @@ impl Tool for AttemptCompletionTool {
             Ok(r) => r,
             Err(e) => return ToolResult::fail(e),
         };
-        ToolResult::ok(result)
+        ToolResult::ok(result).stop_turn()
     }
 }

@@ -4,9 +4,10 @@ use crate::app_support::compose_icon;
 use crate::bindings::invoke_checked;
 use crate::dto::*;
 use crate::i18n::{t, tf, Locale};
-use crate::text::{dom_value, event_target_checked, event_target_value, pretty_json};
+use crate::text::{dom_value, event_target_checked, event_target_value, md_to_html};
 use crate::window_capture_escape;
 use leptos::{ev, *};
+use serde_json::Value;
 use serde_wasm_bindgen::to_value;
 use std::collections::{HashMap, HashSet};
 use wasm_bindgen::{JsCast, JsValue};
@@ -17,7 +18,15 @@ struct DynamicTaskForm {
     id: String,
     instruction: String,
     depends_on: Vec<String>,
+    task_kind: WorkflowTaskKind,
+    run_activity_context_id: String,
+    run_activity_input_task_id: String,
+    run_activity_max_candidates: String,
+    run_activity_max_wall_seconds: String,
+    run_activity_max_evaluator_seconds: String,
+    run_activity_max_cost_microunits: String,
     capabilities: Vec<String>,
+    skill_ids: Vec<String>,
     specialist_id: String,
     output_schema: String,
     isolated: bool,
@@ -35,7 +44,15 @@ impl DynamicTaskForm {
             id,
             instruction: String::new(),
             depends_on: vec![],
+            task_kind: WorkflowTaskKind::Agent,
+            run_activity_context_id: "local".into(),
+            run_activity_input_task_id: String::new(),
+            run_activity_max_candidates: "20".into(),
+            run_activity_max_wall_seconds: "14400".into(),
+            run_activity_max_evaluator_seconds: "120".into(),
+            run_activity_max_cost_microunits: "5000000".into(),
             capabilities: vec!["reasoning".into()],
+            skill_ids: vec![],
             specialist_id: String::new(),
             output_schema: String::new(),
             isolated: false,
@@ -49,12 +66,33 @@ impl DynamicTaskForm {
 
     fn from_proposal(key: u32, task: DynamicAgentTaskProposal) -> Self {
         let budget = task.budget.unwrap_or_default();
+        let activity = task.run_activity.as_ref();
         Self {
             key,
             id: task.id,
             instruction: task.instruction,
             depends_on: task.depends_on,
+            task_kind: task.task_kind,
+            run_activity_context_id: activity
+                .map(|value| value.context_id.clone())
+                .unwrap_or_else(|| "local".into()),
+            run_activity_input_task_id: activity
+                .map(|value| value.input_task_id.clone())
+                .unwrap_or_default(),
+            run_activity_max_candidates: activity
+                .map(|value| value.max_candidates.to_string())
+                .unwrap_or_else(|| "20".into()),
+            run_activity_max_wall_seconds: activity
+                .map(|value| value.max_wall_seconds.to_string())
+                .unwrap_or_else(|| "14400".into()),
+            run_activity_max_evaluator_seconds: activity
+                .map(|value| value.max_evaluator_seconds.to_string())
+                .unwrap_or_else(|| "120".into()),
+            run_activity_max_cost_microunits: activity
+                .map(|value| value.max_cost_microunits.to_string())
+                .unwrap_or_else(|| "5000000".into()),
             capabilities: task.capabilities,
+            skill_ids: task.skill_ids,
             specialist_id: task.specialist_id.unwrap_or_default(),
             output_schema: task
                 .output_schema
@@ -79,6 +117,42 @@ impl DynamicTaskForm {
     }
 
     fn proposal(&self) -> Result<DynamicAgentTaskProposal, String> {
+        if self.task_kind == WorkflowTaskKind::RunActivity {
+            let max_candidates =
+                parse_required_u32(&self.run_activity_max_candidates, "candidate budget")?;
+            let max_wall_seconds =
+                parse_required_u64(&self.run_activity_max_wall_seconds, "wall-time budget")?;
+            let max_evaluator_seconds = parse_required_u64(
+                &self.run_activity_max_evaluator_seconds,
+                "evaluator-time budget",
+            )?;
+            let max_cost_microunits =
+                parse_required_u64(&self.run_activity_max_cost_microunits, "cost budget")?;
+            return Ok(DynamicAgentTaskProposal {
+                id: self.id.trim().into(),
+                instruction: self.instruction.trim().into(),
+                depends_on: self.depends_on.clone(),
+                task_kind: WorkflowTaskKind::RunActivity,
+                run_activity: Some(RunActivityProposal {
+                    activity: "method_search".into(),
+                    context_id: self.run_activity_context_id.trim().into(),
+                    input_task_id: self.run_activity_input_task_id.trim().into(),
+                    spec_output_pointer: "method_search_spec_artifact_version_id".into(),
+                    max_candidates,
+                    max_wall_seconds,
+                    max_evaluator_seconds,
+                    max_cost_microunits,
+                }),
+                capabilities: vec![],
+                skill_ids: vec![],
+                specialist_id: None,
+                output_schema: None,
+                isolated: false,
+                model_id: None,
+                executor: None,
+                budget: None,
+            });
+        }
         let output_schema = if self.output_schema.trim().is_empty() {
             None
         } else {
@@ -87,9 +161,9 @@ impl DynamicTaskForm {
                     .map_err(|error| format!("Task {} output schema: {error}", self.id))?,
             )
         };
-        let max_tokens = parse_optional_u32(&self.max_tokens, "token budget")?;
-        let max_tool_calls = parse_optional_u32(&self.max_tool_calls, "tool-call budget")?;
-        let max_cost_microunits = parse_optional_u64(&self.max_cost_microunits, "cost budget")?;
+        let max_tokens = parse_budget_u32(&self.max_tokens, "token budget")?;
+        let max_tool_calls = parse_budget_u32(&self.max_tool_calls, "tool-call budget")?;
+        let max_cost_microunits = parse_budget_u64(&self.max_cost_microunits, "cost budget")?;
         let budget =
             (max_tokens.is_some() || max_tool_calls.is_some() || max_cost_microunits.is_some())
                 .then_some(AgentBudgetProposal {
@@ -101,7 +175,10 @@ impl DynamicTaskForm {
             id: self.id.trim().into(),
             instruction: self.instruction.trim().into(),
             depends_on: self.depends_on.clone(),
+            task_kind: WorkflowTaskKind::Agent,
+            run_activity: None,
             capabilities: self.capabilities.clone(),
+            skill_ids: self.skill_ids.clone(),
             specialist_id: nonempty(&self.specialist_id),
             output_schema,
             isolated: self.isolated,
@@ -226,7 +303,10 @@ impl DynamicWorkflowForm {
         {
             return Err("Every task needs an id and instruction.".into());
         }
-        if tasks.iter().any(|task| task.capabilities.is_empty()) {
+        if tasks
+            .iter()
+            .any(|task| task.task_kind == WorkflowTaskKind::Agent && task.capabilities.is_empty())
+        {
             return Err("Every task needs at least one capability.".into());
         }
         Ok(DynamicAgentWorkflowProposal {
@@ -243,7 +323,34 @@ impl DynamicWorkflowForm {
             && self.tasks.iter().all(|task| {
                 !task.id.trim().is_empty()
                     && !task.instruction.trim().is_empty()
-                    && !task.capabilities.is_empty()
+                    && match task.task_kind {
+                        WorkflowTaskKind::Agent => !task.capabilities.is_empty(),
+                        WorkflowTaskKind::RunActivity => {
+                            !task.run_activity_context_id.trim().is_empty()
+                                && !task.run_activity_input_task_id.trim().is_empty()
+                                && task.depends_on.contains(&task.run_activity_input_task_id)
+                                && parse_required_u32(
+                                    &task.run_activity_max_candidates,
+                                    "candidate budget",
+                                )
+                                .is_ok()
+                                && parse_required_u64(
+                                    &task.run_activity_max_wall_seconds,
+                                    "wall-time budget",
+                                )
+                                .is_ok()
+                                && parse_required_u64(
+                                    &task.run_activity_max_evaluator_seconds,
+                                    "evaluator-time budget",
+                                )
+                                .is_ok()
+                                && parse_required_u64(
+                                    &task.run_activity_max_cost_microunits,
+                                    "cost budget",
+                                )
+                                .is_ok()
+                        }
+                    }
             })
     }
 
@@ -288,6 +395,10 @@ impl DynamicWorkflowForm {
         for task in &mut self.tasks {
             task.depends_on
                 .retain(|dependency| ids.contains(dependency));
+            if !task.depends_on.contains(&task.run_activity_input_task_id) {
+                task.run_activity_input_task_id =
+                    task.depends_on.first().cloned().unwrap_or_default();
+            }
         }
     }
 
@@ -326,6 +437,12 @@ impl DynamicWorkflowForm {
             return Ok(false);
         }
         target.depends_on.push(source_id);
+        if target.task_kind == WorkflowTaskKind::RunActivity
+            && target.run_activity_input_task_id.is_empty()
+        {
+            target.run_activity_input_task_id =
+                target.depends_on.last().cloned().unwrap_or_default();
+        }
         Ok(true)
     }
 
@@ -345,6 +462,10 @@ impl DynamicWorkflowForm {
         target
             .depends_on
             .retain(|dependency| dependency != &source_id);
+        if target.run_activity_input_task_id == source_id {
+            target.run_activity_input_task_id =
+                target.depends_on.first().cloned().unwrap_or_default();
+        }
         target.depends_on.len() != before
     }
 
@@ -438,12 +559,25 @@ const WORKFLOW_GRAPH_ROW_GAP: i32 = 30;
 const WORKFLOW_GRAPH_PADDING_X: i32 = 28;
 const WORKFLOW_GRAPH_PADDING_TOP: i32 = 58;
 const WORKFLOW_GRAPH_PADDING_BOTTOM: i32 = 28;
+const WORKFLOW_INSPECTOR_WIDTH_DEFAULT: i32 = 360;
+const WORKFLOW_INSPECTOR_WIDTH_MIN: i32 = 280;
+const WORKFLOW_INSPECTOR_WIDTH_MAX: i32 = 640;
+const WORKFLOW_GRAPH_MIN_WIDTH: i32 = 320;
+const WORKFLOW_GRAPH_RESIZER_WIDTH: i32 = 7;
+
+fn clamp_workflow_inspector_width(width: i32, workspace_width: f64) -> i32 {
+    let available =
+        (workspace_width.floor() as i32 - WORKFLOW_GRAPH_MIN_WIDTH - WORKFLOW_GRAPH_RESIZER_WIDTH)
+            .clamp(WORKFLOW_INSPECTOR_WIDTH_MIN, WORKFLOW_INSPECTOR_WIDTH_MAX);
+    width.clamp(WORKFLOW_INSPECTOR_WIDTH_MIN, available)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkflowGraphNode {
     key: u32,
     id: String,
     instruction: String,
+    task_kind: WorkflowTaskKind,
     capability_count: usize,
     specialist_id: String,
     executor_key: String,
@@ -646,6 +780,7 @@ fn workflow_graph_layout(tasks: &[DynamicTaskForm]) -> WorkflowGraphLayout {
             key: task.key,
             id: task.id.clone(),
             instruction: task.instruction.clone(),
+            task_kind: task.task_kind,
             capability_count: task.capabilities.len(),
             specialist_id: task.specialist_id.clone(),
             executor_key: task.executor_key.clone(),
@@ -697,6 +832,7 @@ pub(super) struct AgentPanelState {
     pub(super) dynamic_form: RwSignal<DynamicWorkflowForm>,
     roundtable_form: RwSignal<RoundtableTemplateForm>,
     pub(super) launching: RwSignal<Vec<String>>,
+    retry_budgets: RwSignal<HashMap<(String, String), String>>,
     pub(super) error: RwSignal<Option<String>>,
     pub(super) result: RwSignal<Option<AgentWorkflowResultDetail>>,
 }
@@ -710,6 +846,7 @@ impl AgentPanelState {
             dynamic_form: create_rw_signal(DynamicWorkflowForm::default()),
             roundtable_form: create_rw_signal(RoundtableTemplateForm::default()),
             launching: create_rw_signal(vec![]),
+            retry_budgets: create_rw_signal(HashMap::new()),
             error: create_rw_signal(None),
             result: create_rw_signal(None),
         }
@@ -732,6 +869,28 @@ fn parse_optional_u32(value: &str, label: &str) -> Result<Option<u32>, String> {
         .transpose()
 }
 
+/// Budget fields accept 0 as an explicit "unlimited" (normalized downstream);
+/// empty stays unset, which is also unlimited.
+fn parse_budget_u32(value: &str, label: &str) -> Result<Option<u32>, String> {
+    nonempty(value)
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|_| format!("{label} must be a whole number (0 = unlimited)"))
+        })
+        .transpose()
+}
+
+fn parse_budget_u64(value: &str, label: &str) -> Result<Option<u64>, String> {
+    nonempty(value)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| format!("{label} must be a whole number (0 = unlimited)"))
+        })
+        .transpose()
+}
+
 fn parse_optional_u64(value: &str, label: &str) -> Result<Option<u64>, String> {
     nonempty(value)
         .map(|value| {
@@ -742,6 +901,14 @@ fn parse_optional_u64(value: &str, label: &str) -> Result<Option<u64>, String> {
                 .ok_or_else(|| format!("{label} must be a positive whole number"))
         })
         .transpose()
+}
+
+fn parse_required_u32(value: &str, label: &str) -> Result<u32, String> {
+    parse_optional_u32(value, label)?.ok_or_else(|| format!("{label} is required"))
+}
+
+fn parse_required_u64(value: &str, label: &str) -> Result<u64, String> {
+    parse_optional_u64(value, label)?.ok_or_else(|| format!("{label} is required"))
 }
 
 fn executor_key(executor: &AgentExecutorSelection) -> String {
@@ -881,20 +1048,11 @@ fn group_workflows(
                 .then_with(|| left.workflow.id.cmp(&right.workflow.id))
         });
     }
-    // A taken-over child frame still belongs to the group that spawned it (#442).
     groups.retain(|group| {
         let Some(session_id) = session_id else {
             return false;
         };
         group.frame_id == session_id
-            || group.snapshots.iter().any(|snapshot| {
-                snapshot.dynamic.tasks.iter().any(|task| {
-                    task.result
-                        .as_ref()
-                        .and_then(|result| result.child_frame_id.as_deref())
-                        == Some(session_id)
-                })
-            })
     });
     groups
 }
@@ -904,6 +1062,7 @@ fn status_label(locale: Locale, status: &str) -> String {
         "draft" => "agents.status.draft",
         "approved" => "agents.status.approved",
         "running" => "agents.status.running",
+        "waiting_run" => "agents.status.waiting_run",
         "succeeded" => "agents.status.succeeded",
         "failed" => "agents.status.failed",
         "cancelled" => "agents.status.cancelled",
@@ -947,11 +1106,11 @@ fn update_task(
     });
 }
 
-fn task_value(
+fn task_value<T: Default>(
     form: RwSignal<DynamicWorkflowForm>,
     key: u32,
-    get: impl FnOnce(&DynamicTaskForm) -> String,
-) -> String {
+    get: impl FnOnce(&DynamicTaskForm) -> T,
+) -> T {
     form.with(|form| {
         form.tasks
             .iter()
@@ -1240,6 +1399,26 @@ fn dynamic_task_editor(
 ) -> impl IntoView {
     let key = task.key;
     let remove_key = key;
+    let skill_query = create_rw_signal(String::new());
+    let filtered_skills = create_memo(move |_| {
+        let query = skill_query.get();
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return vec![];
+        }
+        state.options.with(|options| {
+            options
+                .skills
+                .iter()
+                .filter(|skill| {
+                    [&skill.id, &skill.name, &skill.scope]
+                        .into_iter()
+                        .any(|value| value.to_lowercase().contains(&query))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    });
     view! {
         <fieldset class="dynamic-agent-task" data-testid="dynamic-agent-task" data-task-key=key>
             <div class="dynamic-agent-task-head">
@@ -1274,6 +1453,9 @@ fn dynamic_task_editor(
                                             dependency.clone_from(&next);
                                         }
                                     }
+                                    if task.run_activity_input_task_id == previous {
+                                        task.run_activity_input_task_id.clone_from(&next);
+                                    }
                                 }
                             });
                         } />
@@ -1287,8 +1469,64 @@ fn dynamic_task_editor(
                             task.instruction = event_target_value(&event);
                         })></textarea>
                 </label>
+                <label>
+                    <span>{move || t(locale.get(), "agents.task.type")}</span>
+                    <select data-testid="dynamic-task-type"
+                        on:change=move |event| {
+                            let next = dom_value(&event);
+                            update_task(state.dynamic_form, key, |task| {
+                                task.task_kind = if next == "run_activity" {
+                                    if task.run_activity_input_task_id.is_empty() {
+                                        task.run_activity_input_task_id = task
+                                            .depends_on
+                                            .first()
+                                            .cloned()
+                                            .unwrap_or_default();
+                                    }
+                                    task.capabilities.clear();
+                                    task.skill_ids.clear();
+                                    task.specialist_id.clear();
+                                    task.output_schema.clear();
+                                    task.isolated = false;
+                                    task.model_id.clear();
+                                    task.executor_key.clear();
+                                    task.max_tokens.clear();
+                                    task.max_tool_calls.clear();
+                                    task.max_cost_microunits.clear();
+                                    WorkflowTaskKind::RunActivity
+                                } else {
+                                    if task.capabilities.is_empty() {
+                                        task.capabilities.push("reasoning".into());
+                                    }
+                                    WorkflowTaskKind::Agent
+                                };
+                            });
+                        }>
+                        <option value="agent"
+                            prop:selected=move || task_value(
+                                state.dynamic_form,
+                                key,
+                                |task| task.task_kind,
+                            ) == WorkflowTaskKind::Agent>
+                            {move || t(locale.get(), "agents.task.type_agent")}
+                        </option>
+                        <option value="run_activity"
+                            prop:selected=move || task_value(
+                                state.dynamic_form,
+                                key,
+                                |task| task.task_kind,
+                            ) == WorkflowTaskKind::RunActivity>
+                            {move || t(locale.get(), "agents.task.type_run_activity")}
+                        </option>
+                    </select>
+                </label>
             </div>
-            <fieldset class="dynamic-agent-choice-group">
+            <fieldset class="dynamic-agent-choice-group"
+                prop:hidden=move || task_value(
+                    state.dynamic_form,
+                    key,
+                    |task| task.task_kind,
+                ) == WorkflowTaskKind::RunActivity>
                 <legend>{move || t(locale.get(), "agents.task.capabilities")}</legend>
                 <div class="dynamic-agent-checks" data-testid="dynamic-task-capabilities">
                     <For each=move || state.options.get().capabilities
@@ -1322,6 +1560,125 @@ fn dynamic_task_editor(
                             }
                         }
                     />
+                </div>
+            </fieldset>
+            <fieldset class="dynamic-agent-choice-group run-activity-config"
+                data-testid="run-activity-config"
+                prop:hidden=move || task_value(
+                    state.dynamic_form,
+                    key,
+                    |task| task.task_kind,
+                ) != WorkflowTaskKind::RunActivity>
+                <legend>{move || t(locale.get(), "agents.run_activity")}</legend>
+                <p>{move || t(locale.get(), "agents.run_activity_help")}</p>
+                <div class="dynamic-agent-advanced-grid">
+                    <label>
+                        <span>{move || t(locale.get(), "agents.run_activity_kind")}</span>
+                        <input type="text" value="method_search" readonly />
+                    </label>
+                    <label>
+                        <span>{move || t(locale.get(), "agents.run_activity_context")}</span>
+                        <select data-testid="run-activity-context"
+                            on:change=move |event| update_task(
+                                state.dynamic_form,
+                                key,
+                                |task| task.run_activity_context_id = dom_value(&event),
+                            )>
+                            <option value="local" selected>{"Local"}</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>{move || t(locale.get(), "agents.run_activity_input")}</span>
+                        <select data-testid="run-activity-input-task"
+                            on:change=move |event| update_task(
+                                state.dynamic_form,
+                                key,
+                                |task| task.run_activity_input_task_id = dom_value(&event),
+                            )>
+                            <option value=""
+                                prop:selected=move || task_value(
+                                    state.dynamic_form,
+                                    key,
+                                    |task| task.run_activity_input_task_id.clone(),
+                                ).is_empty()>
+                                {move || t(locale.get(), "agents.run_activity_input_choose")}
+                            </option>
+                            {move || task_value(
+                                state.dynamic_form,
+                                key,
+                                |task| task.depends_on.clone(),
+                            ).into_iter().map(|dependency| {
+                                let selected_dependency = dependency.clone();
+                                view! {
+                                    <option value=dependency.clone()
+                                        prop:selected=move || task_value(
+                                            state.dynamic_form,
+                                            key,
+                                            |task| task.run_activity_input_task_id.clone(),
+                                        ) == selected_dependency>
+                                        {dependency}
+                                    </option>
+                                }
+                            }).collect_view()}
+                        </select>
+                    </label>
+                    <label>
+                        <span>{move || t(locale.get(), "agents.run_activity_pointer")}</span>
+                        <input type="text"
+                            value="method_search_spec_artifact_version_id" readonly />
+                    </label>
+                    <label>
+                        <span>{move || t(locale.get(), "agents.run_activity_candidates")}</span>
+                        <input type="number" min="1" max="50" inputmode="numeric"
+                            data-testid="run-activity-max-candidates"
+                            prop:value=move || task_value(
+                                state.dynamic_form,
+                                key,
+                                |task| task.run_activity_max_candidates.clone(),
+                            )
+                            on:input=move |event| update_task(state.dynamic_form, key, |task| {
+                                task.run_activity_max_candidates = event_target_value(&event);
+                            }) />
+                    </label>
+                    <label>
+                        <span>{move || t(locale.get(), "agents.run_activity_wall")}</span>
+                        <input type="number" min="1" max="604800" inputmode="numeric"
+                            data-testid="run-activity-max-wall-seconds"
+                            prop:value=move || task_value(
+                                state.dynamic_form,
+                                key,
+                                |task| task.run_activity_max_wall_seconds.clone(),
+                            )
+                            on:input=move |event| update_task(state.dynamic_form, key, |task| {
+                                task.run_activity_max_wall_seconds = event_target_value(&event);
+                            }) />
+                    </label>
+                    <label>
+                        <span>{move || t(locale.get(), "agents.run_activity_evaluator")}</span>
+                        <input type="number" min="1" max="300" inputmode="numeric"
+                            data-testid="run-activity-max-evaluator-seconds"
+                            prop:value=move || task_value(
+                                state.dynamic_form,
+                                key,
+                                |task| task.run_activity_max_evaluator_seconds.clone(),
+                            )
+                            on:input=move |event| update_task(state.dynamic_form, key, |task| {
+                                task.run_activity_max_evaluator_seconds = event_target_value(&event);
+                            }) />
+                    </label>
+                    <label>
+                        <span>{move || t(locale.get(), "agents.run_activity_cost")}</span>
+                        <input type="number" min="1" inputmode="numeric"
+                            data-testid="run-activity-max-cost"
+                            prop:value=move || task_value(
+                                state.dynamic_form,
+                                key,
+                                |task| task.run_activity_max_cost_microunits.clone(),
+                            )
+                            on:input=move |event| update_task(state.dynamic_form, key, |task| {
+                                task.run_activity_max_cost_microunits = event_target_value(&event);
+                            }) />
+                    </label>
                 </div>
             </fieldset>
             <fieldset class="dynamic-agent-choice-group">
@@ -1376,7 +1733,137 @@ fn dynamic_task_editor(
                     }}
                 </div>
             </fieldset>
-            <label>
+            <fieldset class="dynamic-agent-choice-group dynamic-skill-picker"
+                data-testid="dynamic-task-skills"
+                prop:hidden=move || task_value(
+                    state.dynamic_form,
+                    key,
+                    |task| task.task_kind,
+                ) == WorkflowTaskKind::RunActivity>
+                <legend>
+                    <span>{move || t(locale.get(), "agents.task.skills")}</span>
+                    <small>{move || tf(
+                        locale.get(),
+                        "agents.task.skills_selected",
+                        &[(
+                            "count",
+                            &task_value(
+                                state.dynamic_form,
+                                key,
+                                |task| task.skill_ids.len(),
+                            ).to_string(),
+                        )],
+                    )}</small>
+                </legend>
+                <Show when=move || !task_value(
+                    state.dynamic_form,
+                    key,
+                    |task| task.skill_ids.clone(),
+                ).is_empty()>
+                    <div class="dynamic-skill-selected" data-testid="dynamic-task-selected-skills">
+                        <For each=move || {
+                            let selected = task_value(
+                                state.dynamic_form,
+                                key,
+                                |task| task.skill_ids.clone(),
+                            );
+                            state.options.with(|options| {
+                                options.skills.iter()
+                                    .filter(|skill| selected.contains(&skill.id))
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                            })
+                        }
+                            key=|skill| skill.id.clone()
+                            children=move |skill| {
+                                let remove_id = skill.id.clone();
+                                let remove_name = skill.name.clone();
+                                view! {
+                                    <button type="button" data-testid="dynamic-task-selected-skill"
+                                        aria-label=move || tf(
+                                            locale.get(),
+                                            "agents.task.skill_remove",
+                                            &[("skill", &remove_name)],
+                                        )
+                                        on:click=move |_| update_task(
+                                            state.dynamic_form,
+                                            key,
+                                            |task| task.skill_ids.retain(|id| id != &remove_id),
+                                        )>
+                                        <span>{format!("{} · {}", skill.name, skill.scope)}</span>
+                                        {compose_icon("close")}
+                                    </button>
+                                }
+                            }
+                        />
+                    </div>
+                </Show>
+                <input type="search" class="dynamic-skill-search"
+                    data-testid="dynamic-task-skill-search"
+                    autocomplete="off"
+                    prop:value=move || skill_query.get()
+                    prop:placeholder=move || t(locale.get(), "agents.task.skills_search")
+                    aria-label=move || t(locale.get(), "agents.task.skills_search")
+                    on:input=move |event| skill_query.set(event_target_value(&event)) />
+                <div class="dynamic-skill-results" data-testid="dynamic-task-skill-results">
+                    {move || {
+                        if skill_query.get().trim().is_empty() {
+                            view! {
+                                <span class="dynamic-skill-hint">{tf(
+                                    locale.get(),
+                                    "agents.task.skills_search_hint",
+                                    &[("count", &state.options.get().skills.len().to_string())],
+                                )}</span>
+                            }.into_view()
+                        } else if filtered_skills.get().is_empty() {
+                            view! {
+                                <span class="dynamic-skill-hint">
+                                    {t(locale.get(), "agents.task.skills_no_results")}
+                                </span>
+                            }.into_view()
+                        } else {
+                            ().into_view()
+                        }
+                    }}
+                    <For each=move || filtered_skills.get()
+                        key=|skill| skill.id.clone()
+                        children=move |skill| {
+                            let id = skill.id.clone();
+                            let checked_id = id.clone();
+                            let update_id = id.clone();
+                            view! {
+                                <label class="dynamic-skill-option" title=skill.id
+                                    data-testid="dynamic-task-skill-option">
+                                    <input type="checkbox"
+                                        prop:checked=move || state.dynamic_form.with(|form| {
+                                            form.tasks.iter().find(|task| task.key == key)
+                                                .is_some_and(|task| task.skill_ids.contains(&checked_id))
+                                        })
+                                        on:change=move |event| {
+                                            let checked = event_target_checked(&event);
+                                            update_task(state.dynamic_form, key, |task| {
+                                                if checked {
+                                                    if !task.skill_ids.contains(&update_id) {
+                                                        task.skill_ids.push(update_id.clone());
+                                                    }
+                                                } else {
+                                                    task.skill_ids.retain(|id| id != &update_id);
+                                                }
+                                            });
+                                        } />
+                                    <span>{skill.name}</span>
+                                    <small>{skill.scope}</small>
+                                </label>
+                            }
+                        }
+                    />
+                </div>
+            </fieldset>
+            <label prop:hidden=move || task_value(
+                state.dynamic_form,
+                key,
+                |task| task.task_kind,
+            ) == WorkflowTaskKind::RunActivity>
                 <span>{move || t(locale.get(), "agents.task.specialist")}</span>
                 <select data-testid="dynamic-task-specialist"
                     on:change=move |event| update_task(state.dynamic_form, key, |task| {
@@ -1398,7 +1885,12 @@ fn dynamic_task_editor(
                     />
                 </select>
             </label>
-            <details class="dynamic-agent-advanced">
+            <details class="dynamic-agent-advanced"
+                prop:hidden=move || task_value(
+                    state.dynamic_form,
+                    key,
+                    |task| task.task_kind,
+                ) == WorkflowTaskKind::RunActivity>
                 <summary>{move || t(locale.get(), "agents.task.advanced")}</summary>
                 <div class="dynamic-agent-advanced-grid">
                     <label>
@@ -1538,6 +2030,9 @@ fn workflow_graph_editor(
     let selected_edge = create_rw_signal::<Option<(u32, u32)>>(None);
     let entering_node_keys = create_rw_signal(HashSet::<u32>::new());
     let canvas_ref = create_node_ref::<leptos::html::Div>();
+    let workspace_ref = create_node_ref::<leptos::html::Div>();
+    let inspector_width = create_rw_signal(WORKFLOW_INSPECTOR_WIDTH_DEFAULT);
+    let inspector_resizing = create_rw_signal(false);
     let layout = create_memo(move |_| {
         state
             .dynamic_form
@@ -1550,6 +2045,16 @@ fn workflow_graph_editor(
         connect_origin.set(None);
         connect_dragging.set(false);
     };
+
+    // Studio-level Escape may clear `connect_from_key` without calling
+    // `cancel_connect`; keep the rubber-band state in sync.
+    create_effect(move |_| {
+        if connect_from_key.get().is_none() {
+            connect_cursor.set(None);
+            connect_origin.set(None);
+            connect_dragging.set(false);
+        }
+    });
 
     let mark_node_entering = move |key: u32| {
         entering_node_keys.update(|keys| {
@@ -1653,14 +2158,6 @@ fn workflow_graph_editor(
         });
     });
 
-    window_capture_escape(move || {
-        if connect_from_key.get_untracked().is_some() {
-            cancel_connect();
-            return true;
-        }
-        false
-    });
-
     let create_parallel_node = move || {
         let mut new_key = None;
         state.dynamic_form.update(|form| {
@@ -1698,7 +2195,12 @@ fn workflow_graph_editor(
     };
 
     view! {
-        <div class="workflow-graph-workspace" data-testid="workflow-graph-editor">
+        <div class="workflow-graph-workspace" data-testid="workflow-graph-editor"
+            node_ref=workspace_ref
+            style=move || format!(
+                "--workflow-inspector-width:{}px",
+                inspector_width.get(),
+            )>
             <div class="workflow-graph-main">
                 <div class="workflow-graph-toolbar">
                     <div class="workflow-graph-legend">
@@ -2025,7 +2527,7 @@ fn workflow_graph_editor(
                         />
                         <For each=move || layout.get().nodes
                             key=|node| format!(
-                                "{}|{}|{}|{}|{}|{}|{}|{}",
+                                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
                                 node.key,
                                 node.id,
                                 node.x,
@@ -2034,6 +2536,7 @@ fn workflow_graph_editor(
                                 node.capability_count,
                                 node.specialist_id,
                                 node.executor_key,
+                                node.task_kind == WorkflowTaskKind::RunActivity,
                             )
                             children=move |node| {
                                 let key = node.key;
@@ -2050,7 +2553,11 @@ fn workflow_graph_editor(
                                 let node_id = node.id.clone();
                                 let connect_node_title_id = node.id.clone();
                                 let connect_node_aria_id = node.id.clone();
-                                let role = if node.specialist_id.is_empty() {
+                                let is_run_activity =
+                                    node.task_kind == WorkflowTaskKind::RunActivity;
+                                let role = if is_run_activity {
+                                    t(locale.get_untracked(), "agents.run_activity").into()
+                                } else if node.specialist_id.is_empty() {
                                     t(locale.get_untracked(), "agents.task.temporary").into()
                                 } else {
                                     node.specialist_id.clone()
@@ -2062,6 +2569,7 @@ fn workflow_graph_editor(
                                 };
                                 view! {
                                     <div class="workflow-graph-node"
+                                        class:run-activity=is_run_activity
                                         class:selected=move || {
                                             selected_task_key.get() == Some(key)
                                         }
@@ -2146,12 +2654,14 @@ fn workflow_graph_editor(
                                             </span>
                                             <span class="workflow-graph-node-meta">
                                                 <code>{role}</code>
-                                                <code>{executor}</code>
-                                                <code>{tf(
-                                                    locale.get(),
-                                                    "workflow_studio.graph_capabilities",
-                                                    &[("count", &node.capability_count.to_string())],
-                                                )}</code>
+                                                {(!is_run_activity).then(|| view! {
+                                                    <code>{executor}</code>
+                                                    <code>{tf(
+                                                        locale.get(),
+                                                        "workflow_studio.graph_capabilities",
+                                                        &[("count", &node.capability_count.to_string())],
+                                                    )}</code>
+                                                })}
                                             </span>
                                         </button>
                                         <button type="button" class="workflow-graph-port output"
@@ -2269,6 +2779,65 @@ fn workflow_graph_editor(
                     />
                 </svg>
             </div>
+            <div class="workflow-graph-resizer"
+                class:dragging=move || inspector_resizing.get()
+                data-testid="workflow-graph-resizer"
+                role="separator"
+                tabindex="0"
+                aria-orientation="vertical"
+                aria-valuemin=WORKFLOW_INSPECTOR_WIDTH_MIN
+                aria-valuemax=WORKFLOW_INSPECTOR_WIDTH_MAX
+                aria-valuenow=move || inspector_width.get()
+                aria-label=move || t(locale.get(), "workflow_studio.graph_resize_inspector")
+                title=move || t(locale.get(), "workflow_studio.graph_resize_inspector")
+                on:pointerdown=move |event: web_sys::PointerEvent| {
+                    if event.button() != 0 {
+                        return;
+                    }
+                    event.prevent_default();
+                    if let Some(target) = event.target()
+                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    {
+                        let _ = target.set_pointer_capture(event.pointer_id());
+                    }
+                    inspector_resizing.set(true);
+                }
+                on:pointermove=move |event: web_sys::PointerEvent| {
+                    if !inspector_resizing.get_untracked() {
+                        return;
+                    }
+                    let Some(workspace) = workspace_ref.get() else {
+                        return;
+                    };
+                    event.prevent_default();
+                    let rect = workspace.get_bounding_client_rect();
+                    let width = (rect.right() - event.client_x() as f64).round() as i32;
+                    inspector_width.set(clamp_workflow_inspector_width(width, rect.width()));
+                }
+                on:pointerup=move |event: web_sys::PointerEvent| {
+                    if let Some(target) = event.target()
+                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    {
+                        let _ = target.release_pointer_capture(event.pointer_id());
+                    }
+                    inspector_resizing.set(false);
+                }
+                on:pointercancel=move |_| inspector_resizing.set(false)
+                on:keydown=move |event: web_sys::KeyboardEvent| {
+                    let delta = match event.key().as_str() {
+                        "ArrowLeft" => 24,
+                        "ArrowRight" => -24,
+                        _ => return,
+                    };
+                    event.prevent_default();
+                    let workspace_width = workspace_ref.get()
+                        .map(|workspace| workspace.get_bounding_client_rect().width())
+                        .unwrap_or(960.0);
+                    inspector_width.set(clamp_workflow_inspector_width(
+                        inspector_width.get_untracked() + delta,
+                        workspace_width,
+                    ));
+                }></div>
             <aside class="workflow-graph-inspector" data-testid="workflow-graph-inspector">
                 {move || selected_task_key.get().and_then(|key| {
                     state.dynamic_form.with(|form| {
@@ -2349,6 +2918,77 @@ pub(super) fn workflow_studio(
     let saving = create_rw_signal(false);
     let selected_task_key = create_rw_signal::<Option<u32>>(None);
     let connect_from_key = create_rw_signal::<Option<u32>>(None);
+    let portfolio_open = create_rw_signal(false);
+    let portfolio_request = create_rw_signal(String::new());
+    let portfolio_model_id = create_rw_signal(String::new());
+    let portfolio_draft = create_rw_signal::<Option<SkillPortfolioDraft>>(None);
+    let portfolio_loading = create_rw_signal(false);
+
+    // Escape stack for the studio surface (registered while Workflows is open):
+    // cancel in-progress connect → close portfolio planner → leave studio.
+    window_capture_escape(move || {
+        if connect_from_key.get_untracked().is_some() {
+            connect_from_key.set(None);
+            return true;
+        }
+        if portfolio_open.get_untracked() {
+            portfolio_open.set(false);
+            return true;
+        }
+        on_back.call(());
+        true
+    });
+
+    create_effect(move |_| {
+        let available = state.options.get().models;
+        let profiles = models.get();
+        let current = portfolio_model_id.get_untracked();
+        if available.iter().any(|model| model.id == current) {
+            return;
+        }
+        let selected = profiles
+            .iter()
+            .find(|profile| profile.active && available.iter().any(|model| model.id == profile.id))
+            .map(|profile| profile.id.clone())
+            .or_else(|| available.first().map(|model| model.id.clone()))
+            .unwrap_or_default();
+        portfolio_model_id.set(selected);
+    });
+
+    let generate_portfolio = move |_| {
+        let request_text = portfolio_request.get_untracked().trim().to_string();
+        let model_id = portfolio_model_id.get_untracked();
+        if request_text.is_empty() || model_id.is_empty() {
+            state.error.set(Some(
+                t(
+                    locale.get_untracked(),
+                    "workflow_studio.portfolio.validation",
+                )
+                .into(),
+            ));
+            return;
+        }
+        portfolio_loading.set(true);
+        let args = serde_json::json!({
+            "request": {
+                "request": request_text,
+                "model_id": model_id,
+            }
+        });
+        spawn_local(async move {
+            match invoke_checked("plan_skill_portfolio", to_value(&args).unwrap()).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<SkillPortfolioDraft>(value) {
+                    Ok(draft) => {
+                        portfolio_draft.set(Some(draft));
+                        state.error.set(None);
+                    }
+                    Err(error) => state.error.set(Some(error.to_string())),
+                },
+                Err(error) => state.error.set(Some(js_error_text(error))),
+            }
+            portfolio_loading.set(false);
+        });
+    };
 
     create_effect(move |_| {
         let items = templates.get();
@@ -2503,17 +3143,24 @@ pub(super) fn workflow_studio(
                     <span>{move || t(locale.get(), "workflow_studio.back_to_settings")}</span>
                 </button>
                 <div class="workflow-studio-library-head">
-                    <div>
-                        <strong>{move || t(locale.get(), "workflow_studio.library")}</strong>
-                        <span>{move || tf(
-                            locale.get(),
-                            "workflow_studio.count",
-                            &[("count", &templates.get().len().to_string())],
-                        )}</span>
-                    </div>
+                    <strong>{move || t(locale.get(), "workflow_studio.library")}</strong>
+                    <span>{move || tf(
+                        locale.get(),
+                        "workflow_studio.count",
+                        &[("count", &templates.get().len().to_string())],
+                    )}</span>
+                </div>
+                <div class="workflow-studio-library-actions">
                     <button type="button" class="settings-add-btn" data-testid="workflow-new"
                         on:click=start_new>
                         {move || format!("+ {}", t(locale.get(), "workflow_studio.new"))}
+                    </button>
+                    <button type="button" class="settings-add-btn" data-testid="portfolio-planner-open"
+                        on:click=move |_| {
+                            portfolio_draft.set(None);
+                            portfolio_open.set(true);
+                        }>
+                        {move || t(locale.get(), "workflow_studio.plan_from_skills")}
                     </button>
                 </div>
                 <div class="workflow-studio-template-list">
@@ -2747,6 +3394,164 @@ pub(super) fn workflow_studio(
                     <div class="agents-error" data-testid="workflow-studio-error">{error}</div>
                 })}
             </form>
+            {move || portfolio_open.get().then(|| view! {
+                <div class="overlay" role="presentation" data-testid="portfolio-planner-overlay"
+                    on:click=move |_| portfolio_open.set(false)>
+                    <div class="modal portfolio-planner-modal" role="dialog" aria-modal="true"
+                        aria-labelledby="portfolio-planner-title"
+                        on:click=move |event| event.stop_propagation()>
+                        <div class="ps-head">
+                            <h2 id="portfolio-planner-title">
+                                {move || t(locale.get(), "workflow_studio.portfolio.title")}
+                            </h2>
+                            <button type="button" class="ps-close"
+                                title=move || t(locale.get(), "workflow_studio.portfolio.close")
+                                aria-label=move || t(locale.get(), "workflow_studio.portfolio.close")
+                                on:click=move |_| portfolio_open.set(false)>
+                                {compose_icon("close")}
+                            </button>
+                        </div>
+                        <p class="hint">
+                            {move || t(locale.get(), "workflow_studio.portfolio.subtitle")}
+                        </p>
+                        <label>
+                            {move || t(locale.get(), "workflow_studio.portfolio.request")}
+                            <textarea data-testid="portfolio-request"
+                                prop:value=move || portfolio_request.get()
+                                on:input=move |event| portfolio_request.set(event_target_value(&event))></textarea>
+                        </label>
+                        <div class="portfolio-planner-fields">
+                            <label>
+                                {move || t(locale.get(), "workflow_studio.portfolio.model")}
+                                <select data-testid="portfolio-model"
+                                    disabled=move || portfolio_loading.get()
+                                    on:change=move |event| portfolio_model_id.set(dom_value(&event))>
+                                    <For each=move || state.options.get().models key=|model| model.id.clone()
+                                        children=move |model_option| {
+                                            let id = model_option.id.clone();
+                                            let selected_id = id.clone();
+                                            let label = models.get().into_iter()
+                                                .find(|model| model.id == id)
+                                                .map(|model| model.label)
+                                                .unwrap_or_else(|| id.clone());
+                                            let display_label = if model_option.external {
+                                                tf(
+                                                    locale.get_untracked(),
+                                                    "workflow_studio.portfolio.model_external",
+                                                    &[("model", &label)],
+                                                )
+                                            } else {
+                                                label
+                                            };
+                                            view! {
+                                                <option value=id prop:selected=move || portfolio_model_id.get() == selected_id>
+                                                    {display_label}
+                                                </option>
+                                            }
+                                        }
+                                    />
+                                    {move || state.options.get().models.is_empty().then(|| view! {
+                                        <option value="">
+                                            {move || t(locale.get(), "workflow_studio.portfolio.no_models")}
+                                        </option>
+                                    })}
+                                </select>
+                            </label>
+                        </div>
+                        {move || portfolio_draft.get().map(|draft| {
+                            let plan = draft.plan.clone();
+                            let proposal = draft.proposal.clone();
+                            let loc = locale.get();
+                            let skill_count = plan.tasks.iter()
+                                .flat_map(|task| task.skill_ids.iter())
+                                .collect::<HashSet<_>>()
+                                .len();
+                            let planner_label = plan.planner_model_label.clone();
+                            let summary = tf(
+                                loc,
+                                "workflow_studio.portfolio.summary",
+                                &[
+                                    ("tasks", &plan.tasks.len().to_string()),
+                                    ("skills", &skill_count.to_string()),
+                                    ("model", &planner_label),
+                                ],
+                            );
+                            let description_label = planner_label.clone();
+                            view! {
+                                <section class="portfolio-plan-card" data-testid="portfolio-plan-card">
+                                    <strong>{summary}</strong>
+                                    <p>{plan.rationale}</p>
+                                    <ul>{plan.tasks.into_iter().map(|task| {
+                                        let skills = task.skill_ids.join(", ");
+                                        let dependencies = task.depends_on.join(", ");
+                                        let skill_text = (!skills.is_empty()).then(|| tf(
+                                            loc,
+                                            "workflow_studio.portfolio.task_skills",
+                                            &[("skills", &skills)],
+                                        ));
+                                        let dependency_text = (!dependencies.is_empty()).then(|| tf(
+                                            loc,
+                                            "workflow_studio.portfolio.task_after",
+                                            &[("tasks", &dependencies)],
+                                        ));
+                                        view! {
+                                            <li><code>{task.id}</code>
+                                                {format!(" · {}", task.rationale)}
+                                                {skill_text.map(|text| view! {
+                                                    <span>{format!(" · {text}")}</span>
+                                                })}
+                                                {dependency_text.map(|text| view! {
+                                                    <span>{format!(" · {text}")}</span>
+                                                })}
+                                            </li>
+                                        }
+                                    }).collect_view()}</ul>
+                                    <p>{move || t(locale.get(), "workflow_studio.portfolio.validated_unbudgeted")}</p>
+                                    <div class="row">
+                                        <button type="button" class="primary" data-testid="portfolio-edit-studio"
+                                            on:click=move |_| {
+                                                let form = DynamicWorkflowForm::from_proposal(proposal.clone());
+                                                selected_task_key.set(form.tasks.first().map(|task| task.key));
+                                                state.dynamic_form.set(form);
+                                                template_name.set(
+                                                    t(locale.get_untracked(), "workflow_studio.portfolio.template_name").into(),
+                                                );
+                                                template_description.set(
+                                                    tf(
+                                                        locale.get_untracked(),
+                                                        "workflow_studio.portfolio.template_description",
+                                                        &[("model", &description_label)],
+                                                    ),
+                                                );
+                                                creating.set(true);
+                                                loaded_id.set(None);
+                                                selected_template_id.set(None);
+                                                portfolio_open.set(false);
+                                            }>
+                                            {move || t(locale.get(), "workflow_studio.portfolio.edit_studio")}
+                                        </button>
+                                    </div>
+                                </section>
+                            }
+                        })}
+                        <div class="row">
+                            <button type="button"
+                                on:click=move |_| portfolio_open.set(false)>
+                                {move || t(locale.get(), "settings.cancel")}
+                            </button>
+                            <button type="button" class="primary" data-testid="portfolio-generate"
+                                disabled=move || portfolio_loading.get() || portfolio_model_id.get().is_empty()
+                                on:click=generate_portfolio>
+                                {move || if portfolio_loading.get() {
+                                    t(locale.get(), "workflow_studio.portfolio.planning")
+                                } else {
+                                    t(locale.get(), "workflow_studio.portfolio.generate")
+                                }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            })}
         </div>
     }
 }
@@ -2755,6 +3560,57 @@ fn invoke_workflow_action(command: &'static str, args: serde_json::Value, state:
     spawn_local(async move {
         match invoke_checked(command, to_value(&args).unwrap()).await {
             Ok(_) => refresh_agent_workflows(state),
+            Err(error) => state.error.set(Some(js_error_text(error))),
+        }
+    });
+}
+
+fn retry_workflow(snapshot: AgentWorkflowSnapshot, state: AgentPanelState) {
+    let workflow_id = snapshot.workflow.id;
+    let overrides = match state.retry_budgets.with_untracked(|values| {
+        snapshot
+            .dynamic
+            .tasks
+            .iter()
+            .filter_map(|task| {
+                let raw = values.get(&(workflow_id.clone(), task.id.clone()))?;
+                Some((task, raw))
+            })
+            .try_fold(HashMap::new(), |mut overrides, (task, raw)| {
+                let max_tokens = raw.trim().parse::<u32>().map_err(|_| {
+                    "Retry token budget must be a whole number (0 = unlimited)".to_string()
+                })?;
+                if task.budget.max_tokens != Some(max_tokens) {
+                    overrides.insert(
+                        task.id.clone(),
+                        AgentBudgetProposal {
+                            max_tokens: Some(max_tokens),
+                            max_tool_calls: None,
+                            max_cost_microunits: None,
+                        },
+                    );
+                }
+                Ok(overrides)
+            })
+    }) {
+        Ok(overrides) => overrides,
+        Err(error) => {
+            state.error.set(Some(error));
+            return;
+        }
+    };
+    let args = serde_json::json!({
+        "workflowId": workflow_id.clone(),
+        "budgetOverrides": (!overrides.is_empty()).then_some(overrides),
+    });
+    spawn_local(async move {
+        match invoke_checked("retry_agent_workflow", to_value(&args).unwrap()).await {
+            Ok(_) => {
+                state
+                    .retry_budgets
+                    .update(|values| values.retain(|(id, _), _| id != &workflow_id));
+                refresh_agent_workflows(state);
+            }
             Err(error) => state.error.set(Some(js_error_text(error))),
         }
     });
@@ -2820,7 +3676,7 @@ fn workflow_actions(
     let run_id = workflow_id.clone();
     let run_busy_id = workflow_id.clone();
     let cancel_id = workflow_id.clone();
-    let retry_id = workflow_id.clone();
+    let retry_snapshot = snapshot.clone();
     let delegation_enabled = snapshot.delegation_enabled;
     let automatic = snapshot.approval_policy == AgentApprovalPolicy::AutoSafe;
     view! {
@@ -2867,11 +3723,9 @@ fn workflow_actions(
             {matches!(workflow.status.as_str(), "failed" | "cancelled").then(|| view! {
                 <button type="button" class="agents-primary" data-testid="agent-retry"
                     disabled=!delegation_enabled
-                    on:click=move |_| invoke_workflow_action(
-                        "retry_agent_workflow",
-                        serde_json::json!({ "workflowId": retry_id }),
-                        state,
-                    )>{t(locale.get(), "agents.retry")}</button>
+                    on:click=move |_| retry_workflow(retry_snapshot.clone(), state)>
+                    {t(locale.get(), "agents.retry")}
+                </button>
             })}
         </div>
     }
@@ -2882,8 +3736,6 @@ fn dynamic_workflow_card(
     snapshot: AgentWorkflowSnapshot,
     state: AgentPanelState,
     locale: RwSignal<Locale>,
-    load_session: Callback<String>,
-    refresh_sessions: Callback<()>,
 ) -> View {
     let workflow = snapshot.workflow.clone();
     let workflow_id = workflow.id.clone();
@@ -2944,16 +3796,29 @@ fn dynamic_workflow_card(
             <div class="agent-step-list dynamic" role="list">
                 {dynamic.tasks.into_iter().map(|task| {
                     let result = task.result.clone();
+                    let is_run_activity = task.task_kind == WorkflowTaskKind::RunActivity;
+                    let run_activity = task.run_activity.clone();
                     let task_status = result.as_ref().map(|result| result.status.as_str())
                         .unwrap_or("pending")
                         .to_string();
                     let attempt_class = format!("agent-attempt-status {task_status}");
-                    let specialist = task.specialist_name.clone()
-                        .unwrap_or_else(|| t(locale.get(), "agents.task.temporary").into());
-                    let executor = task.executor.profile_id.as_ref()
-                        .map(|profile| format!("{} · {profile}", task.executor.kind))
-                        .unwrap_or_else(|| task.executor.kind.clone());
-                    let model = task.executor.model_id.clone().unwrap_or_else(|| "—".into());
+                    let specialist = if is_run_activity {
+                        t(locale.get(), "agents.run_activity").into()
+                    } else {
+                        task.specialist_name.clone()
+                            .unwrap_or_else(|| t(locale.get(), "agents.task.temporary").into())
+                    };
+                    let executor = if let Some(activity) = run_activity.as_ref() {
+                        format!("{} · {}", activity.activity, activity.context_id)
+                    } else {
+                        task.executor.profile_id.as_ref()
+                            .map(|profile| format!("{} · {profile}", task.executor.kind))
+                            .unwrap_or_else(|| task.executor.kind.clone())
+                    };
+                    let model = run_activity.as_ref()
+                        .and_then(|activity| activity.model_profile_id.clone())
+                        .or_else(|| task.executor.model_id.clone())
+                        .unwrap_or_else(|| "—".into());
                     let summary = result.as_ref().and_then(|result| result.summary.clone());
                     let result_error = result.as_ref().and_then(|result| result.error.clone());
                     let usage = result.as_ref().map(|result| format!(
@@ -2965,8 +3830,14 @@ fn dynamic_workflow_card(
                     let duration = result.as_ref().and_then(|result| result.duration_secs)
                         .map(|seconds| format!("{seconds}s"));
                     let full_result = result.as_ref().is_some_and(|result| result.full_result_available);
-                    let child_frame = result.as_ref().and_then(|result| result.child_frame_id.clone());
+                    let linked_run_id = result.as_ref().and_then(|result| result.run_id.clone());
                     let task_approval_reasons = task.approval_reasons.clone();
+                    let task_budget = task.budget.clone();
+                    let retry_budget_key = (workflow_id.clone(), task.id.clone());
+                    let retry_budget_value = task_budget.max_tokens
+                        .map(|value| value.to_string())
+                        .unwrap_or_default();
+                    let show_retry_budget = !is_run_activity && task_status == "failed";
                     let result_workflow_id = workflow_id.clone();
                     let result_step_id = task.stored_step_id.clone();
                     view! {
@@ -2979,6 +3850,34 @@ fn dynamic_workflow_card(
                                 <span class=attempt_class>{status_label(locale.get(), &task_status)}</span>
                             </div>
                             <p class="agent-task-instruction">{task.instruction}</p>
+                            {(!is_run_activity).then(|| view! {
+                                <div class="agent-step-limits">{format!(
+                                "{} tokens · {} tools",
+                                task_budget.max_tokens.map_or_else(|| "—".into(), |value| value.to_string()),
+                                task_budget.max_tool_calls.map_or_else(|| "—".into(), |value| value.to_string()),
+                                )}</div>
+                            })}
+                            {show_retry_budget.then(|| {
+                                let key = retry_budget_key.clone();
+                                view! {
+                                    <label class="agent-retry-budget">
+                                        <span>{t(locale.get(), "agents.retry.max_tokens")}</span>
+                                        <input type="number" min="1" step="1"
+                                            data-testid="agent-retry-max-tokens"
+                                            prop:value=retry_budget_value
+                                            on:input=move |event| state.retry_budgets.update(|values| {
+                                                values.insert(key.clone(), event_target_value(&event));
+                                            }) />
+                                    </label>
+                                }
+                            })}
+                            {run_activity.map(|activity| view! {
+                                <div class="agent-chip-row" data-testid="agent-run-activity">
+                                    <span class="agent-chip capability">{activity.activity}</span>
+                                    <span class="agent-chip dependency">{activity.context_id}</span>
+                                    <span class="agent-chip muted">{format!("{} candidates", activity.max_candidates)}</span>
+                                </div>
+                            })}
                             <div class="agent-chip-row" aria-label=t(locale.get(), "agents.task.dependencies")>
                                 <span class="agent-chip-label">{t(locale.get(), "agents.task.dependencies")}</span>
                                 {if task.depends_on.is_empty() {
@@ -2995,6 +3894,16 @@ fn dynamic_workflow_card(
                                     <span class="agent-chip capability">{capability}</span>
                                 }).collect_view()}
                             </div>
+                            {(!task.skill_bindings.is_empty()).then(|| view! {
+                                <div class="agent-chip-row" aria-label="Skills">
+                                    <span class="agent-chip-label">{"Skills"}</span>
+                                    {task.skill_bindings.into_iter().map(|binding| view! {
+                                        <span class="agent-chip skill" title=format!("{} · {}", binding.path, binding.skill_md_sha256)>
+                                            {format!("{} · {}", binding.name, binding.scope)}
+                                        </span>
+                                    }).collect_view()}
+                                </div>
+                            })}
                             <div class="agent-resolved-authority">
                                 <div><span>{t(locale.get(), "agents.task.workspace")}</span><strong>{task.workspace_policy}</strong></div>
                                 <div><span>{t(locale.get(), "agents.task.merge")}</span><strong>{merge_policy_label(locale.get(), &task.merge_policy)}</strong></div>
@@ -3024,18 +3933,16 @@ fn dynamic_workflow_card(
                             {result_error.map(|error| view! { <div class="agents-error">{error}</div> })}
                             {usage.map(|usage| view! { <div class="agent-usage">{usage}</div> })}
                             <div class="agent-result-actions">
+                                {linked_run_id.map(|run_id| view! {
+                                    <span class="agent-chip dependency" data-run-id=run_id.clone()>
+                                        {format!("{} · {}", t(locale.get(), "agents.run_id"), run_id)}
+                                    </span>
+                                })}
                                 {full_result.then(|| view! {
                                     <button type="button" class="agents-secondary" data-testid="agent-inspect-result"
                                         on:click=move |_| open_workflow_result(
                                             result_workflow_id.clone(), result_step_id.clone(), state,
                                         )>{t(locale.get(), "agents.inspect_result")}</button>
-                                })}
-                                {child_frame.map(|frame_id| view! {
-                                    <button type="button" class="agents-secondary agent-takeover"
-                                        on:click=move |_| {
-                                            load_session.call(frame_id.clone());
-                                            refresh_sessions.call(());
-                                        }>{t(locale.get(), "agents.takeover")}</button>
                                 })}
                             </div>
                         </section>
@@ -3044,6 +3951,225 @@ fn dynamic_workflow_card(
             </div>
         </article>
     }.into_view()
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct AgentResultPresentation {
+    summary: Option<String>,
+    diff_summary: Option<String>,
+    files_changed: Vec<Value>,
+    artifacts: Vec<Value>,
+    evidence: Vec<Value>,
+    tests: Vec<Value>,
+    risks: Vec<Value>,
+    details: Vec<(String, Value)>,
+    error: Option<String>,
+}
+
+impl AgentResultPresentation {
+    fn from_response(response: &Value) -> Self {
+        let is_envelope = response.get("output").is_some();
+        let output = response.get("output").unwrap_or(response);
+        let summary = result_string(output.get("summary"));
+        let diff_summary = result_string(output.get("diff_summary"));
+        let files_changed = result_items(output.get("files_changed"));
+        let mut artifacts = result_items(output.get("artifacts"));
+        if is_envelope {
+            merge_result_artifacts(&mut artifacts, result_items(response.get("artifacts")));
+        }
+        let persisted_evidence = is_envelope
+            .then(|| result_items(response.get("evidence")))
+            .unwrap_or_default();
+        let evidence = if persisted_evidence.is_empty() {
+            result_items(output.get("evidence"))
+        } else {
+            persisted_evidence
+        };
+        let tests = result_items(output.get("tests"));
+        let risks = result_items(output.get("risks"));
+        let details = match output {
+            Value::Object(fields) => fields
+                .iter()
+                .filter(|(key, _)| {
+                    !matches!(
+                        key.as_str(),
+                        "task_id"
+                            | "summary"
+                            | "diff_summary"
+                            | "files_changed"
+                            | "artifacts"
+                            | "evidence"
+                            | "tests"
+                            | "risks"
+                            | "error"
+                    )
+                })
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            Value::Null => vec![],
+            value => vec![("result".into(), value.clone())],
+        };
+        let error =
+            result_string(response.get("error")).or_else(|| result_string(output.get("error")));
+        Self {
+            summary,
+            diff_summary,
+            files_changed,
+            artifacts,
+            evidence,
+            tests,
+            risks,
+            details,
+            error,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.summary.is_none()
+            && self.diff_summary.is_none()
+            && self.files_changed.is_empty()
+            && self.artifacts.is_empty()
+            && self.evidence.is_empty()
+            && self.tests.is_empty()
+            && self.risks.is_empty()
+            && self.details.is_empty()
+            && self.error.is_none()
+    }
+}
+
+fn result_string(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).and_then(nonempty)
+}
+
+fn result_items(value: Option<&Value>) -> Vec<Value> {
+    match value {
+        Some(Value::Array(values)) => values.clone(),
+        Some(Value::Null) | None => vec![],
+        Some(value) => vec![value.clone()],
+    }
+}
+
+fn merge_result_artifacts(artifacts: &mut Vec<Value>, persisted: Vec<Value>) {
+    let mut identities = artifacts
+        .iter()
+        .filter_map(result_artifact_identity)
+        .collect::<HashSet<_>>();
+    for artifact in persisted {
+        let Some(identity) = result_artifact_identity(&artifact) else {
+            artifacts.push(artifact);
+            continue;
+        };
+        if identities.insert(identity) {
+            artifacts.push(artifact);
+        }
+    }
+}
+
+fn result_artifact_identity(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    ["name", "path", "id"]
+        .into_iter()
+        .find_map(|key| object.get(key).and_then(Value::as_str).and_then(nonempty))
+}
+
+fn result_field_label(key: &str) -> String {
+    key.replace('_', " ").replace('-', " ")
+}
+
+fn result_value_view(value: Value) -> View {
+    match value {
+        Value::Null => view! { <span class="agent-result-empty-value">{"—"}</span> }.into_view(),
+        Value::Bool(value) => view! { <span>{value.to_string()}</span> }.into_view(),
+        Value::Number(value) => view! { <span>{value.to_string()}</span> }.into_view(),
+        Value::String(value) => view! {
+            <div class="agent-result-markdown md" inner_html=md_to_html(&value)></div>
+        }
+        .into_view(),
+        Value::Array(values) => view! {
+            <ul class="agent-result-value-list">
+                {values.into_iter().map(|value| view! {
+                    <li>{result_value_view(value)}</li>
+                }).collect_view()}
+            </ul>
+        }
+        .into_view(),
+        Value::Object(fields) => view! {
+            <dl class="agent-result-fields">
+                {fields.into_iter().map(|(key, value)| view! {
+                    <div>
+                        <dt>{result_field_label(&key)}</dt>
+                        <dd>{result_value_view(value)}</dd>
+                    </div>
+                }).collect_view()}
+            </dl>
+        }
+        .into_view(),
+    }
+}
+
+fn result_artifact_view(value: Value, locale: Locale) -> View {
+    let Value::Object(mut fields) = value else {
+        return result_value_view(value);
+    };
+    let name = fields
+        .remove("name")
+        .and_then(|value| value.as_str().map(str::to_string));
+    let kind = fields
+        .remove("kind")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .and_then(|value| nonempty(&value));
+    let path = fields
+        .remove("path")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .and_then(|value| nonempty(&value));
+    fields.remove("id");
+    let content = fields
+        .remove("content")
+        .or_else(|| fields.remove("summary"));
+    let title = name
+        .and_then(|value| nonempty(&value))
+        .or_else(|| path.clone())
+        .unwrap_or_else(|| t(locale, "agents.result.output").into());
+    let details = (!fields.is_empty()).then_some(Value::Object(fields));
+    view! {
+        <article class="agent-result-artifact">
+            <div class="agent-result-item-head">
+                <strong>{title}</strong>
+                {kind.map(|kind| view! { <span>{kind}</span> })}
+            </div>
+            {path.map(|path| view! { <code class="agent-result-reference">{path}</code> })}
+            {content.map(result_value_view)}
+            {details.map(result_value_view)}
+        </article>
+    }
+    .into_view()
+}
+
+fn result_evidence_view(value: Value) -> View {
+    let Value::Object(mut fields) = value else {
+        return result_value_view(value);
+    };
+    let kind = fields
+        .remove("kind")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .and_then(|value| nonempty(&value));
+    let reference = fields
+        .remove("reference")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .and_then(|value| nonempty(&value));
+    let summary = fields
+        .remove("summary")
+        .or_else(|| fields.remove("evidence"));
+    let details = (!fields.is_empty()).then_some(Value::Object(fields));
+    view! {
+        <article class="agent-result-evidence">
+            {kind.map(|kind| view! { <span class="agent-result-kind">{result_field_label(&kind)}</span> })}
+            {summary.map(result_value_view)}
+            {reference.map(|reference| view! { <code class="agent-result-reference">{reference}</code> })}
+            {details.map(result_value_view)}
+        </article>
+    }
+    .into_view()
 }
 
 fn workflow_result_dialog(state: AgentPanelState, locale: RwSignal<Locale>) -> View {
@@ -3056,18 +4182,23 @@ fn workflow_result_dialog(state: AgentPanelState, locale: RwSignal<Locale>) -> V
     });
     view! {
         {move || state.result.get().map(|result| {
+            let current_locale = locale.get();
+            let step = result.step_id.rsplit(':').next().unwrap_or(&result.step_id);
+            let attempt = result.attempt.to_string();
             let title = format!(
-                "{} · {} · #{}",
-                result.step_id,
-                status_label(locale.get(), &result.status),
-                result.attempt,
+                "{} · {} · {}",
+                step,
+                status_label(current_locale, &result.status),
+                tf(current_locale, "agents.result.attempt", &[("number", &attempt)]),
             );
-            let response = serde_json::to_string_pretty(&result.response)
-                .unwrap_or_else(|_| pretty_json(&result.response.to_string()));
+            let presentation = AgentResultPresentation::from_response(&result.response);
+            let empty = presentation.is_empty();
+            let has_changes = presentation.diff_summary.is_some()
+                || !presentation.files_changed.is_empty();
             view! {
                 <div class="overlay agent-result-overlay" role="presentation"
                     on:click=move |_| state.result.set(None)>
-                    <div class="modal agent-result-modal" role="dialog" aria-modal="true"
+                    <div class="modal artifact-modal agent-result-modal" role="dialog" aria-modal="true"
                         aria-labelledby="agent-result-title"
                         tabindex="-1"
                         on:click=|event| event.stop_propagation()>
@@ -3076,12 +4207,93 @@ fn workflow_result_dialog(state: AgentPanelState, locale: RwSignal<Locale>) -> V
                                 <h2 id="agent-result-title">{t(locale.get(), "agents.result.title")}</h2>
                                 <span>{title}</span>
                             </div>
-                            <button type="button" class="agents-secondary"
+                            <button type="button" class="ps-close"
                                 id="agent-result-close"
+                                title=t(locale.get(), "agents.result.close")
                                 aria-label=t(locale.get(), "agents.result.close")
-                                on:click=move |_| state.result.set(None)>{"×"}</button>
+                                on:click=move |_| state.result.set(None)>
+                                {compose_icon("close")}
+                            </button>
                         </div>
-                        <pre data-testid="agent-result-json">{response}</pre>
+                        <div class="agent-result-body" data-testid="agent-result-content">
+                            {presentation.error.map(|error| view! {
+                                <div class="agents-error agent-result-error" role="alert">{error}</div>
+                            })}
+                            {presentation.summary.map(|summary| view! {
+                                <section class="agent-result-section agent-result-summary"
+                                    data-testid="agent-result-summary">
+                                    <h3>{t(locale.get(), "agents.result.summary")}</h3>
+                                    {result_value_view(Value::String(summary))}
+                                </section>
+                            })}
+                            {has_changes.then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-changes">
+                                    <h3>{t(locale.get(), "agents.result.changes")}</h3>
+                                    {presentation.diff_summary.map(|summary| result_value_view(Value::String(summary)))}
+                                    {(!presentation.files_changed.is_empty()).then(|| view! {
+                                        <ul class="agent-result-files">
+                                            {presentation.files_changed.into_iter().map(|file| view! {
+                                                <li>{result_value_view(file)}</li>
+                                            }).collect_view()}
+                                        </ul>
+                                    })}
+                                </section>
+                            })}
+                            {(!presentation.artifacts.is_empty()).then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-artifacts">
+                                    <h3>{t(locale.get(), "agents.result.artifacts")}</h3>
+                                    <div class="agent-result-card-list">
+                                        {presentation.artifacts.into_iter().map(|artifact| {
+                                            result_artifact_view(artifact, locale.get())
+                                        }).collect_view()}
+                                    </div>
+                                </section>
+                            })}
+                            {(!presentation.evidence.is_empty()).then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-evidence">
+                                    <h3>{t(locale.get(), "agents.result.evidence")}</h3>
+                                    <div class="agent-result-card-list">
+                                        {presentation.evidence.into_iter().map(result_evidence_view).collect_view()}
+                                    </div>
+                                </section>
+                            })}
+                            {(!presentation.tests.is_empty()).then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-tests">
+                                    <h3>{t(locale.get(), "agents.result.tests")}</h3>
+                                    <ul class="agent-result-value-list">
+                                        {presentation.tests.into_iter().map(|test| view! {
+                                            <li>{result_value_view(test)}</li>
+                                        }).collect_view()}
+                                    </ul>
+                                </section>
+                            })}
+                            {(!presentation.risks.is_empty()).then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-risks">
+                                    <h3>{t(locale.get(), "agents.result.risks")}</h3>
+                                    <ul class="agent-result-value-list agent-result-risk-list">
+                                        {presentation.risks.into_iter().map(|risk| view! {
+                                            <li>{result_value_view(risk)}</li>
+                                        }).collect_view()}
+                                    </ul>
+                                </section>
+                            })}
+                            {(!presentation.details.is_empty()).then(|| view! {
+                                <section class="agent-result-section" data-testid="agent-result-details">
+                                    <h3>{t(locale.get(), "agents.result.details")}</h3>
+                                    <dl class="agent-result-fields">
+                                        {presentation.details.into_iter().map(|(key, value)| view! {
+                                            <div>
+                                                <dt>{result_field_label(&key)}</dt>
+                                                <dd>{result_value_view(value)}</dd>
+                                            </div>
+                                        }).collect_view()}
+                                    </dl>
+                                </section>
+                            })}
+                            {empty.then(|| view! {
+                                <div class="agent-result-empty">{t(locale.get(), "agents.result.empty")}</div>
+                            })}
+                        </div>
                     </div>
                 </div>
             }
@@ -3095,8 +4307,6 @@ pub(super) fn agent_workflows_panel(
     sessions: RwSignal<Vec<SessionInfo>>,
     delegation_enabled: RwSignal<bool>,
     locale: RwSignal<Locale>,
-    load_session: Callback<String>,
-    refresh_sessions: Callback<()>,
     open_workflows: Callback<()>,
 ) -> impl IntoView {
     view! {
@@ -3148,8 +4358,6 @@ pub(super) fn agent_workflows_panel(
                                             snapshot,
                                             state,
                                             locale,
-                                            load_session,
-                                            refresh_sessions,
                                         )).collect_view()}
                                     </div>
                                 </section>
@@ -3166,6 +4374,13 @@ pub(super) fn agent_workflows_panel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inspector_width_keeps_both_panes_usable() {
+        assert_eq!(clamp_workflow_inspector_width(120, 1200.0), 280);
+        assert_eq!(clamp_workflow_inspector_width(900, 1200.0), 640);
+        assert_eq!(clamp_workflow_inspector_width(500, 727.0), 400);
+    }
 
     #[test]
     fn arbitrary_tasks_round_trip() {
@@ -3197,6 +4412,71 @@ mod tests {
             .tasks
             .iter()
             .all(|task| task.specialist_id.is_none()));
+    }
+
+    #[test]
+    fn run_activity_round_trips_without_agent_only_fields() {
+        let proposal = DynamicAgentWorkflowProposal {
+            goal: "Develop a method".into(),
+            context: String::new(),
+            approval_policy: AgentApprovalPolicy::ReviewAll,
+            tasks: vec![
+                DynamicAgentTaskProposal {
+                    id: "prepare".into(),
+                    instruction: "Freeze the evaluator".into(),
+                    depends_on: vec![],
+                    task_kind: WorkflowTaskKind::Agent,
+                    run_activity: None,
+                    capabilities: vec!["code_run".into()],
+                    skill_ids: vec![],
+                    specialist_id: None,
+                    output_schema: Some(serde_json::json!({
+                        "type": "object",
+                        "required": ["method_search_spec_artifact_version_id"],
+                        "properties": {
+                            "method_search_spec_artifact_version_id": { "type": "string" }
+                        }
+                    })),
+                    isolated: false,
+                    model_id: None,
+                    executor: None,
+                    budget: None,
+                },
+                DynamicAgentTaskProposal {
+                    id: "search".into(),
+                    instruction: "Run the method search".into(),
+                    depends_on: vec!["prepare".into()],
+                    task_kind: WorkflowTaskKind::RunActivity,
+                    run_activity: Some(RunActivityProposal {
+                        activity: "method_search".into(),
+                        context_id: "local".into(),
+                        input_task_id: "prepare".into(),
+                        spec_output_pointer: "method_search_spec_artifact_version_id".into(),
+                        max_candidates: 20,
+                        max_wall_seconds: 14_400,
+                        max_evaluator_seconds: 120,
+                        max_cost_microunits: 5_000_000,
+                    }),
+                    capabilities: vec![],
+                    skill_ids: vec![],
+                    specialist_id: None,
+                    output_schema: None,
+                    isolated: false,
+                    model_id: None,
+                    executor: None,
+                    budget: None,
+                },
+            ],
+        };
+        let round_tripped = DynamicWorkflowForm::from_proposal(proposal.clone())
+            .proposal()
+            .unwrap();
+        assert_eq!(round_tripped, proposal);
+        let activity = &round_tripped.tasks[1];
+        assert!(activity.capabilities.is_empty());
+        assert!(activity.skill_ids.is_empty());
+        assert!(activity.budget.is_none());
+        assert!(activity.output_schema.is_none());
     }
 
     #[test]
@@ -3342,6 +4622,9 @@ mod tests {
             proposal.tasks[4].depends_on,
             ["seat_1_review", "seat_2_review"]
         );
+        // Budgets are an advanced override: the template leaves them unset,
+        // which resolves to unlimited at planning time.
+        assert!(proposal.tasks.iter().all(|task| task.budget.is_none()));
 
         for task in [&proposal.tasks[0], &proposal.tasks[2]] {
             assert_eq!(task.specialist_id.as_deref(), Some("reader"));
@@ -3408,7 +4691,7 @@ mod tests {
     }
 
     #[test]
-    fn taken_over_child_frame_keeps_its_root_group() {
+    fn workflow_groups_stay_scoped_to_the_parent_conversation() {
         let snapshot: AgentWorkflowSnapshot = serde_json::from_value(serde_json::json!({
             "workflow": {
                 "id": "wf-1",
@@ -3477,9 +4760,58 @@ mod tests {
 
         let parent = group_workflows(vec![snapshot.clone()], &[], Some("parent-frame"));
         assert_eq!(parent.len(), 1);
-        let taken_over = group_workflows(vec![snapshot.clone()], &[], Some("agent-child"));
-        assert_eq!(taken_over.len(), 1);
+        assert!(group_workflows(vec![snapshot.clone()], &[], Some("agent-child")).is_empty());
         assert!(group_workflows(vec![snapshot], &[], Some("unrelated")).is_empty());
+    }
+
+    #[test]
+    fn result_presentation_extracts_readable_content_from_the_runtime_envelope() {
+        let response = serde_json::json!({
+            "request_id": "request-1",
+            "status": "succeeded",
+            "output": {
+                "task_id": "seat_1_opening",
+                "summary": "Completed the opening position.",
+                "files_changed": ["results/opening.md"],
+                "diff_summary": "Created the report.",
+                "artifacts": [{
+                    "name": "opening.md",
+                    "kind": "markdown",
+                    "content": "# Opening position"
+                }],
+                "evidence": ["declared evidence"],
+                "tests": ["Word limit checked"],
+                "risks": ["Evidence remains uncertain"],
+                "confidence": "medium"
+            },
+            "artifacts": [{
+                "id": "declared:opening.md",
+                "name": "opening.md",
+                "kind": "markdown",
+                "path": null
+            }],
+            "evidence": [{"kind": "agent", "summary": "persisted evidence"}],
+            "child_frame_id": "internal-child-frame",
+            "error": null
+        });
+
+        let result = AgentResultPresentation::from_response(&response);
+
+        assert_eq!(
+            result.summary.as_deref(),
+            Some("Completed the opening position.")
+        );
+        assert_eq!(result.artifacts.len(), 1);
+        assert_eq!(result.evidence[0]["summary"], "persisted evidence");
+        assert_eq!(result.tests, [serde_json::json!("Word limit checked")]);
+        assert_eq!(
+            result.details,
+            [("confidence".into(), serde_json::json!("medium"))]
+        );
+        assert!(!result
+            .details
+            .iter()
+            .any(|(key, _)| key == "task_id" || key == "child_frame_id"));
     }
 
     #[test]
@@ -3497,5 +4829,14 @@ mod tests {
         assert!(parse_optional_u32("0", "token budget").is_err());
         assert!(parse_optional_u64("0", "cost budget").is_err());
         assert_eq!(parse_optional_u32("42", "token budget").unwrap(), Some(42));
+    }
+
+    #[test]
+    fn task_budget_fields_accept_zero_as_unlimited() {
+        assert_eq!(parse_budget_u32("0", "token budget").unwrap(), Some(0));
+        assert_eq!(parse_budget_u64("0", "cost budget").unwrap(), Some(0));
+        assert_eq!(parse_budget_u32("", "token budget").unwrap(), None);
+        assert_eq!(parse_budget_u32("42", "token budget").unwrap(), Some(42));
+        assert!(parse_budget_u32("nope", "token budget").is_err());
     }
 }

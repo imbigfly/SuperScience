@@ -1,4 +1,4 @@
-//! Built-in agent tools for SuperScience, Windows-first.
+//! Built-in agent tools for Wisp, Windows-first.
 //!
 //! Tools implement [`tool::Tool`] and run against a [`env::ToolEnv`] the host
 //! supplies. [`Registry`] bundles the built-ins, exposes their JSON schemas to
@@ -20,11 +20,44 @@ pub mod shell;
 pub mod tool;
 pub mod write;
 
-pub use env::{Approval, ConfirmDecision, ImageData, ToolEnv, ToolEvent, ToolResult};
+pub use env::{
+    Approval, ConfirmDecision, ImageData, ToolControl, ToolEnv, ToolEvent, ToolResourceLease,
+    ToolResult,
+};
 pub use tool::Tool;
 
 use serde_json::Value;
+use std::collections::HashSet;
 use superscience_llm::ToolSchema;
+
+/// Where a schema in the model request comes from. This is intentionally a
+/// request-time view rather than tool metadata: deferred MCP tools collapse
+/// into the two dynamic search/dispatch schemas below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSchemaOrigin {
+    BuiltIn,
+    Dynamic,
+    Subagent,
+}
+
+const BUILT_IN_SCHEMA_NAMES: &[&str] = &[
+    "read",
+    "write",
+    "edit",
+    "search",
+    "grep",
+    "shell",
+    "view_image",
+    "update_plan",
+    "attempt_completion",
+    "list_skill_catalog",
+    "search_skills",
+    "use_skill",
+    "search_memory",
+    "append_memory",
+];
+
+const SUBAGENT_SCHEMA_NAMES: &[&str] = &["explore", "delegate_tasks", "get_delegated_result"];
 
 const SEARCH_MCP_TOOLS: &str = "search_mcp_tools";
 const USE_MCP_TOOL: &str = "use_mcp_tool";
@@ -122,21 +155,50 @@ impl Registry {
     }
 
     pub fn schemas(&self) -> Vec<ToolSchema> {
-        let mut schemas: Vec<_> = self
-            .tools
-            .iter()
-            .filter(|tool| !tool.defer_schema())
-            .map(|tool| tool.schema())
-            .collect();
+        self.schemas_with_origins().0
+    }
+
+    /// Return the exact schema list sent to the provider plus one aligned
+    /// origin per schema, so context accounting can explain the fixed payload
+    /// without rebuilding or guessing at it in the UI.
+    pub fn schemas_with_origins(&self) -> (Vec<ToolSchema>, Vec<ToolSchemaOrigin>) {
+        let mut schemas = Vec::new();
+        let mut origins = Vec::new();
+        for tool in self.tools.iter().filter(|tool| !tool.defer_schema()) {
+            schemas.push(tool.schema());
+            origins.push(if SUBAGENT_SCHEMA_NAMES.contains(&tool.name()) {
+                ToolSchemaOrigin::Subagent
+            } else if BUILT_IN_SCHEMA_NAMES.contains(&tool.name()) {
+                ToolSchemaOrigin::BuiltIn
+            } else {
+                ToolSchemaOrigin::Dynamic
+            });
+        }
         if self.tools.iter().any(|tool| tool.defer_schema()) {
             schemas.push(search_mcp_tools_schema());
+            origins.push(ToolSchemaOrigin::Dynamic);
             schemas.push(use_mcp_tool_schema());
+            origins.push(ToolSchemaOrigin::Dynamic);
         }
-        schemas
+        (schemas, origins)
     }
 
     pub fn names(&self) -> Vec<&str> {
         self.tools.iter().map(|t| t.name()).collect()
+    }
+
+    /// Every name the approval gate may see: registered tool targets plus
+    /// virtual schemas such as the deferred MCP search/dispatch gateway.
+    pub fn approval_names(&self) -> HashSet<String> {
+        self.tools
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .chain(
+                self.schemas()
+                    .into_iter()
+                    .map(|schema| schema.function.name),
+            )
+            .collect()
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
@@ -217,7 +279,8 @@ impl Registry {
                 .await
         {
             env.emit(ToolEvent::Result { ok: false }).await;
-            return ToolResult::fail(format!("tool '{SEARCH_MCP_TOOLS}' was denied by the user"));
+            return ToolResult::fail(format!("tool '{SEARCH_MCP_TOOLS}' was denied by the user"))
+                .stop_batch();
         }
         let result = self.search_mcp_tools(args);
         env.emit(ToolEvent::Result { ok: result.success }).await;
@@ -346,8 +409,15 @@ async fn run_registered_tool(tool: &dyn Tool, args: &Value, env: &dyn ToolEnv) -
     .await;
     if approval == env::Approval::Ask && !env.confirm(&format!("Run tool '{name}'?")).await {
         env.emit(ToolEvent::Result { ok: false }).await;
-        return ToolResult::fail(format!("tool '{name}' was denied by the user"));
+        return ToolResult::fail(format!("tool '{name}' was denied by the user")).stop_batch();
     }
+    let _resource_lease = match env.acquire_tool_resources(name, args).await {
+        Ok(lease) => lease,
+        Err(error) => {
+            env.emit(ToolEvent::Result { ok: false }).await;
+            return ToolResult::fail(error).stop_batch();
+        }
+    };
     tool.before(args, env).await;
     let result = tool.run(args, env).await;
     env.emit(ToolEvent::Result { ok: result.success }).await;
@@ -443,7 +513,7 @@ mod approval_tests {
     use crate::env::{Approval, ToolEnv, ToolEvent};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     /// A tool that flips a flag when it actually runs, so we can assert whether
     /// the approval gate let it through.
@@ -556,6 +626,60 @@ mod approval_tests {
         events: Mutex<Vec<ToolEvent>>,
     }
 
+    struct LeaseEnv {
+        root: PathBuf,
+        held: Arc<AtomicBool>,
+        released: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolEnv for LeaseEnv {
+        fn project_root(&self) -> &Path {
+            &self.root
+        }
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+        async fn acquire_tool_resources(
+            &self,
+            _tool: &str,
+            _args: &Value,
+        ) -> Result<Option<ToolResourceLease>, String> {
+            self.held.store(true, Ordering::SeqCst);
+            let held = self.held.clone();
+            let released = self.released.clone();
+            Ok(Some(ToolResourceLease::new(move || {
+                held.store(false, Ordering::SeqCst);
+                released.store(true, Ordering::SeqCst);
+            })))
+        }
+        async fn emit(&self, _event: ToolEvent) {}
+    }
+
+    struct LeaseAwareTool {
+        held: Arc<AtomicBool>,
+        before_ran: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for LeaseAwareTool {
+        fn name(&self) -> &str {
+            "lease_aware"
+        }
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(self.name(), "test", serde_json::json!({}))
+        }
+        async fn before(&self, _args: &Value, _env: &dyn ToolEnv) {
+            assert!(self.held.load(Ordering::SeqCst));
+            self.before_ran.store(true, Ordering::SeqCst);
+        }
+        async fn run(&self, _args: &Value, _env: &dyn ToolEnv) -> ToolResult {
+            assert!(self.before_ran.load(Ordering::SeqCst));
+            assert!(self.held.load(Ordering::SeqCst));
+            ToolResult::ok("ran while leased")
+        }
+    }
+
     #[async_trait::async_trait]
     impl ToolEnv for EventEnv {
         fn project_root(&self) -> &Path {
@@ -600,6 +724,7 @@ mod approval_tests {
             .run("third_party", &serde_json::json!({}), &env)
             .await;
         assert!(!result.success);
+        assert_eq!(result.control, ToolControl::StopBatch);
         assert!(!RAN.load(Ordering::SeqCst));
     }
 
@@ -641,15 +766,42 @@ mod approval_tests {
         // Deny: never runs, fails.
         let (ran, res) = run_with(Approval::Deny, true).await;
         assert!(!ran && !res.success, "deny must block the tool");
+        assert_eq!(res.control, ToolControl::Continue);
         // Ask + confirm no: never runs, fails.
         let (ran, res) = run_with(Approval::Ask, false).await;
         assert!(!ran && !res.success, "ask+deny must block the tool");
+        assert_eq!(res.control, ToolControl::StopBatch);
         // Ask + confirm yes: runs.
         let (ran, res) = run_with(Approval::Ask, true).await;
         assert!(ran && res.success, "ask+approve must run the tool");
         // Allow: runs without asking.
         let (ran, res) = run_with(Approval::Allow, false).await;
         assert!(ran && res.success, "allow must run the tool");
+    }
+
+    #[tokio::test]
+    async fn resource_lease_covers_before_and_run_then_releases() {
+        let held = Arc::new(AtomicBool::new(false));
+        let released = Arc::new(AtomicBool::new(false));
+        let before_ran = Arc::new(AtomicBool::new(false));
+        let mut registry = Registry { tools: vec![] };
+        registry.add(Box::new(LeaseAwareTool {
+            held: held.clone(),
+            before_ran,
+        }));
+        let env = LeaseEnv {
+            root: PathBuf::from("."),
+            held: held.clone(),
+            released: released.clone(),
+        };
+
+        let result = registry
+            .run("lease_aware", &serde_json::json!({}), &env)
+            .await;
+
+        assert!(result.success, "{}", result.content);
+        assert!(!held.load(Ordering::SeqCst));
+        assert!(released.load(Ordering::SeqCst));
     }
 
     struct PlanEnv {
@@ -672,7 +824,7 @@ mod approval_tests {
 
     #[tokio::test]
     async fn plan_mode_blocks_writers_and_lets_readers_through() {
-        let dir = std::env::temp_dir().join("superscience-plan-mode-gate");
+        let dir = std::env::temp_dir().join("wisp-plan-mode-gate");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("note.txt"), "hello").unwrap();
         let reg = Registry::builtins();
@@ -771,14 +923,39 @@ mod approval_tests {
         reg.add(Box::new(SpyTool(&SPY_FOR_SCHEMA_TEST)));
         reg.add(Box::new(DeferredTool));
 
-        let names: Vec<_> = reg
-            .schemas()
+        let (schemas, origins) = reg.schemas_with_origins();
+        let names: Vec<_> = schemas
             .into_iter()
             .map(|schema| schema.function.name)
             .collect();
 
         assert_eq!(names, ["spy", SEARCH_MCP_TOOLS, USE_MCP_TOOL]);
+        assert_eq!(origins, vec![ToolSchemaOrigin::Dynamic; 3]);
         assert!(!names.contains(&"pubmed_search_articles".to_string()));
+    }
+
+    #[test]
+    fn built_in_schemas_are_marked_for_context_accounting() {
+        let (_, origins) = Registry::builtins().schemas_with_origins();
+        assert!(!origins.is_empty());
+        assert!(origins
+            .iter()
+            .all(|origin| *origin == ToolSchemaOrigin::BuiltIn));
+    }
+
+    #[test]
+    fn deferred_gateway_and_target_names_share_one_approval_set() {
+        let mut registry = Registry { tools: vec![] };
+        registry.add(Box::new(DeferredTool));
+
+        assert_eq!(
+            registry.approval_names(),
+            HashSet::from([
+                "pubmed_search_articles".to_string(),
+                SEARCH_MCP_TOOLS.to_string(),
+                USE_MCP_TOOL.to_string(),
+            ])
+        );
     }
 
     static SPY_FOR_SCHEMA_TEST: AtomicBool = AtomicBool::new(false);

@@ -2,8 +2,8 @@
 
 use crate::{
     AgentDelegationLineage, AgentDelegationRequest, AgentDelegationResponse, AgentDelegator,
-    CapabilityRegistry, DelegationHostPolicy, DelegationPlan, DelegationStatus,
-    ValidatedAgentDelegationRequest,
+    CapabilityRegistry, DelegationHostPolicy, DelegationPlan, DelegationStatus, RunActivitySpec,
+    ValidatedAgentDelegationRequest, WorkflowTaskKind,
 };
 use async_trait::async_trait;
 use futures_util::{stream::FuturesUnordered, StreamExt};
@@ -38,9 +38,34 @@ pub struct DelegationExecutionResult {
     pub steps: Vec<DelegationStepExecution>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunActivityRequest {
+    pub request_id: String,
+    pub workflow_id: String,
+    pub step_id: String,
+    pub activity: RunActivitySpec,
+    pub input: Value,
+}
+
+#[async_trait]
+pub trait WorkflowRunActivityDriver: Send + Sync {
+    async fn execute(
+        &self,
+        request: WorkflowRunActivityRequest,
+    ) -> anyhow::Result<AgentDelegationResponse>;
+
+    async fn cancel(&self, request_id: &str) -> anyhow::Result<bool>;
+}
+
 #[async_trait]
 pub trait DelegationExecutionObserver: Send + Sync {
     async fn workflow_started(&self, _plan: &DelegationPlan) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Resume a persisted running Workflow after every supplied prior step has
+    /// already reached a durable terminal state.
+    async fn workflow_resumed(&self, _plan: &DelegationPlan) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -96,6 +121,7 @@ pub struct DelegationExecutor {
     observer: Arc<dyn DelegationExecutionObserver>,
     dynamic_policy: Option<(CapabilityRegistry, DelegationHostPolicy)>,
     lineage: Option<AgentDelegationLineage>,
+    run_activity_driver: Option<Arc<dyn WorkflowRunActivityDriver>>,
 }
 
 impl DelegationExecutor {
@@ -105,6 +131,7 @@ impl DelegationExecutor {
             observer: Arc::new(NoopDelegationObserver),
             dynamic_policy: None,
             lineage: None,
+            run_activity_driver: None,
         }
     }
 
@@ -127,12 +154,25 @@ impl DelegationExecutor {
         self
     }
 
+    pub fn with_run_activity_driver(mut self, driver: Arc<dyn WorkflowRunActivityDriver>) -> Self {
+        self.run_activity_driver = Some(driver);
+        self
+    }
+
     fn validate_plan(&self, plan: &DelegationPlan) -> anyhow::Result<()> {
         let (registry, host) = self
             .dynamic_policy
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("dynamic delegation policy is not configured"))?;
         registry.validate_resolved_plan(plan, host)?;
+        if plan
+            .steps
+            .iter()
+            .any(|step| step.task_kind == WorkflowTaskKind::RunActivity)
+            && self.run_activity_driver.is_none()
+        {
+            anyhow::bail!("Workflow Run activity driver is not configured");
+        }
         Ok(())
     }
 
@@ -148,8 +188,69 @@ impl DelegationExecutor {
     }
 
     pub async fn execute(&self, plan: DelegationPlan) -> anyhow::Result<DelegationExecutionResult> {
+        self.execute_inner(plan, HashMap::new(), false).await
+    }
+
+    pub async fn execute_with_completed_steps(
+        &self,
+        plan: DelegationPlan,
+        completed_steps: Vec<DelegationStepExecution>,
+    ) -> anyhow::Result<DelegationExecutionResult> {
+        let mut completed = HashMap::new();
+        for step in completed_steps {
+            if step.response.status != DelegationStatus::Succeeded
+                || completed
+                    .insert(step.step_id.clone(), step.response)
+                    .is_some()
+            {
+                anyhow::bail!("completed Workflow steps must be unique and successful");
+            }
+        }
+        for response in completed.values() {
+            response.validate()?;
+        }
+        self.execute_inner(plan, completed, false).await
+    }
+
+    pub async fn resume(
+        &self,
+        plan: DelegationPlan,
+        prior_steps: Vec<DelegationStepExecution>,
+    ) -> anyhow::Result<DelegationExecutionResult> {
+        let mut prior = HashMap::new();
+        for step in prior_steps {
+            if !matches!(
+                step.response.status,
+                DelegationStatus::Succeeded
+                    | DelegationStatus::Failed
+                    | DelegationStatus::Cancelled
+                    | DelegationStatus::Blocked
+            ) || prior.insert(step.step_id.clone(), step.response).is_some()
+            {
+                anyhow::bail!("resumed Workflow prior steps must be unique and terminal");
+            }
+        }
+        self.execute_inner(plan, prior, true).await
+    }
+
+    async fn execute_inner(
+        &self,
+        plan: DelegationPlan,
+        mut responses: HashMap<String, AgentDelegationResponse>,
+        resumed: bool,
+    ) -> anyhow::Result<DelegationExecutionResult> {
         self.validate_plan(&plan)?;
-        self.observer.workflow_started(&plan).await?;
+        if responses
+            .keys()
+            .any(|step_id| !plan.steps.iter().any(|step| step.id == *step_id))
+        {
+            anyhow::bail!("resumed Workflow contains an unknown prior step");
+        }
+        if resumed {
+            self.observer.workflow_resumed(&plan).await?;
+        } else {
+            self.observer.workflow_started(&plan).await?;
+        }
 
         let requests = plan
             .steps
@@ -168,22 +269,51 @@ impl DelegationExecutor {
                 )
             })
             .collect::<HashMap<_, _>>();
+        let step_kinds = plan
+            .steps
+            .iter()
+            .map(|step| (step.id.clone(), step.task_kind))
+            .collect::<HashMap<_, _>>();
+        let run_activities = plan
+            .steps
+            .iter()
+            .filter_map(|step| {
+                step.run_activity
+                    .clone()
+                    .map(|activity| (step.id.clone(), activity))
+            })
+            .collect::<HashMap<_, _>>();
         let mut pending = plan
             .steps
             .iter()
+            .filter(|step| !responses.contains_key(&step.id))
             .map(|step| step.id.clone())
             .collect::<Vec<_>>();
-        let mut responses = HashMap::<String, AgentDelegationResponse>::new();
         let mut running = FuturesUnordered::new();
         let mut running_requests = HashMap::<String, String>::new();
+        let mut running_kinds = HashMap::<String, WorkflowTaskKind>::new();
+        let mut running_agents = 0usize;
         let mut running_mutations = HashSet::<String>::new();
         let mut cancellation_applied = false;
 
         while !pending.is_empty() || !running.is_empty() {
             if !cancellation_applied && self.observer.workflow_cancel_requested(&plan).await? {
                 cancellation_applied = true;
-                for request_id in running_requests.values() {
-                    let _ = self.delegator.cancel(request_id).await;
+                for (step_id, request_id) in &running_requests {
+                    match running_kinds
+                        .get(step_id)
+                        .copied()
+                        .unwrap_or(WorkflowTaskKind::Agent)
+                    {
+                        WorkflowTaskKind::Agent => {
+                            let _ = self.delegator.cancel(request_id).await;
+                        }
+                        WorkflowTaskKind::RunActivity => {
+                            if let Some(driver) = &self.run_activity_driver {
+                                let _ = driver.cancel(request_id).await;
+                            }
+                        }
+                    }
                 }
                 for step_id in pending.drain(..) {
                     let request = &requests[&step_id];
@@ -220,14 +350,20 @@ impl DelegationExecutor {
                 }
             }
 
-            while running.len() < plan.max_parallel {
+            loop {
                 let Some(index) = pending.iter().position(|step_id| {
                     let request = &requests[step_id];
+                    let kind = step_kinds
+                        .get(step_id)
+                        .copied()
+                        .unwrap_or(WorkflowTaskKind::Agent);
                     request.spec.dependencies.iter().all(|dependency| {
                         responses
                             .get(dependency)
                             .is_some_and(|response| response.status == DelegationStatus::Succeeded)
-                    }) && (!uses_mutation_lane(request) || running_mutations.is_empty())
+                    }) && (kind == WorkflowTaskKind::RunActivity
+                        || (running_agents < plan.max_parallel
+                            && (!uses_mutation_lane(request) || running_mutations.is_empty())))
                 }) else {
                     break;
                 };
@@ -237,14 +373,36 @@ impl DelegationExecutor {
                     &mut request.input,
                     &request.spec.dependencies,
                     &responses,
+                    &requests,
                 );
-                let request = self.validate_request(request)?;
-                self.observer.step_started(request.as_request()).await?;
-                running_requests.insert(step_id.clone(), request.as_request().request_id.clone());
-                if uses_mutation_lane(request.as_request()) {
-                    running_mutations.insert(step_id.clone());
+                let kind = step_kinds
+                    .get(&step_id)
+                    .copied()
+                    .unwrap_or(WorkflowTaskKind::Agent);
+                self.observer.step_started(&request).await?;
+                running_requests.insert(step_id.clone(), request.request_id.clone());
+                running_kinds.insert(step_id.clone(), kind);
+                match kind {
+                    WorkflowTaskKind::Agent => {
+                        let request = self.validate_request(request)?;
+                        if uses_mutation_lane(request.as_request()) {
+                            running_mutations.insert(step_id.clone());
+                        }
+                        running_agents += 1;
+                        running.push(run_agent_request(self.delegator.clone(), step_id, request));
+                    }
+                    WorkflowTaskKind::RunActivity => {
+                        let activity = run_activities
+                            .get(&step_id)
+                            .cloned()
+                            .ok_or_else(|| anyhow::anyhow!("Run activity metadata is missing"))?;
+                        let driver =
+                            self.run_activity_driver.as_ref().cloned().ok_or_else(|| {
+                                anyhow::anyhow!("Workflow Run activity driver is not configured")
+                            })?;
+                        running.push(run_activity_request(driver, step_id, request, activity));
+                    }
                 }
-                running.push(run_request(self.delegator.clone(), step_id, request));
             }
 
             if running.is_empty() {
@@ -258,8 +416,12 @@ impl DelegationExecutor {
                 value = running.next() => value,
                 _ = tokio::time::sleep(Duration::from_millis(100)), if !cancellation_applied => continue,
             };
-            if let Some((step_id, request, response)) = next {
+            if let Some((step_id, request, response, kind)) = next {
                 running_requests.remove(&step_id);
+                running_kinds.remove(&step_id);
+                if kind == WorkflowTaskKind::Agent {
+                    running_agents = running_agents.saturating_sub(1);
+                }
                 running_mutations.remove(&step_id);
                 self.observer.step_finished(&request, &response).await?;
                 responses.insert(step_id, response);
@@ -311,13 +473,19 @@ fn uses_mutation_lane(request: &AgentDelegationRequest) -> bool {
 
 type DelegationFuture = Pin<
     Box<
-        dyn Future<Output = (String, AgentDelegationRequest, AgentDelegationResponse)>
-            + Send
+        dyn Future<
+                Output = (
+                    String,
+                    AgentDelegationRequest,
+                    AgentDelegationResponse,
+                    WorkflowTaskKind,
+                ),
+            > + Send
             + 'static,
     >,
 >;
 
-fn run_request(
+fn run_agent_request(
     delegator: Arc<dyn AgentDelegator>,
     step_id: String,
     request: ValidatedAgentDelegationRequest,
@@ -375,7 +543,50 @@ fn run_request(
                 error.to_string(),
             ),
         };
-        (step_id, raw_request, response)
+        (step_id, raw_request, response, WorkflowTaskKind::Agent)
+    })
+}
+
+fn run_activity_request(
+    driver: Arc<dyn WorkflowRunActivityDriver>,
+    step_id: String,
+    request: AgentDelegationRequest,
+    activity: RunActivitySpec,
+) -> DelegationFuture {
+    Box::pin(async move {
+        let activity_request = WorkflowRunActivityRequest {
+            request_id: request.request_id.clone(),
+            workflow_id: request.workflow_id.clone(),
+            step_id: request.step_id.clone(),
+            activity,
+            input: request.input.clone(),
+        };
+        let response = match driver.execute(activity_request).await {
+            Ok(response)
+                if matches!(
+                    response.status,
+                    DelegationStatus::Succeeded
+                        | DelegationStatus::Failed
+                        | DelegationStatus::Cancelled
+                ) =>
+            {
+                response
+            }
+            Ok(response) => failed_response(
+                &request.request_id,
+                DelegationStatus::Failed,
+                format!(
+                    "Run activity returned non-terminal status: {:?}",
+                    response.status
+                ),
+            ),
+            Err(error) => failed_response(
+                &request.request_id,
+                DelegationStatus::Failed,
+                error.to_string(),
+            ),
+        };
+        (step_id, request, response, WorkflowTaskKind::RunActivity)
     })
 }
 
@@ -403,6 +614,7 @@ fn attach_dependency_results(
     input: &mut Value,
     dependencies: &[String],
     responses: &HashMap<String, AgentDelegationResponse>,
+    requests: &HashMap<String, AgentDelegationRequest>,
 ) {
     if dependencies.is_empty() {
         return;
@@ -422,6 +634,22 @@ fn attach_dependency_results(
         "dependency_results".into(),
         Value::Object(dependency_results),
     );
+    let dependency_skill_sources = dependencies
+        .iter()
+        .filter_map(|dependency| {
+            requests.get(dependency).map(|request| {
+                (
+                    dependency.clone(),
+                    serde_json::to_value(&request.spec.skill_bindings)
+                        .unwrap_or_else(|_| Value::Array(vec![])),
+                )
+            })
+        })
+        .collect::<Map<_, _>>();
+    input.insert(
+        "dependency_skill_sources".into(),
+        Value::Object(dependency_skill_sources),
+    );
 }
 
 #[cfg(test)]
@@ -433,7 +661,7 @@ mod tests {
         ModelProfilePolicy, PermissionSet, ValidatedAgentDelegationRequest,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::sync::Mutex;
+    use tokio::sync::{Mutex, Notify};
 
     struct RecordingDelegator {
         active: AtomicUsize,
@@ -443,6 +671,14 @@ mod tests {
     }
 
     struct TimeoutDelegator;
+
+    struct RunActivityConcurrencyDelegator {
+        independent_started: Arc<Notify>,
+    }
+
+    struct WaitingRunActivityDriver {
+        independent_started: Arc<Notify>,
+    }
 
     #[derive(Default)]
     struct CancelBeforeStartObserver {
@@ -491,6 +727,76 @@ mod tests {
                 error: None,
                 nested_results: vec![],
             }))
+        }
+
+        async fn cancel(&self, _request_id: &str) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[async_trait]
+    impl AgentDelegator for RunActivityConcurrencyDelegator {
+        async fn delegate_validated(
+            &self,
+            request: ValidatedAgentDelegationRequest,
+        ) -> anyhow::Result<AgentDelegationResponse> {
+            let request = request.as_request();
+            if request.step_id == "independent" {
+                self.independent_started.notify_one();
+            }
+            Ok(AgentDelegationResponse {
+                request_id: request.request_id.clone(),
+                status: DelegationStatus::Succeeded,
+                output: if request.step_id == "prep" {
+                    serde_json::json!({"method_search_spec_artifact_version_id":"spec-v1"})
+                } else {
+                    serde_json::json!({"summary":"done"})
+                },
+                artifact_ids: vec![],
+                artifacts: vec![],
+                evidence: vec![],
+                usage: Default::default(),
+                agent_session_id: None,
+                child_frame_id: None,
+                error: None,
+                nested_results: vec![],
+            })
+        }
+
+        async fn status(
+            &self,
+            _request_id: &str,
+        ) -> anyhow::Result<Option<AgentDelegationResponse>> {
+            Ok(None)
+        }
+
+        async fn cancel(&self, _request_id: &str) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[async_trait]
+    impl WorkflowRunActivityDriver for WaitingRunActivityDriver {
+        async fn execute(
+            &self,
+            request: WorkflowRunActivityRequest,
+        ) -> anyhow::Result<AgentDelegationResponse> {
+            tokio::time::timeout(Duration::from_secs(2), self.independent_started.notified())
+                .await
+                .map_err(|_| anyhow::anyhow!("Agent capacity was not released while Run waited"))?;
+            Ok(AgentDelegationResponse {
+                request_id: request.request_id,
+                status: DelegationStatus::Succeeded,
+                output: serde_json::json!({"run_id":"method-run","run_status":"succeeded"}),
+                artifact_ids: vec![],
+                artifacts: vec![],
+                evidence: vec![],
+                usage: Default::default(),
+                agent_session_id: None,
+                child_frame_id: None,
+                error: None,
+                nested_results: vec![],
+            })
         }
 
         async fn cancel(&self, _request_id: &str) -> anyhow::Result<bool> {
@@ -579,6 +885,7 @@ mod tests {
                     context_summary: String::new(),
                     depends_on: vec![],
                     capabilities: vec!["reasoning".into()],
+                    skill_bindings: vec![],
                     specialist: None,
                     output_schema: None,
                     isolated: false,
@@ -607,6 +914,7 @@ mod tests {
             context_summary: String::new(),
             depends_on,
             capabilities: vec!["reasoning".into()],
+            skill_bindings: vec![],
             specialist: None,
             output_schema: None,
             isolated: false,
@@ -654,6 +962,7 @@ mod tests {
                 context_summary: String::new(),
                 depends_on: vec![],
                 capabilities: vec!["project_write".into()],
+                skill_bindings: vec![],
                 specialist: None,
                 output_schema: None,
                 isolated,
@@ -676,6 +985,93 @@ mod tests {
         (plan, registry, host)
     }
 
+    fn run_activity_plan() -> (DelegationPlan, CapabilityRegistry, DelegationHostPolicy) {
+        let (registry, host) = dynamic_policy();
+        let mut plan = registry
+            .resolve_plan(
+                "prepare, search, and continue independent work",
+                DelegationMode::Manual,
+                1,
+                vec![
+                    DelegatedTaskProposal {
+                        id: "prep".into(),
+                        instruction: "Prepare an audited method-search spec".into(),
+                        context_summary: String::new(),
+                        depends_on: vec![],
+                        capabilities: vec!["reasoning".into()],
+                        skill_bindings: vec![],
+                        specialist: None,
+                        output_schema: Some(serde_json::json!({
+                            "type":"object",
+                            "required":["method_search_spec_artifact_version_id"],
+                            "properties":{"method_search_spec_artifact_version_id":{"type":"string"}}
+                        })),
+                        isolated: false,
+                        model_id: None,
+                        executor: None,
+                        budget: None,
+                        input: serde_json::json!({}),
+                    },
+                    DelegatedTaskProposal {
+                        id: "independent".into(),
+                        instruction: "Continue independent analysis".into(),
+                        context_summary: String::new(),
+                        depends_on: vec!["prep".into()],
+                        capabilities: vec!["reasoning".into()],
+                        skill_bindings: vec![],
+                        specialist: None,
+                        output_schema: None,
+                        isolated: false,
+                        model_id: None,
+                        executor: None,
+                        budget: None,
+                        input: serde_json::json!({}),
+                    },
+                ],
+                &host,
+            )
+            .unwrap()
+            .into_plan();
+        let mut activity = RunActivitySpec {
+            activity: "method_search".into(),
+            context_id: "local".into(),
+            context_revision: "a".repeat(64),
+            input_task_id: "prep".into(),
+            spec_output_pointer: "method_search_spec_artifact_version_id".into(),
+            max_candidates: 20,
+            max_wall_seconds: 3_600,
+            max_evaluator_seconds: 60,
+            max_cost_microunits: 1_000_000,
+            provider_profile_id: None,
+            model_profile_id: Some("local".into()),
+            approval_reasons: vec!["Execute bounded method search".into()],
+            integrity_hash: String::new(),
+        };
+        activity.seal().unwrap();
+        let mut activity_spec = plan.steps[0].spec.clone();
+        activity_spec.agent_id = "activity".into();
+        activity_spec.name = "activity".into();
+        activity_spec.goal = "Run the method search".into();
+        activity_spec.dependencies = vec!["prep".into()];
+        activity_spec.capabilities.clear();
+        activity_spec.skill_bindings.clear();
+        activity_spec.executor = None;
+        activity_spec.request_preferences = None;
+        activity_spec.authorization = None;
+        plan.steps.insert(
+            1,
+            crate::DelegationPlanStep {
+                id: "activity".into(),
+                spec: activity_spec,
+                input: serde_json::json!({}),
+                task_kind: WorkflowTaskKind::RunActivity,
+                run_activity: Some(activity),
+            },
+        );
+        plan.requires_confirmation = true;
+        (plan, registry, host)
+    }
+
     #[tokio::test]
     async fn scheduler_limits_parallelism_and_runs_fan_in_last() {
         let (plan, registry, host) = fan_in_plan();
@@ -695,6 +1091,66 @@ mod tests {
         let calls = delegator.calls.lock().await;
         assert_eq!(calls.last().map(String::as_str), Some("synthesize"));
         assert!(result.steps.last().unwrap().response.output.is_object());
+    }
+
+    #[tokio::test]
+    async fn resume_keeps_succeeded_steps_and_only_runs_the_remaining_dag() {
+        let (plan, registry, host) = fan_in_plan();
+        let delegator = Arc::new(RecordingDelegator {
+            active: AtomicUsize::new(0),
+            max_active: AtomicUsize::new(0),
+            calls: Mutex::new(vec![]),
+            fail: None,
+        });
+        let prior = DelegationStepExecution {
+            step_id: "inspect".into(),
+            response: AgentDelegationResponse {
+                request_id: "persisted-inspect".into(),
+                status: DelegationStatus::Succeeded,
+                output: serde_json::json!({"step":"inspect","persisted":true}),
+                artifact_ids: vec![],
+                artifacts: vec![],
+                evidence: vec![],
+                usage: Default::default(),
+                agent_session_id: None,
+                child_frame_id: None,
+                error: None,
+                nested_results: vec![],
+            },
+        };
+        let result = DelegationExecutor::new(delegator.clone())
+            .with_dynamic_policy(registry, host)
+            .resume(plan, vec![prior])
+            .await
+            .unwrap();
+        assert_eq!(result.status, DelegationExecutionStatus::Succeeded);
+        let calls = delegator.calls.lock().await;
+        assert!(!calls.iter().any(|step| step == "inspect"));
+        assert!(calls.iter().any(|step| step == "research"));
+        assert_eq!(calls.last().map(String::as_str), Some("synthesize"));
+        assert_eq!(result.steps[0].response.request_id, "persisted-inspect");
+    }
+
+    #[tokio::test]
+    async fn waiting_run_activity_does_not_consume_agent_parallelism() {
+        let (plan, registry, host) = run_activity_plan();
+        let independent_started = Arc::new(Notify::new());
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            DelegationExecutor::new(Arc::new(RunActivityConcurrencyDelegator {
+                independent_started: independent_started.clone(),
+            }))
+            .with_dynamic_policy(registry, host)
+            .with_run_activity_driver(Arc::new(WaitingRunActivityDriver {
+                independent_started,
+            }))
+            .execute(plan),
+        )
+        .await
+        .expect("Run activity should release Agent capacity")
+        .unwrap();
+        assert_eq!(result.status, DelegationExecutionStatus::Succeeded);
+        assert_eq!(result.steps.len(), 3);
     }
 
     #[tokio::test]

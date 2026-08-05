@@ -8,6 +8,10 @@ exclusive project gate and is rejected while any conversation, ACP turn,
 approval, review, persistence flush, or structured run is active. New project
 tasks are also rejected until that sync finishes.
 
+The **Sync now** and **Copy device code** actions appear on project cards only
+after the selected sync backend is fully configured in Settings. Relay mode
+requires both a relay URL and token; shared-folder mode requires a folder path.
+
 Each revision contains:
 
 - a complete, filtered project SQLite snapshot;

@@ -3,8 +3,8 @@
 use crate::{
     delegation_runtime,
     dynamic_workflow::{
-        self, AgentApprovalPolicy, DynamicAgentTaskProposal, DynamicAgentWorkflowProposal,
-        MAX_CONTEXT_CHARS, MAX_GOAL_CHARS, MAX_INSTRUCTION_CHARS,
+        self, AgentApprovalPolicy, AgentBudgetProposal, DynamicAgentTaskProposal,
+        DynamicAgentWorkflowProposal, MAX_CONTEXT_CHARS, MAX_GOAL_CHARS, MAX_INSTRUCTION_CHARS,
     },
     run_context::RunManager,
     specialists, ActiveProject,
@@ -42,11 +42,15 @@ struct DelegateTaskInput {
     depends_on: Vec<String>,
     capabilities: Vec<String>,
     #[serde(default)]
+    skill_ids: Vec<String>,
+    #[serde(default)]
     specialist_id: Option<String>,
     #[serde(default)]
     output_schema: Option<Value>,
     #[serde(default)]
     isolated: bool,
+    #[serde(default)]
+    budget: Option<AgentBudgetProposal>,
 }
 
 #[derive(Debug, Clone)]
@@ -291,6 +295,12 @@ fn build_delegate_tasks_schema(
                                 "items": {"type": "string", "enum": capabilities},
                                 "description": capability_help
                             },
+                            "skill_ids": {
+                                "type": "array",
+                                "uniqueItems": true,
+                                "items": {"type": "string"},
+                                "description": "Exact effective and enabled Skill names to load for this node. Use search_skills first; omit for no Skill guidance."
+                            },
                             "specialist_id": {
                                 "type": "string",
                                 "enum": specialist_ids,
@@ -303,6 +313,16 @@ fn build_delegate_tasks_schema(
                             "isolated": {
                                 "type": "boolean",
                                 "description": "Request a temporary Git worktree for this task. Successful changes are conflict-checked and cherry-picked; rejected or failed changes are preserved as patch Artifacts. Use this for independent parallel writers. It is unavailable for non-Git or dirty project checkouts."
+                            },
+                            "budget": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "max_tokens": {"type": "integer", "minimum": 0},
+                                    "max_tool_calls": {"type": "integer", "minimum": 0},
+                                    "max_cost_microunits": {"type": "integer", "minimum": 0}
+                                },
+                                "description": "Optional per-task limits for advanced tuning. Tasks run unlimited by default; omit a dimension or set it to 0 to leave it unlimited. Positive values are validated against capability and host ceilings."
                             }
                         },
                         "required": ["id", "instruction", "capabilities"]
@@ -450,9 +470,17 @@ impl Tool for DelegateTasksTool {
 
     async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
         match self.run_batch(args, env).await {
-            Ok(value) => ToolResult::ok(serde_json::to_string(&value).unwrap_or_else(|_| {
-                r#"{"status":"failed","error":"result serialization failed"}"#.into()
-            })),
+            Ok(value) => {
+                let denied = value.get("status").and_then(Value::as_str) == Some("denied");
+                let result = ToolResult::ok(serde_json::to_string(&value).unwrap_or_else(|_| {
+                    r#"{"status":"failed","error":"result serialization failed"}"#.into()
+                }));
+                if denied {
+                    result.stop_batch()
+                } else {
+                    result
+                }
+            }
             Err(error) => ToolResult::fail(format!("delegate_tasks error: {error}")),
         }
     }
@@ -499,13 +527,16 @@ impl DelegateTasksTool {
                     id: task.id,
                     instruction: task.instruction,
                     depends_on: task.depends_on,
+                    task_kind: superscience_core::WorkflowTaskKind::Agent,
+                    run_activity: None,
                     capabilities: task.capabilities,
+                    skill_ids: task.skill_ids,
                     specialist_id: task.specialist_id,
                     output_schema: task.output_schema,
                     isolated: task.isolated,
                     model_id: None,
                     executor: None,
-                    budget: None,
+                    budget: task.budget,
                 })
                 .collect(),
         };
@@ -862,7 +893,7 @@ pub(crate) fn compact_execution_result(
                 .output
                 .get("data")
                 .unwrap_or(&response.output);
-            json!({
+            let mut entry = json!({
                 "id": id,
                 "status": response.status,
                 "summary": summary,
@@ -881,14 +912,25 @@ pub(crate) fn compact_execution_result(
                     "workflow_id": execution.workflow_id,
                     "task_id": id,
                 }
-            })
+            });
+            if superscience_core::is_degraded_delivery(&response.output) {
+                entry["delivery"] = response.output["delivery"].clone();
+            }
+            entry
         })
         .collect::<Vec<_>>();
+    let resumable = execution.status != superscience_core::DelegationExecutionStatus::Succeeded;
+    let message = if resumable {
+        "This persisted workflow is resumable. Do not create a replacement delegate_tasks plan automatically: report the failure and workflow_id. Retry from the Agents activity card reruns only unsuccessful tasks, and its failed-task token budget can be adjusted there."
+    } else {
+        "Synthesize these ordered delegated results into the final answer. Independent failures are partial evidence; do not hide them."
+    };
     json!({
         "workflow_id": execution.workflow_id,
         "status": execution.status,
+        "resumable": resumable,
         "results": results,
-        "message": "Synthesize these ordered delegated results into the final answer. Independent failures are partial evidence; do not hide them."
+        "message": message
     })
 }
 
@@ -1532,6 +1574,7 @@ mod tests {
         let parameters = schema.function.parameters.to_string();
         assert!(parameters.contains("paper-expert"));
         assert!(parameters.contains("Finds primary literature"));
+        assert!(parameters.contains("max_tokens"));
         assert!(!parameters.contains("PRIVATE SPECIALIST RUBRIC"));
         assert!(!parameters.contains("private-model-binding"));
     }
@@ -1548,7 +1591,8 @@ mod tests {
                 {
                     "id": "left",
                     "instruction": "Analyze the left input.",
-                    "capabilities": ["reasoning"]
+                    "capabilities": ["reasoning"],
+                    "budget": {"max_tokens": 16000, "max_tool_calls": 16}
                 },
                 {
                     "id": "right",
@@ -1587,6 +1631,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(delegator.max_active.load(Ordering::SeqCst), 2);
+        let workflow = store.list_agent_workflows("p").await.unwrap().remove(0);
+        let plan: DelegationPlan = serde_json::from_str(&workflow.plan_json).unwrap();
+        assert_eq!(plan.steps[0].spec.budget.max_tokens, Some(16_000));
+        assert_eq!(plan.steps[0].spec.budget.max_tool_calls, Some(16));
         let provider_messages = provider.messages.lock().unwrap();
         assert_eq!(provider_messages.len(), 2);
         let tool_message = provider_messages[1]
@@ -1997,6 +2045,7 @@ mod tests {
         assert_eq!(value["status"], "denied");
         assert_eq!(value["feedback"], "keep this read-only");
         assert!(value["results"].as_array().unwrap().is_empty());
+        assert_eq!(result.control, superscience_tools::ToolControl::StopBatch);
         assert!(delegator.calls().is_empty());
         {
             let prompts = env.prompts.lock().unwrap();
@@ -2078,7 +2127,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_output_schema_is_enforced_and_full_result_can_be_loaded() {
+    async fn task_output_schema_violations_degrade_and_full_result_can_be_loaded() {
         let (store, project, root) = fixture().await;
         enable_delegation(&store).await;
         let delegator = Arc::new(FakeDelegator::new(&[], &["invalid"]));
@@ -2118,8 +2167,13 @@ mod tests {
         let results = value["results"].as_array().unwrap();
         assert_eq!(results[0]["status"], "succeeded");
         assert_eq!(results[0]["data"]["score"], 7);
-        assert_eq!(results[1]["status"], "failed");
-        assert!(results[1]["error"]
+        assert!(results[0].get("delivery").is_none());
+        // A schema violation preserves the completed output as a degraded
+        // delivery instead of discarding it.
+        assert_eq!(results[1]["status"], "succeeded");
+        assert_eq!(results[1]["data"]["score"], "invalid");
+        assert_eq!(results[1]["delivery"]["degraded"], true);
+        assert!(results[1]["delivery"]["reason"]
             .as_str()
             .unwrap()
             .contains("output_contract"));

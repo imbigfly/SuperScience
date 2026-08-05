@@ -50,8 +50,7 @@ async fn process_runner_keeps_only_bounded_output_tails() {
 #[cfg(unix)]
 #[tokio::test]
 async fn process_runner_timeout_cleans_up_inherited_pipes() {
-    let auth_dir =
-        std::env::temp_dir().join(format!("superscience_runner_auth_{}", uuid::Uuid::new_v4()));
+    let auth_dir = std::env::temp_dir().join(format!("wisp_runner_auth_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&auth_dir).unwrap();
     let passfile = auth_dir.join("pass");
     let askpass = auth_dir.join("askpass.sh");
@@ -66,11 +65,11 @@ async fn process_runner_timeout_cleans_up_inherited_pipes() {
         stdin: None,
         envs: vec![
             (
-                "SUPERSCIENCE_SSH_PASSFILE".into(),
+                "WISP_SSH_PASSFILE".into(),
                 passfile.to_string_lossy().into_owned(),
             ),
             (
-                "SUPERSCIENCE_SSH_ASKPASS_SCRIPT".into(),
+                "WISP_SSH_ASKPASS_SCRIPT".into(),
                 askpass.to_string_lossy().into_owned(),
             ),
         ],
@@ -90,10 +89,8 @@ async fn process_runner_timeout_cleans_up_inherited_pipes() {
 #[tokio::test]
 async fn run_in_context_preview_keeps_long_commands_intact() {
     use superscience_tools::Tool;
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_run_preview_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_run_preview_{}.sqlite", uuid::Uuid::new_v4()));
     let store = superscience_store::Store::open(&tmp).await.unwrap();
     let tool = RunInContextTool::new(store, RunManager::new(), "p".into(), None);
     let command = format!(
@@ -128,10 +125,51 @@ impl superscience_tools::ToolEnv for RunToolTestEnv {
     async fn emit(&self, _event: superscience_tools::ToolEvent) {}
 }
 
+struct DenyRunToolEnv(PathBuf);
+
+#[async_trait::async_trait]
+impl superscience_tools::ToolEnv for DenyRunToolEnv {
+    fn project_root(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    async fn confirm(&self, _message: &str) -> bool {
+        false
+    }
+
+    async fn emit(&self, _event: superscience_tools::ToolEvent) {}
+}
+
+#[tokio::test]
+async fn denied_dangerous_run_stops_the_model_batch() {
+    use superscience_tools::{Tool, ToolControl};
+    let tmp = std::env::temp_dir().join(format!("wisp_run_deny_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
+        .await
+        .unwrap();
+    let tool = RunInContextTool::new(store, RunManager::new(), "p".into(), None);
+
+    let result = tool
+        .run(
+            &serde_json::json!({
+                "context_id": "local",
+                "command": "rm -rf generated-output"
+            }),
+            &DenyRunToolEnv(tmp.clone()),
+        )
+        .await;
+
+    assert!(!result.success);
+    assert_eq!(result.control, ToolControl::StopBatch);
+    drop(tool);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
 #[tokio::test]
 async fn run_in_context_can_suspend_until_terminal_without_get_run_calls() {
     use superscience_tools::Tool;
-    let tmp = std::env::temp_dir().join(format!("superscience_run_wait_{}", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!("wisp_run_wait_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -140,9 +178,15 @@ async fn run_in_context_can_suspend_until_terminal_without_get_run_calls() {
         .create_project("p", "project", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let manager = RunManager::with_runner(Arc::new(FakeRunRunner {
-        output: ok_output("finished\n"),
-    }));
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output("__WISP_HANDLE__:token-will-be-replaced"),
+        ok_output(&poll_response("finished:0", "finished", "")),
+    ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let manager = RunManager::with_runner(runner);
     let tool = RunInContextTool::new(store, manager, "p".into(), None);
     let result = tool
         .run(
@@ -158,17 +202,14 @@ async fn run_in_context_can_suspend_until_terminal_without_get_run_calls() {
     assert!(result.success, "{}", result.content);
     let run: superscience_store::RunRecord = serde_json::from_str(&result.content).unwrap();
     assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
-    assert_eq!(run.stdout_tail.as_deref(), Some("finished\n"));
+    assert_eq!(run.stdout_tail.as_deref(), Some("finished"));
     let _ = std::fs::remove_dir_all(tmp);
 }
 
 #[tokio::test]
 async fn run_in_context_wait_reports_a_failed_run_as_a_failed_tool_call() {
     use superscience_tools::Tool;
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_run_wait_fail_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_run_wait_fail_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -177,13 +218,19 @@ async fn run_in_context_wait_reports_a_failed_run_as_a_failed_tool_call() {
         .create_project("p", "project", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let manager = RunManager::with_runner(Arc::new(FakeRunRunner {
-        output: Ok(RunCommandOutput {
-            exit_code: 127,
-            stdout: String::new(),
-            stderr: "python: command not found".into(),
-        }),
-    }));
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output("__WISP_HANDLE__:token-will-be-replaced"),
+        ok_output(&poll_response(
+            "finished:127",
+            "",
+            "python: command not found",
+        )),
+    ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let manager = RunManager::with_runner(runner);
     let tool = RunInContextTool::new(store, manager, "p".into(), None);
     let result = tool
         .run(
@@ -209,10 +256,8 @@ async fn run_in_context_wait_reports_a_failed_run_as_a_failed_tool_call() {
 #[tokio::test]
 async fn run_in_context_preflight_blocks_missing_packages_before_creating_a_run() {
     use superscience_tools::Tool;
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_run_preflight_fail_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_run_preflight_fail_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -254,10 +299,7 @@ async fn run_in_context_preflight_blocks_missing_packages_before_creating_a_run(
 #[tokio::test]
 async fn run_in_context_preflight_is_structured_and_persisted_with_the_run() {
     use superscience_tools::Tool;
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_run_preflight_ok_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_run_preflight_ok_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -268,8 +310,13 @@ async fn run_in_context_preflight_is_structured_and_persisted_with_the_run() {
         .unwrap();
     let runner = Arc::new(ScriptedRunRunner::new(vec![
         ok_output("3.12.4\n"),
-        ok_output("analysis complete\n"),
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output("__WISP_HANDLE__:token-will-be-replaced"),
+        ok_output(&poll_response("finished:0", "analysis complete", "")),
     ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let manager = RunManager::with_runner(runner.clone());
     let tool = RunInContextTool::new(store.clone(), manager, "p".into(), None);
 
@@ -301,17 +348,26 @@ async fn run_in_context_preflight_is_structured_and_persisted_with_the_run() {
         .any(|check| check["name"] == "packages" && check["status"] == "passed"));
     let commands = runner.commands.lock().unwrap();
     assert_eq!(commands[0].script, "python interpreter/package preflight");
-    assert_eq!(commands[1].script, "python analysis.py");
+    assert!(commands[1].script.starts_with("prepare "));
+    let prepare = commands[1].stdin.as_deref().unwrap();
+    #[cfg(windows)]
+    {
+        // Windows prepare embeds the command as base64 into command.ps1.
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("python analysis.py");
+        assert!(prepare.contains(&encoded), "{prepare}");
+    }
+    #[cfg(not(windows))]
+    {
+        assert!(prepare.contains("python analysis.py"));
+    }
     let _ = std::fs::remove_dir_all(tmp);
 }
 
 #[tokio::test]
 async fn run_in_context_rejects_nested_ssh_transfer_commands() {
     use superscience_tools::Tool;
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_run_ssh_guard_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_run_ssh_guard_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -321,9 +377,7 @@ async fn run_in_context_rejects_nested_ssh_transfer_commands() {
         .await
         .unwrap();
     store
-        .upsert_execution_context(
-            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
-        )
+        .upsert_execution_context(&superscience_store::ExecutionContext::new("local", "Local").unwrap())
         .await
         .unwrap();
     let tool = RunInContextTool::new(
@@ -353,8 +407,7 @@ async fn run_in_context_rejects_nested_ssh_transfer_commands() {
 #[tokio::test]
 async fn monitor_run_waits_once_for_an_existing_run() {
     use superscience_tools::Tool;
-    let tmp =
-        std::env::temp_dir().join(format!("superscience_monitor_run_{}", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!("wisp_monitor_run_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -438,16 +491,11 @@ fn builds_commands_for_local_ssh_and_wsl() {
 
 #[tokio::test]
 async fn submit_run_records_success() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_submit_run_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_submit_run_{}.sqlite", uuid::Uuid::new_v4()));
     let store = superscience_store::Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store
-        .upsert_execution_context(
-            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
-        )
+        .upsert_execution_context(&superscience_store::ExecutionContext::new("local", "Local").unwrap())
         .await
         .unwrap();
     let runner = FakeRunRunner {
@@ -490,10 +538,7 @@ async fn submit_run_records_success() {
 
 #[tokio::test]
 async fn local_run_binds_inputs_before_execution_and_snapshots_environment() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_local_run_inputs_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_local_run_inputs_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.join("data")).unwrap();
     std::fs::write(tmp.join("data/input.csv"), b"x\n1\n").unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
@@ -503,10 +548,7 @@ async fn local_run_binds_inputs_before_execution_and_snapshots_environment() {
         .create_project("p", "proj", &tmp.to_string_lossy())
         .await
         .unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     let runner = FakeRunRunner {
         output: Ok(RunCommandOutput {
             exit_code: 0,
@@ -536,10 +578,7 @@ async fn local_run_binds_inputs_before_execution_and_snapshots_environment() {
     let inputs = store.list_run_inputs(&result.run_id).await.unwrap();
     assert_eq!(inputs.len(), 1);
     assert_eq!(inputs[0].basis, superscience_store::LineageBasis::Declared);
-    assert_eq!(
-        inputs[0].confidence,
-        superscience_store::LineageConfidence::Exact
-    );
+    assert_eq!(inputs[0].confidence, superscience_store::LineageConfidence::Exact);
     let version = store
         .get_artifact_version(inputs[0].artifact_version_id.as_deref().unwrap())
         .await
@@ -568,15 +607,13 @@ async fn local_run_binds_inputs_before_execution_and_snapshots_environment() {
 #[tokio::test]
 async fn submit_run_records_failure() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_submit_run_fail_{}.sqlite",
+        "wisp_submit_run_fail_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = superscience_store::Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store
-        .upsert_execution_context(
-            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
-        )
+        .upsert_execution_context(&superscience_store::ExecutionContext::new("local", "Local").unwrap())
         .await
         .unwrap();
     let runner = FakeRunRunner {
@@ -613,24 +650,17 @@ async fn submit_run_records_failure() {
 
 #[tokio::test]
 async fn submit_run_harvests_output_specs_on_success() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_submit_run_harvest_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_submit_run_harvest_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.join("results")).unwrap();
     std::fs::write(tmp.join("results/out.tsv"), b"x\ty\n").unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
         .unwrap();
     store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
-    store
-        .upsert_execution_context(
-            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
-        )
+        .upsert_execution_context(&superscience_store::ExecutionContext::new("local", "Local").unwrap())
         .await
         .unwrap();
     let runner = FakeRunRunner {
@@ -681,40 +711,71 @@ async fn submit_run_harvests_output_specs_on_success() {
 #[tokio::test]
 async fn background_run_can_be_cancelled_without_waiting_for_the_command() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_background_run_{}.sqlite",
+        "wisp_background_run_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = superscience_store::Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    let manager = RunManager::with_runner(Arc::new(PendingRunRunner));
+    let mut run = superscience_store::RunRecord::new("local-run", "p", "local", "Local", "local_detached");
+    run.command = Some("long-running-analysis".into());
+    run.timeout_secs = Some(60);
+    run.remote_workdir = Some("~/.superscience/runs/local-run".into());
+    run.remote_handle_json =
+        Some(serde_json::to_string(&test_local_handle("local-run", true, None)).unwrap());
+    run.status = superscience_store::RunStatus::Running;
+    store.create_run(&run).await.unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(
+        "__WISP_CANCEL__:cancelled\n",
+    )]));
+    let cancel_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *runner.rpc_gate.lock().unwrap() = Some(cancel_gate.clone());
+    let manager = RunManager::with_runner(runner);
 
-    let submitted = manager
-        .submit(
-            store.clone(),
-            "p".into(),
-            None,
-            SubmitRunRequest {
-                context_id: "local".into(),
-                command: "long-running-analysis".into(),
-                title: None,
-                timeout_secs: Some(60),
-                input_paths: None,
-                output_specs: None,
-            },
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(submitted.status, superscience_store::RunStatus::Submitted);
+    manager.cancel(&store, "local-run").await.unwrap();
+    assert_eq!(
+        store.get_run("local-run").await.unwrap().unwrap().status,
+        superscience_store::RunStatus::Cancelling
+    );
     assert!(manager.has_in_flight_project(&store, "p").await.unwrap());
     assert!(!manager
         .has_in_flight_project(&store, "other-project")
         .await
         .unwrap());
+    cancel_gate.add_permits(1);
+    assert_eq!(
+        wait_for_terminal(&store, "local-run").await.status,
+        superscience_store::RunStatus::Cancelled
+    );
 
-    manager.cancel(&store, &submitted.run_id).await.unwrap();
-    let run = store.get_run(&submitted.run_id).await.unwrap().unwrap();
-    assert_eq!(run.status, superscience_store::RunStatus::Cancelled);
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn second_cancel_force_finishes_a_wedged_cancelling_run() {
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_force_cancel_{}.sqlite", uuid::Uuid::new_v4()));
+    let store = superscience_store::Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    let mut run = superscience_store::RunRecord::new("stuck-run", "p", "local", "Local", "local_detached");
+    run.command = Some("Write-Host stuck".into());
+    run.timeout_secs = Some(60);
+    run.remote_workdir = Some("~\\.superscience\\runs\\stuck-run".into());
+    run.remote_handle_json =
+        Some(serde_json::to_string(&test_local_handle("stuck-run", true, None)).unwrap());
+    run.status = superscience_store::RunStatus::Cancelling;
+    run.last_poll_error = Some("SSH cancel response omitted status".into());
+    store.create_run(&run).await.unwrap();
+    // Cancel RPC stays wedged; the second cancel must not wait on it.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![]));
+    let cancel_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *runner.rpc_gate.lock().unwrap() = Some(cancel_gate);
+    let manager = RunManager::with_runner(runner);
+
+    manager.cancel(&store, "stuck-run").await.unwrap();
+    assert_eq!(
+        store.get_run("stuck-run").await.unwrap().unwrap().status,
+        superscience_store::RunStatus::Cancelled
+    );
 
     let _ = std::fs::remove_file(&tmp);
 }
@@ -722,19 +783,14 @@ async fn background_run_can_be_cancelled_without_waiting_for_the_command() {
 #[tokio::test]
 async fn remote_run_is_rejected_when_not_selected_for_its_session() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_remote_run_selection_{}.sqlite",
+        "wisp_remote_run_selection_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = superscience_store::Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
-    store
-        .upsert_execution_context(
-            &superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap(),
-        )
+        .upsert_execution_context(&superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
         .await
         .unwrap();
     let request = SubmitRunRequest {
@@ -763,10 +819,7 @@ async fn remote_run_is_rejected_when_not_selected_for_its_session() {
 
 #[tokio::test]
 async fn ssh_run_detaches_persists_handle_and_finishes_from_poller() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_ssh_lifecycle_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_lifecycle_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -775,10 +828,7 @@ async fn ssh_run_detaches_persists_handle_and_finishes_from_poller() {
         .create_project("p", "proj", &tmp.to_string_lossy())
         .await
         .unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     let mut context = superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
     context.config_json = serde_json::json!({ "alias": "gpu" }).to_string();
     context.last_probe_status = Some("ok".into());
@@ -788,8 +838,8 @@ async fn ssh_run_detaches_persists_handle_and_finishes_from_poller() {
         .await
         .unwrap();
     let runner = Arc::new(ScriptedRunRunner::new(vec![
-        ok_output("__SUPERSCIENCE_PREPARED__\n"),
-        ok_output("__SUPERSCIENCE_HANDLE__:token-will-be-replaced"),
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output("__WISP_HANDLE__:token-will-be-replaced"),
     ]));
     let manager = RunManager::with_runner(runner.clone());
 
@@ -867,10 +917,7 @@ async fn ssh_run_detaches_persists_handle_and_finishes_from_poller() {
 
 #[tokio::test]
 async fn ssh_launch_failure_stops_after_the_first_attempt() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_ssh_stage_once_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_stage_once_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     std::fs::write(tmp.join("input.fasta"), b">seq\nACGT\n").unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
@@ -880,10 +927,7 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
         .create_project("p", "proj", &tmp.to_string_lossy())
         .await
         .unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     let mut context = superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
     context.config_json = serde_json::json!({ "alias": "gpu" }).to_string();
     context.last_probe_status = Some("ok".into());
@@ -893,7 +937,7 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
         .await
         .unwrap();
     let runner = Arc::new(ScriptedRunRunner::new(vec![
-        ok_output("__SUPERSCIENCE_PREPARED__\n"),
+        ok_output("__WISP_PREPARED__\n"),
         ok_output(""),
         Err("temporary SSH disconnect".into()),
     ]));
@@ -927,8 +971,7 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
         .as_deref()
         .unwrap()
         .contains(SSH_RETRY_STOPPED_MARKER));
-    let progress: superscience_store::RunProgress =
-        serde_json::from_str(&finished.progress_json).unwrap();
+    let progress: superscience_store::RunProgress = serde_json::from_str(&finished.progress_json).unwrap();
     assert_eq!(progress.phase, "uploaded");
     assert_eq!(progress.completed_bytes, 10);
     assert_eq!(progress.total_bytes, 10);
@@ -952,10 +995,7 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
 
 #[tokio::test]
 async fn recovery_fails_unconfirmed_ssh_run_without_reconnecting() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_ssh_stale_start_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_stale_start_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -964,8 +1004,7 @@ async fn recovery_fails_unconfirmed_ssh_run_without_reconnecting() {
         .create_project("p", "proj", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let mut run =
-        superscience_store::RunRecord::new("stale", "p", "ssh:gpu", "Stale", "ssh_direct");
+    let mut run = superscience_store::RunRecord::new("stale", "p", "ssh:gpu", "Stale", "ssh_direct");
     run.command = Some("echo stale".into());
     run.timeout_secs = Some(60);
     run.last_poll_error = Some("connection timed out".into());
@@ -990,8 +1029,7 @@ async fn recovery_fails_unconfirmed_ssh_run_without_reconnecting() {
 
 #[tokio::test]
 async fn recovery_reattaches_ssh_after_transient_error_and_marks_local_lost() {
-    let tmp =
-        std::env::temp_dir().join(format!("superscience_ssh_recover_{}", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_recover_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -1001,8 +1039,7 @@ async fn recovery_reattaches_ssh_after_transient_error_and_marks_local_lost() {
         .await
         .unwrap();
 
-    let mut remote =
-        superscience_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
+    let mut remote = superscience_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
     remote.command = Some("long-analysis".into());
     remote.timeout_secs = Some(3600);
     remote.remote_workdir = Some("~/.superscience/runs/remote".into());
@@ -1010,8 +1047,7 @@ async fn recovery_reattaches_ssh_after_transient_error_and_marks_local_lost() {
     remote.status = superscience_store::RunStatus::Running;
     store.create_run(&remote).await.unwrap();
 
-    let mut local =
-        superscience_store::RunRecord::new("local-run", "p", "local", "Local", "command");
+    let mut local = superscience_store::RunRecord::new("local-run", "p", "local", "Local", "command");
     local.status = superscience_store::RunStatus::Running;
     store.create_run(&local).await.unwrap();
 
@@ -1035,10 +1071,7 @@ async fn recovery_reattaches_ssh_after_transient_error_and_marks_local_lost() {
 
 #[tokio::test]
 async fn confirmed_ssh_run_stops_polling_after_authentication_failure() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_ssh_auth_stop_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_auth_stop_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -1048,8 +1081,7 @@ async fn confirmed_ssh_run_stops_polling_after_authentication_failure() {
         .await
         .unwrap();
 
-    let mut run =
-        superscience_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
+    let mut run = superscience_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
     run.command = Some("long-analysis".into());
     run.timeout_secs = Some(3600);
     run.remote_workdir = Some("~/.superscience/runs/remote".into());
@@ -1076,8 +1108,7 @@ async fn confirmed_ssh_run_stops_polling_after_authentication_failure() {
 
 #[tokio::test]
 async fn ssh_cancel_stays_cancelling_until_remote_group_confirms() {
-    let tmp =
-        std::env::temp_dir().join(format!("superscience_ssh_cancel_{}", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_cancel_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -1086,8 +1117,7 @@ async fn ssh_cancel_stays_cancelling_until_remote_group_confirms() {
         .create_project("p", "proj", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let mut run =
-        superscience_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
+    let mut run = superscience_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
     run.command = Some("long-analysis".into());
     run.timeout_secs = Some(3600);
     run.remote_workdir = Some("~/.superscience/runs/remote".into());
@@ -1095,7 +1125,7 @@ async fn ssh_cancel_stays_cancelling_until_remote_group_confirms() {
     run.status = superscience_store::RunStatus::Running;
     store.create_run(&run).await.unwrap();
     let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(
-        "__SUPERSCIENCE_CANCEL__:cancelled\n",
+        "__WISP_CANCEL__:cancelled\n",
     )]));
     // Hold the remote cancel RPC so the group has not confirmed yet when the
     // pre-confirmation status is asserted, even under slow scheduling.
@@ -1123,10 +1153,7 @@ async fn ssh_cancel_stays_cancelling_until_remote_group_confirms() {
 
 #[tokio::test]
 async fn cancelling_ssh_input_staging_aborts_the_transfer() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_ssh_upload_cancel_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_upload_cancel_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -1136,8 +1163,7 @@ async fn cancelling_ssh_input_staging_aborts_the_transfer() {
         .await
         .unwrap();
     let manager = RunManager::with_runner(Arc::new(ScriptedRunRunner::new(Vec::new())));
-    let mut run =
-        superscience_store::RunRecord::new("upload", "p", "ssh:gpu", "Upload", "ssh_direct");
+    let mut run = superscience_store::RunRecord::new("upload", "p", "ssh:gpu", "Upload", "ssh_direct");
     run.command = Some("analysis input.dat".into());
     run.timeout_secs = Some(3600);
     run.remote_workdir = Some("~/.superscience/runs/upload".into());
@@ -1174,8 +1200,7 @@ async fn cancelling_ssh_input_staging_aborts_the_transfer() {
     assert!(task.await.unwrap_err().is_cancelled());
     let run = store.get_run("upload").await.unwrap().unwrap();
     assert_eq!(run.status, superscience_store::RunStatus::Cancelled);
-    let progress: superscience_store::RunProgress =
-        serde_json::from_str(&run.progress_json).unwrap();
+    let progress: superscience_store::RunProgress = serde_json::from_str(&run.progress_json).unwrap();
     assert_eq!(progress.phase, "cancelled");
     assert_eq!(progress.completed_bytes, 25);
     let _ = std::fs::remove_dir_all(&tmp);
@@ -1203,11 +1228,41 @@ fn remote_control_payloads_are_valid_posix_shell() {
         harvest_root: None,
         handle: test_handle("payload", true),
     };
+    let local = RemoteRun {
+        run_id: "local-payload".into(),
+        project_id: "p".into(),
+        frame_id: None,
+        command: "printf '%s\\n' ok".into(),
+        timeout: Duration::from_secs(60),
+        input_refs: Vec::new(),
+        output_specs: Vec::new(),
+        harvest_root: None,
+        handle: test_local_handle("local-payload", true, Some("/home/user/project")),
+    };
+    let wsl = RemoteRun {
+        run_id: "wsl-payload".into(),
+        project_id: "p".into(),
+        frame_id: None,
+        command: "printf '%s\\n' ok".into(),
+        timeout: Duration::from_secs(60),
+        input_refs: Vec::new(),
+        output_specs: Vec::new(),
+        harvest_root: None,
+        handle: test_wsl_handle("wsl-payload", true, Some(r"C:\Users\me\project")),
+    };
     let scripts = [
         prepare_payload(&remote),
         launch_payload(&remote.handle),
         poll_payload(&remote.handle).unwrap(),
         cancel_payload(&remote.handle).unwrap(),
+        prepare_payload(&local),
+        launch_payload(&local.handle),
+        poll_payload(&local.handle).unwrap(),
+        cancel_payload(&local.handle).unwrap(),
+        prepare_payload(&wsl),
+        launch_payload(&wsl.handle),
+        poll_payload(&wsl.handle).unwrap(),
+        cancel_payload(&wsl.handle).unwrap(),
     ];
     for script in scripts {
         let mut child = std::process::Command::new("sh")
@@ -1223,10 +1278,22 @@ fn remote_control_payloads_are_valid_posix_shell() {
             .unwrap();
         assert!(child.wait().unwrap().success(), "invalid shell payload");
     }
+    let local_prepare = prepare_payload(&local);
+    assert!(local_prepare.contains("sleep 60"));
+    assert!(!local_prepare.contains("setsid timeout"));
+    // A relaunched supervisor must never rerun the command.
+    assert!(local_prepare.contains("if [ -f _submitted ]; then"));
+    // The local project root is entered directly; WSL goes through wslpath.
+    assert!(local_prepare.contains("cd '/home/user/project' || exit 125"));
+    assert!(!local_prepare.contains("wslpath"));
+    let wsl_prepare = prepare_payload(&wsl);
+    assert!(wsl_prepare.contains(r#"cd "$(wslpath 'C:\Users\me\project')" || exit 125"#));
+    // Signals to the app's process group must not reach a detached supervisor.
+    assert!(launch_payload(&local.handle).contains("nohup setsid sh"));
 }
 
 #[test]
-fn remote_compute_skill_uses_the_real_superscience_run_contract() {
+fn remote_compute_skill_uses_the_real_wisp_run_contract() {
     let skill = include_str!("../../../skills/remote-compute-ssh/SKILL.md");
     for tool in [
         "run_in_context",
@@ -1300,8 +1367,7 @@ impl RunCommandRunner for StreamingRunRunner {
 
 #[tokio::test]
 async fn local_run_streams_bounded_output_and_heartbeat_before_completion() {
-    let tmp =
-        std::env::temp_dir().join(format!("superscience_run_stream_{}", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!("wisp_run_stream_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -1365,19 +1431,6 @@ impl RunCommandRunner for FakeRunRunner {
     }
 }
 
-struct PendingRunRunner;
-
-#[async_trait::async_trait]
-impl RunCommandRunner for PendingRunRunner {
-    async fn run(
-        &self,
-        _command: RunCommand,
-        _timeout: Duration,
-    ) -> Result<RunCommandOutput, String> {
-        std::future::pending().await
-    }
-}
-
 struct ScriptedRunRunner {
     outputs: StdMutex<VecDeque<Result<RunCommandOutput, String>>>,
     commands: StdMutex<Vec<RunCommand>>,
@@ -1412,21 +1465,31 @@ impl RunCommandRunner for ScriptedRunRunner {
         command: RunCommand,
         _timeout: Duration,
     ) -> Result<RunCommandOutput, String> {
-        if matches!(command.script.as_str(), "poll SSH Run" | "cancel SSH Run") {
+        let is_poll_or_cancel =
+            command.script.starts_with("poll ") || command.script.starts_with("cancel ");
+        if is_poll_or_cancel {
             let gate = self.rpc_gate.lock().unwrap().clone();
             if let Some(gate) = gate {
                 let _permit = gate.acquire().await.unwrap();
             }
         }
-        if command.script == "prepare SSH Run" {
+        if command.script.starts_with("prepare ") {
             if let Some(payload) = command.stdin.as_deref() {
-                let token = payload
-                    .lines()
-                    .find_map(|line| {
-                        line.strip_prefix("  printf '%s\\n' '")?
-                            .strip_suffix("' > \"$workdir/token.tmp\"")
-                    })
-                    .map(str::to_string);
+                // Posix and Windows prepare payloads both write a token; parse
+                // each form independently so a failed Posix prefix match does
+                // not short-circuit the Windows branch via `?`.
+                let token = payload.lines().find_map(|line| {
+                    line.strip_prefix("  printf '%s\\n' '")
+                        .and_then(|rest| rest.strip_suffix("' > \"$workdir/token.tmp\""))
+                        .or_else(|| {
+                            line.trim()
+                                .strip_prefix(
+                                    "Set-Content -LiteralPath ($tokenPath + '.tmp') -Value '",
+                                )
+                                .and_then(|rest| rest.strip_suffix("' -Encoding ascii"))
+                        })
+                        .map(str::to_string)
+                });
                 *self.token.lock().unwrap() = token;
             }
         }
@@ -1437,7 +1500,7 @@ impl RunCommandRunner for ScriptedRunRunner {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| Err(format!("unexpected command: {}", command.script)))?;
-        if command.script == "launch SSH Run"
+        if command.script.starts_with("launch ")
             && self
                 .synthesize_launch_ack
                 .load(std::sync::atomic::Ordering::SeqCst)
@@ -1445,7 +1508,7 @@ impl RunCommandRunner for ScriptedRunRunner {
             let token = self.token.lock().unwrap().clone().unwrap();
             return Ok(RunCommandOutput {
                 exit_code: 0,
-                stdout: format!("__SUPERSCIENCE_HANDLE__:{token}:4242:999\n"),
+                stdout: format!("__WISP_HANDLE__:{token}:4242:999\n"),
                 stderr: String::new(),
             });
         }
@@ -1463,24 +1526,19 @@ fn ok_output(stdout: &str) -> Result<RunCommandOutput, String> {
 
 #[tokio::test]
 async fn ssh_download_uses_context_connection_options() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience-run-download-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp-run-download-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
         .unwrap();
     store.create_project("p", "project", "").await.unwrap();
     let runner = Arc::new(ScriptedRunRunner::new(vec![
-        ok_output("__SUPERSCIENCE_TRANSFER_SIZE__:42\n"),
+        ok_output("__WISP_TRANSFER_SIZE__:42\n"),
         ok_output(""),
     ]));
     let manager = RunManager::with_runner(runner.clone());
-    let identity = std::env::temp_dir().join(format!(
-        "superscience-run-download-key-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let identity =
+        std::env::temp_dir().join(format!("wisp-run-download-key-{}", uuid::Uuid::new_v4()));
     std::fs::write(&identity, b"test-key\n").unwrap();
     let mut context = superscience_store::ExecutionContext::new("ssh:CPU", "CPU").unwrap();
     context.config_json = serde_json::json!({
@@ -1533,8 +1591,7 @@ async fn ssh_download_uses_context_connection_options() {
         .unwrap();
     assert_eq!(run.kind, "file_transfer");
     assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
-    let progress: superscience_store::RunProgress =
-        serde_json::from_str(&run.progress_json).unwrap();
+    let progress: superscience_store::RunProgress = serde_json::from_str(&run.progress_json).unwrap();
     assert_eq!(progress.phase, "downloaded");
     assert_eq!(progress.completed_bytes, 42);
     let _ = std::fs::remove_file(identity);
@@ -1544,15 +1601,40 @@ async fn ssh_download_uses_context_connection_options() {
 #[test]
 fn parses_remote_input_progress_without_confusing_missing_files() {
     let parsed = parse_input_progress(
-        "noise\n__SUPERSCIENCE_TRANSFER_FILE__:a.fastq.gz:1024\n__SUPERSCIENCE_TRANSFER_FILE__:empty.txt:0\n",
+        "noise\n__WISP_TRANSFER_FILE__:a.fastq.gz:1024\n__WISP_TRANSFER_FILE__:empty.txt:0\n",
     );
     assert_eq!(parsed.get("a.fastq.gz"), Some(&1024));
     assert_eq!(parsed.get("empty.txt"), Some(&0));
     assert!(!parsed.contains_key("missing.fastq.gz"));
 }
 
+#[test]
+fn parse_remote_poll_accepts_windows_crlf_markers() {
+    // PowerShell Write-Output uses CRLF; without normalization the host keeps
+    // retrying poll forever even after the command has already finished.
+    let raw = "__WISP_RUN_STATUS__:finished:0\r\n__WISP_STDOUT__\r\nCIM/launch fix test OK\r\n\r\n__WISP_STDERR__\r\n\r\n";
+    let poll = remote::parse_remote_poll(raw).unwrap();
+    assert_eq!(poll.state, remote::RemotePollState::Finished(0));
+    assert_eq!(poll.stdout, "CIM/launch fix test OK");
+    assert_eq!(poll.stderr, "");
+}
+
+#[test]
+fn parse_remote_poll_accepts_empty_finished_exit_code() {
+    // A Windows supervisor that read ExitCode before WaitForExit wrote `done:`.
+    let raw = "__WISP_RUN_STATUS__:finished:\n__WISP_STDOUT__\nok\n__WISP_STDERR__\n\n";
+    let poll = remote::parse_remote_poll(raw).unwrap();
+    assert_eq!(poll.state, remote::RemotePollState::Finished(0));
+}
+
+#[test]
+fn parse_remote_cancel_accepts_empty_finished_exit_code() {
+    let cancel = remote::parse_remote_cancel("__WISP_CANCEL__:finished:\r\n").unwrap();
+    assert_eq!(cancel, remote::RemoteCancel::Finished(0));
+}
+
 fn poll_response(status: &str, stdout: &str, stderr: &str) -> String {
-    format!("__SUPERSCIENCE_RUN_STATUS__:{status}\n__SUPERSCIENCE_STDOUT__\n{stdout}\n__SUPERSCIENCE_STDERR__\n{stderr}\n")
+    format!("__WISP_RUN_STATUS__:{status}\n__WISP_STDOUT__\n{stdout}\n__WISP_STDERR__\n{stderr}\n")
 }
 
 fn test_handle(run_id: &str, confirmed: bool) -> RemoteRunHandle {
@@ -1570,6 +1652,53 @@ fn test_handle(run_id: &str, confirmed: bool) -> RemoteRunHandle {
         inputs_staged: false,
         pgid: confirmed.then_some(4242),
         start_time: confirmed.then_some(999),
+    }
+}
+
+fn test_local_handle(run_id: &str, confirmed: bool, command_cwd: Option<&str>) -> RemoteRunHandle {
+    // Match the host platform's real local transport so cancel/poll helpers
+    // exercise the same payloads production uses.
+    #[cfg(windows)]
+    let transport = LocalTransport::Windows {
+        context_id: "local".into(),
+    };
+    #[cfg(not(windows))]
+    let transport = LocalTransport::Posix {
+        context_id: "local".into(),
+        program: "sh".into(),
+        args: vec!["-s".into()],
+    };
+    RemoteRunHandle::LocalDetached {
+        transport,
+        workdir: format!(".superscience/runs/{run_id}"),
+        token: "test-token".into(),
+        inputs_staged: true,
+        pgid: confirmed.then_some(4242),
+        start_identity: confirmed.then(|| "999".into()),
+        command_cwd: command_cwd.map(str::to_string),
+    }
+}
+
+#[cfg(unix)]
+fn test_wsl_handle(run_id: &str, confirmed: bool, command_cwd: Option<&str>) -> RemoteRunHandle {
+    RemoteRunHandle::LocalDetached {
+        transport: LocalTransport::Posix {
+            context_id: "wsl:Ubuntu".into(),
+            program: "wsl.exe".into(),
+            args: vec![
+                "-d".into(),
+                "Ubuntu".into(),
+                "--".into(),
+                "sh".into(),
+                "-s".into(),
+            ],
+        },
+        workdir: format!(".superscience/runs/{run_id}"),
+        token: "test-token".into(),
+        inputs_staged: true,
+        pgid: confirmed.then_some(4242),
+        start_identity: confirmed.then(|| "999".into()),
+        command_cwd: command_cwd.map(str::to_string),
     }
 }
 
@@ -1649,10 +1778,7 @@ fn scp_local_paths_strip_windows_extended_length_prefixes() {
     );
 }
 
-async fn wait_for_terminal(
-    store: &superscience_store::Store,
-    run_id: &str,
-) -> superscience_store::RunRecord {
+async fn wait_for_terminal(store: &superscience_store::Store, run_id: &str) -> superscience_store::RunRecord {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let run = store.get_run(run_id).await.unwrap().unwrap();
@@ -1664,4 +1790,405 @@ async fn wait_for_terminal(
     })
     .await
     .unwrap()
+}
+
+#[tokio::test]
+async fn local_and_wsl_timeout_accepts_values_above_300s() {
+    let tmp = std::env::temp_dir().join(format!("wisp_timeout_clamp_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&superscience_store::ExecutionContext::new("local", "Local").unwrap())
+        .await
+        .unwrap();
+    let mut wsl = superscience_store::ExecutionContext::new("wsl:Ubuntu", "Ubuntu").unwrap();
+    wsl.config_json = serde_json::json!({ "distro": "Ubuntu" }).to_string();
+    store.upsert_execution_context(&wsl).await.unwrap();
+    store
+        .set_session_execution_context_enabled("f", "wsl:Ubuntu", true)
+        .await
+        .unwrap();
+
+    for (context_id, frame_id) in [("local", None), ("wsl:Ubuntu", Some("f"))] {
+        let prepared = create_run_record(
+            &store,
+            "p",
+            frame_id,
+            SubmitRunRequest {
+                context_id: context_id.into(),
+                command: "sleep 1".into(),
+                title: None,
+                timeout_secs: Some(3600),
+                input_paths: None,
+                output_specs: None,
+            },
+            Some(tmp.clone()),
+            superscience_store::RunStatus::Submitted,
+            "owner",
+            REMOTE_START_LEASE_SECS,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared.timeout, Duration::from_secs(3600));
+        let run = store.get_run(&prepared.run_id).await.unwrap().unwrap();
+        assert_eq!(run.timeout_secs, Some(3600));
+        assert_eq!(run.kind, "local_detached");
+        assert!(run
+            .remote_handle_json
+            .as_deref()
+            .unwrap()
+            .contains("local_detached"));
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn local_detached_run_finishes_from_poller() {
+    let tmp = std::env::temp_dir().join(format!("wisp_local_lifecycle_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store
+        .upsert_execution_context(&superscience_store::ExecutionContext::new("local", "Local").unwrap())
+        .await
+        .unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output("__WISP_HANDLE__:token-will-be-replaced"),
+    ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    runner.push(ok_output(&poll_response("finished:0", "local-done", "")));
+    let poll_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *runner.rpc_gate.lock().unwrap() = Some(poll_gate.clone());
+    let manager = RunManager::with_runner(runner.clone());
+    let submitted = manager
+        .submit(
+            store.clone(),
+            "p".into(),
+            None,
+            SubmitRunRequest {
+                context_id: "local".into(),
+                command: "printf done".into(),
+                title: Some("Local analysis".into()),
+                timeout_secs: Some(7200),
+                input_paths: None,
+                output_specs: None,
+            },
+            Some(tmp.clone()),
+        )
+        .await
+        .unwrap();
+    let workdir = submitted.remote_workdir.as_deref().unwrap();
+    #[cfg(windows)]
+    assert!(workdir.starts_with("~\\.superscience\\runs\\"), "{workdir}");
+    #[cfg(not(windows))]
+    assert!(workdir.starts_with("~/.superscience/runs/"), "{workdir}");
+    poll_gate.add_permits(1);
+    let finished = wait_for_terminal(&store, &submitted.run_id).await;
+    assert_eq!(finished.status, superscience_store::RunStatus::Succeeded);
+    assert_eq!(finished.stdout_tail.as_deref(), Some("local-done"));
+    assert_eq!(finished.timeout_secs, Some(7200));
+    let commands = runner.commands.lock().unwrap();
+    let prepare = commands[0].stdin.as_deref().unwrap();
+    #[cfg(windows)]
+    {
+        let shell = local_detached::windows_powershell_program();
+        assert!(
+            commands.iter().any(|command| command.program == shell),
+            "expected host shell {shell}"
+        );
+        // Timeout lives inside the base64-encoded supervisor.ps1 body.
+        use base64::Engine as _;
+        let supervisor = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(
+                    prepare
+                        .lines()
+                        .find(|line| {
+                            line.starts_with("[System.IO.File]::WriteAllText($supervisorPath")
+                        })
+                        .and_then(|line| line.split("FromBase64String('").nth(1))
+                        .and_then(|rest| rest.split('\'').next())
+                        .expect("supervisor base64 in prepare payload"),
+                )
+                .expect("valid supervisor base64"),
+        )
+        .expect("utf8 supervisor script");
+        assert!(supervisor.contains("AddSeconds(7200)"), "{supervisor}");
+    }
+    #[cfg(not(windows))]
+    {
+        assert!(commands.iter().any(|command| command.program == "sh"));
+        assert!(prepare.contains("sleep 7200"), "{prepare}");
+        assert!(!prepare.contains("setsid timeout"));
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn wsl_detached_run_uses_wsl_transport_and_finishes() {
+    let tmp = std::env::temp_dir().join(format!("wisp_wsl_lifecycle_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    let mut wsl = superscience_store::ExecutionContext::new("wsl:Ubuntu", "Ubuntu").unwrap();
+    wsl.config_json = serde_json::json!({ "distro": "Ubuntu" }).to_string();
+    store.upsert_execution_context(&wsl).await.unwrap();
+    store
+        .set_session_execution_context_enabled("f", "wsl:Ubuntu", true)
+        .await
+        .unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output("__WISP_HANDLE__:token-will-be-replaced"),
+        ok_output(&poll_response("finished:0", "wsl-done", "")),
+    ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let manager = RunManager::with_runner(runner.clone());
+    let submitted = manager
+        .submit(
+            store.clone(),
+            "p".into(),
+            Some("f".into()),
+            SubmitRunRequest {
+                context_id: "wsl:Ubuntu".into(),
+                command: "sleep 1 && echo done".into(),
+                title: None,
+                timeout_secs: Some(600),
+                input_paths: None,
+                output_specs: None,
+            },
+            Some(tmp.clone()),
+        )
+        .await
+        .unwrap();
+    let finished = wait_for_terminal(&store, &submitted.run_id).await;
+    assert_eq!(finished.status, superscience_store::RunStatus::Succeeded);
+    assert_eq!(finished.timeout_secs, Some(600));
+    let commands = runner.commands.lock().unwrap();
+    assert!(commands.iter().all(|command| command.program == "wsl.exe"));
+    assert!(commands[0].args.contains(&"-d".to_string()));
+    assert!(commands[0].args.contains(&"Ubuntu".to_string()));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn windows_control_payloads_contain_process_identity_and_timeout() {
+    let remote = RemoteRun {
+        run_id: "win".into(),
+        project_id: "p".into(),
+        frame_id: None,
+        command: "Write-Output ok".into(),
+        timeout: Duration::from_secs(120),
+        input_refs: Vec::new(),
+        output_specs: Vec::new(),
+        harvest_root: None,
+        handle: RemoteRunHandle::LocalDetached {
+            transport: LocalTransport::Windows {
+                context_id: "local".into(),
+            },
+            workdir: ".superscience/runs/win".into(),
+            token: "test-token".into(),
+            inputs_staged: true,
+            pgid: Some(4242),
+            start_identity: Some("639000105000000000".into()),
+            command_cwd: Some(r"C:\project".into()),
+        },
+    };
+    use base64::Engine as _;
+    let prepare = prepare_payload(&remote);
+    assert!(prepare.contains("FromBase64String"));
+    assert!(prepare.contains("__WISP_PREPARED__"));
+    let supervisor = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(
+                prepare
+                    .lines()
+                    .find(|line| line.starts_with("[System.IO.File]::WriteAllText($supervisorPath"))
+                    .and_then(|line| line.split("FromBase64String('").nth(1))
+                    .and_then(|rest| rest.split('\'').next())
+                    .expect("supervisor base64 in prepare payload"),
+            )
+            .expect("valid supervisor base64"),
+    )
+    .expect("utf8 supervisor script");
+    // The supervisor must be idempotent and use a culture-stable identity from
+    // System.Diagnostics.Process; CIM can be unavailable or miss fast exits.
+    assert!(supervisor.contains("if (Test-Path -LiteralPath (Join-Path $workdir '_submitted'))"));
+    assert!(supervisor.contains("$proc.StartTime.ToUniversalTime().Ticks"));
+    assert!(!supervisor.contains("Get-CimInstance"));
+    // Start-Process -PassThru + RedirectStandard* returns a null ExitCode on
+    // Windows PowerShell 5.1; the .NET Process API works on both 5.1 and 7.
+    assert!(supervisor.contains("New-Object System.Diagnostics.ProcessStartInfo"));
+    assert!(supervisor.contains("CopyToAsync"));
+    assert!(supervisor.contains("-ExecutionPolicy Bypass"));
+    assert!(!supervisor.contains("Start-Process @startParams"));
+    let launch = launch_payload(&remote.handle);
+    assert!(launch.contains("Start-Process"));
+    assert!(launch.contains("'-ExecutionPolicy','Bypass','-File'"));
+    // Supervisor must follow the host engine (pwsh when present, else powershell).
+    assert!(launch.contains("GetCurrentProcess().MainModule.FileName"));
+    // Only the launcher that created the lock may start the supervisor, and a
+    // live lock owner must not be raced.
+    assert!(launch.contains("if ($acquired)"));
+    assert!(launch.contains("Get-Process -Id $ownerId"));
+    assert!(launch.contains("supervisor.stderr.log"));
+    assert!(launch.contains("local supervisor did not acknowledge launch: "));
+    let poll = poll_payload(&remote.handle).unwrap();
+    assert!(poll.contains("Get-Process -Id 4242"));
+    assert!(poll.contains("__WISP_RUN_STATUS__"));
+    assert!(poll.contains("StartTime.ToUniversalTime().Ticks"));
+    // Log tails must share the writer's handle and stay bounded.
+    assert!(poll.contains("[System.IO.FileShare]::ReadWrite"));
+    assert!(!poll.contains("ReadAllBytes"));
+    let cancel = cancel_payload(&remote.handle).unwrap();
+    assert!(cancel.contains("taskkill.exe"));
+    assert!(cancel.contains("__WISP_CANCEL__"));
+    assert!(cancel.contains("StartTime.ToUniversalTime().Ticks"));
+}
+
+#[test]
+fn windows_transport_executes_stdin_as_one_script() {
+    let handle = RemoteRunHandle::LocalDetached {
+        transport: LocalTransport::Windows {
+            context_id: "local".into(),
+        },
+        workdir: ".superscience/runs/win".into(),
+        token: "test-token".into(),
+        inputs_staged: true,
+        pgid: None,
+        start_identity: None,
+        command_cwd: None,
+    };
+    let command =
+        local_detached::transport_script_command(&handle, "prepare local Run", "exit 0".into())
+            .unwrap();
+    assert_eq!(
+        command.program,
+        local_detached::windows_powershell_program()
+    );
+    // `-Command -` parses stdin line-by-line like an interactive session on
+    // Windows PowerShell 5.1; the same form works under pwsh.
+    assert!(!command.args.contains(&"-".to_string()));
+    assert!(command
+        .args
+        .contains(&"[Console]::In.ReadToEnd() | Invoke-Expression".to_string()));
+    assert_eq!(command.stdin.as_deref(), Some("exit 0"));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_shell_prefers_pwsh_when_present_on_path() {
+    let program = local_detached::windows_powershell_program();
+    let has_pwsh = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .any(|dir| dir.join("pwsh.exe").is_file() || dir.join("pwsh").is_file())
+        })
+        .unwrap_or(false);
+    if has_pwsh {
+        assert_eq!(program, "pwsh");
+    } else {
+        assert_eq!(program, "powershell");
+    }
+}
+
+#[test]
+fn handle_ack_preserves_identities_containing_colons_and_spaces() {
+    let handle = test_local_handle("mac", false, None);
+    let confirmed = remote::handle_from_ack(
+        &handle,
+        "__WISP_HANDLE__:test-token:4242:Mon Aug  3 10:55:00 2026\n",
+    )
+    .unwrap();
+    let RemoteRunHandle::LocalDetached {
+        pgid,
+        start_identity,
+        ..
+    } = confirmed
+    else {
+        panic!("expected LocalDetached");
+    };
+    assert_eq!(pgid, Some(4242));
+    assert_eq!(start_identity.as_deref(), Some("Mon Aug  3 10:55:00 2026"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_detached_real_shell_lifecycle() {
+    let tmp = std::env::temp_dir().join(format!("wisp_local_real_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store
+        .upsert_execution_context(&superscience_store::ExecutionContext::new("local", "Local").unwrap())
+        .await
+        .unwrap();
+    let manager = RunManager::new();
+    let submitted = manager
+        .submit(
+            store.clone(),
+            "p".into(),
+            None,
+            SubmitRunRequest {
+                context_id: "local".into(),
+                command: "printf 'real-shell-ok\\n'".into(),
+                title: Some("Real local".into()),
+                timeout_secs: Some(60),
+                input_paths: None,
+                output_specs: None,
+            },
+            Some(tmp.clone()),
+        )
+        .await
+        .unwrap();
+    let finished = wait_for_terminal(&store, &submitted.run_id).await;
+    assert_eq!(
+        finished.status,
+        superscience_store::RunStatus::Succeeded,
+        "stderr={:?} poll_error={:?} handle={:?}",
+        finished.stderr_tail,
+        finished.last_poll_error,
+        finished.remote_handle_json
+    );
+    assert_eq!(finished.exit_code, Some(0));
+    assert!(finished
+        .stdout_tail
+        .as_deref()
+        .unwrap_or_default()
+        .contains("real-shell-ok"));
+    if let Some(workdir) = finished.remote_workdir.as_deref() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let path = workdir.replacen("~", &home, 1);
+        let _ = std::fs::remove_dir_all(path);
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
 }

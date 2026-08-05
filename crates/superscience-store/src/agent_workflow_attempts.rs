@@ -54,6 +54,7 @@ impl BudgetReservation {
 pub enum AgentWorkflowAttemptStatus {
     Queued,
     Running,
+    WaitingRun,
     Succeeded,
     Failed,
     Cancelled,
@@ -65,6 +66,7 @@ impl AgentWorkflowAttemptStatus {
         match self {
             Self::Queued => "queued",
             Self::Running => "running",
+            Self::WaitingRun => "waiting_run",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -76,6 +78,7 @@ impl AgentWorkflowAttemptStatus {
         match value {
             "queued" => Ok(Self::Queued),
             "running" => Ok(Self::Running),
+            "waiting_run" => Ok(Self::WaitingRun),
             "succeeded" => Ok(Self::Succeeded),
             "failed" => Ok(Self::Failed),
             "cancelled" => Ok(Self::Cancelled),
@@ -806,21 +809,38 @@ impl Store {
     }
 
     pub async fn request_agent_workflow_cancel(&self, workflow_id: &str) -> Result<u64> {
+        let mut tx = self.begin_write().await?;
         let root_workflow_id = sqlx::query_scalar::<_, String>(
             "SELECT root_workflow_id FROM agent_workflows WHERE id=?",
         )
         .bind(workflow_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?
         .unwrap_or_else(|| workflow_id.to_string());
+        let now = chrono::Utc::now().timestamp();
         let updated = sqlx::query(
             "UPDATE agent_workflow_attempts SET cancel_requested=1,updated_at=? \
-             WHERE root_workflow_id=? AND status IN ('queued','running')",
+             WHERE root_workflow_id=? AND status IN ('queued','running','waiting_run')",
         )
-        .bind(chrono::Utc::now().timestamp())
-        .bind(root_workflow_id)
-        .execute(&self.pool)
+        .bind(now)
+        .bind(&root_workflow_id)
+        .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            "UPDATE runs SET \
+               status=CASE WHEN status='draft' THEN 'cancelled' ELSE 'cancelling' END,\
+               ended_at=CASE WHEN status='draft' THEN COALESCE(ended_at,?) ELSE ended_at END \
+             WHERE id IN (\
+               SELECT link.run_id FROM agent_workflow_run_activities link \
+               JOIN agent_workflow_attempts attempt ON attempt.id=link.attempt_id \
+               WHERE attempt.root_workflow_id=?\
+             ) AND status IN ('draft','submitted','running')",
+        )
+        .bind(now)
+        .bind(&root_workflow_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(updated.rows_affected())
     }
 
@@ -989,7 +1009,7 @@ impl Store {
         .bind(now)
         .execute(&mut *tx)
         .await?;
-        let attempts = sqlx::query(
+        let mut attempts = sqlx::query(
             "UPDATE agent_workflow_attempts SET status='failed',error=COALESCE(error,?),\
              delegation_slot_yielded=0,finished_at=COALESCE(finished_at,?),updated_at=? \
              WHERE status IN ('queued','running') \
@@ -1001,10 +1021,37 @@ impl Store {
         .execute(&mut *tx)
         .await?
         .rows_affected();
-        let mut workflows = sqlx::query(
-            "UPDATE agent_workflows SET status='failed',version=version+1,updated_at=? WHERE status='running'",
+        attempts += sqlx::query(
+            "UPDATE agent_workflow_attempts SET status='failed',\
+             error=COALESCE(error,'The linked Run activity is missing or belongs to another project.'),\
+             finished_at=COALESCE(finished_at,?),updated_at=? \
+             WHERE status='waiting_run' AND NOT EXISTS (\
+               SELECT 1 FROM agent_workflow_run_activities link \
+               JOIN runs r ON r.id=link.run_id \
+               JOIN agent_workflows w ON w.id=agent_workflow_attempts.workflow_id \
+               WHERE link.attempt_id=agent_workflow_attempts.id AND r.project_id=w.project_id\
+             )",
         )
         .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let mut workflows = sqlx::query(
+            "UPDATE agent_workflows SET status='failed',version=version+1,updated_at=? \
+             WHERE status='running' AND (\
+               EXISTS (SELECT 1 FROM agent_workflow_attempts failed \
+                       WHERE failed.root_workflow_id=agent_workflows.root_workflow_id \
+                       AND failed.status='failed' AND failed.finished_at=? \
+                       AND (failed.error=? OR failed.error='The linked Run activity is missing or belongs to another project.')) \
+               OR NOT EXISTS (SELECT 1 FROM agent_workflow_attempts waiting \
+                              WHERE waiting.root_workflow_id=agent_workflows.root_workflow_id \
+                              AND waiting.status='waiting_run')\
+             )",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(reason)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -1039,6 +1086,12 @@ fn validate_transition(
                 | AgentWorkflowAttemptStatus::Blocked
         ) | (
             AgentWorkflowAttemptStatus::Running,
+            AgentWorkflowAttemptStatus::Succeeded
+                | AgentWorkflowAttemptStatus::Failed
+                | AgentWorkflowAttemptStatus::Cancelled
+                | AgentWorkflowAttemptStatus::WaitingRun
+        ) | (
+            AgentWorkflowAttemptStatus::WaitingRun,
             AgentWorkflowAttemptStatus::Succeeded
                 | AgentWorkflowAttemptStatus::Failed
                 | AgentWorkflowAttemptStatus::Cancelled

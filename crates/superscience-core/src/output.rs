@@ -6,6 +6,13 @@
 //! (confirmation prompts) is guarded with interior mutability in impls.
 
 use serde_json::Value;
+use std::future::Future;
+use std::pin::Pin;
+
+/// Object-safe async hook used by interactive outputs. Most headless outputs
+/// keep the synchronous defaults below; desktop outputs return a future that
+/// yields while the UI sends its decision back.
+pub type OutputFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait Output: Send + Sync {
     fn assistant_text(&self, _delta: &str) {}
@@ -21,11 +28,12 @@ pub trait Output: Send + Sync {
         _cached: u64,
         _ctx_tokens: usize,
         _max_context: usize,
+        _context_usage: crate::ContextUsage,
     ) {
     }
     fn compaction(&self, _before: usize, _after: usize, _strategy: &str) {}
-    /// Fired once when the context estimate crosses the warning threshold —
-    /// the agent never compacts on its own; the user decides (/compact).
+    /// Fired once when the context estimate crosses the warning threshold and
+    /// automatic compaction is disabled or could not bring it back under.
     fn context_warning(&self, _ctx_tokens: usize, _max_context: usize) {}
     fn diff(&self, _path: &str, _old: &str, _new: &str) {}
     fn file_changed(&self, _path: &str) {}
@@ -43,10 +51,32 @@ pub trait Output: Send + Sync {
             superscience_tools::ConfirmDecision::Denied { feedback: None }
         }
     }
+    /// Async confirmation path used by [`ToolEnvAdapter`]. The default bridges
+    /// existing CLI/test outputs to their synchronous implementation; GUI
+    /// hosts should override it so waiting never blocks their command runtime.
+    fn confirm_async<'a>(&'a self, message: &'a str) -> OutputFuture<'a, bool> {
+        Box::pin(async move { self.confirm(message) })
+    }
+    /// Async variant carrying rejection feedback.
+    fn confirm_decision_async<'a>(
+        &'a self,
+        message: &'a str,
+    ) -> OutputFuture<'a, superscience_tools::ConfirmDecision> {
+        Box::pin(async move { self.confirm_decision(message) })
+    }
     /// Approval mode for a tool about to run. Default `Allow` preserves the old
     /// auto-run behaviour; the Tauri host overrides it from its saved policy.
     fn approval_mode(&self, _tool: &str) -> superscience_tools::Approval {
         superscience_tools::Approval::Allow
+    }
+    /// Desktop hosts can coordinate project resources across conversations.
+    /// The default keeps CLI and test execution independent.
+    fn acquire_tool_resources<'a>(
+        &'a self,
+        _tool: &'a str,
+        _args: &'a Value,
+    ) -> OutputFuture<'a, Result<Option<superscience_tools::ToolResourceLease>, String>> {
+        Box::pin(async { Ok(None) })
     }
     /// Whether this conversation bypasses approval prompts. Explicit blocks
     /// and the tool registry's plan-mode gate remain authoritative.
@@ -123,13 +153,20 @@ impl<'a> superscience_tools::ToolEnv for ToolEnvAdapter<'a> {
         self.out.restrict_read_paths_to_project()
     }
     async fn confirm(&self, message: &str) -> bool {
-        self.out.confirm(message)
+        self.out.confirm_async(message).await
     }
     async fn confirm_decision(&self, message: &str) -> superscience_tools::ConfirmDecision {
-        self.out.confirm_decision(message)
+        self.out.confirm_decision_async(message).await
     }
     async fn approval_mode(&self, tool: &str) -> superscience_tools::Approval {
         self.out.approval_mode(tool)
+    }
+    async fn acquire_tool_resources(
+        &self,
+        tool: &str,
+        args: &Value,
+    ) -> Result<Option<superscience_tools::ToolResourceLease>, String> {
+        self.out.acquire_tool_resources(tool, args).await
     }
     fn approval_bypass(&self) -> bool {
         self.out.approval_bypass()
@@ -155,12 +192,8 @@ impl<'a> superscience_tools::ToolEnv for ToolEnvAdapter<'a> {
     }
     async fn emit(&self, event: superscience_tools::ToolEvent) {
         match event {
-            superscience_tools::ToolEvent::Call { name, preview } => {
-                self.out.tool_call(&name, &preview)
-            }
-            superscience_tools::ToolEvent::Diff { path, old, new } => {
-                self.out.diff(&path, &old, &new)
-            }
+            superscience_tools::ToolEvent::Call { name, preview } => self.out.tool_call(&name, &preview),
+            superscience_tools::ToolEvent::Diff { path, old, new } => self.out.diff(&path, &old, &new),
             superscience_tools::ToolEvent::FileChanged { path } => self.out.file_changed(&path),
             superscience_tools::ToolEvent::Stdout { chunk } => self.out.stdout_chunk(&chunk),
             superscience_tools::ToolEvent::Presentation { kind, payload } => {
@@ -210,6 +243,7 @@ impl<'a> superscience_llm::StreamSink for StreamSinkAdapter<'a> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
     use superscience_llm::StreamSink;
 
     // The streaming loops break on `sink.is_cancelled()`; this proves the Stop
@@ -228,5 +262,54 @@ mod tests {
         );
         // A sink built without a cancel flag never reports cancelled.
         assert!(!StreamSinkAdapter::new(&out).is_cancelled());
+    }
+
+    struct AsyncConfirmOutput {
+        receiver: Mutex<Option<tokio::sync::oneshot::Receiver<superscience_tools::ConfirmDecision>>>,
+        sync_called: AtomicBool,
+    }
+
+    impl Output for AsyncConfirmOutput {
+        fn confirm_decision(&self, _message: &str) -> superscience_tools::ConfirmDecision {
+            self.sync_called.store(true, Ordering::SeqCst);
+            superscience_tools::ConfirmDecision::Denied { feedback: None }
+        }
+
+        fn confirm_decision_async<'a>(
+            &'a self,
+            _message: &'a str,
+        ) -> OutputFuture<'a, superscience_tools::ConfirmDecision> {
+            let receiver = self.receiver.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                receiver
+                    .await
+                    .unwrap_or(superscience_tools::ConfirmDecision::Denied { feedback: None })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_env_yields_while_async_confirmation_is_pending() {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let output = AsyncConfirmOutput {
+            receiver: Mutex::new(Some(receiver)),
+            sync_called: AtomicBool::new(false),
+        };
+        let env = ToolEnvAdapter::new(std::path::PathBuf::from("."), &output);
+        let decision = superscience_tools::ToolEnv::confirm_decision(&env, "Run tool?");
+        tokio::pin!(decision);
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut decision)
+                .await
+                .is_err(),
+            "a pending UI decision must keep the tool call suspended"
+        );
+        sender.send(superscience_tools::ConfirmDecision::Approved).unwrap();
+        assert_eq!(decision.await, superscience_tools::ConfirmDecision::Approved);
+        assert!(
+            !output.sync_called.load(Ordering::SeqCst),
+            "the adapter must not fall back to the runtime-blocking sync hook"
+        );
     }
 }

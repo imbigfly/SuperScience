@@ -9,6 +9,7 @@ use superscience_skills::SkillIndex;
 pub struct SystemPrompt<'a> {
     project_root: &'a Path,
     skills: &'a SkillIndex,
+    project_instructions: Option<String>,
     user_rules: Option<String>,
     compute_hosts: Option<String>,
 }
@@ -19,20 +20,23 @@ impl<'a> SystemPrompt<'a> {
         skills: &'a SkillIndex,
         compute_hosts: Option<String>,
     ) -> Self {
-        let user_rules =
-            std::fs::read_to_string(project_root.join(".superscience").join("SUPERSCIENCE.md"))
-                .ok()
-                .filter(|s| !s.trim().is_empty());
+        let project_instructions = std::fs::read_to_string(project_root.join("AGENTS.md"))
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let user_rules = std::fs::read_to_string(project_root.join(".superscience").join("SUPERSCIENCE.md"))
+            .ok()
+            .filter(|s| !s.trim().is_empty());
         Self {
             project_root,
             skills,
+            project_instructions,
             user_rules,
             compute_hosts,
         }
     }
 
     fn base_intro() -> String {
-        "You are **SuperScience**, an interactive AI agent for software engineering and scientific computing tasks. \
+        "You are **superscience**, an interactive AI agent for software engineering and scientific computing tasks. \
 \"superscience\" is your name and identity — always refer to yourself as superscience. You are NOT \"Claude Science\", \
 \"Claude\", \"ChatGPT\", \"Gemini\", or any other assistant or product, and you must never call yourself by those names, \
 even though you are built on top of a large language model.\n\n\
@@ -80,6 +84,7 @@ never reduce the promised samples or scientific objective without the user's exp
     fn tool_guidance() -> String {
         "## Tool Selection\n\n\
 Use the dedicated tool when one exists (read/write/edit/search/grep/attempt_completion). Reach for **shell** only when no dedicated tool fits — it runs PowerShell on Windows and POSIX `sh` on macOS/Linux, with a 60s timeout.\n\
+When the user asks what a configured Workflow is, what it does, or how it works, call **explain_workflow** when available and explain the returned task graph. Inspection is not execution: do not call **delegate_tasks** unless the user asks to run the Workflow.\n\
 Use **edit** (not write) for small in-place changes; read the target first so `old` matches the current file exactly, and ensure `old` is unique or pass `all=true`.\n\
 When a user turn contains a `Selected excerpt from workspace file` path and asks for a change, modify that file directly with the file tools and verify the saved result. Do not merely reply with a replacement code block.\n\
 Use **view_image** for screenshots, UI mockups, error screens, and diagrams. The `read` tool auto-routes image files (.png/.jpg/.jpeg/.gif/.webp) to vision, but call `view_image` directly when the path is computed.\n\
@@ -91,7 +96,7 @@ Always finish with **attempt_completion** to present the final result.\n".into()
     fn environment_guidance() -> String {
         "## Python, R, And Local Environments\n\n\
 Use the existing **python** tool for ordinary analysis; its variables and loaded data persist across cells. **A missing package is a setup step, not a dead end.** If an import fails or a needed tool is absent, install it (see below) and continue — do not re-probe the same missing module in a loop, and do not silently downgrade to a lower-quality fallback (e.g. a worse PDF/text extractor) that yields garbled output. Install once, confirm the import, then proceed. Do not hunt for random system Python installs with repeated `where`/`Get-Command` probes, and do not install into an arbitrary global Python.\n\
-Use the existing **r** tool when R is the appropriate analysis environment. It requires an existing `Rscript` and `jsonlite`; do not silently install R or packages. Interpreter paths belong to the selected execution context's persisted settings. When the user supplies or asks to change a Python/R path, use `set_runtime_interpreter` with the matching `context_id` if that tool is available; never try to change the SuperScience host process environment from a shell tool.\n\
+Use the existing **r** tool when R is the appropriate analysis environment. It requires an existing `Rscript` and `jsonlite`; do not silently install R or packages. Interpreter paths belong to the selected execution context's persisted settings. When the user supplies or asks to change a Python/R path, use `set_runtime_interpreter` with the matching `context_id` if that tool is available; never try to change the Wisp host process environment from a shell tool.\n\
 When packages or a project-specific scientific stack are needed, call `use_skill` for `local-env-setup` first. For local bioinformatics/scientific package work, prefer a project-local **pixi** environment: `pixi init`, `pixi add ...`, then `pixi run python ...` from the project directory.\n\
 Before any `pip`, `uv`, `npm`, or `pixi add` download, consider the user's network. If mainland-China or corporate-mirror access is likely or requested, configure PyPI/uv and pixi conda/PyPI mirrors first; otherwise use defaults.\n".into()
     }
@@ -113,8 +118,10 @@ If a named workflow is disabled or unavailable, follow the same principles direc
         let availability = if count == 1 { "skill is" } else { "skills are" };
         format!(
             "## Skills Selection Guidelines\n\n\
-{count} installed {availability} available. Their catalog and bodies are not preloaded.\n\n\
+{count} {availability} currently configured, enabled, and searchable for this project/session. Their catalog and bodies are not preloaded.\n\n\
 - When a task may match an installed workflow, call `search_skills` with concise task or domain keywords.\n\
+- When the user asks how many Skills are configured, enabled, effective, shadowed, or broken, use `list_skill_catalog` and read its explicitly named count fields.\n\
+- Treat `current_configured_enabled_count` as authoritative for this Agent snapshot. If the user cites a different UI or remembered count, report the discrepancy; do not accept, relabel, or explain the user's number without supporting inventory data.\n\
 - Then call `use_skill` with the exact returned name before proceeding.\n\
 - If the user already attached a selected skill's guidance to the turn, follow that content without loading it again.\n"
         )
@@ -136,10 +143,17 @@ If a named workflow is disabled or unavailable, follow the same principles direc
     }
 
     fn memory(&self) -> String {
-        match &self.user_rules {
-            Some(rules) => format!("## User Rules\n\n{rules}\n"),
-            None => "## User Rules\n\nNo user-defined rules.\n".into(),
+        let mut sections = Vec::new();
+        if let Some(instructions) = &self.project_instructions {
+            sections.push(format!(
+                "## Project Instructions (AGENTS.md)\n\n{instructions}"
+            ));
         }
+        sections.push(match &self.user_rules {
+            Some(rules) => format!("## User Rules\n\n{rules}"),
+            None => "## User Rules\n\nNo user-defined rules.".into(),
+        });
+        sections.join("\n\n") + "\n"
     }
 
     fn environment(&self) -> String {
@@ -180,6 +194,28 @@ mod tests {
     use superscience_skills::SkillIndex;
 
     #[test]
+    fn project_agents_md_is_loaded_before_wisp_rules() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp-agents-md-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".superscience")).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "Use the repository checks.").unwrap();
+        std::fs::write(root.join(".superscience/SUPERSCIENCE.md"), "Prefer the project UI setting.").unwrap();
+
+        let out = SystemPrompt::new(&root, &SkillIndex::default(), None).assemble();
+        let agents = out.find("Use the repository checks.").unwrap();
+        let wisp = out.find("Prefer the project UI setting.").unwrap();
+        assert!(
+            agents < wisp,
+            "SUPERSCIENCE.md must remain the later override:\n{out}"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn assemble_includes_compute_hosts_when_present() {
         let skills = SkillIndex::default();
         let sp = SystemPrompt::new(
@@ -209,7 +245,7 @@ mod tests {
         // claimed an Anthropic model while actually running GLM. Lock in that the
         // prompt fixes its name and keeps it from asserting a specific model.
         assert!(
-            out.contains("You are **SuperScience**"),
+            out.contains("You are **superscience**"),
             "identity anchor missing:\n{out}"
         );
         assert!(
@@ -280,6 +316,21 @@ mod tests {
     }
 
     #[test]
+    fn prompt_separates_workflow_explanation_from_execution() {
+        let skills = SkillIndex::default();
+        let out = SystemPrompt::new(std::path::Path::new("/tmp"), &skills, None).assemble();
+        assert!(
+            out.contains("call **explain_workflow** when available"),
+            "{out}"
+        );
+        assert!(out.contains("Inspection is not execution"), "{out}");
+        assert!(
+            out.contains("do not call **delegate_tasks** unless the user asks"),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn prompt_makes_user_cancelled_plan_steps_terminal() {
         let skills = SkillIndex::default();
         let out = SystemPrompt::new(std::path::Path::new("/tmp"), &skills, None).assemble();
@@ -304,7 +355,7 @@ mod tests {
     #[test]
     fn prompt_keeps_skill_catalog_out_of_context() {
         let root = std::env::temp_dir().join(format!(
-            "superscience-system-prompt-skills-{}-{}",
+            "wisp-system-prompt-skills-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -321,8 +372,12 @@ mod tests {
         let skills = SkillIndex::load(&[root.clone()]);
 
         let out = SystemPrompt::new(std::path::Path::new("/tmp"), &skills, None).assemble();
-        assert!(out.contains("1 installed skill is available"), "{out}");
+        assert!(
+            out.contains("1 skill is currently configured, enabled, and searchable"),
+            "{out}"
+        );
         assert!(out.contains("`search_skills`"), "{out}");
+        assert!(out.contains("do not accept, relabel, or explain"), "{out}");
         assert!(!out.contains("secret-skill"), "{out}");
         assert!(!out.contains("SHOULD_NOT_BE_IN_SYSTEM_PROMPT"), "{out}");
 

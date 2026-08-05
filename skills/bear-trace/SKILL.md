@@ -6,6 +6,14 @@ description: >
   **以下情况请主动触发本技能**：用户问"这个问题是怎么来的"、"帮我溯源这个方向"、"这个领域怎么发展的"、"这篇论文是建立在谁的基础上的"、"从头讲一下这个方向的历史"、"入门一个新领域想先了解演化脉络"——即使用户没有说"bear-trace"，只要意图是**理解一个研究问题或领域的来龙去脉**，就使用本技能。加 `-d N` 控制向前溯源的层数（默认 3 层）。
 
   不适用于：为观点找支持文献（用 bear-support）、找反对文献（用 bear-counter）、选题查重（用 bear-scoop）、概念地图（用 bear-map）。
+wisp:
+  schema_version: 1
+  domains: [scientific-literature]
+  research_stages: [retrieval, synthesis]
+  roles: [retrieval, synthesizer]
+  evidence_types: [literature]
+  outputs: [research-timeline, literature-review]
+  side_effects: network
 ---
 
 # bear-trace · 文献溯源

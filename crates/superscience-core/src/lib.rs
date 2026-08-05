@@ -1,12 +1,14 @@
-//! Agent runtime for SuperScience: context compaction, system-prompt assembly, the
+//! Agent runtime for Wisp: context compaction, system-prompt assembly, the
 //! agent loop, markdown memory, and memory tools.
 
 pub mod agent;
+pub mod archive;
 pub mod context;
 pub mod delegation;
 pub mod delegation_policy;
 pub mod execution;
 pub mod memory;
+pub mod method_search;
 pub mod orchestration;
 pub mod output;
 pub mod provenance;
@@ -14,12 +16,13 @@ pub mod subagent;
 pub mod system_prompt;
 
 pub use agent::{agent_loop, agent_loop_continue, GuidanceQueue};
-pub use context::ContextManager;
+pub use context::{ContextManager, ContextToolDetail, ContextUsage, ContextUsageDetails};
 pub use delegation::{
-    AgentArtifact, AgentAuthorizationSnapshot, AgentBackend, AgentBudget, AgentDelegationLineage,
-    AgentDelegationRequest, AgentDelegationResponse, AgentDelegator, AgentEvidence,
-    AgentExecutorRef, AgentOrigin, AgentOutputSchemaSource, AgentRequestPreferences, AgentRole,
-    AgentSessionPolicy, AgentSpec, AgentUsage, AgentWorkspacePolicy, CapabilityRevision,
+    degraded_delivery_marker, is_degraded_delivery, AgentArtifact, AgentAuthorizationSnapshot,
+    AgentBackend, AgentBudget, AgentDelegationLineage, AgentDelegationRequest,
+    AgentDelegationResponse, AgentDelegator, AgentEvidence, AgentExecutorRef, AgentOrigin,
+    AgentOutputSchemaSource, AgentRequestPreferences, AgentRole, AgentSessionPolicy,
+    AgentSkillBinding, AgentSpec, AgentUsage, AgentWorkspacePolicy, CapabilityRevision,
     ContextPolicy, DelegationStatus, PermissionSet, SpecialistSnapshot, UnconfiguredAgentDelegator,
     ValidatedAgentDelegationRequest, MAX_AGENT_DELEGATION_DEPTH, MAX_AGENT_OUTPUT_SCHEMA_BYTES,
 };
@@ -30,14 +33,15 @@ pub use delegation_policy::{
 };
 pub use execution::{
     DelegationExecutionObserver, DelegationExecutionResult, DelegationExecutionStatus,
-    DelegationExecutor, DelegationStepExecution, NoopDelegationObserver,
+    DelegationExecutor, DelegationStepExecution, NoopDelegationObserver, WorkflowRunActivityDriver,
+    WorkflowRunActivityRequest,
 };
 pub use memory::MemoryManager;
 pub use orchestration::{
-    DelegationMode, DelegationPlan, DelegationPlanStep, DYNAMIC_DELEGATION_SCHEMA_VERSION,
-    MAX_DELEGATION_TASKS,
+    DelegationMode, DelegationPlan, DelegationPlanStep, RunActivitySpec, WorkflowTaskKind,
+    DYNAMIC_DELEGATION_SCHEMA_VERSION, MAX_DELEGATION_TASKS,
 };
-pub use output::{NullOutput, Output, StreamSinkAdapter, ToolEnvAdapter};
+pub use output::{NullOutput, Output, OutputFuture, StreamSinkAdapter, ToolEnvAdapter};
 pub use provenance::ProvenanceRecord;
 pub use subagent::ExploreTool;
 pub use system_prompt::SystemPrompt;
@@ -57,9 +61,10 @@ pub fn build_registry(
     memory_enabled: bool,
 ) -> Registry {
     let mut reg = Registry::builtins();
-    reg.add(Box::new(superscience_skills::SearchSkillsTool::new(
+    reg.add(Box::new(superscience_skills::ListSkillCatalogTool::new(
         skills.clone(),
     )));
+    reg.add(Box::new(superscience_skills::SearchSkillsTool::new(skills.clone())));
     reg.add(Box::new(superscience_skills::UseSkillTool::new(skills)));
     if memory_enabled {
         reg.add(Box::new(SearchMemoryTool::new(memory.clone())));
@@ -96,9 +101,10 @@ impl Agent {
         // The explore subagent shares the primary model but runs in its own
         // context; only its anchor (stats + conclusion + trace path) lands in
         // the main context.
-        tools.add(Box::new(subagent::ExploreTool::new(Arc::from(
-            superscience_llm::build(cfg),
-        ))));
+        tools.add(Box::new(subagent::ExploreTool::new(
+            Arc::from(superscience_llm::build(cfg)),
+            max_context,
+        )));
         let session_path = root.join(".superscience").join("session.json");
         let mut ctx = ContextManager::new(max_context);
         ctx.load(&session_path);
@@ -193,7 +199,8 @@ impl Agent {
     }
 
     /// User-triggered `/compact`: archive the full history under
-    /// `.superscience/history/`, then fold old turns (see `ContextManager::compact`).
+    /// `.superscience/history/`, then safely prune noise or install a semantic summary
+    /// checkpoint plus a bounded recent tail (see `ContextManager::compact`).
     /// Returns (before, after) estimated tokens and the archive path.
     pub async fn compact(&mut self) -> Result<(usize, usize, PathBuf), String> {
         let archive = self
@@ -201,8 +208,17 @@ impl Agent {
             .join(".superscience")
             .join("history")
             .join(format!("session-{}.json", chrono::Utc::now().timestamp()));
-        let (before, after) = self.ctx.compact(self.provider.as_ref(), &archive).await?;
+        let schemas = self.tools.schemas();
+        let fixed_tokens = ContextManager::estimated_tool_tokens(&schemas);
+        let (before, after) = self
+            .ctx
+            .compact_with_reserve(self.provider.as_ref(), &archive, fixed_tokens)
+            .await?;
         Ok((before, after, archive))
+    }
+
+    pub fn set_auto_compact(&mut self, enabled: bool) {
+        self.ctx.set_auto_compact(enabled);
     }
 
     /// Register an extra tool (e.g. the Python `repl` tool or MCP tools).

@@ -2,23 +2,25 @@
 //! or calls `attempt_completion`. Ported from mangopi-cli's `agent_loop`,
 //! retuned for streaming + the shared `Output` sink.
 
+use crate::archive::{prune_dir, ArchiveRetention};
 use crate::context::{image_content, ContextManager};
 use crate::output::{StreamSinkAdapter, ToolEnvAdapter};
 use crate::provenance;
 use crate::Output;
 use anyhow::Result;
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use superscience_llm::{
     is_retriable, Completion, Content, LlmError, Message, Part, Provider, ToolCall, ToolSchema,
 };
-use superscience_tools::{ImageData, Registry, ToolEnv};
+use superscience_tools::{ImageData, Registry, ToolControl, ToolEnv};
 
 const RETRY_DELAYS: [u64; 5] = [2_000, 10_000, 30_000, 60_000, 120_000];
 const TRUNCATED_OUTPUT_MESSAGE: &str = "模型输出在达到 max_tokens 上限时被截断，任务可能尚未完成——请在设置中调高该模型的 max_tokens，或直接继续对话让我接着做。(output truncated at max_tokens)";
 const STREAM_CUT_MESSAGE: &str = "模型响应流在中途被断开（未收到结束标记），已生成的部分内容不完整、不会计入上下文。常见原因：网络不稳定、代理/中转站切断连接，或同一 API key 的并发请求达到上限（例如多个会话同时使用同一模型）。可重发消息重试；需要并行会话时建议错开请求或使用不同的 API key。(stream cut mid-response, #437)";
+const EMPTY_RESPONSE_MESSAGE: &str = "模型完成了本轮推理，但没有返回可显示的文本或工具调用。对话上下文和已完成的工具结果均已保留；请点击“继续执行”重新生成最终回复。若长对话中反复出现，请先发送 /compact 压缩上下文。(model returned no visible response)";
 /// How many byte-identical tool-call batches within the recent window count as
 /// "stuck". Windowed (not consecutive) so alternating A/B/A/B loops also trip it.
 const STUCK_REPEAT_LIMIT: usize = 5;
@@ -27,39 +29,69 @@ const STUCK_REPEAT_LIMIT: usize = 5;
 /// other calls between each repeat.
 const STUCK_WINDOW: usize = 16;
 const STUCK_LOOP_MESSAGE: &str = "检测到智能体连续多次发出完全相同的工具调用且没有进展，已中断以避免空转烧 token——通常是模型退化，建议换用更强的模型或换一种问法。(aborted: agent repeated an identical tool call with no progress)";
-/// Interpreter/shell output is an unbounded print stream, not content the model
-/// asked to read — budget it at ingestion: the context message is written once
-/// and never rewritten (provider prefix caches stay valid), while the full text
-/// still reaches the user via the tool_result/stdout events emitted before the
-/// truncation. read/grep/edit results keep their own tool-level caps instead:
-/// budgeting a requested file read would break the read.
-const STREAM_OUTPUT_TOOLS: [&str; 3] = ["shell", "python", "r"];
-/// Total byte budget (head + tail) for a stream tool result in the context.
-/// ~16 KiB ≈ 4K estimated tokens. Override with SUPERSCIENCE_TOOL_RESULT_BUDGET
-/// (bytes; 0 disables). ponytail: env knob only, per-tool budgets when needed.
+/// Tool output is an unbounded external payload, not durable conversation
+/// state. Budget every textual result at ingestion: the full text still
+/// reaches the user through the tool-result event emitted before truncation,
+/// while the main model gets a bounded head/tail excerpt. This also covers
+/// read/grep/browser/MCP tools whose own safety cap can exceed a model window.
+/// Total byte budget (head + tail) for one tool result in the model context.
+/// ~16 KiB ≈ 4K estimated tokens. Override with WISP_TOOL_RESULT_BUDGET
+/// (bytes; 0 disables).
 const DEFAULT_STREAM_RESULT_BUDGET: usize = 16 * 1024;
 
-/// Head/tail-truncate a stream tool's text result to the ingestion budget,
-/// with a marker telling the model what was elided and how to get it back.
-fn budget_stream_result(tool_name: &str, content: Content) -> Content {
-    if !STREAM_OUTPUT_TOOLS.contains(&tool_name) {
-        return content;
-    }
-    let Content::Text(text) = &content else {
-        return content;
-    };
-    let budget = std::env::var("SUPERSCIENCE_TOOL_RESULT_BUDGET")
+fn auto_compact_archive_path(root: &Path) -> PathBuf {
+    root.join(".superscience").join("history").join(format!(
+        "session-auto-{}-{}.json",
+        chrono::Utc::now().timestamp_millis(),
+        uuid::Uuid::new_v4().simple()
+    ))
+}
+
+/// Head/tail-truncate a tool's text result to the ingestion budget. The full
+/// text is written under `.superscience/tool-output/` so the model can read/grep it back.
+fn budget_tool_result(root: &Path, tool_name: &str, content: Content) -> Content {
+    let budget = std::env::var("WISP_TOOL_RESULT_BUDGET")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(DEFAULT_STREAM_RESULT_BUDGET);
+    budget_tool_result_with_limit(root, tool_name, content, budget)
+}
+
+fn budget_tool_result_with_limit(
+    root: &Path,
+    tool_name: &str,
+    content: Content,
+    budget: usize,
+) -> Content {
+    let Content::Text(text) = &content else {
+        return content;
+    };
     if budget == 0 || text.len() <= budget {
         return content;
     }
+    let spill_dir = root.join(".superscience").join("tool-output");
+    let safe_name = tool_name.replace(['/', '\\'], "_");
+    let spill_path = spill_dir.join(format!(
+        "{safe_name}-{}.txt",
+        chrono::Utc::now().timestamp_millis()
+    ));
+    if std::fs::create_dir_all(&spill_dir).is_ok() {
+        let _ = std::fs::write(&spill_path, text.as_bytes());
+        prune_dir(&spill_dir, ArchiveRetention::default());
+    }
     let half = budget / 2;
-    let marker = format!(
-        "[... ~{} bytes omitted to fit the context budget; the full output was shown to the user. Persist data you need to a file, or re-run with narrower filters (head/tail/grep). ...]",
-        text.len() - budget
-    );
+    let marker = if spill_path.is_file() {
+        format!(
+            "[... ~{} bytes omitted from {tool_name}; full output at {} — read/grep narrow ranges; do not load the whole file ...]",
+            text.len().saturating_sub(budget),
+            spill_path.display()
+        )
+    } else {
+        format!(
+            "[... ~{} bytes omitted from {tool_name} to fit the model-context budget; the full output was shown to the user. Re-run with narrower ranges or filters for omitted details. ...]",
+            text.len().saturating_sub(budget)
+        )
+    };
     Content::text(ContextManager::truncate_middle(text, half, half, &marker))
 }
 
@@ -243,24 +275,90 @@ async fn agent_loop_inner(
             }
         }
         iteration += 1;
-        let messages = ctx.prepare_for_api(output);
+        let (schemas, schema_origins) = tools.schemas_with_origins();
+        let fixed_request_tokens = ContextManager::estimated_tool_tokens(&schemas);
+        // Match the long-context behaviour used by mangopi-cli: check the
+        // budget at every model boundary, not only when the user first sends a
+        // turn. Wisp's archive-first compactor preserves the full transcript
+        // on disk before folding old turns, so automatic recovery has the same
+        // retrievability contract as manual `/compact`.
+        if ctx.needs_auto_compact_with_reserve(fixed_request_tokens) {
+            let archive = auto_compact_archive_path(root);
+            match ctx
+                .compact_with_reserve(provider, &archive, fixed_request_tokens)
+                .await
+            {
+                Ok((before, after)) => output.compaction(before, after, "auto"),
+                Err(error) => {
+                    tracing::warn!(
+                        archive = %archive.display(),
+                        "automatic context compaction failed: {error}"
+                    );
+                }
+            }
+        }
         let mut sink = match cancel {
             Some(c) => StreamSinkAdapter::with_cancel(output, c),
             None => StreamSinkAdapter::new(output),
         };
-        let comp = match stream_with_retry(provider, &messages, &tools.schemas(), &mut sink, cancel)
-            .await
-        {
-            // ponytail: no auto-retry after a cut — re-streaming would duplicate the
-            // already-emitted deltas in the UI; add a sink reset event if this recurs.
-            Err(LlmError::Incomplete) => anyhow::bail!(STREAM_CUT_MESSAGE),
-            r => r?,
+        let mut overflow_recovery_used = false;
+        let comp = loop {
+            let messages = ctx.prepare_for_api_with_reserve(output, fixed_request_tokens);
+            match stream_with_retry(provider, &messages, &schemas, &mut sink, cancel).await {
+                Ok(comp) => break comp,
+                Err(LlmError::Incomplete) => anyhow::bail!(STREAM_CUT_MESSAGE),
+                Err(error) if error.is_context_overflow() && !overflow_recovery_used => {
+                    overflow_recovery_used = true;
+                    let archive = auto_compact_archive_path(root);
+                    match ctx
+                        .compact_with_reserve(provider, &archive, fixed_request_tokens)
+                        .await
+                    {
+                        Ok((before, after)) => output.compaction(before, after, "overflow"),
+                        Err(compact_error) => {
+                            anyhow::bail!(
+                                "context overflow recovery failed: {compact_error} (original: {error})"
+                            );
+                        }
+                    }
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            }
         };
+        if comp.usage.input_tokens > 0 {
+            ctx.calibrate(comp.usage.input_tokens, ctx.last_request_estimated_tokens());
+        }
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
             anyhow::bail!("stopped by user");
         }
         if is_truncated(comp.finish_reason.as_deref()) {
             anyhow::bail!(TRUNCATED_OUTPUT_MESSAGE);
+        }
+        // A few reasoning models can terminate cleanly after spending output
+        // tokens entirely on `reasoning_content`, leaving neither user-visible
+        // text nor a tool call. Treating that as success produces a bare
+        // "Processed" row and, worse, persists an empty assistant turn. Fail
+        // resumably instead: tool results already appended to the context stay
+        // intact, so Resume asks only for the missing final response.
+        if comp.content.trim().is_empty() && comp.tool_calls.is_empty() {
+            let context_usage = ctx.context_usage(&schemas, &schema_origins);
+            let context_tokens = context_usage.total();
+            debug_assert_eq!(
+                context_tokens,
+                ctx.request_tokens_with_reserve(fixed_request_tokens)
+            );
+            output.usage(
+                iteration,
+                comp.usage.input_tokens,
+                comp.usage.output_tokens,
+                comp.usage.reasoning_tokens,
+                comp.usage.cached_input_tokens,
+                context_tokens,
+                ctx.max_context,
+                context_usage,
+            );
+            anyhow::bail!(EMPTY_RESPONSE_MESSAGE);
         }
 
         ctx.append_assistant(
@@ -271,14 +369,21 @@ async fn agent_loop_inner(
         if let Some(m) = ctx.messages.last() {
             output.on_message(m);
         }
+        let context_usage = ctx.context_usage(&schemas, &schema_origins);
+        let context_tokens = context_usage.total();
+        debug_assert_eq!(
+            context_tokens,
+            ctx.request_tokens_with_reserve(fixed_request_tokens)
+        );
         output.usage(
             iteration,
             comp.usage.input_tokens,
             comp.usage.output_tokens,
             comp.usage.reasoning_tokens,
             comp.usage.cached_input_tokens,
-            ctx.total_tokens(),
+            context_tokens,
             ctx.max_context,
+            context_usage,
         );
 
         if comp.tool_calls.is_empty() {
@@ -301,8 +406,8 @@ async fn agent_loop_inner(
             anyhow::bail!(STUCK_LOOP_MESSAGE);
         }
 
-        let mut completed = false;
-        for tc in &comp.tool_calls {
+        let mut batch_control = ToolControl::Continue;
+        for (index, tc) in comp.tool_calls.iter().enumerate() {
             let name = tc.function.name.clone();
             let args = tc.args_value();
             let producing = provenance::is_producing(&name);
@@ -328,6 +433,7 @@ async fn agent_loop_inner(
             };
             let t0 = std::time::Instant::now();
             let result = tools.run(&name, &args, &env).await;
+            let control = result.control;
             let duration_ms = t0.elapsed().as_millis() as u64;
             if let Some(root) = &root {
                 let root2 = root.clone();
@@ -381,16 +487,33 @@ async fn agent_loop_inner(
                 )
             };
             output.tool_result(&tools.event_name(&name, &args), ok, &tool_text, duration_ms);
-            ctx.append_tool(&tc.id, &name, budget_stream_result(&name, content));
+            ctx.append_tool(
+                &tc.id,
+                &name,
+                budget_tool_result(env.project_root(), &name, content),
+            );
             if let Some(m) = ctx.messages.last() {
                 output.on_message(m);
             }
-            if name == "attempt_completion" {
-                completed = true;
+
+            if control != ToolControl::Continue {
+                // A user decision invalidates calls the model optimistically
+                // placed later in the same batch. Do not execute them, but do
+                // persist a synthetic result for each one: providers require
+                // every assistant tool call to have a matching tool message.
+                append_skipped_tool_results(
+                    ctx,
+                    tools,
+                    output,
+                    &comp.tool_calls[index + 1..],
+                    &name,
+                    control,
+                );
+                batch_control = control;
                 break;
             }
         }
-        if completed {
+        if batch_control == ToolControl::StopTurn {
             break;
         }
         if iteration_limit_reached(iteration, max_iter) {
@@ -401,6 +524,36 @@ async fn agent_loop_inner(
         }
     }
     Ok(())
+}
+
+fn append_skipped_tool_results(
+    ctx: &mut ContextManager,
+    tools: &Registry,
+    output: &dyn Output,
+    skipped: &[ToolCall],
+    boundary_name: &str,
+    control: ToolControl,
+) {
+    let reason = match control {
+        ToolControl::StopBatch => format!(
+            "Skipped because the user's decision on '{boundary_name}' invalidated later calls from the same model batch."
+        ),
+        ToolControl::StopTurn => format!(
+            "Skipped because '{boundary_name}' ended the turn before this call. Wait for the user's next message."
+        ),
+        ToolControl::Continue => return,
+    };
+    for tc in skipped {
+        let name = &tc.function.name;
+        let args = tc.args_value();
+        let event_name = tools.event_name(name, &args);
+        output.tool_call(&event_name, &reason);
+        output.tool_result(&event_name, false, &reason, 0);
+        ctx.append_tool(&tc.id, name, Content::text(reason.clone()));
+        if let Some(message) = ctx.messages.last() {
+            output.on_message(message);
+        }
+    }
 }
 
 fn iteration_limit_reached(iteration: usize, max_iter: usize) -> bool {
@@ -436,7 +589,7 @@ async fn describe_image(
     let comp = provider
         .complete(
             &[
-                Message::system("You are SuperScience's vision subagent. Return concise, factual observations for a non-visual main agent. Do not invent details that are not visible."),
+                Message::system("You are Wisp's vision subagent. Return concise, factual observations for a non-visual main agent. Do not invent details that are not visible."),
                 user,
             ],
             &[],
@@ -501,10 +654,11 @@ mod tests {
     use super::*;
     use crate::output::NullOutput;
     use async_trait::async_trait;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use superscience_llm::{FunctionCall, ToolCall};
-    use superscience_tools::{Registry, Tool, ToolEnv, ToolResult};
+    use superscience_tools::ask_user::ASK_USER;
+    use superscience_tools::{Approval, Registry, Tool, ToolEnv, ToolResult};
 
     #[test]
     fn retry_window_covers_sustained_provider_overload() {
@@ -526,6 +680,33 @@ mod tests {
         assert!(!iteration_limit_reached(usize::MAX, 0));
         assert!(!iteration_limit_reached(99, 100));
         assert!(iteration_limit_reached(100, 100));
+    }
+
+    #[test]
+    fn every_text_tool_result_is_bounded_before_it_enters_model_context() {
+        let root = std::env::temp_dir().join(format!("wisp-budget-tool-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let raw = format!("BEGIN\n{}\nEND", "界".repeat(20_000));
+        let original_len = raw.len();
+
+        let bounded =
+            budget_tool_result_with_limit(&root, "read", Content::text(raw.clone()), 16 * 1024);
+        let text = bounded.as_text();
+
+        assert!(text.len() < original_len);
+        assert!(text.contains("full output at"));
+        assert!(text.starts_with("BEGIN"));
+        assert!(text.ends_with("END"));
+        assert!(
+            ContextManager::estimated_tokens(&Message::tool("call-read", "read", text)) < 5_000
+        );
+        let spill = std::fs::read_dir(root.join(".superscience/tool-output"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(spill.path()).unwrap(), raw);
+        std::fs::remove_dir_all(&root).ok();
     }
 
     struct FixedProvider {
@@ -558,6 +739,669 @@ mod tests {
         ) -> superscience_llm::Result<Completion> {
             Ok(self.completion.clone())
         }
+    }
+
+    struct SequenceProvider {
+        completions: Mutex<VecDeque<Completion>>,
+        stream_calls: AtomicUsize,
+    }
+
+    struct FailingCompactProvider {
+        complete_requests: Mutex<Vec<Vec<Message>>>,
+        stream_calls: AtomicUsize,
+    }
+
+    struct AutoCompactProvider {
+        stream_calls: AtomicUsize,
+    }
+
+    struct OverflowRecoverProvider {
+        stream_calls: AtomicUsize,
+        complete_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for OverflowRecoverProvider {
+        fn name(&self) -> &str {
+            "overflow-recover"
+        }
+
+        fn model(&self) -> &str {
+            "overflow-recover"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> superscience_llm::Result<Completion> {
+            self.complete_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Completion {
+                content: "Objective\nRecovered after overflow.".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            })
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
+            let call = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                return Err(LlmError::Api {
+                    status: 400,
+                    body: "maximum context length exceeded".into(),
+                });
+            }
+            Ok(Completion {
+                content: "continued after overflow recovery".into(),
+                finish_reason: Some("stop".into()),
+                usage: superscience_llm::Usage {
+                    input_tokens: 1_000,
+                    ..Default::default()
+                },
+                ..Completion::default()
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Provider for AutoCompactProvider {
+        fn name(&self) -> &str {
+            "auto-compact"
+        }
+
+        fn model(&self) -> &str {
+            "auto-compact"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> superscience_llm::Result<Completion> {
+            Ok(Completion {
+                content: "Objective\nContinue the current conversation after compaction.".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            })
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Completion {
+                content: "continued after compacting".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Provider for FailingCompactProvider {
+        fn name(&self) -> &str {
+            "failing-compact"
+        }
+
+        fn model(&self) -> &str {
+            "failing-compact"
+        }
+
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> superscience_llm::Result<Completion> {
+            self.complete_requests
+                .lock()
+                .unwrap()
+                .push(messages.to_vec());
+            Err(LlmError::Config("forced compact failure".into()))
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            Err(LlmError::Config(
+                "main stream failed after degraded compaction".into(),
+            ))
+        }
+    }
+
+    impl SequenceProvider {
+        fn new(completions: impl IntoIterator<Item = Completion>) -> Self {
+            Self {
+                completions: Mutex::new(completions.into_iter().collect()),
+                stream_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn next(&self) -> superscience_llm::Result<Completion> {
+            self.completions
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| LlmError::Incomplete)
+        }
+    }
+
+    #[async_trait]
+    impl Provider for SequenceProvider {
+        fn name(&self) -> &str {
+            "sequence"
+        }
+
+        fn model(&self) -> &str {
+            "sequence"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> superscience_llm::Result<Completion> {
+            self.next()
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            self.next()
+        }
+    }
+
+    struct CountingTool {
+        name: &'static str,
+        runs: Arc<AtomicUsize>,
+    }
+
+    struct CompactionCounter(AtomicUsize);
+
+    impl Output for CompactionCounter {
+        fn compaction(&self, _before: usize, _after: usize, strategy: &str) {
+            assert_eq!(strategy, "auto");
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl Tool for CountingTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                self.name,
+                "count executions",
+                serde_json::json!({"type": "object"}),
+            )
+        }
+
+        async fn run(&self, _args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            ToolResult::ok("ran")
+        }
+    }
+
+    fn call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: name.into(),
+                arguments: arguments.to_string(),
+            },
+        }
+    }
+
+    fn tool_result_ids(ctx: &ContextManager) -> Vec<&str> {
+        ctx.messages
+            .iter()
+            .filter_map(|message| message.tool_call_id.as_deref())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn auto_compacts_at_each_model_boundary_and_archives_first() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp_auto_compact_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = AutoCompactProvider {
+            stream_calls: AtomicUsize::new(0),
+        };
+        let output = CompactionCounter(AtomicUsize::new(0));
+        let mut ctx = ContextManager::new(1_000);
+        let tools = Registry::builtins().filtered(&[]);
+        for turn in 0..12 {
+            ctx.append_user(format!("question {turn} {}", "u".repeat(180)));
+            ctx.append_assistant(format!("answer {turn} {}", "a".repeat(180)), vec![], None);
+        }
+        assert!(ctx.needs_auto_compact());
+
+        agent_loop(
+            &mut ctx, &provider, None, &tools, &root, &output, "continue", 0, None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output.0.load(Ordering::SeqCst), 1);
+        assert_eq!(ctx.compaction_revision(), 1);
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+        let archives = std::fs::read_dir(root.join(".superscience/history"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(archives.len(), 1, "automatic compaction must archive once");
+        assert!(archives[0].path().is_file());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn failed_auto_compaction_still_attempts_the_main_request() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp_auto_compact_failure_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = FailingCompactProvider {
+            complete_requests: Mutex::new(Vec::new()),
+            stream_calls: AtomicUsize::new(0),
+        };
+        let mut ctx = ContextManager::new(10_000);
+        ctx.append_user(format!("oversized {}", "x".repeat(50_000)));
+        let original = serde_json::to_string(&ctx.messages).unwrap();
+        let tools = Registry::builtins().filtered(&[]);
+
+        let error = agent_loop_continue(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            0,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("main stream failed after degraded compaction"));
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(serde_json::to_string(&ctx.messages).unwrap(), original);
+        assert!(!ctx.messages.iter().any(|message| message
+            .content
+            .as_text()
+            .contains("Return only the updated checkpoint")));
+        assert_eq!(provider.complete_requests.lock().unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn context_overflow_triggers_one_forced_compaction_and_retries() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp_overflow_recover_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = OverflowRecoverProvider {
+            stream_calls: AtomicUsize::new(0),
+            complete_calls: AtomicUsize::new(0),
+        };
+        let mut ctx = ContextManager::new(10_000);
+        ctx.set_auto_compact(false);
+        for turn in 0..12 {
+            ctx.append_user(format!("question {turn} {}", "u".repeat(1_500)));
+            ctx.append_assistant(format!("answer {turn} {}", "a".repeat(1_500)), vec![], None);
+        }
+        let tools = Registry::builtins().filtered(&[]);
+
+        agent_loop_continue(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            0,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 2);
+        assert!(provider.complete_calls.load(Ordering::SeqCst) >= 1);
+        assert!(ctx.messages.iter().any(|message| {
+            message
+                .content
+                .as_text()
+                .contains("continued after overflow recovery")
+        }));
+        assert!(ctx.compaction_revision() >= 1);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn successful_ask_user_skips_later_calls_and_ends_the_turn() {
+        let later_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([
+            Completion {
+                tool_calls: vec![
+                    call(
+                        "ask-1",
+                        ASK_USER,
+                        serde_json::json!({
+                            "question": "Which reference genome?",
+                            "options": [{ "label": "GRCh38" }]
+                        }),
+                    ),
+                    call("later-1", "later", serde_json::json!({})),
+                ],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            },
+            Completion {
+                content: "continued without waiting".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(superscience_tools::ask_user::AskUserTool));
+        tools.add(Box::new(CountingTool {
+            name: "later",
+            runs: later_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &NullOutput,
+            "prepare the analysis",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            provider.stream_calls.load(Ordering::SeqCst),
+            1,
+            "the loop must wait for the user's next message after ask_user"
+        );
+        assert_eq!(
+            later_runs.load(Ordering::SeqCst),
+            0,
+            "a sibling call after ask_user must not execute"
+        );
+        assert_eq!(ctx.messages.len(), 4);
+        assert_eq!(ctx.messages[2].tool_name.as_deref(), Some(ASK_USER));
+        assert_eq!(tool_result_ids(&ctx), vec!["ask-1", "later-1"]);
+        assert!(ctx.messages[3].content.as_text().contains("ended the turn"));
+    }
+
+    #[tokio::test]
+    async fn successful_propose_plan_skips_later_calls_and_ends_the_turn() {
+        let later_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([
+            Completion {
+                tool_calls: vec![
+                    call(
+                        "plan-1",
+                        superscience_tools::plan::PROPOSE_PLAN,
+                        serde_json::json!({
+                            "entries": [{ "content": "Implement the fix" }]
+                        }),
+                    ),
+                    call("later-1", "later", serde_json::json!({})),
+                ],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            },
+            Completion {
+                content: "continued without plan approval".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(superscience_tools::plan::ProposePlanTool));
+        tools.add(Box::new(CountingTool {
+            name: "later",
+            runs: later_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &NullOutput,
+            "plan the change",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(later_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(tool_result_ids(&ctx), vec!["plan-1", "later-1"]);
+    }
+
+    struct DenyApprovalOutput;
+
+    impl Output for DenyApprovalOutput {
+        fn confirm(&self, _message: &str) -> bool {
+            false
+        }
+
+        fn approval_mode(&self, tool: &str) -> Approval {
+            if tool == "approval_tool" {
+                Approval::Ask
+            } else {
+                Approval::Allow
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn denied_approval_skips_stale_siblings_before_the_model_reacts() {
+        let approved_tool_runs = Arc::new(AtomicUsize::new(0));
+        let later_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([
+            Completion {
+                tool_calls: vec![
+                    call("approval-1", "approval_tool", serde_json::json!({})),
+                    call("later-1", "later", serde_json::json!({})),
+                ],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            },
+            Completion {
+                content: "I will respect the denial.".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(CountingTool {
+            name: "approval_tool",
+            runs: approved_tool_runs.clone(),
+        }));
+        tools.add(Box::new(CountingTool {
+            name: "later",
+            runs: later_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &DenyApprovalOutput,
+            "perform approved work",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(approved_tool_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(later_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(tool_result_ids(&ctx), vec!["approval-1", "later-1"]);
+        assert!(ctx.messages[3]
+            .content
+            .as_text()
+            .contains("invalidated later calls"));
+    }
+
+    #[tokio::test]
+    async fn empty_terminal_response_is_resumable_without_replaying_tools() {
+        let tool_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([
+            Completion {
+                tool_calls: vec![call("work-1", "work", serde_json::json!({}))],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            },
+            Completion {
+                reasoning: Some("The work succeeded; I should summarize it.".into()),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+            Completion {
+                content: "Work completed successfully.".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(CountingTool {
+            name: "work",
+            runs: tool_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+
+        let error = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &NullOutput,
+            "do the work",
+            0,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("model returned no visible response"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(tool_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(ctx.messages.len(), 3, "empty assistant is not persisted");
+        assert_eq!(ctx.messages[2].tool_call_id.as_deref(), Some("work-1"));
+
+        agent_loop_continue(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &NullOutput,
+            0,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(tool_runs.load(Ordering::SeqCst), 1, "Resume reran the tool");
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            ctx.messages.last().unwrap().content.as_text(),
+            "Work completed successfully."
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_completion_skips_later_sibling_calls() {
+        let later_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([Completion {
+            tool_calls: vec![
+                call(
+                    "complete-1",
+                    "attempt_completion",
+                    serde_json::json!({"result": "done"}),
+                ),
+                call("later-1", "later", serde_json::json!({})),
+            ],
+            finish_reason: Some("tool_calls".into()),
+            ..Completion::default()
+        }]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(CountingTool {
+            name: "later",
+            runs: later_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &NullOutput,
+            "finish",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(later_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(tool_result_ids(&ctx), vec!["complete-1", "later-1"]);
     }
 
     struct RecordingProvider {
@@ -840,11 +1684,11 @@ mod tests {
         }
     }
 
-    // Stream-tool (shell/python/r) results are budgeted when INGESTED into the
-    // context — written once, never rewritten — while other tools' results are
-    // stored verbatim. The elision marker tells the model how to recover.
+    // Every text tool result is budgeted when INGESTED into model context —
+    // written once, never rewritten. The elision marker names the source tool
+    // and tells the model how to recover omitted details with a narrower call.
     #[tokio::test]
-    async fn stream_tool_results_are_budgeted_at_ingestion_others_untouched() {
+    async fn all_text_tool_results_are_budgeted_at_ingestion() {
         let call = |id: &str, name: &str| ToolCall {
             id: id.into(),
             kind: "function".into(),
@@ -904,7 +1748,10 @@ mod tests {
         assert!(py.ends_with("TAIL-MARK"), "tail kept");
         assert!(py.contains("bytes omitted"), "elision marker present");
         let other = by_name("noisy_other");
-        assert!(other.len() > 40_000, "non-stream result stored verbatim");
+        assert!(other.len() < 20_000, "all text tools use the same budget");
+        assert!(other.starts_with("HEAD-MARK"), "other head kept");
+        assert!(other.ends_with("TAIL-MARK"), "other tail kept");
+        assert!(other.contains("bytes omitted from noisy_other"));
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -931,10 +1778,8 @@ mod tests {
         let mut tools = Registry::builtins();
         tools.add(Box::new(OkTool));
         let mut ctx = ContextManager::new(100_000);
-        let root = std::env::temp_dir().join(format!(
-            "superscience-core-stuck-loop-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("superscience-core-stuck-loop-test-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
 
         let err = agent_loop(
@@ -1028,10 +1873,8 @@ mod tests {
         let mut tools = Registry::builtins();
         tools.add(Box::new(OkTool));
         let mut ctx = ContextManager::new(100_000);
-        let root = std::env::temp_dir().join(format!(
-            "superscience-core-alt-loop-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("superscience-core-alt-loop-test-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
 
         let err = agent_loop(

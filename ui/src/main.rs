@@ -43,7 +43,7 @@ use pet::{PetDesktop, PetOverlay};
 use project_landing::{ProjectLanding, ProjectLandingState};
 use publication::{PublicationEvidenceSource, PublicationWorkspaceModal};
 use research::{refresh_research_graph, ResearchGraphModal};
-use serde_wasm_bindgen::to_value;
+use serde_wasm_bindgen::{from_value, to_value};
 use settings_view::{DeleteConfirm, SettingsView, SettingsViewState};
 use sidebar::{Sidebar, SidebarState};
 use std::cell::{Cell, RefCell};
@@ -77,6 +77,24 @@ const SIDEBAR_RESIZER_WIDTH: f64 = 10.0;
 const THEME_STORAGE_KEY: &str = "superscience-theme";
 const SIDE_CHAT_SCROLLER_ID: &str = "side-chat-scroller";
 const SIDE_CHAT_INPUT_ID: &str = "side-chat-input";
+
+fn project_transfer_stage_label(locale: Locale, stage: &str) -> String {
+    let key = match stage {
+        "selecting_export_destination" => "projects.transfer.selecting_export_destination",
+        "selecting_import_destination" => "projects.transfer.selecting_import_destination",
+        "selecting_archive" => "projects.transfer.selecting_archive",
+        "preparing" => "projects.transfer.preparing",
+        "scanning" => "projects.transfer.scanning",
+        "writing" => "projects.transfer.writing",
+        "validating" => "projects.transfer.validating",
+        "publishing" => "projects.transfer.publishing",
+        "reading" => "projects.transfer.reading",
+        "extracting" => "projects.transfer.extracting",
+        "registering" => "projects.transfer.registering",
+        _ => "projects.transfer.preparing",
+    };
+    t(locale, key)
+}
 
 /// Let component-owned inner surfaces consume Escape before the app-level
 /// stack sees it. The listener is capture-phase and owner-scoped, so it does
@@ -775,6 +793,9 @@ fn App() -> impl IntoView {
     let turn_undo_dialog = create_rw_signal::<Option<TurnUndoDialog>>(None);
     let turn_undo_busy = create_rw_signal(false);
     let turn_undo_error = create_rw_signal::<Option<String>>(None);
+    // ui_index of a user message whose edit would discard later conversation;
+    // Some means the edit/branch confirm modal is open for that message.
+    let edit_confirm = create_rw_signal::<Option<usize>>(None);
     // Interrupting a running turn (especially a language runtime) is not instant, so
     // keep track of the session whose Stop click is waiting for the backend.
     let stopping_session = create_rw_signal::<Option<String>>(None);
@@ -823,10 +844,14 @@ fn App() -> impl IntoView {
     // on `kind`; track just `kind` so editing command/url doesn't rebuild them.
     let conn_form_kind = create_memo(move |_| conn_form.get().map(|f| f.kind).unwrap_or_default());
     let settings = create_rw_signal(Settings::default());
+    // This mirrors the last persisted sync configuration. Keep it separate
+    // from `settings`, which also holds unsaved edits while Settings is open.
+    let sync_actions_available = create_rw_signal(false);
     let pet_status = create_rw_signal(PetStatus::default());
     // Configured model profiles + the composer's bottom-right picker state.
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
     let active_session = create_rw_signal::<Option<String>>(None);
+    let session_has_items = create_memo(move |_| items.with(|rows| !rows.is_empty()));
     let conversation_outline = create_memo(move |_| {
         let Some(id) = active_session.get() else {
             return Vec::new();
@@ -847,6 +872,25 @@ fn App() -> impl IntoView {
     let session_model_ids = create_rw_signal::<HashMap<String, String>>(HashMap::new());
     let acp_agents = create_rw_signal::<Vec<AcpAgentProfile>>(vec![]);
     let active_acp_agent_id = create_rw_signal::<Option<String>>(None);
+    let acp_context_usage =
+        create_rw_signal::<HashMap<String, ContextUsageSnapshot>>(HashMap::new());
+    let context_usage_open = create_rw_signal(false);
+    let context_usage_details = create_rw_signal::<Option<ContextUsageDetails>>(None);
+    let context_usage_detail_open = create_rw_signal::<Option<String>>(None);
+    let active_context_usage = create_memo(move |_| {
+        let session_id = active_session.get()?;
+        if active_acp_agent_id.get().is_some() {
+            acp_context_usage.with(|all| all.get(&session_id).cloned())
+        } else {
+            items.with(|rows| latest_context_usage(rows))
+        }
+    });
+    create_effect(move |_| {
+        let _ = active_session.get();
+        context_usage_open.set(false);
+        context_usage_details.set(None);
+        context_usage_detail_open.set(None);
+    });
     // An ACP Agent can only bind an empty frame. When the picker creates that
     // frame on demand, retain the intended selection while the async binding
     // lookup still (correctly) reports None before the first prompt.
@@ -868,6 +912,7 @@ fn App() -> impl IntoView {
     let demo_mode = create_rw_signal(false); // true = the synthetic "Example project" is open
     let scratch_open = create_rw_signal(false); // ephemeral scratch chat overlay
     let project_open_error = create_rw_signal(None::<String>);
+    let project_transfer = create_rw_signal(None::<ProjectTransferProgress>);
     let app_shell_entering = create_rw_signal(false);
     let project_transition_epoch = Rc::new(Cell::new(0u64));
     let project_transition_target = Rc::new(RefCell::new(None::<String>));
@@ -931,6 +976,12 @@ fn App() -> impl IntoView {
     // Set when a send fails because no API key is configured, so the status bar
     // can offer a one-click jump to Settings instead of a dead-end message.
     let needs_api_key = create_rw_signal(false);
+    // A built-in model context-overflow error opens a root-owned recovery
+    // choice. Keep it in the app Escape stack: it can appear without focus
+    // moving into the dialog, immediately after an async AgentEvent::Error.
+    let context_recovery_dialog = create_rw_signal::<Option<String>>(None);
+    let context_recovery_busy = create_rw_signal(false);
+    let context_recovery_error = create_rw_signal::<Option<String>>(None);
     let refresh_models = move || {
         spawn_local(async move {
             let v = invoke("list_models", JsValue::UNDEFINED).await;
@@ -1280,8 +1331,7 @@ fn App() -> impl IntoView {
     let research_graph = create_rw_signal(ResearchGraph::default());
     let show_research_graph = create_rw_signal(false);
     let show_publication_workspace = create_rw_signal(false);
-    let publication_binding_source =
-        create_rw_signal::<Option<PublicationEvidenceSource>>(None);
+    let publication_binding_source = create_rw_signal::<Option<PublicationEvidenceSource>>(None);
     create_effect(move |_| {
         side_chat_items.with(|items| items.len());
         if !show_right.get() || right_tab.get() != RightTab::SideChat {
@@ -1407,7 +1457,6 @@ fn App() -> impl IntoView {
     // interactive project-open path. The callback is built after `load_session`.
     let dedicated_project_id = url_project_param();
     let show_capabilities = create_rw_signal(false);
-    let show_capability_memory = create_rw_signal(false);
     let skill_filter_tag = create_rw_signal(String::new());
     let caps = create_rw_signal::<Option<Capabilities>>(None);
     let bootstrap = create_rw_signal::<Option<BootstrapStatus>>(None);
@@ -1757,6 +1806,7 @@ fn App() -> impl IntoView {
         }
         let v = invoke("get_settings", JsValue::UNDEFINED).await;
         if let Ok(cfg) = serde_wasm_bindgen::from_value::<Settings>(v) {
+            sync_actions_available.set(project_sync_backend_configured(&cfg));
             let loc = Locale::from_code(&cfg.locale);
             locale.set(loc);
             set_document_lang(loc);
@@ -2171,6 +2221,7 @@ fn App() -> impl IntoView {
                 cached,
                 ctx_tokens,
                 max_context,
+                context_usage,
                 ..
             } => {
                 // One usage row per reply: each round's usage (one API call)
@@ -2178,33 +2229,31 @@ fn App() -> impl IntoView {
                 // it never splits the coalesced tool-steps panel.
                 flush_now();
                 route_items(active_cb, items_cb, transcripts_cb, &frame_id, |v| {
-                    upsert_turn_usage(v, input, output, reasoning, cached);
+                    upsert_turn_usage(
+                        v,
+                        input,
+                        output,
+                        reasoning,
+                        cached,
+                        ctx_tokens,
+                        max_context,
+                        context_usage,
+                    );
                 });
-                // Status bar reflects only the active session's usage.
-                if active_cb.get().as_deref() == Some(&frame_id) {
-                    let pct = if max_context > 0 {
-                        ctx_tokens * 100 / max_context
-                    } else {
-                        0
-                    };
-                    let loc = locale_cb.get();
-                    status_cb.set(tf(
-                        loc,
-                        "status.usage",
-                        &[
-                            ("in", &fmt_tokens(input)),
-                            ("out", &fmt_tokens(output)),
-                            ("pct", &pct.to_string()),
-                        ],
-                    ));
-                }
             }
             AgentEvent::Compaction {
                 frame_id,
                 before,
                 after,
-                ..
+                strategy,
             } => {
+                route_items(active_cb, items_cb, transcripts_cb, &frame_id, |items| {
+                    items.push(ChatItem::Compaction {
+                        before,
+                        after,
+                        strategy,
+                    });
+                });
                 if active_cb.get().as_deref() == Some(&frame_id) {
                     status_cb.set(tf(
                         locale_cb.get(),
@@ -2296,6 +2345,13 @@ fn App() -> impl IntoView {
                         }
                         last_user.is_some()
                     };
+                let offer_context_recovery = !rolled_back
+                    && i18n::is_context_limit_error(&message)
+                    && active_cb.get_untracked().as_deref() == Some(&frame_id)
+                    // ACP owns its remote transcript and cannot run Wisp's
+                    // /compact + resume path. Do not offer an action that
+                    // cannot preserve its opaque session state.
+                    && active_acp_agent_id.get_untracked().is_none();
                 if !rolled_back {
                     let model = session_model_label(
                         &models_cb.get_untracked(),
@@ -2319,6 +2375,14 @@ fn App() -> impl IntoView {
                 set_pet_activity(&frame_id, "failed");
                 if stopping_session.get().as_deref() == Some(&frame_id) {
                     stopping_session.set(None);
+                }
+                if offer_context_recovery {
+                    // The modal supersedes any transient surface left open
+                    // when the async error arrived.
+                    selection_popup.set(None);
+                    context_recovery_busy.set(false);
+                    context_recovery_error.set(None);
+                    context_recovery_dialog.set(Some(frame_id));
                 }
             }
             AgentEvent::DelegationCompleted {
@@ -2684,23 +2748,27 @@ fn App() -> impl IntoView {
                 });
             }
             "Usage" => {
-                if active_session.get_untracked().as_deref() == Some(update.frame_id.as_str()) {
-                    let used = update
-                        .payload
-                        .get("used")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0);
-                    let size = update
-                        .payload
-                        .get("size")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0);
-                    status.set(if size == 0 {
-                        format!("ACP context: {used} tokens")
-                    } else {
-                        format!("ACP context: {used} / {size} tokens")
-                    });
-                }
+                let used = update
+                    .payload
+                    .get("used")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let max = update
+                    .payload
+                    .get("size")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as usize;
+                acp_context_usage.update(|all| {
+                    all.insert(
+                        update.frame_id,
+                        ContextUsageSnapshot {
+                            used,
+                            max,
+                            breakdown: None,
+                            estimated: false,
+                        },
+                    );
+                });
             }
             "SessionInfo" => {
                 if active_session.get_untracked().as_deref() == Some(update.frame_id.as_str()) {
@@ -2728,6 +2796,22 @@ fn App() -> impl IntoView {
     acp_update_cb.forget();
     spawn_local(async move {
         let _ = listen("acp-session-update", &acp_update_js).await;
+    });
+
+    let project_transfer_cb = Closure::wrap(Box::new(move |payload: JsValue| {
+        let Ok(progress) = serde_wasm_bindgen::from_value::<ProjectTransferProgress>(payload)
+        else {
+            return;
+        };
+        project_transfer.set(Some(progress));
+    }) as Box<dyn FnMut(JsValue)>);
+    let project_transfer_js: js_sys::Function = project_transfer_cb
+        .as_ref()
+        .unchecked_ref::<js_sys::Function>()
+        .clone();
+    project_transfer_cb.forget();
+    spawn_local(async move {
+        let _ = listen_current_window("project-transfer-progress", &project_transfer_js).await;
     });
 
     let acp_state_cb = Closure::wrap(Box::new(move |payload: JsValue| {
@@ -3196,6 +3280,12 @@ fn App() -> impl IntoView {
         if busy.get() {
             return;
         }
+        // Editing a message with later conversation after it would discard
+        // that conversation permanently — confirm first and offer a branch.
+        if items.with(|list| list.len() > ui_index + 1) {
+            edit_confirm.set(Some(ui_index));
+            return;
+        }
         rewind_to_user_item(ui_index);
     };
     let undo_message = Callback::new(move |assistant_ui_index: usize| {
@@ -3597,6 +3687,151 @@ fn App() -> impl IntoView {
         }
     };
 
+    let compact_context_recovery = Callback::new(move |id: String| {
+        if context_recovery_busy.get_untracked() {
+            return;
+        }
+        context_recovery_busy.set(true);
+        context_recovery_error.set(None);
+        spawn_local(async move {
+            let compact = to_value(&SendMessageArgs {
+                session_id: Some(id.clone()),
+                message: "/compact".into(),
+                attachments: vec![],
+                references: vec![],
+                resume: false,
+                acp_agent_id: None,
+                guide: None,
+                replace: None,
+            })
+            .unwrap();
+            if let Err(error) = invoke_checked("send_message", compact).await {
+                let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                context_recovery_error.set(Some(message));
+                context_recovery_busy.set(false);
+                return;
+            }
+
+            // /compact rewrites only the model context. The existing error row
+            // stays in the visual transcript until we remove it here; the
+            // completed tool rows remain and Resume continues after them.
+            if active_session.get_untracked().as_deref() == Some(id.as_str()) {
+                let model = session_model_label(
+                    &models.get_untracked(),
+                    &session_model_ids.get_untracked(),
+                    Some(&id),
+                );
+                items.update(|rows| {
+                    if let Some(index) = rows.iter().rposition(is_error_assistant) {
+                        rows.remove(index);
+                    }
+                    ensure_streaming_assistant(rows, model);
+                });
+            }
+            context_recovery_dialog.set(None);
+            context_recovery_error.set(None);
+            begin_pending_turn(pending_turns, running, &id);
+            force_chat_bottom();
+
+            let resume = to_value(&SendMessageArgs {
+                session_id: Some(id.clone()),
+                message: String::new(),
+                attachments: vec![],
+                references: vec![],
+                resume: true,
+                acp_agent_id: None,
+                guide: None,
+                replace: None,
+            })
+            .unwrap();
+            if let Err(error) = invoke_checked("send_message", resume).await {
+                let raw = js_error_text(error);
+                if raw.contains(NO_API_KEY_MARK) {
+                    needs_api_key.set(true);
+                }
+                status.set(tf(
+                    locale.get_untracked(),
+                    "status.send_failed",
+                    &[("msg", &localize_backend(locale.get_untracked(), &raw))],
+                ));
+            }
+            finish_pending_turn(pending_turns, running, &id);
+            context_recovery_busy.set(false);
+            refresh_session_history();
+        });
+    });
+
+    let new_session_context_recovery = Callback::new(move |source_id: String| {
+        if context_recovery_busy.get_untracked() {
+            return;
+        }
+        context_recovery_busy.set(true);
+        context_recovery_error.set(None);
+        spawn_local(async move {
+            let Some(id) = invoke("new_session", JsValue::UNDEFINED).await.as_string() else {
+                context_recovery_error.set(Some(t(locale.get_untracked(), "status.send_failed")));
+                context_recovery_busy.set(false);
+                return;
+            };
+
+            if active_session.get_untracked().as_deref() == Some(source_id.as_str()) {
+                transcripts.update(|all| {
+                    all.insert(source_id.clone(), items.get_untracked());
+                });
+            }
+            let prompt = t(locale.get_untracked(), "context_recovery.new_prompt");
+            let model = active_model_label(&models.get_untracked());
+            active_acp_agent_id.set(None);
+            active_session.set(Some(id.clone()));
+            transcript_pages.update(|pages| {
+                pages.entry(id.clone()).or_default().window_user_start = usize::MAX;
+            });
+            items.set(vec![
+                ChatItem::User(prompt.clone()),
+                ChatItem::Assistant {
+                    text: String::new(),
+                    model,
+                    resources: Vec::new(),
+                },
+            ]);
+            input.set(String::new());
+            attachments.set(vec![]);
+            composer_references.set(vec![]);
+            composer_quotes.set(vec![]);
+            context_recovery_dialog.set(None);
+            context_recovery_error.set(None);
+            begin_pending_turn(pending_turns, running, &id);
+            force_chat_bottom();
+            refresh_session_history();
+
+            let args = to_value(&SendMessageArgs {
+                session_id: Some(id.clone()),
+                message: prompt,
+                attachments: vec![],
+                references: vec![ComposerReferenceArg::Session { id: source_id }],
+                resume: false,
+                acp_agent_id: None,
+                guide: None,
+                replace: None,
+            })
+            .unwrap();
+            if let Err(error) = invoke_checked("send_message", args).await {
+                let raw = js_error_text(error);
+                if raw.contains(NO_API_KEY_MARK) {
+                    needs_api_key.set(true);
+                }
+                status.set(tf(
+                    locale.get_untracked(),
+                    "status.send_failed",
+                    &[("msg", &localize_backend(locale.get_untracked(), &raw))],
+                ));
+            }
+            finish_pending_turn(pending_turns, running, &id);
+            context_recovery_busy.set(false);
+            refresh_session_history();
+        });
+    });
+
     let pick_files = move |_| {
         if uploading.get() {
             return;
@@ -3965,6 +4200,8 @@ fn App() -> impl IntoView {
 
     let refresh_memory = move || {
         spawn_local(async move {
+            // Always load the window's active project when entering Memory;
+            // the picker can then browse another workspace without switching chat.
             let v = invoke("get_memory_view", JsValue::UNDEFINED).await;
             if let Ok(view) = serde_wasm_bindgen::from_value::<MemoryView>(v) {
                 memory_view.set(Some(view));
@@ -3990,8 +4227,16 @@ fn App() -> impl IntoView {
     let load_memory_file = move |name: String| {
         memory_selected.set(Some(name.clone()));
         memory_msg.set(None);
+        let project_id = memory_view
+            .get_untracked()
+            .map(|view| view.project_id)
+            .unwrap_or_default();
         spawn_local(async move {
-            let arg = to_value(&serde_json::json!({ "name": name })).unwrap();
+            let arg = to_value(&serde_json::json!({
+                "name": name,
+                "projectId": project_id,
+            }))
+            .unwrap();
             let v = invoke("read_memory_file", arg).await;
             memory_editor.set(v.as_string().unwrap_or_default());
         });
@@ -4081,7 +4326,6 @@ fn App() -> impl IntoView {
     };
     let open_settings = move |_| open_settings_fn(None);
     let open_capability_settings = Callback::new(move |section: String| {
-        show_capability_memory.set(false);
         show_capabilities.set(false);
         open_settings_fn(Some(section));
     });
@@ -4125,6 +4369,7 @@ fn App() -> impl IntoView {
                 cfg.has_sync_relay_token = true;
                 cfg.sync_relay_token.clear();
             }
+            sync_actions_available.set(project_sync_backend_configured(&cfg));
             busy.set(false);
             show.set(false);
             status_msg.set(t(loc.get(), "status.settings_saved").into());
@@ -4703,16 +4948,6 @@ fn App() -> impl IntoView {
             }
         });
     });
-    let refresh_agent_sessions = Callback::new(move |_: ()| refresh_session_history());
-
-    // Take-over from the Agents panel: load_session flips the right pane to
-    // Artifacts for the generic session-switch path, which made the panel (and
-    // the workflow being inspected) vanish mid-click (#442).
-    let takeover_session = Callback::new(move |id: String| {
-        load_session.call(id);
-        right_tab.set(RightTab::Agents);
-    });
-
     let load_earlier_messages = Callback::new(move |_: ()| {
         let Some(id) = active_session.get_untracked() else {
             return;
@@ -4929,17 +5164,23 @@ fn App() -> impl IntoView {
             )
             .await;
             if let Ok(demo) = serde_wasm_bindgen::from_value::<Demo>(v) {
-                let mut view = vec![ChatItem::User(demo.request.clone())];
-                if let Some(t) = &demo.thinking {
-                    if !t.is_empty() {
-                        view.push(ChatItem::Reasoning(t.clone()));
+                let mut view = if !demo.items.is_empty() {
+                    demo.items.into_iter().map(LoadedItem::into_chat).collect()
+                } else {
+                    let mut legacy = vec![ChatItem::User(demo.request.clone())];
+                    if let Some(t) = &demo.thinking {
+                        if !t.is_empty() {
+                            legacy.push(ChatItem::Reasoning(t.clone()));
+                        }
                     }
-                }
-                view.push(ChatItem::Assistant {
-                    text: demo.response.clone(),
-                    model: None,
-                    resources: Vec::new(),
-                });
+                    legacy.push(ChatItem::Assistant {
+                        text: demo.response.clone(),
+                        model: None,
+                        resources: Vec::new(),
+                    });
+                    legacy
+                };
+                settle_question_cards(&mut view);
                 items.set(view);
                 force_chat_bottom();
                 status_cb.set(tf(locale.get(), "status.demo", &[("title", &demo.title)]));
@@ -5195,7 +5436,6 @@ fn App() -> impl IntoView {
     };
 
     let open_capabilities = move |_| {
-        show_capability_memory.set(false);
         show_capabilities.set(true);
         refresh_capabilities(caps);
     };
@@ -5537,6 +5777,7 @@ fn App() -> impl IntoView {
     let runtime_object_states =
         create_rw_signal::<HashMap<String, RuntimeObjectState>>(HashMap::new());
     let run_records = create_rw_signal::<Vec<RunRecord>>(vec![]);
+    let run_clock = create_rw_signal(now_secs());
     let show_add_host = create_rw_signal(false);
     let host_alias = create_rw_signal(String::new());
     let host_hostname = create_rw_signal(String::new());
@@ -5801,6 +6042,7 @@ fn App() -> impl IntoView {
     {
         let ticks = Cell::new(0_u8);
         let refresh = Closure::wrap(Box::new(move || {
+            run_clock.set(now_secs());
             let tick = (ticks.get() + 1) % 5;
             ticks.set(tick);
             let transfer_active = run_records.get_untracked().iter().any(|run| {
@@ -6266,7 +6508,7 @@ fn App() -> impl IntoView {
                         });
                     }
                     context_menu::SessionAction::Delete(id) => {
-                        ui_confirm.set(Some(UiConfirm::DeleteSession(id)));
+                        ui_confirm.set(Some(UiConfirm::DeleteSessions(vec![id])));
                     }
                 }
             }
@@ -6274,6 +6516,10 @@ fn App() -> impl IntoView {
         })
     };
     let on_context_menu = move |ev: web_sys::MouseEvent| {
+        if context_menu::uses_native_text_menu(&ev) {
+            ctx_menu.set(None);
+            return;
+        }
         let loc = locale.get();
         let center = center_file.get_untracked();
         if let Some(menu) = context_menu::build(
@@ -6315,6 +6561,22 @@ fn App() -> impl IntoView {
             return;
         };
         if ev.key() != "Escape" || ev.default_prevented() || ime_composing(ev) {
+            return;
+        }
+        if let Some(transfer) = project_transfer.get() {
+            if transfer.is_complete() {
+                project_transfer.set(None);
+            }
+            ev.prevent_default();
+            ev.stop_propagation();
+            return;
+        }
+        if context_recovery_dialog.get().is_some() {
+            ev.prevent_default();
+            if !context_recovery_busy.get() {
+                context_recovery_dialog.set(None);
+                context_recovery_error.set(None);
+            }
             return;
         }
         if selection_popup.get().is_some() {
@@ -6441,6 +6703,11 @@ fn App() -> impl IntoView {
             turn_undo_error.set(None);
             return;
         }
+        if edit_confirm.get().is_some() {
+            ev.prevent_default();
+            edit_confirm.set(None);
+            return;
+        }
         if ui_confirm.get().is_some() {
             ev.prevent_default();
             ui_confirm.set(None);
@@ -6473,11 +6740,6 @@ fn App() -> impl IntoView {
             show_proj_settings.set(false);
             return;
         }
-        if show_capability_memory.get() {
-            ev.prevent_default();
-            show_capability_memory.set(false);
-            return;
-        }
         if show_capabilities.get() {
             ev.prevent_default();
             show_capabilities.set(false);
@@ -6485,6 +6747,11 @@ fn App() -> impl IntoView {
         }
 
         // --- menus / popovers ---
+        if context_usage_open.get() {
+            ev.prevent_default();
+            context_usage_open.set(false);
+            return;
+        }
         if artifact_menu.get().is_some() {
             ev.prevent_default();
             artifact_menu.set(None);
@@ -6943,16 +7210,25 @@ fn App() -> impl IntoView {
         });
     };
 
-    let move_session_to = {
-        Callback::new(move |(session_id, folder_id): (String, Option<String>)| {
-            spawn_local(async move {
-                let arg = to_value(&serde_json::json!({ "id": session_id, "folderId": folder_id }))
-                    .unwrap();
-                if invoke_checked("move_session", arg).await.is_ok() {
-                    refresh_session_history();
-                }
-            });
-        })
+    let move_sessions_to = {
+        Callback::new(
+            move |(session_ids, folder_id): (Vec<String>, Option<String>)| {
+                spawn_local(async move {
+                    let mut moved = false;
+                    for session_id in session_ids {
+                        let arg = to_value(&serde_json::json!({
+                            "id": session_id,
+                            "folderId": folder_id,
+                        }))
+                        .unwrap();
+                        moved |= invoke_checked("move_session", arg).await.is_ok();
+                    }
+                    if moved {
+                        refresh_session_history();
+                    }
+                });
+            },
+        )
     };
 
     let new_folder = move |_| {
@@ -7229,16 +7505,34 @@ fn App() -> impl IntoView {
         if show_projects.get_untracked() || demo_mode.get_untracked() {
             return;
         }
+        if project_transfer.get_untracked().is_some() {
+            return;
+        }
         let Some(id) = project_info.get_untracked().map(|project| project.id) else {
             return;
         };
         project_open_error.set(None);
+        project_transfer.set(Some(ProjectTransferProgress::selecting("export")));
         spawn_local(async move {
             let args = to_value(&serde_json::json!({ "id": id })).unwrap();
-            if let Err(error) = invoke_checked("export_project", args).await {
-                let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                status.set(message.clone());
-                project_open_error.set(Some(message));
+            match invoke_checked("export_project", args).await {
+                Ok(value) => {
+                    if let Ok(Some(path)) = serde_wasm_bindgen::from_value::<Option<String>>(value)
+                    {
+                        project_transfer.set(Some(ProjectTransferProgress::complete(
+                            "export",
+                            Some(path),
+                        )));
+                    } else {
+                        project_transfer.set(None);
+                    }
+                }
+                Err(error) => {
+                    project_transfer.set(None);
+                    let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                    status.set(message.clone());
+                    project_open_error.set(Some(message));
+                }
             }
         });
     });
@@ -7475,11 +7769,88 @@ fn App() -> impl IntoView {
             on_new_session=palette_new_session on_open_scratch=open_scratch
             on_project_settings=palette_project_settings
             on_manage_skills=palette_manage_skills on_attach=palette_attach />
+        {move || project_transfer.get().map(|transfer| {
+            let complete = transfer.is_complete();
+            let title = if complete {
+                t(
+                    locale.get(),
+                    if transfer.direction == "export" {
+                        "projects.transfer.export_complete"
+                    } else {
+                        "projects.transfer.import_complete"
+                    },
+                )
+            } else if transfer.direction == "export" {
+                t(locale.get(), "projects.transfer.export_title")
+            } else {
+                t(locale.get(), "projects.transfer.import_title")
+            };
+            let stage = if complete {
+                String::new()
+            } else {
+                project_transfer_stage_label(locale.get(), &transfer.stage)
+            };
+            let byte_progress = transfer.total_bytes.map(|total| {
+                format!(
+                    "{} / {}",
+                    format_bytes(transfer.completed_bytes),
+                    format_bytes(total),
+                )
+            });
+            let file_progress = transfer.total_files.map(|total| {
+                tf(
+                    locale.get(),
+                    "projects.transfer.files",
+                    &[
+                        ("done", &transfer.completed_files.to_string()),
+                        ("total", &total.to_string()),
+                    ],
+                )
+            });
+            let detail = transfer.current_path.clone();
+            let import_hint = (!complete && transfer.direction == "import")
+                .then(|| t(locale.get(), "projects.transfer.import_destination_hint"));
+            let max = transfer.total_bytes.unwrap_or(1).to_string();
+            let value = transfer.total_bytes.map(|_| transfer.completed_bytes.to_string());
+            view! {
+                <div class="overlay project-transfer-overlay">
+                    <div class="modal confirm-modal project-transfer-modal"
+                        data-testid="project-transfer-modal"
+                        role="dialog" aria-modal="true" aria-live="polite">
+                        <h2>{title}</h2>
+                        {(!complete).then(|| view! {
+                            <div class="project-transfer-progress" role="status">
+                                <span class="project-transfer-stage">{stage}</span>
+                                <progress max=max value=value></progress>
+                                <div class="project-transfer-meta">
+                                    {byte_progress.map(|progress| view! { <span>{progress}</span> })}
+                                    {file_progress.map(|progress| view! { <span>{progress}</span> })}
+                                </div>
+                            </div>
+                        })}
+                        {import_hint.map(|hint| view! {
+                            <div class="project-transfer-hint">{hint}</div>
+                        })}
+                        {detail.map(|path| view! {
+                            <div class="project-transfer-path" title=path.clone()>{path}</div>
+                        })}
+                        {complete.then(|| view! {
+                            <div class="row">
+                                <button type="button" class="primary"
+                                    on:click=move |_| project_transfer.set(None)>
+                                    {move || t(locale.get(), "projects.transfer.done")}
+                                </button>
+                            </div>
+                        })}
+                    </div>
+                </div>
+            }
+        })}
         <ProjectLanding
             state=ProjectLandingState {
                 show_projects, demo_mode, items, active_session, project_open_error,
                 demos, modal_artifact, locale, running, approval_pending,
-                command_palette_open,
+                sync_actions_available, command_palette_open, project_transfer,
             }
             open_project=switch_project
             open_project_session=palette_open_session
@@ -7828,17 +8199,14 @@ fn App() -> impl IntoView {
                                         on:click=move |_| {
                                             let version = version_for_download.clone();
                                             let release_url = release_for_download.clone();
+                                            let downloaded_bytes = create_rw_signal(0_u64);
+                                            let total_bytes = create_rw_signal(None::<u64>);
                                             update_check_modal.set(Some(UpdateCheckModal::Downloading {
                                                 version: version.clone(),
-                                                downloaded_bytes: 0,
-                                                total_bytes: None,
+                                                downloaded_bytes,
+                                                total_bytes,
                                             }));
                                             spawn_local(async move {
-                                                let downloaded = Rc::new(Cell::new(0_u64));
-                                                let total = Rc::new(Cell::new(None::<u64>));
-                                                let event_downloaded = downloaded.clone();
-                                                let event_total = total.clone();
-                                                let event_version = version.clone();
                                                 let callback = Closure::<dyn FnMut(JsValue)>::wrap(Box::new(
                                                     move |value: JsValue| {
                                                         let Ok(event) = serde_wasm_bindgen::from_value::<UpdateDownloadEvent>(value) else {
@@ -7846,20 +8214,15 @@ fn App() -> impl IntoView {
                                                         };
                                                         match event {
                                                             UpdateDownloadEvent::Started { content_length } => {
-                                                                event_total.set(content_length);
+                                                                total_bytes.set(content_length);
                                                             }
                                                             UpdateDownloadEvent::Progress { chunk_length } => {
-                                                                event_downloaded.set(
-                                                                    event_downloaded.get().saturating_add(chunk_length),
-                                                                );
+                                                                downloaded_bytes.update(|bytes| {
+                                                                    *bytes = bytes.saturating_add(chunk_length);
+                                                                });
                                                             }
                                                             UpdateDownloadEvent::Verified => {}
                                                         }
-                                                        update_check_modal.set(Some(UpdateCheckModal::Downloading {
-                                                            version: event_version.clone(),
-                                                            downloaded_bytes: event_downloaded.get(),
-                                                            total_bytes: event_total.get(),
-                                                        }));
                                                     },
                                                 ));
                                                 let result = download_app_update(
@@ -7909,11 +8272,6 @@ fn App() -> impl IntoView {
                     "update_modal.downloading_title",
                     &[("version", &version)],
                 );
-                let progress = if let Some(total) = total_bytes {
-                    format!("{} / {}", format_bytes(downloaded_bytes), format_bytes(total))
-                } else {
-                    format_bytes(downloaded_bytes)
-                };
                 view! {
                     <div class="overlay">
                         <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
@@ -7921,10 +8279,14 @@ fn App() -> impl IntoView {
                             <div class="hint">{move || t(locale.get(), "update_modal.downloading_body")}</div>
                             <div class="update-download-progress" role="status" aria-live="polite">
                                 <progress
-                                    max=total_bytes.unwrap_or(1).to_string()
-                                    value=total_bytes.map(|_| downloaded_bytes.to_string())
+                                    max=move || total_bytes.get().unwrap_or(1).to_string()
+                                    value=move || total_bytes.get().map(|_| downloaded_bytes.get().to_string())
                                 ></progress>
-                                <span>{progress}</span>
+                                <span>{move || if let Some(total) = total_bytes.get() {
+                                    format!("{} / {}", format_bytes(downloaded_bytes.get()), format_bytes(total))
+                                } else {
+                                    format_bytes(downloaded_bytes.get())
+                                }}</span>
                             </div>
                         </div>
                     </div>
@@ -8111,7 +8473,10 @@ fn App() -> impl IntoView {
                 session_history_cursor,
                 session_history_loading,
             ))
-            move_session_to=move_session_to
+            move_sessions_to=move_sessions_to
+            delete_sessions=Callback::new(move |ids: Vec<String>| {
+                ui_confirm.set(Some(UiConfirm::DeleteSessions(ids)));
+            })
             open_session_actions=Callback::new(move |(ev, id, title, pinned): (web_sys::MouseEvent, String, String, bool)| {
                 ctx_menu.set(Some(context_menu::session_menu(
                     ev.client_x() as f64,
@@ -8801,19 +9166,24 @@ fn App() -> impl IntoView {
                             let busy_now = busy.get();
                             let native_session = active_acp_agent_id.get().is_none();
                             let outline = conversation_outline.get();
-                            let user_offset = active_session
+                            // `load_session` deliberately swaps the visible rows before
+                            // publishing their session id. Carry the id in every keyed row
+                            // so that second update rebuilds callbacks which must target the
+                            // newly active session (notably background approval cards).
+                            let thread_session_id = active_session.get().unwrap_or_default();
+                            let user_offset = transcript_pages
                                 .get()
-                                .and_then(|id| transcript_pages.get().get(&id).copied())
+                                .get(&thread_session_id)
+                                .copied()
                                 .map_or(0, |page| page.user_offset);
                             let requested_start = if busy_now {
                                 usize::MAX
                             } else {
-                                active_session.get().and_then(|id| {
-                                    transcript_pages
-                                        .get()
-                                        .get(&id)
-                                        .map(|page| page.window_user_start)
-                                }).unwrap_or(usize::MAX)
+                                transcript_pages
+                                    .get()
+                                    .get(&thread_session_id)
+                                    .map(|page| page.window_user_start)
+                                    .unwrap_or(usize::MAX)
                             };
                             // `with` avoids deep-cloning every message per flush;
                             // only rows being built clone their item below.
@@ -8840,7 +9210,7 @@ fn App() -> impl IntoView {
                             // Keep process layers separate while the turn runs;
                             // once complete, fold commentary + reasoning + tools
                             // into one activity summary before the final answer.
-                            let mut rows: Vec<(usize, u64, ThreadRow)> = Vec::new();
+                            let mut rows: Vec<(String, usize, u64, ThreadRow)> = Vec::new();
                             let (window, _, _) = transcript_render_window(
                                 list,
                                 requested_start,
@@ -8866,7 +9236,7 @@ fn App() -> impl IntoView {
                                         .collect::<Vec<_>>()
                                         .join(" ");
                                     let items_only = run.into_iter().map(|(_, item)| item).collect();
-                                    rows.push((start, h.finish(), ThreadRow::Activity {
+                                    rows.push((thread_session_id.clone(), start, h.finish(), ThreadRow::Activity {
                                         items: items_only,
                                         ui_indices,
                                     }));
@@ -8894,7 +9264,7 @@ fn App() -> impl IntoView {
                                         .collect::<Vec<_>>()
                                         .join(" ");
                                     let items_only: Vec<ChatItem> = run.into_iter().map(|(_, c)| c).collect();
-                                    rows.push((start, h.finish(), ThreadRow::Steps {
+                                    rows.push((thread_session_id.clone(), start, h.finish(), ThreadRow::Steps {
                                         items: items_only,
                                         live,
                                         ui_indices,
@@ -8924,7 +9294,7 @@ fn App() -> impl IntoView {
                                     fp ^= (compact_assistant as u64) << 62;
                                     fp ^= (can_undo as u64) << 61;
                                     fp ^= timestamp.unwrap_or_default() as u64;
-                                    rows.push((i, fp, ThreadRow::Item {
+                                    rows.push((thread_session_id.clone(), i, fp, ThreadRow::Item {
                                         i,
                                         item: list[i].clone(),
                                         timestamp,
@@ -8938,8 +9308,8 @@ fn App() -> impl IntoView {
                             rows
                             })
                         }
-                        key=|(start, fp, _)| (*start, *fp)
-                        children=move |(start, _, row)| {
+                        key=|(session_id, start, fp, _)| (session_id.clone(), *start, *fp)
+                        children=move |(session_id, start, _, row)| {
                             match row {
                                 ThreadRow::Item {
                                     i,
@@ -8950,7 +9320,6 @@ fn App() -> impl IntoView {
                                     can_undo,
                                 } => {
                                     let arts = artifacts.get_untracked();
-                                    let sid = active_session.get().unwrap_or_default();
                                     let on_resume = Callback::new(resume_turn);
                                     let class = if commentary {
                                         "msg assistant commentary"
@@ -8960,12 +9329,9 @@ fn App() -> impl IntoView {
                                     let user_index =
                                         user_turn_index(&items.get_untracked(), i).map(|index| {
                                             index
-                                                + active_session
-                                                    .get_untracked()
-                                                    .and_then(|id| {
-                                                        transcript_pages.with_untracked(|pages| {
-                                                            pages.get(&id).copied()
-                                                        })
+                                                + transcript_pages
+                                                    .with_untracked(|pages| {
+                                                        pages.get(&session_id).copied()
                                                     })
                                                     .map_or(0, |page| page.user_offset)
                                         });
@@ -8980,8 +9346,9 @@ fn App() -> impl IntoView {
                                             data-user-index=data_user_index>
                                             {render_item(
                                                 i, &item, timestamp, &arts, on_artifact_select, on_file_link,
-                                                run_records, busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, sid,
+                                                run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, session_id,
                                                 respond_confirm, on_resume, on_queue,
+                                                step_disclosure_state,
                                                 plan_mode_active, plan_compat, on_plan_decision,
                                                 on_question_answer, jump_to_review_message,
                                             )}
@@ -8989,10 +9356,9 @@ fn App() -> impl IntoView {
                                     }.into_view()
                                 }
                                 ThreadRow::Steps { items, live, ui_indices } => {
-                                    let sid = active_session.get().unwrap_or_default();
                                     // ponytail: position-keyed; move to stable
                                     // row ids if mid-list edits ever shift groups.
-                                    let group_id = format!("{sid}:steps:{start}");
+                                    let group_id = format!("{session_id}:steps:{start}");
                                     view! {
                                         <div class="steps-wrap" data-ui-indices=ui_indices>{
                                             render_steps_group(
@@ -9006,8 +9372,7 @@ fn App() -> impl IntoView {
                                     }.into_view()
                                 },
                                 ThreadRow::Activity { items, ui_indices } => {
-                                    let sid = active_session.get().unwrap_or_default();
-                                    let group_id = format!("{sid}:activity:{start}");
+                                    let group_id = format!("{session_id}:activity:{start}");
                                     view! {
                                         <div class="steps-wrap" data-ui-indices=ui_indices>{
                                             render_steps_group(
@@ -9055,6 +9420,7 @@ fn App() -> impl IntoView {
                                         <RunMonitorCard
                                             run_id=run_id
                                             runs=run_records
+                                            clock=run_clock.read_only()
                                             tool_ok=None
                                             tool_output=String::new()
                                         />
@@ -9243,7 +9609,15 @@ fn App() -> impl IntoView {
                     <div class="transfer-tray" aria-live="polite">
                         {transfers.into_iter().map(|(run, progress)| {
                             let run_id = run.id.clone();
-                            let cancellable = matches!(run.status.as_str(), "submitted" | "running");
+                            let cancellable = matches!(
+                                run.status.as_str(),
+                                "submitted" | "running" | "cancelling"
+                            );
+                            let cancel_label = if run.status == "cancelling" {
+                                t(locale.get(), "runs.force_cancel")
+                            } else {
+                                t(locale.get(), "runs.cancel")
+                            };
                             let direction = progress.direction.clone();
                             let icon = match direction.as_str() {
                                 "download" => "↓",
@@ -9256,10 +9630,12 @@ fn App() -> impl IntoView {
                                         <span class="transfer-card-icon">{icon}</span>
                                         <strong>{run.title}</strong>
                                         <span>{run.context_id}</span>
-                                        {cancellable.then(|| view! {
+                                        {cancellable.then(|| {
+                                            let tip = cancel_label.clone();
+                                            view! {
                                             <button type="button" class="icon-btn transfer-cancel"
-                                                title=t(locale.get(), "runs.cancel")
-                                                aria-label=t(locale.get(), "runs.cancel")
+                                                title=tip.clone()
+                                                aria-label=tip
                                                 on:click=move |_| {
                                                     let run_id = run_id.clone();
                                                     spawn_local(async move {
@@ -9268,6 +9644,7 @@ fn App() -> impl IntoView {
                                                         refresh_runs(run_records, locale);
                                                     });
                                                 }>{compose_icon("close")}</button>
+                                            }
                                         })}
                                     </div>
                                     {run_progress_meter(progress, locale.get())}
@@ -9660,7 +10037,7 @@ fn App() -> impl IntoView {
                                 {compose_icon("controls")}
                             </button>
                             {move || agent_menu_open.get().then(|| {
-                                let locked = items.with(|rows| !rows.is_empty());
+                                let locked = session_has_items.get();
                                 view! {
                                 <div class="compose-backdrop" on:click=move |_| {
                                     agent_menu_open.set(false);
@@ -10183,7 +10560,7 @@ fn App() -> impl IntoView {
                                                     session_model_ids.with(|models| models.get(&session_id).cloned())
                                                 });
                                                 let acp_selected = active_acp_agent_id.get().is_some();
-                                                let acp_locked = acp_selected && items.with(|rows| !rows.is_empty());
+                                                let acp_locked = acp_selected && session_has_items.get();
                                                 list.into_iter().filter(ModelProfile::is_chat_model).map(|m| {
                                                     let pick_id = m.id.clone();
                                                     let pick_label = m.label.clone();
@@ -10230,7 +10607,7 @@ fn App() -> impl IntoView {
                                                 {acp_agents.get().into_iter().map(|agent| {
                                                     let id = agent.id.clone();
                                                     let active = active_acp_agent_id.get().as_deref() == Some(agent.id.as_str());
-                                                    let starts_new_session = items.with(|rows| !rows.is_empty()) && !active;
+                                                    let starts_new_session = session_has_items.get() && !active;
                                                     view! {
                                                         <div class="model-menu-row" class:active=active>
                                                             <button type="button" class="model-menu-pick"
@@ -10599,17 +10976,149 @@ fn App() -> impl IntoView {
                             </div>
                         </div>
                     </div>
-                    <div class="composer-hint">{move || {
-                        if send_with_modifier.get() {
-                            tf(
-                                locale.get(),
-                                "composer.hint_modifier",
-                                &[("modifier", if is_mac() { "Cmd" } else { "Ctrl" })],
-                            )
-                        } else {
-                            t(locale.get(), "composer.hint").into()
-                        }
-                    }}</div>
+                    <div class="composer-footer">
+                        <div class="composer-hint">{move || {
+                            if send_with_modifier.get() {
+                                tf(
+                                    locale.get(),
+                                    "composer.hint_modifier",
+                                    &[("modifier", if is_mac() { "Cmd" } else { "Ctrl" })],
+                                )
+                            } else {
+                                t(locale.get(), "composer.hint").into()
+                            }
+                        }}</div>
+                        {move || active_context_usage.get().map(|snapshot| {
+                            let pct = context_percent(snapshot.used, snapshot.max);
+                            let panel_snapshot = snapshot.clone();
+                            view! {
+                                <div class="context-usage-wrap">
+                                    <button type="button" class="context-usage-trigger"
+                                        data-testid="context-usage-trigger"
+                                        title=move || t(locale.get(), "context_usage.open")
+                                        aria-label=move || t(locale.get(), "context_usage.open")
+                                        aria-expanded=move || context_usage_open.get().to_string()
+                                        aria-controls="context-usage-panel"
+                                        on:click=move |event| {
+                                            event.stop_propagation();
+                                            let opening = !context_usage_open.get_untracked();
+                                            context_usage_open.set(opening);
+                                            if opening && active_acp_agent_id.get_untracked().is_none()
+                                                && context_usage_details.get_untracked().is_none()
+                                            {
+                                                if let Some(session_id) = active_session.get_untracked() {
+                                                    spawn_local(async move {
+                                                        let arg = to_value(&serde_json::json!({
+                                                            "sessionId": session_id,
+                                                        })).unwrap();
+                                                        if let Ok(value) = invoke_checked("get_context_usage_details", arg).await {
+                                                            if let Ok(details) = from_value::<ContextUsageDetails>(value) {
+                                                                context_usage_details.set(Some(details));
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                            }
+                                        }>
+                                        {compose_icon("gauge")}
+                                        <span>{format!("{pct}%")}</span>
+                                    </button>
+                                    {move || context_usage_open.get().then(|| {
+                                        let snapshot = panel_snapshot.clone();
+                                        let loc = locale.get();
+                                        let pct = context_percent(snapshot.used, snapshot.max);
+                                        let used = fmt_context_tokens(snapshot.used);
+                                        let total = if snapshot.max == 0 {
+                                            tf(loc, "context_usage.total_used", &[("used", &used)])
+                                        } else {
+                                            let max = fmt_context_limit(snapshot.max);
+                                            tf(
+                                                loc,
+                                                if snapshot.estimated {
+                                                    "context_usage.total_estimated"
+                                                } else {
+                                                    "context_usage.total_exact"
+                                                },
+                                                &[("used", &used), ("max", &max)],
+                                            )
+                                        };
+                                        let rows = context_usage_rows(&snapshot, loc);
+                                        let segments = rows.clone();
+                                        let denominator = snapshot.max.max(snapshot.used).max(1);
+                                        view! {
+                                            <div class="context-usage-backdrop"
+                                                aria-hidden="true"
+                                                on:click=move |_| context_usage_open.set(false)></div>
+                                            <section id="context-usage-panel" class="context-usage-panel"
+                                                data-testid="context-usage-panel"
+                                                role="dialog" aria-modal="true"
+                                                aria-labelledby="context-usage-title"
+                                                on:click=|event| event.stop_propagation()>
+                                                <div class="context-usage-head">
+                                                    <h2 id="context-usage-title">{t(loc, "context_usage.title")}</h2>
+                                                    <button type="button" class="context-usage-close"
+                                                        title=t(loc, "context_usage.close")
+                                                        aria-label=t(loc, "context_usage.close")
+                                                        on:click=move |_| context_usage_open.set(false)>
+                                                        {compose_icon("close")}
+                                                    </button>
+                                                </div>
+                                                <div class="context-usage-summary">
+                                                    <span>{tf(loc, "context_usage.full", &[("pct", &pct.to_string())])}</span>
+                                                    <span>{total}</span>
+                                                </div>
+                                                <div class="context-usage-bar" role="img"
+                                                    aria-label=tf(loc, "context_usage.full", &[("pct", &pct.to_string())])>
+                                                    {segments.into_iter().filter(|row| row.tokens > 0).map(|row| {
+                                                        let width = row.tokens as f64 * 100.0 / denominator as f64;
+                                                        view! {
+                                                            <span class=format!("context-usage-segment {}", row.color)
+                                                                style=format!("width:{width:.4}%")></span>
+                                                        }
+                                                    }).collect_view()}
+                                                </div>
+                                                <div class="context-usage-list">
+                                                    {rows.into_iter().map(|row| {
+                                                        let expandable = row.color != "conversation";
+                                                        let color = row.color.to_string();
+                                                        let detail_color = color.clone();
+                                                        let open_color = color.clone();
+                                                        view! {
+                                                            <div class="context-usage-item">
+                                                                <button type="button" class="context-usage-row"
+                                                                    class:expandable=expandable
+                                                                    disabled=!expandable
+                                                                    aria-expanded=move || (expandable && context_usage_detail_open.get().as_deref() == Some(open_color.as_str())).to_string()
+                                                                    on:click=move |_| {
+                                                                        if expandable {
+                                                                            context_usage_detail_open.update(|active| {
+                                                                                *active = (active.as_deref() != Some(color.as_str())).then(|| color.clone());
+                                                                            });
+                                                                        }
+                                                                    }>
+                                                                    <span class=format!("context-usage-swatch {}", row.color)
+                                                                        aria-hidden="true"></span>
+                                                                    <span class="context-usage-label">{row.label}</span>
+                                                                    <span class="context-usage-value">{fmt_context_tokens(row.tokens)}</span>
+                                                                    {expandable.then(|| view! { <span class="context-usage-chevron">{"⌄"}</span> })}
+                                                                </button>
+                                                                {move || (context_usage_detail_open.get().as_deref() == Some(detail_color.as_str())).then(|| {
+                                                                    let content = context_usage_details.get()
+                                                                        .map(|details| context_usage_detail_text(&details, &detail_color))
+                                                                        .unwrap_or_else(|| t(locale.get(), "context_usage.loading").into());
+                                                                    view! { <pre class="context-usage-detail">{content}</pre> }
+                                                                })}
+                                                            </div>
+                                                        }
+                                                    }).collect_view()}
+                                                </div>
+                                            </section>
+                                        }
+                                    })}
+                                </div>
+                            }
+                        })}
+                    </div>
                 </div>
             </div>
         </main>
@@ -10878,6 +11387,7 @@ fn App() -> impl IntoView {
                                                 let (p, n, k) = (path.clone(), vn.clone(), fkind.clone());
                                                 let (mv, sp, dw) = (p.clone(), p.clone(), p.clone());
                                                 let rv = p.clone();
+                                                let at = p.clone();
                                                 let oc = CenterFileTab::new(p.clone(), n.clone(), k.clone());
                                                 let (mvn, mvk) = (n.clone(), k.clone());
                                                 view! {
@@ -10898,6 +11408,13 @@ fn App() -> impl IntoView {
                                                                 center_file.set(Some(oc.path.clone()));
                                                             }>
                                                             {move || t(locale.get(), "center.open_file")}</button>
+                                                        <button type="button" class="rp-tile-menu-item"
+                                                            on:click=move |_| {
+                                                                artifact_menu.set(None);
+                                                                let _ = attach_ready_path(attachments, at.clone());
+                                                                focus_composer();
+                                                            }>
+                                                            {move || t(locale.get(), "ctx.attach_file")}</button>
                                                         <button type="button" class="rp-tile-menu-item"
                                                             on:click=move |_| {
                                                                 artifact_menu.set(None);
@@ -11029,8 +11546,6 @@ fn App() -> impl IntoView {
                             sessions,
                             delegation_enabled,
                             locale,
-                            takeover_session.clone(),
-                            refresh_agent_sessions.clone(),
                             Callback::new(move |_: ()| {
                                 open_settings_fn(Some("workflows".into()));
                                 refresh_agent_resources(workflow_studio_state, specialists);
@@ -11566,7 +12081,7 @@ fn App() -> impl IntoView {
                                                                                 }
                                                                             }
                                                                         });
-                                                                    }>"↻"</button>
+                                                                    }>{compose_icon("sync")}</button>
                                                                 <button type="button" class="context-terminal"
                                                                     title=t(loc, "contexts.open_terminal")
                                                                     aria-label=t(loc, "contexts.open_terminal")
@@ -12240,6 +12755,40 @@ fn App() -> impl IntoView {
             }.into_view()
         })}
 
+        {move || edit_confirm.get().map(|ui_index| {
+            view! {
+                <div class="overlay">
+                    <div
+                        class="modal confirm-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="edit-confirm-title"
+                        data-testid="edit-confirm-modal"
+                    >
+                        <h2 id="edit-confirm-title">{move || t(locale.get(), "msg.edit_confirm_title")}</h2>
+                        <div class="hint">{move || t(locale.get(), "msg.edit_confirm_hint")}</div>
+                        <div class="row">
+                            <button on:click=move |_| edit_confirm.set(None)>
+                                {move || t(locale.get(), "settings.cancel")}
+                            </button>
+                            <button on:click=move |_| {
+                                edit_confirm.set(None);
+                                branch_message(ui_index);
+                            }>
+                                {move || t(locale.get(), "msg.branch")}
+                            </button>
+                            <button class="primary" class:danger=true on:click=move |_| {
+                                edit_confirm.set(None);
+                                rewind_to_user_item(ui_index);
+                            }>
+                                {move || t(locale.get(), "msg.edit")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })}
+
         {move || ui_confirm.get().map(|action| {
             let action_ok = action.clone();
             let is_full_permission = matches!(&action, UiConfirm::EnableFullPermission);
@@ -12251,7 +12800,12 @@ fn App() -> impl IntoView {
             let message = match &action {
                 UiConfirm::EnableFullPermission => t(locale.get(), "full_permission.confirm_body").to_string(),
                 UiConfirm::DeleteFolder(_) => t(locale.get(), "folder.delete_confirm").to_string(),
-                UiConfirm::DeleteSession(_) => t(locale.get(), "session.delete_confirm").to_string(),
+                UiConfirm::DeleteSessions(ids) if ids.len() == 1 => t(locale.get(), "session.delete_confirm").to_string(),
+                UiConfirm::DeleteSessions(ids) => tf(
+                    locale.get(),
+                    "session.delete_many_confirm",
+                    &[("n", &ids.len().to_string())],
+                ),
                 UiConfirm::DeleteFileEntry { path, is_dir } => tf(
                     locale.get(),
                     if *is_dir { "files.delete_directory_confirm" } else { "files.delete_file_confirm" },
@@ -12261,7 +12815,7 @@ fn App() -> impl IntoView {
             let action_key = match &action {
                 UiConfirm::EnableFullPermission => "full_permission.confirm_action",
                 UiConfirm::DeleteFolder(_) => "ctx.delete_folder",
-                UiConfirm::DeleteSession(_) => "ctx.delete_session",
+                UiConfirm::DeleteSessions(_) => "ctx.delete_session",
                 UiConfirm::DeleteFileEntry { is_dir: true, .. } => "files.delete_directory",
                 UiConfirm::DeleteFileEntry { is_dir: false, .. } => "files.delete_file",
             };
@@ -12322,19 +12876,31 @@ fn App() -> impl IntoView {
                                         }
                                     });
                                 }
-                                UiConfirm::DeleteSession(id) => {
+                                UiConfirm::DeleteSessions(ids) => {
                                     let active_session = active_session;
                                     let items = items;
                                     let transcripts = transcripts;
                                     let running = running;
                                     let pending_turns = pending_turns;
                                     spawn_local(async move {
-                                        let arg = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
-                                        if invoke_checked("delete_session", arg).await.is_ok() {
-                                            transcripts.update(|m| { m.remove(&id); });
-                                            running.update(|r| { r.remove(&id); });
-                                            pending_turns.update(|m| { m.remove(&id); });
-                                            if active_session.get().as_deref() == Some(id.as_str()) {
+                                        let mut deleted = HashSet::new();
+                                        for id in ids {
+                                            let arg = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
+                                            if invoke_checked("delete_session", arg).await.is_ok() {
+                                                deleted.insert(id);
+                                            }
+                                        }
+                                        if !deleted.is_empty() {
+                                            transcripts.update(|stored| {
+                                                stored.retain(|id, _| !deleted.contains(id));
+                                            });
+                                            running.update(|stored| {
+                                                stored.retain(|id| !deleted.contains(id));
+                                            });
+                                            pending_turns.update(|stored| {
+                                                stored.retain(|id, _| !deleted.contains(id));
+                                            });
+                                            if active_session.get().is_some_and(|id| deleted.contains(&id)) {
                                                 active_session.set(None);
                                                 items.set(vec![]);
                                             }
@@ -12712,7 +13278,7 @@ fn App() -> impl IntoView {
             runtimes=runtime_infos
         />
         <CapabilitiesOverlay
-            locale=locale show_capabilities=show_capabilities show_memory_files=show_capability_memory
+            locale=locale show_capabilities=show_capabilities
             bootstrap=bootstrap caps=caps busy=busy open_settings_section=open_capability_settings
             start_env_setup=Callback::new(start_env_setup)
         />
@@ -12722,6 +13288,78 @@ fn App() -> impl IntoView {
             save_onboard_key=save_onboard_key
             dismiss_onboard=Callback::new(dismiss_onboard)
         />
+        {move || context_recovery_dialog.get().map(|frame_id| {
+            let compact_id = frame_id.clone();
+            let new_session_id = frame_id;
+            view! {
+                <div class="overlay context-recovery-overlay">
+                    <div
+                        class="modal context-recovery-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="context-recovery-title"
+                        data-testid="context-recovery-modal"
+                    >
+                        <h2 id="context-recovery-title">
+                            {move || t(locale.get(), "context_recovery.title")}
+                        </h2>
+                        <p class="context-recovery-body">
+                            {move || t(locale.get(), "context_recovery.body")}
+                        </p>
+                        <div class="context-recovery-options">
+                            <button
+                                type="button"
+                                class="context-recovery-option recommended"
+                                data-testid="context-recovery-compact"
+                                disabled=move || context_recovery_busy.get()
+                                on:click=move |_| compact_context_recovery.call(compact_id.clone())
+                            >
+                                <span class="context-recovery-option-title">
+                                    {move || t(locale.get(), "context_recovery.compact")}
+                                </span>
+                                <span class="context-recovery-option-hint">
+                                    {move || t(locale.get(), "context_recovery.compact_hint")}
+                                </span>
+                            </button>
+                            <button
+                                type="button"
+                                class="context-recovery-option"
+                                data-testid="context-recovery-new-session"
+                                disabled=move || context_recovery_busy.get()
+                                on:click=move |_| new_session_context_recovery.call(new_session_id.clone())
+                            >
+                                <span class="context-recovery-option-title">
+                                    {move || t(locale.get(), "context_recovery.new_session")}
+                                </span>
+                                <span class="context-recovery-option-hint">
+                                    {move || t(locale.get(), "context_recovery.new_session_hint")}
+                                </span>
+                            </button>
+                            <button
+                                type="button"
+                                class="context-recovery-option"
+                                data-testid="context-recovery-pause"
+                                disabled=move || context_recovery_busy.get()
+                                on:click=move |_| {
+                                    context_recovery_dialog.set(None);
+                                    context_recovery_error.set(None);
+                                }
+                            >
+                                <span class="context-recovery-option-title">
+                                    {move || t(locale.get(), "context_recovery.pause")}
+                                </span>
+                                <span class="context-recovery-option-hint">
+                                    {move || t(locale.get(), "context_recovery.pause_hint")}
+                                </span>
+                            </button>
+                        </div>
+                        {move || context_recovery_error.get().map(|error| view! {
+                            <div class="context-recovery-error" role="alert">{error}</div>
+                        })}
+                    </div>
+                </div>
+            }
+        })}
         <ContextMenuPortal menu=ctx_menu.read_only() set_menu=ctx_menu.write_only() on_pick=on_ctx_pick />
         </div>
     }
@@ -12750,6 +13388,7 @@ fn class_for(item: &ChatItem) -> &'static str {
         ChatItem::AcpPermission { .. } => "tool-wrap approval-wrap-row",
         ChatItem::AcpTool { .. } => "tool-wrap",
         ChatItem::Usage { .. } => "usage-row",
+        ChatItem::Compaction { .. } => "context-compaction-row",
         ChatItem::ReviewTransition { .. } => "review-transition-row",
         ChatItem::Review(_) => "tool-wrap",
         ChatItem::Plan(_) => "tool-wrap plan-wrap",
@@ -12766,14 +13405,163 @@ fn fmt_tokens(n: u64) -> String {
     }
 }
 
+fn context_percent(used: usize, max: usize) -> usize {
+    if max == 0 {
+        0
+    } else {
+        ((((used as u128) * 100 + (max as u128 / 2)) / max as u128) as usize).min(100)
+    }
+}
+
+fn fmt_context_tokens(tokens: usize) -> String {
+    if tokens < 1_000 {
+        tokens.to_string()
+    } else if tokens < 1_000_000 {
+        format!("{:.1}K", tokens as f64 / 1_000.0)
+    } else {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    }
+}
+
+fn fmt_context_limit(tokens: usize) -> String {
+    if tokens >= 1_000_000 && tokens % 1_000_000 == 0 {
+        format!("{}M", tokens / 1_000_000)
+    } else if tokens >= 1_000 && tokens % 1_000 == 0 {
+        format!("{}K", tokens / 1_000)
+    } else {
+        fmt_context_tokens(tokens)
+    }
+}
+
+#[derive(Clone)]
+struct ContextUsageRow {
+    label: String,
+    tokens: usize,
+    color: &'static str,
+}
+
+fn context_usage_rows(snapshot: &ContextUsageSnapshot, locale: Locale) -> Vec<ContextUsageRow> {
+    let Some(usage) = snapshot.breakdown else {
+        // ACP only reports used/max; do not invent native category splits.
+        return vec![ContextUsageRow {
+            label: t(locale, "context_usage.remote_context").into(),
+            tokens: snapshot.used,
+            color: "conversation",
+        }];
+    };
+    [
+        ("context_usage.system_prompt", usage.system_prompt, "system"),
+        (
+            "context_usage.tool_definitions",
+            usage.tool_definitions,
+            "tools",
+        ),
+        ("context_usage.rules", usage.rules, "rules"),
+        ("context_usage.skills", usage.skills, "skills"),
+        (
+            "context_usage.mcp_dynamic_tools",
+            usage.mcp_dynamic_tools,
+            "dynamic",
+        ),
+        (
+            "context_usage.subagent_definitions",
+            usage.subagent_definitions,
+            "subagents",
+        ),
+        (
+            "context_usage.conversation",
+            usage.conversation,
+            "conversation",
+        ),
+    ]
+    .into_iter()
+    .map(|(key, tokens, color)| ContextUsageRow {
+        label: t(locale, key).into(),
+        tokens,
+        color,
+    })
+    .collect()
+}
+
+fn context_usage_detail_text(details: &ContextUsageDetails, color: &str) -> String {
+    let tools = |items: &[ContextToolDetail]| {
+        items
+            .iter()
+            .map(|item| format!("{}\n{}", item.name, item.description))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
+    match color {
+        "system" => details.system_prompt.clone(),
+        "tools" => tools(&details.tool_definitions),
+        "rules" => details.rules.clone(),
+        "skills" => details.skills.clone(),
+        "dynamic" => tools(&details.mcp_dynamic_tools),
+        "subagents" => tools(&details.subagent_definitions),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod token_format_tests {
-    use super::fmt_tokens;
+    use super::{
+        context_percent, context_usage_rows, fmt_context_limit, fmt_context_tokens, fmt_tokens,
+    };
+    use crate::dto::{ContextUsage, ContextUsageSnapshot};
+    use crate::i18n::Locale;
 
     #[test]
     fn small_counts_are_not_rounded_to_zero() {
         assert_eq!(fmt_tokens(81), "81");
         assert_eq!(fmt_tokens(136_286), "136.3k");
+    }
+
+    #[test]
+    fn context_counts_match_the_usage_panel_format() {
+        assert_eq!(context_percent(79_900, 300_000), 27);
+        assert_eq!(fmt_context_tokens(6_000), "6.0K");
+        assert_eq!(fmt_context_tokens(79_900), "79.9K");
+        assert_eq!(fmt_context_limit(300_000), "300K");
+    }
+
+    #[test]
+    fn acp_totals_keep_a_single_remote_row() {
+        let rows = context_usage_rows(
+            &ContextUsageSnapshot {
+                used: 1_200,
+                max: 8_000,
+                breakdown: None,
+                estimated: false,
+            },
+            Locale::En,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "Agent-reported total");
+        assert_eq!(rows[0].tokens, 1_200);
+    }
+
+    #[test]
+    fn categorized_native_usage_keeps_seven_rows() {
+        let rows = context_usage_rows(
+            &ContextUsageSnapshot {
+                used: 79_900,
+                max: 300_000,
+                breakdown: Some(ContextUsage {
+                    system_prompt: 6_000,
+                    tool_definitions: 22_700,
+                    rules: 2_200,
+                    skills: 6_100,
+                    mcp_dynamic_tools: 4_200,
+                    subagent_definitions: 2_400,
+                    conversation: 36_300,
+                }),
+                estimated: true,
+            },
+            Locale::En,
+        );
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows[6].label, "Conversation");
+        assert_eq!(rows[6].tokens, 36_300);
     }
 }
 
@@ -13220,6 +14008,7 @@ fn run_output_preview(run: &RunRecord) -> String {
 fn RunMonitorCard(
     run_id: String,
     runs: RwSignal<Vec<RunRecord>>,
+    clock: ReadSignal<i64>,
     tool_ok: Option<bool>,
     tool_output: String,
 ) -> impl IntoView {
@@ -13264,15 +14053,26 @@ fn RunMonitorCard(
             let status = run.status.clone();
             let status_class = format!("run-status {status}");
             let active = matches!(status.as_str(), "submitted" | "running" | "cancelling");
-            let cancellable = matches!(status.as_str(), "submitted" | "running");
+            let cancellable = matches!(status.as_str(), "submitted" | "running" | "cancelling");
+            let force_cancel = status == "cancelling";
+            let cancel_label = if force_cancel {
+                t(locale.get(), "runs.force_cancel")
+            } else {
+                t(locale.get(), "runs.cancel")
+            };
             let started = run.started_at.unwrap_or(run.created_at);
-            let ended = run.ended_at.unwrap_or_else(|| js_sys::Date::now() as i64 / 1000);
+            let now = if active {
+                clock.get()
+            } else {
+                js_sys::Date::now() as i64 / 1000
+            };
+            let ended = run.ended_at.unwrap_or(now);
             let elapsed_value = transfer_duration(ended.saturating_sub(started) as u64);
             let elapsed = tf(locale.get(), "runs.elapsed", &[("time", &elapsed_value)]);
             let mut meta = format!("{} · {} · {elapsed}", run.context_id, run.kind);
             if active {
                 if let Some(last_heartbeat) = run.last_polled_at {
-                    let age = (js_sys::Date::now() as i64 / 1000).saturating_sub(last_heartbeat);
+                    let age = now.saturating_sub(last_heartbeat);
                     let age = transfer_duration(age as u64);
                     meta.push_str(" · ");
                     meta.push_str(&tf(locale.get(), "runs.heartbeat", &[("time", &age)]));
@@ -13295,6 +14095,7 @@ fn RunMonitorCard(
             // (old rows, transfer runs) yield no pairs, so the block disappears.
             let env_pairs = research::metadata_pairs(&run.env_snapshot_json);
             let cancel_id = run.id.clone();
+            let output_id = run.id.clone();
             view! {
                 <article class="run-monitor-card" data-testid="run-monitor-card" data-run-id=run.id>
                     <div class="run-monitor-head">
@@ -13311,18 +14112,43 @@ fn RunMonitorCard(
                             <strong>{title}</strong>
                             <code>{lookup_id.clone()}</code>
                         </div>
-                        <span class=status_class>{run_status_label(locale.get(), &status)}</span>
-                        {cancellable.then(|| view! {
-                            <button type="button" class="icon-btn run-monitor-cancel"
-                                title=t(locale.get(), "runs.cancel")
-                                aria-label=t(locale.get(), "runs.cancel")
-                                on:click=move |_| {
-                                    let run_id = cancel_id.clone();
-                                    spawn_local(async move {
-                                        let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
-                                        let _ = invoke("cancel_run", arg).await;
-                                    });
-                                }>{compose_icon("close")}</button>
+                        {if force_cancel {
+                            let run_id = cancel_id.clone();
+                            let label = run_status_label(locale.get(), &status);
+                            let tip = cancel_label.clone();
+                            view! {
+                                <button type="button" class=status_class
+                                    title=tip.clone()
+                                    aria-label=tip
+                                    on:click=move |_| {
+                                        let run_id = run_id.clone();
+                                        spawn_local(async move {
+                                            let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+                                            let _ = invoke("cancel_run", arg).await;
+                                        });
+                                    }
+                                >{label}</button>
+                            }.into_view()
+                        } else {
+                            view! {
+                                <span class=status_class>{run_status_label(locale.get(), &status)}</span>
+                            }.into_view()
+                        }}
+                        {cancellable.then(|| {
+                            let run_id = cancel_id.clone();
+                            let tip = cancel_label.clone();
+                            view! {
+                                <button type="button" class="icon-btn run-monitor-cancel"
+                                    title=tip.clone()
+                                    aria-label=tip
+                                    on:click=move |_| {
+                                        let run_id = run_id.clone();
+                                        spawn_local(async move {
+                                            let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+                                            let _ = invoke("cancel_run", arg).await;
+                                        });
+                                    }>{compose_icon("close")}</button>
+                            }
                         })}
                     </div>
                     <div class="run-monitor-meta">{meta}</div>
@@ -13337,7 +14163,7 @@ fn RunMonitorCard(
                     {(!output.is_empty()).then(|| view! {
                         <div class="run-monitor-output">
                             <span>{t(locale.get(), "runs.output")}</span>
-                            <pre>{output}</pre>
+                            <pre data-run-output-for=output_id.clone()>{output}</pre>
                         </div>
                     })}
                     {(!env_pairs.is_empty()).then(|| view! {
@@ -13370,6 +14196,7 @@ fn render_item(
     on_artifact: Callback<usize>,
     on_file: Callback<ModalArtifact>,
     runs: RwSignal<Vec<RunRecord>>,
+    run_clock: ReadSignal<i64>,
     busy: ReadSignal<bool>,
     compact_assistant: bool,
     can_modify: bool,
@@ -13381,6 +14208,7 @@ fn render_item(
     on_approval: Callback<(String, bool, Option<String>, String)>,
     on_resume: Callback<usize>,
     on_queue: Callback<QueueOp>,
+    disclosure_state: RwSignal<HashMap<String, bool>>,
     plan_mode_active: Signal<bool>,
     plan_compat: Signal<bool>,
     on_plan_decision: Callback<PlanDecision>,
@@ -13464,6 +14292,7 @@ fn render_item(
             <RunMonitorCard
                 run_id=input.trim().to_string()
                 runs=runs
+                clock=run_clock
                 tool_ok=*ok
                 tool_output=output.clone()
             />
@@ -13477,9 +14306,19 @@ fn render_item(
             />
         }.into_view(),
         ChatItem::Reasoning(s) => {
+            // The chat row is fingerprint-keyed, so every streaming delta
+            // rebuilds it and a plain `<details>` would snap shut mid-stream.
+            // Keep the open state in the shared disclosure map, like the step
+            // group does, and drive `open` from it.
+            let open_id = format!("{session_id}:reasoning:{ui_index}");
+            let toggle_id = open_id.clone();
             view! {
-                <details class="rz">
-                    <summary>{move || t(locale.get(), "chat.thinking")}</summary>
+                <details class="rz"
+                    open=move || disclosure_open(disclosure_state, &open_id, false)>
+                    <summary on:click=move |event| {
+                        event.prevent_default();
+                        toggle_disclosure(disclosure_state, &toggle_id, false);
+                    }>{move || t(locale.get(), "chat.thinking")}</summary>
                     <div class="body">{s.clone()}</div>
                 </details>
             }.into_view()
@@ -13487,7 +14326,13 @@ fn render_item(
         ChatItem::Tool { name, ok, input, output, .. } => view! {
             <ToolBlock name=name.clone() ok=*ok input=input.clone() output=output.clone() />
         }.into_view(),
-        ChatItem::Usage { input, output, reasoning, cached } => {
+        ChatItem::Usage {
+            input,
+            output,
+            reasoning,
+            cached,
+            ..
+        } => {
             let (input, output, reasoning, cached) = (*input, *output, *reasoning, *cached);
             view! {
                 <div class="usage-line" title=move || t(locale.get(), "msg.usage_title")>
@@ -13505,6 +14350,32 @@ fn render_item(
                         }
                         s
                     }}
+                </div>
+            }.into_view()
+        }
+        ChatItem::Compaction {
+            before,
+            after,
+            strategy,
+        } => {
+            let automatic = strategy == "auto";
+            let counts = format!(
+                "{} → {}",
+                fmt_tokens(*before as u64),
+                fmt_tokens(*after as u64)
+            );
+            view! {
+                <div class="context-compaction-flag" data-testid="context-compaction-flag">
+                    <span class="gi doc" aria-hidden="true"></span>
+                    <span>{move || t(
+                        locale.get(),
+                        if automatic {
+                            "chat.context_auto_compacted"
+                        } else {
+                            "chat.context_compacted"
+                        },
+                    )}</span>
+                    <span class="context-compaction-count">{counts}</span>
                 </div>
             }.into_view()
         }

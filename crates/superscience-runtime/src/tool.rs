@@ -114,6 +114,7 @@ async fn run_runtime(
                         success,
                         content: format_response(&response),
                         image: None,
+                        control: superscience_tools::ToolControl::Continue,
                     };
                 }
                 Some(RuntimeEvent::Finished(Err(error))) => {

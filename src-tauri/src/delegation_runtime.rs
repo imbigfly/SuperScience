@@ -10,6 +10,8 @@ use std::{
     },
     time::Duration,
 };
+use tauri::State;
+use tokio::sync::Mutex;
 use superscience_acp::{
     acp::schema::v1::{ContentBlock, SessionId, TextContent},
     AcpPermissionKind, AcpSessionEvent, AcpSessionHandle, AcpStopReason, AcpUpdateKind,
@@ -31,8 +33,6 @@ use superscience_store::{
     AgentWorkflowAttemptStart, AgentWorkflowAttemptStatus, AgentWorkflowStatus, AgentWorkflowStep,
     Store, MAX_ROOT_AGENT_TASKS,
 };
-use tauri::State;
-use tokio::sync::Mutex;
 
 const RESULT_INSTRUCTIONS: &str = "Return one JSON object and no Markdown fence. Include summary (string), files_changed (array), diff_summary (string), artifacts (array), evidence (array), tests (array), and risks (array).";
 const DELEGATION_PROMPT_START: &str = "\n\n<delegation_capability>";
@@ -467,7 +467,8 @@ pub(crate) async fn get_dynamic_agent_options(
         &state.app_data,
     )
     .await?;
-    let mut options = dynamic_workflow::editor_options(&policy.registry, &policy.host);
+    let mut options =
+        dynamic_workflow::editor_options(&policy.registry, &policy.host, &policy.resources);
     let profiles = acp::profiles(&state.store).await;
     for executor in &mut options.executors {
         if executor.kind == "acp" {
@@ -688,6 +689,17 @@ fn workflow_records(
             stored.context_policy_json = serde_json::to_string(&spec.context_policy)?;
             stored.budget_json = serde_json::to_string(&spec.budget)?;
             stored.spec_json = serde_json::to_string(spec)?;
+            stored.task_kind = match step.task_kind {
+                superscience_core::WorkflowTaskKind::Agent => "agent",
+                superscience_core::WorkflowTaskKind::RunActivity => "run_activity",
+            }
+            .into();
+            stored.activity_json = step
+                .run_activity
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?
+                .unwrap_or_else(|| "{}".into());
             stored.timeout_secs = spec.timeout_secs.map(i64::try_from).transpose()?;
             Ok::<_, anyhow::Error>(stored)
         })
@@ -891,14 +903,200 @@ pub(crate) async fn retry_agent_workflow(
     state: State<'_, crate::AppState>,
     window: tauri::WebviewWindow,
     workflow_id: String,
+    budget_overrides: Option<HashMap<String, dynamic_workflow::AgentBudgetProposal>>,
 ) -> Result<AgentWorkflowSnapshot, String> {
     let project = state.active(window.label());
-    let snapshot = prepare_agent_workflow_retry(&state.store, &project.id, &workflow_id).await?;
+    let snapshot = match budget_overrides.filter(|overrides| !overrides.is_empty()) {
+        Some(overrides) => {
+            let frame_id = state.active_frame(window.label());
+            let policy = dynamic_delegation_policy_for_project(
+                &state.store,
+                &project,
+                frame_id.as_deref(),
+                &state.app_data,
+            )
+            .await?;
+            prepare_agent_workflow_budget_retry(
+                &state.store,
+                &project.id,
+                &project.root,
+                &workflow_id,
+                overrides,
+                &(policy.registry, policy.host),
+                Some(&policy.resources),
+            )
+            .await?
+        }
+        None => prepare_agent_workflow_retry(&state.store, &project.id, &workflow_id).await?,
+    };
     let automatic = snapshot.workflow.mode == "automatic";
     if automatic {
         spawn_agent_workflow(&state, project, workflow_id).await?;
     }
     Ok(snapshot)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn prepare_agent_workflow_budget_retry(
+    store: &Store,
+    project_id: &str,
+    project_root: &Path,
+    workflow_id: &str,
+    overrides: HashMap<String, dynamic_workflow::AgentBudgetProposal>,
+    policy: &(CapabilityRegistry, DelegationHostPolicy),
+    resources: Option<&crate::delegation_resources::ScientificResourceCatalog>,
+) -> Result<AgentWorkflowSnapshot, String> {
+    let current = project_workflow(store, project_id, workflow_id).await?;
+    require_workflow_delegation(store, &current).await?;
+    if current.depth != 0
+        || !matches!(
+            current.status,
+            AgentWorkflowStatus::Failed | AgentWorkflowStatus::Cancelled
+        )
+    {
+        return Err(
+            "Only a failed or cancelled root Agent workflow can be revised for retry.".into(),
+        );
+    }
+
+    let attempts = store
+        .list_agent_workflow_attempts(workflow_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let original_plan = stored_dynamic_plan(&current)?;
+    policy
+        .0
+        .validate_resolved_plan(&original_plan, &policy.1)
+        .map_err(|error| {
+            format!("Stored Agent workflow can no longer be revised safely: {error}")
+        })?;
+    let summary = dynamic_workflow::summarize(&original_plan, &attempts)?;
+    let retryable_tasks = summary
+        .tasks
+        .iter()
+        .filter(|task| {
+            task.result
+                .as_ref()
+                .is_some_and(|result| matches!(result.status.as_str(), "failed" | "cancelled"))
+        })
+        .map(|task| (task.id.clone(), task.stored_step_id.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut proposal = summary.editable_proposal;
+    let mut revised_step_ids = HashSet::new();
+    for (task_id, requested) in overrides {
+        if requested.max_tokens.is_none()
+            && requested.max_tool_calls.is_none()
+            && requested.max_cost_microunits.is_none()
+        {
+            return Err(format!("Retry budget for task '{task_id}' is empty."));
+        }
+        let step_id = retryable_tasks.get(&task_id).ok_or_else(|| {
+            format!("Retry budget can only be changed for a failed or cancelled task: '{task_id}'.")
+        })?;
+        revised_step_ids.insert(step_id.clone());
+        let task = proposal
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == task_id)
+            .ok_or_else(|| format!("Retry budget references unknown task '{task_id}'."))?;
+        let budget = task.budget.get_or_insert_default();
+        if requested.max_tokens.is_some() {
+            budget.max_tokens = requested.max_tokens;
+        }
+        if requested.max_tool_calls.is_some() {
+            budget.max_tool_calls = requested.max_tool_calls;
+        }
+        if requested.max_cost_microunits.is_some() {
+            budget.max_cost_microunits = requested.max_cost_microunits;
+        }
+    }
+
+    let plan = dynamic_workflow::resolve_proposal(
+        store,
+        workflow_id.into(),
+        proposal,
+        &policy.0,
+        &policy.1,
+        resources,
+    )
+    .await?;
+    policy
+        .0
+        .validate_resolved_plan(&plan, &policy.1)
+        .map_err(|error| error.to_string())?;
+    ensure_retry_revises_only_budgets(&original_plan, &plan, &revised_step_ids)?;
+    let (mut replacement, steps) =
+        workflow_records(&plan, project_id, project_root, current.frame_id.clone())?;
+    replacement.workspace_id.clone_from(&current.workspace_id);
+    replacement
+        .root_workflow_id
+        .clone_from(&current.root_workflow_id);
+    replacement
+        .parent_attempt_id
+        .clone_from(&current.parent_attempt_id);
+    replacement.depth = current.depth;
+    replacement
+        .root_limits_json
+        .clone_from(&current.root_limits_json);
+    replacement.description.clone_from(&current.description);
+    replacement.version = current.version;
+    replacement.enabled = current.enabled;
+    replacement.created_at = current.created_at;
+    if !store
+        .replace_agent_workflow_plan_for_retry(
+            &replacement,
+            &steps,
+            current.status,
+            current.version,
+        )
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Agent workflow changed in another window; refresh and try again.".into());
+    }
+    let updated = project_workflow(store, project_id, workflow_id).await?;
+    load_workflow_snapshot(store, updated).await
+}
+
+fn ensure_retry_revises_only_budgets(
+    original: &DelegationPlan,
+    revised: &DelegationPlan,
+    revised_step_ids: &HashSet<String>,
+) -> Result<(), String> {
+    let mut expected = original.clone();
+    expected.requires_confirmation = revised.requires_confirmation;
+    for step in &mut expected.steps {
+        if !revised_step_ids.contains(&step.id) {
+            continue;
+        }
+        let actual = revised
+            .steps
+            .iter()
+            .find(|candidate| candidate.id == step.id)
+            .ok_or_else(|| "Retry budget revision changed the workflow task graph.".to_string())?;
+        step.spec.budget.clone_from(&actual.spec.budget);
+        match (
+            step.spec.request_preferences.as_mut(),
+            actual.spec.request_preferences.as_ref(),
+        ) {
+            (Some(expected), Some(actual)) => expected.budget.clone_from(&actual.budget),
+            (None, None) => {}
+            _ => return Err("Retry budget revision changed the task request preferences.".into()),
+        }
+        step.spec
+            .approval_reasons
+            .clone_from(&actual.spec.approval_reasons);
+        step.spec
+            .authorization
+            .clone_from(&actual.spec.authorization);
+    }
+    if expected != *revised {
+        return Err(
+            "Retry budget revision would change more than task budgets; refresh or retry without an override."
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) async fn prepare_agent_workflow_retry(
@@ -1014,17 +1212,17 @@ async fn spawn_agent_workflow_with_completion_override(
                 )
                 .await
                 {
-                    tracing::error!(target: "superscience", workflow_id = %workflow_id, %error, "failed to persist automatic Agent completion");
+                    tracing::error!(target: "wisp", workflow_id = %workflow_id, %error, "failed to persist automatic Agent completion");
                 }
             }
             Err(error) => {
-                tracing::error!(target: "superscience", workflow_id = %workflow_id, %error, "automatic Agent workflow failed");
+                tracing::error!(target: "wisp", workflow_id = %workflow_id, %error, "automatic Agent workflow failed");
                 if let Err(persist_error) = crate::delegation_completion::persist_execution_failure(
                     &store, &delivery, &error,
                 )
                 .await
                 {
-                    tracing::error!(target: "superscience", workflow_id = %workflow_id, %persist_error, "failed to persist automatic Agent failure");
+                    tracing::error!(target: "wisp", workflow_id = %workflow_id, %persist_error, "failed to persist automatic Agent failure");
                 }
             }
         }
@@ -1260,6 +1458,7 @@ async fn build_dynamic_delegation_policy(
         "run_in_context".into(),
         "get_run".into(),
         "cancel_run".into(),
+        "prepare_method_search".into(),
         "delegate_tasks".into(),
         "get_delegated_result".into(),
     ];
@@ -1300,11 +1499,9 @@ async fn build_dynamic_delegation_policy(
             include_artifacts: true,
             max_tokens: Some(32_000),
         },
-        budget_ceiling: AgentBudget {
-            max_tokens: Some(32_000),
-            max_tool_calls: Some(64),
-            max_cost_microunits: Some(1_000_000),
-        },
+        // Run budgets are unlimited by default: the host does not cap tokens,
+        // tool calls, or cost unless the user sets a per-task budget.
+        budget_ceiling: AgentBudget::default(),
         default_timeout_secs: Some(600),
         timeout_ceiling_secs: Some(1_800),
         auto_safe: true,
@@ -1496,6 +1693,122 @@ pub(crate) async fn execute_inline_agent_workflow(
     .await
 }
 
+fn persisted_attempt_response(
+    attempt: &AgentWorkflowAttempt,
+) -> Result<AgentDelegationResponse, String> {
+    if let Some(response) = attempt
+        .response_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<AgentDelegationResponse>(raw).ok())
+    {
+        return Ok(response);
+    }
+    let status = match attempt.status {
+        AgentWorkflowAttemptStatus::Succeeded => DelegationStatus::Succeeded,
+        AgentWorkflowAttemptStatus::Cancelled => DelegationStatus::Cancelled,
+        AgentWorkflowAttemptStatus::Blocked => DelegationStatus::Blocked,
+        AgentWorkflowAttemptStatus::Failed => DelegationStatus::Failed,
+        _ => return Err("Persisted Workflow resume encountered a non-terminal attempt".into()),
+    };
+    Ok(AgentDelegationResponse {
+        request_id: attempt.request_id.clone(),
+        status,
+        output: serde_json::from_str(&attempt.output_json).map_err(|error| error.to_string())?,
+        artifact_ids: serde_json::from_str(&attempt.artifact_ids_json)
+            .map_err(|error| error.to_string())?,
+        artifacts: vec![],
+        evidence: serde_json::from_str(&attempt.evidence_json)
+            .map_err(|error| error.to_string())?,
+        usage: superscience_core::AgentUsage {
+            input_tokens: u64::try_from(attempt.input_tokens).unwrap_or_default(),
+            output_tokens: u64::try_from(attempt.output_tokens).unwrap_or_default(),
+            tool_calls: u64::try_from(attempt.tool_calls).unwrap_or_default(),
+            cost_microunits: u64::try_from(attempt.cost_microunits).unwrap_or_default(),
+        },
+        agent_session_id: attempt.agent_session_id.clone(),
+        child_frame_id: attempt.child_frame_id.clone(),
+        error: attempt.error.clone(),
+        nested_results: vec![],
+    })
+}
+
+async fn persisted_workflow_steps(
+    store: &Store,
+    workflow_id: &str,
+) -> Result<Vec<superscience_core::DelegationStepExecution>, String> {
+    let mut latest = HashMap::<String, AgentWorkflowAttempt>::new();
+    for attempt in store
+        .list_agent_workflow_attempts(workflow_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        if latest
+            .get(&attempt.step_id)
+            .is_none_or(|existing| attempt.attempt > existing.attempt)
+        {
+            latest.insert(attempt.step_id.clone(), attempt);
+        }
+    }
+    let mut prior = Vec::new();
+    for attempt in latest.into_values() {
+        if !attempt.status.is_terminal() {
+            return Err(format!(
+                "Workflow step '{}' is still active and cannot be resumed twice",
+                attempt.step_id
+            ));
+        }
+        prior.push(superscience_core::DelegationStepExecution {
+            step_id: attempt.step_id.clone(),
+            response: persisted_attempt_response(&attempt)?,
+        });
+    }
+    Ok(prior)
+}
+
+pub(crate) async fn resume_inline_agent_workflow(
+    store: &Store,
+    project: ActiveProject,
+    run_manager: crate::run_context::RunManager,
+    runtime_manager: superscience_runtime::RuntimeManager,
+    app_data: std::path::PathBuf,
+    workflow_id: &str,
+) -> Result<DelegationExecutionResult, String> {
+    let workflow = project_workflow(store, &project.id, workflow_id).await?;
+    if workflow.status != AgentWorkflowStatus::Running {
+        return Err("Only a persisted running Workflow can continue after Run recovery".into());
+    }
+    let policy = dynamic_delegation_policy_for_project(
+        store,
+        &project,
+        workflow.frame_id.as_deref(),
+        &app_data,
+    )
+    .await?;
+    let delegator = Arc::new(TauriDelegator::new(
+        store.clone(),
+        project.clone(),
+        run_manager,
+        runtime_manager,
+        app_data,
+        policy.resources.clone(),
+    ));
+    let prior = persisted_workflow_steps(store, workflow_id).await?;
+    let result = execute_agent_workflow_with_delegator_inner(
+        store,
+        &project.id,
+        workflow_id,
+        delegator.clone(),
+        Some((policy.registry, policy.host)),
+        None,
+        Some(prior),
+    )
+    .await;
+    if result.is_err() {
+        delegator.cancel_all().await;
+    }
+    result
+}
+
 pub(crate) async fn execute_agent_workflow_with_delegator(
     store: &Store,
     project_id: &str,
@@ -1503,6 +1816,27 @@ pub(crate) async fn execute_agent_workflow_with_delegator(
     delegator: Arc<dyn AgentDelegator>,
     dynamic_policy: Option<(CapabilityRegistry, DelegationHostPolicy)>,
     attempt_generation: Option<i64>,
+) -> Result<DelegationExecutionResult, String> {
+    execute_agent_workflow_with_delegator_inner(
+        store,
+        project_id,
+        workflow_id,
+        delegator,
+        dynamic_policy,
+        attempt_generation,
+        None,
+    )
+    .await
+}
+
+async fn execute_agent_workflow_with_delegator_inner(
+    store: &Store,
+    project_id: &str,
+    workflow_id: &str,
+    delegator: Arc<dyn AgentDelegator>,
+    dynamic_policy: Option<(CapabilityRegistry, DelegationHostPolicy)>,
+    attempt_generation: Option<i64>,
+    prior_steps: Option<Vec<superscience_core::DelegationStepExecution>>,
 ) -> Result<DelegationExecutionResult, String> {
     let workflow = store
         .get_agent_workflow(workflow_id)
@@ -1529,11 +1863,36 @@ pub(crate) async fn execute_agent_workflow_with_delegator(
         Some(policy) => policy,
         None => dynamic_delegation_policy(store).await?,
     };
+    let completed_steps = if prior_steps.is_none() {
+        persisted_successful_steps(store, workflow_id).await?
+    } else {
+        vec![]
+    };
+    let (_, project_workspace) = store
+        .get_project(project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent workflow project does not exist".to_string())?;
+    let activity_driver = Arc::new(
+        crate::method_search_coordinator::StoreWorkflowRunActivityDriver::new(
+            store.clone(),
+            project_id.to_string(),
+            std::path::PathBuf::from(project_workspace),
+        ),
+    );
     let executor = DelegationExecutor::new(delegator.clone())
         .with_observer(observer.clone())
         .with_lineage(lineage)
+        .with_run_activity_driver(activity_driver)
         .with_dynamic_policy(registry, host);
-    let result = executor.execute(plan).await;
+    let result = match prior_steps {
+        Some(prior_steps) => executor.resume(plan, prior_steps).await,
+        None => {
+            executor
+                .execute_with_completed_steps(plan, completed_steps)
+                .await
+        }
+    };
     if result.is_err() {
         let _ = fail_owned_agent_workflow_execution(
             store,
@@ -1544,6 +1903,45 @@ pub(crate) async fn execute_agent_workflow_with_delegator(
         .await;
     }
     result.map_err(|error| error.to_string())
+}
+
+async fn persisted_successful_steps(
+    store: &Store,
+    workflow_id: &str,
+) -> Result<Vec<superscience_core::DelegationStepExecution>, String> {
+    let mut latest = HashMap::<String, AgentWorkflowAttempt>::new();
+    for attempt in store
+        .list_agent_workflow_attempts(workflow_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let replace = latest
+            .get(&attempt.step_id)
+            .is_none_or(|current| current.attempt < attempt.attempt);
+        if replace {
+            latest.insert(attempt.step_id.clone(), attempt);
+        }
+    }
+    let mut completed = Vec::new();
+    for attempt in latest
+        .into_values()
+        .into_iter()
+        .filter(|attempt| attempt.status == AgentWorkflowAttemptStatus::Succeeded)
+    {
+        let Some(raw) = attempt.response_json else {
+            continue;
+        };
+        let Ok(response) = serde_json::from_str::<AgentDelegationResponse>(&raw) else {
+            continue;
+        };
+        if response.status == DelegationStatus::Succeeded {
+            completed.push(superscience_core::DelegationStepExecution {
+                step_id: attempt.step_id,
+                response,
+            });
+        }
+    }
+    Ok(completed)
 }
 
 async fn fail_owned_agent_workflow_execution(
@@ -1889,7 +2287,7 @@ impl TauriDelegator {
             IsolationDisposition::Applied { commit } => response.evidence.push(AgentEvidence {
                 kind: "workspace_merge".into(),
                 summary: format!(
-                    "Conflict preflight passed and SuperScience cherry-picked {} isolated project change(s): {}",
+                    "Conflict preflight passed and Wisp cherry-picked {} isolated project change(s): {}",
                     result.changed_files.len(),
                     summarize_changed_files(&result.changed_files)
                 ),
@@ -2244,6 +2642,7 @@ impl AgentDelegator for NativeDelegator {
         self.resources
             .validate_task(
                 &request.spec.capabilities,
+                &request.spec.skill_bindings,
                 specialist_from_request(&request),
             )
             .map_err(anyhow::Error::msg)?;
@@ -2313,14 +2712,14 @@ impl AgentDelegator for NativeDelegator {
         };
         system.push_str(&resource_grant.prompt_section());
         let project_skills = crate::active_skill_index(&self.store, &self.project).await;
+        system.push_str(&bound_skill_prompt(&request.spec, &project_skills)?);
         let skill_allow = resource_grant
             .skills
             .iter()
             .cloned()
             .collect::<HashSet<_>>();
         let skills = Arc::new(project_skills.filtered_by_names(Some(&skill_allow)));
-        let mut tools =
-            superscience_core::build_registry(skills, self.project.memory.clone(), false);
+        let mut tools = superscience_core::build_registry(skills, self.project.memory.clone(), false);
         tools.add(Box::new(
             crate::session_context_tool::SessionExecutionContextTool::new(
                 Box::new(crate::run_context::RunInContextTool::new(
@@ -2342,13 +2741,19 @@ impl AgentDelegator for NativeDelegator {
             self.run_manager.clone(),
             self.project.id.clone(),
         )));
-        let runtime_project_id = if request.spec.workspace_policy
-            == Some(superscience_core::AgentWorkspacePolicy::Isolated)
-        {
-            isolated_runtime_scope(&self.project.id, &request.request_id)
-        } else {
-            self.project.id.clone()
-        };
+        tools.add(Box::new(
+            crate::method_search::PrepareMethodSearchTool::new(
+                self.store.clone(),
+                self.project.id.clone(),
+                child_frame_id.clone(),
+            ),
+        ));
+        let runtime_project_id =
+            if request.spec.workspace_policy == Some(superscience_core::AgentWorkspacePolicy::Isolated) {
+                isolated_runtime_scope(&self.project.id, &request.request_id)
+            } else {
+                self.project.id.clone()
+            };
         let wiring = crate::wire_runtimes_and_mcp(
             &mut tools,
             &self.runtime_manager,
@@ -2600,7 +3005,7 @@ fn native_tool_allowlist(request: &AgentDelegationRequest) -> Vec<String> {
             "read" | "search" | "grep" => !request.spec.permissions.paths.is_empty(),
             "write" | "edit" => request.spec.permissions.write && !reviewer,
             "view_image" => !request.spec.permissions.paths.is_empty() && !reviewer,
-            "run_in_context" | "get_run" | "cancel_run" => {
+            "run_in_context" | "get_run" | "cancel_run" | "prepare_method_search" => {
                 request.spec.permissions.execute && !reviewer
             }
             _ => false,
@@ -2677,11 +3082,33 @@ fn delegation_result_instructions(request: &AgentDelegationRequest) -> anyhow::R
 }
 
 fn parse_agent_result(raw: &str, request: &AgentDelegationRequest) -> Result<Value, String> {
-    if request.spec.output_schema_source == AgentOutputSchemaSource::Task {
-        return serde_json::from_str(raw.trim())
-            .map_err(|error| format!("Agent returned invalid task JSON: {error}"));
+    if raw.trim().is_empty() {
+        return Err("Agent returned an empty final message".into());
     }
-    parse_result_object(raw)
+    let reviewer = is_reviewer(request);
+    let candidates = extract_json_candidates(raw);
+    if request.spec.output_schema_source == AgentOutputSchemaSource::Task {
+        if let Some(value) = largest_candidate(candidates) {
+            return Ok(value);
+        }
+        if reviewer {
+            return Err("Reviewer returned no parseable JSON task result".into());
+        }
+        return Ok(degraded_result_envelope(
+            raw,
+            "The final message contained no parseable JSON value; the raw text is preserved in summary.",
+        ));
+    }
+    if let Some(object) = envelope_candidate(candidates) {
+        return Ok(normalize_result_envelope(object));
+    }
+    if reviewer {
+        return Err("Reviewer returned no JSON result object with a summary string".into());
+    }
+    Ok(degraded_result_envelope(
+        raw,
+        "The final message contained no JSON object with a summary string; the raw text is preserved in summary.",
+    ))
 }
 
 async fn reviewer_host_evidence(project_root: &std::path::Path) -> String {
@@ -2744,6 +3171,7 @@ impl AgentDelegator for AcpDelegator {
         self.resources
             .validate_task(
                 &request.spec.capabilities,
+                &request.spec.skill_bindings,
                 specialist_from_request(&request),
             )
             .map_err(anyhow::Error::msg)?;
@@ -2799,10 +3227,12 @@ impl AgentDelegator for AcpDelegator {
                 .await?;
         }
         sync_child_execution_contexts(&self.store, Some(&parent_frame_id), &child_frame_id).await?;
+        let project_skills = crate::active_skill_index(&self.store, &self.project).await;
         let prompt_text = format!(
-            "{}{}",
+            "{}{}{}",
             delegation_prompt(&request)?,
-            resource_grant.prompt_section()
+            resource_grant.prompt_section(),
+            bound_skill_prompt(&request.spec, &project_skills)?,
         );
         let next_seq = self.store.load_messages(&child_frame_id).await?.len() as i64 + 1;
         self.store
@@ -3270,7 +3700,7 @@ fn permission_option_with_resources(
     resources: &crate::delegation_resources::ScientificTaskGrant,
     project_root: &std::path::Path,
 ) -> Option<String> {
-    // ACP vendors can name equivalent tools differently. SuperScience recognizes only
+    // ACP vendors can name equivalent tools differently. Wisp recognizes only
     // bounded file operations and the already-filtered project MCP bridge;
     // unknown command, process, and network requests fail closed.
     let identities = tool_identity_fields(&request.tool_call);
@@ -3303,10 +3733,7 @@ fn permission_option_with_resources(
                         && crate::delegation_resources::connector_from_token(tool).is_none()
                 })
                 .any(|tool| {
-                    matches_identity(
-                        identity,
-                        &[tool.as_str(), tool.trim_start_matches("superscience_")],
-                    )
+                    matches_identity(identity, &[tool.as_str(), tool.trim_start_matches("wisp_")])
                 })
                 || granted_connector_identity(identity, resources)
         });
@@ -3314,9 +3741,9 @@ fn permission_option_with_resources(
         matches_identity(
             identity,
             &[
-                "superscience_delegate_tasks",
+                "wisp_delegate_tasks",
                 "delegate_tasks",
-                "superscience_get_delegated_result",
+                "wisp_get_delegated_result",
                 "get_delegated_result",
             ],
         )
@@ -3330,13 +3757,13 @@ fn permission_option_with_resources(
                             matches_identity(
                                 identity,
                                 &[
-                                    "superscience_run_in_context",
+                                    "wisp_run_in_context",
                                     "run_in_context",
-                                    "superscience_list_execution_contexts",
+                                    "wisp_list_execution_contexts",
                                     "list_execution_contexts",
-                                    "superscience_get_run",
+                                    "wisp_get_run",
                                     "get_run",
-                                    "superscience_cancel_run",
+                                    "wisp_cancel_run",
                                     "cancel_run",
                                 ],
                             )
@@ -3393,7 +3820,7 @@ fn granted_connector_identity(
                 .any(|tool| normalize_tool_identity(tool) == identity);
         }
         let custom_prefix = format!(
-            "superscience_custom_{}__",
+            "wisp_custom_{}__",
             connector
                 .to_ascii_lowercase()
                 .chars()
@@ -3509,12 +3936,12 @@ impl AcpUsage {
     }
 
     fn missing_budget_dimension(&self, budget: &AgentBudget) -> Option<String> {
-        if budget.max_tokens.is_some() && !self.tokens_reported {
+        if budget.max_tokens.is_some_and(|limit| limit > 0) && !self.tokens_reported {
             return Some(
                 "ACP Agent did not report usage required to enforce its token budget".into(),
             );
         }
-        if budget.max_cost_microunits.is_some() && !self.cost_reported {
+        if budget.max_cost_microunits.is_some_and(|limit| limit > 0) && !self.cost_reported {
             return Some(
                 "ACP Agent did not report cost required to enforce its cost budget".into(),
             );
@@ -3527,7 +3954,7 @@ fn runtime_budget_violation(usage: &AgentUsage, budget: &AgentBudget) -> Option<
     let total_tokens = usage.input_tokens.saturating_add(usage.output_tokens);
     if budget
         .max_tokens
-        .is_some_and(|limit| total_tokens > u64::from(limit))
+        .is_some_and(|limit| limit > 0 && total_tokens > u64::from(limit))
     {
         return Some(format!(
             "Agent exceeded its token budget ({total_tokens} tokens)"
@@ -3535,7 +3962,7 @@ fn runtime_budget_violation(usage: &AgentUsage, budget: &AgentBudget) -> Option<
     }
     if budget
         .max_tool_calls
-        .is_some_and(|limit| usage.tool_calls > u64::from(limit))
+        .is_some_and(|limit| limit > 0 && usage.tool_calls > u64::from(limit))
     {
         return Some(format!(
             "Agent exceeded its tool-call budget ({} calls)",
@@ -3544,7 +3971,7 @@ fn runtime_budget_violation(usage: &AgentUsage, budget: &AgentBudget) -> Option<
     }
     if budget
         .max_cost_microunits
-        .is_some_and(|limit| usage.cost_microunits > limit)
+        .is_some_and(|limit| limit > 0 && usage.cost_microunits > limit)
     {
         return Some(format!(
             "Agent exceeded its cost budget ({} microunits)",
@@ -3586,26 +4013,26 @@ fn acp_bridge_tool_allowlist(
     };
     for tool in &permissions.tools {
         match tool.as_str() {
-            "delegate_tasks" => add("superscience_delegate_tasks"),
-            "get_delegated_result" => add("superscience_get_delegated_result"),
+            "delegate_tasks" => add("wisp_delegate_tasks"),
+            "get_delegated_result" => add("wisp_get_delegated_result"),
             "run_in_context" if permissions.execute => {
-                add("superscience_list_execution_contexts");
-                add("superscience_run_in_context");
+                add("wisp_list_execution_contexts");
+                add("wisp_run_in_context");
             }
-            "get_run" if permissions.execute => add("superscience_get_run"),
-            "cancel_run" if permissions.execute => add("superscience_cancel_run"),
+            "get_run" if permissions.execute => add("wisp_get_run"),
+            "cancel_run" if permissions.execute => add("wisp_cancel_run"),
             "python" | "r" if permissions.execute => {
-                add("superscience_list_execution_contexts");
-                add("superscience_run_in_context");
-                add("superscience_get_run");
-                add("superscience_cancel_run");
+                add("wisp_list_execution_contexts");
+                add("wisp_run_in_context");
+                add("wisp_get_run");
+                add("wisp_cancel_run");
             }
             _ => {}
         }
     }
     if !resources.skills.is_empty() {
-        add("superscience_list_skills");
-        add("superscience_use_skill");
+        add("wisp_list_skills");
+        add("wisp_use_skill");
     }
     // Resource grants were already derived from the resolved capabilities and
     // intersected with the Specialist snapshot. Pass every resulting token so
@@ -3709,6 +4136,19 @@ impl DelegationExecutionObserver for StoreDelegationObserver {
         Ok(())
     }
 
+    async fn workflow_resumed(&self, plan: &DelegationPlan) -> anyhow::Result<()> {
+        let workflow = self
+            .store
+            .get_agent_workflow(&plan.id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Agent workflow no longer exists"))?;
+        if workflow.status != AgentWorkflowStatus::Running {
+            anyhow::bail!("Only a persisted running Agent workflow can resume");
+        }
+        self.execution_claimed.store(true, Ordering::Release);
+        Ok(())
+    }
+
     async fn step_started(&self, request: &AgentDelegationRequest) -> anyhow::Result<()> {
         self.create_started_attempt(request).await?;
         Ok(())
@@ -3731,6 +4171,13 @@ impl DelegationExecutionObserver for StoreDelegationObserver {
             .get_agent_workflow_attempt(&attempt_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Agent attempt disappeared"))?;
+        let expected_status = attempt.status;
+        if !matches!(
+            expected_status,
+            AgentWorkflowAttemptStatus::Running | AgentWorkflowAttemptStatus::WaitingRun
+        ) {
+            anyhow::bail!("Workflow attempt is no longer active");
+        }
         attempt.status = match response.status {
             DelegationStatus::Succeeded => AgentWorkflowAttemptStatus::Succeeded,
             DelegationStatus::Cancelled => AgentWorkflowAttemptStatus::Cancelled,
@@ -3752,7 +4199,7 @@ impl DelegationExecutionObserver for StoreDelegationObserver {
         attempt.finished_at = Some(chrono::Utc::now().timestamp());
         if !self
             .store
-            .update_agent_workflow_attempt(&attempt, AgentWorkflowAttemptStatus::Running)
+            .update_agent_workflow_attempt(&attempt, expected_status)
             .await?
         {
             anyhow::bail!("Agent attempt terminal state lost a concurrent update");
@@ -3884,6 +4331,41 @@ fn delegation_task_prompt(
     ))
 }
 
+fn bound_skill_prompt(
+    spec: &superscience_core::AgentSpec,
+    skills: &superscience_skills::SkillIndex,
+) -> anyhow::Result<String> {
+    if spec.skill_bindings.is_empty() {
+        return Ok(String::new());
+    }
+    let mut rendered = String::new();
+    for binding in &spec.skill_bindings {
+        let record = skills.effective_record(&binding.name).ok_or_else(|| {
+            anyhow::anyhow!("Bound Skill '{}' is no longer effective", binding.id)
+        })?;
+        if record.scope.as_str() != binding.scope
+            || record.path.to_string_lossy() != binding.path
+            || record.skill_md_sha256.as_deref() != Some(binding.skill_md_sha256.as_str())
+        {
+            anyhow::bail!(
+                "Bound Skill '{}' changed after planning; regenerate the workflow",
+                binding.id
+            );
+        }
+        let skill = skills
+            .get(&binding.name)
+            .ok_or_else(|| anyhow::anyhow!("Bound Skill '{}' is disabled", binding.id))?;
+        rendered.push_str(&format!(
+            "\n\n<bound_skill id={} scope={} sha256={}>\n{}\n</bound_skill>",
+            serde_json::to_string(&binding.id)?,
+            serde_json::to_string(&binding.scope)?,
+            serde_json::to_string(&binding.skill_md_sha256)?,
+            superscience_skills::render_skill(skill),
+        ));
+    }
+    Ok(rendered)
+}
+
 fn delegation_prompt(request: &AgentDelegationRequest) -> anyhow::Result<String> {
     Ok(format!(
         "{}\n\n{}",
@@ -3892,31 +4374,92 @@ fn delegation_prompt(request: &AgentDelegationRequest) -> anyhow::Result<String>
     ))
 }
 
-fn parse_result_object(raw: &str) -> Result<Value, String> {
-    let start = raw
-        .find('{')
-        .ok_or_else(|| "Agent returned no JSON object".to_string())?;
-    let end = raw
-        .rfind('}')
-        .filter(|end| *end >= start)
-        .ok_or_else(|| "Agent returned an incomplete JSON object".to_string())?;
-    let value: Value = serde_json::from_str(&raw[start..=end])
-        .map_err(|error| format!("Agent returned invalid JSON: {error}"))?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| "Agent result must be an object".to_string())?;
-    if !object.get("summary").is_some_and(Value::is_string) {
-        return Err("Agent result is missing the summary string".into());
+/// Every JSON value that can be recovered from the Agent's final message.
+/// Models frequently wrap the requested JSON in Markdown fences or narrative
+/// text, so after a strict whole-message parse this scans for embedded
+/// balanced JSON values and skips past each recovered one.
+pub(crate) fn extract_json_candidates(raw: &str) -> Vec<Value> {
+    let trimmed = raw.trim();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return vec![value];
     }
+    let mut candidates = Vec::new();
+    let bytes = trimmed.as_bytes();
+    let mut index = 0;
+    let mut failed_attempts = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'{' && bytes[index] != b'[' {
+            index += 1;
+            continue;
+        }
+        let mut stream = serde_json::Deserializer::from_str(&trimmed[index..]).into_iter::<Value>();
+        match stream.next() {
+            Some(Ok(value)) => {
+                index += stream.byte_offset().max(1);
+                candidates.push(value);
+            }
+            _ => {
+                // Bound quadratic rescans of pathological brace-heavy text.
+                failed_attempts += 1;
+                if failed_attempts > 1_000 {
+                    break;
+                }
+                index += 1;
+            }
+        }
+    }
+    candidates
+}
+
+fn largest_candidate(candidates: Vec<Value>) -> Option<Value> {
+    candidates.into_iter().max_by_key(|value| {
+        serde_json::to_string(value)
+            .map(|serialized| serialized.len())
+            .unwrap_or(0)
+    })
+}
+
+fn envelope_candidate(candidates: Vec<Value>) -> Option<Map<String, Value>> {
+    largest_candidate(
+        candidates
+            .into_iter()
+            .filter(|value| value.get("summary").is_some_and(Value::is_string))
+            .collect(),
+    )
+    .and_then(|value| match value {
+        Value::Object(object) => Some(object),
+        _ => None,
+    })
+}
+
+/// Fill optional envelope fields so downstream consumers can rely on their
+/// presence; only the summary string is required from the Agent itself.
+fn normalize_result_envelope(mut object: Map<String, Value>) -> Value {
     if !object.get("diff_summary").is_some_and(Value::is_string) {
-        return Err("Agent result is missing the diff_summary string".into());
+        object.insert("diff_summary".into(), json!(""));
     }
     for field in ["files_changed", "artifacts", "evidence", "tests", "risks"] {
         if !object.get(field).is_some_and(Value::is_array) {
-            return Err(format!("Agent result is missing the {field} array"));
+            object.insert(field.into(), json!([]));
         }
     }
-    Ok(value)
+    Value::Object(object)
+}
+
+/// Preserve the Agent's completed work instead of discarding it when the
+/// final message is not the requested JSON shape. The raw text becomes the
+/// summary and the delivery marker records why the result was degraded.
+fn degraded_result_envelope(raw: &str, reason: &str) -> Value {
+    json!({
+        "summary": bounded_text(raw.trim(), 60_000),
+        "files_changed": [],
+        "diff_summary": "",
+        "artifacts": [],
+        "evidence": [],
+        "tests": [],
+        "risks": [],
+        "delivery": superscience_core::degraded_delivery_marker(reason),
+    })
 }
 
 fn evidence_from_output(output: &Value) -> Vec<AgentEvidence> {
@@ -4117,7 +4660,9 @@ mod tests {
         DynamicAgentWorkflowProposal,
     };
     use std::{process::Command, sync::atomic::AtomicUsize};
-    use superscience_core::{AgentSpec, ValidatedAgentDelegationRequest};
+    use superscience_core::{
+        AgentSkillBinding, AgentSpec, DelegatedTaskProposal, ValidatedAgentDelegationRequest,
+    };
     use superscience_store::AgentWorkflow;
 
     #[test]
@@ -4127,10 +4672,8 @@ mod tests {
     }
 
     async fn dynamic_fixture() -> (Store, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "superscience_dynamic_workflow_{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("wisp_dynamic_workflow_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let store = Store::open(&root.join("store.sqlite")).await.unwrap();
         store
@@ -4248,10 +4791,8 @@ mod tests {
 
     #[tokio::test]
     async fn dropped_isolated_execution_guard_cleans_the_worktree_and_branch() {
-        let base = std::env::temp_dir().join(format!(
-            "superscience_isolation_guard_{}",
-            uuid::Uuid::new_v4()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("wisp_isolation_guard_{}", uuid::Uuid::new_v4()));
         let repo = base.join("repo with spaces");
         std::fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| {
@@ -4266,9 +4807,9 @@ mod tests {
         assert!(git(&["add", "."]).status.success());
         assert!(git(&[
             "-c",
-            "user.name=SuperScience Test",
+            "user.name=Wisp Test",
             "-c",
-            "user.email=superscience-test@localhost",
+            "user.email=wisp-test@localhost",
             "commit",
             "-m",
             "base",
@@ -4311,8 +4852,8 @@ mod tests {
         // for the worktree to disappear races the later branch deletion, so poll
         // until the branch — the last resource cleaned — is gone.
         let branch_present = || {
-            String::from_utf8_lossy(&git(&["branch", "--list", "superscience-agent/*"]).stdout)
-                .contains("superscience-agent/")
+            String::from_utf8_lossy(&git(&["branch", "--list", "wisp-agent/*"]).stdout)
+                .contains("wisp-agent/")
         };
         let mut cleaned = false;
         for _ in 0..500 {
@@ -4432,6 +4973,7 @@ mod tests {
                         "run_in_context".into(),
                         "get_run".into(),
                         "cancel_run".into(),
+                        "prepare_method_search".into(),
                     ],
                     paths: vec!["project://**".into()],
                     network: false,
@@ -4461,7 +5003,10 @@ mod tests {
             id: id.into(),
             instruction: format!("Complete task {id}"),
             depends_on: dependencies.iter().map(|value| (*value).into()).collect(),
+            task_kind: superscience_core::WorkflowTaskKind::Agent,
+            run_activity: None,
             capabilities: vec!["reasoning".into()],
+            skill_ids: vec![],
             specialist_id: None,
             output_schema: None,
             isolated: false,
@@ -4511,7 +5056,7 @@ mod tests {
             acp::AcpAgentProfile {
                 id: "missing-acp".into(),
                 label: "Missing ACP".into(),
-                command: format!("superscience-missing-acp-{}", uuid::Uuid::new_v4()),
+                command: format!("wisp-missing-acp-{}", uuid::Uuid::new_v4()),
                 args: vec![],
             },
         ];
@@ -4880,36 +5425,127 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn structured_result_parser_rejects_prose_and_incomplete_results() {
-        assert!(parse_result_object("done").is_err());
-        assert!(parse_result_object(r#"{"summary":"done"}"#).is_err());
-        assert!(parse_result_object(r#"{"summary":"done","files_changed":[],"diff_summary":"","artifacts":[],"evidence":[],"tests":[],"risks":[]}"#)
-        .is_ok());
-
-        let request = AgentDelegationRequest {
+    fn parse_request(spec: Value) -> AgentDelegationRequest {
+        AgentDelegationRequest {
             request_id: "request".into(),
             workflow_id: "workflow".into(),
             step_id: "step".into(),
-            spec: serde_json::from_value(json!({
-                "agent_id": "structured",
-                "name": "Structured Agent",
-                "goal": "Return rows",
-                "role": "temporary",
-                "backend": "local",
-                "prompt_template": "Return structured data.",
-                "output_contract": {"type": "array"},
-                "output_schema_source": "task"
-            }))
-            .unwrap(),
+            spec: serde_json::from_value(spec).unwrap(),
             input: json!({}),
             lineage: None,
-        };
+        }
+    }
+
+    fn standard_parse_request() -> AgentDelegationRequest {
+        parse_request(json!({
+            "agent_id": "worker",
+            "name": "Worker Agent",
+            "goal": "Do the work",
+            "role": "temporary",
+            "backend": "local",
+            "prompt_template": "Work."
+        }))
+    }
+
+    fn task_parse_request() -> AgentDelegationRequest {
+        parse_request(json!({
+            "agent_id": "structured",
+            "name": "Structured Agent",
+            "goal": "Return rows",
+            "role": "temporary",
+            "backend": "local",
+            "prompt_template": "Return structured data.",
+            "output_contract": {"type": "array"},
+            "output_schema_source": "task"
+        }))
+    }
+
+    fn reviewer_parse_request() -> AgentDelegationRequest {
+        parse_request(json!({
+            "agent_id": "temporary-reviewer",
+            "name": "Independent reviewer",
+            "goal": "Review the work",
+            "role": "reviewer",
+            "backend": "local",
+            "prompt_template": "Review only."
+        }))
+    }
+
+    #[test]
+    fn result_parser_tolerates_fences_and_narrative_around_the_payload() {
+        let request = task_parse_request();
         assert_eq!(
             parse_agent_result("[1,2]", &request).unwrap(),
             json!([1, 2])
         );
-        assert!(parse_agent_result("not JSON", &request).is_err());
+        assert_eq!(
+            parse_agent_result("```json\n{\"rows\":[1]}\n```", &request).unwrap(),
+            json!({"rows": [1]})
+        );
+        assert_eq!(
+            parse_agent_result(
+                "Here is the final result you asked for:\n{\"rows\":[1,2]}\nDone.",
+                &request
+            )
+            .unwrap(),
+            json!({"rows": [1, 2]})
+        );
+
+        let request = standard_parse_request();
+        let envelope = r#"{"summary":"done","files_changed":[],"diff_summary":"","artifacts":[],"evidence":[],"tests":[],"risks":[]}"#;
+        assert_eq!(
+            parse_agent_result(envelope, &request).unwrap()["summary"],
+            "done"
+        );
+        // Stray braces in surrounding prose must not break payload extraction.
+        let noisy = format!("I produced {{almost}} everything requested.\n{envelope}");
+        assert_eq!(
+            parse_agent_result(&noisy, &request).unwrap()["summary"],
+            "done"
+        );
+        // Optional envelope fields are normalized instead of rejected.
+        let minimal = parse_agent_result(r#"{"summary":"done"}"#, &request).unwrap();
+        assert_eq!(minimal["summary"], "done");
+        assert_eq!(minimal["files_changed"], json!([]));
+        assert_eq!(minimal["diff_summary"], "");
+        assert!(minimal.get("delivery").is_none());
+    }
+
+    #[test]
+    fn result_parser_degrades_unparseable_deliveries_instead_of_discarding_them() {
+        let request = standard_parse_request();
+        let narrative = "A long narrative report without any JSON envelope.";
+        let degraded = parse_agent_result(narrative, &request).unwrap();
+        assert_eq!(degraded["summary"], narrative);
+        assert_eq!(degraded["delivery"]["degraded"], true);
+        assert!(degraded["delivery"]["reason"].is_string());
+
+        // A JSON object without the required summary keeps the raw text too.
+        let custom = r#"{"skill_source":"bear-review","findings":[],"limitations":[]}"#;
+        let degraded = parse_agent_result(custom, &request).unwrap();
+        assert_eq!(degraded["delivery"]["degraded"], true);
+        assert_eq!(degraded["summary"], custom);
+
+        let request = task_parse_request();
+        let degraded = parse_agent_result("not JSON", &request).unwrap();
+        assert_eq!(degraded["summary"], "not JSON");
+        assert_eq!(degraded["delivery"]["degraded"], true);
+
+        assert!(parse_agent_result("  \n ", &request).is_err());
+    }
+
+    #[test]
+    fn result_parser_keeps_reviewer_deliveries_strict() {
+        let request = reviewer_parse_request();
+        assert!(is_reviewer(&request));
+        assert_eq!(
+            parse_agent_result("plain prose verdict", &request).unwrap_err(),
+            "Reviewer returned no JSON result object with a summary string"
+        );
+        let envelope = r#"{"summary":"ok","findings":[]}"#;
+        let parsed = parse_agent_result(envelope, &request).unwrap();
+        assert_eq!(parsed["summary"], "ok");
+        assert_eq!(parsed["findings"], json!([]));
     }
 
     #[test]
@@ -5005,7 +5641,7 @@ mod tests {
     #[tokio::test]
     async fn child_execution_contexts_exactly_follow_the_parent_session() {
         let root = std::env::temp_dir().join(format!(
-            "superscience_delegation_context_sync_{}",
+            "wisp_delegation_context_sync_{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
@@ -5021,9 +5657,7 @@ mod tests {
             .unwrap();
         for id in ["ssh:selected", "ssh:stale"] {
             store
-                .upsert_execution_context(
-                    &superscience_store::ExecutionContext::new(id, id).unwrap(),
-                )
+                .upsert_execution_context(&superscience_store::ExecutionContext::new(id, id).unwrap())
                 .await
                 .unwrap();
         }
@@ -5055,7 +5689,7 @@ mod tests {
     #[tokio::test]
     async fn native_reviewer_prompt_uses_host_labeled_evidence() {
         let root = std::env::temp_dir().join(format!(
-            "superscience_native_reviewer_evidence_{}",
+            "wisp_native_reviewer_evidence_{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
@@ -5070,7 +5704,7 @@ mod tests {
     #[tokio::test]
     async fn delegation_setting_defaults_off_and_is_project_scoped() {
         let path = std::env::temp_dir().join(format!(
-            "superscience_delegation_setting_{}.sqlite",
+            "wisp_delegation_setting_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&path).await.unwrap();
@@ -5318,7 +5952,7 @@ mod tests {
         };
         let prompt = delegation_prompt(&request).unwrap();
         let markers = [
-            "bounded SuperScience sub-Agent",
+            "bounded Wisp sub-Agent",
             "Specialist identity: Code scientist",
             "Apply the saved scientific coding rubric.",
             "Controlled Agent task",
@@ -5600,6 +6234,137 @@ mod tests {
         assert_eq!(specs[0], specs[1]);
 
         drop(specs);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    struct ResumeSuccessfulStepsDelegator {
+        failed_research_once: AtomicBool,
+        calls: StdMutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl AgentDelegator for ResumeSuccessfulStepsDelegator {
+        async fn delegate_validated(
+            &self,
+            request: ValidatedAgentDelegationRequest,
+        ) -> anyhow::Result<AgentDelegationResponse> {
+            let request = request.into_request();
+            let task_id = request.input["task_id"].as_str().unwrap().to_string();
+            self.calls.lock().unwrap().push(task_id.clone());
+            let failed =
+                task_id == "research" && !self.failed_research_once.swap(true, Ordering::SeqCst);
+            Ok(AgentDelegationResponse {
+                request_id: request.request_id,
+                status: if failed {
+                    DelegationStatus::Failed
+                } else {
+                    DelegationStatus::Succeeded
+                },
+                output: if failed {
+                    json!({})
+                } else {
+                    json!({"summary": format!("completed {task_id}")})
+                },
+                artifact_ids: vec![],
+                artifacts: vec![],
+                evidence: vec![],
+                usage: AgentUsage::default(),
+                agent_session_id: None,
+                child_frame_id: None,
+                error: failed.then(|| "research failed once".into()),
+                nested_results: vec![],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_resumes_from_persisted_successful_steps() {
+        let (store, root) = dynamic_fixture().await;
+        let policy = test_dynamic_policy();
+        let created = create_dynamic_agent_workflow_draft(
+            &store,
+            "p",
+            &root,
+            "f".into(),
+            dynamic_proposal(vec![
+                dynamic_task("inspect", &[]),
+                dynamic_task("research", &[]),
+                dynamic_task("synthesize", &["inspect", "research"]),
+            ]),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(store
+            .approve_agent_workflow_plan(&created.workflow.id, created.workflow.version)
+            .await
+            .unwrap());
+        let delegator = Arc::new(ResumeSuccessfulStepsDelegator {
+            failed_research_once: AtomicBool::new(false),
+            calls: StdMutex::new(vec![]),
+        });
+
+        let first = execute_agent_workflow_with_delegator(
+            &store,
+            "p",
+            &created.workflow.id,
+            delegator.clone(),
+            Some(policy.clone()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.status, DelegationExecutionStatus::Failed);
+
+        let revised = prepare_agent_workflow_budget_retry(
+            &store,
+            "p",
+            &root,
+            &created.workflow.id,
+            HashMap::from([(
+                "research".into(),
+                dynamic_workflow::AgentBudgetProposal {
+                    max_tokens: Some(16_000),
+                    max_tool_calls: None,
+                    max_cost_microunits: None,
+                },
+            )]),
+            &policy,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            revised
+                .dynamic
+                .tasks
+                .iter()
+                .find(|task| task.id == "research")
+                .unwrap()
+                .budget
+                .max_tokens,
+            Some(16_000)
+        );
+        let second = execute_agent_workflow_with_delegator(
+            &store,
+            "p",
+            &created.workflow.id,
+            delegator.clone(),
+            Some(policy),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(second.status, DelegationExecutionStatus::Succeeded);
+        let calls = delegator.calls.lock().unwrap();
+        assert_eq!(calls.iter().filter(|task| *task == "inspect").count(), 1);
+        assert_eq!(calls.iter().filter(|task| *task == "research").count(), 2);
+        assert_eq!(calls.iter().filter(|task| *task == "synthesize").count(), 1);
+
+        drop(calls);
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -6035,10 +6800,8 @@ mod tests {
 
     #[test]
     fn acp_permission_choice_respects_tool_and_write_ceiling() {
-        let root = std::env::temp_dir().join(format!(
-            "superscience_delegation_acp_{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("wisp_delegation_acp_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("results")).unwrap();
         let request = superscience_acp::AcpPermissionRequest {
             request_id: "p".into(),
@@ -6153,7 +6916,7 @@ mod tests {
             );
         }
         let bridge_request = superscience_acp::AcpPermissionRequest {
-            tool_call: json!({"name":"superscience_get_run"}),
+            tool_call: json!({"name":"wisp_get_run"}),
             ..spoofed.clone()
         };
         assert_eq!(
@@ -6169,7 +6932,7 @@ mod tests {
             Some("allow".into())
         );
         let delegation_request = superscience_acp::AcpPermissionRequest {
-            tool_call: json!({"name":"superscience_delegate_tasks", "kind":"execute"}),
+            tool_call: json!({"name":"wisp_delegate_tasks", "kind":"execute"}),
             ..spoofed.clone()
         };
         assert_eq!(
@@ -6190,7 +6953,7 @@ mod tests {
         );
         let connector_request = superscience_acp::AcpPermissionRequest {
             tool_call: json!({
-                "name":"superscience_custom_lab_search__query",
+                "name":"wisp_custom_lab_search__query",
                 "kind":"fetch"
             }),
             ..spoofed
@@ -6214,7 +6977,7 @@ mod tests {
         );
         let connector_execute = superscience_acp::AcpPermissionRequest {
             tool_call: json!({
-                "name":"superscience_custom_lab_search__query",
+                "name":"wisp_custom_lab_search__query",
                 "kind":"execute"
             }),
             ..connector_request.clone()
@@ -6258,10 +7021,7 @@ mod tests {
                 },
                 &crate::delegation_resources::ScientificTaskGrant::default()
             ),
-            [
-                "superscience_delegate_tasks",
-                "superscience_get_delegated_result"
-            ]
+            ["wisp_delegate_tasks", "wisp_get_delegated_result"]
         );
         assert_eq!(
             acp_bridge_tool_allowlist(
@@ -6279,10 +7039,10 @@ mod tests {
                 &crate::delegation_resources::ScientificTaskGrant::default()
             ),
             [
-                "superscience_list_execution_contexts",
-                "superscience_run_in_context",
-                "superscience_get_run",
-                "superscience_cancel_run",
+                "wisp_list_execution_contexts",
+                "wisp_run_in_context",
+                "wisp_get_run",
+                "wisp_cancel_run",
             ]
         );
 
@@ -6302,10 +7062,10 @@ mod tests {
                 &resources,
             ),
             [
-                "superscience_list_skills",
-                "superscience_use_skill",
-                "superscience_connector:web",
-                "superscience_skill:figure-style",
+                "wisp_list_skills",
+                "wisp_use_skill",
+                "wisp_connector:web",
+                "wisp_skill:figure-style",
             ]
         );
     }
@@ -6342,6 +7102,26 @@ mod tests {
             &budget
         )
         .is_some());
+    }
+
+    #[test]
+    fn runtime_budget_checks_treat_zero_dimensions_as_unlimited() {
+        let budget = AgentBudget {
+            max_tokens: Some(0),
+            max_tool_calls: Some(0),
+            max_cost_microunits: Some(0),
+        };
+        let usage = AgentUsage {
+            input_tokens: 900_000,
+            output_tokens: 100_000,
+            tool_calls: 10_000,
+            cost_microunits: u64::MAX,
+        };
+        assert_eq!(runtime_budget_violation(&usage, &budget), None);
+        assert_eq!(
+            runtime_budget_violation(&usage, &AgentBudget::default()),
+            None
+        );
     }
 
     struct SuccessfulDelegator;
@@ -6450,7 +7230,7 @@ mod tests {
     #[tokio::test]
     async fn store_observer_persists_the_complete_execution_lifecycle() {
         let path = std::env::temp_dir().join(format!(
-            "superscience_delegation_observer_{}.sqlite",
+            "wisp_delegation_observer_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&path).await.unwrap();
@@ -6491,7 +7271,7 @@ mod tests {
     #[tokio::test]
     async fn duplicate_start_cannot_fail_the_observer_that_claimed_execution() {
         let path = std::env::temp_dir().join(format!(
-            "superscience_delegation_claim_{}.sqlite",
+            "wisp_delegation_claim_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&path).await.unwrap();
@@ -6537,5 +7317,72 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn bound_skill_prompt_rejects_catalog_drift() {
+        let root = std::env::temp_dir().join(format!("wisp-bound-skill-{}", uuid::Uuid::new_v4()));
+        let dir = root.join("demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+        std::fs::write(
+            &path,
+            "---\nname: demo\ndescription: demo\n---\nFollow exact guidance.",
+        )
+        .unwrap();
+        let index = superscience_skills::SkillIndex::load_scoped(&[(
+            root.clone(),
+            superscience_skills::SkillSource::Custom,
+        )]);
+        let record = index.effective_record("demo").unwrap();
+        let binding = AgentSkillBinding {
+            id: "demo".into(),
+            name: "demo".into(),
+            scope: record.scope.as_str().into(),
+            path: record.path.to_string_lossy().into(),
+            declared_version: None,
+            skill_md_sha256: record.skill_md_sha256.clone().unwrap(),
+            package_id: None,
+            package_version: None,
+            package_source: None,
+        };
+        let (registry, host) = test_dynamic_policy();
+        let resolved = registry
+            .resolve_task(
+                DelegatedTaskProposal {
+                    id: "demo".into(),
+                    instruction: "Use demo".into(),
+                    context_summary: String::new(),
+                    depends_on: vec![],
+                    capabilities: vec!["reasoning".into()],
+                    skill_bindings: vec![binding],
+                    specialist: None,
+                    output_schema: None,
+                    isolated: false,
+                    model_id: None,
+                    executor: None,
+                    budget: None,
+                    input: json!({}),
+                },
+                &host,
+            )
+            .unwrap();
+        let prompt = bound_skill_prompt(resolved.spec(), &index).unwrap();
+        assert!(prompt.contains("Follow exact guidance."));
+
+        std::fs::write(
+            &path,
+            "---\nname: demo\ndescription: demo\n---\nChanged guidance.",
+        )
+        .unwrap();
+        let changed = superscience_skills::SkillIndex::load_scoped(&[(
+            root.clone(),
+            superscience_skills::SkillSource::Custom,
+        )]);
+        assert!(bound_skill_prompt(resolved.spec(), &changed)
+            .unwrap_err()
+            .to_string()
+            .contains("changed after planning"));
+        std::fs::remove_dir_all(root).ok();
     }
 }

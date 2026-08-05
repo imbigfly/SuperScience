@@ -13,6 +13,12 @@ To move a project from Windows to macOS:
 4. Pick a parent folder. SuperScience creates a new folder named after the project and
    opens the imported project.
 
+During both operations, Wisp keeps a progress dialog open with the current
+stage, files, bytes, and path being processed. An export is published as the
+selected ZIP only after its completed archive has been checked against its
+manifest; while it is running, do not use the temporary or still-empty archive
+file as a transfer copy.
+
 ## Path rules
 
 The ZIP never treats the source `workspace_dir` as the destination. Workspace
@@ -43,3 +49,17 @@ archive manifest and are not followed. Export rejects workspaces with more than
 For repeated device switching, use [Manual project sync](project-sync.md). It
 uses the same portable project snapshot rules while transferring only changed
 workspace files.
+
+## Removing a project
+
+The delete action on a project card offers two distinct choices:
+
+- **Remove from Wisp only** deletes the project's Wisp metadata while keeping
+  its project directory and files on disk.
+- **Delete project and local data** also permanently deletes the registered
+  project directory. This choice opens a second warning that shows the exact
+  directory; its final delete button stays disabled for five seconds. The data
+  deletion cannot be undone.
+
+Pressing Escape from the permanent-delete warning returns to the first choice
+dialog. Pressing Escape again closes project removal without making changes.

@@ -146,7 +146,18 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
-    store.create_project("p", "proj", "").await.unwrap();
+    store
+        .create_project("p", "Workspace A", "/workspace/a")
+        .await
+        .unwrap();
+    store
+        .create_project("p2", "Workspace B", "/workspace/b")
+        .await
+        .unwrap();
+    store
+        .create_project("scratch:usage", "Scratch", "/tmp/scratch")
+        .await
+        .unwrap();
     store
         .create_frame("root", "p", "SUPERSCIENCE", "m")
         .await
@@ -159,13 +170,14 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
         .create_child_frame("child", "root", "p", "Sub", "m")
         .await
         .unwrap();
-    let usage = |input: i64, output: i64| {
+    let now = chrono::Utc::now().timestamp();
+    let usage = |input: i64, output: i64, model: &str| {
         format!(
-            "{{\"kind\":\"Usage\",\"frame_id\":\"x\",\"round\":1,\"input\":{input},\"output\":{output},\"reasoning\":1,\"cached\":2,\"ctx_tokens\":0,\"max_context\":0}}"
+            "{{\"kind\":\"Usage\",\"frame_id\":\"x\",\"round\":1,\"model\":\"{model}\",\"created_at\":{now},\"input\":{input},\"output\":{output},\"reasoning\":1,\"cached\":2,\"ctx_tokens\":0,\"max_context\":0}}"
         )
     };
     store
-        .append_session_ui_event("root", 1, &usage(100, 10))
+        .append_session_ui_event("root", 1, &usage(100, 10, "model-a"))
         .await
         .unwrap();
     store
@@ -177,7 +189,39 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
         .await
         .unwrap();
     store
-        .append_session_ui_event("child", 1, &usage(50, 5))
+        .append_session_ui_event("child", 1, &usage(50, 5, "model-b"))
+        .await
+        .unwrap();
+    store
+        .create_frame("second", "p", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_message("second", 1, &Message::user("second session"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("second", 1, &usage(25, 3, "model-a"))
+        .await
+        .unwrap();
+    store
+        .create_frame("other", "p2", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_message("other", 1, &Message::user("other workspace"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("other", 1, &usage(30, 4, "model-b"))
+        .await
+        .unwrap();
+    store
+        .create_frame("scratch", "scratch:usage", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("scratch", 1, &usage(999, 999, "scratch-model"))
         .await
         .unwrap();
     // A session with no usage events must not appear at all.
@@ -186,14 +230,67 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
         .await
         .unwrap();
 
-    let rows = store.token_usage_by_session().await.unwrap();
-    assert_eq!(rows.len(), 1);
-    let row = &rows[0];
+    let workspaces = store.token_usage_by_project().await.unwrap();
+    assert_eq!(workspaces.len(), 2, "scratch usage stays out of Settings");
+    let workspace = workspaces
+        .iter()
+        .find(|workspace| workspace.project_id == "p")
+        .unwrap();
+    assert_eq!(workspace.name, "Workspace A");
+    assert_eq!(workspace.workspace_dir, "/workspace/a");
+    assert_eq!(workspace.session_count, 2);
+    assert_eq!(
+        (
+            workspace.input,
+            workspace.output,
+            workspace.reasoning,
+            workspace.cached,
+        ),
+        (175, 18, 3, 6)
+    );
+
+    let first_page = store.token_usage_by_session("p", 0, 1).await.unwrap();
+    let second_page = store.token_usage_by_session("p", 1, 1).await.unwrap();
+    assert_eq!(first_page.total, 2);
+    assert_eq!(first_page.items.len(), 1);
+    assert_eq!(second_page.items.len(), 1);
+    assert_ne!(first_page.items[0].id, second_page.items[0].id);
+    let full_page = store.token_usage_by_session("p", 0, 20).await.unwrap();
+    let row = full_page.items.iter().find(|row| row.id == "root").unwrap();
     assert_eq!(row.id, "root");
     assert_eq!(row.title, "hello usage");
     assert_eq!(
         (row.input, row.output, row.reasoning, row.cached),
         (150, 15, 2, 4)
+    );
+
+    let models = store.token_usage_by_model().await.unwrap();
+    assert_eq!(models.len(), 2);
+    assert_eq!(
+        models
+            .iter()
+            .find(|model| model.model == "model-a")
+            .unwrap()
+            .tokens,
+        138
+    );
+    assert_eq!(
+        models
+            .iter()
+            .find(|model| model.model == "model-b")
+            .unwrap()
+            .tokens,
+        89
+    );
+    assert_eq!(
+        store
+            .token_usage_activity()
+            .await
+            .unwrap()
+            .iter()
+            .map(|day| day.tokens)
+            .sum::<i64>(),
+        227
     );
 
     let _ = std::fs::remove_file(&tmp);
@@ -577,6 +674,329 @@ async fn interrupted_agent_workflows_recover_to_failed_terminal_state() {
     assert_eq!(
         store.recover_interrupted_agent_workflows().await.unwrap(),
         (0, 0)
+    );
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn workflow_run_activity_waits_without_consuming_agent_capacity_and_reconciles() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_workflow_run_activity_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    let mut workflow = AgentWorkflow::new("wf", "p", "workspace", "Method search").unwrap();
+    workflow.max_parallel = 1;
+    workflow.root_limits_json = serde_json::to_string(&AgentDelegationRootLimits {
+        max_parallel: 1,
+        ..AgentDelegationRootLimits::default()
+    })
+    .unwrap();
+    let mut activity_step = AgentWorkflowStep::new(
+        "activity",
+        "wf",
+        0,
+        "activity",
+        "run_activity",
+        "local",
+        "host activity",
+    )
+    .unwrap();
+    activity_step.task_kind = "run_activity".into();
+    activity_step.activity_json = serde_json::json!({"activity":"method_search"}).to_string();
+    let agent_step =
+        AgentWorkflowStep::new("agent", "wf", 1, "agent", "worker", "local", "prompt").unwrap();
+    store
+        .create_agent_workflow_plan(&workflow, &[activity_step, agent_step])
+        .await
+        .unwrap();
+    assert!(store.approve_agent_workflow_plan("wf", 1).await.unwrap());
+    assert!(store
+        .transition_agent_workflow_status(
+            "wf",
+            AgentWorkflowStatus::Approved,
+            AgentWorkflowStatus::Running,
+        )
+        .await
+        .unwrap());
+
+    let activity_attempt = AgentWorkflowAttempt::queued(
+        "activity-attempt",
+        "wf",
+        "activity",
+        1,
+        "activity-request",
+        "local",
+        "{}",
+    )
+    .unwrap();
+    let activity_attempt = match store
+        .try_create_started_agent_workflow_attempt(activity_attempt)
+        .await
+        .unwrap()
+    {
+        AgentWorkflowAttemptStart::Started(value) => value,
+        other => panic!("activity attempt did not start: {other:?}"),
+    };
+    let run = RunRecord::new("method-run", "p", "local", "Method search", "method_search");
+    let link =
+        AgentWorkflowRunActivity::new(&activity_attempt.id, &run.id, "method_search").unwrap();
+    store
+        .create_agent_workflow_run_activity(&run, &link)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_agent_workflow_attempt(&activity_attempt.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkflowAttemptStatus::WaitingRun
+    );
+
+    let agent_attempt = AgentWorkflowAttempt::queued(
+        "agent-attempt",
+        "wf",
+        "agent",
+        1,
+        "agent-request",
+        "local",
+        "{}",
+    )
+    .unwrap();
+    assert!(matches!(
+        store
+            .try_create_started_agent_workflow_attempt(agent_attempt)
+            .await
+            .unwrap(),
+        AgentWorkflowAttemptStart::Started(_)
+    ));
+
+    assert!(store
+        .activate_run_lifecycle("method-run", RunStatus::Running, "test-owner", 60)
+        .await
+        .unwrap());
+    assert!(store
+        .finish_active_run_owned("method-run", "test-owner", RunStatus::Succeeded, Some(0))
+        .await
+        .unwrap());
+    assert_eq!(
+        store
+            .reconcile_agent_workflow_run_activity(&activity_attempt.id)
+            .await
+            .unwrap(),
+        Some(AgentWorkflowAttemptStatus::Succeeded)
+    );
+    assert_eq!(
+        store
+            .reconcile_agent_workflow_run_activity(&activity_attempt.id)
+            .await
+            .unwrap(),
+        Some(AgentWorkflowAttemptStatus::Succeeded)
+    );
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn workflow_root_cancellation_cancels_linked_draft_run() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_workflow_linked_cancel_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    let workflow = AgentWorkflow::new("wf", "p", "workspace", "Method search").unwrap();
+    let mut activity_step = AgentWorkflowStep::new(
+        "activity",
+        "wf",
+        0,
+        "activity",
+        "run_activity",
+        "local",
+        "host activity",
+    )
+    .unwrap();
+    activity_step.task_kind = "run_activity".into();
+    activity_step.activity_json = serde_json::json!({"activity":"method_search"}).to_string();
+    let descendant =
+        AgentWorkflowStep::new("report", "wf", 1, "report", "writer", "local", "report").unwrap();
+    store
+        .create_agent_workflow_plan(&workflow, &[activity_step, descendant])
+        .await
+        .unwrap();
+    assert!(store.approve_agent_workflow_plan("wf", 1).await.unwrap());
+    assert!(store
+        .transition_agent_workflow_status(
+            "wf",
+            AgentWorkflowStatus::Approved,
+            AgentWorkflowStatus::Running,
+        )
+        .await
+        .unwrap());
+    let attempt = AgentWorkflowAttempt::queued(
+        "activity-attempt",
+        "wf",
+        "activity",
+        1,
+        "activity-request",
+        "local",
+        "{}",
+    )
+    .unwrap();
+    let attempt = match store
+        .try_create_started_agent_workflow_attempt(attempt)
+        .await
+        .unwrap()
+    {
+        AgentWorkflowAttemptStart::Started(attempt) => attempt,
+        other => panic!("activity attempt did not start: {other:?}"),
+    };
+    let run = RunRecord::new("method-run", "p", "local", "Method search", "method_search");
+    let link = AgentWorkflowRunActivity::new(&attempt.id, &run.id, "method_search").unwrap();
+    store
+        .create_agent_workflow_run_activity(&run, &link)
+        .await
+        .unwrap();
+
+    assert_eq!(store.request_agent_workflow_cancel("wf").await.unwrap(), 1);
+    assert_eq!(
+        store.method_search_run_status("method-run").await.unwrap(),
+        Some(RunStatus::Cancelled)
+    );
+    assert_eq!(
+        store
+            .reconcile_agent_workflow_run_activity(&attempt.id)
+            .await
+            .unwrap(),
+        Some(AgentWorkflowAttemptStatus::Cancelled)
+    );
+    assert!(store
+        .list_agent_workflow_attempts("wf")
+        .await
+        .unwrap()
+        .iter()
+        .all(|attempt| attempt.step_id != "report"));
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn workflow_run_activity_recovery_preserves_valid_link_and_fails_missing_link() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_workflow_run_recovery_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+
+    for (workflow_id, with_link) in [("valid", true), ("invalid", false)] {
+        let workflow = AgentWorkflow::new(workflow_id, "p", "workspace", "Method search").unwrap();
+        let mut step = AgentWorkflowStep::new(
+            format!("{workflow_id}-step"),
+            workflow_id,
+            0,
+            "activity",
+            "run_activity",
+            "local",
+            "host activity",
+        )
+        .unwrap();
+        step.task_kind = "run_activity".into();
+        step.activity_json = serde_json::json!({"activity":"method_search"}).to_string();
+        store
+            .create_agent_workflow_plan(&workflow, &[step.clone()])
+            .await
+            .unwrap();
+        assert!(store
+            .approve_agent_workflow_plan(workflow_id, 1)
+            .await
+            .unwrap());
+        assert!(store
+            .transition_agent_workflow_status(
+                workflow_id,
+                AgentWorkflowStatus::Approved,
+                AgentWorkflowStatus::Running,
+            )
+            .await
+            .unwrap());
+        let attempt = AgentWorkflowAttempt::queued(
+            format!("{workflow_id}-attempt"),
+            workflow_id,
+            &step.id,
+            1,
+            format!("{workflow_id}-request"),
+            "local",
+            "{}",
+        )
+        .unwrap();
+        let mut attempt = match store
+            .try_create_started_agent_workflow_attempt(attempt)
+            .await
+            .unwrap()
+        {
+            AgentWorkflowAttemptStart::Started(value) => value,
+            other => panic!("activity attempt did not start: {other:?}"),
+        };
+        if with_link {
+            let run = RunRecord::new(
+                format!("{workflow_id}-run"),
+                "p",
+                "local",
+                "Method search",
+                "method_search",
+            );
+            let link =
+                AgentWorkflowRunActivity::new(&attempt.id, &run.id, "method_search").unwrap();
+            store
+                .create_agent_workflow_run_activity(&run, &link)
+                .await
+                .unwrap();
+        } else {
+            attempt.status = AgentWorkflowAttemptStatus::WaitingRun;
+            assert!(store
+                .update_agent_workflow_attempt(&attempt, AgentWorkflowAttemptStatus::Running)
+                .await
+                .unwrap());
+        }
+    }
+
+    assert_eq!(
+        store.recover_interrupted_agent_workflows().await.unwrap(),
+        (1, 1)
+    );
+    assert_eq!(
+        store
+            .get_agent_workflow("valid")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkflowStatus::Running
+    );
+    assert_eq!(
+        store
+            .get_agent_workflow_attempt("valid-attempt")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkflowAttemptStatus::WaitingRun
+    );
+    assert_eq!(
+        store
+            .get_agent_workflow_attempt("invalid-attempt")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentWorkflowAttemptStatus::Failed
     );
 
     store.pool.close().await;
@@ -2196,10 +2616,169 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             PUBLICATION_DOMAIN_MIGRATION.to_string(),
             PUBLICATION_FREEZE_MIGRATION.to_string(),
             PUBLICATION_VERIFICATION_MIGRATION.to_string(),
+            AGENT_WORKFLOW_RUN_ACTIVITIES_MIGRATION.to_string(),
+            METHOD_SEARCH_MIGRATION.to_string(),
+            METHOD_SEARCH_CONTROL_MIGRATION.to_string(),
         ]
     );
 
     let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn method_search_state_candidates_and_pause_lifecycle_are_durable() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_method_search_store_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store
+        .create_project("p", "proj", "workspace")
+        .await
+        .unwrap();
+    store
+        .create_frame("f", "p", "OPERON", "model")
+        .await
+        .unwrap();
+    let spec_version = store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: Some("spec-v1".into()),
+            artifact_id: "spec-artifact".into(),
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "method-search.json".into(),
+            content_type: "application/json".into(),
+            storage_path: ".superscience/artifacts/sha256/aa/spec.json".into(),
+            logical_key: Some("method-search:spec".into()),
+            size_bytes: Some(2),
+            checksum: Some("a".repeat(64)),
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::Snapshot,
+            capture_timing: ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    let run = RunRecord::new("run", "p", "local", "Method search", "method_search");
+    store.create_run(&run).await.unwrap();
+    let state = MethodSearchRunState::new("run", &spec_version, "a".repeat(64)).unwrap();
+    store.create_method_search_run_state(&state).await.unwrap();
+    assert_eq!(
+        store.method_search_run_status("run").await.unwrap(),
+        Some(RunStatus::Draft)
+    );
+
+    let cancel_run = RunRecord::new(
+        "cancel-draft",
+        "p",
+        "local",
+        "Cancelled draft",
+        "method_search",
+    );
+    store.create_run(&cancel_run).await.unwrap();
+    store
+        .create_method_search_run_state(
+            &MethodSearchRunState::new("cancel-draft", &spec_version, "a".repeat(64)).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(store
+        .request_run_cancellation("cancel-draft")
+        .await
+        .unwrap());
+    assert_eq!(
+        store
+            .method_search_run_status("cancel-draft")
+            .await
+            .unwrap(),
+        Some(RunStatus::Cancelling)
+    );
+    assert!(store
+        .claim_run_lifecycle("cancel-draft", "cancel-owner", 60)
+        .await
+        .unwrap());
+    assert!(store
+        .finish_active_run_owned("cancel-draft", "cancel-owner", RunStatus::Cancelled, None,)
+        .await
+        .unwrap());
+
+    let blob = MethodCandidateBlob {
+        id: "blob".into(),
+        run_id: "run".into(),
+        kind: "source".into(),
+        checksum: "b".repeat(64),
+        size_bytes: 12,
+        storage_path: ".superscience/method-search/run/blobs/bb/source.py".into(),
+        created_at: 1,
+    };
+    store.save_method_candidate_blob(&blob).await.unwrap();
+    let mut candidate = MethodCandidate::proposed(
+        "candidate",
+        "run",
+        0,
+        "baseline",
+        "baseline",
+        "b".repeat(64),
+        "c".repeat(64),
+    )
+    .unwrap();
+    store.insert_method_candidate(&candidate).await.unwrap();
+    assert!(store
+        .transition_method_candidate_to_evaluating("candidate")
+        .await
+        .unwrap());
+    candidate.status = MethodCandidateStatus::Succeeded;
+    candidate.primary_score = Some(0.5);
+    candidate.utility = Some(0.5);
+    candidate.source_blob_id = Some("blob".into());
+    candidate.metrics_json = serde_json::json!({"accuracy":0.5}).to_string();
+    candidate.finished_at = Some(2);
+    assert!(store
+        .finish_method_candidate(&candidate, MethodCandidateStatus::Evaluating)
+        .await
+        .unwrap());
+    assert_eq!(
+        store.list_method_candidates("run").await.unwrap(),
+        vec![candidate]
+    );
+
+    assert!(store
+        .activate_run_lifecycle("run", RunStatus::Running, "owner", 60)
+        .await
+        .unwrap());
+    assert!(store
+        .pause_method_search_run_owned("run", "owner", "user requested pause")
+        .await
+        .unwrap());
+    assert_eq!(
+        store.method_search_run_status("run").await.unwrap(),
+        Some(RunStatus::Paused)
+    );
+    assert!(!store.project_has_active_runs("p").await.unwrap());
+    assert!(store.resume_method_search_run("run").await.unwrap());
+    assert_eq!(store.pause_method_searches_for_shutdown().await.unwrap(), 1);
+    let shutdown_run = store.get_run("run").await.unwrap().unwrap();
+    assert_eq!(shutdown_run.status, RunStatus::Paused);
+    assert!(shutdown_run
+        .last_poll_error
+        .as_deref()
+        .unwrap()
+        .contains("graceful application shutdown"));
+    assert!(store.resume_method_search_run("run").await.unwrap());
+    assert_eq!(
+        store
+            .recover_interrupted_method_search_runs()
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.method_search_run_status("run").await.unwrap(),
+        Some(RunStatus::Paused)
+    );
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
 }
 
 #[tokio::test]

@@ -11,6 +11,115 @@ use crate::i18n::Locale;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+pub(crate) struct ContextUsage {
+    #[serde(default)]
+    pub(crate) system_prompt: usize,
+    #[serde(default)]
+    pub(crate) tool_definitions: usize,
+    #[serde(default)]
+    pub(crate) rules: usize,
+    #[serde(default)]
+    pub(crate) skills: usize,
+    #[serde(default)]
+    pub(crate) mcp_dynamic_tools: usize,
+    #[serde(default)]
+    pub(crate) subagent_definitions: usize,
+    #[serde(default)]
+    pub(crate) conversation: usize,
+}
+
+impl ContextUsage {
+    pub(crate) fn total(self) -> usize {
+        self.system_prompt
+            .saturating_add(self.tool_definitions)
+            .saturating_add(self.rules)
+            .saturating_add(self.skills)
+            .saturating_add(self.mcp_dynamic_tools)
+            .saturating_add(self.subagent_definitions)
+            .saturating_add(self.conversation)
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(crate) struct ContextUsageSnapshot {
+    pub(crate) used: usize,
+    pub(crate) max: usize,
+    pub(crate) breakdown: Option<ContextUsage>,
+    pub(crate) estimated: bool,
+}
+
+#[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ContextToolDetail {
+    pub(crate) name: String,
+    pub(crate) description: String,
+}
+
+#[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ContextUsageDetails {
+    #[serde(default)]
+    pub(crate) system_prompt: String,
+    #[serde(default)]
+    pub(crate) tool_definitions: Vec<ContextToolDetail>,
+    #[serde(default)]
+    pub(crate) rules: String,
+    #[serde(default)]
+    pub(crate) skills: String,
+    #[serde(default)]
+    pub(crate) mcp_dynamic_tools: Vec<ContextToolDetail>,
+    #[serde(default)]
+    pub(crate) subagent_definitions: Vec<ContextToolDetail>,
+}
+
+/// Progress emitted by the native project archive importer/exporter. Mirrors
+/// `ProjectTransferProgress` in `src-tauri/src/project_transfer.rs`.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectTransferProgress {
+    pub(crate) direction: String,
+    pub(crate) stage: String,
+    pub(crate) completed_files: u64,
+    pub(crate) total_files: Option<u64>,
+    pub(crate) completed_bytes: u64,
+    pub(crate) total_bytes: Option<u64>,
+    #[serde(default)]
+    pub(crate) current_path: Option<String>,
+}
+
+impl ProjectTransferProgress {
+    pub(crate) fn selecting(direction: &str) -> Self {
+        Self {
+            direction: direction.into(),
+            stage: if direction == "export" {
+                "selecting_export_destination".into()
+            } else {
+                "selecting_archive".into()
+            },
+            completed_files: 0,
+            total_files: None,
+            completed_bytes: 0,
+            total_bytes: None,
+            current_path: None,
+        }
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        self.stage == "complete"
+    }
+
+    pub(crate) fn complete(direction: &str, current_path: Option<String>) -> Self {
+        Self {
+            direction: direction.into(),
+            stage: "complete".into(),
+            completed_files: 0,
+            total_files: None,
+            completed_bytes: 0,
+            total_bytes: None,
+            current_path,
+        }
+    }
+}
+
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CustomCredentialStatus {
@@ -91,6 +200,8 @@ pub(crate) enum AgentEvent {
         cached: u64,
         ctx_tokens: usize,
         max_context: usize,
+        #[serde(default)]
+        context_usage: ContextUsage,
     },
     Compaction {
         frame_id: String,
@@ -245,6 +356,17 @@ pub(crate) enum ChatItem {
         output: u64,
         reasoning: u64,
         cached: u64,
+        ctx_tokens: usize,
+        max_context: usize,
+        context_usage: ContextUsage,
+    },
+    /// Persistent timeline marker emitted whenever the model context is
+    /// rewritten. `strategy == "auto"` distinguishes the default 80%
+    /// threshold path from an explicit `/compact`.
+    Compaction {
+        before: usize,
+        after: usize,
+        strategy: String,
     },
     /// A visible handoff between the main agent and the independent reviewer.
     ReviewTransition {
@@ -334,7 +456,25 @@ impl ChatItem {
                 output,
                 reasoning,
                 cached,
-            } => (8u8, input, output, reasoning, cached).hash(&mut h),
+                ctx_tokens,
+                max_context,
+                context_usage,
+            } => (
+                8u8,
+                input,
+                output,
+                reasoning,
+                cached,
+                ctx_tokens,
+                max_context,
+                context_usage,
+            )
+                .hash(&mut h),
+            Self::Compaction {
+                before,
+                after,
+                strategy,
+            } => (13u8, before, after, strategy).hash(&mut h),
             Self::ReviewTransition { phase, model } => (11u8, phase, model).hash(&mut h),
             Self::Review(report) => (5u8, report).hash(&mut h),
             Self::Plan(plan) => (7u8, plan).hash(&mut h),
@@ -345,7 +485,7 @@ impl ChatItem {
 }
 
 /// One checklist row of a plan. Mirrors the ACP `plan` update entry shape,
-/// which is also what SuperScience persists, so one parser serves both.
+/// which is also what Wisp persists, so one parser serves both.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, Hash, PartialEq, Eq)]
 pub(crate) struct PlanEntry {
     #[serde(default)]
@@ -757,7 +897,7 @@ pub(crate) struct RegionAttach {
     pub(crate) jump_to_chat: bool,
 }
 
-/// Detail of the `superscience:pins-ask-ai` event: image comment pins assembled into
+/// Detail of the `wisp:pins-ask-ai` event: image comment pins assembled into
 /// one composer message by the preview. Serialized as a struct (not
 /// `serde_json::json!`) so serde-wasm-bindgen emits a plain JS object — a
 /// `Value::Object` would become an ES Map the listener cannot deserialize.
@@ -930,17 +1070,38 @@ pub(crate) struct StorageEntry {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct ProjectStorageUsage {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) path: String,
+    pub(crate) bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct StorageUsage {
     pub(crate) data_dir: String,
     #[serde(default)]
-    pub(crate) workspace_dirs: Vec<String>,
+    pub(crate) projects: Vec<ProjectStorageUsage>,
     #[serde(default)]
     pub(crate) entries: Vec<StorageEntry>,
     pub(crate) total_bytes: u64,
 }
 
-/// Mirrors `SessionTokenUsage` in crates/superscience-store/src/sessions.rs — align
-/// field by field on both sides.
+/// Mirrors the token-usage payloads in crates/superscience-store/src/sessions.rs and
+/// src-tauri/src/settings_commands.rs — align field by field on both sides.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct ProjectTokenUsage {
+    pub(crate) project_id: String,
+    pub(crate) name: String,
+    pub(crate) workspace_dir: String,
+    pub(crate) updated_at: i64,
+    pub(crate) session_count: i64,
+    pub(crate) input: i64,
+    pub(crate) output: i64,
+    pub(crate) reasoning: i64,
+    pub(crate) cached: i64,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct SessionTokenUsage {
     pub(crate) id: String,
@@ -950,6 +1111,37 @@ pub(crate) struct SessionTokenUsage {
     pub(crate) output: i64,
     pub(crate) reasoning: i64,
     pub(crate) cached: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct SessionTokenUsagePage {
+    #[serde(default)]
+    pub(crate) items: Vec<SessionTokenUsage>,
+    pub(crate) total: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct TokenUsageDay {
+    pub(crate) date: String,
+    pub(crate) tokens: i64,
+    #[serde(default)]
+    pub(crate) future: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct ModelTokenUsage {
+    pub(crate) model: String,
+    pub(crate) tokens: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct TokenUsageOverview {
+    #[serde(default)]
+    pub(crate) workspaces: Vec<ProjectTokenUsage>,
+    #[serde(default)]
+    pub(crate) days: Vec<TokenUsageDay>,
+    #[serde(default)]
+    pub(crate) models: Vec<ModelTokenUsage>,
 }
 
 /// Mirrors `SshTrustEdge` in src-tauri/src/run_context/transfer.rs — align
@@ -1014,6 +1206,8 @@ pub(crate) struct Settings {
     pub(crate) workspace_dir: String,
     #[serde(default = "default_max_iter")]
     pub(crate) max_iter: i64,
+    #[serde(default = "default_auto_compact")]
+    pub(crate) auto_compact: bool,
     #[serde(default)]
     pub(crate) max_tokens: u64,
     #[serde(default)]
@@ -1045,6 +1239,10 @@ fn default_sync_backend() -> String {
 }
 
 fn default_notifications_enabled() -> bool {
+    true
+}
+
+fn default_auto_compact() -> bool {
     true
 }
 
@@ -1159,6 +1357,7 @@ impl Default for Settings {
             locale: Locale::En.code().into(),
             workspace_dir: String::new(),
             max_iter: default_max_iter(),
+            auto_compact: true,
             max_tokens: 8192,
             reasoning_effort: String::new(),
             proxy_url: String::new(),
@@ -1210,13 +1409,14 @@ pub(crate) struct DemoInfo {
     pub(crate) title: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 pub(crate) struct Demo {
-    pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) request: String,
     pub(crate) response: String,
     pub(crate) thinking: Option<String>,
+    #[serde(default)]
+    pub(crate) items: Vec<LoadedItem>,
 }
 
 #[derive(Serialize)]
@@ -1539,6 +1739,31 @@ impl LoadedItem {
                     output: n("output"),
                     reasoning: n("reasoning"),
                     cached: n("cached"),
+                    ctx_tokens: n("ctx_tokens") as usize,
+                    max_context: n("max_context") as usize,
+                    context_usage: v
+                        .get("context_usage")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .unwrap_or_default(),
+                }
+            }
+            "compaction" => {
+                let value: serde_json::Value = serde_json::from_str(&self.text).unwrap_or_default();
+                ChatItem::Compaction {
+                    before: value
+                        .get("before")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default() as usize,
+                    after: value
+                        .get("after")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default() as usize,
+                    strategy: value
+                        .get("strategy")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("manual")
+                        .to_string(),
                 }
             }
             _ => ChatItem::Assistant {
@@ -1585,6 +1810,12 @@ pub(crate) struct FileContent {
     pub(crate) mime: String,
     pub(crate) text: Option<String>,
     pub(crate) base64: Option<String>,
+    /// Set when the backend returned only a leading prefix of a large text file.
+    #[serde(default)]
+    pub(crate) truncated: bool,
+    /// Full on-disk size (bytes), present when known.
+    #[serde(default)]
+    pub(crate) total_bytes: Option<u64>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -1972,13 +2203,16 @@ fn default_model_context_window() -> u64 {
 #[derive(Deserialize, Clone)]
 pub(crate) struct MemoryFile {
     pub(crate) name: String,
-    pub(crate) preview: String,
     pub(crate) bytes: u64,
 }
 
 #[derive(Deserialize, Clone)]
 pub(crate) struct MemoryView {
     pub(crate) enabled: bool,
+    #[serde(default)]
+    pub(crate) project_id: String,
+    #[serde(default)]
+    pub(crate) project_name: String,
     pub(crate) today_file: String,
     pub(crate) files: Vec<MemoryFile>,
 }
@@ -2031,9 +2265,17 @@ pub(crate) enum UpdateDownloadEvent {
 
 #[derive(Deserialize, Clone)]
 pub(crate) struct Capabilities {
-    pub(crate) mcp_servers: Vec<String>,
     pub(crate) memory_files: Vec<MemoryFile>,
-    pub(crate) project: ProjectInfo,
+    #[serde(default)]
+    pub(crate) skill_counts: CapabilitySourceCounts,
+    #[serde(default)]
+    pub(crate) mcp_counts: CapabilitySourceCounts,
+}
+
+#[derive(Deserialize, Clone, Copy, Default)]
+pub(crate) struct CapabilitySourceCounts {
+    pub(crate) bundled: usize,
+    pub(crate) project: usize,
 }
 
 #[derive(Deserialize, Clone)]
@@ -2386,6 +2628,13 @@ pub(crate) struct AgentCapabilityOption {
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentSkillOption {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) scope: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AgentModelOption {
     pub(crate) id: String,
     pub(crate) external: bool,
@@ -2404,6 +2653,8 @@ pub(crate) struct ExecutorProfileSummary {
 #[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DynamicAgentEditorOptions {
     pub(crate) capabilities: Vec<AgentCapabilityOption>,
+    #[serde(default)]
+    pub(crate) skills: Vec<AgentSkillOption>,
     pub(crate) models: Vec<AgentModelOption>,
     pub(crate) executors: Vec<ExecutorProfileSummary>,
 }
@@ -2415,12 +2666,56 @@ pub(crate) struct AgentBudgetProposal {
     pub(crate) max_cost_microunits: Option<u64>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkflowTaskKind {
+    #[default]
+    Agent,
+    RunActivity,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunActivityProposal {
+    pub(crate) activity: String,
+    pub(crate) context_id: String,
+    pub(crate) input_task_id: String,
+    pub(crate) spec_output_pointer: String,
+    pub(crate) max_candidates: u32,
+    pub(crate) max_wall_seconds: u64,
+    pub(crate) max_evaluator_seconds: u64,
+    pub(crate) max_cost_microunits: u64,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunActivitySpec {
+    pub(crate) activity: String,
+    pub(crate) context_id: String,
+    pub(crate) context_revision: String,
+    pub(crate) input_task_id: String,
+    pub(crate) spec_output_pointer: String,
+    pub(crate) max_candidates: u32,
+    pub(crate) max_wall_seconds: u64,
+    pub(crate) max_evaluator_seconds: u64,
+    pub(crate) max_cost_microunits: u64,
+    pub(crate) provider_profile_id: Option<String>,
+    pub(crate) model_profile_id: Option<String>,
+    pub(crate) approval_reasons: Vec<String>,
+    pub(crate) integrity_hash: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DynamicAgentTaskProposal {
     pub(crate) id: String,
     pub(crate) instruction: String,
     pub(crate) depends_on: Vec<String>,
+    #[serde(default)]
+    pub(crate) task_kind: WorkflowTaskKind,
+    #[serde(default)]
+    pub(crate) run_activity: Option<RunActivityProposal>,
+    #[serde(default)]
     pub(crate) capabilities: Vec<String>,
+    #[serde(default)]
+    pub(crate) skill_ids: Vec<String>,
     pub(crate) specialist_id: Option<String>,
     pub(crate) output_schema: Option<serde_json::Value>,
     pub(crate) isolated: bool,
@@ -2435,6 +2730,28 @@ pub(crate) struct DynamicAgentWorkflowProposal {
     pub(crate) context: String,
     pub(crate) approval_policy: AgentApprovalPolicy,
     pub(crate) tasks: Vec<DynamicAgentTaskProposal>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SkillPortfolioTaskSummary {
+    pub(crate) id: String,
+    pub(crate) rationale: String,
+    pub(crate) skill_ids: Vec<String>,
+    pub(crate) depends_on: Vec<String>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PortfolioPlanSummary {
+    pub(crate) planner_model_id: String,
+    pub(crate) planner_model_label: String,
+    pub(crate) rationale: String,
+    pub(crate) tasks: Vec<SkillPortfolioTaskSummary>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SkillPortfolioDraft {
+    pub(crate) plan: PortfolioPlanSummary,
+    pub(crate) proposal: DynamicAgentWorkflowProposal,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2455,7 +2772,8 @@ pub(crate) struct AgentResultSummary {
     pub(crate) status: String,
     pub(crate) summary: Option<String>,
     pub(crate) error: Option<String>,
-    pub(crate) child_frame_id: Option<String>,
+    #[serde(default)]
+    pub(crate) run_id: Option<String>,
     pub(crate) input_tokens: i64,
     pub(crate) output_tokens: i64,
     pub(crate) tool_calls: i64,
@@ -2470,7 +2788,14 @@ pub(crate) struct ResolvedAgentTaskSummary {
     pub(crate) stored_step_id: String,
     pub(crate) instruction: String,
     pub(crate) depends_on: Vec<String>,
+    #[serde(default)]
+    pub(crate) task_kind: WorkflowTaskKind,
+    #[serde(default)]
+    pub(crate) run_activity: Option<RunActivitySpec>,
+    #[serde(default)]
     pub(crate) capabilities: Vec<String>,
+    #[serde(default)]
+    pub(crate) skill_bindings: Vec<AgentSkillBinding>,
     pub(crate) specialist_id: Option<String>,
     pub(crate) specialist_name: Option<String>,
     pub(crate) executor: AgentExecutorSummary,
@@ -2486,6 +2811,19 @@ pub(crate) struct ResolvedAgentTaskSummary {
     pub(crate) approval_reasons: Vec<String>,
     pub(crate) output_schema: Option<serde_json::Value>,
     pub(crate) result: Option<AgentResultSummary>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentSkillBinding {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) scope: String,
+    pub(crate) path: String,
+    pub(crate) declared_version: Option<String>,
+    pub(crate) skill_md_sha256: String,
+    pub(crate) package_id: Option<String>,
+    pub(crate) package_version: Option<String>,
+    pub(crate) package_source: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2546,6 +2884,7 @@ pub(crate) struct ExecutionContext {
 pub(crate) struct RuntimeInterpreterForm {
     pub(crate) context_id: String,
     pub(crate) context_label: String,
+    pub(crate) context_kind: String,
     pub(crate) python_executable: String,
     pub(crate) rscript_executable: String,
 }
@@ -2554,11 +2893,22 @@ impl RuntimeInterpreterForm {
     pub(crate) fn from_context(context: &ExecutionContext) -> Self {
         let config =
             serde_json::from_str::<serde_json::Value>(&context.config_json).unwrap_or_default();
-        let value = |keys: &[&str]| {
+        // When no interpreter is configured explicitly, prefill from the latest
+        // probe results so the dialog shows the interpreter actually in use
+        // instead of an empty field (issue #651).
+        let capabilities = serde_json::from_str::<serde_json::Value>(&context.capabilities_json)
+            .unwrap_or_default();
+        let string_value = |value: &serde_json::Value, keys: &[&str]| {
             keys.iter()
-                .find_map(|key| config.get(*key).and_then(serde_json::Value::as_str))
+                .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let value = |config_keys: &[&str], capability_keys: &[&str]| {
+            string_value(&config, config_keys)
+                .or_else(|| string_value(&capabilities, capability_keys))
                 .unwrap_or_default()
-                .to_string()
         };
         Self {
             context_id: context.id.clone(),
@@ -2567,9 +2917,65 @@ impl RuntimeInterpreterForm {
             } else {
                 context.label.clone()
             },
-            python_executable: value(&["python_executable", "python_path"]),
-            rscript_executable: value(&["rscript_executable", "rscript_path"]),
+            context_kind: context.kind.clone(),
+            python_executable: value(
+                &["python_executable", "python_path"],
+                &["python_executable"],
+            ),
+            rscript_executable: value(
+                &["rscript_executable", "rscript_path"],
+                &["rscript_executable"],
+            ),
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_interpreter_form_tests {
+    use super::{ExecutionContext, RuntimeInterpreterForm};
+
+    fn context(config_json: &str, capabilities_json: &str) -> ExecutionContext {
+        ExecutionContext {
+            id: "local".into(),
+            kind: "local".into(),
+            label: "Local".into(),
+            config_json: config_json.into(),
+            capabilities_json: capabilities_json.into(),
+            last_probe_at: None,
+            last_probe_status: None,
+            last_probe_error: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn prefills_probed_interpreters_when_nothing_is_configured() {
+        let form = RuntimeInterpreterForm::from_context(&context(
+            "{}",
+            r#"{"python_executable":"/opt/conda/bin/python","rscript_executable":"D:\\R-4.5.2\\bin\\Rscript.exe"}"#,
+        ));
+        assert_eq!(form.python_executable, "/opt/conda/bin/python");
+        assert_eq!(form.rscript_executable, r"D:\R-4.5.2\bin\Rscript.exe");
+        assert_eq!(form.context_kind, "local");
+    }
+
+    #[test]
+    fn explicit_configuration_wins_over_probe_results() {
+        let form = RuntimeInterpreterForm::from_context(&context(
+            r#"{"rscript_executable":"/custom/Rscript"}"#,
+            r#"{"rscript_executable":"/probed/Rscript"}"#,
+        ));
+        assert_eq!(form.rscript_executable, "/custom/Rscript");
+    }
+
+    #[test]
+    fn blank_configured_values_fall_back_to_probe_results() {
+        let form = RuntimeInterpreterForm::from_context(&context(
+            r#"{"python_executable":"  "}"#,
+            r#"{"python_executable":"/probed/python"}"#,
+        ));
+        assert_eq!(form.python_executable, "/probed/python");
     }
 }
 
@@ -2676,6 +3082,147 @@ pub(crate) struct RunRecord {
     #[serde(default)]
     pub(crate) progress_json: String,
     pub(crate) env_snapshot_json: String,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchRunState {
+    pub(crate) spec_artifact_version_id: String,
+    pub(crate) spec_sha256: String,
+    pub(crate) control_state: String,
+    pub(crate) result_status: Option<String>,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchTargetView {
+    pub(crate) source_artifact_version_id: String,
+    pub(crate) source_path: String,
+    pub(crate) symbol: String,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchEvaluatorView {
+    pub(crate) artifact_version_id: String,
+    pub(crate) entry_path: String,
+    pub(crate) repetitions: u32,
+    pub(crate) timeout_seconds: u64,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchGuardrailView {
+    pub(crate) metric: String,
+    pub(crate) op: String,
+    pub(crate) value: f64,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchMetricsView {
+    pub(crate) primary: String,
+    pub(crate) direction: String,
+    pub(crate) guardrails: Vec<MethodSearchGuardrailView>,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchBudgetView {
+    pub(crate) max_candidates: u32,
+    pub(crate) max_wall_seconds: u64,
+    pub(crate) max_evaluator_seconds: u64,
+    pub(crate) max_cost_microunits: u64,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchSpecView {
+    pub(crate) objective: String,
+    pub(crate) target: MethodSearchTargetView,
+    pub(crate) evaluator: MethodSearchEvaluatorView,
+    pub(crate) metrics: MethodSearchMetricsView,
+    pub(crate) protected_paths: Vec<String>,
+    pub(crate) constraints: Vec<String>,
+    pub(crate) budget: MethodSearchBudgetView,
+    pub(crate) final_verification: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct BaselineAuditView {
+    pub(crate) repetitions: u32,
+    pub(crate) successful_repetitions: u32,
+    pub(crate) failure_rate: f64,
+    pub(crate) median_primary: f64,
+    pub(crate) spread: f64,
+    pub(crate) noise_floor: f64,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MethodSearchAuditView {
+    pub(crate) baseline: BaselineAuditView,
+    pub(crate) sentinel_reachable: bool,
+    pub(crate) protected_files: Vec<serde_json::Value>,
+    pub(crate) target_source_sha256: String,
+    pub(crate) findings: Vec<String>,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodCandidateView {
+    pub(crate) id: String,
+    pub(crate) parent_candidate_id: Option<String>,
+    pub(crate) sequence: i64,
+    pub(crate) strategy_key: String,
+    pub(crate) family: String,
+    pub(crate) status: String,
+    pub(crate) primary_score: Option<f64>,
+    pub(crate) runtime_ms: Option<i64>,
+    pub(crate) changed_lines: Option<i64>,
+    pub(crate) rationale: Option<String>,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodStrategyView {
+    pub(crate) strategy_key: String,
+    pub(crate) category: String,
+    pub(crate) weight: f64,
+    pub(crate) attempts: i64,
+    pub(crate) improvements: i64,
+}
+
+#[derive(Deserialize, Clone)]
+pub(crate) struct MethodSearchRunOutput {
+    pub(crate) artifact_version_id: String,
+    pub(crate) role: String,
+    pub(crate) logical_output_key: String,
+    pub(crate) source_path: String,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MethodSearchRunDetails {
+    pub(crate) run: RunRecord,
+    pub(crate) state: MethodSearchRunState,
+    pub(crate) spec: MethodSearchSpecView,
+    pub(crate) audit: MethodSearchAuditView,
+    pub(crate) audit_artifact_version_id: String,
+    pub(crate) candidates: Vec<MethodCandidateView>,
+    pub(crate) strategies: Vec<MethodStrategyView>,
+    pub(crate) outputs: Vec<MethodSearchRunOutput>,
+}
+
+#[derive(Deserialize, Clone, Default)]
+pub(crate) struct MethodSearchProgressView {
+    #[serde(default)]
+    pub(crate) phase: String,
+    pub(crate) baseline_primary: Option<f64>,
+    pub(crate) best_primary: Option<f64>,
+    #[serde(default)]
+    pub(crate) candidate_count: usize,
+    #[serde(default)]
+    pub(crate) successful_count: usize,
+    #[serde(default)]
+    pub(crate) failed_count: usize,
+    #[serde(default)]
+    pub(crate) cost_microunits: u64,
+    pub(crate) current_strategy: Option<String>,
+    pub(crate) last_checkpoint_at: Option<i64>,
+    pub(crate) best_candidate_id: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]

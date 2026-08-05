@@ -71,7 +71,7 @@ pub(super) async fn create_project(
     std::fs::create_dir_all(&path)
         .map_err(|e| format!("Failed to create working directory: {e}"))?;
     // Writability probe: create + remove a temp marker.
-    let marker = path.join(".superscience-write-test");
+    let marker = path.join(".wisp-write-test");
     std::fs::write(&marker, b"").map_err(|e| format!("Working directory is not writable: {e}"))?;
     let _ = std::fs::remove_file(&marker);
 
@@ -97,10 +97,10 @@ pub(super) async fn create_project(
     }
     let ctx = agent_context.trim();
     if !ctx.is_empty() {
-        let superscience_dir = path.join(".superscience");
-        std::fs::create_dir_all(&superscience_dir)
+        let wisp_dir = path.join(".superscience");
+        std::fs::create_dir_all(&wisp_dir)
             .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
-        std::fs::write(superscience_dir.join("SUPERSCIENCE.md"), ctx)
+        std::fs::write(wisp_dir.join("SUPERSCIENCE.md"), ctx)
             .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
     }
     Ok(build_project_summary(&state, &id).await)
@@ -330,8 +330,20 @@ pub(super) async fn delete_project(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
     id: String,
+    delete_data: Option<bool>,
 ) -> Result<(), String> {
     let _project_activity = state.begin_project_activity(&id)?;
+    let workspace_delete_target = if delete_data.unwrap_or(false) {
+        let (_, workspace_dir) = state
+            .store
+            .get_project(&id)
+            .await
+            .map_err(|e| format!("{e}"))?
+            .ok_or_else(|| "Project not found".to_string())?;
+        project_workspace_delete_target(&workspace_dir)?
+    } else {
+        None
+    };
     // The delete ✕ is only reachable from the projects list, so a project may
     // legitimately be deleted while it's still the backend's *active* one
     // (returning to the list is a frontend-only nav — it never told the backend
@@ -342,6 +354,9 @@ pub(super) async fn delete_project(
     // the store cascade removes them); other projects keep running (#52).
     cancel_project_sessions(state.inner(), &id).await;
     state.runtime_manager.stop_project(&id).await;
+    if let Some(target) = workspace_delete_target {
+        delete_project_workspace_data(target).await?;
+    }
     state
         .store
         .delete_project(&id)
@@ -352,6 +367,81 @@ pub(super) async fn delete_project(
         let _ = set_active_project(state.inner(), window.label(), "default").await;
     }
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ProjectWorkspaceDeleteTarget {
+    Directory(PathBuf),
+    Symlink(PathBuf),
+}
+
+/// Resolve the registered project root before stopping any sessions. Missing
+/// workspaces are already effectively data-free, but broad filesystem roots
+/// are never valid deletion targets even after an explicit UI confirmation.
+pub(super) fn project_workspace_delete_target(
+    workspace_dir: &str,
+) -> Result<Option<ProjectWorkspaceDeleteTarget>, String> {
+    if workspace_dir.trim().is_empty() {
+        return Err("Project workspace is empty; refusing to delete data.".into());
+    }
+    let path = PathBuf::from(workspace_dir);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect project workspace {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Ok(Some(ProjectWorkspaceDeleteTarget::Symlink(path)));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "Project workspace is not a directory: {}",
+            path.display()
+        ));
+    }
+    let canonical = dunce::canonicalize(&path).map_err(|error| {
+        format!(
+            "Failed to inspect project workspace {}: {error}",
+            path.display()
+        )
+    })?;
+    if canonical.parent().is_none() {
+        return Err("Refusing to delete a filesystem root.".into());
+    }
+    Ok(Some(ProjectWorkspaceDeleteTarget::Directory(canonical)))
+}
+
+pub(super) async fn delete_project_workspace_data(
+    target: ProjectWorkspaceDeleteTarget,
+) -> Result<(), String> {
+    let display_path = match &target {
+        ProjectWorkspaceDeleteTarget::Directory(path)
+        | ProjectWorkspaceDeleteTarget::Symlink(path) => path.clone(),
+    };
+    let result = match target {
+        ProjectWorkspaceDeleteTarget::Directory(path) => tokio::fs::remove_dir_all(path).await,
+        ProjectWorkspaceDeleteTarget::Symlink(path) => {
+            #[cfg(target_os = "windows")]
+            {
+                tokio::fs::remove_dir(path).await
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                tokio::fs::remove_file(path).await
+            }
+        }
+    };
+    result.map_err(|error| {
+        format!(
+            "Failed to delete project data at {}: {error}",
+            display_path.display()
+        )
+    })
 }
 
 #[derive(Serialize, Clone)]
@@ -378,8 +468,7 @@ pub(super) async fn get_project_settings(
         .map_err(|e| format!("{e}"))?
         .unwrap_or_default();
     let agent_context =
-        std::fs::read_to_string(ap.root.join(".superscience").join("SUPERSCIENCE.md"))
-            .unwrap_or_default();
+        std::fs::read_to_string(ap.root.join(".superscience").join("SUPERSCIENCE.md")).unwrap_or_default();
     Ok(ProjectSettings {
         id: ap.id.clone(),
         name,
@@ -408,16 +497,15 @@ pub(super) async fn update_project(
         .update_project(&ap.id, name.trim(), description.trim())
         .await
         .map_err(|e| format!("{e}"))?;
-    let superscience_dir = ap.root.join(".superscience");
-    let superscience_md = superscience_dir.join("SUPERSCIENCE.md");
+    let wisp_dir = ap.root.join(".superscience");
+    let wisp_md = wisp_dir.join("SUPERSCIENCE.md");
     let ctx = agent_context.trim();
     if ctx.is_empty() {
-        let _ = std::fs::remove_file(&superscience_md);
+        let _ = std::fs::remove_file(&wisp_md);
     } else {
-        std::fs::create_dir_all(&superscience_dir)
+        std::fs::create_dir_all(&wisp_dir)
             .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
-        std::fs::write(&superscience_md, ctx)
-            .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
+        std::fs::write(&wisp_md, ctx).map_err(|e| format!("Failed to write Agent Context: {e}"))?;
     }
     Ok(build_project_summary(&state, &ap.id).await)
 }

@@ -1,345 +1,274 @@
-# SuperScience — 本地优先的 AI 科研工作台
+<div align="center">
 
-[English](README.md) | [简体中文](README_zh.md)
+<img src="docs/assets/logo.svg" alt="Wisp Science logo" width="128" />
 
-<p>
-<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/downloads/xuzhougeng/wisp-science/total" alt="下载量"></a>
+# Wisp Science
+
+**开源、本地优先的 AI 科研工作台。**
+
+<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/v/release/xuzhougeng/superscience" alt="Release"></a>
+<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/downloads/xuzhougeng/superscience/total" alt="下载量"></a>
 <a href="https://doi.org/10.5281/zenodo.21193742"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
+<a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE"><img src="https://img.shields.io/github/license/xuzhougeng/superscience" alt="许可证"></a>
+<a href="https://github.com/xuzhougeng/wisp-science/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/superscience?style=social" alt="Stars"></a>
+<br>
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="支持 Windows"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="支持 macOS"></a>
-<a href="#构建与运行"><img src="https://img.shields.io/badge/Linux-source%20build-FCC624" alt="Linux 源码构建"></a>
-<a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE"><img src="https://img.shields.io/github/license/xuzhougeng/wisp-science" alt="许可证"></a>
-<br>
-<a href="https://github.com/xuzhougeng/wisp-science/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/wisp-science?style=social" alt="Stars"></a>
-</p>
+<a href="#从源码构建"><img src="https://img.shields.io/badge/Linux-source%20build-FCC624" alt="Linux 源码构建"></a>
 
-**SuperScience** 是一个开源、本地优先的桌面 AI 科研助手和科学计算工作台。
-它可连接兼容 OpenAI 或 Anthropic 的模型，在本地、SSH、WSL 和 GPU 计算环境
-中运行持久化 Python 与 R，加载可复用的 Agent Skills（`SKILL.md`），并通过
+[English](README.md) · [简体中文](README_zh.md) · [文档](#文档) · [Releases](https://github.com/xuzhougeng/wisp-science/releases)
+
+<img src="docs/assets/app-home.png" alt="Wisp Science 桌面应用正在运行内置的 RNA-seq 分析演示" width="100%" />
+
+</div>
+
+**Wisp Science** 是一个开源、本地优先的桌面 AI 科研助手和科学计算工作台。
+它可连接兼容 OpenAI 或 Anthropic 的模型，在本地、WSL、SSH 和 GPU 计算环境
+中运行持久化的 Python 与 R，加载可复用的 Agent Skills（`SKILL.md`），并通过
 内置 Model Context Protocol（MCP）服务访问约 80 个生物信息学与计算生物学
-数据库。
+数据库——同时把你的数据、会话和凭据留在自己的机器上。
 
-SuperScience 使用 Rust、Tauri v2 和 Leptos 构建，可作为跨平台桌面应用或
+Wisp Science 使用 Rust、Tauri v2 和 Leptos 构建，可作为跨平台桌面应用或
 无界面 CLI 运行。
 
-> **我们的宣言：** SuperScience 开源、无国界。我们希望打造一个任何地方的
+> **我们的宣言：** Wisp Science 开源、无国界。我们希望打造一个任何地方的
 > 任何人都能使用、研究、改进和分享的科学工作台。
 
-> 当前状态：MVP 垂直切片。Agent 循环、流式模型提供商、工具、Python/R
+> **当前状态：** MVP 垂直切片。Agent 循环、流式模型提供商、工具、Python/R
 > REPL、SQLite 存储、MCP 客户端和 Leptos UI 均可构建并运行。尚未完成的
 > 内容见[路线图](#路线图mvp-之后)。
 
-## 目录结构
+## WISP 是什么的缩写？
 
-```text
-superscience/
-├─ crates/
-│  ├─ superscience-llm/     Provider trait + OpenAI-compatible + Anthropic + SSE + RoutedProvider
-│  ├─ superscience-core/    ContextManager（三层压缩）、SystemPrompt、agent_loop、memory
-│  ├─ superscience-tools/   read/write/edit/search/grep/shell/attempt_completion + Windows 安全机制
-│  ├─ superscience-store/   sqlx SQLite（projects/frames/messages/artifacts/settings）+ OS keyring
-│  ├─ superscience-skills/  SKILL.md 发现 + use_skill 工具（内置目录位于 skills/）
-│  ├─ superscience-runtime/ 项目级 Python/R 运行时管理器 + REPL 工具
-│  ├─ superscience-mcp/     stdio JSON-RPC MCP 客户端 + McpTool 适配器（内置 bio-tools）
-│  ├─ superscience-acp/     外部编码智能体的 ACP v1 stdio 客户端
-│  ├─ superscience-sync/    加密快照协议 + 可自行托管的中继服务
-│  └─ superscience-cli/     `superscience` 无界面可执行程序
-├─ src-tauri/       Tauri v2 桌面壳（命令 + Agent 事件流）
-├─ ui/              Leptos CSR 前端（由 Trunk 构建，在 WebView2 中加载）
-├─ python/          kernel_worker.py + 模拟 MCP 服务
-├─ r/               可选的系统 R kernel worker（需要 jsonlite）
-├─ skills/          内置 SKILL.md 目录（29 个科研工作流）
-├─ mcp-servers/     内置 MCP 服务（bio-tools：约 80 个数据库客户端）
-└─ seed/            内置演示会话（CRISPR / 酶 / 极端微生物 / 免疫治疗）
-```
+**WISP = Workspace for Intelligent Scientific Practice**
+（面向智能科研实践的工作空间）
 
-## 前置要求
+- **Workspace（工作空间）** —— 不是单个分析工具，而是完整的科研工作空间。
+- **Intelligent（智能）** —— 内置 AI Agent、模型与自动化能力。
+- **Scientific（科学）** —— 明确服务于科学研究。
+- **Practice（实践）** —— 覆盖真实科研实践：文献检索、分析、计算、写作、
+  任务管理等。
+
+## 功能特性
+
+**能真正干活的 Agent，而不只是聊天**
+
+- 流式接入 OpenAI 兼容与 Anthropic 模型，按提供商管理模型配置，单一
+  trait 实现分层路由。
+- 在项目根目录沙箱内读写文件、搜索、执行 shell，全部经过显式审批门控；
+  每个会话可选开启 **Full Permission**（开启前需确认警告）自动放行。
+- 渐进式加载可复用的 Agent Skills（`SKILL.md`）——目录永远不会塞满提示词。
+- 通过 ACP v1 驱动外部编码 Agent（Codex、Claude Code 等），也可以用
+  [受控委派](docs/agent-delegation.md)组建可审查的子 Agent 团队。
+
+**真实算力：从笔记本到集群**
+
+- 每个项目都有持久化的 Python 与 R 环境——变量跨 cell、跨会话、跨重启保留。
+- 本地、WSL、SSH/GPU **执行环境**，一次连接即可完成硬件与运行时探测；
+  每个环境保存各自独立的解释器路径。
+- 结构化 **Run** 管理长任务：提交前预检、每秒心跳、有界日志，并随环境
+  快照持久化。
+- 密钥只存系统密钥环，绝不写入 SQLite。不再使用自由形式的 `ssh`/`scp`，
+  改为注册并探测过的主机；连接失败会打开连通性闸门，而不是静默重试。
+
+**为科研而生**
+
+- 通过内置 [MCP bio-tools 服务](#内置-bio-tools-mcp)访问约 80 个生物信息学
+  数据库（PubMed、GEO 等），按需用 `search_mcp_tools` 发现工具，不会膨胀
+  每次模型请求。
+- 支持 OAuth 的远程 MCP 服务（Notion 等），以及把 Skills 与 MCP 服务打包
+  分发的[功能插件](docs/feature-plugins.md)。
+- 完全离线预览 Jupyter notebook、PDF、DOCX/XLSX/PPTX 和图片——图片可直接
+  框选区域加入对话。
+- [出版工作区](docs/publication-evidence.md)可冻结稿件修订版本，导出可验证、
+  确定性的证据胶囊（Evidence Capsule）。
+
+**会记忆的工作台**
+
+- 会话持久化到 SQLite，重启后完整恢复；一键**撤销**某一轮对文件的修改，
+  撤销前先预览将恢复或移除的文件。
+- `@` 附加产物、文件、执行环境和语言运行时；`#` 通过只读、带引用的
+  **Reader** 专员检索已保存的会话；`/` 让下一轮使用指定 skill。
+- Ctrl+K / Ctrl+P 命令面板、侧边对话、会话文件夹、跨项目的代码与图表
+  全局库，以及应用内更新检查。
+- [加密手动同步](docs/project-sync.zh-CN.md)与一键[项目迁移](docs/project-transfer.md)
+  让多台设备保持一致——绝不在后台运行。
+
+## 快速开始
+
+### 下载
+
+从 [GitHub Releases](https://github.com/xuzhougeng/wisp-science/releases)
+获取最新安装包：
+
+| 平台 | 安装包 | 说明 |
+|------|--------|------|
+| Windows | MSI / NSIS | 安装包未签名：SmartScreen 选择 **更多信息 → 仍要运行**。若安装后窗口不出现，请先从托盘菜单 **Quit** 彻底退出，再以管理员身份运行微软官方 [WebView2 Evergreen Standalone Installer](https://developer.microsoft.com/microsoft-edge/webview2/#download-section) 修复 Runtime，然后重新打开 Wisp Science。 |
+| macOS | `.dmg`（Apple Silicon + Intel） | 未签名：首次启动右键 → **打开**，或在“系统设置 → 隐私与安全性”中允许运行。 |
+| Linux | — | [从源码构建](#从源码构建)。 |
+
+### 从源码构建
+
+前置要求：
 
 - **Rust**（stable，1.88+）及 `wasm32-unknown-unknown`：
   `rustup target add wasm32-unknown-unknown`
 - **uv**（Python 环境管理器）：<https://docs.astral.sh/uv/>
+- **Trunk**：`cargo install --locked trunk` · **Tauri CLI v2**：
+  `cargo install tauri-cli --version "^2"`
 - 可选：PATH 中存在 **R** 的 `Rscript`，并安装 `jsonlite` 包，以使用持久化
-  `r` 工具。SuperScience 不会自动安装 R 包。
-- **Trunk**（WASM 前端打包器）：`cargo install --locked trunk`
-- **Tauri CLI v2**：`cargo install tauri-cli --version "^2"`
-- **WebView2 Runtime**（仅 Windows）：Windows 10/11 通常已安装 Evergreen
-  Runtime，安装程序会在缺失时获取它。较旧或损坏的 Runtime 仍可能阻止主窗口
-  显示；遇到问题请参考下方的 [Windows 安装与启动故障排除](#windows-安装与启动故障排除)。
-- **Xcode Command Line Tools**（仅 macOS）：`xcode-select --install`。macOS
-  使用系统 WebKit，无需额外运行时。
+  `r` 工具。Wisp 不会自动安装 R 包。
+- Windows 需要 **WebView2 Runtime**（Windows 10/11 通常已内置，安装程序会在
+  缺失时获取）。macOS 需要 **Xcode Command Line Tools**
+  （`xcode-select --install`），使用系统 WebKit。
 
-## 构建与运行
-
-### 无界面 CLI
-
-```powershell
-$env:SUPERSCIENCE_API_KEY = "<your provider key>"
-$env:SUPERSCIENCE_PROVIDER = "openai"           # openai、openai_responses 或 anthropic
-$env:SUPERSCIENCE_MODEL     = "deepseek-v4-pro" # openai_responses: gpt-5.5；anthropic: claude-sonnet-5
-cargo run -p superscience-cli
+```bash
+cargo tauri dev      # 热更新：Trunk 提供 UI，Tauri 打开窗口
+cargo tauri build    # 在 target/release/bundle 下生成安装包（MSI/NSIS、.app/.dmg）
 ```
 
-也可以只运行一次提示词而不进入交互循环，或把事件按 JSONL 输出到标准输出
-（每行一个 JSON 对象）：
-
-```powershell
-cargo run -p superscience-cli -- run "总结这个项目中的文件"
-cargo run -p superscience-cli -- run --output jsonl "总结这个项目中的文件"
-```
-
-JSONL 包含 `start`、流式 `text`/`reasoning`、工具、用量，以及最终的 `done`
-或 `error` 事件。运行时初始化信息写入标准错误，标准输出可直接交给程序解析。
-若工具需要交互确认，JSONL 模式会拒绝该操作，而不会等待终端输入。
-
-CLI 还提供一个小型、可重复的 Agent 回归套件：
-
-```powershell
-cargo run -p superscience-cli -- eval --save baseline.json
-cargo run -p superscience-cli -- eval --compare baseline.json --save current.json
-```
-
-Agent Eval v0 会在相互隔离的临时工作区中执行 6 个固定文件任务，并限定固定工具集。
-它使用当前配置的真实模型，输出 JSON 报告，记录通过率、耗时、轮次、工具调用/错误、
-Token 用量、场景提示词与工具 Schema 哈希。`--compare` 会增加汇总指标差值，以及
-退步和改善的场景列表。每个场景结束后都会删除其临时工作区；自动化测试只验证夹具
-和报告逻辑，不会调用模型服务。
-
-CLI 会自动加载内置的 `skills/` 目录，并接入内置 Python 和可选的系统 R REPL。
-Python 首次运行时会在 `.superscience/python/.venv` 中创建 uv 虚拟环境；R 使用 PATH
-中的 `Rscript`，并要求该 R 环境已安装 `jsonlite`。在桌面应用中，可以通过
-Contexts 面板或 Agent 的 `set_runtime_interpreter` 工具，按执行上下文保存
-Python 与 R 解释器路径。因此 `local`、WSL 和每台 SSH 服务器都可使用不同
-环境，而无需依赖宿主环境变量。必要时该工具会重启当前项目对应的 REPL，
-从而在不重启 SuperScience 的情况下恢复失败的运行时；重启会清空该 REPL 的内存状态。
-输入框底部的计算主机按钮会先打开固定的主机列表，其中 `Local` 位于已配置的
-SSH 主机之前；只有选择某一台主机后，才会在右上角显示该上下文独立的环境信息
-卡，包括探测摘要、Runtime/Run 数量及详情、探测和终端快捷操作。
-
-**设置 → 凭据**除内置服务外，也支持添加自定义凭据。每条自定义凭据将服务名称
-映射到技能或客户端实际读取的环境变量（例如 `METASO_API_KEY`）。名称和变量名
-保存在本地设置中，秘密值只保存在系统钥匙串，并注入新启动的本地 Python 与
-内置 MCP 进程；自定义凭据不会复制到 SSH/WSL 主机。
-
-### 桌面应用
-
-```powershell
-cargo tauri dev      # 热更新：Trunk 提供 UI，Tauri 打开 WebView2
-cargo tauri build    # 在 target/release/bundle 下生成 MSI/NSIS 安装程序
-```
-
-#### Windows 安装与启动故障排除
-
-- 如果未签名的 MSI/NSIS 安装包被 Microsoft Defender SmartScreen 拦截，请确认
-  安装包来自本仓库的 [GitHub Releases](https://github.com/xuzhougeng/wisp-science/releases)，
-  然后选择 **更多信息 → 仍要运行**。
-- 如果安装完成后主窗口一闪而过、不可见或只剩系统托盘图标，请先从托盘菜单
-  **Quit** 彻底退出 SuperScience，再从 Microsoft 官方
-  [WebView2 下载页面](https://developer.microsoft.com/microsoft-edge/webview2/#download-section)
-  下载与系统架构匹配的最新 **Evergreen Standalone Installer**，并以管理员身份运行，
-  以更新或修复 Microsoft Edge WebView2 Runtime。这里要求使用受支持的最新
-  Evergreen Runtime，不表示 SuperScience 依赖某个固定的大版本。
-- WebView2 安装完成后重新打开 SuperScience；如果窗口仍未恢复，请重启 Windows
-  后再试。问题仍存在时，请在 issue 中附上 `winver` 结果、WebView2 Runtime
-  版本、安装包文件名和复现步骤；不要上传 API Key、Token、密码或私钥。
-- 桌面应用启动时会规范化 `PATH` 条目末尾的反斜杠，并从 Windows User PATH
-  恢复受影响的条目，因此 Pixi 等工具在内置 shell 中仍然可用。
-
-桌面开发固定使用 `1421` 端口，UI 测试使用 `1422`。对应的 Trunk 输出分别
-隔离在 `ui/dist-dev` 与 `ui/dist-test`，发布构建继续使用 `ui/dist`，避免正在
-运行的开发或测试服务器与 `cargo tauri build` 并发复制优化后的 WASM 文件。
-
-当图片或 PDF 内容超出可见区域时，预览支持缩放和拖拽平移，包括 100% 缩放状态。
-
-在 macOS 上使用相同命令（`cargo tauri build` 会在
-`target/release/bundle` 下生成 `.app` 和 `.dmg`）。
-`src-tauri/tauri.macos.conf.json` 会由 Tauri 自动合并，以跨平台的
-`trunk build` 替代 PowerShell `beforeBuildCommand`。构建 Apple Silicon 与
-Intel 通用二进制：
+构建 Apple Silicon + Intel 通用二进制：
 
 ```bash
 rustup target add x86_64-apple-darwin
 cargo tauri build --target universal-apple-darwin
 ```
 
-`.app`/`.dmg` 未签名，首次启动时需要右键选择“打开”，或在“系统设置 →
-隐私与安全性”中允许运行。
+### 无界面 CLI
 
-桌面应用把 API 密钥存入操作系统密钥环，并把模型配置保存在
-`.superscience/superscience.sqlite`（Settings → Models）。配置可指向远程 API 提供商，字段
-说明见[模型配置](docs/model-configuration.md)。每轮模型/工具循环上限可在
-**设置 → 常规 → 每轮最大 Agent 迭代次数**中调整（默认 100；0 表示不限制）。对话也会持久化到该 SQLite
-数据库：每轮消息都会追加到当前会话 frame，重启后可恢复完整历史。无界面
-CLI 继续使用 `.superscience/session.json`，便于迁移。
+```powershell
+$env:WISP_API_KEY = "<your provider key>"
+$env:WISP_PROVIDER = "openai"           # openai（默认）、openai_responses 或 anthropic
+$env:WISP_MODEL     = "deepseek-v4-pro"
+cargo run -p superscience-cli                   # 终端里的交互式 Agent
+```
 
-项目可在 Windows 与 macOS 之间迁移。在 Projects 页面使用项目卡片上的下载
-操作导出版本化 ZIP，再在另一台电脑上选择 **Import project**。导入器会要求
-选择父目录并创建新的项目目录，不会复用 Windows 盘符。详情及限制见
-[项目迁移](docs/project-transfer.md)。
+运行单条提示词，或以 JSONL 流式输出机器可读事件（每行一个 JSON 对象），
+便于脚本化：
 
-项目还支持设备间的显式同步。可在 **Settings → General** 中配置自托管中继，
-或配置由百度网盘/坚果云桌面客户端管理的文件夹，然后在项目卡片上点击
-**Sync now**。同步不会在后台运行，并且当任务、审批、审查或运行处于活动状态
-时会拒绝启动。项目内容在到达任一后端之前均会加密；工作区文件按内容增量
-上传。设置、设备码、冲突、路径行为、部署和限制见
-[手动项目同步](docs/project-sync.md)或
-[中文同步指南](docs/project-sync.zh-CN.md)。
+```powershell
+cargo run -p superscience-cli -- run "总结这个项目中的文件"
+cargo run -p superscience-cli -- run --output jsonl "总结这个项目中的文件"
+```
 
-### 本地 ACP Agents
+CLI 还内置一个小型、可重复的 Agent 回归套件（6 个固定文件任务，输出 JSON
+报告，可与基线对比通过率、耗时和 Token 用量）：
 
-SuperScience 可以启动任何已安装、通过 stdio 使用稳定版 ACP v1 的本地 Agent。
-这与 **Settings → Models** 中的 HTTP API 模型配置相互独立。
+```powershell
+cargo run -p superscience-cli -- eval --save baseline.json
+cargo run -p superscience-cli -- eval --compare baseline.json --save current.json
+```
 
-快速开始：
+### ACP Agents（可选）
 
-1. 安装 ACP 适配器，例如 Codex：
-   `npm install -g @agentclientprotocol/codex-acp`
-2. 打开 **Settings → Models → ACP Agents**，或在聊天模型选择器中点击
-   **Add ACP Agent**。不要把 ACP 启动命令填入 HTTP 的 “Add model” 表单。
-3. 设置 **Label**、**Command**（`codex-acp`、`npx` 或 `npx.cmd`）及
-   **Arguments**（每行一个；使用 `npx` 时依次填写 `-y` 和
-   `@agentclientprotocol/codex-acp`）。
-4. 依次执行 **Save Agent** → **Test Connection**，如有提示则完成认证。
-5. 选择该 Agent 后发送消息。如果当前会话已有消息，SuperScience 会自动新建空会话，
-   因为 ACP 无法重新绑定现有的对话历史。首条消息发出后，所选 Agent 会锁定。
+Wisp 可以启动任何已安装、通过 stdio 使用 ACP v1 的本地 Agent——这与 HTTP
+模型配置相互独立：
 
-不要在此处直接使用 `codex` 或 `claude`，它们并不提供 ACP。请使用
-[`codex-acp`](https://github.com/agentclientprotocol/codex-acp) 或
-[`claude-agent-acp`](https://github.com/agentclientprotocol/claude-agent-acp)
-等适配器。
+1. 安装适配器，例如 `npm install -g @agentclientprotocol/codex-acp`。
+2. 打开 **Settings → Models → ACP Agents**，设置 **Label**、**Command** 和
+   **Arguments**，然后 **Save Agent** → **Test Connection**。
+3. 在聊天模型选择器中选中该 Agent，发送消息即可。
 
-完整设置步骤、Claude 示例、Windows 注意事项和故障排除见
+完整设置步骤、Claude 示例和故障排除见
 [docs/acp-agents.md](docs/acp-agents.md)。
-
-
-### 受控 Agent 工作流
-
-在编辑器 Agent 菜单中为当前对话开启 **Delegation**，然后打开右侧面板的
-**Agents** 标签——或直接让主 Agent 提出计划——即可创建可持久化的多 Agent
-工作流。手动模式使用显式有序团队；辅助模式请当前模型生成可审阅草稿；自动模式
-仅在低风险的本地只读计划上无需二次确认即可启动。可审查能力边界，然后运行、
-取消、重试或接管子对话。生命周期、安全边界与当前限制见
-[受控 Agent 委派](docs/agent-delegation.md)。
-
-### 编辑器引用与搜索
-
-在桌面对话中，可在光标处手动输入 `@` 附加已保存的产物、上传的文件、执行环境
-或语言运行时，输入 `#` 附加已保存的会话（包括其他项目的会话），输入 `/` 让
-下一轮使用已启用的 skill。这些选择器在编辑消息的任意位置都可使用，粘贴文本
-时不会弹出。附件会显示为可移除的显式标签；跨项目产物保留原始本地路径，不会
-被自动复制。ACP Agent 同样支持这些引用：所选 skill 与会话上下文作为 ACP 文本
-块发送，产物则作为文件链接发送。
-
-你上传的文件本身也是产物，因此一直都能通过 `@` 引用；它们带有 **Upload**
-标记，以便与 agent 产出的文件区分。
-
-图片预览提供区域框选工具。拖出区域后，SuperScience 会持续高亮所选范围，并让你选择
-“添加到对话”（留在预览）或“添加到对话并返回对话”；确认前不会把截图直接
-附加到编辑器。
-
-`@` 也可以指向算力。引用执行环境（`@CPU1`）会把本轮工作指向那台服务器，并
-自动为该会话开启它，无需先到算力菜单里手动打开——本地算力始终可用，不需要
-开关。引用运行时（`@runtime_R`）会指向该环境上常驻的 Python 或 R 会话，它在
-多次调用之间保留变量，因此 agent 会直接查看当前状态，而不是重跑之前的工作。
-只有配置或探测到相应解释器的环境才会出现运行时条目。引用运行时不会启动它。
-
-在 Windows/Linux 上按 Ctrl+K，在 macOS 上按 Cmd+K，可以搜索项目、产物、
-会话和常用命令。按 Enter 打开所选结果；按 Shift+Enter 将产物或会话附加到
-编辑器。
-
-编辑器默认按 Enter 发送、按 Shift+Enter 换行。你也可以在
-**设置 → 常规 → 发送与换行快捷键**中改为 Windows/Linux 按 Ctrl+Enter、
-macOS 按 Cmd+Enter 发送，此时按 Enter 直接换行。
-
-在 macOS、Windows 和 Linux 的侧边栏中，已保存的会话和会话文件夹均提供
-可见的操作按钮。可以重命名或删除文件夹，也可以重命名、整理、复制、移动、
-导出或删除会话。远程文件行也提供可见的下载操作，同时仍可使用右键菜单。
-打开会话时先加载最新 20 个完整用户轮次；顶部可继续加载更早消息。聊天区同时
-最多挂载 40 个完整用户轮次，可通过“显示更早/较新的消息”在已加载历史间移动，
-避免超长会话无限扩张 DOM。
-助手回复中的每个围栏代码块都提供一键复制按钮，并保留原始换行。
-跨项目转移只会复制已保存的对话文本；项目文件与运行仍留在源项目中，关联的
-产物记录不会转移，底层工作区文件也不会被删除。
-
-原生 SuperScience 会话的一轮完成后，最新助手回复的“复制”旁会显示“撤销”。确认框会先
-列出将恢复或移除的 Markdown、源码、CSV、JSON 等有大小限制的纯文本文件；确认
-后，原提问会回到编辑器，本轮独占的产物记录也会移除。如果文本文件在本轮之后
-又被修改，SuperScience 会拒绝覆盖它。Word、Excel、PDF、图片等二进制文件会列出但保留；
-当前版本暂不支持二进制文件和 ACP 会话撤销。
-
-在 macOS 上，原生应用菜单包含全局桌面命令，包括项目导航、新会话、编辑
-快捷键和 **Check for Updates…**。针对具体会话和文件夹的操作仍位于对应行。
-Settings 页面以及 Windows 的窗口内 Help 菜单同样提供更新检查。结果会在
-应用内对话框中显示，包括当前是否已是最新版，以及 GitHub Releases 上是否
-存在新版本。
 
 ## 配置
 
-以下配置均为可选，项目提供了合理的默认值。
+以下配置均为可选，项目提供了合理的默认值。桌面端把 API 密钥存入系统密钥环，
+模型配置保存在 `.superscience/superscience.sqlite`（Settings → Models）；字段说明见
+[模型配置](docs/model-configuration.md)。自定义凭据将名称映射到环境变量，
+只注入新启动的本地 Python 与内置 MCP 进程，绝不复制到 SSH/WSL 主机。
+
+**设置 → 存储**会逐个列出项目工作区路径；选择项目后，可单独查看该工作区的
+本地占用，并与应用共享数据区分开。
 
 | 变量 | 用途 |
-|---|---|
-| `SUPERSCIENCE_API_KEY` | 模型提供商 API 密钥（CLI）；桌面端改用密钥环 |
-| `SUPERSCIENCE_PROVIDER` | CLI API 提供商：`openai`（默认）、`openai_responses` 或 `anthropic` |
-| `SUPERSCIENCE_API_URL` | API 根地址；默认使用 DeepSeek / OpenAI / Anthropic |
-| `SUPERSCIENCE_MODEL` | 模型名称 |
-| `SUPERSCIENCE_MAX_CONTEXT` | 上下文预算（默认 1,000,000） |
-| `SUPERSCIENCE_MAX_ITER` | 每轮 Agent 最大迭代次数（默认 100；0 表示不限制） |
-| `SUPERSCIENCE_SKILLS_PATH` | 额外的 SKILL.md 目录，以 `;` 或 `:` 分隔 |
-| `SUPERSCIENCE_KERNEL_WORKER` | 覆盖内置 `kernel_worker.py` 路径 |
-| `SUPERSCIENCE_MCP_COMMAND` | 启动任意 stdio MCP 服务（完整命令行） |
-| `SUPERSCIENCE_MCP_PKG` | 启动内置 bio-tools 服务，例如 `mcp_pubmed` |
+|------|------|
+| `WISP_API_KEY` | 模型提供商 API 密钥（CLI）；桌面端改用密钥环 |
+| `WISP_PROVIDER` | CLI API 提供商：`openai`（默认）、`openai_responses` 或 `anthropic` |
+| `WISP_API_URL` | API 根地址；默认使用 DeepSeek / OpenAI / Anthropic |
+| `WISP_MODEL` | 模型名称 |
+| `WISP_MAX_CONTEXT` | 上下文预算（默认 1,000,000） |
+| `WISP_MAX_ITER` | 每轮 Agent 最大迭代次数（默认 100；0 表示不限制） |
+| `WISP_SKILLS_PATH` | 额外的 SKILL.md 目录，以 `;` 或 `:` 分隔 |
+| `WISP_KERNEL_WORKER` | 覆盖内置 `kernel_worker.py` 路径 |
+| `WISP_MCP_COMMAND` | 启动任意 stdio MCP 服务（完整命令行） |
+| `WISP_MCP_PKG` | 启动内置 bio-tools 服务，例如 `mcp_pubmed` |
 
 ### 内置 bio-tools MCP
 
-`SUPERSCIENCE_MCP_PKG=mcp_pubmed` 会在 uv 虚拟环境中启动
+`WISP_MCP_PKG=mcp_pubmed` 会在 uv 虚拟环境中启动
 `mcp-servers/bio-tools/run_server.py mcp_pubmed`。需要先在该环境中安装服务
 依赖：
 
-```powershell
+```bash
 uv pip install mcp requests
 # 以及该服务导入的专用依赖，例如 httpx、xmltodict 等
 ```
 
-之后 Agent 即可直接调用该服务的工具，例如 PubMed 搜索。
+Agent 先用 `search_mcp_tools` 发现匹配的工具，再通过 `use_mcp_tool` 调用；
+完整的服务目录不会进入每次模型请求。
 
-### Notion MCP
+### 远程 MCP（以 Notion 为例）
 
-Notion 使用与其他托管 MCP 服务相同的远程 URL 流程。进入
-**设置 → 连接 → 添加连接**，选择**远程 URL**，填写
-`https://mcp.notion.com/mcp`，将**认证方式**设为 **OAuth**，再点击
-**测试**或**保存**。两项操作都会在浏览器中打开 Notion 授权页；测试会验证连接
-并获取工具列表，但不会保存连接；保存只会在授权成功后写入连接。启动应用时不会
-自动创建或认证 Notion 连接。
+进入 **设置 → 连接 → 添加连接 → 远程 URL**，填写
+`https://mcp.notion.com/mcp`，将认证方式设为 **OAuth**，再点击**测试**或
+**保存**——两者都会在浏览器中打开 Notion 授权页。OAuth 令牌保存在系统密钥
+环中，不会写入项目数据库；删除连接即清除对应凭据。
 
-OAuth 访问令牌和刷新令牌保存在系统密钥环中，不会写入项目数据库。删除已保存的
-连接时也会清除对应凭据。连接详情会显示服务 URL、启用状态和 OAuth 认证方式。
+## 内置演示
 
-该连接会用于之后新建的 Agent 会话。Agent 可访问的内容由 Notion 工作区权限决定，
-请在批准写入操作前仔细确认。
+`seed/` 提供五个按研究叙事排序的 ESR1 / GSE153250 示例：查找数据 → 查看样本/
+数据格式 → RNA-seq 上游分析（siESR1 vs siNT counts）→ 下游 DEG/ORA/GSEA →
+科学假设与研究项目设计。在桌面应用中，**Open demo** 会列出这些示例，并以只读
+对话形式打开（含完整工具/run 操作记录）——不需要 API Key 就能看到 Wisp 的
+完整工作过程。
 
+## 文档
 
-### 文件预览
+| 主题 | 指南 |
+|------|------|
+| 模型配置与提供商 | [docs/model-configuration.md](docs/model-configuration.md) |
+| 外部编码 Agent（ACP） | [docs/acp-agents.md](docs/acp-agents.md) |
+| 多 Agent 工作流 | [docs/agent-delegation.md](docs/agent-delegation.md) |
+| Skills 与功能插件 | [docs/skills.md](docs/skills.md) · [docs/feature-plugins.md](docs/feature-plugins.md) |
+| 终端、远程文件与传输 | [docs/terminal-sessions.md](docs/terminal-sessions.md) · [docs/remote-file-browser.md](docs/remote-file-browser.md) · [docs/server-transfers.md](docs/server-transfers.md) |
+| 项目迁移与同步 | [docs/project-transfer.md](docs/project-transfer.md) · [docs/project-sync.md](docs/project-sync.md)（[中文](docs/project-sync.zh-CN.md)） |
+| 出版证据胶囊 | [docs/publication-evidence.md](docs/publication-evidence.md) |
+| 跨项目全局库 | [docs/global-library.md](docs/global-library.md) |
+| IM 机器人（飞书 / 微信） | [docs/channels.md](docs/channels.md) |
+| 真实浏览器自动化 | [docs/real-browser-automation.md](docs/real-browser-automation.md) |
+| StickS3 设备桥与桌面宠物 | [docs/sticks3-device-bridge.md](docs/sticks3-device-bridge.md) · [docs/pet.md](docs/pet.md) |
+| 应用更新 | [docs/app-updates.md](docs/app-updates.md) |
+| UI 设计原则 | [docs/ui-design-principles.md](docs/ui-design-principles.md) |
 
-Files 面板可预览 Jupyter `.ipynb` 笔记本（不执行）。Markdown 与源码单元格，
-以及笔记本中已保存的输出（文本/traceback、栅格图、SVG、静态 HTML、LaTeX）
-会一并渲染。HTML 输出在禁用脚本、剥离外部引用的沙箱中运行；SVG 通过隔离的
-图片上下文加载；过大的单项或合计输出会被省略，以保持桌面 WebView 响应。
+## 开发
 
-PDF 与现代 Office 文件同样完全离线预览。DOCX 保留文档版式；XLSX 以只读、
-虚拟化工作簿打开（含工作表标签与公式显示）；PPTX 采用惰性窗口化幻灯片渲染。
-PDF 与 OOXML 字节以原始 ArrayBuffer 而非 Base64 跨越 Tauri IPC。Office 预览
-限制压缩输入不超过 32 MiB，并拒绝不安全或过度膨胀的 ZIP；不执行宏、ActiveX、
-OLE、公式或外部关系。复杂的 Excel 样式与 PowerPoint 动画可能与 Microsoft Office
-不完全一致。
+### 目录结构
 
-### 内置演示
+```text
+superscience/
+├─ crates/
+│  ├─ superscience-llm/     Provider trait + OpenAI 兼容 + Anthropic + SSE + RoutedProvider
+│  ├─ superscience-core/    ContextManager（三层压缩）、SystemPrompt、agent_loop、memory
+│  ├─ superscience-tools/   read/write/edit/search/grep/shell/attempt_completion + Windows 安全机制
+│  ├─ superscience-store/   sqlx SQLite（projects/frames/messages/artifacts/settings）+ OS keyring
+│  ├─ superscience-skills/  SKILL.md 发现 + search_skills/use_skill 渐进式加载
+│  ├─ superscience-runtime/ 项目级 Python/R 运行时管理器 + REPL 工具
+│  ├─ superscience-mcp/     stdio JSON-RPC MCP 客户端 + McpTool 适配器（内置 bio-tools）
+│  ├─ superscience-acp/     外部编码 Agent 的 ACP v1 stdio 客户端
+│  ├─ superscience-sync/    加密快照协议 + 可自托管的中继服务
+│  └─ superscience-cli/     `superscience` 无界面可执行程序
+├─ src-tauri/       Tauri v2 桌面壳（命令 + Agent 事件流）
+├─ ui/              Leptos CSR 前端（由 Trunk 构建，在 WebView2 中加载）
+├─ python/          kernel_worker.py + 模拟 MCP 服务（uv 管理）
+├─ r/               可选的系统 R kernel worker（需要 jsonlite）
+├─ skills/          内置 SKILL.md 目录（可复用的科研工作流）
+├─ mcp-servers/     内置 MCP 服务（bio-tools：约 80 个数据库客户端）
+└─ seed/            内置演示会话（ESR1 / GSE153250 ×5）
+```
 
-`seed/` 提供四个预先录制的示例会话：CRISPR 筛选、酶工程、极端微生物和
-免疫治疗。在桌面应用中，**Open demo** 会列出这些示例，并以只读的 User +
-Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压到工作区，
-因此右侧面板可以正确预览图像和数据文件。
-
-## 测试
+### 测试
 
 - **Rust 单元测试**：`cargo test --workspace`，覆盖 `superscience-store` SQLite
   往返读写、seed 演示加载器等。
@@ -349,51 +278,102 @@ Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压
   Leptos UI，并使用模拟的 `window.__TAURI__`，因此不需要 Rust 后端或 API
   密钥：
 
-  ```powershell
+  ```bash
   cd ui-tests
   npm install
-  npx playwright install chromium      # 仅首次需要下载浏览器
-  npx playwright test                  # 启动 UI 并运行完整模拟桌面流程测试
+  npx playwright install chromium   # 仅首次需要下载浏览器
+  npx playwright test               # 启动 UI 并运行完整模拟桌面流程测试
   ```
 
-  模拟实现位于 `tests/mock-tauri.ts`，它会使用固定数据替代 `invoke`/`listen`，
-  并模拟流式 Assistant 回复。因此测试能够覆盖真实的 Leptos 渲染与事件处理，
-  同时不访问网络。
-
-## 架构
+### 架构
 
 - **Agent 循环**（`superscience-core::agent`）：读取 → 思考 → 工具调用 → 验证；token
-  会流式发送到 `Output`。调用 `attempt_completion` 或模型不再返回工具调用时
+  流式发送到 `Output`。调用 `attempt_completion` 或模型不再返回工具调用时
   停止。
-- **上下文压缩**（`superscience-core::context`）：每次模型调用前，当上下文达到预算的
-  80% 时触发三层处理——微压缩过大的工具输出、丢弃较旧轮次，最后才使用
-  LLM 生成完整摘要。
+- **上下文压缩**（`superscience-core::context`）：归档优先的流水线在每次模型调用前、
+  上下文达到预算 80% 时触发——先安全地裁剪工具/媒体噪音，再对净化后的原始
+  历史做摘要，最终保留一个增量检查点和 8K token 的近期尾部；旧轮次不会被
+  静默丢弃。
 - **模型提供商**（`superscience-llm`）：一个 trait、两种 wire format（OpenAI
   `/chat/completions` 与 Anthropic `/v1/messages`），均支持 SSE 流式输出。
-  `RoutedProvider` 根据最后一条用户消息选择 low/medium/high 层级。
+  `RoutedProvider` 按轮选择 low/medium/high 层级。
 - **工具**（`superscience-tools`）：文件系统与 shell 工具，提供 Windows 感知的危险
-  命令门控，并使用 `dunce` 规范化路径，将沙箱限制在项目目录内。
-- **Python/R REPL**（`superscience-runtime`）：每个项目、执行上下文和语言各有一个由
-  manager 管理的进程，可跨 cell 和会话保持命名空间。local、WSL 和 SSH 上下文
-  使用同一个版本化协议。R 是可选功能，使用现有 `Rscript` 和 `jsonlite`。
-  Contexts 面板可探测解释器能力，并显示运行时状态、内存、最后活动时间、具有
-  破坏性的 Stop/Restart 控件，以及按需只读展示的内存对象名、类型、形状/大小
-  和有限元数据。
+  命令门控，并将沙箱限制在项目目录内。
+- **Python/R REPL**（`superscience-runtime`）：每个项目、执行环境和语言各有一个由
+  manager 托管的进程，可跨 cell 和会话保持命名空间；local、WSL 和 SSH 上下文
+  使用同一个版本化协议。
 - **MCP**（`superscience-mcp`）：最小化的 newline-JSON-RPC 客户端，可启动任意 stdio
-  MCP 服务，并把每个远程工具作为一等 Agent 工具公开。
+  MCP 服务；远程 Schema 始终藏在 `search_mcp_tools` / `use_mcp_tool` 之后，
+  直到任务真正需要。
+
+## 路线图（MVP 之后）
+
+- `FlashThinking`：按阶段注入结构化思考框架。
+- `loop_engine`：在当前有界自动 Reviewer 流程之外，提供更深入的
+  Implementer / Verifier / Updater 工作流。
+- 产物管理，以及 UI 中的内嵌 Mol* 三维结构查看器。
+- `RoutedProvider` 基于 LLM 评分选择层级（基于关键词的选择已接入）。
 
 ## 致谢
 
-特别感谢以下社区成员的实测反馈与建议：
+特别感谢以下社区成员的反馈、issue 报告与 PR（按报告 issue 的数量排序）：
 
 <p>
   <a href="https://github.com/Yu-Qiao-sjtu"><img src="https://avatars.githubusercontent.com/u/88706761?v=4&amp;s=96" width="64" height="64" alt="@Yu-Qiao-sjtu" title="@Yu-Qiao-sjtu"></a>
   <a href="https://github.com/lfz0924"><img src="https://avatars.githubusercontent.com/u/82395287?v=4&amp;s=96" width="64" height="64" alt="@lfz0924" title="@lfz0924"></a>
-  <a href="https://github.com/LeeJyee"><img src="https://avatars.githubusercontent.com/u/166231040?v=4&amp;s=96" width="64" height="64" alt="@LeeJyee" title="@LeeJyee"></a>
+  <a href="https://github.com/jarxunlai"><img src="https://avatars.githubusercontent.com/u/199478724?v=4&amp;s=96" width="64" height="64" alt="@jarxunlai" title="@jarxunlai"></a>
   <a href="https://github.com/OrigamiSheep"><img src="https://avatars.githubusercontent.com/u/48906039?v=4&amp;s=96" width="64" height="64" alt="@OrigamiSheep" title="@OrigamiSheep"></a>
-  <a href="https://github.com/Charlesyu153"><img src="https://avatars.githubusercontent.com/u/232734740?v=4&amp;s=96" width="64" height="64" alt="@Charlesyu153" title="@Charlesyu153"></a>
+  <a href="https://github.com/LeeJyee"><img src="https://avatars.githubusercontent.com/u/166231040?v=4&amp;s=96" width="64" height="64" alt="@LeeJyee" title="@LeeJyee"></a>
+  <a href="https://github.com/stardustFFF"><img src="https://avatars.githubusercontent.com/u/306053694?v=4&amp;s=96" width="64" height="64" alt="@stardustFFF" title="@stardustFFF"></a>
   <a href="https://github.com/Doctorluka"><img src="https://avatars.githubusercontent.com/u/101385826?v=4&amp;s=96" width="64" height="64" alt="@Doctorluka" title="@Doctorluka"></a>
+  <a href="https://github.com/Charlesyu153"><img src="https://avatars.githubusercontent.com/u/232734740?v=4&amp;s=96" width="64" height="64" alt="@Charlesyu153" title="@Charlesyu153"></a>
   <a href="https://github.com/xiaowen621"><img src="https://avatars.githubusercontent.com/u/241900839?v=4&amp;s=96" width="64" height="64" alt="@xiaowen621" title="@xiaowen621"></a>
+  <a href="https://github.com/liaoyuan919"><img src="https://avatars.githubusercontent.com/u/240658511?v=4&amp;s=96" width="64" height="64" alt="@liaoyuan919" title="@liaoyuan919"></a>
+  <a href="https://github.com/lhx-JIPS"><img src="https://avatars.githubusercontent.com/u/33241642?v=4&amp;s=96" width="64" height="64" alt="@lhx-JIPS" title="@lhx-JIPS"></a>
+  <a href="https://github.com/chenzhiyu48"><img src="https://avatars.githubusercontent.com/u/65606400?v=4&amp;s=96" width="64" height="64" alt="@chenzhiyu48" title="@chenzhiyu48"></a>
+  <a href="https://github.com/liuyc414"><img src="https://avatars.githubusercontent.com/u/190511200?v=4&amp;s=96" width="64" height="64" alt="@liuyc414" title="@liuyc414"></a>
+  <a href="https://github.com/kevinzzzhang76-dot"><img src="https://avatars.githubusercontent.com/u/251931886?v=4&amp;s=96" width="64" height="64" alt="@kevinzzzhang76-dot" title="@kevinzzzhang76-dot"></a>
+  <a href="https://github.com/Shawn-Gua"><img src="https://avatars.githubusercontent.com/u/110019576?v=4&amp;s=96" width="64" height="64" alt="@Shawn-Gua" title="@Shawn-Gua"></a>
+  <a href="https://github.com/Hayesss"><img src="https://avatars.githubusercontent.com/u/66942436?v=4&amp;s=96" width="64" height="64" alt="@Hayesss" title="@Hayesss"></a>
+  <a href="https://github.com/Az-Fan"><img src="https://avatars.githubusercontent.com/u/189823792?v=4&amp;s=96" width="64" height="64" alt="@Az-Fan" title="@Az-Fan"></a>
+  <a href="https://github.com/19951219asd"><img src="https://avatars.githubusercontent.com/u/118892832?v=4&amp;s=96" width="64" height="64" alt="@19951219asd" title="@19951219asd"></a>
+  <a href="https://github.com/yeshubiao2017-source"><img src="https://avatars.githubusercontent.com/u/233231577?v=4&amp;s=96" width="64" height="64" alt="@yeshubiao2017-source" title="@yeshubiao2017-source"></a>
+  <a href="https://github.com/xuxh95"><img src="https://avatars.githubusercontent.com/u/299415390?v=4&amp;s=96" width="64" height="64" alt="@xuxh95" title="@xuxh95"></a>
+  <a href="https://github.com/xiaoshen19930901"><img src="https://avatars.githubusercontent.com/u/24424905?v=4&amp;s=96" width="64" height="64" alt="@xiaoshen19930901" title="@xiaoshen19930901"></a>
+  <a href="https://github.com/scsksprings"><img src="https://avatars.githubusercontent.com/u/60927616?v=4&amp;s=96" width="64" height="64" alt="@scsksprings" title="@scsksprings"></a>
+  <a href="https://github.com/lpc520"><img src="https://avatars.githubusercontent.com/u/61644087?v=4&amp;s=96" width="64" height="64" alt="@lpc520" title="@lpc520"></a>
+  <a href="https://github.com/lijianchunChina"><img src="https://avatars.githubusercontent.com/u/42370856?v=4&amp;s=96" width="64" height="64" alt="@lijianchunChina" title="@lijianchunChina"></a>
+  <a href="https://github.com/kjiojio"><img src="https://avatars.githubusercontent.com/u/118580250?v=4&amp;s=96" width="64" height="64" alt="@kjiojio" title="@kjiojio"></a>
+  <a href="https://github.com/dmh-git-cop"><img src="https://avatars.githubusercontent.com/u/270353192?v=4&amp;s=96" width="64" height="64" alt="@dmh-git-cop" title="@dmh-git-cop"></a>
+  <a href="https://github.com/ZZRSCAR"><img src="https://avatars.githubusercontent.com/u/255126066?v=4&amp;s=96" width="64" height="64" alt="@ZZRSCAR" title="@ZZRSCAR"></a>
+  <a href="https://github.com/Toomi0124"><img src="https://avatars.githubusercontent.com/u/300393761?v=4&amp;s=96" width="64" height="64" alt="@Toomi0124" title="@Toomi0124"></a>
+  <a href="https://github.com/Lezhao0226"><img src="https://avatars.githubusercontent.com/u/72743280?v=4&amp;s=96" width="64" height="64" alt="@Lezhao0226" title="@Lezhao0226"></a>
+  <a href="https://github.com/HSsnano"><img src="https://avatars.githubusercontent.com/u/87816341?v=4&amp;s=96" width="64" height="64" alt="@HSsnano" title="@HSsnano"></a>
+  <a href="https://github.com/zwbao"><img src="https://avatars.githubusercontent.com/u/24564677?v=4&amp;s=96" width="64" height="64" alt="@zwbao" title="@zwbao"></a>
+  <a href="https://github.com/yuzhenpeng"><img src="https://avatars.githubusercontent.com/u/31943277?v=4&amp;s=96" width="64" height="64" alt="@yuzhenpeng" title="@yuzhenpeng"></a>
+  <a href="https://github.com/youxiudongdong-lang"><img src="https://avatars.githubusercontent.com/u/306058340?v=4&amp;s=96" width="64" height="64" alt="@youxiudongdong-lang" title="@youxiudongdong-lang"></a>
+  <a href="https://github.com/ying-ge"><img src="https://avatars.githubusercontent.com/u/45988974?v=4&amp;s=96" width="64" height="64" alt="@ying-ge" title="@ying-ge"></a>
+  <a href="https://github.com/yemiaoyong"><img src="https://avatars.githubusercontent.com/u/61010663?v=4&amp;s=96" width="64" height="64" alt="@yemiaoyong" title="@yemiaoyong"></a>
+  <a href="https://github.com/yejia1988"><img src="https://avatars.githubusercontent.com/u/164177661?v=4&amp;s=96" width="64" height="64" alt="@yejia1988" title="@yejia1988"></a>
+  <a href="https://github.com/xingzhuo123"><img src="https://avatars.githubusercontent.com/u/167210517?v=4&amp;s=96" width="64" height="64" alt="@xingzhuo123" title="@xingzhuo123"></a>
+  <a href="https://github.com/xiaochuheying19901216"><img src="https://avatars.githubusercontent.com/u/304343377?v=4&amp;s=96" width="64" height="64" alt="@xiaochuheying19901216" title="@xiaochuheying19901216"></a>
+  <a href="https://github.com/xiahouzuoying"><img src="https://avatars.githubusercontent.com/u/57342415?v=4&amp;s=96" width="64" height="64" alt="@xiahouzuoying" title="@xiahouzuoying"></a>
+  <a href="https://github.com/likemoonriver"><img src="https://avatars.githubusercontent.com/u/157043962?v=4&amp;s=96" width="64" height="64" alt="@likemoonriver" title="@likemoonriver"></a>
+  <a href="https://github.com/lijianguoa"><img src="https://avatars.githubusercontent.com/u/52228119?v=4&amp;s=96" width="64" height="64" alt="@lijianguoa" title="@lijianguoa"></a>
+  <a href="https://github.com/k1600639239"><img src="https://avatars.githubusercontent.com/u/301947158?v=4&amp;s=96" width="64" height="64" alt="@k1600639239" title="@k1600639239"></a>
+  <a href="https://github.com/gongmeiyuan"><img src="https://avatars.githubusercontent.com/u/75189860?v=4&amp;s=96" width="64" height="64" alt="@gongmeiyuan" title="@gongmeiyuan"></a>
+  <a href="https://github.com/chhhhai"><img src="https://avatars.githubusercontent.com/u/99796066?v=4&amp;s=96" width="64" height="64" alt="@chhhhai" title="@chhhhai"></a>
+  <a href="https://github.com/chenchen199401-cmyk"><img src="https://avatars.githubusercontent.com/u/236738705?v=4&amp;s=96" width="64" height="64" alt="@chenchen199401-cmyk" title="@chenchen199401-cmyk"></a>
+  <a href="https://github.com/btzheng"><img src="https://avatars.githubusercontent.com/u/15546828?v=4&amp;s=96" width="64" height="64" alt="@btzheng" title="@btzheng"></a>
+  <a href="https://github.com/Winteric123"><img src="https://avatars.githubusercontent.com/u/122366825?v=4&amp;s=96" width="64" height="64" alt="@Winteric123" title="@Winteric123"></a>
+  <a href="https://github.com/ShixiangWang"><img src="https://avatars.githubusercontent.com/u/25057508?v=4&amp;s=96" width="64" height="64" alt="@ShixiangWang" title="@ShixiangWang"></a>
+  <a href="https://github.com/ScholarlyLuck"><img src="https://avatars.githubusercontent.com/u/267531500?v=4&amp;s=96" width="64" height="64" alt="@ScholarlyLuck" title="@ScholarlyLuck"></a>
+  <a href="https://github.com/Junweichengang"><img src="https://avatars.githubusercontent.com/u/41681007?v=4&amp;s=96" width="64" height="64" alt="@Junweichengang" title="@Junweichengang"></a>
+  <a href="https://github.com/JarningGau"><img src="https://avatars.githubusercontent.com/u/22016330?v=4&amp;s=96" width="64" height="64" alt="@JarningGau" title="@JarningGau"></a>
+  <a href="https://github.com/Cloudy-Zhuang"><img src="https://avatars.githubusercontent.com/u/85553170?v=4&amp;s=96" width="64" height="64" alt="@Cloudy-Zhuang" title="@Cloudy-Zhuang"></a>
+  <a href="https://github.com/245429488zc-svg"><img src="https://avatars.githubusercontent.com/u/250579619?v=4&amp;s=96" width="64" height="64" alt="@245429488zc-svg" title="@245429488zc-svg"></a>
+  <a href="https://github.com/chewice"><img src="https://avatars.githubusercontent.com/u/244145152?v=4&amp;s=96" width="64" height="64" alt="@chewice" title="@chewice"></a>
+  <a href="https://github.com/XuuChen"><img src="https://avatars.githubusercontent.com/u/99383234?v=4&amp;s=96" width="64" height="64" alt="@XuuChen" title="@XuuChen"></a>
 </p>
 
 - 我们最初关注过 Claude Science 一类封闭产品，但发现其对部分地区用户不友好、
@@ -401,12 +381,13 @@ Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压
   选型思路；Agent 架构、工作台功能与路线图均由开源社区自主设计与推进。
 - 真实浏览器自动化受
   [GenericAgent 的 GA Web / TMWebDriver](https://github.com/lsdefine/GenericAgent)
-  架构启发（MIT，Copyright 2025 lsdefine）。SuperScience 的 Rust 桥接器与 Manifest V3
+  架构启发（MIT，Copyright 2025 lsdefine）。Wisp 的 Rust 桥接器与 Manifest V3
   扩展为独立实现；详细出处见
   [`browser-extension/NOTICE.md`](browser-extension/NOTICE.md)。
 - Agent 核心基于
   [`w4n9H/mangopi-cli`](https://github.com/w4n9H/mangopi-cli)（Apache-2.0）。
-- `skills/` 与 `mcp-servers/bio-tools/` 随本仓库打包提供（Apache-2.0）。
+- `skills/` 与 `mcp-servers/bio-tools/` 来自上游 `superscience` 资源包
+  （Apache-2.0）。
 - `skills/bear-*` 来自
   [bear-research-skills](https://github.com/fei0810/bear-research-skills)
   （CC BY-NC-SA 4.0）；在线检索需要 `scimaster-cli`。
@@ -415,7 +396,7 @@ Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压
 
 ## 许可证
 
-除另有说明外，SuperScience 采用
+除另有说明外，Wisp Science 采用
 [GNU Affero 通用公共许可证 v3.0（仅此版本）](LICENSE)。第三方及 vendored
 组件继续适用各自的许可证；上游声明保留在对应目录中，Apache License 2.0
 全文保留于 [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt)。更早发布的
@@ -423,15 +404,15 @@ Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压
 
 ## 引用
 
-如果你在研究中使用 SuperScience，请引用：
+如果你在研究中使用 superscience，请引用：
 
 [![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.21193742)
 
 ```bibtex
-@software{xu2026superscience,
+@software{xu2026wisp,
   author    = {Xu, Zhougeng and hoptop},
-  title     = {SuperScience: A local-first scientific computing agent},
-  version   = {v0.30.0},
+  title     = {superscience: A local-first scientific computing agent},
+  version   = {v0.33.0},
   year      = {2026},
   publisher = {Zenodo},
   doi       = {10.5281/zenodo.21193742},
@@ -439,15 +420,8 @@ Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压
 }
 ```
 
-## 路线图（MVP 之后）
-
-- `FlashThinking`：按阶段注入结构化思考框架。
-- `loop_engine`：在当前有界自动 Reviewer 流程之外，提供更深入的
-  Implementer / Verifier / Updater 工作流。
-- `RoutedProvider` 基于 LLM 评分选择层级（基于关键词的选择已接入）。
-
 ## Star History
 
-<a href="https://star-history.com/#xuzhougeng/wisp-science&Date">
-  <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=xuzhougeng/wisp-science&type=Date" />
+<a href="https://star-history.com/#xuzhougeng/superscience&Date">
+  <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=xuzhougeng/superscience&type=Date" />
 </a>

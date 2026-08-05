@@ -25,8 +25,8 @@ Manage these two layers in Settings:
 The Studio uses the same task contract and proposal type as runtime delegation.
 The right-panel Agents view is intentionally an activity surface rather than a
 second workflow editor.
-**Literature evidence review** and **Roundtable** are both read-only built-in
-Workflows in its library. The Roundtable generator is also available for
+**Literature evidence review**, **Roundtable**, and **Develop computational
+method** are read-only built-in Workflows in its library. The Roundtable generator is also available for
 custom variants: it expands two or three participants plus a chair into
 ordinary parallel opening, cross-review, and synthesis tasks. The generated
 nodes remain editable and can be saved as a reusable Workflow, then bound to
@@ -49,15 +49,18 @@ rejected before save.
 Workflow Studio replaces the normal Settings chrome with a dedicated
 full-window editor. Its stable layout keeps the template library on the left,
 save and lifecycle controls in the top bar, the DAG canvas in the center, and
-the selected-node inspector on the right. Workflow-level fields live in a
-collapsible configuration strip so they do not permanently reduce the canvas.
-The canvas includes zoom controls, a reset-to-100% action, a dotted
-orientation grid, and a minimap; large graphs remain scrollable without
+the selected-node inspector on the right. Drag the divider between the canvas
+and inspector to allocate space to either side. Workflow-level fields live in
+a collapsible configuration strip so they do not permanently reduce the
+canvas. The node inspector keeps selected Skills visible as removable chips
+and searches the effective Skill catalog on demand instead of rendering the
+whole catalog. The canvas includes zoom controls, a reset-to-100% action, a
+dotted orientation grid, and a minimap; large graphs remain scrollable without
 shrinking the inspector.
 
 The composer `/` picker searches both enabled Skills and Workflow templates.
 Selecting a Workflow adds a typed Workflow chip instead of copying prose into
-the message. On send, SuperScience resolves the template by stable ID, injects its
+the message. On send, Wisp resolves the template by stable ID, injects its
 exact DAG contract, and enables delegation for that native conversation so
 the main Agent can execute the graph through `delegate_tasks`. Skill and
 Workflow chips can be combined in the same turn; transcript cards retain both
@@ -66,7 +69,7 @@ of silently falling back to an invented plan.
 
 The first built-in action is **Research literature**. Select text in a
 conversation or file preview, then choose the action from the floating
-selection toolbar or the right-click menu. SuperScience creates a dedicated
+selection toolbar or the right-click menu. Wisp creates a dedicated
 conversation and runs three temporary Agents:
 
 1. `supporting_evidence` searches for publications supporting the passage.
@@ -105,15 +108,18 @@ boundary.
    when it is, calls `delegate_tasks` itself.
 3. The call describes an overall goal, bounded shared context, and up to eight
    tasks. Each task has its own instruction, dependency IDs, capability IDs,
-   optional Specialist, optional JSON output schema, and optional isolation
-   request.
-4. SuperScience resolves every capability through host policy into an exact model,
+   optional Specialist, optional JSON output schema, optional isolation
+   request, and optional per-task token/tool/cost budget. Budgets are an
+   advanced tuning knob: tasks run unlimited by default, and an omitted or
+   zero dimension stays unlimited.
+4. Wisp resolves every capability through host policy into an exact model,
    executor, tool set, project scope, workspace policy, budget, and timeout.
    The model cannot grant raw tools or permissions to a child.
 5. Safe read-only tasks run immediately. A batch that can write, execute code,
-   use an external service, request isolation, or exceed normal budgets uses
-   the existing approval prompt. Rejecting it starts no child and returns the
-   feedback to the main Agent so it can revise the batch.
+   use an external service, request isolation, or explicitly request an
+   elevated budget uses the existing approval prompt. Rejecting it starts no
+   child and returns the feedback to the main Agent so it can revise the
+   batch.
 6. Independent tasks run concurrently up to the batch limit. A dependent task
    starts only after its direct dependencies succeed and receives their
    structured results. An unrelated branch continues after another branch
@@ -122,6 +128,29 @@ boundary.
    them into its final response rather than sending the user elsewhere. If a
    result was truncated, `get_delegated_result` reads that task's full persisted
    result for the same conversation.
+
+Delivery parsing is tolerant. A child's final message may wrap the requested
+JSON in a Markdown fence or narrative text; Wisp extracts the embedded JSON
+payload. When a non-reviewer child finishes but its final message still cannot
+be parsed as the requested shape, or its parsed value does not satisfy the
+task's output schema, the completed work is preserved instead of discarded:
+the raw text (or non-conforming value) is delivered with a
+`delivery: {degraded, reason}` marker, the task counts as succeeded, and
+dependent tasks receive the degraded result rather than being blocked.
+Consumers must treat a degraded delivery as raw evidence, not contract-shaped
+data. Reviewer verdicts are exempt: a reviewer result that is not a JSON
+object with a summary (and, for standard reviews, a findings array) still
+fails, because review gates must not be satisfiable by unparseable output.
+
+Failed and cancelled workflows are resumable. **Retry** keeps the persisted
+workflow and every successful task result, reruns only failed/cancelled tasks
+and descendants that were blocked, then supplies the retained dependency
+results to those descendants. A failed task exposes its current token limit in
+the activity card; changing **Retry max tokens** before retrying revises only
+that task's authorized budget on the same workflow (0 makes the task
+unlimited). A finite value is still checked against capability and host
+ceilings; a rejected budget names the triggered limit, the requested value,
+and the ceiling.
 
 Omitting `specialist_id` creates a generic temporary Agent. Selecting a
 Specialist reuses its persona, model preference, skills, and connector
@@ -145,7 +174,7 @@ automatically.
 Workflow Studio can generate a structured Roundtable without introducing a
 second workflow or chat protocol. Expand **Roundtable template**, choose two or
 three discussion seats, and assign each seat an optional Specialist plus a
-Native or ACP executor. A Native seat may also select a SuperScience model; an ACP
+Native or ACP executor. A Native seat may also select a Wisp model; an ACP
 seat's model and reasoning settings remain owned by that ACP Agent profile.
 Configure the chair separately, then apply the template.
 
@@ -159,7 +188,7 @@ The generated proposal uses the ordinary dynamic workflow contract:
    conclusions, unresolved disagreements, evidence gaps, risks, and next steps.
 
 The same Specialist, executor, and model assignment is copied into both rounds
-for each seat. Enter the overall goal before applying the template; SuperScience embeds
+for each seat. Enter the overall goal before applying the template; Wisp embeds
 that goal into every generated task so detached children receive the actual
 discussion topic. Applying preserves the goal, shared context, and approval
 policy, and replaces only the task cards. Reapply after changing the goal.
@@ -185,7 +214,7 @@ durable background delivery path. The conversation's auto-resume setting still
 decides whether their parent is automatically synthesized.
 
 Each background execution reserves a persisted generation before any child
-starts. When the workflow reaches succeeded, failed, or cancelled, SuperScience stores
+starts. When the workflow reaches succeeded, failed, or cancelled, Wisp stores
 one compact result for that generation. Under the same conversation lock used
 by normal turns, it then atomically appends one internal result message and
 marks the generation delivered. A busy parent finishes its current or already
@@ -214,15 +243,71 @@ delivered normally. The compact conversation message may later be removed by
 ordinary transcript retention; full task responses and lookup records remain
 in workflow attempts.
 
+## Host-managed Run activities
+
+A Workflow may contain a bounded host-managed `run_activity` node in addition
+to ordinary Agent nodes. The first supported activity is `method_search`.
+Workflow remains an immutable DAG: candidate iteration happens inside one
+persisted Run and never expands the approved graph.
+
+Run activities have their own exact authority snapshot: activity version,
+ExecutionContext revision, one direct dependency and structured output
+pointer, candidate/time/evaluator/cost limits, provider/model profile IDs, and
+integrity hash. Specialist, Agent executor, Skill, isolation, model override,
+and Agent token/tool budgets are rejected on these nodes. A method-search node
+may consume only the required
+`method_search_spec_artifact_version_id` field declared by its direct
+dependency's output schema.
+
+After its attempt starts, Wisp atomically creates and links the Run and moves
+the attempt to `waiting_run`. That state is unfinished for DAG dependencies but
+does not occupy one of the root Agent concurrency slots. Descendants remain
+blocked until the linked Run succeeds. Run failure, timeout, loss, or
+cancellation maps to one terminal attempt exactly once; retry creates a new
+attempt and a new Run.
+
+For `method_search`, creation stops at a second, exact review boundary. The
+linked Run is `Draft`, the provider is not called, and no candidate evaluator
+runs. The Run detail shows the immutable spec and audit ArtifactVersion IDs,
+target symbol, evaluator, baseline/noise summary, reachability result,
+guardrails, protected inputs, ExecutionContext, and budgets. **Start search**
+revalidates those frozen inputs plus the approved model profile and only then
+moves the Run to `Submitted`. This review is distinct from approving the
+Workflow plan: plan approval authorizes preparation; Run start authorizes
+search against the exact contract that preparation produced.
+
+The method-search Run surface reports bounded progress and candidate lineage,
+and provides pause, resume, and cancel controls. A pause takes effect at a
+durable candidate boundary. Resume revalidates the exact contract and context;
+it never silently substitutes current files. Selected code remains an
+ArtifactVersion and is not applied to the project checkout.
+
+Startup recovery keeps `waiting_run` only when its dedicated Run link still
+exists in the same project. A missing or mismatched link fails explicitly.
+Project import always fails an imported waiting activity instead of guessing
+that work on another device can resume; the Run link and prior evidence remain
+available for inspection. Cancelling the root requests cancellation of both
+active Agent attempts and linked Runs. Graceful desktop shutdown converts a
+submitted/running local method search to `Paused` after its last durable
+checkpoint and terminates the bounded evaluator with the application. Startup
+also converts an interrupted search to `Paused` with a recovery note. Both
+paths require an explicit resume.
+
+Method-search v0 is deliberately local and serial: Python only, one declared
+function/class target, one local ExecutionContext, 1–50 candidates, immutable
+project-local inputs, and a bounded evaluator. It does not provide GPU/remote
+scheduling, multi-target repository edits, automatic data downloads, or
+automatic application of the selected method.
+
 ## Native, ACP, and code execution
 
-Native execution runs the ordinary SuperScience Agent loop in a separate child
+Native execution runs the ordinary Wisp Agent loop in a separate child
 conversation with only the resolved tools. It supports project reading,
 project writing, and bounded Run Manager execution without starting an ACP
 client. This is the default eligible executor and is enough for a code task.
 
 Scientific resources are resolved for the owning project and conversation at
-draft time, then checked again before execution. SuperScience considers the project's
+draft time, then checked again before execution. Wisp considers the project's
 enabled Skills, enabled bundled/custom MCP connections, selected
 ExecutionContexts, configured Python/R interpreters, runtime workers, and
 vision-capable models. A disabled or missing resource is omitted from both the
@@ -246,8 +331,12 @@ For every task, its capability grant and its immutable Specialist whitelist
 must both allow a Skill or connector. `None` on a selected Specialist keeps
 the existing “inherit project settings” behavior; an explicit list narrows it.
 The resulting exact resource IDs are installed directly in a Native child or
-encoded as private allowlist tokens for that ACP child's filtered SuperScience MCP
+encoded as private allowlist tokens for that ACP child's filtered Wisp MCP
 bridge. They are not inferred from an ACP vendor, command name, or Agent label.
+Native children discover granted MCP tools through `search_mcp_tools` and call
+them through `use_mcp_tool`; the child approval boundary authorizes both those
+gateway names and the exact hidden tool targets from the resolved connector
+grant.
 
 ACP profiles remain available to workflows that explicitly resolve to an ACP
 executor. Every configured profile whose command is currently available is
@@ -258,7 +347,7 @@ ACP or Codex template. Automatic selection continues to prefer Native whenever
 Native satisfies the task; choosing ACP is an explicit, approval-visible
 override.
 
-Delegated ACP sessions start with no SuperScience MCP bridge. SuperScience adds only bridge
+Delegated ACP sessions start with no Wisp MCP bridge. Wisp adds only bridge
 tools implied by the resolved task permission set; for example, `code_run` can
 receive the project-scoped execution-context and Run Manager tools while a
 reasoning or file-read task receives no bridge. ACP permission requests are
@@ -273,16 +362,16 @@ Run by ID. Direct `shell` is never registered for a delegated Native child;
 ACP receives the same Run control plane through the filtered bridge.
 
 When a child links a project-local output in its structured summary or
-evidence, SuperScience snapshots the file as a content-addressed Artifact and returns
+evidence, Wisp snapshots the file as a content-addressed Artifact and returns
 its durable ID with the task result. Structured DataAsset and Paper references
 remain JSON references in the persisted response and parent delivery; large
 or binary payloads are not copied into the conversation. A configured custom
 MCP connection is treated as available from its saved configuration, but a
-connection failure at execution is still reported by the child because SuperScience
+connection failure at execution is still reported by the child because Wisp
 does not perform network health checks while drafting.
 
-The same inline delegation surface is exposed through the SuperScience MCP bridge as
-`superscience_delegate_tasks` and `superscience_get_delegated_result` when the owning
+The same inline delegation surface is exposed through the Wisp MCP bridge as
+`wisp_delegate_tasks` and `wisp_get_delegated_result` when the owning
 conversation opted in. Because that bridge is non-interactive, a batch that
 requires approval is denied instead of silently escalating.
 
@@ -316,7 +405,7 @@ the coordination paths.
 
 ## Persistence and safety
 
-- SuperScience persists the resolved v2 plan before execution. Stored steps contain the
+- Wisp persists the resolved v2 plan before execution. Stored steps contain the
   immutable Specialist, requested model/executor preferences, capability
   revisions, resolved permissions/model/executor, contracts, budgets, and
   policy integrity hash used for revalidation. ACP tasks do not store a
@@ -334,9 +423,9 @@ the coordination paths.
   tasks without isolation use one mutation lane and cannot edit the same
   checkout concurrently. When Git is installed and the project checkout is
   clean, a task may instead use a unique temporary Git worktree and run in
-  parallel with other isolated writers. The approval card shows that SuperScience will
+  parallel with other isolated writers. The approval card shows that Wisp will
   conflict-check and then cherry-pick the task's temporary commit.
-- Native and ACP children both receive the isolated project root. SuperScience captures
+- Native and ACP children both receive the isolated project root. Wisp captures
   a changed-file manifest and binary-capable patch, serializes merge decisions,
   and removes the temporary worktree and branch on success, failure, or
   cancellation. A failed child is never merged. A rejected/conflicting merge
@@ -358,6 +447,11 @@ the coordination paths.
 - Children receive only their instruction, bounded shared context, applicable
   project instructions, explicit inputs, and direct dependency results. They
   do not receive the full parent transcript.
+- Dynamic tasks bind Skill guidance with explicit `skill_ids`, independently
+  from capability permissions. Resolution snapshots each effective Skill's
+  scope, path, declared version, package origin, and SHA-256. Native and ACP
+  children receive only those rendered instructions; a disabled, shadowed, or
+  changed Skill fails closed and requires the draft to be regenerated.
 - Delegated Agents receive `delegate_tasks` only from an approved `delegation`
   capability and only while root-wide depth, task, concurrency, token, tool,
   cost, cancellation, and time checks still have capacity.
@@ -365,6 +459,43 @@ the coordination paths.
   structured results, artifacts, evidence, usage, child conversation IDs, and
   backend session IDs remain auditable in SQLite. Secrets stay in the existing
   credential stores.
+
+## Skill Portfolio Planner
+
+Workflow Studio can ask a user-selected configured chat model to generate a draft from the current
+effective Skill Catalog. The planning Agent receives the research request plus catalog summaries
+and returns a structured goal, rationale, selected Skill ids, node instructions, and dependency
+graph. There is no lexical/metadata ranking fallback: an unavailable model, invalid response, or
+invented Skill fails explicitly.
+
+The host, not the model, derives capabilities from each selected Skill and validates that every
+Skill is currently effective, the required resources are available, and the task graph is valid
+and acyclic. Generated drafts always require review and open in Workflow Studio for editing.
+Planning does not estimate, reserve, or enforce token budgets; every generated node is unlimited
+until the user explicitly adds limits in Workflow Studio.
+
+The built-in **Data-driven research design** Workflow is the first validation template. It keeps
+the general planner domain-neutral while giving the final synthesis a strict eight-part schema:
+data observations and robustness; literature consensus, conflicts, and gaps; hypotheses and
+alternatives; deductive predictions; discriminating experiments plus rescue/falsification;
+failure-driven iteration; translation, feasibility, and risk; and a source-marked evidence–claim
+matrix with priorities. Its data and literature nodes run independently before synthesis and each
+binds only its declared Skill.
+
+The main Agent can inspect any configured template with the read-only `explain_workflow` tool.
+Questions such as “What is Data-driven research design?” return the saved goal, task graph,
+dependencies, capabilities, Skill bindings, and output sections. Inspection never starts the
+Workflow; execution still requires a separate `delegate_tasks` call or an explicit UI action.
+
+The main Agent can also turn an installed Skill into a reusable template with the
+`create_workflow` tool. It reads the named Skill, derives capabilities from the Skill's declared
+side effects, and registers a single-task Workflow that binds the Skill — the same binding the
+delegation runtime expands into full Skill guidance at run time. Optional `params` overrides
+(`goal`, `context`, `instruction`, `capabilities`, `approval_policy`, `output_schema`) expose the
+Skill as a parameterized Workflow input. The generated template behaves like any user-authored
+Workflow: `explain_workflow` shows it, Settings → Workflows edits it, and `delegate_tasks` runs
+it. Names must be unique across built-in and user templates.
+
 - Turning Delegation off prevents the main conversation and its MCP bridge from
   listing or invoking delegation tools. It does not erase workflow history or
   implicitly cancel a workflow that is already running.
@@ -382,10 +513,10 @@ drafts, so lifecycle controls remain on the root only.
 Each dynamic task shows dependencies, requested capabilities, optional
 Specialist, resolved model and executor, workspace/tool authority, approval
 reasons, status, duration, usage, summary, and whether a full result is
-available. **Inspect result** opens the persisted structured response; **Take
-over** opens that task's child conversation. Child conversations remain linked
-to their dispatching conversation and do not appear as top-level sessions in
-the sidebar, recent-session views, or session search.
+available. **Inspect result** opens a readable view of the persisted summary,
+deliverables, changes, evidence, checks, risks, and custom output fields. Child
+conversation IDs and other execution-envelope details stay internal; the panel
+does not offer a separate child-conversation takeover flow.
 
 Workflow Studio creates arbitrary task graphs instead of assembling a fixed
 team. Add bounded tasks, connect them with dependencies, and choose
@@ -411,8 +542,11 @@ adds one synthesized assistant update; start another parent turn and verify a
 completion waits behind it. Then create an equivalent graph in
 **Settings → Workflows**, attach it from the composer, and confirm the Agents
 panel shows the run without showing workflow editing fields. Repeat with a
-write capability: SuperScience should show the exact resolved authority and start zero
+write capability: Wisp should show the exact resolved authority and start zero
 children if approval is denied.
+Open a completed task result and confirm its sections and rendered Markdown are
+readable without raw JSON or a child-conversation action. Press Escape
+immediately after opening it and confirm only the result dialog closes.
 Finally, add the **Nested delegation** capability to one root task and let it
 create two independent leaf tasks. Confirm that both leaves appear under the
 same root card at depth 2, their IDs are prefixed by the parent task, their
@@ -421,7 +555,7 @@ the parent and both leaves for cancellation.
 For the isolation path, start from a clean Git project and create two independent
 write tasks with **Use an isolated workspace** enabled. Confirm that approval
 shows **Conflict-check, then cherry-pick**, both children overlap, both changes
-land as separate commits, and no `superscience-agent/*` worktree branch remains. Then
+land as separate commits, and no `wisp-agent/*` worktree branch remains. Then
 make both tasks edit the same line and confirm one merge is rejected, the main
 file keeps the accepted change, and the rejected patch is available as an
 Artifact. Cancel another isolated writer and confirm its partial patch is

@@ -193,7 +193,7 @@ pub(crate) async fn run_native_agent(
     });
 
     let output = NativeOutput {
-        allowed_tools: tools.names().into_iter().map(str::to_string).collect(),
+        allowed_tools: tools.approval_names(),
         messages: message_tx,
         provenance: provenance_tx,
     };
@@ -212,12 +212,13 @@ pub(crate) async fn run_native_agent(
         .spec
         .context_policy
         .max_tokens
-        .or(request.spec.budget.max_tokens)
+        .or(request.spec.budget.max_tokens.filter(|limit| *limit > 0))
         .unwrap_or(32_000) as usize;
     let max_iterations = request
         .spec
         .budget
         .max_tool_calls
+        .filter(|limit| *limit > 0)
         .map(|limit| limit as usize + 1)
         .unwrap_or(100);
     let mut context = ContextManager::new(max_context.max(1));
@@ -281,6 +282,7 @@ mod tests {
     use super::*;
     use std::{collections::VecDeque, path::PathBuf, sync::atomic::Ordering};
     use superscience_llm::{FunctionCall, ToolCall, Usage};
+    use superscience_tools::{Tool, ToolEnv, ToolResult};
 
     struct SequenceProvider {
         completions: Mutex<VecDeque<Completion>>,
@@ -373,6 +375,39 @@ mod tests {
         }
     }
 
+    struct DeferredLiteratureTool;
+
+    #[async_trait]
+    impl Tool for DeferredLiteratureTool {
+        fn name(&self) -> &str {
+            "pubmed_search_articles"
+        }
+
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                self.name(),
+                "Search PubMed articles by biomedical keywords.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": { "query": { "type": "string" } },
+                    "required": ["query"]
+                }),
+            )
+        }
+
+        fn defer_schema(&self) -> bool {
+            true
+        }
+
+        fn read_only(&self) -> bool {
+            true
+        }
+
+        async fn run(&self, args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+            ToolResult::ok(format!("searched {}", args["query"]))
+        }
+    }
+
     fn completion(content: &str, tool_calls: Vec<ToolCall>, input: u64, output: u64) -> Completion {
         Completion {
             content: content.into(),
@@ -434,7 +469,7 @@ mod tests {
 
     async fn fixture() -> (Store, PathBuf, PathBuf) {
         let base = std::env::temp_dir().join(format!(
-            "superscience_native_agent_{}_{}",
+            "wisp_native_agent_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -517,6 +552,63 @@ mod tests {
             .iter()
             .filter(|message| message.role == superscience_llm::Role::Assistant)
             .all(|message| message.model_name.as_deref() == Some("sequence-model")));
+        drop(store);
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[tokio::test]
+    async fn native_agent_can_discover_and_call_granted_deferred_mcp_tools() {
+        let (store, base, workspace) = fixture().await;
+        let provider = SequenceProvider::new(vec![
+            completion(
+                "",
+                vec![tool_call(
+                    "call-search",
+                    "search_mcp_tools",
+                    serde_json::json!({"query": "pubmed"}),
+                )],
+                1,
+                1,
+            ),
+            completion(
+                "",
+                vec![tool_call(
+                    "call-pubmed",
+                    "use_mcp_tool",
+                    serde_json::json!({
+                        "tool_name": "pubmed_search_articles",
+                        "tool_input": {"query": "cancer"}
+                    }),
+                )],
+                1,
+                1,
+            ),
+            completion("done", vec![], 1, 1),
+        ]);
+        let mut tools = Registry::builtins().filtered(&[]);
+        tools.add(Box::new(DeferredLiteratureTool));
+
+        let run = run_sequence(&provider, &store, &workspace, &tools, &request(100, 4)).await;
+
+        assert_eq!(run.result.unwrap(), "done");
+        assert!(provider.schemas.lock().unwrap().iter().all(|schemas| {
+            schemas == &["search_mcp_tools".to_string(), "use_mcp_tool".to_string()]
+        }));
+        let messages = store.load_messages("child").await.unwrap();
+        let tool_results = messages
+            .iter()
+            .filter(|message| message.role == superscience_llm::Role::Tool)
+            .map(|message| message.content.as_text())
+            .collect::<Vec<_>>();
+        assert!(tool_results
+            .iter()
+            .any(|result| result.contains("pubmed_search_articles")));
+        assert!(tool_results
+            .iter()
+            .any(|result| result.contains("searched \"cancer\"")));
+        assert!(!tool_results
+            .iter()
+            .any(|result| result.contains("blocked by the approval policy")));
         drop(store);
         std::fs::remove_dir_all(base).ok();
     }

@@ -3,6 +3,7 @@
 use crate::AgentSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
 pub const MAX_PARALLEL_AGENTS: usize = 2;
@@ -16,12 +17,104 @@ pub enum DelegationMode {
     Automatic,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowTaskKind {
+    #[default]
+    Agent,
+    RunActivity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunActivitySpec {
+    pub activity: String,
+    pub context_id: String,
+    pub context_revision: String,
+    pub input_task_id: String,
+    pub spec_output_pointer: String,
+    pub max_candidates: u32,
+    pub max_wall_seconds: u64,
+    pub max_evaluator_seconds: u64,
+    pub max_cost_microunits: u64,
+    #[serde(default)]
+    pub provider_profile_id: Option<String>,
+    #[serde(default)]
+    pub model_profile_id: Option<String>,
+    #[serde(default)]
+    pub approval_reasons: Vec<String>,
+    pub integrity_hash: String,
+}
+
+impl RunActivitySpec {
+    fn calculated_integrity_hash(&self) -> anyhow::Result<String> {
+        let mut payload = self.clone();
+        payload.integrity_hash.clear();
+        let bytes = serde_json::to_vec(&payload)?;
+        Ok(Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect())
+    }
+
+    pub fn seal(&mut self) -> anyhow::Result<()> {
+        self.integrity_hash = self.calculated_integrity_hash()?;
+        Ok(())
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.activity != "method_search" {
+            anyhow::bail!("unsupported Workflow Run activity: {}", self.activity);
+        }
+        if self.context_id.trim().is_empty() || self.context_revision.len() != 64 {
+            anyhow::bail!("Run activity requires an exact ExecutionContext revision");
+        }
+        if self.input_task_id.trim().is_empty()
+            || self.spec_output_pointer != "method_search_spec_artifact_version_id"
+        {
+            anyhow::bail!("Run activity requires the fixed audited-spec input binding");
+        }
+        if !(1..=50).contains(&self.max_candidates)
+            || self.max_wall_seconds == 0
+            || self.max_wall_seconds > 7 * 24 * 60 * 60
+            || self.max_evaluator_seconds == 0
+            || self.max_evaluator_seconds > 300
+            || self.max_cost_microunits == 0
+        {
+            anyhow::bail!("Run activity budget is outside the supported range");
+        }
+        if self.integrity_hash.len() != 64
+            || !self
+                .integrity_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            anyhow::bail!("Run activity integrity hash is invalid");
+        }
+        if self.calculated_integrity_hash()? != self.integrity_hash {
+            anyhow::bail!("Run activity integrity hash does not match its authority snapshot");
+        }
+        if self
+            .approval_reasons
+            .iter()
+            .any(|reason| reason.trim().is_empty())
+        {
+            anyhow::bail!("Run activity approval reasons cannot be empty");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegationPlanStep {
     pub id: String,
     pub spec: AgentSpec,
     #[serde(default)]
     pub input: Value,
+    #[serde(default)]
+    pub task_kind: WorkflowTaskKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_activity: Option<RunActivitySpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,7 +132,25 @@ impl DelegationPlan {
     pub fn validate(&self) -> anyhow::Result<()> {
         self.validate_structure()?;
         for step in &self.steps {
-            step.spec.validate_dynamic_metadata()?;
+            match step.task_kind {
+                WorkflowTaskKind::Agent => {
+                    if step.run_activity.is_some() {
+                        anyhow::bail!("Agent Workflow task cannot contain a Run activity");
+                    }
+                    step.spec.validate_dynamic_metadata()?;
+                }
+                WorkflowTaskKind::RunActivity => {
+                    let activity = step.run_activity.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("Run activity Workflow task requires activity metadata")
+                    })?;
+                    activity.validate()?;
+                    if activity.input_task_id == step.id
+                        || !step.spec.dependencies.contains(&activity.input_task_id)
+                    {
+                        anyhow::bail!("Run activity input must be a direct dependency");
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -60,6 +171,14 @@ impl DelegationPlan {
             anyhow::bail!(
                 "delegation plan must contain between 1 and {MAX_DELEGATION_TASKS} tasks"
             );
+        }
+        if self
+            .steps
+            .iter()
+            .any(|step| step.task_kind == WorkflowTaskKind::RunActivity)
+            && !self.requires_confirmation
+        {
+            anyhow::bail!("Workflow Run activities always require explicit confirmation");
         }
         let ids = self
             .steps
@@ -155,6 +274,7 @@ mod tests {
                 allow_delegation: false,
                 origin: AgentOrigin::Temporary,
                 capabilities: vec!["project_read".into()],
+                skill_bindings: vec![],
                 executor: Some(AgentExecutorRef::Native),
                 request_preferences: None,
                 workspace_policy: Some(AgentWorkspacePolicy::SharedReadOnly),
@@ -163,6 +283,8 @@ mod tests {
                 authorization: None,
             },
             input: json!({}),
+            task_kind: WorkflowTaskKind::Agent,
+            run_activity: None,
         }
     }
 

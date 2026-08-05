@@ -159,7 +159,7 @@ pub(super) async fn check_for_updates(
     }
 
     const LATEST_RELEASE_API: &str =
-        "https://api.github.com/repos/xuzhougeng/wisp-science/releases/latest";
+        "https://api.github.com/repos/xuzhougeng/superscience/releases/latest";
 
     let release = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))

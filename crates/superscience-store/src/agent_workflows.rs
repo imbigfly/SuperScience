@@ -296,6 +296,10 @@ pub struct AgentWorkflowStep {
     pub budget_json: String,
     #[serde(default = "empty_json_object")]
     pub spec_json: String,
+    #[serde(default = "default_task_kind")]
+    pub task_kind: String,
+    #[serde(default = "empty_json_object")]
+    pub activity_json: String,
     pub timeout_secs: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -303,6 +307,10 @@ pub struct AgentWorkflowStep {
 
 fn empty_json_object() -> String {
     "{}".into()
+}
+
+fn default_task_kind() -> String {
+    "agent".into()
 }
 
 fn default_root_limits_json() -> String {
@@ -339,6 +347,8 @@ impl AgentWorkflowStep {
             context_policy_json: "{}".into(),
             budget_json: "{}".into(),
             spec_json: "{}".into(),
+            task_kind: default_task_kind(),
+            activity_json: "{}".into(),
             timeout_secs: None,
             created_at: now,
             updated_at: now,
@@ -363,6 +373,9 @@ impl AgentWorkflowStep {
         if self.position < 0 {
             anyhow::bail!("workflow step position must be non-negative");
         }
+        if !matches!(self.task_kind.as_str(), "agent" | "run_activity") {
+            anyhow::bail!("workflow step task_kind must be agent or run_activity");
+        }
         if self.timeout_secs == Some(0) || self.timeout_secs.is_some_and(|v| v < 0) {
             anyhow::bail!("workflow step timeout_secs must be positive");
         }
@@ -375,6 +388,7 @@ impl AgentWorkflowStep {
             ("context_policy_json", self.context_policy_json.as_str()),
             ("budget_json", self.budget_json.as_str()),
             ("spec_json", self.spec_json.as_str()),
+            ("activity_json", self.activity_json.as_str()),
         ] {
             if !serde_json::from_str::<serde_json::Value>(value)
                 .map(|value| value.is_object())
@@ -433,6 +447,8 @@ fn step_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<AgentWorkflowStep> {
         context_policy_json: row.try_get("context_policy_json")?,
         budget_json: row.try_get("budget_json")?,
         spec_json: row.try_get("spec_json")?,
+        task_kind: row.try_get("task_kind")?,
+        activity_json: row.try_get("activity_json")?,
         timeout_secs: row.try_get("timeout_secs")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
@@ -573,7 +589,7 @@ async fn validate_nested_workflow_registration(
 
 async fn insert_step(tx: &mut Transaction<'_, Sqlite>, step: &AgentWorkflowStep) -> Result<()> {
     sqlx::query(
-        "INSERT INTO agent_workflow_steps(id,workflow_id,position,agent_id,template_id,role,backend,model,prompt_template,input_schema_json,output_schema_json,input_contract_json,output_contract_json,permissions_json,context_policy_json,budget_json,spec_json,timeout_secs,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO agent_workflow_steps(id,workflow_id,position,agent_id,template_id,role,backend,model,prompt_template,input_schema_json,output_schema_json,input_contract_json,output_contract_json,permissions_json,context_policy_json,budget_json,spec_json,task_kind,activity_json,timeout_secs,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(&step.id)
     .bind(&step.workflow_id)
@@ -592,6 +608,8 @@ async fn insert_step(tx: &mut Transaction<'_, Sqlite>, step: &AgentWorkflowStep)
     .bind(&step.context_policy_json)
     .bind(&step.budget_json)
     .bind(&step.spec_json)
+    .bind(&step.task_kind)
+    .bind(&step.activity_json)
     .bind(step.timeout_secs)
     .bind(step.created_at)
     .bind(step.updated_at)
@@ -698,6 +716,112 @@ impl super::Store {
             .await?;
         for step in steps {
             insert_step(&mut tx, step).await?;
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Replace only the resolved snapshot of a failed root workflow while
+    /// retaining its attempts, then put it back into the approved state.
+    pub async fn replace_agent_workflow_plan_for_retry(
+        &self,
+        workflow: &AgentWorkflow,
+        steps: &[AgentWorkflowStep],
+        expected_status: AgentWorkflowStatus,
+        expected_version: i64,
+    ) -> Result<bool> {
+        workflow.validate()?;
+        if workflow.depth != 0
+            || !matches!(
+                expected_status,
+                AgentWorkflowStatus::Failed | AgentWorkflowStatus::Cancelled
+            )
+        {
+            anyhow::bail!("only failed or cancelled root workflows can be revised for retry");
+        }
+        validate_plan_steps(&workflow.id, steps)?;
+        let limits: AgentDelegationRootLimits = serde_json::from_str(&workflow.root_limits_json)?;
+        if plan_budget(steps)?.exceeds(&limits) {
+            anyhow::bail!("root Agent workflow registered budget is exceeded");
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let mut tx = self.begin_write().await?;
+        let existing_ids = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM agent_workflow_steps WHERE workflow_id=? ORDER BY id",
+        )
+        .bind(&workflow.id)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+        let replacement_ids = steps
+            .iter()
+            .map(|step| step.id.clone())
+            .collect::<HashSet<_>>();
+        if existing_ids != replacement_ids {
+            anyhow::bail!("retry plan must preserve the existing workflow task ids");
+        }
+
+        // The step triggers deliberately allow edits only while the workflow is
+        // draft. This temporary state is visible only inside this transaction.
+        let updated = sqlx::query(
+            "UPDATE agent_workflows SET status='draft' WHERE id=? AND version=? AND status=?",
+        )
+        .bind(&workflow.id)
+        .bind(expected_version)
+        .bind(expected_status.as_str())
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        for step in steps {
+            let updated = sqlx::query(
+                "UPDATE agent_workflow_steps SET position=?,agent_id=?,template_id=?,role=?,backend=?,model=?,prompt_template=?,input_schema_json=?,output_schema_json=?,input_contract_json=?,output_contract_json=?,permissions_json=?,context_policy_json=?,budget_json=?,spec_json=?,timeout_secs=?,updated_at=? WHERE id=? AND workflow_id=?",
+            )
+            .bind(step.position)
+            .bind(&step.agent_id)
+            .bind(&step.template_id)
+            .bind(&step.role)
+            .bind(&step.backend)
+            .bind(step.model.as_deref())
+            .bind(&step.prompt_template)
+            .bind(&step.input_schema_json)
+            .bind(&step.output_schema_json)
+            .bind(&step.input_contract_json)
+            .bind(&step.output_contract_json)
+            .bind(&step.permissions_json)
+            .bind(&step.context_policy_json)
+            .bind(&step.budget_json)
+            .bind(&step.spec_json)
+            .bind(step.timeout_secs)
+            .bind(now)
+            .bind(&step.id)
+            .bind(&workflow.id)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() != 1 {
+                anyhow::bail!("retry plan task disappeared during update");
+            }
+        }
+        let approved = sqlx::query(
+            "UPDATE agent_workflows SET goal=?,mode=?,status='approved',max_parallel=?,requires_confirmation=?,plan_json=?,version=version+1,approved_at=?,updated_at=? WHERE id=? AND version=? AND status='draft'",
+        )
+        .bind(&workflow.goal)
+        .bind(&workflow.mode)
+        .bind(workflow.max_parallel)
+        .bind(workflow.requires_confirmation as i64)
+        .bind(&workflow.plan_json)
+        .bind(now)
+        .bind(now)
+        .bind(&workflow.id)
+        .bind(expected_version)
+        .execute(&mut *tx)
+        .await?;
+        if approved.rows_affected() != 1 {
+            anyhow::bail!("retry plan could not be approved after update");
         }
         tx.commit().await?;
         Ok(true)
@@ -829,7 +953,7 @@ impl super::Store {
     }
 
     pub async fn get_agent_workflow_step(&self, id: &str) -> Result<Option<AgentWorkflowStep>> {
-        sqlx::query("SELECT id,workflow_id,position,agent_id,template_id,role,backend,model,prompt_template,input_schema_json,output_schema_json,input_contract_json,output_contract_json,permissions_json,context_policy_json,budget_json,spec_json,timeout_secs,created_at,updated_at FROM agent_workflow_steps WHERE id=?")
+        sqlx::query("SELECT id,workflow_id,position,agent_id,template_id,role,backend,model,prompt_template,input_schema_json,output_schema_json,input_contract_json,output_contract_json,permissions_json,context_policy_json,budget_json,spec_json,task_kind,activity_json,timeout_secs,created_at,updated_at FROM agent_workflow_steps WHERE id=?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?
@@ -842,7 +966,7 @@ impl super::Store {
         &self,
         workflow_id: &str,
     ) -> Result<Vec<AgentWorkflowStep>> {
-        let rows = sqlx::query("SELECT id,workflow_id,position,agent_id,template_id,role,backend,model,prompt_template,input_schema_json,output_schema_json,input_contract_json,output_contract_json,permissions_json,context_policy_json,budget_json,spec_json,timeout_secs,created_at,updated_at FROM agent_workflow_steps WHERE workflow_id=? ORDER BY position,id")
+        let rows = sqlx::query("SELECT id,workflow_id,position,agent_id,template_id,role,backend,model,prompt_template,input_schema_json,output_schema_json,input_contract_json,output_contract_json,permissions_json,context_policy_json,budget_json,spec_json,task_kind,activity_json,timeout_secs,created_at,updated_at FROM agent_workflow_steps WHERE workflow_id=? ORDER BY position,id")
             .bind(workflow_id)
             .fetch_all(&self.pool)
             .await?;

@@ -3,7 +3,9 @@ use super::{
     SessionSearchResult, Store,
 };
 use anyhow::Result;
+use chrono::{Datelike, Duration, Local};
 use sqlx::{Row, Sqlite, Transaction};
+use std::collections::HashMap;
 use superscience_llm::Message;
 
 /// Token totals for one root session, folded from the persisted per-round
@@ -17,6 +19,40 @@ pub struct SessionTokenUsage {
     pub output: i64,
     pub reasoning: i64,
     pub cached: i64,
+}
+
+/// Token totals for one project workspace. Only sessions with persisted usage
+/// events contribute to the totals and count.
+#[derive(serde::Serialize)]
+pub struct ProjectTokenUsage {
+    pub project_id: String,
+    pub name: String,
+    pub workspace_dir: String,
+    pub updated_at: i64,
+    pub session_count: i64,
+    pub input: i64,
+    pub output: i64,
+    pub reasoning: i64,
+    pub cached: i64,
+}
+
+#[derive(serde::Serialize)]
+pub struct SessionTokenUsagePage {
+    pub items: Vec<SessionTokenUsage>,
+    pub total: i64,
+}
+
+#[derive(serde::Serialize)]
+pub struct TokenUsageDay {
+    pub date: String,
+    pub tokens: i64,
+    pub future: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct ModelTokenUsage {
+    pub model: String,
+    pub tokens: i64,
 }
 
 /// One bounded, turn-aligned slice of a saved conversation.
@@ -1405,10 +1441,141 @@ impl Store {
             .next())
     }
 
-    /// Per-session token totals for the Usage settings page. Sub-agent frames
+    /// Per-project totals for the Usage settings page. A project is the durable
+    /// workspace boundary in Wisp; scratch projects are intentionally omitted.
+    pub async fn token_usage_by_project(&self) -> Result<Vec<ProjectTokenUsage>> {
+        let rows = sqlx::query(
+            "WITH session_usage AS (\
+                SELECT r.id AS id, r.project_id AS project_id, r.updated_at AS updated_at, \
+                    SUM(COALESCE(json_extract(e.event_json,'$.input'),0)) AS input, \
+                    SUM(COALESCE(json_extract(e.event_json,'$.output'),0)) AS output, \
+                    SUM(COALESCE(json_extract(e.event_json,'$.reasoning'),0)) AS reasoning, \
+                    SUM(COALESCE(json_extract(e.event_json,'$.cached'),0)) AS cached \
+                FROM session_ui_events e \
+                JOIN frames f ON f.id = e.frame_id \
+                JOIN frames r ON r.id = COALESCE(f.root_frame_id, f.id) \
+                WHERE e.event_json LIKE '{\"kind\":\"Usage\"%' \
+                GROUP BY r.id\
+             ) \
+             SELECT p.id AS project_id, COALESCE(p.name,'') AS name, \
+                    COALESCE(p.workspace_dir,'') AS workspace_dir, \
+                    MAX(s.updated_at) AS updated_at, COUNT(*) AS session_count, \
+                    SUM(s.input) AS input, SUM(s.output) AS output, \
+                    SUM(s.reasoning) AS reasoning, SUM(s.cached) AS cached \
+             FROM session_usage s JOIN projects p ON p.id = s.project_id \
+             WHERE p.id NOT LIKE 'scratch:%' \
+             GROUP BY p.id ORDER BY updated_at DESC, p.id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ProjectTokenUsage {
+                    project_id: row.try_get("project_id")?,
+                    name: row.try_get("name")?,
+                    workspace_dir: row.try_get("workspace_dir")?,
+                    updated_at: row.try_get("updated_at")?,
+                    session_count: row.try_get("session_count")?,
+                    input: row.try_get("input")?,
+                    output: row.try_get("output")?,
+                    reasoning: row.try_get("reasoning")?,
+                    cached: row.try_get("cached")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Daily input + output token totals for 53 calendar weeks. New Usage
+    /// events carry their own timestamp; legacy events fall back to the root
+    /// session's last activity because no round timestamp was persisted then.
+    pub async fn token_usage_activity(&self) -> Result<Vec<TokenUsageDay>> {
+        let rows = sqlx::query(
+            "SELECT date(COALESCE(\
+                        NULLIF(CAST(json_extract(e.event_json,'$.created_at') AS INTEGER),0),\
+                        r.updated_at\
+                    ),'unixepoch','localtime') AS day, \
+                    SUM(COALESCE(json_extract(e.event_json,'$.input'),0) + \
+                        COALESCE(json_extract(e.event_json,'$.output'),0)) AS tokens \
+             FROM session_ui_events e \
+             JOIN frames f ON f.id=e.frame_id \
+             JOIN frames r ON r.id=COALESCE(f.root_frame_id,f.id) \
+             JOIN projects p ON p.id=r.project_id \
+             WHERE p.id NOT LIKE 'scratch:%' \
+               AND e.event_json LIKE '{\"kind\":\"Usage\"%' \
+             GROUP BY day",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let totals = rows
+            .into_iter()
+            .map(|row| Ok((row.try_get("day")?, row.try_get("tokens")?)))
+            .collect::<Result<HashMap<String, i64>>>()?;
+        let today = Local::now().date_naive();
+        let start =
+            today - Duration::days(i64::from(today.weekday().num_days_from_monday()) + 52 * 7);
+        Ok((0..53 * 7)
+            .map(|offset| {
+                let date = start + Duration::days(offset);
+                let key = date.format("%Y-%m-%d").to_string();
+                TokenUsageDay {
+                    tokens: totals.get(&key).copied().unwrap_or(0),
+                    future: date > today,
+                    date: key,
+                }
+            })
+            .collect())
+    }
+
+    /// Input + output token share by the model selected for each round.
+    /// Legacy events use their frame's current model binding as a fallback.
+    pub async fn token_usage_by_model(&self) -> Result<Vec<ModelTokenUsage>> {
+        let rows = sqlx::query(
+            "SELECT COALESCE(\
+                        NULLIF(json_extract(e.event_json,'$.model'),''),\
+                        NULLIF(f.model,''),\
+                        'unknown'\
+                    ) AS model_key, \
+                    SUM(COALESCE(json_extract(e.event_json,'$.input'),0) + \
+                        COALESCE(json_extract(e.event_json,'$.output'),0)) AS tokens \
+             FROM session_ui_events e \
+             JOIN frames f ON f.id=e.frame_id \
+             JOIN frames r ON r.id=COALESCE(f.root_frame_id,f.id) \
+             JOIN projects p ON p.id=r.project_id \
+             WHERE p.id NOT LIKE 'scratch:%' \
+               AND e.event_json LIKE '{\"kind\":\"Usage\"%' \
+             GROUP BY model_key ORDER BY tokens DESC, model_key",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ModelTokenUsage {
+                    model: row.try_get("model_key")?,
+                    tokens: row.try_get("tokens")?,
+                })
+            })
+            .collect()
+    }
+
+    /// One project workspace's session usage, newest first. Sub-agent frames
     /// fold into their root session. Serde tags internally-tagged enums first,
     /// so the LIKE prefix is a cheap exact filter for `Usage` events.
-    pub async fn token_usage_by_session(&self) -> Result<Vec<SessionTokenUsage>> {
+    pub async fn token_usage_by_session(
+        &self,
+        project_id: &str,
+        offset: i64,
+        limit: i64,
+    ) -> Result<SessionTokenUsagePage> {
+        let total = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT r.id) \
+             FROM session_ui_events e \
+             JOIN frames f ON f.id = e.frame_id \
+             JOIN frames r ON r.id = COALESCE(f.root_frame_id, f.id) \
+             WHERE r.project_id=? AND e.event_json LIKE '{\"kind\":\"Usage\"%'",
+        )
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?;
         let rows = sqlx::query(
             "SELECT r.id AS id, r.title AS custom_title, r.updated_at AS updated_at, \
                     (SELECT content FROM messages m WHERE m.frame_id = r.id AND m.role='user' ORDER BY m.seq ASC LIMIT 1) AS first_user, \
@@ -1419,12 +1586,16 @@ impl Store {
              FROM session_ui_events e \
              JOIN frames f ON f.id = e.frame_id \
              JOIN frames r ON r.id = COALESCE(f.root_frame_id, f.id) \
-             WHERE e.event_json LIKE '{\"kind\":\"Usage\"%' \
-             GROUP BY r.id ORDER BY r.updated_at DESC",
+             WHERE r.project_id=? AND e.event_json LIKE '{\"kind\":\"Usage\"%' \
+             GROUP BY r.id ORDER BY r.updated_at DESC, r.id DESC LIMIT ? OFFSET ?",
         )
+        .bind(project_id)
+        .bind(limit.clamp(1, 100))
+        .bind(offset.max(0))
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter()
+        let items = rows
+            .into_iter()
             .map(|row| {
                 Ok(SessionTokenUsage {
                     id: row.try_get("id")?,
@@ -1439,6 +1610,7 @@ impl Store {
                     cached: row.try_get("cached")?,
                 })
             })
-            .collect()
+            .collect::<Result<_>>()?;
+        Ok(SessionTokenUsagePage { items, total })
     }
 }

@@ -186,7 +186,7 @@ impl Tool for UpdatePlanTool {
             {
                 ConfirmDecision::Approved => {}
                 ConfirmDecision::Denied { feedback } => {
-                    return ToolResult::fail(plan_rejection_message(feedback));
+                    return ToolResult::fail(plan_rejection_message(feedback)).stop_batch();
                 }
             }
         }
@@ -317,7 +317,7 @@ impl Tool for ProposePlanTool {
     }
     async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
         match normalize_entries(args) {
-            Ok(entries) => ToolResult::ok(plan_body(entries).to_string()),
+            Ok(entries) => ToolResult::ok(plan_body(entries).to_string()).stop_turn(),
             Err(error) => ToolResult::fail(error),
         }
     }
@@ -326,7 +326,7 @@ impl Tool for ProposePlanTool {
 #[cfg(test)]
 mod tests {
     use super::{is_fresh_proposal, render_plan, ProposePlanTool, UpdatePlanTool, PROPOSE_PLAN};
-    use crate::env::{ConfirmDecision, ToolEnv, ToolEvent};
+    use crate::env::{ConfirmDecision, ToolControl, ToolEnv, ToolEvent};
     use crate::tool::Tool;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -450,6 +450,7 @@ mod tests {
             "the result has to stop the agent, not invite it to execute"
         );
         assert_eq!(ProposePlanTool.name(), PROPOSE_PLAN);
+        assert_eq!(result.control, ToolControl::StopTurn);
     }
 
     #[tokio::test]
@@ -491,6 +492,7 @@ mod tests {
             .await;
 
         assert!(!result.success);
+        assert_eq!(result.control, ToolControl::StopBatch);
         assert!(
             result
                 .content

@@ -54,7 +54,7 @@
   // default ("About you") category.
   let memoryFiles = [
     { name: "2026-07-01.md", preview: "User prefers DeepSeek.", bytes: 128 },
-    { name: "Projects--2026-07-02.md", preview: "SuperScience: two-column memory pane in settings.", bytes: 96 },
+    { name: "Projects--2026-07-02.md", preview: "Wisp: two-column memory pane in settings.", bytes: 96 },
     { name: "Projects--2026-06-28.md", preview: "Library rerun tracking shipped in #474.", bytes: 88 },
     { name: "Preferences--2026-07-03.md", preview: "Reply in Chinese; keep diffs minimal.", bytes: 72 },
   ];
@@ -123,11 +123,11 @@
         }
       }
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600">${cells.join("")}</svg>`;
-      return { path: name, mime: "image/svg+xml", text: null, base64: btoa(svg) };
+      return { path: name, mime: "image/svg+xml", text: null, base64: btoa(svg), truncated: false };
     }
     const text = mockFiles[ext];
-    if (text !== undefined) return { path: name, mime: "text/plain", text, base64: null };
-    return { path: name, mime: "text/csv", text: "gene,score\nFX-cell,0.91", base64: null };
+    if (text !== undefined) return { path: name, mime: "text/plain", text, base64: null, truncated: false };
+    return { path: name, mime: "text/csv", text: "gene,score\nFX-cell,0.91", base64: null, truncated: false };
   }
   const mockCredentials = {
     openalex_api_key: false,
@@ -149,7 +149,7 @@
   // Agent-created SSH trust edges (ssh_trust_edges_v1). One edge whose
   // destination context no longer exists, to exercise the orphan rendering.
   const mockTrustEdges = [
-    { source_context_id: "ssh:cpu1", destination_context_id: "ssh:gpu2", destination_target: "researcher@gpu2.lab", destination_port: 22, key_path: ".ssh/superscience-gpu2-ed25519", managed: true, verified_at: 1719900000 },
+    { source_context_id: "ssh:cpu1", destination_context_id: "ssh:gpu2", destination_target: "researcher@gpu2.lab", destination_port: 22, key_path: ".ssh/wisp-gpu2-ed25519", managed: true, verified_at: 1719900000 },
     { source_context_id: "ssh:gpu2", destination_context_id: "ssh:cpu1", destination_target: "researcher@cpu1.lab", destination_port: null, key_path: null, managed: false, verified_at: 1719800000 },
   ];
   const mockChannels = {
@@ -283,6 +283,8 @@
           }
           case "pick_directory":
             return "/Users/mock/Desktop/demo-project";
+          case "pick_executable_file":
+            return "/mock/picked/Rscript";
           case "load_session":
             return {
               items: [
@@ -316,23 +318,74 @@
               user_offset: 0,
             };
           case "list_demos":
-            return [{ id: "manifest_crispr_screen", title: "Design a genome-wide CRISPR knockout screen targeting all kinases" }];
+            return [
+              { id: "manifest_esr1_01_datasets", title: "Help me find RNA-seq knockdown datasets involving ESR1" },
+              { id: "manifest_esr1_02_samples", title: "What specific samples are included in GSE153250" },
+              { id: "manifest_esr1_03_rnaseq", title: "Connect to the remote compute host, locate the FASTQ data for GSE153250" },
+              { id: "manifest_esr1_04_downstream", title: "Based on the upstream Counts data from GSE153250, perform transcriptome" },
+              { id: "manifest_esr1_05_hypotheses", title: "Based on the Counts data from our study, along with the differential e" },
+            ];
           case "load_demo":
             return {
-              id: "manifest_crispr_screen",
-              title: "CRISPR screen",
-              request: "Design a genome-wide CRISPR knockout screen targeting all kinases.",
-              response: "## Human Kinome CRISPR-KO Screen\n\n| kinase | guides |\n| --- | --- |\n| AKT1 | 4 |",
-              thinking: "Planning kinome coverage.",
+              id: "manifest_esr1_03_rnaseq",
+              title: "ESR1 RNA-seq",
+              request: "Connect to the remote compute host, locate the FASTQ data for GSE153250, keep only the siESR1 and siNT groups.",
+              response: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.",
+              thinking: "Identify sample groups, download FASTQs, run the upstream pipeline.",
+              items: [
+                {
+                  role: "user",
+                  text: "Connect to the remote compute host, locate the FASTQ data for GSE153250, keep only the siESR1 and siNT groups.",
+                  tool_name: null,
+                  ok: null,
+                  input: "",
+                },
+                {
+                  role: "tool",
+                  text: JSON.stringify({
+                    id: "demo-run-001",
+                    frame_id: null,
+                    context_id: "ssh:remote-host",
+                    title: "Re-run pipeline with fixed STAR index",
+                    kind: "ssh_direct",
+                    status: "succeeded",
+                    command: "cd ~/workspace/GSE153250 && bash pipeline.sh",
+                    created_at: 1700000000,
+                    started_at: 1700000001,
+                    ended_at: 1700000120,
+                    exit_code: 0,
+                    stdout_tail: "Pipeline finished: 38606 genes, 12 samples",
+                    stderr_tail: "",
+                    remote_workdir: null,
+                    timeout_secs: null,
+                    last_polled_at: 1700000120,
+                    last_poll_error: null,
+                    progress_json: "{}",
+                    env_snapshot_json: "{}",
+                  }),
+                  tool_name: "monitor_run",
+                  ok: true,
+                  input: "demo-run-001",
+                },
+                {
+                  role: "assistant",
+                  text: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.",
+                  tool_name: null,
+                  ok: null,
+                  input: "",
+                },
+              ],
             };
           case "get_settings":
-            return { provider: "openai", api_url: "https://api.deepseek.com", model: "deepseek-v4-pro", label: "deepseek-v4-pro", has_api_key: true, locale: "en", max_iter: 100, max_tokens: 4096, reasoning_effort: "", supports_vision: true };
+            return { provider: "openai", api_url: "https://api.deepseek.com", model: "deepseek-v4-pro", label: "deepseek-v4-pro", has_api_key: true, locale: "en", max_iter: 100, auto_compact: true, max_tokens: 4096, reasoning_effort: "", supports_vision: true };
           case "list_models":
             return mockModels;
           case "get_storage_usage":
             return {
               data_dir: "C:\\mock\\AppData\\superscience",
-              workspace_dirs: ["C:\\mock\\superscience"],
+              projects: [
+                { id: "default", name: "superscience", path: "C:\\mock\\superscience", bytes: 96 * 1024 * 1024 },
+              ],
               entries: [
                 { key: "database", bytes: 23 * 1024 * 1024 },
                 { key: "python", bytes: 428 * 1024 * 1024 },
@@ -443,6 +496,8 @@
               mcp_servers: ["mcp_pubmed"],
               memory_files: [],
               project,
+              skill_counts: { bundled: 1, project: 0 },
+              mcp_counts: { bundled: 1, project: 0 },
             };
           case "search_artifacts": {
             const q = String(args?.query ?? "").toLowerCase();
@@ -487,7 +542,7 @@
                 started_at: Math.floor(Date.now() / 1000) - 90,
                 ended_at: null, exit_code: null,
                 stdout_tail: "..... started mapping\nMar 12 loading genome",
-                stderr_tail: null, remote_workdir: "/scratch/superscience/r2",
+                stderr_tail: null, remote_workdir: "/scratch/wisp/r2",
                 timeout_secs: 14400, last_poll_error: null,
                 progress_json: "",
                 env_snapshot_json: JSON.stringify({

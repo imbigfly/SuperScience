@@ -1,4 +1,4 @@
-//! Tauri v2 desktop shell: commands that drive the SuperScience agent and stream
+//! Tauri v2 desktop shell: commands that drive the Wisp agent and stream
 //! events to the webview, plus a settings/confirm surface.
 
 use serde::{Deserialize, Serialize};
@@ -6,16 +6,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
-use superscience_core::{Agent, MemoryManager, Output};
-use superscience_llm::{Message, ProviderConfig};
-use superscience_skills::{SkillIndex, SkillSource};
-use superscience_store::{LibraryStore, Store};
 #[cfg(target_os = "macos")]
 use tauri::menu::{
     AboutMetadata, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
 };
 use tauri::{ipc::Response, AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
+use superscience_core::{Agent, MemoryManager, Output, OutputFuture};
+use superscience_llm::{Message, ProviderConfig};
+use superscience_skills::{SkillIndex, SkillSource};
+use superscience_store::{LibraryStore, Store};
 
 mod acp;
 mod app_commands;
@@ -45,6 +45,8 @@ mod mcp_bridge;
 pub use mcp_bridge::run_mcp_bridge_cli;
 mod mcp_oauth;
 mod memory_commands;
+mod method_search;
+mod method_search_coordinator;
 mod models;
 mod native_delegation;
 mod pet_commands;
@@ -60,6 +62,7 @@ mod publication_freeze;
 mod publication_reproduction;
 mod quick_actions;
 mod research_graph;
+mod resource_leases;
 mod resource_refs;
 mod review;
 mod run_context;
@@ -73,6 +76,7 @@ mod session_context_tool;
 mod session_export;
 mod settings_commands;
 mod skill_commands;
+mod skill_portfolio;
 mod snapshot_store;
 mod specialist_tool;
 mod specialists;
@@ -141,12 +145,18 @@ enum AgentEvent {
     Usage {
         frame_id: String,
         round: u64,
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        created_at: i64,
         input: u64,
         output: u64,
         reasoning: u64,
         cached: u64,
         ctx_tokens: usize,
         max_context: usize,
+        #[serde(default)]
+        context_usage: superscience_core::ContextUsage,
     },
     Compaction {
         frame_id: String,
@@ -154,8 +164,7 @@ enum AgentEvent {
         after: usize,
         strategy: String,
     },
-    /// The context estimate crossed the warning threshold. The agent never
-    /// compacts on its own — the user decides (send "/compact").
+    /// The context estimate crossed the warning threshold and remains high.
     ContextWarning {
         frame_id: String,
         ctx_tokens: usize,
@@ -225,7 +234,14 @@ struct ConfirmRequest {
     preview: String,
 }
 
-type ConfirmSender = std::sync::mpsc::Sender<superscience_tools::ConfirmDecision>;
+type ConfirmSender = tokio::sync::oneshot::Sender<superscience_tools::ConfirmDecision>;
+type ConfirmReceiver = tokio::sync::oneshot::Receiver<superscience_tools::ConfirmDecision>;
+
+async fn receive_confirm_decision(receiver: ConfirmReceiver) -> superscience_tools::ConfirmDecision {
+    receiver
+        .await
+        .unwrap_or(superscience_tools::ConfirmDecision::Denied { feedback: None })
+}
 
 struct PendingConfirm {
     tx: ConfirmSender,
@@ -343,7 +359,7 @@ impl ApprovalGrants {
 
 fn approval_grant_key(message: &str) -> Option<ApprovalGrantKey> {
     let (tool, preview) = parse_confirm_payload(message);
-    if tool.is_empty() || tool == "update_plan" {
+    if tool.is_empty() || matches!(tool.as_str(), "update_plan" | resource_leases::CONFIRM_TOOL) {
         return None;
     }
     let target = if tool == "shell" {
@@ -373,6 +389,9 @@ fn parse_confirm_payload(message: &str) -> (String, String) {
     // the UI renders the dedicated plan card (preview = the checklist).
     if let Some(rest) = message.strip_prefix(superscience_tools::plan::PLAN_APPROVAL_PREFIX) {
         return ("update_plan".to_string(), rest.to_string());
+    }
+    if let Some(rest) = message.strip_prefix(resource_leases::CONFIRM_PREFIX) {
+        return (resource_leases::CONFIRM_TOOL.to_string(), rest.to_string());
     }
     if let Some(rest) = message.strip_prefix("Run tool '") {
         if let Some((tool, _)) = rest.split_once("'?") {
@@ -705,6 +724,23 @@ struct Capabilities {
     mcp_servers: Vec<String>,
     memory_files: Vec<MemoryFile>,
     project: ProjectInfo,
+    skill_counts: CapabilitySourceCounts,
+    mcp_counts: CapabilitySourceCounts,
+}
+
+/// Current enabled capability inventory. `project` intentionally groups every
+/// non-bundled source available to this project (project/global/extra/plugin)
+/// so the read-only summary has a stable two-way bundled vs added split.
+#[derive(Serialize, Clone, Copy, Default)]
+struct CapabilitySourceCounts {
+    bundled: usize,
+    project: usize,
+}
+
+impl CapabilitySourceCounts {
+    fn total(self) -> usize {
+        self.bundled + self.project
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -952,9 +988,7 @@ fn messages_to_items(msgs: &[superscience_llm::Message]) -> Vec<UiItem> {
             let input = match call.function.name.as_str() {
                 "python" | "r" => args.get("code").and_then(|v| v.as_str()),
                 "shell" => args.get("cmd").and_then(|v| v.as_str()),
-                "monitor_run" | "superscience_monitor_run" => {
-                    args.get("run_id").and_then(|v| v.as_str())
-                }
+                "monitor_run" | "wisp_monitor_run" => args.get("run_id").and_then(|v| v.as_str()),
                 _ => None,
             }?;
             Some((call.id.as_str(), input.to_owned()))
@@ -965,9 +999,7 @@ fn messages_to_items(msgs: &[superscience_llm::Message]) -> Vec<UiItem> {
         match m.role {
             superscience_llm::Role::User => {
                 let t = m.content.as_text();
-                if m.tool_name.as_deref()
-                    == Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL)
-                {
+                if m.tool_name.as_deref() == Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL) {
                     let ok = background_completion_ok(&t);
                     out.push(UiItem {
                         role: "tool".into(),
@@ -1156,12 +1188,12 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
     // Per-round usage folds into one row per turn, floated to the turn's tail —
     // same shape the live UI produces via `upsert_turn_usage`. Flushed when the
     // next user turn starts and again at the end of the stream.
-    let mut turn_usage: Option<(u64, u64, u64, u64)> = None;
+    let mut turn_usage: Option<(u64, u64, u64, u64, usize, usize, superscience_core::ContextUsage)> = None;
     for event in events {
         match event {
             AgentEvent::User { text, .. } => {
-                if let Some((i, o, r, c)) = turn_usage.take() {
-                    items.push(usage_item(i, o, r, c));
+                if let Some((i, o, r, c, used, max, context)) = turn_usage.take() {
+                    items.push(usage_item(i, o, r, c, used, max, context));
                 }
                 items.push(UiItem {
                     role: "user".into(),
@@ -1183,14 +1215,52 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                 output,
                 reasoning,
                 cached,
+                ctx_tokens,
+                max_context,
+                context_usage,
                 ..
             } => {
-                let acc = turn_usage.get_or_insert((0, 0, 0, 0));
+                let acc = turn_usage.get_or_insert((
+                    0,
+                    0,
+                    0,
+                    0,
+                    *ctx_tokens,
+                    *max_context,
+                    *context_usage,
+                ));
                 acc.0 += input;
                 acc.1 += output;
                 acc.2 += reasoning;
                 acc.3 += cached;
+                acc.4 = *ctx_tokens;
+                acc.5 = *max_context;
+                acc.6 = *context_usage;
             }
+            AgentEvent::Compaction {
+                before,
+                after,
+                strategy,
+                ..
+            } => items.push(UiItem {
+                role: "compaction".into(),
+                text: serde_json::json!({
+                    "before": before,
+                    "after": after,
+                    "strategy": strategy,
+                })
+                .to_string(),
+                tool_name: None,
+                ok: None,
+                duration_ms: None,
+                input: None,
+                model_name: None,
+                call_id: None,
+                kind: None,
+                status: None,
+                locations: None,
+                resources: Vec::new(),
+            }),
             AgentEvent::Text { delta, .. } | AgentEvent::Reasoning { delta, .. } => {
                 let role = if matches!(event, AgentEvent::Text { .. }) {
                     "assistant"
@@ -1237,6 +1307,39 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                 duration_ms,
                 ..
             } => {
+                // These successful tool results are complete UI cards. Live
+                // rendering suppresses their call rows and does the same
+                // conversion; replay must mirror that path or a refresh turns
+                // the card back into a raw tool row (and loses its actions).
+                let card_role = match name.as_str() {
+                    superscience_tools::plan::PROPOSE_PLAN if *ok => Some("plan"),
+                    superscience_tools::ask_user::ASK_USER if *ok => Some("question"),
+                    _ => None,
+                };
+                if let Some(role) = card_role {
+                    if let Some(index) = items.iter().rposition(|item| {
+                        item.role == "tool"
+                            && item.tool_name.as_deref() == Some(name)
+                            && item.ok.is_none()
+                    }) {
+                        items.remove(index);
+                    }
+                    items.push(UiItem {
+                        role: role.into(),
+                        text: content.clone(),
+                        tool_name: None,
+                        ok: None,
+                        duration_ms: None,
+                        input: None,
+                        model_name: None,
+                        call_id: None,
+                        kind: None,
+                        status: None,
+                        locations: None,
+                        resources: Vec::new(),
+                    });
+                    continue;
+                }
                 if let Some(item) = items.iter_mut().rev().find(|item| {
                     item.role == "tool"
                         && item.tool_name.as_deref() == Some(name)
@@ -1302,15 +1405,23 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
             _ => {}
         }
     }
-    if let Some((i, o, r, c)) = turn_usage.take() {
-        items.push(usage_item(i, o, r, c));
+    if let Some((i, o, r, c, used, max, context)) = turn_usage.take() {
+        items.push(usage_item(i, o, r, c, used, max, context));
     }
     (items, boundaries)
 }
 
 /// Encode a folded per-turn usage total as a transcript row the UI decodes back
 /// into `ChatItem::Usage` (numbers packed as JSON in `text`).
-fn usage_item(input: u64, output: u64, reasoning: u64, cached: u64) -> UiItem {
+fn usage_item(
+    input: u64,
+    output: u64,
+    reasoning: u64,
+    cached: u64,
+    ctx_tokens: usize,
+    max_context: usize,
+    context_usage: superscience_core::ContextUsage,
+) -> UiItem {
     UiItem {
         role: "usage".into(),
         text: serde_json::json!({
@@ -1318,6 +1429,9 @@ fn usage_item(input: u64, output: u64, reasoning: u64, cached: u64) -> UiItem {
             "output": output,
             "reasoning": reasoning,
             "cached": cached,
+            "ctx_tokens": ctx_tokens,
+            "max_context": max_context,
+            "context_usage": context_usage,
         })
         .to_string(),
         tool_name: None,
@@ -1416,12 +1530,16 @@ struct Settings {
     #[serde(default = "default_locale")]
     locale: String,
     /// Where the workspace/data root lives. Empty = platform default
-    /// (Documents/SuperScience). Applied on next launch (#6, #13).
+    /// (Documents/superscience). Applied on next launch (#6, #13).
     #[serde(default)]
     workspace_dir: String,
     /// Maximum LLM/tool iterations in one agent turn.
     #[serde(default = "default_max_iter_setting")]
     max_iter: i64,
+    /// Compact long native-model conversations automatically at 80% of the
+    /// configured context budget. ACP agents own their remote context.
+    #[serde(default = "default_auto_compact")]
+    auto_compact: bool,
     /// Max output tokens per LLM turn. 0 = provider default.
     #[serde(default)]
     max_tokens: u64,
@@ -1462,6 +1580,10 @@ const MAX_MCP_APP_NAME_CHARS: usize = 160;
 
 const fn default_max_iter_setting() -> i64 {
     DEFAULT_MAX_ITER as i64
+}
+
+const fn default_auto_compact() -> bool {
+    true
 }
 
 /// Drop cached per-session agents so the next turn picks up new model settings.
@@ -1512,7 +1634,7 @@ fn log_dev_llm_dispatch(
 ) {
     #[cfg(debug_assertions)]
     tracing::info!(
-        target: "superscience",
+        target: "wisp",
         event = "llm_dispatch",
         frame_id,
         purpose,
@@ -1704,9 +1826,7 @@ fn normalize_mcp_app_context(
                 .as_object()
                 .ok_or_else(|| "MCP App model context blocks must be objects.".to_string())?;
             if block.get("type").and_then(serde_json::Value::as_str) != Some("text") {
-                return Err(
-                    "SuperScience currently accepts only text MCP App context blocks.".into(),
-                );
+                return Err("Wisp currently accepts only text MCP App context blocks.".into());
             }
             let text = block
                 .get("text")
@@ -1784,6 +1904,9 @@ struct AppState {
     /// Read-locked for the lifetime of project tasks; manual sync takes the
     /// write lock so task start and snapshot creation cannot race.
     project_activity: StdMutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
+    /// Advisory leases for local project resources used by parallel built-in
+    /// conversations. External editors remain outside this in-process boundary.
+    resource_leases: resource_leases::ProjectResourceCoordinator,
     /// The frame id the UI is currently viewing. Drives artifact attachment
     /// (`upload_file`/`register_artifact`) and `list_artifacts` fallback.
     /// Written only by view-navigation commands (`load_session`/`new_session`/
@@ -2036,13 +2159,19 @@ fn ensure_writable(dir: PathBuf, app_data: &std::path::Path) -> PathBuf {
     }
 }
 
-/// `superscience_core::Output` backed by Tauri events. `confirm` blocks on a std
-/// channel satisfied by the `confirm_response` command. `frame_id` is the
-/// session frame id (carried on every event so the UI can route by session).
+/// `superscience_core::Output` backed by Tauri events. Confirmation awaits a Tokio
+/// oneshot satisfied by the `confirm_response` command, yielding the runtime
+/// so that command remains clickable. `frame_id` is the session frame id
+/// (carried on every event so the UI can route by session).
 struct TauriOutput {
     app: AppHandle,
     frame_id: String,
+    model: String,
     project_id: String,
+    project_root: PathBuf,
+    store: Store,
+    resource_leases: resource_leases::ProjectResourceCoordinator,
+    cancel: Arc<AtomicBool>,
     device_hub: Arc<device_hub::DeviceHub>,
     confirms: ConfirmMap,
     awaiting_confirm: Arc<StdMutex<HashSet<String>>>,
@@ -2086,6 +2215,97 @@ impl TauriOutput {
         }
         emit_agent_event_to_surfaces(&self.app, event);
     }
+
+    async fn request_confirmation(
+        &self,
+        message: &str,
+        allow_full_permission: bool,
+    ) -> superscience_tools::ConfirmDecision {
+        if allow_full_permission && self.full_permission() {
+            return superscience_tools::ConfirmDecision::Approved;
+        }
+        let (tool, preview) = parse_confirm_payload(message);
+        let grant = approval_grant_key(message);
+        if allow_full_permission
+            && grant.as_ref().is_some_and(|key| {
+                self.approval_grants
+                    .lock()
+                    .map(|grants| grants.allows(&self.frame_id, &self.project_id, key))
+                    .unwrap_or(false)
+            })
+        {
+            return superscience_tools::ConfirmDecision::Approved;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.confirms.lock().unwrap().insert(
+            self.frame_id.clone(),
+            PendingConfirm {
+                tx,
+                grant,
+                project_id: self.project_id.clone(),
+            },
+        );
+        self.awaiting_confirm
+            .lock()
+            .unwrap()
+            .insert(self.frame_id.clone());
+        self.device_hub
+            .mark_needs_user(&self.frame_id, Some(&self.project_id));
+        let _ = self.app.emit(
+            "confirm-request",
+            ConfirmRequest {
+                frame_id: self.frame_id.clone(),
+                message: message.into(),
+                tool,
+                preview,
+            },
+        );
+
+        // There is deliberately no timeout: lack of approval must never be
+        // converted into a denial that lets the same agent turn continue.
+        let decision = receive_confirm_decision(rx).await;
+        self.confirms.lock().unwrap().remove(&self.frame_id);
+        self.awaiting_confirm.lock().unwrap().remove(&self.frame_id);
+        self.device_hub.resolve_needs_user(&self.frame_id);
+        decision
+    }
+
+    async fn resource_owner_label(&self, frame_id: &str) -> String {
+        let title = self
+            .store
+            .get_session_reference(frame_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|session| session.title)
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Untitled conversation".into());
+        let short: String = frame_id.chars().take(8).collect();
+        format!("{title} · {short}")
+    }
+
+    fn resource_conflict_message(
+        &self,
+        owner: &str,
+        conflict: &resource_leases::ResourceConflict,
+        tool: &str,
+        request: &resource_leases::ResourceRequest,
+    ) -> String {
+        let active_preview = if conflict.preview.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" Active call: `{}`.", conflict.preview.replace('\n', " "))
+        };
+        format!(
+            "{}{owner} has been using {} with `{}` for {}s. `{tool}` needs {}.{} Approve to wait for that call to finish, then continue; deny to cancel this operation.",
+            resource_leases::CONFIRM_PREFIX,
+            conflict.request.description(),
+            conflict.tool,
+            conflict.elapsed_secs,
+            request.description(),
+            active_preview,
+        )
+    }
 }
 
 fn emit_agent_event_to_surfaces(app: &AppHandle, event: AgentEvent) {
@@ -2114,6 +2334,7 @@ fn should_persist_ui_event(event: &AgentEvent) -> bool {
             | AgentEvent::ToolPresentation { .. }
             | AgentEvent::Stdout { .. }
             | AgentEvent::Usage { .. }
+            | AgentEvent::Compaction { .. }
     )
 }
 
@@ -2143,9 +2364,7 @@ impl Output for TauriOutput {
         // and ask_user are card JSON bodies. A clip would truncate them into junk.
         let clipped: String = if matches!(
             name,
-            "attempt_completion"
-                | superscience_tools::plan::PROPOSE_PLAN
-                | superscience_tools::ask_user::ASK_USER
+            "attempt_completion" | superscience_tools::plan::PROPOSE_PLAN | superscience_tools::ask_user::ASK_USER
         ) {
             content.to_string()
         } else {
@@ -2176,16 +2395,20 @@ impl Output for TauriOutput {
         cached: u64,
         ctx_tokens: usize,
         max_context: usize,
+        context_usage: superscience_core::ContextUsage,
     ) {
         self.emit(AgentEvent::Usage {
             frame_id: self.frame_id.clone(),
             round: round as u64,
+            model: self.model.clone(),
+            created_at: chrono::Utc::now().timestamp(),
             input,
             output,
             reasoning,
             cached,
             ctx_tokens,
             max_context,
+            context_usage,
         });
     }
     fn compaction(&self, before: usize, after: usize, strategy: &str) {
@@ -2221,66 +2444,81 @@ impl Output for TauriOutput {
             chunk: chunk.into(),
         });
     }
-    fn confirm(&self, message: &str) -> bool {
-        self.confirm_decision(message).approved()
+    // Desktop approval must use the async hooks below. Fail closed if a future
+    // caller accidentally reaches the legacy synchronous compatibility path.
+    fn confirm(&self, _message: &str) -> bool {
+        false
     }
-    fn confirm_decision(&self, message: &str) -> superscience_tools::ConfirmDecision {
-        if self.full_permission() {
-            return superscience_tools::ConfirmDecision::Approved;
-        }
-        let (tool, preview) = parse_confirm_payload(message);
-        let grant = approval_grant_key(message);
-        if grant.as_ref().is_some_and(|key| {
-            self.approval_grants
-                .lock()
-                .map(|grants| grants.allows(&self.frame_id, &self.project_id, key))
-                .unwrap_or(false)
-        }) {
-            return superscience_tools::ConfirmDecision::Approved;
-        }
-        let (tx, rx) = std::sync::mpsc::channel::<superscience_tools::ConfirmDecision>();
-        self.confirms.lock().unwrap().insert(
-            self.frame_id.clone(),
-            PendingConfirm {
-                tx,
-                grant,
-                project_id: self.project_id.clone(),
-            },
-        );
-        self.awaiting_confirm
-            .lock()
-            .unwrap()
-            .insert(self.frame_id.clone());
-        self.device_hub
-            .mark_needs_user(&self.frame_id, Some(&self.project_id));
-        let _ = self.app.emit(
-            "confirm-request",
-            ConfirmRequest {
-                frame_id: self.frame_id.clone(),
-                message: message.into(),
-                tool,
-                preview,
-            },
-        );
-        let decision = match rx.recv_timeout(std::time::Duration::from_secs(180)) {
-            Ok(decision) => decision,
-            Err(_) => {
-                // Drop the inline card: after timeout the channel is gone, so a
-                // still-visible Allow button would invoke a dead confirm.
-                let _ = self.app.emit("confirm-expired", self.frame_id.clone());
-                superscience_tools::ConfirmDecision::Denied { feedback: None }
-            }
-        };
-        self.confirms.lock().unwrap().remove(&self.frame_id);
-        self.awaiting_confirm.lock().unwrap().remove(&self.frame_id);
-        self.device_hub.resolve_needs_user(&self.frame_id);
-        decision
+    fn confirm_decision(&self, _message: &str) -> superscience_tools::ConfirmDecision {
+        superscience_tools::ConfirmDecision::Denied { feedback: None }
+    }
+    fn confirm_async<'a>(&'a self, message: &'a str) -> OutputFuture<'a, bool> {
+        Box::pin(async move { self.confirm_decision_async(message).await.approved() })
+    }
+    fn confirm_decision_async<'a>(
+        &'a self,
+        message: &'a str,
+    ) -> OutputFuture<'a, superscience_tools::ConfirmDecision> {
+        Box::pin(async move { self.request_confirmation(message, true).await })
     }
     fn approval_mode(&self, tool: &str) -> superscience_tools::Approval {
         self.approvals
             .read()
             .map(|p| p.mode_for(tool))
             .unwrap_or(superscience_tools::Approval::Allow)
+    }
+    fn acquire_tool_resources<'a>(
+        &'a self,
+        tool: &'a str,
+        args: &'a serde_json::Value,
+    ) -> OutputFuture<'a, Result<Option<superscience_tools::ToolResourceLease>, String>> {
+        Box::pin(async move {
+            let Some(request) = resource_leases::request_for_call(&self.project_root, tool, args)
+            else {
+                return Ok(None);
+            };
+            let preview = resource_leases::preview_for_call(tool, args);
+            let mut wait_approved = false;
+            loop {
+                match self.resource_leases.try_acquire(
+                    &self.project_id,
+                    &self.frame_id,
+                    tool,
+                    &preview,
+                    request.clone(),
+                ) {
+                    resource_leases::AcquireResult::Acquired(lease) => {
+                        return Ok(Some(lease));
+                    }
+                    resource_leases::AcquireResult::Conflict(mut conflict) => {
+                        if !wait_approved {
+                            let owner = self.resource_owner_label(&conflict.frame_id).await;
+                            let message =
+                                self.resource_conflict_message(&owner, &conflict, tool, &request);
+                            let decision = self.request_confirmation(&message, false).await;
+                            if !decision.approved() {
+                                let feedback = decision
+                                    .feedback()
+                                    .map(|feedback| format!(" User feedback: {feedback}"))
+                                    .unwrap_or_default();
+                                return Err(format!(
+                                    "resource conflict: user cancelled `{tool}` instead of waiting for {owner}.{feedback}"
+                                ));
+                            }
+                            wait_approved = true;
+                        }
+                        tokio::select! {
+                            _ = conflict.wait_until_released() => {}
+                            _ = async {
+                                while !self.cancel.load(Ordering::Relaxed) {
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                }
+                            } => return Err("resource wait interrupted by user".into()),
+                        }
+                    }
+                }
+            }
+        })
     }
     fn approval_bypass(&self) -> bool {
         self.full_permission()
@@ -2571,7 +2809,7 @@ fn wire_macos_menu_events(window: &tauri::WebviewWindow) {
 fn install_macos_app_menu(app: &AppHandle, locale_tag: &str) -> Result<(), String> {
     let labels = mac_menu_labels(AppMenuLocale::from_tag(locale_tag));
     let about = AboutMetadata {
-        name: Some("SuperScience".into()),
+        name: Some("superscience".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         ..Default::default()
     };
@@ -2829,16 +3067,16 @@ fn resolve_model_settings(
     api_key: String,
 ) -> (String, String, String, String) {
     let provider = normalized_provider(&non_empty_setting(Some(provider), || {
-        env_or("SUPERSCIENCE_PROVIDER", "openai")
+        env_or("WISP_PROVIDER", "openai")
     }));
     let api_url = non_empty_setting(Some(api_url), || {
-        env_or("SUPERSCIENCE_API_URL", default_api_url(&provider))
+        env_or("WISP_API_URL", default_api_url(&provider))
     });
     let model = non_empty_setting(Some(model), || {
-        env_or("SUPERSCIENCE_MODEL", default_model(&provider))
+        env_or("WISP_MODEL", default_model(&provider))
     });
     let api_key = if api_key.trim().is_empty() {
-        env_or("SUPERSCIENCE_API_KEY", "")
+        env_or("WISP_API_KEY", "")
     } else {
         api_key
     };
@@ -3049,9 +3287,11 @@ fn skill_infos(
         .collect()
 }
 
-async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex> {
+async fn project_skill_catalog(
+    store: &Store,
+    ap: &ActiveProject,
+) -> (SkillIndex, Option<HashSet<String>>) {
     let mut enabled = effective_enabled_skill_names(store, ap).await;
-    let tags = load_skill_tags(store).await;
     let plugin_paths: Vec<PathBuf> = plugins::enabled_plugin_manifests(store, &ap.id)
         .await
         .into_iter()
@@ -3073,12 +3313,17 @@ async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex
                 .map(|skill| skill.name.clone()),
         );
     }
-    Arc::new(
+    (
         ap.skills
             .merged_preserving_self(&plugin)
-            .with_tag_overrides(&tags)
-            .filtered_by_names(enabled.as_ref()),
+            .with_tag_overrides(&load_skill_tags(store).await),
+        enabled,
     )
+}
+
+async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex> {
+    let (catalog, enabled) = project_skill_catalog(store, ap).await;
+    Arc::new(catalog.filtered_by_names(enabled.as_ref()))
 }
 
 /// Identity section appended after the base system prompt when a session has
@@ -3275,6 +3520,16 @@ async fn load_notifications_enabled(store: &Store) -> bool {
         .unwrap_or(true)
 }
 
+async fn load_auto_compact_enabled(store: &Store) -> bool {
+    store
+        .get_setting("auto_compact")
+        .await
+        .ok()
+        .flatten()
+        .map(|value| value != "false")
+        .unwrap_or(true)
+}
+
 /// Labels of app windows currently holding OS focus. A set (not a bool) so the
 /// unordered Focused(false)/Focused(true) pair fired when focus moves between
 /// two app windows cannot leave us wrongly marked unfocused.
@@ -3463,7 +3718,7 @@ async fn build_vision_provider_config(store: &Store) -> Option<ProviderConfig> {
     ) {
         Ok(cfg) => Some(cfg),
         Err(e) => {
-            tracing::warn!(target: "superscience", error = %e, "vision model unavailable");
+            tracing::warn!(target: "wisp", error = %e, "vision model unavailable");
             None
         }
     }
@@ -3500,17 +3755,11 @@ fn skill_sources(root: &std::path::Path) -> Vec<(PathBuf, SkillSource)> {
     if let Some(b) = superscience_skills::bundled_dir() {
         paths.push((b, SkillSource::Bundled));
     }
-    paths.push((
-        root.join(".superscience").join("skills"),
-        SkillSource::Project,
-    ));
+    paths.push((root.join(".superscience").join("skills"), SkillSource::Project));
     if let Some(home) = dirs::home_dir() {
-        paths.push((
-            home.join(".superscience").join("skills"),
-            SkillSource::Global,
-        ));
+        paths.push((home.join(".superscience").join("skills"), SkillSource::Global));
     }
-    if let Ok(extra) = std::env::var("SUPERSCIENCE_SKILLS_PATH") {
+    if let Ok(extra) = std::env::var("WISP_SKILLS_PATH") {
         for p in extra.split([':', ';']).filter(|s| !s.is_empty()) {
             paths.push((PathBuf::from(p), SkillSource::Extra));
         }
@@ -3523,21 +3772,17 @@ fn load_skill_index(root: &std::path::Path) -> SkillIndex {
 }
 
 fn kernel_worker_path() -> PathBuf {
-    let configured = std::env::var("SUPERSCIENCE_KERNEL_WORKER")
+    let configured = std::env::var("WISP_KERNEL_WORKER")
         .ok()
-        .or_else(|| {
-            superscience_runtime::bundled_worker_path().map(|path| path.to_string_lossy().into())
-        })
+        .or_else(|| superscience_runtime::bundled_worker_path().map(|path| path.to_string_lossy().into()))
         .unwrap_or_default();
     superscience_runtime::resolve_bundled_script(&configured)
 }
 
 fn r_kernel_worker_path() -> PathBuf {
-    let configured = std::env::var("SUPERSCIENCE_R_KERNEL_WORKER")
+    let configured = std::env::var("WISP_R_KERNEL_WORKER")
         .ok()
-        .or_else(|| {
-            superscience_runtime::bundled_r_worker_path().map(|path| path.to_string_lossy().into())
-        })
+        .or_else(|| superscience_runtime::bundled_r_worker_path().map(|path| path.to_string_lossy().into()))
         .unwrap_or_default();
     superscience_runtime::resolve_bundled_script(&configured)
 }
@@ -3645,9 +3890,9 @@ async fn wire_runtimes_and_mcp(
     }
 
     // Bundled bio-tools. Per-connector (domain) enable is the only gate now:
-    // the `SUPERSCIENCE_MCP_COMMAND` dev override always applies; otherwise mcp_bio
+    // the `WISP_MCP_COMMAND` dev override always applies; otherwise mcp_bio
     // launches unless every domain is disabled.
-    if let Ok(cmdline) = std::env::var("SUPERSCIENCE_MCP_COMMAND") {
+    if let Ok(cmdline) = std::env::var("WISP_MCP_COMMAND") {
         if connector_allow.is_some_and(|allow| !allow.contains("dev-mcp")) {
             return finish_custom_mcp_wiring(result, registry, store, project_id, connector_allow)
                 .await;
@@ -3675,7 +3920,7 @@ async fn wire_runtimes_and_mcp(
             }
         }
     } else if let Some(env) = &py_env {
-        let pkg = std::env::var("SUPERSCIENCE_MCP_PKG").unwrap_or_else(|_| "mcp_bio".into());
+        let pkg = std::env::var("WISP_MCP_PKG").unwrap_or_else(|_| "mcp_bio".into());
         // mcp_bio serves all 247 tools; drop disabled domains' tools at
         // registration. Skip the launch entirely if every domain is off.
         let blocked = |slug: &str| {
@@ -3692,9 +3937,7 @@ async fn wire_runtimes_and_mcp(
             .flat_map(|d| d.tools.iter().cloned())
             .collect();
         if !all_off {
-            match superscience_mcp::McpClient::launch_bio_tools(&env.python(), &pkg, &service_env)
-                .await
-            {
+            match superscience_mcp::McpClient::launch_bio_tools(&env.python(), &pkg, &service_env).await {
                 Ok(client) => {
                     match register_mcp_filtered(registry, std::sync::Arc::new(client), &skip).await
                     {
@@ -3740,7 +3983,7 @@ async fn connect_plugin_mcp(
     }
     command
         .envs(&launch.env)
-        .env("SUPERSCIENCE_PLUGIN_ROOT", &launch.install_root)
+        .env("WISP_PLUGIN_ROOT", &launch.install_root)
         .env("CLAUDE_PLUGIN_ROOT", &launch.install_root);
     superscience_mcp::McpClient::launch_with_command(command).await
 }
@@ -3918,7 +4161,7 @@ async fn create_session_frame(store: &Store, project_id: &str) -> Result<String,
     let id = Uuid::new_v4().to_string();
     let model_id = models::active_profile_id(store).await;
     store
-        .create_frame(&id, project_id, "SUPERSCIENCE", &model_id)
+        .create_frame(&id, project_id, "OPERON", &model_id)
         .await
         .map_err(|e| format!("{e}"))?;
     Ok(id)
@@ -3947,7 +4190,7 @@ fn acp_bridge_launch(
     allowed_tools: Option<&[String]>,
 ) -> Result<(String, Vec<String>), String> {
     let exe = std::env::current_exe()
-        .map_err(|e| format!("Cannot locate SuperScience executable for MCP bridge: {e}"))?
+        .map_err(|e| format!("Cannot locate Wisp executable for MCP bridge: {e}"))?
         .display()
         .to_string();
     let mut bridge_args = vec![
@@ -4159,9 +4402,7 @@ async fn enable_referenced_contexts(store: &Store, refs: &[ComposerReferenceArg]
             continue;
         }
         match store.get_execution_context(id).await {
-            Ok(Some(context))
-                if context.kind != superscience_store::ExecutionContextKind::Local =>
-            {
+            Ok(Some(context)) if context.kind != superscience_store::ExecutionContextKind::Local => {
                 if let Err(e) = store
                     .set_session_execution_context_enabled(frame_id, id, true)
                     .await
@@ -4177,7 +4418,7 @@ async fn enable_referenced_contexts(store: &Store, refs: &[ComposerReferenceArg]
 
 /// Resolve artifact references to files that can be passed to an ACP Agent as
 /// standard `ResourceLink` blocks. Unlike ordinary composer attachments, an
-/// artifact may belong to another SuperScience project, so validate it against its
+/// artifact may belong to another Wisp project, so validate it against its
 /// recorded project root rather than the currently active project.
 async fn resolve_acp_artifact_references(
     store: &Store,
@@ -4456,7 +4697,7 @@ async fn send_message_inner(
     }
     let vision_cfg = build_vision_provider_config(&state.store).await;
 
-    let max_context = state
+    let fallback_max_context = state
         .store
         .get_setting("max_context")
         .await
@@ -4502,6 +4743,14 @@ async fn send_message_inner(
     let session_profile_id = models::session_profile_id(&state.store, &frame_id).await;
     let model_label = models::session_label(&state.store, &frame_id).await;
     let specialist = specialists::session_specialist(&state.store, &frame_id).await;
+    let max_context = match &specialist {
+        Some(specialist) => specialists::specialist_context_window(&state.store, specialist).await,
+        None => models::profile_context_window(&state.store, &session_profile_id)
+            .await
+            .unwrap_or(fallback_max_context as u64),
+    }
+    .try_into()
+    .unwrap_or(fallback_max_context);
     if references.as_ref().is_some_and(|references| {
         references
             .iter()
@@ -4645,6 +4894,7 @@ async fn send_message_inner(
             load_memory_enabled(&state.store).await,
             vision_cfg.clone(),
         );
+        agent.set_auto_compact(load_auto_compact_enabled(&state.store).await);
         if specialist
             .as_ref()
             .is_some_and(|specialist| specialist.id == "scientific_illustrator")
@@ -4702,9 +4952,21 @@ async fn send_message_inner(
             state.run_manager.clone(),
             ap.id.clone(),
         )));
+        agent.add_tool(Box::new(method_search::PrepareMethodSearchTool::new(
+            state.store.clone(),
+            ap.id.clone(),
+            frame_id.clone(),
+        )));
         agent.add_tool(Box::new(research_graph::ResearchGraphTool::new(
             state.store.clone(),
             ap.id.clone(),
+        )));
+        agent.add_tool(Box::new(quick_actions::ExplainWorkflowTool::new(
+            state.store.clone(),
+        )));
+        agent.add_tool(Box::new(quick_actions::CreateWorkflowTool::new(
+            state.store.clone(),
+            skills.clone(),
         )));
         agent.add_tool(Box::new(specialist_tool::SaveSpecialistTool {
             store: state.store.clone(),
@@ -4841,15 +5103,19 @@ async fn send_message_inner(
                         format!("compact: persisting the rewritten context failed: {e}")
                     })?;
                 rt.set_last_seq(agent.ctx.messages.len() as i64);
-                emit_agent_event(
-                    &app,
-                    AgentEvent::Compaction {
-                        frame_id: frame_id.clone(),
-                        before,
-                        after,
-                        strategy: "manual".into(),
-                    },
-                );
+                let event = AgentEvent::Compaction {
+                    frame_id: frame_id.clone(),
+                    before,
+                    after,
+                    strategy: "manual".into(),
+                };
+                let mut event_seq = state
+                    .store
+                    .next_session_ui_event_seq(&frame_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                append_ui_event(&state.store, &frame_id, &mut event_seq, event.clone()).await;
+                emit_agent_event(&app, event);
                 emit_agent_event(
                     &app,
                     AgentEvent::Done {
@@ -5001,8 +5267,7 @@ async fn send_message_inner(
         Some(start_seq + 1)
     };
     let (prov_handle, prov_tx) = {
-        let (tx, mut rx) =
-            tokio::sync::mpsc::unbounded_channel::<superscience_core::ProvenanceRecord>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<superscience_core::ProvenanceRecord>();
         let store = state.store.clone();
         let app_data = state.app_data.clone();
         let fid = frame_id.clone();
@@ -5079,7 +5344,12 @@ async fn send_message_inner(
     let output = TauriOutput {
         app: app.clone(),
         frame_id: frame_id.clone(),
+        model: model.clone(),
         project_id: ap.id.clone(),
+        project_root: ap.root.clone(),
+        store: state.store.clone(),
+        resource_leases: state.resource_leases.clone(),
+        cancel: rt.cancel.clone(),
         device_hub: state.device_hub.clone(),
         confirms: state.confirms.clone(),
         awaiting_confirm: state.awaiting_confirm.clone(),
@@ -5094,12 +5364,13 @@ async fn send_message_inner(
     };
 
     let turn_start = agent.ctx.messages.len();
+    let compaction_revision = agent.ctx.compaction_revision();
     // Re-stated every turn: the session may have been switched to a different
     // model since the last one, and images already in history must follow the
     // model that is about to receive them, not the one that accepted them.
     agent.ctx.supports_vision = primary_supports_vision;
     state.running_turns.lock().await.insert(frame_id.clone());
-    let result = if resume {
+    let mut result = if resume {
         agent
             .run_resume(&output, Some(&rt.cancel), Some(&rt.pending_guidance))
             .await
@@ -5163,6 +5434,19 @@ async fn send_message_inner(
         }
     }
     let _ = tokio::time::timeout(std::time::Duration::from_secs(10), prov_handle).await;
+    if agent.ctx.compaction_revision() != compaction_revision {
+        if let Err(error) = state
+            .store
+            .replace_messages(&frame_id, &agent.ctx.messages)
+            .await
+        {
+            result = Err(anyhow::anyhow!(
+                "automatic compact: persisting the rewritten context failed: {error}"
+            ));
+        } else {
+            rt.set_last_seq(agent.ctx.messages.len() as i64);
+        }
+    }
     drop(guard);
     // After the persist flush so the seen snapshot covers the final messages.
     mark_seen_if_viewed(&state, &frame_id).await;
@@ -5360,35 +5644,31 @@ fn message_uses_resource_bindings(message: &Message) -> bool {
 #[tauri::command]
 async fn stop_agent(state: State<'_, AppState>, session_id: Option<String>) -> Result<(), String> {
     // Cancel only the named session's turn; other conversations keep running.
-    let targets: Vec<Arc<SessionRuntime>> = match session_id.as_deref().filter(|s| !s.is_empty()) {
-        Some(id) => state
-            .sessions
-            .lock()
-            .await
-            .get(id)
-            .cloned()
-            .into_iter()
-            .collect(),
-        None => state.sessions.lock().await.values().cloned().collect(),
-    };
-    for rt in targets {
+    let targets: Vec<(String, Arc<SessionRuntime>)> =
+        match session_id.as_deref().filter(|s| !s.is_empty()) {
+            Some(id) => state
+                .sessions
+                .lock()
+                .await
+                .get(id)
+                .cloned()
+                .map(|runtime| (id.to_string(), runtime))
+                .into_iter()
+                .collect(),
+            None => state
+                .sessions
+                .lock()
+                .await
+                .iter()
+                .map(|(id, runtime)| (id.clone(), runtime.clone()))
+                .collect(),
+        };
+    for (id, rt) in targets {
         rt.cancel.store(true, Ordering::Relaxed);
-    }
-    // A turn blocked on `confirm` only wakes when the channel resolves — the
-    // cancel flag alone cannot interrupt `recv_timeout`. Deny any matching
-    // pending confirms so Stop unblocks the agent loop.
-    let confirm_ids: Vec<String> = match session_id.as_deref().filter(|id| !id.is_empty()) {
-        Some(id) => vec![id.to_string()],
-        None => state.confirms.lock().unwrap().keys().cloned().collect(),
-    };
-    for id in confirm_ids {
-        if let Some(pending) = state.confirms.lock().unwrap().remove(&id) {
-            let _ = pending
-                .tx
-                .send(superscience_tools::ConfirmDecision::Denied { feedback: None });
-            state.awaiting_confirm.lock().unwrap().remove(&id);
-            state.device_hub.resolve_needs_user(&id);
-        }
+        // Wake an agent suspended on the async approval receiver. The loop
+        // observes the cancel flag after the denied tool result and exits
+        // instead of leaving the Stop button waiting forever.
+        approval_commands::cancel_pending_confirmation(&state, &id);
     }
     if let Some(id) = session_id.as_deref().filter(|id| !id.is_empty()) {
         acp::cancel_frame(&state, id).await;
@@ -6086,7 +6366,7 @@ fn set_dev_flag(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    let _ = window.eval(&format!("window.__SUPERSCIENCE_DEV__ = {};", dev));
+    let _ = window.eval(&format!("window.__WISP_DEV__ = {};", dev));
 }
 
 /// A macOS/Linux `.app` launched from Finder/Dock/Launchpad inherits a bare
@@ -6108,7 +6388,7 @@ fn inherit_user_path() {
     // ponytail: assumes a colon-PATH shell (zsh/bash/sh); fish joins list vars
     // with spaces and would parse wrong — fish users set UV_PATH/PIXI_PATH or
     // launch from a terminal. Widen to fish only if someone reports it.
-    let script = r#"printf '__SUPERSCIENCE_PATH__%s__SUPERSCIENCE_END__' "$PATH""#;
+    let script = r#"printf '__WISP_PATH__%s__WISP_END__' "$PATH""#;
     let Ok(out) = std::process::Command::new(&shell)
         .args(["-ilc", script])
         .stdin(std::process::Stdio::null())
@@ -6118,8 +6398,8 @@ fn inherit_user_path() {
     };
     let stdout = String::from_utf8_lossy(&out.stdout);
     if let Some(path) = stdout
-        .split_once("__SUPERSCIENCE_PATH__")
-        .and_then(|(_, rest)| rest.split_once("__SUPERSCIENCE_END__"))
+        .split_once("__WISP_PATH__")
+        .and_then(|(_, rest)| rest.split_once("__WISP_END__"))
         .map(|(p, _)| p.trim())
         .filter(|p| !p.is_empty())
     {
@@ -6188,7 +6468,7 @@ fn inherit_user_path() {
 pub fn run() {
     inherit_user_path();
     let filter = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive("superscience=info".parse().unwrap());
+        .add_directive("wisp=info".parse().unwrap());
     let subscriber = tracing_subscriber::fmt().with_env_filter(filter);
     #[cfg(all(not(debug_assertions), target_os = "windows"))]
     subscriber.with_writer(std::io::sink).init();
@@ -6228,7 +6508,7 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from(".superscience"))
-                .join("SuperScience");
+                .join("superscience");
             std::fs::create_dir_all(&app_data).expect("create app data dir");
             let db_path = app_data.join("superscience.sqlite");
             let store = tauri::async_runtime::block_on(Store::open(&db_path)).expect("open store");
@@ -6246,6 +6526,13 @@ pub fn run() {
                 &app_data.join("library.sqlite"),
             ))
             .expect("open global library");
+            let paused_method_searches = tauri::async_runtime::block_on(
+                store.recover_interrupted_method_search_runs(),
+            )
+            .expect("checkpoint interrupted method searches");
+            if paused_method_searches > 0 {
+                tracing::warn!(target: "wisp", paused_method_searches, "paused interrupted method searches for explicit resume");
+            }
             let run_manager = run_context::RunManager::new();
             tauri::async_runtime::block_on(run_manager.recover(&store))
                 .expect("recover incomplete runs");
@@ -6272,7 +6559,7 @@ pub fn run() {
                 let default_workspace = app
                     .path()
                     .document_dir()
-                    .map(|d| d.join("SuperScience"))
+                    .map(|d| d.join("superscience"))
                     .unwrap_or_else(|_| app_data.join("workspace"));
                 let legacy_ws = store
                     .get_setting("workspace_dir")
@@ -6302,10 +6589,10 @@ pub fn run() {
             let default_workspace = app
                 .path()
                 .document_dir()
-                .map(|d| d.join("SuperScience"))
+                .map(|d| d.join("superscience"))
                 .unwrap_or_else(|_| app_data.join("workspace"));
             let root = resolve_workspace(
-                std::env::var("SUPERSCIENCE_WORKSPACE").ok(),
+                std::env::var("WISP_WORKSPACE").ok(),
                 Some(ws),
                 default_workspace,
             );
@@ -6342,7 +6629,7 @@ pub fn run() {
                 store.recover_interrupted_agent_workflows(),
             ) {
                 if workflows > 0 {
-                    tracing::warn!(target: "superscience", attempts, workflows, "recovered interrupted Agent workflows");
+                    tracing::warn!(target: "wisp", attempts, workflows, "recovered interrupted Agent workflows");
                 }
             }
             let state = AppState {
@@ -6370,6 +6657,7 @@ pub fn run() {
                 running_turns: tokio::sync::Mutex::new(HashSet::new()),
                 completion_dispatches: tokio::sync::Mutex::new(HashSet::new()),
                 project_activity: StdMutex::new(HashMap::new()),
+                resource_leases: resource_leases::ProjectResourceCoordinator::default(),
                 active_frame: std::sync::RwLock::new(HashMap::new()),
                 notification_window: std::sync::RwLock::new(HashMap::new()),
                 confirms: Arc::new(StdMutex::new(HashMap::new())),
@@ -6415,7 +6703,7 @@ pub fn run() {
             {
                 desktop_lifecycle::install_windows_shell(app)?;
                 if let Err(error) = desktop_lifecycle::sync_pet_window(app.handle(), pet_enabled) {
-                    tracing::warn!(target: "superscience", %error, "failed to initialize pet window");
+                    tracing::warn!(target: "wisp", %error, "failed to initialize pet window");
                 }
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_decorations(false);
@@ -6512,6 +6800,12 @@ pub fn run() {
             delegation_runtime::cancel_agent_workflow,
             delegation_runtime::discard_agent_workflow,
             delegation_runtime::retry_agent_workflow,
+            method_search::prepare_method_search,
+            method_search::get_method_search_run,
+            method_search::pause_method_search,
+            method_search::start_method_search,
+            method_search::resume_method_search,
+            method_search::cancel_method_search,
             quick_actions::list_quick_actions,
             quick_actions::list_workflow_templates,
             quick_actions::save_quick_action,
@@ -6519,6 +6813,7 @@ pub fn run() {
             quick_actions::save_workflow_template,
             quick_actions::remove_workflow_template,
             quick_actions::run_quick_action,
+            skill_portfolio::plan_skill_portfolio,
             review_session,
             side_chat,
             context_probe::probe_execution_context,
@@ -6565,11 +6860,13 @@ pub fn run() {
             session_commands::list_recent_sessions,
             project_commands::list_projects,
             app_commands::pick_directory,
+            app_commands::pick_executable_file,
             app_commands::download_file,
             app_commands::export_text_file,
             app_commands::import_json_file,
             export_session,
             debug_request::export_debug_request,
+            debug_request::get_context_usage_details,
             project_transfer::export_project,
             project_transfer::import_project,
             codex_import::list_codex_sessions,
@@ -6628,6 +6925,7 @@ pub fn run() {
             settings_commands::set_settings,
             settings_commands::get_storage_usage,
             settings_commands::get_token_usage,
+            settings_commands::get_session_token_usage,
             settings_commands::credential_status,
             settings_commands::set_credential,
             settings_commands::list_custom_credentials,
@@ -6718,7 +7016,7 @@ pub fn run() {
             specialists::get_session_specialist,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building SuperScience")
+        .expect("error while building Wisp")
         .run(move |_app, _event| {
             #[cfg(target_os = "macos")]
             if matches!(_event, tauri::RunEvent::Reopen { .. }) {
@@ -6729,6 +7027,16 @@ pub fn run() {
                 macos_exit_in_progress.store(true, Ordering::SeqCst);
             }
             if matches!(_event, tauri::RunEvent::Exit) {
+                let store = _app.state::<AppState>().store.clone();
+                match tauri::async_runtime::block_on(store.pause_method_searches_for_shutdown()) {
+                    Ok(paused) if paused > 0 => {
+                        tracing::info!(target: "wisp", paused, "checkpointed method searches for shutdown");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::error!(target: "wisp", %error, "failed to pause method searches during shutdown");
+                    }
+                }
                 let device_bridge = _app.state::<AppState>().device_bridge.clone();
                 tauri::async_runtime::block_on(device_bridge.stop());
                 let runtime_manager = _app.state::<AppState>().runtime_manager.clone();

@@ -5,14 +5,20 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use tauri::{ipc::Response, State, WebviewWindow};
 
-const REMOTE_DIR_PROTOCOL: &[u8] = b"SUPERSCIENCE_REMOTE_DIR_V1\0";
-const REMOTE_FILE_PROTOCOL: &[u8] = b"SUPERSCIENCE_REMOTE_FILE_V1\0";
+const REMOTE_DIR_PROTOCOL: &[u8] = b"WISP_REMOTE_DIR_V1\0";
+const REMOTE_FILE_PROTOCOL: &[u8] = b"WISP_REMOTE_FILE_V1\0";
+/// Text-oriented remote reads: size + truncated head so multi-GB logs never
+/// cross the wire just for a UI preview.
+const REMOTE_FILE_TEXT_PROTOCOL: &[u8] = b"WISP_REMOTE_FILE_TEXT_V1\0";
 /// Remote previews stay capped at 32 MB: the bytes cross an SSH connection.
 const REMOTE_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// Local previews match the 100 MB upload cap — a 38 MB journal PDF is routine
 /// and pdf.js renders one page at a time, so memory stays bounded (#485).
 const LOCAL_FILE_MAX_BYTES: u64 = 100 * 1024 * 1024;
 const DEFAULT_FILE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// Default budget for text-ish `read_file` / artifact previews when the caller
+/// omits `maxBytes`. Head-only; never reject oversized text solely for size.
+const DEFAULT_TEXT_PREVIEW_BYTES: u64 = 1024 * 1024;
 const OOXML_MAX_ENTRIES: usize = 4096;
 const OOXML_MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 const OOXML_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
@@ -98,6 +104,11 @@ pub(super) struct FileContent {
     text: Option<String>,
     /// Base64 payload for binary files (images, pdf, pdb, …).
     base64: Option<String>,
+    /// True when only a leading prefix was returned (large text/log/CSV).
+    truncated: bool,
+    /// Full on-disk size when known (local metadata or remote `stat`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_bytes: Option<u64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -145,6 +156,43 @@ fn preview_byte_cap(max_bytes: Option<u64>) -> u64 {
     max_bytes
         .unwrap_or(DEFAULT_FILE_MAX_BYTES)
         .min(LOCAL_FILE_MAX_BYTES)
+}
+
+fn text_preview_byte_cap(max_bytes: Option<u64>) -> u64 {
+    max_bytes
+        .unwrap_or(DEFAULT_TEXT_PREVIEW_BYTES)
+        .min(LOCAL_FILE_MAX_BYTES)
+}
+
+/// MIME types that remain useful when only a leading prefix is available.
+fn supports_prefix_preview(mime: &str) -> bool {
+    is_text_mime(mime)
+        || mime == "chemical/x-pdb"
+        || mime == "chemical/x-mdl-molfile"
+        || mime == "application/octet-stream"
+}
+
+/// Read at most `cap` bytes from the start of a file. Never loads the tail of a
+/// multi-GB log just to discover it is text.
+fn read_path_prefix(path: &Path, cap: u64) -> Result<(Vec<u8>, u64), String> {
+    let total = std::fs::metadata(path).map_err(|e| format!("{e}"))?.len();
+    if total == 0 || cap == 0 {
+        return Ok((Vec::new(), total));
+    }
+    let mut file = std::fs::File::open(path).map_err(|e| format!("{e}"))?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(cap.min(total))
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{e}"))?;
+    Ok((bytes, total))
+}
+
+fn is_text_preview_bytes(mime: &str, bytes: &[u8]) -> bool {
+    is_text_mime(mime)
+        || mime == "chemical/x-pdb"
+        || mime == "chemical/x-mdl-molfile"
+        || (mime == "application/octet-stream" && looks_like_text(bytes))
 }
 
 fn is_ooxml_path(path: &Path) -> bool {
@@ -643,7 +691,7 @@ if ! CDPATH= cd "$dir" 2>/dev/null; then
   printf 'Cannot open remote directory: %s\n' "$dir" >&2
   exit 66
 fi
-printf 'SUPERSCIENCE_REMOTE_DIR_V1\000%s\000' "$(pwd -P)"
+printf 'WISP_REMOTE_DIR_V1\000%s\000' "$(pwd -P)"
 for entry in ./*; do
   if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
     continue
@@ -767,9 +815,9 @@ fn list_remote_dir_with_runner(
     parse_remote_directory(&output.stdout)
 }
 
-/// POSIX-sh script that size-checks then streams one remote file. The marker
-/// separates the payload from login banners; the size guard runs remotely so a
-/// runaway file never crosses the wire just to be rejected here.
+/// POSIX-sh script that size-checks then streams one remote file in full.
+/// Binary / office previews need an intact payload, so oversized files are
+/// rejected on the remote before any bytes cross the wire.
 fn remote_file_script(path: &str, cap: u64) -> Result<String, String> {
     let path = remote_path_expression(Some(path))?;
     Ok(format!(
@@ -787,8 +835,35 @@ if [ "$size" -gt {cap} ]; then
   printf 'Remote file exceeds {cap} byte limit: %s\n' "$f" >&2
   exit 67
 fi
-printf 'SUPERSCIENCE_REMOTE_FILE_V1\000'
+printf 'WISP_REMOTE_FILE_V1\000'
 cat "$f""#
+    ))
+}
+
+/// POSIX-sh script that returns a bounded head of a remote text-ish file plus
+/// the real size, so multi-GB MEDLINE dumps preview without a full transfer.
+fn remote_text_file_script(path: &str, cap: u64) -> Result<String, String> {
+    let path = remote_path_expression(Some(path))?;
+    Ok(format!(
+        r#"LC_ALL=C
+f={path}
+case "$f" in -*) f="./$f" ;; esac
+if [ ! -f "$f" ]; then
+  printf 'Cannot read remote file: %s\n' "$f" >&2
+  exit 66
+fi
+size=$(stat -c '%s' "$f" 2>/dev/null) ||
+  size=$(stat -f '%z' "$f" 2>/dev/null) ||
+  size=0
+printf 'WISP_REMOTE_FILE_TEXT_V1\000'
+printf '%s\000' "$size"
+if [ "$size" -eq 0 ] || [ {cap} -eq 0 ]; then
+  :
+elif command -v head >/dev/null 2>&1; then
+  head -c {cap} "$f"
+else
+  dd if="$f" bs={cap} count=1 2>/dev/null
+fi"#
     ))
 }
 
@@ -808,6 +883,68 @@ fn build_remote_file_command(
     })
 }
 
+fn build_remote_text_file_command(
+    context: &superscience_store::ExecutionContext,
+    path: &str,
+    cap: u64,
+) -> Result<RemoteCommand, String> {
+    let connection = crate::ssh_hosts::SshConnection::from_execution_context(context)?;
+    let mut args = connection.ssh_args()?;
+    args.push(remote_text_file_script(path, cap)?);
+    Ok(RemoteCommand {
+        context_id: context.id.clone(),
+        program: "ssh".into(),
+        args,
+        envs: crate::ssh_hosts::auth_envs_for_connection(&connection)?,
+    })
+}
+
+fn run_remote_command(
+    context: &superscience_store::ExecutionContext,
+    command: &RemoteCommand,
+    runner: &mut dyn RemoteRunner,
+) -> Result<RemoteOutput, String> {
+    match runner.run(command) {
+        Ok(output) => Ok(output),
+        Err(error) => {
+            if crate::ssh_guard::is_authentication_failure(&error) {
+                crate::ssh_guard::record_failure(&context.id, &error);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn remote_command_failed(context: &superscience_store::ExecutionContext, output: &RemoteOutput) -> String {
+    let detail = if output.stderr.is_empty() {
+        "no error details returned".to_string()
+    } else {
+        output.stderr.clone()
+    };
+    let error = format!(
+        "Remote file request failed (exit {}): {detail}",
+        output.status
+    );
+    if crate::ssh_guard::is_authentication_failure(&error) {
+        crate::ssh_guard::record_failure(&context.id, &error);
+    }
+    error
+}
+
+/// Payload shape: `total_size\0<body>` after the text-protocol marker.
+fn parse_remote_text_payload(stdout: &[u8]) -> Result<(Vec<u8>, u64), String> {
+    let payload = protocol_payload(stdout, REMOTE_FILE_TEXT_PROTOCOL)?;
+    let zero = payload
+        .iter()
+        .position(|b| *b == 0)
+        .ok_or_else(|| "Remote text response omitted its size field".to_string())?;
+    let total = std::str::from_utf8(&payload[..zero])
+        .map_err(|_| "Remote text response size was not UTF-8".to_string())?
+        .parse::<u64>()
+        .map_err(|_| "Remote text response size was not a number".to_string())?;
+    Ok((payload[zero + 1..].to_vec(), total))
+}
+
 fn read_remote_file_bytes_with_runner(
     context: &superscience_store::ExecutionContext,
     path: &str,
@@ -817,29 +954,9 @@ fn read_remote_file_bytes_with_runner(
     crate::ssh_hosts::require_managed_ssh_ready(context)?;
     let cap = preview_byte_cap(max_bytes).min(REMOTE_FILE_MAX_BYTES);
     let command = build_remote_file_command(context, path, cap)?;
-    let output = match runner.run(&command) {
-        Ok(output) => output,
-        Err(error) => {
-            if crate::ssh_guard::is_authentication_failure(&error) {
-                crate::ssh_guard::record_failure(&context.id, &error);
-            }
-            return Err(error);
-        }
-    };
+    let output = run_remote_command(context, &command, runner)?;
     if output.status != 0 {
-        let detail = if output.stderr.is_empty() {
-            "no error details returned".to_string()
-        } else {
-            output.stderr
-        };
-        let error = format!(
-            "Remote file request failed (exit {}): {detail}",
-            output.status
-        );
-        if crate::ssh_guard::is_authentication_failure(&error) {
-            crate::ssh_guard::record_failure(&context.id, &error);
-        }
-        return Err(error);
+        return Err(remote_command_failed(context, &output));
     }
     crate::ssh_guard::record_success(&context.id);
     let mut bytes = protocol_payload(&output.stdout, REMOTE_FILE_PROTOCOL)?.to_vec();
@@ -856,12 +973,44 @@ fn read_remote_file_bytes_with_runner(
 fn read_remote_file_with_runner(
     context: &superscience_store::ExecutionContext,
     path: &str,
+    max_bytes: Option<u64>,
     runner: &mut dyn RemoteRunner,
 ) -> Result<FileContent, String> {
-    let bytes =
-        read_remote_file_bytes_with_runner(context, path, Some(REMOTE_FILE_MAX_BYTES), runner)?;
+    crate::ssh_hosts::require_managed_ssh_ready(context)?;
+    let cap = text_preview_byte_cap(max_bytes).min(REMOTE_FILE_MAX_BYTES);
+    let command = build_remote_text_file_command(context, path, cap)?;
+    let output = run_remote_command(context, &command, runner)?;
+    if output.status != 0 {
+        return Err(remote_command_failed(context, &output));
+    }
+    crate::ssh_guard::record_success(&context.id);
+    let (bytes, total) = parse_remote_text_payload(&output.stdout)?;
+    if bytes.len() as u64 > cap {
+        return Err(format!("remote file exceeds {cap} byte limit"));
+    }
     let mime = mime_for_path(Path::new(path));
-    Ok(file_content_from_bytes(path.to_string(), mime, bytes))
+    if !is_text_preview_bytes(mime, &bytes) {
+        // Binary: require a full, under-budget transfer via the bytes path.
+        if total > cap {
+            return Err(format!("remote file exceeds {cap} byte limit"));
+        }
+        let full = read_remote_file_bytes_with_runner(context, path, Some(cap), runner)?;
+        return Ok(file_content_from_bytes(
+            path.to_string(),
+            mime,
+            full,
+            Some(total),
+            false,
+        ));
+    }
+    let truncated = total > bytes.len() as u64;
+    Ok(file_content_from_bytes(
+        path.to_string(),
+        mime,
+        bytes,
+        Some(total),
+        truncated,
+    ))
 }
 
 #[tauri::command]
@@ -869,6 +1018,7 @@ pub(super) async fn read_remote_file(
     state: State<'_, AppState>,
     context_id: String,
     path: String,
+    max_bytes: Option<u64>,
 ) -> Result<FileContent, String> {
     let context = state
         .store
@@ -878,7 +1028,7 @@ pub(super) async fn read_remote_file(
         .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
     tokio::task::spawn_blocking(move || {
         let mut runner = ProcessRemoteRunner;
-        read_remote_file_with_runner(&context, &path, &mut runner)
+        read_remote_file_with_runner(&context, &path, max_bytes, &mut runner)
     })
     .await
     .map_err(|e| format!("Remote file task failed: {e}"))?
@@ -933,18 +1083,36 @@ pub(super) fn read_file_at(
 ) -> Result<FileContent, String> {
     let real = superscience_tools::safety::validate_file_path(root, &path)?;
     let mime = mime_for_path(&real);
-    let cap = preview_byte_cap(max_bytes);
-    // Size check before the read: the old order slurped a file of any size
-    // into memory just to reject it.
-    let len = std::fs::metadata(&real).map_err(|e| format!("{e}"))?.len();
-    if len > cap {
-        return Err(format!("file exceeds {cap} byte limit"));
+    // Prefetch only a prefix so multi-GB text never lands fully in RAM.
+    // Binary / OOXML still require a complete payload under the higher ceiling.
+    let text_cap = text_preview_byte_cap(max_bytes);
+    let (prefix, total) = read_path_prefix(&real, text_cap)?;
+    if supports_prefix_preview(mime) && is_text_preview_bytes(mime, &prefix) {
+        let truncated = total > prefix.len() as u64;
+        return Ok(file_content_from_bytes(
+            real.to_string_lossy().into_owned(),
+            mime,
+            prefix,
+            Some(total),
+            truncated,
+        ));
     }
-    let bytes = std::fs::read(&real).map_err(|e| format!("{e}"))?;
+
+    let full_cap = preview_byte_cap(max_bytes);
+    if total > full_cap {
+        return Err(format!("file exceeds {full_cap} byte limit"));
+    }
+    let bytes = if total <= prefix.len() as u64 {
+        prefix
+    } else {
+        std::fs::read(&real).map_err(|e| format!("{e}"))?
+    };
     Ok(file_content_from_bytes(
         real.to_string_lossy().into_owned(),
         mime,
         bytes,
+        Some(total),
+        false,
     ))
 }
 
@@ -969,17 +1137,21 @@ pub(super) fn read_file_bytes_at(
 
 /// The shared text-vs-binary decision for previews, local or remote: named text
 /// mimes go out as text, unnamed extensions are sniffed, the rest is base64.
-fn file_content_from_bytes(path: String, mime: &'static str, bytes: Vec<u8>) -> FileContent {
-    if is_text_mime(mime)
-        || mime == "chemical/x-pdb"
-        || mime == "chemical/x-mdl-molfile"
-        || (mime == "application/octet-stream" && looks_like_text(&bytes))
-    {
+fn file_content_from_bytes(
+    path: String,
+    mime: &'static str,
+    bytes: Vec<u8>,
+    total_bytes: Option<u64>,
+    truncated: bool,
+) -> FileContent {
+    if is_text_preview_bytes(mime, &bytes) {
         FileContent {
             path,
             mime: mime.into(),
             text: Some(String::from_utf8_lossy(&bytes).into_owned()),
             base64: None,
+            truncated,
+            total_bytes,
         }
     } else {
         FileContent {
@@ -987,6 +1159,8 @@ fn file_content_from_bytes(path: String, mime: &'static str, bytes: Vec<u8>) -> 
             mime: mime.into(),
             text: None,
             base64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+            truncated: false,
+            total_bytes,
         }
     }
 }
@@ -1094,14 +1268,21 @@ mod tests {
     use std::io::Write;
 
     struct FakeRemoteRunner {
-        output: Option<Result<RemoteOutput, String>>,
+        outputs: Vec<Result<RemoteOutput, String>>,
         commands: Vec<RemoteCommand>,
     }
 
     impl FakeRemoteRunner {
         fn returning(output: RemoteOutput) -> Self {
             Self {
-                output: Some(Ok(output)),
+                outputs: vec![Ok(output)],
+                commands: Vec::new(),
+            }
+        }
+
+        fn sequence(outputs: Vec<RemoteOutput>) -> Self {
+            Self {
+                outputs: outputs.into_iter().map(Ok).collect(),
                 commands: Vec::new(),
             }
         }
@@ -1110,13 +1291,16 @@ mod tests {
     impl RemoteRunner for FakeRemoteRunner {
         fn run(&mut self, command: &RemoteCommand) -> Result<RemoteOutput, String> {
             self.commands.push(command.clone());
-            self.output.take().expect("fake output configured")
+            if self.outputs.is_empty() {
+                panic!("fake remote runner ran out of outputs");
+            }
+            self.outputs.remove(0)
         }
     }
 
     fn test_identity_file() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "superscience-file-browser-test-key-{}",
+            "wisp-file-browser-test-key-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::write(&path, b"test-key\n").unwrap();
@@ -1174,7 +1358,7 @@ mod tests {
             .any(|arg| arg == "researcher@gpu.example"));
         let script = command.args.last().unwrap();
         assert!(script.contains("dir='/work/O'\"'\"'Brien; printf unsafe'"));
-        assert!(script.contains("SUPERSCIENCE_REMOTE_DIR_V1\\000"));
+        assert!(script.contains("WISP_REMOTE_DIR_V1\\000"));
         assert!(script.contains("stat -c '%s'"));
         assert!(script.contains("stat -f '%z'"));
         assert!(!script.contains("wc -c"));
@@ -1189,7 +1373,7 @@ mod tests {
     #[test]
     fn remote_directory_runner_parses_banner_and_sorts_directories_first() {
         let identity = test_identity_file();
-        let stdout = b"login banner\nSUPERSCIENCE_REMOTE_DIR_V1\0/home/research\0f\012\0notes.txt\0d\00\0projects\0f\03\0a.csv\0".to_vec();
+        let stdout = b"login banner\nWISP_REMOTE_DIR_V1\0/home/research\0f\012\0notes.txt\0d\00\0projects\0f\03\0a.csv\0".to_vec();
         let mut runner = FakeRemoteRunner::returning(RemoteOutput {
             status: 0,
             stdout,
@@ -1247,9 +1431,48 @@ mod tests {
         assert_eq!(command.program, "ssh");
         let script = command.args.last().unwrap();
         assert!(script.contains("f='/work/O'\"'\"'Brien results.html'"));
-        assert!(script.contains("SUPERSCIENCE_REMOTE_FILE_V1\\000"));
+        assert!(script.contains("WISP_REMOTE_FILE_V1\\000"));
         assert!(script.contains(&format!("-gt {REMOTE_FILE_MAX_BYTES}")));
         assert!(script.contains("cat \"$f\""));
+    }
+
+    #[test]
+    fn remote_text_file_command_streams_head_with_size() {
+        let identity = test_identity_file();
+        let command =
+            build_remote_text_file_command(&ssh_context(&identity), "/data/medline.txt", 1024)
+                .unwrap();
+        let script = command.args.last().unwrap();
+        assert!(script.contains("WISP_REMOTE_FILE_TEXT_V1\\000"));
+        assert!(script.contains("head -c 1024"));
+        assert!(!script.contains("cat \"$f\""));
+        assert!(!script.contains("-gt 1024"));
+    }
+
+    #[test]
+    fn local_text_preview_reads_only_a_prefix() {
+        let base = std::env::temp_dir().join(format!(
+            "wisp_text_prefix_test_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let body = "alpha\n".repeat(10_000); // ~60 KB
+        std::fs::write(base.join("huge.txt"), &body).unwrap();
+
+        let content = read_file_at(&base, "huge.txt".into(), Some(64)).unwrap();
+        assert!(content.truncated);
+        assert_eq!(content.total_bytes, Some(body.len() as u64));
+        assert_eq!(content.text.as_deref(), Some(&body[..64]));
+        assert!(content.base64.is_none());
+
+        // Oversize binary still rejects rather than returning a partial image.
+        let bin = vec![0u8; 128];
+        std::fs::write(base.join("huge.bin"), &bin).unwrap();
+        let error = read_file_at(&base, "huge.bin".into(), Some(32)).unwrap_err();
+        assert!(error.contains("byte limit"));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn test_ooxml(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -1317,7 +1540,7 @@ mod tests {
     #[test]
     fn raw_file_reader_preserves_binary_bytes_and_validates_ooxml() {
         let base = std::env::temp_dir().join(format!(
-            "superscience_raw_preview_test_{}_{}",
+            "wisp_raw_preview_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1399,33 +1622,76 @@ mod tests {
     #[test]
     fn remote_file_runner_sniffs_text_after_banner() {
         let identity = test_identity_file();
-        let stdout = b"motd noise\nSUPERSCIENCE_REMOTE_FILE_V1\0print('hi')\n".to_vec();
+        let stdout = b"motd noise\nWISP_REMOTE_FILE_TEXT_V1\012\0print('hi')\n".to_vec();
         let mut runner = FakeRemoteRunner::returning(RemoteOutput {
             status: 0,
             stdout,
             stderr: String::new(),
         });
-        let content =
-            read_remote_file_with_runner(&ssh_context(&identity), "~/analysis.py", &mut runner)
-                .unwrap();
+        let content = read_remote_file_with_runner(
+            &ssh_context(&identity),
+            "~/analysis.py",
+            None,
+            &mut runner,
+        )
+        .unwrap();
         assert_eq!(content.mime, "text/x-python");
         assert_eq!(content.text.as_deref(), Some("print('hi')\n"));
         assert!(content.base64.is_none());
         assert_eq!(content.path, "~/analysis.py");
+        assert!(!content.truncated);
+        assert_eq!(content.total_bytes, Some(12));
+    }
+
+    #[test]
+    fn remote_file_runner_returns_truncated_text_head() {
+        let identity = test_identity_file();
+        let head = b"PMID- 1\nTI  - plant\n";
+        let mut stdout = b"WISP_REMOTE_FILE_TEXT_V1\0".to_vec();
+        stdout.extend_from_slice(b"999999999\0");
+        stdout.extend_from_slice(head);
+        let mut runner = FakeRemoteRunner::returning(RemoteOutput {
+            status: 0,
+            stdout,
+            stderr: String::new(),
+        });
+        let content = read_remote_file_with_runner(
+            &ssh_context(&identity),
+            "/data/medline.txt",
+            Some(head.len() as u64),
+            &mut runner,
+        )
+        .unwrap();
+        assert_eq!(content.text.as_deref(), Some("PMID- 1\nTI  - plant\n"));
+        assert!(content.truncated);
+        assert_eq!(content.total_bytes, Some(999_999_999));
     }
 
     #[test]
     fn remote_file_runner_returns_binary_as_base64() {
         let identity = test_identity_file();
-        let stdout = b"SUPERSCIENCE_REMOTE_FILE_V1\0\x89PNG\0\x01".to_vec();
-        let mut runner = FakeRemoteRunner::returning(RemoteOutput {
-            status: 0,
-            stdout,
-            stderr: String::new(),
-        });
-        let content =
-            read_remote_file_with_runner(&ssh_context(&identity), "/plots/figure.png", &mut runner)
-                .unwrap();
+        // Text protocol sniffs binary and re-fetches full file via V1 bytes path.
+        let head = b"WISP_REMOTE_FILE_TEXT_V1\05\0\x89PNG\0\x01";
+        let full = b"WISP_REMOTE_FILE_V1\0\x89PNG\0\x01";
+        let mut runner = FakeRemoteRunner::sequence(vec![
+            RemoteOutput {
+                status: 0,
+                stdout: head.to_vec(),
+                stderr: String::new(),
+            },
+            RemoteOutput {
+                status: 0,
+                stdout: full.to_vec(),
+                stderr: String::new(),
+            },
+        ]);
+        let content = read_remote_file_with_runner(
+            &ssh_context(&identity),
+            "/plots/figure.png",
+            None,
+            &mut runner,
+        )
+        .unwrap();
         assert_eq!(content.mime, "image/png");
         assert!(content.text.is_none());
         assert_eq!(
@@ -1436,18 +1702,47 @@ mod tests {
                     .as_str()
             )
         );
+        assert!(!content.truncated);
+        assert_eq!(runner.commands.len(), 2);
     }
 
     #[test]
-    fn remote_file_runner_surfaces_size_limit_failure() {
+    fn remote_file_runner_surfaces_size_limit_failure_for_oversize_binary() {
+        let identity = test_identity_file();
+        // NULs in the head make it binary; total size above the text cap rejects.
+        let mut stdout = b"WISP_REMOTE_FILE_TEXT_V1\0".to_vec();
+        stdout.extend_from_slice(format!("{}\0", REMOTE_FILE_MAX_BYTES + 1).as_bytes());
+        stdout.extend_from_slice(b"MZ\0bin");
+        let mut runner = FakeRemoteRunner::returning(RemoteOutput {
+            status: 0,
+            stdout,
+            stderr: String::new(),
+        });
+        let error = read_remote_file_with_runner(
+            &ssh_context(&identity),
+            "/big.bam",
+            Some(REMOTE_FILE_MAX_BYTES),
+            &mut runner,
+        )
+        .unwrap_err();
+        assert!(error.contains("byte limit"));
+    }
+
+    #[test]
+    fn remote_file_bytes_runner_surfaces_size_limit_failure() {
         let identity = test_identity_file();
         let mut runner = FakeRemoteRunner::returning(RemoteOutput {
             status: 67,
             stdout: Vec::new(),
             stderr: "Remote file exceeds 33554432 byte limit: /big.bam".into(),
         });
-        let error = read_remote_file_with_runner(&ssh_context(&identity), "/big.bam", &mut runner)
-            .unwrap_err();
+        let error = read_remote_file_bytes_with_runner(
+            &ssh_context(&identity),
+            "/big.bam",
+            Some(REMOTE_FILE_MAX_BYTES),
+            &mut runner,
+        )
+        .unwrap_err();
         assert!(error.contains("exit 67"));
         assert!(error.contains("byte limit"));
     }
@@ -1455,7 +1750,7 @@ mod tests {
     #[test]
     fn collect_file_search_hits_matches_by_name_across_dirs() {
         let base = std::env::temp_dir().join(format!(
-            "superscience_search_files_test_{}_{}",
+            "wisp_search_files_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1485,7 +1780,7 @@ mod tests {
     #[test]
     fn workspace_entry_operations_create_rename_and_delete_files_and_directories() {
         let base = std::env::temp_dir().join(format!(
-            "superscience_file_operations_test_{}_{}",
+            "wisp_file_operations_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1514,7 +1809,7 @@ mod tests {
     #[test]
     fn workspace_entry_operations_stay_inside_root_and_never_overwrite() {
         let base = std::env::temp_dir().join(format!(
-            "superscience_file_operation_safety_test_{}_{}",
+            "wisp_file_operation_safety_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1537,7 +1832,7 @@ mod tests {
     #[test]
     fn script_files_are_text_and_unnamed_extensions_fall_back_to_sniffing() {
         let base = std::env::temp_dir().join(format!(
-            "superscience_script_preview_test_{}_{}",
+            "wisp_script_preview_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1577,7 +1872,7 @@ mod tests {
     #[test]
     fn append_review_note_creates_sidecar_and_appends_quotes() {
         let base = std::env::temp_dir().join(format!(
-            "superscience_review_note_test_{}_{}",
+            "wisp_review_note_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));

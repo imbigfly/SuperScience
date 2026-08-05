@@ -5,6 +5,9 @@
 //! alongside `scripts/` and `references/` directories. This mirrors the
 //! convention used by mangopi-cli and the superscience `skills/` catalog.
 
+use crate::manifest::{parse_skill_document, SuperscienceSkillMetadata};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -20,9 +23,12 @@ pub struct Skill {
     pub tags: Vec<String>,
     pub body: String,
     pub dir: PathBuf,
+    pub declared_version: Option<String>,
+    pub wisp: Option<SuperscienceSkillMetadata>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SkillSource {
     Bundled,
     Project,
@@ -30,6 +36,40 @@ pub enum SkillSource {
     Extra,
     Plugin,
     Custom,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SkillCatalogRecord {
+    pub record_id: String,
+    pub name: String,
+    pub scope: SkillSource,
+    pub path: PathBuf,
+    pub effective: bool,
+    pub shadowed_by: Option<String>,
+    pub declared_version: Option<String>,
+    pub skill_md_sha256: Option<String>,
+    pub parse_error: Option<String>,
+    pub package_id: Option<String>,
+    pub package_version: Option<String>,
+    pub package_source: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SkillCatalogSourceAudit {
+    pub discovered: usize,
+    pub effective: usize,
+    pub shadowed: usize,
+    pub parse_errors: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SkillCatalogAudit {
+    pub discovered_count: usize,
+    pub effective_count: usize,
+    pub unique_name_count: usize,
+    pub duplicate_count: usize,
+    pub parse_error_count: usize,
+    pub by_source: BTreeMap<String, SkillCatalogSourceAudit>,
 }
 
 impl SkillSource {
@@ -49,6 +89,7 @@ impl SkillSource {
 pub struct SkillIndex {
     skills: Vec<Skill>,
     sources: HashMap<String, SkillSource>,
+    records: Vec<SkillCatalogRecord>,
 }
 
 impl SkillIndex {
@@ -67,7 +108,8 @@ impl SkillIndex {
     pub fn load_scoped(base_paths: &[(PathBuf, SkillSource)]) -> Self {
         let mut skills = vec![];
         let mut sources = HashMap::new();
-        let mut names = HashSet::new();
+        let mut winners = HashMap::<String, String>::new();
+        let mut records = vec![];
         for (base, source) in base_paths {
             if !base.is_dir() {
                 continue;
@@ -76,25 +118,67 @@ impl SkillIndex {
                 .max_depth(2)
                 .sort_by_file_name()
                 .into_iter()
-                .filter_map(|e| e.ok())
             {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        let path = error
+                            .path()
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| base.clone());
+                        records.push(error_record(&path, *source, error.to_string()));
+                        continue;
+                    }
+                };
                 if !entry.file_type().is_file() {
                     continue;
                 }
                 if entry.file_name() != "SKILL.md" {
                     continue;
                 }
-                let dir = entry.path().parent().map(PathBuf::from).unwrap_or_default();
-                if let Ok(skill) = parse_skill(entry.path(), dir.clone()) {
-                    if names.insert(skill.name.clone()) {
-                        sources.insert(skill.name.clone(), *source);
-                        skills.push(skill);
+                let path = entry.path().to_path_buf();
+                let hash = sha256_file(&path).ok();
+                let dir = path.parent().map(PathBuf::from).unwrap_or_default();
+                match parse_skill(&path, dir) {
+                    Ok(skill) => {
+                        let record_id = record_id(*source, &path, hash.as_deref(), None);
+                        let shadowed_by = winners.get(&skill.name).cloned();
+                        let effective = shadowed_by.is_none();
+                        if effective {
+                            winners.insert(skill.name.clone(), record_id.clone());
+                            sources.insert(skill.name.clone(), *source);
+                            skills.push(skill.clone());
+                        }
+                        records.push(SkillCatalogRecord {
+                            record_id,
+                            name: skill.name,
+                            scope: *source,
+                            path,
+                            effective,
+                            shadowed_by,
+                            declared_version: skill.declared_version.clone(),
+                            skill_md_sha256: hash,
+                            parse_error: None,
+                            package_id: None,
+                            package_version: None,
+                            package_source: None,
+                        });
                     }
+                    Err(error) => records.push(error_record(&path, *source, error)),
                 }
             }
         }
         skills.sort_by(|a, b| a.name.cmp(&b.name));
-        Self { skills, sources }
+        records.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        Self {
+            skills,
+            sources,
+            records,
+        }
     }
 
     pub fn all(&self) -> &[Skill] {
@@ -102,6 +186,72 @@ impl SkillIndex {
     }
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
+    }
+
+    pub fn catalog_records(&self) -> &[SkillCatalogRecord] {
+        &self.records
+    }
+
+    pub fn catalog_audit(&self) -> SkillCatalogAudit {
+        let mut audit = SkillCatalogAudit {
+            discovered_count: self.records.len(),
+            effective_count: self
+                .records
+                .iter()
+                .filter(|record| record.effective)
+                .count(),
+            unique_name_count: self
+                .records
+                .iter()
+                .filter(|record| record.parse_error.is_none())
+                .map(|record| record.name.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            duplicate_count: self
+                .records
+                .iter()
+                .filter(|record| record.shadowed_by.is_some())
+                .count(),
+            parse_error_count: self
+                .records
+                .iter()
+                .filter(|record| record.parse_error.is_some())
+                .count(),
+            by_source: BTreeMap::new(),
+        };
+        for record in &self.records {
+            let source = audit
+                .by_source
+                .entry(record.scope.as_str().to_string())
+                .or_default();
+            source.discovered += 1;
+            source.effective += usize::from(record.effective);
+            source.shadowed += usize::from(record.shadowed_by.is_some());
+            source.parse_errors += usize::from(record.parse_error.is_some());
+        }
+        audit
+    }
+
+    /// Count the effective Skills present in this index by their winning
+    /// source. When the index has been filtered to the current enabled set,
+    /// these are the exact Skills the Agent can search and load.
+    pub fn skill_counts_by_source(&self) -> BTreeMap<String, usize> {
+        let mut counts = BTreeMap::new();
+        for skill in &self.skills {
+            let source = self
+                .source(&skill.name)
+                .unwrap_or(SkillSource::Custom)
+                .as_str()
+                .to_string();
+            *counts.entry(source).or_default() += 1;
+        }
+        counts
+    }
+
+    pub fn effective_record(&self, name: &str) -> Option<&SkillCatalogRecord> {
+        self.records
+            .iter()
+            .find(|record| record.effective && record.name == name)
     }
 
     pub fn filtered_by_names(&self, enabled: Option<&HashSet<String>>) -> Self {
@@ -119,10 +269,12 @@ impl SkillIndex {
                     .filter(|(name, _)| names.contains(*name))
                     .map(|(name, source)| (name.clone(), *source))
                     .collect(),
+                records: self.records.clone(),
             },
             None => Self {
                 skills: self.skills.clone(),
                 sources: self.sources.clone(),
+                records: self.records.clone(),
             },
         }
     }
@@ -144,7 +296,19 @@ impl SkillIndex {
             }
         }
         skills.sort_by(|left, right| left.name.cmp(&right.name));
-        Self { skills, sources }
+        let mut records = self.records.clone();
+        records.extend(other.records.clone());
+        mark_effective_records(&mut records, &skills);
+        records.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        Self {
+            skills,
+            sources,
+            records,
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<&Skill> {
@@ -171,6 +335,7 @@ impl SkillIndex {
                 })
                 .collect(),
             sources: self.sources.clone(),
+            records: self.records.clone(),
         }
     }
 
@@ -201,6 +366,69 @@ impl SkillIndex {
                 .filter(|(name, _)| !disabled.contains(*name))
                 .map(|(name, source)| (name.clone(), *source))
                 .collect(),
+            records: self.records.clone(),
+        }
+    }
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn record_id(source: SkillSource, path: &Path, hash: Option<&str>, error: Option<&str>) -> String {
+    let mut digest = Sha256::new();
+    digest.update(source.as_str().as_bytes());
+    digest.update([0]);
+    digest.update(path.to_string_lossy().as_bytes());
+    digest.update([0]);
+    digest.update(hash.unwrap_or_default().as_bytes());
+    digest.update([0]);
+    digest.update(error.unwrap_or_default().as_bytes());
+    format!("skill-record:{}", hex::encode(digest.finalize()))
+}
+
+fn error_record(path: &Path, source: SkillSource, error: String) -> SkillCatalogRecord {
+    let hash = sha256_file(path).ok();
+    let name = path
+        .parent()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    SkillCatalogRecord {
+        record_id: record_id(source, path, hash.as_deref(), Some(&error)),
+        name,
+        scope: source,
+        path: path.to_path_buf(),
+        effective: false,
+        shadowed_by: None,
+        declared_version: None,
+        skill_md_sha256: hash,
+        parse_error: Some(error),
+        package_id: None,
+        package_version: None,
+        package_source: None,
+    }
+}
+
+fn mark_effective_records(records: &mut [SkillCatalogRecord], skills: &[Skill]) {
+    for record in records.iter_mut() {
+        record.effective = false;
+        record.shadowed_by = None;
+    }
+    for skill in skills {
+        let winner = records.iter().position(|record| {
+            record.parse_error.is_none()
+                && record.name == skill.name
+                && record.path.parent() == Some(skill.dir.as_path())
+        });
+        let Some(winner) = winner else { continue };
+        let winner_id = records[winner].record_id.clone();
+        records[winner].effective = true;
+        for record in records.iter_mut().filter(|record| {
+            record.parse_error.is_none() && record.name == skill.name && !record.effective
+        }) {
+            record.shadowed_by = Some(winner_id.clone());
         }
     }
 }
@@ -213,100 +441,22 @@ pub fn parse_skill_file(md: &Path) -> Result<Skill, String> {
     parse_skill(md, dir)
 }
 
-/// A YAML block-scalar header: `>` or `|`, optionally with a chomping/indent
-/// indicator (`>-`, `|+`, `>2`, …). Everything else is a plain scalar.
-fn is_block_scalar(val: &str) -> bool {
-    let indicator = val.trim_end_matches(|c: char| c == '-' || c == '+' || c.is_ascii_digit());
-    indicator == ">" || indicator == "|"
-}
-
 fn parse_skill(path: &Path, dir: PathBuf) -> Result<Skill, String> {
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("could not read SKILL.md: {e}"))?;
-    let body_start = text
-        .find("---")
-        .ok_or_else(|| "SKILL.md has no frontmatter (--- block)".to_string())?;
-    let rest = &text[body_start + 3..];
-    let end = rest
-        .find("---")
-        .ok_or_else(|| "SKILL.md frontmatter is not closed with ---".to_string())?;
-    let yaml = &rest[..end];
-    let body = rest[end + 3..].trim().to_string();
-
-    let mut name = dir
+    let fallback_name = dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let mut description = String::new();
-    let mut tags: Vec<String> = vec![];
-
-    let lines: Vec<&str> = yaml.lines().collect();
-    let mut i = 0;
-    while i < lines.len() {
-        let raw = lines[i];
-        i += 1;
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        // Skip nested mapping/list lines (indented under a parent key).
-        if raw.starts_with(char::is_whitespace) || line.starts_with('-') {
-            continue;
-        }
-        let (key, val) = match line.split_once(':') {
-            Some(kv) => kv,
-            None => continue,
-        };
-        let key = key.trim();
-        let mut val = val
-            .trim()
-            .trim_matches(|c: char| c == '"' || c == '\'')
-            .to_string();
-        // YAML block scalar (`description: >` / `|`): fold the following
-        // more-indented lines into the value. ponytail: folds every
-        // continuation line with spaces — enough for one-line skill
-        // descriptions, not full literal/fold chomping semantics.
-        if is_block_scalar(&val) {
-            let mut parts: Vec<String> = vec![];
-            while i < lines.len() {
-                let cont = lines[i];
-                if cont.trim().is_empty() {
-                    i += 1;
-                    continue;
-                }
-                if !cont.starts_with(char::is_whitespace) {
-                    break;
-                }
-                parts.push(cont.trim().to_string());
-                i += 1;
-            }
-            val = parts.join(" ");
-        }
-        match key {
-            "name" => {
-                if !val.is_empty() {
-                    name = val;
-                }
-            }
-            "description" => description = val,
-            "tags" => {
-                tags = val
-                    .trim_matches(|c: char| c == '[' || c == ']')
-                    .split(',')
-                    .map(|s| s.trim().trim_matches('"').to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            }
-            _ => {}
-        }
-    }
-
+    let (manifest, body) = parse_skill_document(&text, fallback_name)?;
     Ok(Skill {
-        name,
-        description,
-        tags,
+        name: manifest.name.unwrap_or_default(),
+        description: manifest.description,
+        tags: manifest.tags.0,
         body,
         dir,
+        declared_version: manifest.version,
+        wisp: manifest.wisp,
     })
 }
 
@@ -340,6 +490,8 @@ mod tests {
             tags: vec![],
             body: String::new(),
             dir: PathBuf::new(),
+            declared_version: None,
+            wisp: None,
         }
     }
 
@@ -348,6 +500,7 @@ mod tests {
         let idx = SkillIndex {
             skills: vec![skill("a"), skill("b"), skill("c")],
             sources: HashMap::new(),
+            records: vec![],
         };
         let disabled: HashSet<String> = ["b".to_string()].into_iter().collect();
         let out = idx.filtered(&disabled);
@@ -362,6 +515,7 @@ mod tests {
         let idx = SkillIndex {
             skills: vec![skill("a"), skill("b"), skill("c")],
             sources: HashMap::new(),
+            records: vec![],
         };
         let enabled: HashSet<String> = ["a".to_string(), "c".to_string()].into_iter().collect();
         let out = idx.filtered_by_names(Some(&enabled));
@@ -436,6 +590,7 @@ mod tests {
             "python",
             "r",
             "search_skills",
+            "list_skill_catalog",
             "use_skill",
             "search_memory",
             "append_memory",
@@ -575,6 +730,7 @@ mod tests {
         let host = SkillIndex {
             skills: vec![skill("host"), skill("shared")],
             sources: HashMap::new(),
+            records: vec![],
         };
         let plugin = SkillIndex {
             skills: vec![
@@ -585,6 +741,7 @@ mod tests {
                 },
             ],
             sources: HashMap::new(),
+            records: vec![],
         };
         let merged = host.merged_preserving_self(&plugin);
         let names: Vec<_> = merged
@@ -601,10 +758,12 @@ mod tests {
         let host = SkillIndex {
             skills: vec![skill("shared")],
             sources: HashMap::new(),
+            records: vec![],
         };
         let plugin = SkillIndex {
             skills: vec![skill("plugin"), skill("shared")],
             sources: HashMap::new(),
+            records: vec![],
         };
         let enabled = HashSet::from(["plugin".to_string()]);
         let filtered = host
@@ -655,6 +814,7 @@ mod tests {
         let mut index = SkillIndex {
             skills: vec![skill("literature")],
             sources: HashMap::from([("literature".into(), SkillSource::Project)]),
+            records: vec![],
         };
         index.skills[0].tags = vec!["original".into()];
         let overrides = BTreeMap::from([(
@@ -668,5 +828,62 @@ mod tests {
             overrides["literature"]
         );
         assert_eq!(updated.source("literature"), Some(SkillSource::Project));
+    }
+
+    #[test]
+    fn catalog_snapshot_keeps_shadowed_and_parse_error_records() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp-skill-audit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bundled = root.join("bundled").join("shared");
+        let project = root.join("project").join("shared");
+        let broken = root.join("project").join("broken");
+        for dir in [&bundled, &project, &broken] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(
+            bundled.join("SKILL.md"),
+            "---\nname: shared\nversion: 1.2.3\ndescription: first\n---\nfirst",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("SKILL.md"),
+            "---\nname: shared\ndescription: second\n---\nsecond",
+        )
+        .unwrap();
+        std::fs::write(broken.join("SKILL.md"), "not frontmatter").unwrap();
+
+        let index = SkillIndex::load_scoped(&[
+            (root.join("bundled"), SkillSource::Bundled),
+            (root.join("project"), SkillSource::Project),
+        ]);
+        let audit = index.catalog_audit();
+        assert_eq!(audit.discovered_count, 3);
+        assert_eq!(audit.effective_count, 1);
+        assert_eq!(audit.duplicate_count, 1);
+        assert_eq!(audit.parse_error_count, 1);
+        let winner = index.effective_record("shared").unwrap();
+        assert_eq!(winner.declared_version.as_deref(), Some("1.2.3"));
+        assert_eq!(winner.skill_md_sha256.as_deref().unwrap().len(), 64);
+        let shadowed = index
+            .catalog_records()
+            .iter()
+            .find(|record| record.name == "shared" && !record.effective)
+            .unwrap();
+        assert_eq!(
+            shadowed.shadowed_by.as_deref(),
+            Some(winner.record_id.as_str())
+        );
+        assert!(index
+            .catalog_records()
+            .iter()
+            .any(|record| record.name == "broken" && record.parse_error.is_some()));
+
+        std::fs::remove_dir_all(root).ok();
     }
 }

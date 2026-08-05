@@ -205,7 +205,7 @@ Agent 通过 use_skill 工具按需加载 SKILL.md</pre>
           </div>
           <div class="feature-list-item">
             <h4>三层上下文压缩</h4>
-            <p>超大 tool 输出微压缩、丢弃旧轮次、LLM 摘要——在百万 token 预算内稳定长跑。</p>
+            <p>完整历史先归档，安全裁剪 tool/图片噪声；必须移除语义轮次时，先基于原历史生成增量摘要检查点，并保留有界近期上下文。</p>
           </div>
           <div class="feature-list-item">
             <h4>SQLite 持久化</h4>

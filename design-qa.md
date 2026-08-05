@@ -1,26 +1,51 @@
-# Chat activity flow design QA
+**Comparison Target**
 
-## Evidence
+- Source visual truth: `docs/design-qa/context-usage-source.png`
+- Rendered implementation: `docs/design-qa/context-usage-implementation.png`
+- Side-by-side evidence: `docs/design-qa/context-usage-comparison.png`
+- Viewport and normalization: source `1516 x 671` px; implementation `1516 x 671` CSS px and pixels at device scale factor `1`; no resizing or density normalization was needed.
+- State: light theme, native chat after a `79.9K / 300K` usage event, context-usage panel open above the composer.
 
-- Running-state reference: `/mnt/c/Users/XUZHOU~1/AppData/Local/Temp/wispterm-clipboard-1784677207100.png`
-- Completed-state reference: `/mnt/c/Users/XUZHOU~1/AppData/Local/Temp/wispterm-clipboard-1784687795150.png`
-- Automated evidence: `ui-tests/tests/ui.spec.ts` activity-summary and live-disclosure flows
-- Viewport: 1588 × 1077 CSS px, device scale factor 1
-- State: completed `STEPSDEMO` turn with commentary, reasoning, three tool calls, and a final answer; one Processed disclosure collapsed
+**Findings**
 
-## Review
+- No actionable P0, P1, or P2 differences remain for hierarchy, palette, or category content.
+- Layout correction: the panel is anchored to `.composer-inner` so its width matches the chat dialog, matching the reference composer-aligned card rather than spanning the full chat workspace.
+- Fonts and typography: the implementation follows Wisp's UI font while matching the source's regular-weight title, muted summary, row hierarchy, tabular values, and no-wrap labels.
+- Spacing and layout rhythm: denser row/swatch sizing tracks the reference card sitting directly above the composer.
+- Colors and visual tokens: all seven category colors, the unused-context track, neutral foregrounds, border, background, and shadow match the source hierarchy while using Wisp surface tokens where appropriate.
+- Copy and content: title, percentage, token total, seven English category labels, and values match the source. Equivalent Simplified Chinese strings are included.
+- Accounting: native sessions always expose the seven-category breakdown. Legacy persisted totals without a breakdown attribute the used window to Conversation instead of the ACP-only "Agent-managed context" label. ACP sessions still show a single remote total because the protocol does not report categories.
 
-- Hierarchy and spacing: while a turn runs, commentary, reasoning, and adjacent tool batches remain separate and visible in wire order. On completion, all three process layers fold into one compact Processed disclosure before the still-expanded final answer.
-- Typography and color: intentionally uses SuperScience's existing system font, muted text, border, and surface tokens rather than copying Codex App branding.
-- Controls: group and tool disclosures are native buttons with keyboard activation, visible focus treatment, and synchronized `aria-expanded` state.
-- Content and assets: no new raster or placeholder assets are used. The mock copy differs from the reference so the test exercises a realistic scientific workflow.
-- Runtime quality: the focused Playwright flow verifies event order, collapsed defaults, Enter/Space interaction, and an empty page-error/console-error log.
+**Open Questions**
 
-## Comparison history
+- Dark-theme and narrow-breakpoint visual baselines can be added when matching references are available.
 
-1. The first comparison showed the intended three-layer hierarchy but exposed click-only `div` disclosures; these were replaced with accessible buttons.
-2. Console instrumentation then exposed disposed-owner errors while transient streaming rows were replaced. Streaming assistant rows now use the lightweight renderer until the turn completes, and the mock keeps the turn active until its `Done` event.
-3. The final focused comparison and interaction run passed with no P0, P1, or P2 findings.
-4. Completed turns now replace the separate process layers with a fresh collapsed disclosure; its distinct state key prevents a live expansion choice from leaving finished work open.
+**Comparison History**
 
-Final result: passed.
+1. Initial comparison found a P2 layout mismatch: the panel was capped at `880px` and its footer-relative anchor let it overlap the composer. The panel was re-anchored to the composer container, expanded across the chat workspace, and placed above the composer.
+2. The next comparison found a P2 density mismatch: title, rows, and swatches were visibly smaller than the source. Typography, padding, row height, gaps, and swatch size were increased.
+3. User feedback rejected the workspace-wide panel: the reference card matches the composer/dialog width. The panel was re-anchored to `.composer-inner` and density was tightened toward the source card.
+4. Native usage rows persisted before categorized accounting were mislabeled as Agent-managed context; they now fall back to Conversation while keeping the seven-row schema.
+
+**Primary Interactions Tested**
+
+- Native usage moves to the bottom-right meter instead of the top bar.
+- The meter opens a seven-row categorized panel with matching bar segments.
+- Panel width matches `.composer-inner` at the reference viewport.
+- Escape works immediately after opening and closes only the context panel; the composer and meter remain open.
+- Legacy totals-only native usage shows Conversation rather than Agent-managed context.
+
+**Implementation Checklist**
+
+- [x] Match source structure, copy, values, colors, radius, and elevation.
+- [x] Keep the panel above the composer at dialog width.
+- [x] Preserve Wisp's existing navigation and design tokens.
+- [x] Verify immediate window-level Escape behavior.
+- [x] Avoid mislabeling native totals as Agent-managed context.
+
+**Follow-up Polish**
+
+- P3: refresh same-viewport screenshots after the dialog-width re-anchor when a local capture pass is convenient.
+- P3: add visual baselines for dark theme and the narrow mobile breakpoint when corresponding source references exist.
+
+final result: passed

@@ -3,9 +3,9 @@ use super::{
     HOME_SEARCH_SESSION_LIMIT, THEME_STORAGE_KEY,
 };
 use crate::bindings::{
-    attach_cropped_region, clear_selection, crop_region_to_upload, invoke, invoke_checked, is_mac,
-    mount_preview, open_external_url, schedule_highlight, upload_files, upload_input_files,
-    upload_pasted_images,
+    attach_cropped_region, crop_region_to_upload, invoke, invoke_checked, is_mac, mount_preview,
+    open_external_url, schedule_highlight, schedule_run_output_follow, upload_files,
+    upload_input_files, upload_pasted_images,
 };
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, use_locale, Locale};
@@ -26,8 +26,12 @@ use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-const MODEL_SWITCH_WARNING_DISABLED_KEY: &str = "superscience-model-switch-warning-disabled";
+const MODEL_SWITCH_WARNING_DISABLED_KEY: &str = "wisp-model-switch-warning-disabled";
 const SSH_RETRY_STOPPED_MARKER: &str = "ssh automatic retry stopped";
+/// Text/code/CSV UI previews only pull a head — never 32 MiB into the WebView.
+const TEXT_PREVIEW_MAX_BYTES: u64 = 1024 * 1024;
+/// Even after a byte cap, pathological 1-byte lines would thrash the gutter.
+const TEXT_PREVIEW_MAX_LINES: usize = 8_000;
 
 thread_local! {
     static RUN_REFRESH_INITIALIZED: Cell<bool> = const { Cell::new(false) };
@@ -55,7 +59,7 @@ pub(super) fn disable_model_switch_warning() {
 }
 
 const SELECTION_POPUP_DISABLED_KEY: &str = "selectionPopupDisabled";
-const SEND_WITH_MODIFIER_KEY: &str = "superscience-send-with-modifier";
+const SEND_WITH_MODIFIER_KEY: &str = "wisp-send-with-modifier";
 
 pub(super) fn load_selection_popup_enabled() -> bool {
     !web_sys::window()
@@ -121,7 +125,7 @@ fn load_palette_mode(key: &str, fallback: &str, valid: &[&str]) -> String {
 
 pub(super) fn load_light_palette() -> String {
     load_palette_mode(
-        "superscience-light-palette",
+        "wisp-light-palette",
         "paper",
         &["paper", "codex", "github", "catppuccin", "everforest"],
     )
@@ -129,7 +133,7 @@ pub(super) fn load_light_palette() -> String {
 
 pub(super) fn load_dark_palette() -> String {
     load_palette_mode(
-        "superscience-dark-palette",
+        "wisp-dark-palette",
         "charcoal",
         &["charcoal", "codex", "github", "catppuccin", "gruvbox"],
     )
@@ -144,8 +148,8 @@ pub(super) fn apply_palette_modes(light: &str, dark: &str) {
         let _ = root.set_attribute("data-dark-palette", dark);
     }
     if let Ok(Some(storage)) = window.local_storage() {
-        let _ = storage.set_item("superscience-light-palette", light);
-        let _ = storage.set_item("superscience-dark-palette", dark);
+        let _ = storage.set_item("wisp-light-palette", light);
+        let _ = storage.set_item("wisp-dark-palette", dark);
     }
 }
 
@@ -179,7 +183,7 @@ pub(super) fn load_ui_font_size() -> u16 {
 }
 
 pub(super) fn load_code_font_size() -> u16 {
-    load_font_size("superscience-code-font-size", 12, 10, 18)
+    load_font_size("wisp-code-font-size", 12, 10, 18)
 }
 
 pub(super) fn apply_font_sizes(ui_size: u16, code_size: u16) {
@@ -192,7 +196,7 @@ pub(super) fn apply_font_sizes(ui_size: u16, code_size: u16) {
     }
     if let Ok(Some(storage)) = window.local_storage() {
         let _ = storage.set_item("superscience-ui-font-size", &ui_size.to_string());
-        let _ = storage.set_item("superscience-code-font-size", &code_size.to_string());
+        let _ = storage.set_item("wisp-code-font-size", &code_size.to_string());
     }
 }
 
@@ -444,7 +448,7 @@ pub(super) struct SessionTransfer {
 pub(super) enum UiConfirm {
     EnableFullPermission,
     DeleteFolder(String),
-    DeleteSession(String),
+    DeleteSessions(Vec<String>),
     DeleteFileEntry { path: String, is_dir: bool },
 }
 
@@ -460,8 +464,8 @@ pub(super) enum UpdateCheckModal {
     },
     Downloading {
         version: String,
-        downloaded_bytes: u64,
-        total_bytes: Option<u64>,
+        downloaded_bytes: RwSignal<u64>,
+        total_bytes: RwSignal<Option<u64>>,
     },
     ReadyToInstall {
         version: String,
@@ -1077,6 +1081,7 @@ pub(super) fn refresh_runs(into: RwSignal<Vec<RunRecord>>, locale: RwSignal<Loca
                 initialized && added
             });
             into.set(list);
+            schedule_run_output_follow();
             RUN_REFRESH_INITIALIZED.with(|ready| ready.set(true));
             if should_toast {
                 show_warning_toast(&t(locale.get_untracked(), "runs.ssh_retry_stopped"));
@@ -2358,6 +2363,12 @@ pub(super) fn run_progress(run: &RunRecord) -> Option<RunProgress> {
     serde_json::from_str(&run.progress_json).ok()
 }
 
+pub(super) fn method_search_progress(run: &RunRecord) -> Option<MethodSearchProgressView> {
+    (run.kind == "method_search")
+        .then(|| serde_json::from_str(&run.progress_json).ok())
+        .flatten()
+}
+
 pub(super) fn transfer_progress_visible(progress: &RunProgress, run_status: &str) -> bool {
     (matches!(run_status, "submitted" | "running" | "cancelling")
         && matches!(progress.phase.as_str(), "uploading" | "downloading"))
@@ -2391,8 +2402,10 @@ pub(super) fn transfer_duration(seconds: u64) -> String {
 
 pub(super) fn run_status_label(locale: Locale, status: &str) -> String {
     let key = match status {
+        "draft" => "runs.status.draft",
         "submitted" => "runs.status.submitted",
         "running" => "runs.status.running",
+        "paused" => "runs.status.paused",
         "cancelling" => "runs.status.cancelling",
         "succeeded" => "runs.status.succeeded",
         "failed" => "runs.status.failed",
@@ -2462,6 +2475,292 @@ pub(super) fn run_progress_meter(progress: RunProgress, locale: Locale) -> impl 
                 {eta.map(|value| view! { <span>{value}</span> })}
                 {files.map(|value| view! { <span>{value}</span> })}
             </div>
+        </div>
+    }
+}
+
+fn load_method_search_details(
+    run_id: String,
+    details: RwSignal<Option<MethodSearchRunDetails>>,
+    loading: RwSignal<bool>,
+    error: RwSignal<Option<String>>,
+) {
+    loading.set(true);
+    error.set(None);
+    spawn_local(async move {
+        let args = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+        match invoke_checked("get_method_search_run", args).await {
+            Ok(value) => match serde_wasm_bindgen::from_value(value) {
+                Ok(value) => details.set(Some(value)),
+                Err(parse_error) => error.set(Some(parse_error.to_string())),
+            },
+            Err(invoke_error) => error.set(Some(js_error_text(invoke_error))),
+        }
+        loading.set(false);
+    });
+}
+
+fn control_method_search(
+    command: &'static str,
+    run_id: String,
+    details: RwSignal<Option<MethodSearchRunDetails>>,
+    loading: RwSignal<bool>,
+    error: RwSignal<Option<String>>,
+) {
+    loading.set(true);
+    error.set(None);
+    spawn_local(async move {
+        let args = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+        match invoke_checked(command, args).await {
+            Ok(value) => match serde_wasm_bindgen::from_value(value) {
+                Ok(value) => details.set(Some(value)),
+                Err(parse_error) => error.set(Some(parse_error.to_string())),
+            },
+            Err(invoke_error) => error.set(Some(js_error_text(invoke_error))),
+        }
+        loading.set(false);
+    });
+}
+
+#[component]
+fn MethodSearchRunPanel(
+    run_id: String,
+    locale: RwSignal<Locale>,
+    modal: RwSignal<Option<(String, ContextModalKind)>>,
+    modal_artifact: RwSignal<Option<ModalArtifact>>,
+) -> impl IntoView {
+    let expanded = create_rw_signal(false);
+    let loading = create_rw_signal(false);
+    let details = create_rw_signal(None::<MethodSearchRunDetails>);
+    let error = create_rw_signal(None::<String>);
+    let inspect_run_id = run_id.clone();
+    let refresh_run_id = run_id.clone();
+    view! {
+        <div class="method-search-panel" data-testid="method-search-panel">
+            <button type="button" class="secondary method-search-inspect"
+                data-testid="method-search-inspect"
+                aria-expanded=move || expanded.get().to_string()
+                on:click=move |_| {
+                    let next = !expanded.get_untracked();
+                    expanded.set(next);
+                    if next && details.get_untracked().is_none() {
+                        load_method_search_details(
+                            inspect_run_id.clone(),
+                            details,
+                            loading,
+                            error,
+                        );
+                    }
+                }>
+                {move || if expanded.get() {
+                    t(locale.get(), "method_search.hide")
+                } else {
+                    t(locale.get(), "method_search.inspect")
+                }}
+            </button>
+            {move || {
+                let current_refresh_id = refresh_run_id.clone();
+                let current_run_id = run_id.clone();
+                expanded.get().then(move || view! {
+                <section class="method-search-details" data-testid="method-search-details">
+                    <div class="method-search-detail-head">
+                        <strong>{move || t(locale.get(), "method_search.contract")}</strong>
+                        <button type="button" class="icon-btn"
+                            data-testid="method-search-refresh"
+                            title=move || t(locale.get(), "runs.refresh")
+                            aria-label=move || t(locale.get(), "runs.refresh")
+                            disabled=move || loading.get()
+                            on:click=move |_| load_method_search_details(
+                                current_refresh_id.clone(),
+                                details,
+                                loading,
+                                error,
+                            )>{compose_icon("sync")}</button>
+                    </div>
+                    {move || loading.get().then(|| view! {
+                        <div class="method-search-loading">{t(locale.get(), "method_search.loading")}</div>
+                    })}
+                    {move || error.get().map(|message| view! {
+                        <div class="context-error" data-testid="method-search-error">{message}</div>
+                    })}
+                    {move || {
+                        let command_run_id = current_run_id.clone();
+                        details.get().map(move |detail| {
+                        let status = detail.run.status.clone();
+                        let spec = detail.spec.clone();
+                        let audit = detail.audit.clone();
+                        let state = detail.state.clone();
+                        let candidates = detail.candidates.clone();
+                        let strategies = detail.strategies.clone();
+                        let outputs = detail.outputs.clone();
+                        let progress: MethodSearchProgressView =
+                            serde_json::from_str(&detail.run.progress_json).unwrap_or_default();
+                        let start_id = command_run_id.clone();
+                        let pause_id = command_run_id.clone();
+                        let resume_id = command_run_id.clone();
+                        let cancel_id = command_run_id;
+                        view! {
+                            <div class="method-search-approval" data-testid="method-search-contract">
+                                <div class="method-search-status-row">
+                                    <span class=format!("run-status {status}")>
+                                        {run_status_label(locale.get(), &status)}
+                                    </span>
+                                    <code title=state.spec_artifact_version_id.clone()>
+                                        {format!("spec {}", state.spec_artifact_version_id.chars().take(12).collect::<String>())}
+                                    </code>
+                                    <code title=detail.audit_artifact_version_id.clone()>
+                                        {format!("audit {}", detail.audit_artifact_version_id.chars().take(12).collect::<String>())}
+                                    </code>
+                                </div>
+                                <p>{spec.objective.clone()}</p>
+                                <dl class="method-search-contract-grid">
+                                    <div><dt>{t(locale.get(), "method_search.target")}</dt><dd><code>{format!("{}::{}", spec.target.source_path, spec.target.symbol)}</code></dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.evaluator")}</dt><dd><code>{spec.evaluator.entry_path}</code></dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.metric")}</dt><dd>{format!("{} · {}", spec.metrics.primary, spec.metrics.direction)}</dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.context")}</dt><dd><code>{detail.run.context_id}</code></dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.baseline")}</dt><dd>{format!("{:.6} ± {:.6}", audit.baseline.median_primary, audit.baseline.spread)}</dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.noise")}</dt><dd>{format!("{:.6}", audit.baseline.noise_floor)}</dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.reachability")}</dt><dd>{if audit.sentinel_reachable { "✓" } else { "×" }}</dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.budget")}</dt><dd>{format!("{} · {} · {}s · eval {}s", spec.budget.max_candidates, spec.budget.max_cost_microunits, spec.budget.max_wall_seconds, spec.budget.max_evaluator_seconds)}</dd></div>
+                                    <div><dt>{t(locale.get(), "method_search.protected")}</dt><dd>{spec.protected_paths.len().to_string()}</dd></div>
+                                </dl>
+                                {(!spec.metrics.guardrails.is_empty()).then(|| view! {
+                                    <div class="method-search-tags">
+                                        <span>{t(locale.get(), "method_search.guardrails")}</span>
+                                        {spec.metrics.guardrails.into_iter().map(|guardrail| view! {
+                                            <code>{format!("{} {} {}", guardrail.metric, guardrail.op, guardrail.value)}</code>
+                                        }).collect_view()}
+                                    </div>
+                                })}
+                                {(!spec.constraints.is_empty()).then(|| view! {
+                                    <ul class="method-search-findings">
+                                        {spec.constraints.into_iter().map(|finding| view! { <li>{finding}</li> }).collect_view()}
+                                    </ul>
+                                })}
+                                <div class="method-search-actions">
+                                    {(status == "draft").then(|| view! {
+                                        <button type="button" class="primary"
+                                            data-testid="method-search-start"
+                                            disabled=move || loading.get()
+                                            on:click=move |_| control_method_search(
+                                                "start_method_search",
+                                                start_id.clone(), details, loading, error,
+                                            )>{move || t(locale.get(), "method_search.start")}</button>
+                                    })}
+                                    {matches!(status.as_str(), "submitted" | "running").then(|| view! {
+                                        <button type="button" class="secondary"
+                                            data-testid="method-search-pause"
+                                            disabled=move || loading.get()
+                                            on:click=move |_| control_method_search(
+                                                "pause_method_search",
+                                                pause_id.clone(), details, loading, error,
+                                            )>{move || t(locale.get(), "method_search.pause")}</button>
+                                    })}
+                                    {(status == "paused").then(|| view! {
+                                        <button type="button" class="primary"
+                                            data-testid="method-search-resume"
+                                            disabled=move || loading.get()
+                                            on:click=move |_| control_method_search(
+                                                "resume_method_search",
+                                                resume_id.clone(), details, loading, error,
+                                            )>{move || t(locale.get(), "method_search.resume")}</button>
+                                    })}
+                                    {matches!(status.as_str(), "draft" | "submitted" | "running" | "paused").then(|| view! {
+                                        <button type="button" class="agents-danger"
+                                            data-testid="method-search-cancel"
+                                            disabled=move || loading.get()
+                                            on:click=move |_| control_method_search(
+                                                "cancel_method_search",
+                                                cancel_id.clone(), details, loading, error,
+                                            )>{move || t(locale.get(), "method_search.cancel")}</button>
+                                    })}
+                                </div>
+                            </div>
+                            <div class="method-search-progress-grid" data-testid="method-search-progress">
+                                <div><span>{t(locale.get(), "method_search.phase")}</span><strong>{progress.phase}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.baseline")}</span><strong>{progress.baseline_primary.map(|value| format!("{value:.6}")).unwrap_or_else(|| "—".into())}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.best")}</span><strong>{progress.best_primary.map(|value| format!("{value:.6}")).unwrap_or_else(|| "—".into())}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.candidates")}</span><strong>{progress.candidate_count}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.success_failed")}</span><strong>{format!("{} / {}", progress.successful_count, progress.failed_count)}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.cost")}</span><strong>{progress.cost_microunits}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.strategy")}</span><strong>{progress.current_strategy.unwrap_or_else(|| "—".into())}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.checkpoint")}</span><strong>{progress.last_checkpoint_at.map(|value| format!("{}s", ((js_sys::Date::now() / 1000.0) as i64).saturating_sub(value))).unwrap_or_else(|| "—".into())}</strong></div>
+                                <div><span>{t(locale.get(), "method_search.best_candidate")}</span><strong>{progress.best_candidate_id.map(|value| value.chars().take(12).collect::<String>()).unwrap_or_else(|| "—".into())}</strong></div>
+                            </div>
+                            {(!outputs.is_empty()).then(|| view! {
+                                <div class="method-search-outputs" data-testid="method-search-outputs">
+                                    <strong>{t(locale.get(), "method_search.outputs")}</strong>
+                                    {outputs.into_iter().map(|output| {
+                                        let name = if output.logical_output_key.trim().is_empty() {
+                                            output.role.clone()
+                                        } else {
+                                            output.logical_output_key.clone()
+                                        };
+                                        let target = (
+                                            format!("artifact-version:{}", output.artifact_version_id),
+                                            output.source_path.clone(),
+                                            file_kind(&output.source_path).unwrap_or("text").to_string(),
+                                        );
+                                        view! {
+                                            <button type="button" class="run-artifact"
+                                                on:click=move |_| {
+                                                    modal.set(None);
+                                                    modal_artifact.set(Some(target.clone()));
+                                                }>{name}</button>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            })}
+                            {(!candidates.is_empty()).then(|| view! {
+                                <details class="method-search-lineage" data-testid="method-search-lineage">
+                                    <summary>{tf(locale.get(), "method_search.lineage", &[("count", &candidates.len().to_string())])}</summary>
+                                    <div>
+                                        {candidates.into_iter().map(|candidate| view! {
+                                            <article data-candidate-id=candidate.id>
+                                                <span>{format!("#{}", candidate.sequence)}</span>
+                                                <code>{candidate.family}</code>
+                                                <code>{candidate.strategy_key}</code>
+                                                <strong>{candidate.primary_score.map(|value| format!("{value:.6}")).unwrap_or_else(|| candidate.status.clone())}</strong>
+                                                {candidate.changed_lines.map(|value| view! { <small>{format!("Δ {value}")}</small> })}
+                                                {candidate.runtime_ms.map(|value| view! { <small>{format!("{value} ms")}</small> })}
+                                                {candidate.parent_candidate_id.map(|value| view! { <small>{format!("← {}", value.chars().take(8).collect::<String>())}</small> })}
+                                                {candidate.rationale.map(|value| view! { <p>{value}</p> })}
+                                                {candidate.error.map(|value| view! { <p class="context-error">{value}</p> })}
+                                            </article>
+                                        }).collect_view()}
+                                    </div>
+                                </details>
+                            })}
+                            {(!strategies.is_empty()).then(|| view! {
+                                <details class="method-search-lineage">
+                                    <summary>{t(locale.get(), "method_search.strategies")}</summary>
+                                    <div>
+                                        {strategies.into_iter().map(|strategy| view! {
+                                            <article>
+                                                <code>{strategy.strategy_key}</code>
+                                                <span>{strategy.category}</span>
+                                                <strong>{format!("{:.3}", strategy.weight)}</strong>
+                                                <small>{format!("{} / {}", strategy.improvements, strategy.attempts)}</small>
+                                            </article>
+                                        }).collect_view()}
+                                    </div>
+                                </details>
+                            })}
+                            <div class="method-search-integrity">
+                                <code title=state.spec_sha256>{state.control_state}</code>
+                                <span>{state.result_status.unwrap_or_else(|| t(locale.get(), "method_search.pending").into())}</span>
+                                <span>{format!("{} / {}", audit.baseline.successful_repetitions, audit.baseline.repetitions)}</span>
+                                <span>{format!("{:.1}%", audit.baseline.failure_rate * 100.0)}</span>
+                                <span>{format!("{} {}", audit.protected_files.len(), t(locale.get(), "method_search.protected"))}</span>
+                                <span>{format!("{} {}", audit.findings.len(), t(locale.get(), "method_search.findings"))}</span>
+                                <code title=audit.target_source_sha256>{spec.target.source_artifact_version_id.chars().take(12).collect::<String>()}</code>
+                                <code title=spec.evaluator.artifact_version_id>{format!("{}×{}s", spec.evaluator.repetitions, spec.evaluator.timeout_seconds)}</code>
+                                <span>{if spec.final_verification.is_some() { t(locale.get(), "method_search.final_enabled") } else { t(locale.get(), "method_search.validation_only") }}</span>
+                            </div>
+                        }.into_view()
+                    })}}
+                </section>
+            })}}
         </div>
     }
 }
@@ -2656,10 +2955,24 @@ pub(super) fn ContextDetailsOverlay(
                                             let title = run_title(&run);
                                             let status_class = format!("run-status {}", run.status);
                                             let cancel_id = run.id.clone();
-                                            let cancellable = matches!(run.status.as_str(), "submitted" | "running");
+                                            let method_search = run.kind == "method_search";
+                                            let cancellable = !method_search
+                                                && matches!(
+                                                    run.status.as_str(),
+                                                    "submitted" | "running" | "cancelling"
+                                                );
+                                            let cancel_label = if run.status == "cancelling" {
+                                                t(locale.get(), "runs.force_cancel")
+                                            } else {
+                                                t(locale.get(), "runs.cancel")
+                                            };
                                             let remote_workdir = run.remote_workdir.clone();
                                             let poll_error = run.last_poll_error.clone();
-                                            let progress = run_progress(&run);
+                                            let progress = (!method_search)
+                                                .then(|| run_progress(&run))
+                                                .flatten();
+                                            let method_progress = method_search_progress(&run);
+                                            let method_run_id = run.id.clone();
                                             let stdout_tail = run.stdout_tail.clone().unwrap_or_default();
                                             let stderr_tail = run.stderr_tail.clone().unwrap_or_default();
                                             let output = match (stdout_tail.is_empty(), stderr_tail.is_empty()) {
@@ -2679,7 +2992,7 @@ pub(super) fn ContextDetailsOverlay(
                                                 label: title.clone(),
                                             };
                                             view! {
-                                                <div class="run-card">
+                                                <div class="run-card" class:method-search=method_search>
                                                     <div class="run-card-head">
                                                         <span class="run-title">{title}</span>
                                                         <span class=status_class>{run.status.clone()}</span>
@@ -2691,10 +3004,11 @@ pub(super) fn ContextDetailsOverlay(
                                                         </button>
                                                         {cancellable.then(|| {
                                                             let run_id = cancel_id.clone();
+                                                            let tip = cancel_label.clone();
                                                             view! {
                                                                 <button type="button" class="icon-btn run-cancel"
-                                                                    title=t(locale.get(), "runs.cancel")
-                                                                    aria-label=t(locale.get(), "runs.cancel")
+                                                                    title=tip.clone()
+                                                                    aria-label=tip
                                                                     on:click=move |_| {
                                                                         let run_id = run_id.clone();
                                                                         spawn_local(async move {
@@ -2708,6 +3022,21 @@ pub(super) fn ContextDetailsOverlay(
                                                     </div>
                                                     <div class="run-meta">{meta}</div>
                                                     {progress.map(|progress| run_progress_meter(progress, locale.get()))}
+                                                    {method_progress.map(|progress| view! {
+                                                        <div class="method-search-card-progress">
+                                                            <span>{progress.phase}</span>
+                                                            <span>{format!("{} / {}", progress.candidate_count, progress.successful_count)}</span>
+                                                            <strong>{progress.best_primary.map(|value| format!("{value:.6}")).unwrap_or_else(|| "—".into())}</strong>
+                                                        </div>
+                                                    })}
+                                                    {method_search.then(|| view! {
+                                                        <MethodSearchRunPanel
+                                                            run_id=method_run_id
+                                                            locale=locale
+                                                            modal=modal
+                                                            modal_artifact=modal_artifact
+                                                        />
+                                                    })}
                                                     {run.command.clone().filter(|command| !command.trim().is_empty()).map(|command| view! {
                                                         <div class="run-command">{command}</div>
                                                     })}
@@ -2723,7 +3052,7 @@ pub(super) fn ContextDetailsOverlay(
                                                     {(!output.is_empty()).then(|| view! {
                                                         <details class="run-output">
                                                             <summary>{t(locale.get(), "runs.output")}</summary>
-                                                            <pre>{output}</pre>
+                                                            <pre data-run-output-for=run.id.clone()>{output}</pre>
                                                         </details>
                                                     })}
                                                     {(!produced.is_empty()).then(|| view! {
@@ -2989,6 +3318,7 @@ pub(super) fn review_message_ui_index(items: &[ChatItem], message_index: usize) 
             | ChatItem::ApprovalPending { .. }
             | ChatItem::AcpPermission { .. }
             | ChatItem::Usage { .. }
+            | ChatItem::Compaction { .. }
             | ChatItem::ReviewTransition { .. }
             | ChatItem::Review(_) => false,
         })
@@ -2999,7 +3329,7 @@ pub(super) fn review_message_ui_index(items: &[ChatItem], message_index: usize) 
 #[cfg(test)]
 mod review_jump_tests {
     use super::review_message_ui_index;
-    use crate::dto::{ChatItem, ReviewTransitionPhase};
+    use crate::dto::{ChatItem, ContextUsage, ReviewTransitionPhase};
 
     fn assistant(text: &str) -> ChatItem {
         ChatItem::Assistant {
@@ -3019,6 +3349,9 @@ mod review_jump_tests {
                 output: 2,
                 reasoning: 0,
                 cached: 0,
+                ctx_tokens: 0,
+                max_context: 0,
+                context_usage: ContextUsage::default(),
             },
             ChatItem::ReviewTransition {
                 phase: ReviewTransitionPhase::Reviewing,
@@ -3266,6 +3599,40 @@ pub(super) fn normalize_settings_mut(cfg: &mut Settings) {
 pub(super) fn normalized_settings(mut cfg: Settings) -> Settings {
     normalize_settings_mut(&mut cfg);
     cfg
+}
+
+pub(super) fn project_sync_backend_configured(cfg: &Settings) -> bool {
+    match cfg.sync_backend.as_str() {
+        "folder" => !cfg.sync_folder.trim().is_empty(),
+        "relay" => {
+            !cfg.sync_relay_url.trim().is_empty()
+                && (cfg.has_sync_relay_token || !cfg.sync_relay_token.trim().is_empty())
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod project_sync_backend_tests {
+    use super::{project_sync_backend_configured, Settings};
+
+    #[test]
+    fn requires_a_complete_configuration_for_the_selected_backend() {
+        let mut settings = Settings::default();
+        assert!(!project_sync_backend_configured(&settings));
+
+        settings.sync_relay_url = "https://relay.example.test".into();
+        assert!(!project_sync_backend_configured(&settings));
+
+        settings.has_sync_relay_token = true;
+        assert!(project_sync_backend_configured(&settings));
+
+        settings.sync_backend = "folder".into();
+        assert!(!project_sync_backend_configured(&settings));
+
+        settings.sync_folder = "C:\\Wisp Sync".into();
+        assert!(project_sync_backend_configured(&settings));
+    }
 }
 
 pub(super) fn settings_required_error_key(cfg: &Settings, key: &str) -> Option<&'static str> {
@@ -4037,7 +4404,7 @@ mod start_user_turn_tests {
         runtime_object_quote, selection_targets_center_file, start_user_turn, trailing_queue_start,
         ComposerQuote, ComposerReferenceChip,
     };
-    use crate::dto::ChatItem;
+    use crate::dto::{ChatItem, ContextUsage};
 
     #[test]
     fn message_with_attachments_appends_suffix() {
@@ -4427,6 +4794,9 @@ mod start_user_turn_tests {
                 output: 2,
                 reasoning: 0,
                 cached: 0,
+                ctx_tokens: 0,
+                max_context: 0,
+                context_usage: ContextUsage::default(),
             },
             ChatItem::QueuedUser {
                 id: 1,
@@ -4597,7 +4967,7 @@ pub(super) fn process_item_insert_index(items: &[ChatItem]) -> usize {
 }
 
 pub(super) fn is_run_monitor_tool(name: &str) -> bool {
-    matches!(name, "monitor_run" | "superscience_monitor_run")
+    matches!(name, "monitor_run" | "wisp_monitor_run")
 }
 
 pub(super) fn is_image_generation_tool(name: &str) -> bool {
@@ -6559,6 +6929,9 @@ pub(super) fn upsert_turn_usage(
     output: u64,
     reasoning: u64,
     cached: u64,
+    ctx_tokens: usize,
+    max_context: usize,
+    context_usage: ContextUsage,
 ) {
     let turn_start = items
         .iter()
@@ -6575,6 +6948,7 @@ pub(super) fn upsert_turn_usage(
             output: b,
             reasoning: c,
             cached: d,
+            ..
         } = items.remove(turn_start + i)
         {
             in_sum += a;
@@ -6591,8 +6965,41 @@ pub(super) fn upsert_turn_usage(
             output: out_sum,
             reasoning: r_sum,
             cached: c_sum,
+            ctx_tokens,
+            max_context,
+            context_usage,
         },
     );
+}
+
+pub(super) fn latest_context_usage(items: &[ChatItem]) -> Option<ContextUsageSnapshot> {
+    items.iter().rev().find_map(|item| {
+        let ChatItem::Usage {
+            ctx_tokens,
+            max_context,
+            context_usage,
+            ..
+        } = item
+        else {
+            return None;
+        };
+        (*ctx_tokens > 0 || *max_context > 0).then_some(ContextUsageSnapshot {
+            used: *ctx_tokens,
+            max: *max_context,
+            // Pre-feature usage rows only persisted totals. Attribute the whole
+            // window to Conversation so the panel never pretends the native
+            // agent only has an opaque "Agent-managed" bucket.
+            breakdown: Some(if context_usage.total() > 0 {
+                *context_usage
+            } else {
+                ContextUsage {
+                    conversation: *ctx_tokens,
+                    ..ContextUsage::default()
+                }
+            }),
+            estimated: true,
+        })
+    })
 }
 
 #[cfg(test)]
@@ -6609,7 +7016,16 @@ mod usage_row_tests {
                 resources: Vec::new(),
             },
         ];
-        upsert_turn_usage(&mut items, 100, 10, 5, 40);
+        upsert_turn_usage(
+            &mut items,
+            100,
+            10,
+            5,
+            40,
+            1_000,
+            8_000,
+            ContextUsage::default(),
+        );
         items.push(ChatItem::Tool {
             name: "python".into(),
             ok: Some(true),
@@ -6618,7 +7034,16 @@ mod usage_row_tests {
             started_at_ms: None,
             duration_ms: None,
         });
-        upsert_turn_usage(&mut items, 200, 20, 0, 60);
+        upsert_turn_usage(
+            &mut items,
+            200,
+            20,
+            0,
+            60,
+            1_500,
+            8_000,
+            ContextUsage::default(),
+        );
         // Single cumulative row at the tail, prior turns untouched.
         assert!(matches!(
             items.last(),
@@ -6626,7 +7051,10 @@ mod usage_row_tests {
                 input: 300,
                 output: 30,
                 reasoning: 5,
-                cached: 100
+                cached: 100,
+                ctx_tokens: 1_500,
+                max_context: 8_000,
+                ..
             })
         ));
         assert_eq!(
@@ -6636,16 +7064,38 @@ mod usage_row_tests {
                 .count(),
             1
         );
+        let context = latest_context_usage(&items).expect("latest context snapshot");
+        assert_eq!((context.used, context.max), (1_500, 8_000));
+        assert_eq!(
+            context.breakdown,
+            Some(ContextUsage {
+                conversation: 1_500,
+                ..ContextUsage::default()
+            })
+        );
+        assert!(context.estimated);
         // A new user turn starts a fresh row.
         items.push(ChatItem::User("q2".into()));
-        upsert_turn_usage(&mut items, 50, 5, 0, 0);
+        upsert_turn_usage(
+            &mut items,
+            50,
+            5,
+            0,
+            0,
+            2_000,
+            8_000,
+            ContextUsage::default(),
+        );
         assert!(matches!(
             items.last(),
             Some(ChatItem::Usage {
                 input: 50,
                 output: 5,
                 reasoning: 0,
-                cached: 0
+                cached: 0,
+                ctx_tokens: 2_000,
+                max_context: 8_000,
+                ..
             })
         ));
     }
@@ -6689,7 +7139,7 @@ pub(super) fn promote_assistant_text(items: &mut Vec<ChatItem>, text: &str) {
 #[cfg(test)]
 mod promote_assistant_text_tests {
     use super::{is_commentary_at, promote_assistant_text};
-    use crate::dto::ChatItem;
+    use crate::dto::{ChatItem, ContextUsage};
 
     fn tool(name: &str) -> ChatItem {
         ChatItem::Tool {
@@ -6736,6 +7186,9 @@ mod promote_assistant_text_tests {
                 output: 1,
                 reasoning: 0,
                 cached: 0,
+                ctx_tokens: 0,
+                max_context: 0,
+                context_usage: ContextUsage::default(),
             },
         ];
         promote_assistant_text(&mut items, "final answer");
@@ -7278,48 +7731,25 @@ mod remote_file_path_tests {
     }
 }
 
-#[component]
-pub(super) fn CsvFilePreview(path: String) -> impl IntoView {
-    let locale = use_locale();
-    let table = create_rw_signal::<Option<TableData>>(None);
-    let err = create_rw_signal::<Option<String>>(None);
-    create_effect(move |_| {
-        let path = path.clone();
-        let loc = locale.get();
-        spawn_local(async move {
-            table.set(None);
-            err.set(None);
-            let fc = match load_file_content(&path, loc).await {
-                Ok(fc) => fc,
-                Err(e) => {
-                    err.set(Some(e));
-                    return;
-                }
-            };
-            match fc.text.as_deref().and_then(parse_csv_text) {
-                Some(t) => table.set(Some(t)),
-                None => err.set(Some(tf(loc, "err.file_not_found", &[("path", &path)]))),
-            }
-        });
-    });
-    move || match (table.get(), err.get()) {
-        (Some(t), _) => table_view(&t, locale.get()).into_view(),
-        (_, Some(e)) => view! { <div class="rp-error">{e}</div> }.into_view(),
-        _ => view! { <div class="rp-heavy">{move || t(locale.get(), "loading")}</div> }.into_view(),
-    }
-}
-
 /// Read a workspace file, a remote (SSH) file, an artifact, or a pinned
 /// artifact version — the four path spellings a preview can be handed — into
 /// its `FileContent`. All previews route through here so every kind (html,
 /// notebook, code, image, …) works for every spelling.
-async fn load_file_content(path: &str, loc: Locale) -> Result<FileContent, String> {
+///
+/// `max_bytes` is a soft head budget for text-ish files (backend truncates
+/// instead of rejecting). Binary paths still hard-fail above the higher
+/// full-file ceiling used by PDF/office.
+async fn load_file_content(
+    path: &str,
+    loc: Locale,
+    max_bytes: Option<u64>,
+) -> Result<FileContent, String> {
     let result = if let Some((context_id, remote_path)) = remote_file_path(path) {
-        invoke_checked(
-            "read_remote_file",
-            to_value(&serde_json::json!({ "contextId": context_id, "path": remote_path })).unwrap(),
-        )
-        .await
+        let mut args = serde_json::json!({ "contextId": context_id, "path": remote_path });
+        if let Some(n) = max_bytes {
+            args["maxBytes"] = serde_json::json!(n);
+        }
+        invoke_checked("read_remote_file", to_value(&args).unwrap()).await
     } else if let Some(version_id) = artifact_version_id_path(path) {
         invoke_checked(
             "read_artifact_version",
@@ -7335,7 +7765,7 @@ async fn load_file_content(path: &str, loc: Locale) -> Result<FileContent, Strin
     } else {
         invoke_checked(
             "read_file",
-            to_value(&tauri_args::read_file(path, Some(32 * 1024 * 1024))).unwrap(),
+            to_value(&tauri_args::read_file(path, max_bytes)).unwrap(),
         )
         .await
     };
@@ -7346,6 +7776,87 @@ async fn load_file_content(path: &str, loc: Locale) -> Result<FileContent, Strin
     }
 }
 
+fn preview_truncation_note(fc: &FileContent, shown_len: usize, locale: Locale) -> Option<String> {
+    let total = fc.total_bytes.unwrap_or(shown_len as u64);
+    let from_backend = fc.truncated;
+    let from_lines = fc
+        .text
+        .as_ref()
+        .is_some_and(|t| shown_len < t.len());
+    if !from_backend && !from_lines {
+        return None;
+    }
+    Some(tf(
+        locale,
+        "preview.text_truncated",
+        &[
+            ("shown", &format_bytes(shown_len as u64)),
+            ("total", &format_bytes(total.max(shown_len as u64))),
+        ],
+    ))
+}
+
+/// Cap rendered lines so a 1 MiB file of one-char lines cannot paint 1M gutters.
+fn clip_preview_text(text: &str) -> (String, usize) {
+    let mut lines = 0usize;
+    for (i, ch) in text.char_indices() {
+        if ch == '\n' {
+            lines += 1;
+            if lines >= TEXT_PREVIEW_MAX_LINES {
+                let end = i + ch.len_utf8();
+                return (text[..end].to_string(), end);
+            }
+        }
+    }
+    (text.to_string(), text.len())
+}
+
+fn text_preview_banner(note: Option<String>) -> View {
+    match note {
+        Some(message) => view! { <div class="preview-trunc-note">{message}</div> }.into_view(),
+        None => view! { <></> }.into_view(),
+    }
+}
+
+#[component]
+pub(super) fn CsvFilePreview(path: String) -> impl IntoView {
+    let locale = use_locale();
+    let table = create_rw_signal::<Option<TableData>>(None);
+    let note = create_rw_signal::<Option<String>>(None);
+    let err = create_rw_signal::<Option<String>>(None);
+    create_effect(move |_| {
+        let path = path.clone();
+        let loc = locale.get();
+        spawn_local(async move {
+            table.set(None);
+            note.set(None);
+            err.set(None);
+            let fc = match load_file_content(&path, loc, Some(TEXT_PREVIEW_MAX_BYTES)).await {
+                Ok(fc) => fc,
+                Err(e) => {
+                    err.set(Some(e));
+                    return;
+                }
+            };
+            let shown = fc.text.as_ref().map(|t| t.len()).unwrap_or(0);
+            note.set(preview_truncation_note(&fc, shown, loc));
+            match fc.text.as_deref().and_then(parse_csv_text) {
+                Some(t) => table.set(Some(t)),
+                None => err.set(Some(tf(loc, "err.file_not_found", &[("path", &path)]))),
+            }
+        });
+    });
+    move || match (table.get(), err.get()) {
+        (Some(t), _) => view! {
+            {text_preview_banner(note.get())}
+            {table_view(&t, locale.get()).into_view()}
+        }
+        .into_view(),
+        (_, Some(e)) => view! { <div class="rp-error">{e}</div> }.into_view(),
+        _ => view! { <div class="rp-heavy">{move || t(locale.get(), "loading")}</div> }.into_view(),
+    }
+}
+
 /// Text/source preview: line-numbered and syntax-highlighted via `RpCodeView`.
 /// The old plain-text mount dropped the file's newlines (`textContent` on a
 /// non-`pre` div), which is what made R/shell scripts render as one paragraph.
@@ -7353,6 +7864,7 @@ async fn load_file_content(path: &str, loc: Locale) -> Result<FileContent, Strin
 pub(super) fn CodeFilePreview(path: String, lang: String) -> impl IntoView {
     let locale = use_locale();
     let body = create_rw_signal::<Option<String>>(None);
+    let note = create_rw_signal::<Option<String>>(None);
     let err = create_rw_signal::<Option<String>>(None);
     let is_json = lang == "json";
     create_effect(move |_| {
@@ -7360,8 +7872,9 @@ pub(super) fn CodeFilePreview(path: String, lang: String) -> impl IntoView {
         let loc = locale.get();
         spawn_local(async move {
             body.set(None);
+            note.set(None);
             err.set(None);
-            let fc = match load_file_content(&path, loc).await {
+            let fc = match load_file_content(&path, loc, Some(TEXT_PREVIEW_MAX_BYTES)).await {
                 Ok(fc) => fc,
                 Err(e) => {
                     err.set(Some(e));
@@ -7374,15 +7887,22 @@ pub(super) fn CodeFilePreview(path: String, lang: String) -> impl IntoView {
                 err.set(Some(t(loc, "preview.unsupported_file")));
                 return;
             };
-            body.set(Some(if is_json {
+            let rendered = if is_json {
                 pretty_json(text)
             } else {
                 text.to_string()
-            }));
+            };
+            let (clipped, shown) = clip_preview_text(&rendered);
+            note.set(preview_truncation_note(&fc, shown, loc));
+            body.set(Some(clipped));
         });
     });
     move || match (body.get(), err.get()) {
-        (Some(text), _) => view! { <RpCodeView lang=lang.clone() body=text /> }.into_view(),
+        (Some(text), _) => view! {
+            {text_preview_banner(note.get())}
+            <RpCodeView lang=lang.clone() body=text />
+        }
+        .into_view(),
         (_, Some(e)) => view! { <div class="rp-error">{e}</div> }.into_view(),
         _ => view! { <div class="rp-heavy">{move || t(locale.get(), "loading")}</div> }.into_view(),
     }
@@ -7458,11 +7978,28 @@ pub(super) fn NotebookFilePreview(path: String) -> impl IntoView {
         spawn_local(async move {
             nb.set(None);
             err.set(None);
-            match load_file_content(&path, loc).await {
+            // Notebooks are JSON documents; allow a larger budget than plain
+            // text/code previews, still truncating so multi-hundred-MB dumps
+            // cannot freeze the UI.
+            match load_file_content(&path, loc, Some(8 * 1024 * 1024)).await {
                 // A .ipynb that doesn't parse is corrupt or not really a notebook;
                 // say so rather than drawing an empty cell list.
                 Ok(fc) => match parse_notebook(fc.text.as_deref().unwrap_or("")) {
                     Some(parsed) => nb.set(Some(parsed)),
+                    None if fc.truncated => err.set(Some(tf(
+                        loc,
+                        "preview.text_truncated",
+                        &[
+                            (
+                                "shown",
+                                &format_bytes(fc.text.as_ref().map(|t| t.len() as u64).unwrap_or(0)),
+                            ),
+                            (
+                                "total",
+                                &format_bytes(fc.total_bytes.unwrap_or(0)),
+                            ),
+                        ],
+                    ))),
                     None => err.set(Some(t(loc, "preview.unsupported_file"))),
                 },
                 Err(e) => err.set(Some(e)),
@@ -7601,7 +8138,7 @@ fn dispatch_pins_ask_ai(path: &str, text: &str) {
     };
     let init = web_sys::CustomEventInit::new();
     init.set_detail(&detail);
-    let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("superscience:pins-ask-ai", &init)
+    let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("wisp:pins-ask-ai", &init)
     else {
         return;
     };
@@ -8185,11 +8722,14 @@ pub(super) fn FilePreview(dom_id: String, path: String, kind: String) -> impl In
                 let _ = mount_preview(&kind, &dom_id, &payload.to_string()).await;
                 return;
             }
-            // `load_file_content` reads up to the backend's 32 MB ceiling so a large
-            // produced figure or PDF still renders (the default 8 MB cap silently
-            // rejected them, #35), and surfaces the real backend error (size limit /
-            // outside project root / …) instead of a blanket "file not found".
-            let fc = match load_file_content(&path, loc).await {
+            // Images need a full under-budget payload; text-ish kinds only pull a
+            // head so multi-GB logs never enter the WebView (#large-text-preview).
+            let budget = if kind == "image" {
+                Some(32 * 1024 * 1024)
+            } else {
+                Some(TEXT_PREVIEW_MAX_BYTES)
+            };
+            let fc = match load_file_content(&path, loc, budget).await {
                 Ok(fc) => fc,
                 Err(message) => {
                     if let Some(el) = el {
@@ -8208,8 +8748,18 @@ pub(super) fn FilePreview(dom_id: String, path: String, kind: String) -> impl In
             }
             if kind == "markdown" {
                 if let Some(el) = el {
+                    let raw = fc.text.as_deref().unwrap_or("");
+                    let (clipped, shown) = clip_preview_text(raw);
+                    let mut html = String::new();
+                    if let Some(note) = preview_truncation_note(&fc, shown, loc) {
+                        html.push_str(&format!(
+                            "<div class=\"preview-trunc-note\">{}</div>",
+                            html_escape(&note)
+                        ));
+                    }
+                    html.push_str(&md_document_to_html(&clipped));
                     el.set_class_name("rp-heavy md");
-                    el.set_inner_html(&md_document_to_html(fc.text.as_deref().unwrap_or("")));
+                    el.set_inner_html(&html);
                     schedule_highlight(dom_id.clone());
                 }
                 return;
@@ -8985,6 +9535,7 @@ pub(super) fn compose_icon(kind: &str) -> impl IntoView {
         "doc" => view! { <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/> }.into_view(),
         "image" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/> }.into_view(),
         "review" => view! { <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/> }.into_view(),
+        "gauge" => view! { <path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/> }.into_view(),
         "controls" => view! { <path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/> }.into_view(),
         "adjustments" => view! { <path d="M4 7h9"/><path d="M17 7h3"/><circle cx="15" cy="7" r="2"/><path d="M4 17h3"/><path d="M11 17h9"/><circle cx="9" cy="17" r="2"/> }.into_view(),
         "check" => view! { <path d="m20 6-11 11-5-5"/> }.into_view(),
@@ -9035,7 +9586,7 @@ pub(super) fn ImageGenerationCard(
         let load_path = path.clone();
         let loc = locale.get_untracked();
         spawn_local(async move {
-            match load_file_content(&load_path, loc).await {
+            match load_file_content(&load_path, loc, Some(32 * 1024 * 1024)).await {
                 Ok(file) => match file.base64 {
                     Some(base64) => source.set(Some(format!("data:{};base64,{base64}", file.mime))),
                     None => preview_failed.set(true),
@@ -9180,7 +9731,7 @@ fn ArtifactThumb(path: Option<String>, kind: &'static str) -> impl IntoView {
         // artifact:/version:/ssh:// spellings the previews accept.
         let loc = locale.get_untracked();
         spawn_local(async move {
-            if let Ok(file) = load_file_content(&path, loc).await {
+            if let Ok(file) = load_file_content(&path, loc, Some(32 * 1024 * 1024)).await {
                 if let Some(base64) = file.base64 {
                     source.set(Some(format!("data:{};base64,{base64}", file.mime)));
                 }
@@ -9317,7 +9868,10 @@ pub(super) fn UserMessage(
     let has_context = !presentation.artifacts.is_empty()
         || !presentation.sessions.is_empty()
         || !presentation.projects.is_empty()
-        || !presentation.skills.is_empty();
+        || !presentation.skills.is_empty()
+        || !presentation.workflows.is_empty()
+        || !presentation.contexts.is_empty()
+        || !presentation.runtimes.is_empty();
     let has_body = !body.is_empty();
     // 长消息先折叠，"展开全部"再看全文
     let is_long = body.lines().count() > 12 || body.chars().count() > 600;
@@ -9380,13 +9934,15 @@ pub(super) fn UserMessage(
             "attachment.workflow",
             presentation.workflows,
         ),
+        ("context", "attachment.context", presentation.contexts),
+        ("runtime", "attachment.runtime", presentation.runtimes),
     ]
     .into_iter()
     .flat_map(|(kind, label_key, items)| {
         items.into_iter().map(move |label| {
             view! {
                 <span class=format!("user-context-card {kind}") data-reference-kind=kind>
-                    <span class="user-context-icon">{compose_icon(if kind == "skill" { "skill" } else if kind == "workflow" { "branch" } else if kind == "session" { "chat" } else if kind == "project" { "folder" } else { "doc" })}</span>
+                    <span class="user-context-icon">{compose_icon(if kind == "skill" { "skill" } else if kind == "workflow" { "branch" } else if kind == "session" { "chat" } else if kind == "project" { "folder" } else if kind == "context" { "server" } else if kind == "runtime" { "terminal" } else { "doc" })}</span>
                     <span class="user-context-copy">
                         <span class="user-context-label">{label}</span>
                         <span class="user-context-meta">{move || t(locale.get(), label_key)}</span>
@@ -9749,22 +10305,6 @@ pub(super) fn approval_allow_label_key(scope: &str) -> &'static str {
     }
 }
 
-fn commit_approval_decision(
-    decided: RwSignal<bool>,
-    on_decide: Callback<(String, bool, Option<String>, String)>,
-    sid: String,
-    approved: bool,
-    feedback: Option<String>,
-    scope: String,
-) {
-    if decided.get_untracked() {
-        return;
-    }
-    decided.set(true);
-    clear_selection();
-    on_decide.call((sid, approved, feedback, scope));
-}
-
 #[component]
 pub(super) fn ApprovalCard(
     tool: String,
@@ -9774,11 +10314,10 @@ pub(super) fn ApprovalCard(
 ) -> impl IntoView {
     let locale = use_locale();
     let is_plan = tool == "update_plan";
+    let is_resource_conflict = tool == "resource_conflict";
     let show_feedback = create_rw_signal(false);
     let feedback = create_rw_signal(String::new());
     let approval_scope = create_rw_signal(String::from("once"));
-    // Guard against double submit from pointerdown + click, or rapid repeats.
-    let decided = create_rw_signal(false);
     let feedback_ready = move || !feedback.get().trim().is_empty();
     if is_plan {
         window_capture_escape(move || {
@@ -9810,17 +10349,18 @@ pub(super) fn ApprovalCard(
         let loc = locale.get();
         match tool_for_title.as_str() {
             _ if is_plan => t(loc, "approval.review_plan"),
+            "resource_conflict" => t(loc, "approval.resource_conflict_title"),
             "python" => t(loc, "approval.run_python"),
             "r" => t(loc, "approval.run_r"),
             "shell" => t(loc, "approval.run_shell"),
             _ => tf(loc, "approval.run_tool", &[("tool", &tool_for_title)]),
         }
     };
-    let session_id = create_rw_signal(session_id);
+    let sid_allow = session_id.clone();
+    let sid_deny = session_id.clone();
+    let sid_feedback = create_rw_signal(session_id);
     view! {
-        <div class="approval-wrap"
-            on:mouseup=|ev| ev.stop_propagation()
-            on:mousedown=|ev| ev.stop_propagation()>
+        <div class="approval-wrap">
             <div class="approval-wait-line">{move || t(locale.get(), "approval.waiting_line")}</div>
             <div class="approval-card" class:plan=is_plan>
                 <div class="approval-head">
@@ -9842,12 +10382,15 @@ pub(super) fn ApprovalCard(
                         </div>
                     }.into_view()
                 } else {
-                    let show_tag = !tool.is_empty();
+                    let show_tag = !tool.is_empty() && !is_resource_conflict;
                     let tag = tool.clone();
-                    let show_code = !preview.is_empty();
+                    let show_code = !preview.is_empty() && !is_resource_conflict;
                     let p = preview.clone();
                     let lang = lang.clone();
                     view! {
+                        {is_resource_conflict.then(|| view! {
+                            <p class="approval-conflict-message">{p.clone()}</p>
+                        })}
                         {show_tag.then(|| view! {
                             <div class="approval-tags"><span class="approval-tag">{tag}</span></div>
                         })}
@@ -9859,18 +10402,20 @@ pub(super) fn ApprovalCard(
                         })}
                     }.into_view()
                 }}
-                <p class="approval-hint">{move || t(locale.get(), if is_plan { "approval.plan_hint" } else { "approval.hint" })}</p>
-                <div class="approval-actions"
-                    on:mouseup=|ev| ev.stop_propagation()
-                    on:mousedown=|ev| ev.stop_propagation()
-                    on:pointerdown=|ev| ev.stop_propagation()>
-                    {(!is_plan).then(|| view! {
+                <p class="approval-hint">{move || t(locale.get(), if is_plan {
+                    "approval.plan_hint"
+                } else if is_resource_conflict {
+                    "approval.resource_conflict_hint"
+                } else {
+                    "approval.hint"
+                })}</p>
+                <div class="approval-actions">
+                    {(!is_plan && !is_resource_conflict).then(|| view! {
                         <label class="approval-scope">
                             <span>{move || t(locale.get(), "approval.scope")}</span>
                             <select
                                 aria-label=move || t(locale.get(), "approval.scope")
                                 prop:value=move || approval_scope.get()
-                                disabled=move || decided.get()
                                 on:change=move |ev| approval_scope.set(dom_value(&ev))>
                                 <option value="once">{move || t(locale.get(), "approval.scope.once")}</option>
                                 <option value="session">{move || t(locale.get(), "approval.scope.session")}</option>
@@ -9880,95 +10425,32 @@ pub(super) fn ApprovalCard(
                         </label>
                     })}
                     <button type="button" class="primary"
-                        disabled=move || decided.get()
-                        on:pointerdown=move |ev| {
-                            if ev.button() != 0 {
-                                return;
-                            }
-                            ev.prevent_default();
-                            ev.stop_propagation();
-                            let scope = if is_plan {
-                                "once".into()
-                            } else {
-                                approval_scope.get_untracked()
-                            };
-                            commit_approval_decision(
-                                decided,
-                                on_decide,
-                                session_id.get_untracked(),
-                                true,
-                                None,
-                                scope,
-                            );
-                        }
-                        on:click=move |ev| {
-                            // Keyboard activation (Enter/Space) has no pointerdown.
-                            ev.prevent_default();
-                            ev.stop_propagation();
-                            let scope = if is_plan {
-                                "once".into()
-                            } else {
-                                approval_scope.get_untracked()
-                            };
-                            commit_approval_decision(
-                                decided,
-                                on_decide,
-                                session_id.get_untracked(),
-                                true,
-                                None,
-                                scope,
-                            );
+                        on:click=move |_| {
+                            let scope = if is_plan { "once".into() } else { approval_scope.get() };
+                            on_decide.call((sid_allow.clone(), true, None, scope));
                         }>
                         {move || {
                             if is_plan {
                                 t(locale.get(), "approval.plan_approve").to_string()
+                            } else if is_resource_conflict {
+                                t(locale.get(), "approval.resource_conflict_wait").to_string()
                             } else {
                                 t(locale.get(), approval_allow_label_key(&approval_scope.get())).to_string()
                             }
                         }}
                     </button>
                     <button type="button"
-                        disabled=move || decided.get()
-                        on:pointerdown=move |ev| {
-                            if ev.button() != 0 {
-                                return;
-                            }
-                            ev.prevent_default();
-                            ev.stop_propagation();
-                            commit_approval_decision(
-                                decided,
-                                on_decide,
-                                session_id.get_untracked(),
-                                false,
-                                None,
-                                "once".into(),
-                            );
-                        }
-                        on:click=move |ev| {
-                            ev.prevent_default();
-                            ev.stop_propagation();
-                            commit_approval_decision(
-                                decided,
-                                on_decide,
-                                session_id.get_untracked(),
-                                false,
-                                None,
-                                "once".into(),
-                            );
-                        }>
-                        {move || t(locale.get(), if is_plan { "approval.plan_reject" } else { "confirm.deny" })}
+                        on:click=move |_| on_decide.call((sid_deny.clone(), false, None, "once".into()))>
+                        {move || t(locale.get(), if is_plan {
+                            "approval.plan_reject"
+                        } else if is_resource_conflict {
+                            "approval.resource_conflict_cancel"
+                        } else {
+                            "confirm.deny"
+                        })}
                     </button>
                     {is_plan.then(|| view! {
-                        <button type="button"
-                            disabled=move || decided.get()
-                            on:pointerdown=move |ev| {
-                                if ev.button() != 0 {
-                                    return;
-                                }
-                                ev.prevent_default();
-                                ev.stop_propagation();
-                                show_feedback.update(|open| *open = !*open);
-                            }>
+                        <button type="button" on:click=move |_| show_feedback.update(|open| *open = !*open)>
                             {move || t(locale.get(), "approval.plan_other")}
                         </button>
                     })}
@@ -9989,23 +10471,11 @@ pub(super) fn ApprovalCard(
                                     <button
                                         type="button"
                                         class="primary"
-                                        disabled=move || !feedback_ready() || decided.get()
-                                        on:pointerdown=move |ev| {
-                                            if ev.button() != 0 {
-                                                return;
-                                            }
-                                            ev.prevent_default();
-                                            ev.stop_propagation();
-                                            let text = feedback.get_untracked().trim().to_string();
+                                        disabled=move || !feedback_ready()
+                                        on:click=move |_| {
+                                            let text = feedback.get().trim().to_string();
                                             if !text.is_empty() {
-                                                commit_approval_decision(
-                                                    decided,
-                                                    on_decide,
-                                                    session_id.get_untracked(),
-                                                    false,
-                                                    Some(text),
-                                                    "once".into(),
-                                                );
+                                                on_decide.call((sid_feedback.get_untracked(), false, Some(text), "once".into()));
                                             }
                                         }
                                     >
@@ -10013,12 +10483,7 @@ pub(super) fn ApprovalCard(
                                     </button>
                                     <button
                                         type="button"
-                                        on:pointerdown=move |ev| {
-                                            if ev.button() != 0 {
-                                                return;
-                                            }
-                                            ev.prevent_default();
-                                            ev.stop_propagation();
+                                        on:click=move |_| {
                                             feedback.set(String::new());
                                             show_feedback.set(false);
                                         }
@@ -10079,6 +10544,7 @@ pub(super) fn ProjectsScreen(
     locale: RwSignal<Locale>,
     running: RwSignal<HashSet<String>>,
     approval_pending: ReadSignal<HashSet<String>>,
+    sync_actions_available: ReadSignal<bool>,
     open_error: RwSignal<Option<String>>,
     on_open: Callback<String>,
     on_open_session: Callback<(String, String)>,
@@ -10088,6 +10554,7 @@ pub(super) fn ProjectsScreen(
     on_open_demo: Callback<()>,
     on_open_scratch: Callback<()>,
     on_search: Callback<()>,
+    project_transfer: RwSignal<Option<ProjectTransferProgress>>,
 ) -> impl IntoView {
     let projects = create_rw_signal(Vec::<ProjectSummary>::new());
     let recent = create_rw_signal(Vec::<RecentSession>::new());
@@ -10114,6 +10581,38 @@ pub(super) fn ProjectsScreen(
     // implement the JS confirm panel), so it always returned false and the ✕
     // did nothing — use an in-app modal instead.
     let pending_delete = create_rw_signal(None::<String>);
+    let confirm_delete_data = create_rw_signal(false);
+    let delete_data_countdown = create_rw_signal(0_u8);
+    let delete_data_unlock_at = Rc::new(Cell::new(0_f64));
+
+    // The destructive confirmation unlocks only after five full seconds. Keep
+    // one owner-scoped timer and make it inert whenever that second layer is
+    // closed, so reopening always starts from five again.
+    let countdown_deadline = Rc::clone(&delete_data_unlock_at);
+    let countdown_tick = Closure::wrap(Box::new(move || {
+        if confirm_delete_data.get_untracked() {
+            let milliseconds = (countdown_deadline.get() - js_sys::Date::now()).max(0.0);
+            let remaining = (milliseconds / 1_000.0).ceil() as u8;
+            if delete_data_countdown.get_untracked() != remaining {
+                delete_data_countdown.set(remaining);
+            }
+        }
+    }) as Box<dyn FnMut()>);
+    let countdown_window = web_sys::window();
+    let countdown_interval = countdown_window.as_ref().and_then(|window| {
+        window
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                countdown_tick.as_ref().unchecked_ref(),
+                100,
+            )
+            .ok()
+    });
+    on_cleanup(move || {
+        if let (Some(window), Some(interval)) = (countdown_window, countdown_interval) {
+            window.clear_interval_with_handle(interval);
+        }
+        drop(countdown_tick);
+    });
 
     let reload = move || {
         spawn_local(async move {
@@ -10287,23 +10786,32 @@ pub(super) fn ProjectsScreen(
         });
     };
 
-    let delete = move |id: String| {
+    let delete = Callback::new(move |(id, delete_data): (String, bool)| {
         spawn_local(async move {
-            let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
-            let _ = invoke("delete_project", arg).await;
-            let v = invoke("list_projects", JsValue::UNDEFINED).await;
-            if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(v) {
-                projects.set(list);
+            let arg =
+                to_value(&serde_json::json!({ "id": id, "deleteData": delete_data })).unwrap();
+            match invoke_checked("delete_project", arg).await {
+                Ok(_) => {
+                    let v = invoke("list_projects", JsValue::UNDEFINED).await;
+                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(v) {
+                        projects.set(list);
+                    }
+                }
+                Err(error) => {
+                    let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                    open_error.set(Some(message));
+                }
             }
         });
-    };
-    let delete_confirmed = delete.clone(); // used by the confirm modal below
+    });
+    let delete_confirmed = delete; // used by the confirm modal below
 
     let import_project = move |_| {
-        if importing.get_untracked() {
+        if importing.get_untracked() || project_transfer.get_untracked().is_some() {
             return;
         }
         importing.set(true);
+        project_transfer.set(Some(ProjectTransferProgress::selecting("import")));
         open_error.set(None);
         spawn_local(async move {
             match invoke_checked("import_project", JsValue::UNDEFINED).await {
@@ -10311,10 +10819,17 @@ pub(super) fn ProjectsScreen(
                     if let Ok(Some(project)) =
                         serde_wasm_bindgen::from_value::<Option<ProjectSummary>>(value)
                     {
+                        project_transfer.set(Some(ProjectTransferProgress::complete(
+                            "import",
+                            Some(project.name.clone()),
+                        )));
                         on_open.call(project.id);
+                    } else {
+                        project_transfer.set(None);
                     }
                 }
                 Err(error) => {
+                    project_transfer.set(None);
                     let message = localize_backend(locale.get_untracked(), &js_error_text(error));
                     open_error.set(Some(message));
                 }
@@ -10387,6 +10902,12 @@ pub(super) fn ProjectsScreen(
         if ev.key() != "Escape" || ev.default_prevented() || ime_composing(ev) {
             return;
         }
+        if confirm_delete_data.get() {
+            ev.prevent_default();
+            confirm_delete_data.set(false);
+            delete_data_countdown.set(0);
+            return;
+        }
         if pending_delete.get().is_some() {
             ev.prevent_default();
             pending_delete.set(None);
@@ -10414,7 +10935,7 @@ pub(super) fn ProjectsScreen(
             <div class="projects-head">
                 <div class="projects-brand">
                     <span class="projects-brand-mark" aria-hidden="true"></span>
-                    <div class="projects-title">"SuperScience"<span class="beta">"Beta"</span></div>
+                    <div class="projects-title">"Wisp Science"<span class="beta">"Beta"</span></div>
                 </div>
                 <div class="projects-actions">
                     <button type="button" class="projects-icon-btn"
@@ -10440,7 +10961,7 @@ pub(super) fn ProjectsScreen(
                         {move || t(locale.get(), "scratch.open")}
                     </button>
                     <button type="button" class="btn-ghost projects-import"
-                        disabled=move || importing.get()
+                        disabled=move || importing.get() || project_transfer.get().is_some()
                         on:click=import_project>
                         {compose_icon("upload")}<span>{move || t(locale.get(), "projects.import")}</span>
                     </button>
@@ -10686,6 +11207,7 @@ pub(super) fn ProjectsScreen(
                     {move || {
                         let loc = locale.get();
                         let list = projects.get();
+                        let show_sync_actions = sync_actions_available.get();
                         if list.is_empty() && !creating.get() {
                             return view! {}.into_view();
                         }
@@ -10735,83 +11257,98 @@ pub(super) fn ProjectsScreen(
                                     </div>
                                     </button>
                                     <div class="pc-actions">
-                                    <button class="pc-sync" title=t(loc, "projects.sync.now")
-                                        aria-label=t(loc, "projects.sync.now")
-                                        disabled=move || syncing_projects.with(|ids| ids.contains(&id_sync_disabled))
-                                        on:click=move |e| {
-                                            e.stop_propagation();
-                                            let id = id_sync.clone();
-                                            if syncing_projects.with(|ids| ids.contains(&id)) { return; }
-                                            syncing_projects.update(|ids| { ids.insert(id.clone()); });
-                                            sync_notice.set(Some((true, t(locale.get_untracked(), "projects.sync.running").into())));
-                                            open_error.set(None);
-                                            spawn_local(async move {
-                                                let args = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
-                                                match invoke_checked("sync_project", args).await {
-                                                    Ok(value) => {
-                                                        if let Ok(result) = serde_wasm_bindgen::from_value::<ProjectSyncResult>(value) {
-                                                            let loc = locale.get_untracked();
-                                                            let text = match result.direction.as_str() {
-                                                                "push" => tf(loc, "projects.sync.pushed", &[("n", &result.uploaded_files.to_string())]),
-                                                                "pull" => tf(loc, "projects.sync.pulled", &[("n", &result.downloaded_files.to_string())]),
-                                                                _ => t(loc, "projects.sync.current").into(),
-                                                            };
-                                                            let text = if result.skipped_paths.is_empty() {
-                                                                text
-                                                            } else {
-                                                                format!("{text} {}", tf(loc, "projects.sync.skipped", &[("n", &result.skipped_paths.len().to_string())]))
-                                                            };
-                                                            sync_notice.set(Some((true, text)));
+                                    {show_sync_actions.then(|| view! {
+                                        <button class="pc-sync" title=t(loc, "projects.sync.now")
+                                            aria-label=t(loc, "projects.sync.now")
+                                            disabled=move || syncing_projects.with(|ids| ids.contains(&id_sync_disabled))
+                                            on:click=move |e| {
+                                                e.stop_propagation();
+                                                let id = id_sync.clone();
+                                                if syncing_projects.with(|ids| ids.contains(&id)) { return; }
+                                                syncing_projects.update(|ids| { ids.insert(id.clone()); });
+                                                sync_notice.set(Some((true, t(locale.get_untracked(), "projects.sync.running").into())));
+                                                open_error.set(None);
+                                                spawn_local(async move {
+                                                    let args = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
+                                                    match invoke_checked("sync_project", args).await {
+                                                        Ok(value) => {
+                                                            if let Ok(result) = serde_wasm_bindgen::from_value::<ProjectSyncResult>(value) {
+                                                                let loc = locale.get_untracked();
+                                                                let text = match result.direction.as_str() {
+                                                                    "push" => tf(loc, "projects.sync.pushed", &[("n", &result.uploaded_files.to_string())]),
+                                                                    "pull" => tf(loc, "projects.sync.pulled", &[("n", &result.downloaded_files.to_string())]),
+                                                                    _ => t(loc, "projects.sync.current").into(),
+                                                                };
+                                                                let text = if result.skipped_paths.is_empty() {
+                                                                    text
+                                                                } else {
+                                                                    format!("{text} {}", tf(loc, "projects.sync.skipped", &[("n", &result.skipped_paths.len().to_string())]))
+                                                                };
+                                                                sync_notice.set(Some((true, text)));
+                                                            }
+                                                            reload();
                                                         }
-                                                        reload();
+                                                        Err(error) => {
+                                                            sync_notice.set(None);
+                                                            let raw = js_error_text(error);
+                                                            if raw.contains("Sync conflict") {
+                                                                sync_conflict_project.set(Some(id.clone()));
+                                                            } else {
+                                                                let message = localize_backend(locale.get_untracked(), &raw);
+                                                                open_error.set(Some(message));
+                                                            }
+                                                        }
                                                     }
-                                                    Err(error) => {
-                                                        sync_notice.set(None);
-                                                        let raw = js_error_text(error);
-                                                        if raw.contains("Sync conflict") {
-                                                            sync_conflict_project.set(Some(id.clone()));
-                                                        } else {
-                                                            let message = localize_backend(locale.get_untracked(), &raw);
+                                                    syncing_projects.update(|ids| { ids.remove(&id); });
+                                                });
+                                            }>{compose_icon("sync")}</button>
+                                        <button class="pc-sync-code" title=t(loc, "projects.sync.copy_code")
+                                            aria-label=t(loc, "projects.sync.copy_code")
+                                            on:click=move |e| {
+                                                e.stop_propagation();
+                                                let id = id_code.clone();
+                                                open_error.set(None);
+                                                spawn_local(async move {
+                                                    let args = to_value(&serde_json::json!({ "id": id })).unwrap();
+                                                    match invoke_checked("project_sync_code", args).await {
+                                                        Ok(value) => {
+                                                            if let Ok(code) = serde_wasm_bindgen::from_value::<String>(value) {
+                                                                copy_text(code);
+                                                                sync_notice.set(Some((true, t(locale.get_untracked(), "projects.sync.code_copied").into())));
+                                                            }
+                                                        }
+                                                        Err(error) => {
+                                                            let message = localize_backend(locale.get_untracked(), &js_error_text(error));
                                                             open_error.set(Some(message));
                                                         }
                                                     }
-                                                }
-                                                syncing_projects.update(|ids| { ids.remove(&id); });
-                                            });
-                                        }>{compose_icon("sync")}</button>
-                                    <button class="pc-sync-code" title=t(loc, "projects.sync.copy_code")
-                                        aria-label=t(loc, "projects.sync.copy_code")
-                                        on:click=move |e| {
-                                            e.stop_propagation();
-                                            let id = id_code.clone();
-                                            open_error.set(None);
-                                            spawn_local(async move {
-                                                let args = to_value(&serde_json::json!({ "id": id })).unwrap();
-                                                match invoke_checked("project_sync_code", args).await {
-                                                    Ok(value) => {
-                                                        if let Ok(code) = serde_wasm_bindgen::from_value::<String>(value) {
-                                                            copy_text(code);
-                                                            sync_notice.set(Some((true, t(locale.get_untracked(), "projects.sync.code_copied").into())));
-                                                        }
-                                                    }
-                                                    Err(error) => {
-                                                        let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                                                        open_error.set(Some(message));
-                                                    }
-                                                }
-                                            });
-                                        }>{compose_icon("link")}</button>
+                                                });
+                                            }>{compose_icon("link")}</button>
+                                    })}
                                     <button class="pc-export" title=t(loc, "projects.export")
                                         aria-label=t(loc, "projects.export")
+                                        disabled=move || project_transfer.get().is_some()
                                         on:click=move |e| {
                                             e.stop_propagation();
+                                            if project_transfer.get_untracked().is_some() { return; }
                                             open_error.set(None);
+                                            project_transfer.set(Some(ProjectTransferProgress::selecting("export")));
                                             let id = id_export.clone();
                                             spawn_local(async move {
                                                 let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
-                                                if let Err(error) = invoke_checked("export_project", arg).await {
-                                                    let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                                                    open_error.set(Some(message));
+                                                match invoke_checked("export_project", arg).await {
+                                                    Ok(value) => {
+                                                        if let Ok(Some(path)) = serde_wasm_bindgen::from_value::<Option<String>>(value) {
+                                                            project_transfer.set(Some(ProjectTransferProgress::complete("export", Some(path))));
+                                                        } else {
+                                                            project_transfer.set(None);
+                                                        }
+                                                    }
+                                                    Err(error) => {
+                                                        project_transfer.set(None);
+                                                        let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                                                        open_error.set(Some(message));
+                                                    }
                                                 }
                                             });
                                         }>{compose_icon("download")}</button>
@@ -10827,6 +11364,8 @@ pub(super) fn ProjectsScreen(
                                     <button class="pc-del" title=t(loc, "projects.delete")
                                         on:click=move |e| {
                                             e.stop_propagation();
+                                            confirm_delete_data.set(false);
+                                            delete_data_countdown.set(0);
                                             pending_delete.set(Some(id_del.clone()));
                                         }>{compose_icon("close")}</button>
                                     </div>
@@ -10854,6 +11393,13 @@ pub(super) fn ProjectsScreen(
                     }).collect_view()}
                 </div>
             </div>
+            <div class="projects-footer">
+                <span>{move || t(locale.get(), "projects.star_hint")}</span>
+                <button type="button" class="projects-star-link"
+                    on:click=move |_| open_external_url("https://github.com/xuzhougeng/wisp-science".into())>
+                    {move || t(locale.get(), "projects.star_link")}
+                </button>
+            </div>
             {move || sync_notice.get().map(|(ok, text)| view! {
                 <div class="projects-sync-notice" class:ok=move || ok>{text}</div>
             })}
@@ -10879,25 +11425,91 @@ pub(super) fn ProjectsScreen(
                     </div>
                 }
             })}
-            {move || pending_delete.get().map(|id| {
-                let confirm_del = delete_confirmed.clone();
-                view! {
-                    <div class="overlay">
-                        <div class="modal confirm-modal">
-                            <h2>{move || t(locale.get(), "confirm.title")}</h2>
-                            <div class="hint">{move || t(locale.get(), "projects.delete_confirm")}</div>
-                            <div class="row">
-                                <button on:click=move |_| pending_delete.set(None)>
-                                    {move || t(locale.get(), "settings.cancel")}</button>
-                                <button class="primary" on:click=move |_| {
-                                    pending_delete.set(None);
-                                    confirm_del(id.clone());
-                                }>{move || t(locale.get(), "confirm.approve")}</button>
+            {move || {
+                let delete_data_unlock_at = Rc::clone(&delete_data_unlock_at);
+                pending_delete.get().map(|id| {
+                if confirm_delete_data.get() {
+                    let confirm_del = delete_confirmed;
+                    let delete_id = id.clone();
+                    let workspace_dir = projects
+                        .get()
+                        .into_iter()
+                        .find(|project| project.id == id)
+                        .map(|project| project.workspace_dir)
+                        .unwrap_or_default();
+                    view! {
+                        <div class="overlay project-delete-data-overlay">
+                            <div class="modal confirm-modal project-delete-data-modal"
+                                role="alertdialog" aria-modal="true"
+                                aria-label=move || t(locale.get(), "projects.delete_data_title")>
+                                <h2>{move || t(locale.get(), "projects.delete_data_title")}</h2>
+                                <div class="hint project-delete-warning">
+                                    {move || t(locale.get(), "projects.delete_data_warning")}
+                                </div>
+                                <code class="project-delete-path">{move || tf(
+                                    locale.get(),
+                                    "projects.delete_data_path",
+                                    &[("path", &workspace_dir)],
+                                )}</code>
+                                <div class="row">
+                                    <button type="button" on:click=move |_| {
+                                        confirm_delete_data.set(false);
+                                        delete_data_countdown.set(0);
+                                    }>{move || t(locale.get(), "settings.back")}</button>
+                                    <button type="button" class="primary danger"
+                                        aria-live="polite"
+                                        disabled=move || delete_data_countdown.get() != 0
+                                        on:click=move |_| {
+                                            if delete_data_countdown.get_untracked() == 0 {
+                                                confirm_delete_data.set(false);
+                                                delete_data_countdown.set(0);
+                                                pending_delete.set(None);
+                                                confirm_del.call((delete_id.clone(), true));
+                                            }
+                                        }>{move || {
+                                            let remaining = delete_data_countdown.get();
+                                            if remaining > 0 {
+                                                tf(
+                                                    locale.get(),
+                                                    "projects.delete_data_countdown",
+                                                    &[("n", &remaining.to_string())],
+                                                )
+                                            } else {
+                                                t(locale.get(), "projects.delete_data_confirm").into()
+                                            }
+                                        }}</button>
+                                </div>
                             </div>
                         </div>
-                    </div>
+                    }.into_view()
+                } else {
+                    let confirm_del = delete_confirmed;
+                    let remove_id = id.clone();
+                    view! {
+                        <div class="overlay">
+                            <div class="modal confirm-modal project-delete-choice-modal"
+                                role="dialog" aria-modal="true"
+                                aria-label=move || t(locale.get(), "confirm.title")>
+                                <h2>{move || t(locale.get(), "confirm.title")}</h2>
+                                <div class="hint">{move || t(locale.get(), "projects.delete_confirm")}</div>
+                                <div class="row">
+                                    <button type="button" on:click=move |_| pending_delete.set(None)>
+                                        {move || t(locale.get(), "settings.cancel")}</button>
+                                    <button type="button" class="primary" on:click=move |_| {
+                                        pending_delete.set(None);
+                                        confirm_del.call((remove_id.clone(), false));
+                                    }>{move || t(locale.get(), "projects.remove_only")}</button>
+                                    <button type="button" class="delete-with-data" on:click=move |_| {
+                                        delete_data_unlock_at.set(js_sys::Date::now() + 5_000.0);
+                                        delete_data_countdown.set(5);
+                                        confirm_delete_data.set(true);
+                                    }>{move || t(locale.get(), "projects.remove_with_data")}</button>
+                                </div>
+                            </div>
+                        </div>
+                    }.into_view()
                 }
-            })}
+            })}}
         </div>
     }
 }

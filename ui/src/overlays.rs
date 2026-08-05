@@ -4,7 +4,7 @@ use crate::app_support::{
 use crate::bindings::{invoke_checked, open_external_url};
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, Locale};
-use crate::text::{dom_value, event_target_value, format_bytes};
+use crate::text::{dom_value, event_target_value};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 
@@ -65,12 +65,25 @@ pub(super) fn AddHostOverlay(
     move || {
         show_add_host.get().then(|| view! {
     <div class="overlay">
-        <div class="modal host-modal" role="dialog" aria-modal="true">
-            <h2>{move || if editing_host_alias.get().is_some() {
-                t(locale.get(), "hosts.edit")
-            } else {
-                t(locale.get(), "hosts.add")
-            }}</h2>
+        <div class="modal host-modal" role="dialog" aria-modal="true"
+            aria-labelledby="host-modal-title">
+            <div class="ps-head">
+                <h2 id="host-modal-title">{move || if editing_host_alias.get().is_some() {
+                    t(locale.get(), "hosts.edit")
+                } else {
+                    t(locale.get(), "hosts.add")
+                }}</h2>
+                <button type="button" class="ps-close"
+                    title=move || t(locale.get(), "hosts.cancel")
+                    aria-label=move || t(locale.get(), "hosts.cancel")
+                    on:click=move |_| {
+                        editing_host_alias.set(None);
+                        test_result.set(None);
+                        show_add_host.set(false);
+                    }>
+                    {compose_icon("close")}
+                </button>
+            </div>
             <label class="host-label" for="add-host-alias">{move || t(locale.get(), "hosts.name")}</label>
             <input id="add-host-alias" class="host-input" autofocus=true
                 disabled=move || editing_host_alias.get().is_some()
@@ -202,6 +215,34 @@ pub(super) fn RuntimeInterpreterOverlay(
     // Otherwise each input event (including paste) replaces the modal DOM and
     // drops focus.
     let open = create_memo(move |_| form.with(|value| value.is_some()));
+    // Native file picker for local interpreters; remote contexts keep manual
+    // entry because the path must exist on the remote host (#651).
+    let browse = move |field: &'static str| {
+        busy.set(true);
+        error.set(None);
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({})).unwrap();
+            match invoke_checked("pick_executable_file", args).await {
+                Ok(value) => {
+                    if let Some(path) = value.as_string().filter(|path| !path.is_empty()) {
+                        form.update(|current| {
+                            if let Some(current) = current {
+                                match field {
+                                    "python" => current.python_executable = path.clone(),
+                                    _ => current.rscript_executable = path.clone(),
+                                }
+                            }
+                        });
+                    }
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+            busy.set(false);
+        });
+    };
     let save = move |_| {
         let Some(current) = form.get_untracked() else {
             return;
@@ -252,25 +293,37 @@ pub(super) fn RuntimeInterpreterOverlay(
                         }</p>
                         <label>
                             {move || t(locale.get(), "runtime_config.python")}
-                            <input id="runtime-python-executable" autocomplete="off"
-                                placeholder=move || t(locale.get(), "runtime_config.python_placeholder")
-                                prop:value=move || form.get().map(|value| value.python_executable).unwrap_or_default()
-                                on:input=move |event| form.update(|value| {
-                                    if let Some(value) = value {
-                                        value.python_executable = event_target_value(&event);
-                                    }
-                                }) />
+                            <div class="runtime-config-picker">
+                                <input id="runtime-python-executable" autocomplete="off"
+                                    placeholder=move || t(locale.get(), "runtime_config.python_placeholder")
+                                    prop:value=move || form.get().map(|value| value.python_executable).unwrap_or_default()
+                                    on:input=move |event| form.update(|value| {
+                                        if let Some(value) = value {
+                                            value.python_executable = event_target_value(&event);
+                                        }
+                                    }) />
+                                {move || form.get().map(|value| value.context_kind == "local").unwrap_or(false).then(|| view! {
+                                    <button type="button" class="runtime-config-browse" disabled=move || busy.get()
+                                        on:click=move |_| browse("python")>{move || t(locale.get(), "runtime_config.browse")}</button>
+                                })}
+                            </div>
                         </label>
                         <label>
                             {move || t(locale.get(), "runtime_config.r")}
-                            <input id="runtime-rscript-executable" autocomplete="off"
-                                placeholder=move || t(locale.get(), "runtime_config.r_placeholder")
-                                prop:value=move || form.get().map(|value| value.rscript_executable).unwrap_or_default()
-                                on:input=move |event| form.update(|value| {
-                                    if let Some(value) = value {
-                                        value.rscript_executable = event_target_value(&event);
-                                    }
-                                }) />
+                            <div class="runtime-config-picker">
+                                <input id="runtime-rscript-executable" autocomplete="off"
+                                    placeholder=move || t(locale.get(), "runtime_config.r_placeholder")
+                                    prop:value=move || form.get().map(|value| value.rscript_executable).unwrap_or_default()
+                                    on:input=move |event| form.update(|value| {
+                                        if let Some(value) = value {
+                                            value.rscript_executable = event_target_value(&event);
+                                        }
+                                    }) />
+                                {move || form.get().map(|value| value.context_kind == "local").unwrap_or(false).then(|| view! {
+                                    <button type="button" class="runtime-config-browse" disabled=move || busy.get()
+                                        on:click=move |_| browse("r")>{move || t(locale.get(), "runtime_config.browse")}</button>
+                                })}
+                            </div>
                         </label>
                         <p class="runtime-config-hint">{move || t(locale.get(), "runtime_config.hint")}</p>
                         {move || error.get().map(|message| view! {
@@ -292,7 +345,6 @@ pub(super) fn RuntimeInterpreterOverlay(
 pub(super) fn CapabilitiesOverlay(
     locale: RwSignal<Locale>,
     show_capabilities: RwSignal<bool>,
-    show_memory_files: RwSignal<bool>,
     bootstrap: RwSignal<Option<BootstrapStatus>>,
     caps: RwSignal<Option<Capabilities>>,
     busy: RwSignal<bool>,
@@ -300,17 +352,18 @@ pub(super) fn CapabilitiesOverlay(
     start_env_setup: Callback<web_sys::MouseEvent>,
 ) -> impl IntoView {
     move || {
-        let capabilities = show_capabilities.get().then(|| view! {
+        show_capabilities.get().then(|| view! {
     <div class="overlay">
         <div class="modal modal-wide" role="dialog" aria-modal="true"
             aria-labelledby="capabilities-title">
-            <div class="fb-head">
+            <div class="ps-head">
                 <h2 id="capabilities-title">{move || t(locale.get(), "caps.title")}</h2>
-                <button class="icon-btn" aria-label=move || t(locale.get(), "caps.close")
-                    on:click=move |_| {
-                        show_memory_files.set(false);
-                        show_capabilities.set(false);
-                    }>{compose_icon("close")}</button>
+                <button type="button" class="ps-close"
+                    title=move || t(locale.get(), "caps.close")
+                    aria-label=move || t(locale.get(), "caps.close")
+                    on:click=move |_| show_capabilities.set(false)>
+                    {compose_icon("close")}
+                </button>
             </div>
             {move || bootstrap.get().map(|b| {
                 let loc = locale.get();
@@ -346,29 +399,47 @@ pub(super) fn CapabilitiesOverlay(
                             show_capabilities.set(false);
                             open_settings_section.call("skills".into());
                         }>
-                        <span class="cap-num">{c.project.skill_count}</span>
-                        <span class="cap-label">{move || t(locale.get(), "caps.skills")}</span>
+                        <span class="cap-num">{c.skill_counts.bundled}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.bundled_skills")}</span>
+                    </button>
+                    <button type="button" class="cap-stat"
+                        on:click=move |_| {
+                            show_capabilities.set(false);
+                            open_settings_section.call("skills".into());
+                        }>
+                        <span class="cap-num">{c.skill_counts.project}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.project_skills")}</span>
                     </button>
                     <button type="button" class="cap-stat"
                         on:click=move |_| {
                             show_capabilities.set(false);
                             open_settings_section.call("connections".into());
                         }>
-                        <span class="cap-num">{c.mcp_servers.len()}</span>
-                        <span class="cap-label">{move || t(locale.get(), "caps.mcp_servers")}</span>
+                        <span class="cap-num">{c.mcp_counts.bundled}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.bundled_mcp_servers")}</span>
                     </button>
                     <button type="button" class="cap-stat"
-                        on:click=move |_| show_memory_files.set(true)>
+                        on:click=move |_| {
+                            show_capabilities.set(false);
+                            open_settings_section.call("connections".into());
+                        }>
+                        <span class="cap-num">{c.mcp_counts.project}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.project_mcp_servers")}</span>
+                    </button>
+                    <button type="button" class="cap-stat"
+                        on:click=move |_| {
+                            show_capabilities.set(false);
+                            open_settings_section.call("memory".into());
+                        }>
                         <span class="cap-num">{c.memory_files.len()}</span>
                         <span class="cap-label">{move || t(locale.get(), "caps.memory_files")}</span>
                     </button>
                 </div>
             })}
             <div class="row">
-                <button on:click=move |_| {
-                    show_memory_files.set(false);
-                    show_capabilities.set(false);
-                }>{move || t(locale.get(), "caps.close")}</button>
+                <button on:click=move |_| show_capabilities.set(false)>
+                    {move || t(locale.get(), "caps.close")}
+                </button>
                 {move || bootstrap.get().filter(|b| !b.python_initializing && (!b.python_ok || !b.uv_ok || !b.node_ok || !b.sci_ok || !b.pixi_ok)).map(|_| view! {
                     <button class="primary" disabled=move || busy.get() on:click=move |ev| start_env_setup.call(ev)>
                         {move || t(locale.get(), "caps.setup_env")}
@@ -377,60 +448,7 @@ pub(super) fn CapabilitiesOverlay(
             </div>
         </div>
     </div>
-}.into_view());
-        let memory_files = show_memory_files.get().then(|| {
-            let (project, files) = caps.get()
-                .map(|value| (value.project.name, value.memory_files))
-                .unwrap_or_default();
-            view! {
-                <div class="overlay cap-memory-overlay">
-                    <div class="modal modal-wide cap-memory-modal" role="dialog" aria-modal="true"
-                        aria-labelledby="cap-memory-title">
-                        <div class="fb-head">
-                            <div class="cap-memory-heading">
-                                <h2 id="cap-memory-title">{move || t(locale.get(), "caps.memory_files")}</h2>
-                                <p>{tf(locale.get(), "caps.memory_project", &[("project", &project)])}</p>
-                            </div>
-                            <button class="icon-btn" aria-label=move || t(locale.get(), "caps.close")
-                                on:click=move |_| show_memory_files.set(false)>
-                                {compose_icon("close")}
-                            </button>
-                        </div>
-                        {if files.is_empty() {
-                            view! {
-                                <div class="cap-memory-empty">
-                                    {move || t(locale.get(), "caps.memory_empty")}
-                                </div>
-                            }.into_view()
-                        } else {
-                            view! {
-                                <div class="cap-memory-list">
-                                    <For each=move || files.clone() key=|file| file.name.clone() let:file>
-                                        <article class="cap-memory-file">
-                                            <div class="cap-memory-file-head">
-                                                <span class="cap-memory-file-name">{file.name}</span>
-                                                <span class="cap-memory-file-size">{format_bytes(file.bytes)}</span>
-                                            </div>
-                                            <pre>{if file.preview.trim().is_empty() {
-                                                t(locale.get_untracked(), "caps.memory_no_preview").into()
-                                            } else {
-                                                file.preview
-                                            }}</pre>
-                                        </article>
-                                    </For>
-                                </div>
-                            }.into_view()
-                        }}
-                        <div class="row">
-                            <button on:click=move |_| show_memory_files.set(false)>
-                                {move || t(locale.get(), "caps.close")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            }.into_view()
-        });
-        (capabilities, memory_files).into_view()
+})
     }
 }
 

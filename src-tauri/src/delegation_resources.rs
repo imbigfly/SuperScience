@@ -12,14 +12,14 @@ use crate::{
 };
 use serde::Serialize;
 use std::{collections::HashSet, path::Path};
-use superscience_core::{AgentSpec, CapabilityRegistry, SpecialistSnapshot};
+use superscience_core::{AgentSkillBinding, AgentSpec, CapabilityRegistry, SpecialistSnapshot};
 use superscience_store::{ExecutionContext, ExecutionContextKind, Store};
 
 pub(crate) const LITERATURE_TOOL_GRANT: &str = "literature_search";
 pub(crate) const EXTERNAL_TOOL_GRANT: &str = "web_search";
 const LITERATURE_CONNECTORS: &[&str] = &["literature", "pubmed", "biorxiv"];
-const SKILL_TOKEN_PREFIX: &str = "superscience_skill:";
-const CONNECTOR_TOKEN_PREFIX: &str = "superscience_connector:";
+const SKILL_TOKEN_PREFIX: &str = "wisp_skill:";
+const CONNECTOR_TOKEN_PREFIX: &str = "wisp_connector:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 enum ConnectorClass {
@@ -40,6 +40,7 @@ pub(crate) struct ScientificResourceCatalog {
     literature_skills: Vec<String>,
     visualization_skills: Vec<String>,
     skill_fingerprints: Vec<String>,
+    skill_bindings: Vec<AgentSkillBinding>,
     execution_context_ids: Vec<String>,
     context_fingerprints: Vec<String>,
     connectors: Vec<ConnectorResource>,
@@ -56,6 +57,17 @@ pub(crate) struct ScientificTaskGrant {
 }
 
 impl ScientificResourceCatalog {
+    pub(crate) fn skill_options(&self) -> Vec<crate::dynamic_workflow::AgentSkillOption> {
+        self.skill_bindings
+            .iter()
+            .map(|binding| crate::dynamic_workflow::AgentSkillOption {
+                id: binding.id.clone(),
+                name: binding.name.clone(),
+                scope: binding.scope.clone(),
+            })
+            .collect()
+    }
+
     pub(crate) async fn discover(
         store: &Store,
         project: &ActiveProject,
@@ -85,12 +97,30 @@ impl ScientificResourceCatalog {
             .iter()
             .map(skill_fingerprint)
             .collect::<Vec<_>>();
+        let skill_bindings = skills
+            .all()
+            .iter()
+            .filter_map(|skill| {
+                let record = skills.effective_record(&skill.name)?;
+                Some(AgentSkillBinding {
+                    id: skill.name.clone(),
+                    name: skill.name.clone(),
+                    scope: record.scope.as_str().into(),
+                    path: record.path.to_string_lossy().into(),
+                    declared_version: record.declared_version.clone(),
+                    skill_md_sha256: record.skill_md_sha256.clone()?,
+                    package_id: record.package_id.clone(),
+                    package_version: record.package_version.clone(),
+                    package_source: record.package_source.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
 
         let managed_python = superscience_runtime::PythonEnv::managed(app_data)
             .python()
             .is_file();
         let disabled = load_disabled_connectors(store).await;
-        let dev_command = std::env::var("SUPERSCIENCE_MCP_COMMAND")
+        let dev_command = std::env::var("WISP_MCP_COMMAND")
             .ok()
             .filter(|command| command.split_whitespace().next().is_some());
         let mut connectors = if dev_command.is_some() {
@@ -156,6 +186,7 @@ impl ScientificResourceCatalog {
             literature_skills,
             visualization_skills,
             skill_fingerprints,
+            skill_bindings,
             execution_context_ids,
             context_fingerprints,
             connectors,
@@ -229,15 +260,43 @@ impl ScientificResourceCatalog {
     }
 
     pub(crate) fn grant_for_spec(&self, spec: &AgentSpec) -> ScientificTaskGrant {
-        self.grant(&spec.capabilities, specialist(spec))
+        self.grant(&spec.capabilities, &spec.skill_bindings, specialist(spec))
+    }
+
+    pub(crate) fn resolve_skill_bindings(
+        &self,
+        skill_ids: &[String],
+        specialist: Option<&SpecialistSnapshot>,
+    ) -> Result<Vec<AgentSkillBinding>, String> {
+        let mut seen = HashSet::new();
+        let mut bindings = Vec::with_capacity(skill_ids.len());
+        for id in skill_ids {
+            if !seen.insert(id.as_str()) {
+                return Err(format!("duplicate skill_id: {id}"));
+            }
+            let binding = self
+                .skill_bindings
+                .iter()
+                .find(|binding| binding.id == *id)
+                .cloned()
+                .ok_or_else(|| format!("Skill '{id}' is not currently effective and enabled"))?;
+            if let Some(allowed) = specialist.and_then(|specialist| specialist.skills.as_ref()) {
+                if !allowed.contains(id) {
+                    return Err(format!("Skill '{id}' is not allowed by this Specialist"));
+                }
+            }
+            bindings.push(binding);
+        }
+        Ok(bindings)
     }
 
     pub(crate) fn validate_task(
         &self,
         capabilities: &[String],
+        skill_bindings: &[AgentSkillBinding],
         specialist: Option<&SpecialistSnapshot>,
     ) -> Result<(), String> {
-        let grant = self.grant(capabilities, specialist);
+        let grant = self.grant(capabilities, skill_bindings, specialist);
         if capabilities
             .iter()
             .any(|capability| capability == "literature_search")
@@ -277,6 +336,7 @@ impl ScientificResourceCatalog {
     fn grant(
         &self,
         capabilities: &[String],
+        skill_bindings: &[AgentSkillBinding],
         specialist: Option<&SpecialistSnapshot>,
     ) -> ScientificTaskGrant {
         let literature = capabilities
@@ -291,26 +351,10 @@ impl ScientificResourceCatalog {
         let code_run = capabilities
             .iter()
             .any(|capability| capability == "code_run");
-        let mut skills = if literature {
-            self.literature_skills.iter().cloned().collect()
-        } else {
-            HashSet::new()
-        };
-        if visualization {
-            skills.extend(self.visualization_skills.iter().cloned());
-        }
-        // Generic temporary code tasks do not inherit every project Skill.
-        // A selected Specialist may reuse its configured non-literature
-        // Skills, with `Some(...)` narrowed below and `None` preserving the
-        // established "inherit project settings" meaning.
-        if code_run && specialist.is_some() {
-            skills.extend(
-                self.enabled_skills
-                    .iter()
-                    .filter(|skill| !self.literature_skills.contains(*skill))
-                    .cloned(),
-            );
-        }
+        let mut skills = skill_bindings
+            .iter()
+            .map(|binding| binding.name.clone())
+            .collect::<HashSet<_>>();
         let mut connectors = self
             .connectors
             .iter()
@@ -387,6 +431,20 @@ impl ScientificResourceCatalog {
                 .map(|value| (*value).into())
                 .collect(),
             skill_fingerprints: skills.iter().map(|value| (*value).into()).collect(),
+            skill_bindings: skills
+                .iter()
+                .map(|value| AgentSkillBinding {
+                    id: (*value).into(),
+                    name: (*value).into(),
+                    scope: "bundled".into(),
+                    path: format!("/skills/{value}/SKILL.md"),
+                    declared_version: None,
+                    skill_md_sha256: "0".repeat(64),
+                    package_id: None,
+                    package_version: None,
+                    package_source: None,
+                })
+                .collect(),
             execution_context_ids: vec!["local".into()],
             context_fingerprints: vec!["local:test".into()],
             connectors,
@@ -432,7 +490,7 @@ impl ScientificTaskGrant {
             String::new()
         } else {
             format!(
-                "Available Skills: {}. Load one with use_skill before following it.\n",
+                "Bound Skills: {}. Their exact guidance is injected below; no other Skill is authorized for this node.\n",
                 prompt_id_list(&skills)
             )
         };
@@ -560,8 +618,7 @@ fn context_supports_python(context: &ExecutionContext, managed_python: bool) -> 
 }
 
 fn context_supports_r(context: &ExecutionContext) -> bool {
-    if context.kind == ExecutionContextKind::Local && superscience_runtime::find_rscript().is_some()
-    {
+    if context.kind == ExecutionContextKind::Local && superscience_runtime::find_rscript().is_some() {
         return true;
     }
     let interpreter = json_string(
@@ -648,7 +705,10 @@ mod tests {
             &["web"],
             &["python", "r"],
         );
-        let unrestricted = catalog.grant(&["literature_search".into()], None);
+        let bindings = catalog
+            .resolve_skill_bindings(&["literature-review".into()], None)
+            .unwrap();
+        let unrestricted = catalog.grant(&["literature_search".into()], &bindings, None);
         assert_eq!(
             unrestricted.skills,
             HashSet::from(["literature-review".into()])
@@ -665,6 +725,7 @@ mod tests {
         };
         let restricted = catalog.grant(
             &["literature_search".into(), "visualization".into()],
+            &bindings,
             Some(&specialist),
         );
         assert_eq!(
@@ -696,11 +757,11 @@ mod tests {
             connectors: Some(vec![]),
         };
         assert!(catalog
-            .validate_task(&["literature_search".into()], Some(&blocked))
+            .validate_task(&["literature_search".into()], &[], Some(&blocked))
             .unwrap_err()
             .contains("no enabled"));
         assert!(catalog
-            .validate_task(&["visualization".into()], None)
+            .validate_task(&["visualization".into()], &[], None)
             .unwrap_err()
             .contains("no configured"));
     }
@@ -715,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn code_skills_require_a_specialist_and_still_exclude_literature() {
+    fn tasks_receive_only_explicitly_bound_skills() {
         let catalog = ScientificResourceCatalog::fake(
             &["analysis-workflow", "figure-style", "literature-review"],
             &["literature-review"],
@@ -723,7 +784,10 @@ mod tests {
             &[],
             &["python"],
         );
-        assert!(catalog.grant(&["code_run".into()], None).skills.is_empty());
+        assert!(catalog
+            .grant(&["code_run".into()], &[], None)
+            .skills
+            .is_empty());
 
         let selected = SpecialistSnapshot {
             id: "analyst".into(),
@@ -733,7 +797,10 @@ mod tests {
             skills: Some(vec!["analysis-workflow".into(), "literature-review".into()]),
             connectors: None,
         };
-        let selected_grant = catalog.grant(&["code_run".into()], Some(&selected));
+        let bindings = catalog
+            .resolve_skill_bindings(&["analysis-workflow".into()], Some(&selected))
+            .unwrap();
+        let selected_grant = catalog.grant(&["code_run".into()], &bindings, Some(&selected));
         assert_eq!(
             selected_grant.skills,
             HashSet::from(["analysis-workflow".into()])
@@ -744,16 +811,13 @@ mod tests {
         );
         assert!(selected_grant.prompt_section().contains("local"));
 
-        let inherited = SpecialistSnapshot {
-            skills: None,
-            ..selected
-        };
+        let figure = catalog
+            .resolve_skill_bindings(&["figure-style".into()], None)
+            .unwrap();
         assert_eq!(
-            catalog.grant(&["code_run".into()], Some(&inherited)).skills,
-            HashSet::from(["analysis-workflow".into(), "figure-style".into()])
-        );
-        assert_eq!(
-            catalog.grant(&["visualization".into()], None).skills,
+            catalog
+                .grant(&["visualization".into()], &figure, None)
+                .skills,
             HashSet::from(["figure-style".into()])
         );
     }

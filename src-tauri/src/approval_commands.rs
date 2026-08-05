@@ -28,6 +28,17 @@ pub(crate) fn session_full_permission(state: &AppState, session_id: &str) -> boo
         .unwrap_or(false)
 }
 
+pub(super) fn cancel_pending_confirmation(state: &AppState, session_id: &str) {
+    let pending = state.confirms.lock().unwrap().remove(session_id);
+    if let Some(pending) = pending {
+        let _ = pending
+            .tx
+            .send(superscience_tools::ConfirmDecision::Denied { feedback: None });
+    }
+    state.awaiting_confirm.lock().unwrap().remove(session_id);
+    state.device_hub.resolve_needs_user(session_id);
+}
+
 #[tauri::command]
 pub(super) async fn get_session_full_permission(
     state: State<'_, AppState>,

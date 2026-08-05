@@ -6,15 +6,43 @@ use super::{
     branch_title, copy_dir_recursive, enable_referenced_contexts, events_to_items,
     merge_pending_ui_event, message_uses_resource_bindings, messages_to_items,
     parse_disabled_skills, parse_enabled_skill_names, parse_skill_tags, persist_ui_events,
-    resolve_acp_artifact_references, resolve_composer_references, resolve_reader_references,
-    resolve_review_backend, resolve_workspace, session_runtime_status,
+    receive_confirm_decision, resolve_acp_artifact_references, resolve_composer_references,
+    resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
     should_hide_app_on_macos_close, should_persist_ui_event, side_chat_prompt, user_message_start,
     AgentEvent, ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem,
-    SessionRuntime, MAX_PENDING_UI_EVENT_BYTES,
+    SessionRuntime, SkillInfo, MAX_PENDING_UI_EVENT_BYTES,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
+
+#[tokio::test]
+async fn native_confirmation_waits_for_an_explicit_response() {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let decision = receive_confirm_decision(receiver);
+    tokio::pin!(decision);
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut decision)
+            .await
+            .is_err(),
+        "an unanswered permission request must remain blocked"
+    );
+    sender.send(superscience_tools::ConfirmDecision::Approved).unwrap();
+    assert_eq!(decision.await, superscience_tools::ConfirmDecision::Approved);
+}
+
+#[test]
+fn resource_conflict_confirmation_has_dedicated_ui_payload_and_no_saved_grant() {
+    let message = format!(
+        "{}Analysis · abc123 is using `plot.R`. Approve to wait.",
+        super::resource_leases::CONFIRM_PREFIX
+    );
+    let (tool, preview) = super::parse_confirm_payload(&message);
+    assert_eq!(tool, super::resource_leases::CONFIRM_TOOL);
+    assert!(preview.contains("plot.R"));
+    assert!(super::approval_grant_key(&message).is_none());
+}
 
 #[test]
 fn mcp_app_context_is_latest_only_and_session_scoped() {
@@ -422,17 +450,66 @@ fn persisted_ui_events_keep_live_step_order_and_boundaries() {
 }
 
 #[test]
+fn persisted_ui_events_restore_native_plan_and_question_cards() {
+    let frame_id = "f".to_string();
+    let events = vec![
+        AgentEvent::ToolCall {
+            frame_id: frame_id.clone(),
+            name: superscience_tools::plan::PROPOSE_PLAN.into(),
+            preview: "1 steps".into(),
+        },
+        AgentEvent::ToolResult {
+            frame_id: frame_id.clone(),
+            name: superscience_tools::plan::PROPOSE_PLAN.into(),
+            ok: true,
+            content: r#"{"v":1,"source":"native","entries":[{"content":"Fix replay","status":"pending","priority":"high"}]}"#.into(),
+            duration_ms: 1,
+        },
+        AgentEvent::ToolCall {
+            frame_id: frame_id.clone(),
+            name: superscience_tools::ask_user::ASK_USER.into(),
+            preview: "Which option?".into(),
+        },
+        AgentEvent::ToolResult {
+            frame_id,
+            name: superscience_tools::ask_user::ASK_USER.into(),
+            ok: true,
+            content: r#"{"v":1,"source":"native","question":"Which option?","options":[]}"#.into(),
+            duration_ms: 1,
+        },
+    ];
+
+    let (items, _) = events_to_items(&events);
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.role.as_str())
+            .collect::<Vec<_>>(),
+        vec!["plan", "question"]
+    );
+    assert!(items[0].text.contains("Fix replay"));
+    assert!(items[1].text.contains("Which option?"));
+    assert!(items.iter().all(|item| item.tool_name.is_none()));
+}
+
+#[test]
 fn persisted_usage_folds_per_turn_and_floats_to_tail() {
     let frame_id = "f".to_string();
     let usage = |round, input, output, cached| AgentEvent::Usage {
         frame_id: frame_id.clone(),
         round,
+        model: "model".into(),
+        created_at: 1,
         input,
         output,
         reasoning: 0,
         cached,
-        ctx_tokens: 0,
-        max_context: 0,
+        ctx_tokens: input as usize,
+        max_context: 1_000,
+        context_usage: superscience_core::ContextUsage {
+            conversation: input as usize,
+            ..superscience_core::ContextUsage::default()
+        },
     };
     let events = vec![
         AgentEvent::User {
@@ -469,6 +546,9 @@ fn persisted_usage_folds_per_turn_and_floats_to_tail() {
     assert_eq!(first["input"], 300); // 100 + 200 folded
     assert_eq!(first["output"], 30);
     assert_eq!(first["cached"], 80);
+    assert_eq!(first["ctx_tokens"], 200); // latest round snapshot, not a sum
+    assert_eq!(first["max_context"], 1_000);
+    assert_eq!(first["context_usage"]["conversation"], 200);
     let second: serde_json::Value = serde_json::from_str(&items[5].text).unwrap();
     assert_eq!(second["input"], 50);
 }
@@ -488,6 +568,26 @@ fn persisted_ui_events_ignore_ephemeral_reviewer_handoffs() {
 
     let (items, _) = events_to_items(&events);
     assert!(items.is_empty());
+}
+
+#[test]
+fn persisted_ui_events_restore_context_compaction_flags() {
+    let event = AgentEvent::Compaction {
+        frame_id: "f".into(),
+        before: 812_000,
+        after: 236_000,
+        strategy: "auto".into(),
+    };
+    assert!(should_persist_ui_event(&event));
+    let events = vec![event];
+
+    let (items, _) = events_to_items(&events);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].role, "compaction");
+    let payload: serde_json::Value = serde_json::from_str(&items[0].text).unwrap();
+    assert_eq!(payload["before"], 812_000);
+    assert_eq!(payload["after"], 236_000);
+    assert_eq!(payload["strategy"], "auto");
 }
 
 #[test]
@@ -1253,6 +1353,34 @@ fn python_bootstrap_failure_is_reported_after_initialization() {
 }
 
 #[test]
+fn capability_skill_counts_use_enabled_bundled_vs_project_added_inventory() {
+    let skill = |name: &str, scope: &str, enabled: bool| SkillInfo {
+        name: name.into(),
+        description: String::new(),
+        tags: vec![],
+        scope: scope.into(),
+        enabled,
+        builtin: scope == "bundled",
+        managed: false,
+        managed_by: None,
+        dir: format!("/{scope}/{name}"),
+    };
+    let skills = vec![
+        skill("bundled-on", "bundled", true),
+        skill("bundled-off", "bundled", false),
+        skill("project", "project", true),
+        skill("global", "global", true),
+        skill("plugin", "plugin", true),
+    ];
+
+    let counts = crate::app_commands::capability_skill_counts(&skills);
+
+    assert_eq!(counts.bundled, 1);
+    assert_eq!(counts.project, 3);
+    assert_eq!(counts.total(), 4);
+}
+
+#[test]
 fn macos_close_hides_only_main_window_when_not_quitting() {
     assert!(should_hide_app_on_macos_close("main", false));
     assert!(!should_hide_app_on_macos_close("proj-default", false));
@@ -1287,6 +1415,33 @@ fn project_window_url_carries_the_target_session() {
         super::project_commands::project_window_url("abc", Some("s1")),
         "index.html?project=abc&session=s1"
     );
+}
+
+#[tokio::test]
+async fn project_workspace_data_deletion_removes_only_the_resolved_project_directory() {
+    let root = std::env::temp_dir().join(format!("wisp_project_delete_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("data")).unwrap();
+    std::fs::write(root.join("data").join("results.csv"), b"value\n1\n").unwrap();
+
+    let target =
+        super::project_commands::project_workspace_delete_target(root.to_string_lossy().as_ref())
+            .unwrap()
+            .unwrap();
+    super::project_commands::delete_project_workspace_data(target)
+        .await
+        .unwrap();
+
+    assert!(!root.exists());
+}
+
+#[test]
+fn project_workspace_data_deletion_rejects_filesystem_root() {
+    let temp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let root = temp.ancestors().last().unwrap();
+    let error =
+        super::project_commands::project_workspace_delete_target(root.to_string_lossy().as_ref())
+            .unwrap_err();
+    assert_eq!(error, "Refusing to delete a filesystem root.");
 }
 
 #[test]

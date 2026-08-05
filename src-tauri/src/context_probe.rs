@@ -4,8 +4,8 @@ use tauri::State;
 
 const PROBE_SKILL_NAME: &str = "probe-compute-environment";
 const PROBE_SKILL: &str = include_str!("../../skills/probe-compute-environment/SKILL.md");
-const PROBE_VALUE_BEGIN: &str = "__SUPERSCIENCE_PROBE_VALUE_BEGIN__";
-const PROBE_VALUE_END: &str = "__SUPERSCIENCE_PROBE_VALUE_END__";
+const PROBE_VALUE_BEGIN: &str = "__WISP_PROBE_VALUE_BEGIN__";
+const PROBE_VALUE_END: &str = "__WISP_PROBE_VALUE_END__";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeResult {
@@ -246,12 +246,14 @@ fn probe_specs(
     if configured_python.is_none() {
         specs.push(ProbeSpec {
             key: "python_executable",
-            script: platform_script(
+            script: platform_owned(
                 ctx,
-                "command -v python3 || command -v python",
-                "(Get-Command python -ErrorAction SilentlyContinue).Source",
-            )
-            .into(),
+                posix_python_discovery(),
+                format!(
+                    "{}; if ($wispPython) {{ $wispPython }}",
+                    windows_python_discovery()
+                ),
+            ),
             required: false,
         });
     }
@@ -259,12 +261,14 @@ fn probe_specs(
         key: "python_version",
         script: configured_python.as_deref().map_or_else(
             || {
-                platform_script(
+                platform_owned(
                     ctx,
-                    "python3 --version 2>&1 || python --version 2>&1",
-                    "python --version 2>&1",
+                    posix_with_discovered("PY", &posix_python_discovery(), "--version 2>&1"),
+                    format!(
+                        "{}; if ($wispPython) {{ & $wispPython --version 2>&1 }}",
+                        windows_python_discovery()
+                    ),
                 )
-                .to_string()
             },
             |executable| interpreter_command(ctx, executable, "--version 2>&1"),
         ),
@@ -273,12 +277,14 @@ fn probe_specs(
     if configured_rscript.is_none() {
         specs.push(ProbeSpec {
             key: "rscript_executable",
-            script: platform_script(
+            script: platform_owned(
                 ctx,
-                "command -v Rscript",
-                "(Get-Command Rscript -ErrorAction SilentlyContinue).Source",
-            )
-            .into(),
+                posix_rscript_discovery(),
+                format!(
+                    "{}; if ($wispRscript) {{ $wispRscript }}",
+                    windows_rscript_discovery()
+                ),
+            ),
             required: false,
         });
     }
@@ -287,8 +293,14 @@ fn probe_specs(
             key: "r_version",
             script: configured_rscript.as_deref().map_or_else(
                 || {
-                    platform_script(ctx, "Rscript --version 2>&1", "Rscript --version 2>&1")
-                        .to_string()
+                    platform_owned(
+                        ctx,
+                        posix_with_discovered("RSCRIPT", &posix_rscript_discovery(), "--version 2>&1"),
+                        format!(
+                            "{}; if ($wispRscript) {{ & $wispRscript --version 2>&1 }}",
+                            windows_rscript_discovery()
+                        ),
+                    )
                 },
                 |executable| interpreter_command(ctx, executable, "--version 2>&1"),
             ),
@@ -298,12 +310,18 @@ fn probe_specs(
             key: "r_jsonlite",
             script: configured_rscript.as_deref().map_or_else(
                 || {
-                    platform_script(
+                    platform_owned(
                         ctx,
-                        "Rscript --vanilla -e 'cat(requireNamespace(\"jsonlite\", quietly=TRUE))' 2>/dev/null",
-                        "Rscript --vanilla -e \"cat(requireNamespace('jsonlite', quietly=TRUE))\" 2>$null",
+                        posix_with_discovered(
+                            "RSCRIPT",
+                            &posix_rscript_discovery(),
+                            "--vanilla -e 'cat(requireNamespace(\"jsonlite\", quietly=TRUE))' 2>/dev/null",
+                        ),
+                        format!(
+                            "{}; if ($wispRscript) {{ & $wispRscript --vanilla -e \"cat(requireNamespace('jsonlite', quietly=TRUE))\" 2>$null }}",
+                            windows_rscript_discovery()
+                        ),
                     )
-                    .to_string()
                 },
                 |executable| {
                     interpreter_command(
@@ -457,7 +475,7 @@ fn run_bundled_ssh_probe(
     }
     if !bundled_probe_protocol_observed(&stdout, specs) {
         return Err(
-            "SSH authentication succeeded, but the remote account did not execute SuperScience's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early."
+            "SSH authentication succeeded, but the remote account did not execute Wisp's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early."
                 .into(),
         );
     }
@@ -553,6 +571,42 @@ fn platform_script<'a>(
     } else {
         posix
     }
+}
+
+fn platform_owned(ctx: &superscience_store::ExecutionContext, posix: String, windows: String) -> String {
+    if cfg!(target_os = "windows") && ctx.kind == superscience_store::ExecutionContextKind::Local {
+        windows
+    } else {
+        posix
+    }
+}
+
+/// Interpreter lookup order is: explicit configuration (handled by the caller),
+/// PATH, then well-known install locations — so an interpreter installed
+/// outside PATH (e.g. `D:\R-4.5.2\bin\Rscript.exe` or a conda base env) is
+/// still discovered instead of being reported as missing (issue #651).
+fn posix_rscript_discovery() -> String {
+    "command -v Rscript || for p in /usr/local/bin/Rscript /opt/homebrew/bin/Rscript /usr/bin/Rscript \"$HOME/miniconda3/bin/Rscript\" \"$HOME/anaconda3/bin/Rscript\" \"$HOME/miniforge3/bin/Rscript\" \"$HOME/mambaforge/bin/Rscript\" /opt/conda/bin/Rscript; do [ -x \"$p\" ] && { printf '%s\\n' \"$p\"; break; }; done".into()
+}
+
+fn posix_python_discovery() -> String {
+    "command -v python3 || command -v python || for p in \"$HOME/miniconda3/bin/python3\" \"$HOME/anaconda3/bin/python3\" \"$HOME/miniforge3/bin/python3\" \"$HOME/mambaforge/bin/python3\" /opt/conda/bin/python3 /usr/local/bin/python3; do [ -x \"$p\" ] && { printf '%s\\n' \"$p\"; break; }; done".into()
+}
+
+/// Run `args` with the interpreter resolved by `discovery` (PATH + common
+/// install dirs), printing nothing when no interpreter exists.
+fn posix_with_discovered(var: &str, discovery: &str, args: &str) -> String {
+    format!("{var}=$({discovery}); if [ -n \"${var}\" ]; then \"${var}\" {args}; fi")
+}
+
+fn windows_rscript_discovery() -> String {
+    // Newest C:\Program Files\R\R-* install wins when PATH lookup fails.
+    "$wispRscript = (Get-Command Rscript -ErrorAction SilentlyContinue).Source; if (-not $wispRscript) { $wispRscript = Get-ChildItem (Join-Path $env:ProgramFiles 'R') -Directory -ErrorAction SilentlyContinue | Sort-Object { try { [version]($_.Name -replace '^R-', '') } catch { [version]'0.0.0' } } -Descending | ForEach-Object { Join-Path $_.FullName 'bin\\Rscript.exe' } | Where-Object { Test-Path $_ } | Select-Object -First 1 }".into()
+}
+
+fn windows_python_discovery() -> String {
+    // Per-user installs live in %LOCALAPPDATA%\Programs\Python\PythonXY(Z).
+    "$wispPython = (Get-Command python -ErrorAction SilentlyContinue).Source; if (-not $wispPython) { $wispPython = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Programs\\Python') -Directory -ErrorAction SilentlyContinue | Sort-Object { try { [int]($_.Name -replace '[^0-9]', '') } catch { 0 } } -Descending | ForEach-Object { Join-Path $_.FullName 'python.exe' } | Where-Object { Test-Path $_ } | Select-Object -First 1 }".into()
 }
 
 fn configured_interpreter(
@@ -759,41 +813,42 @@ mod tests {
     #[test]
     fn fake_runner_collects_probe_capabilities() {
         let ctx = superscience_store::ExecutionContext::new("wsl:Ubuntu", "GPU").unwrap();
-        let mut runner = FakeRunner::new([
-            ("uname -s", "Linux"),
-            ("uname -m", "x86_64"),
-            ("hostname", "gpu01"),
-            ("getconf _NPROCESSORS_ONLN", "64"),
-            ("nvidia-smi -L", "GPU 0: NVIDIA A100-SXM4-80GB"),
+        let mut runner = FakeRunner::new(vec![
+            ("uname -s".into(), "Linux".into()),
+            ("uname -m".into(), "x86_64".into()),
+            ("hostname".into(), "gpu01".into()),
+            ("getconf _NPROCESSORS_ONLN".into(), "64".into()),
+            ("nvidia-smi -L".into(), "GPU 0: NVIDIA A100-SXM4-80GB".into()),
             (
-                "command -v sbatch || command -v qsub || command -v bsub",
-                "/usr/bin/sbatch",
+                "command -v sbatch || command -v qsub || command -v bsub".into(),
+                "/usr/bin/sbatch".into(),
+            ),
+            (posix_python_discovery(), "/opt/conda/bin/python".into()),
+            (
+                posix_with_discovered("PY", &posix_python_discovery(), "--version 2>&1"),
+                "Python 3.11.8".into(),
+            ),
+            (posix_rscript_discovery(), "/opt/R/bin/Rscript".into()),
+            (
+                posix_with_discovered("RSCRIPT", &posix_rscript_discovery(), "--version 2>&1"),
+                "R scripting front-end version 4.4.1".into(),
             ),
             (
-                "command -v python3 || command -v python",
-                "/opt/conda/bin/python",
+                posix_with_discovered(
+                    "RSCRIPT",
+                    &posix_rscript_discovery(),
+                    "--vanilla -e 'cat(requireNamespace(\"jsonlite\", quietly=TRUE))' 2>/dev/null",
+                ),
+                "TRUE".into(),
             ),
+            ("command -v conda".into(), "/opt/conda/bin/conda".into()),
+            ("command -v mamba".into(), "".into()),
+            ("command -v modulecmd".into(), "/usr/bin/modulecmd".into()),
+            ("printf '%s' \"$HOME\"".into(), "/home/alice".into()),
+            ("pwd".into(), "/scratch/proj".into()),
             (
-                "python3 --version 2>&1 || python --version 2>&1",
-                "Python 3.11.8",
-            ),
-            ("command -v Rscript", "/opt/R/bin/Rscript"),
-            (
-                "Rscript --version 2>&1",
-                "R scripting front-end version 4.4.1",
-            ),
-            (
-                "Rscript --vanilla -e 'cat(requireNamespace(\"jsonlite\", quietly=TRUE))' 2>/dev/null",
-                "TRUE",
-            ),
-            ("command -v conda", "/opt/conda/bin/conda"),
-            ("command -v mamba", ""),
-            ("command -v modulecmd", "/usr/bin/modulecmd"),
-            ("printf '%s' \"$HOME\"", "/home/alice"),
-            ("pwd", "/scratch/proj"),
-            (
-                "if [ \"$(id -u)\" = 0 ]; then printf root; elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then printf sudo; else printf unprivileged; fi",
-                "unprivileged",
+                "if [ \"$(id -u)\" = 0 ]; then printf root; elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then printf sudo; else printf unprivileged; fi".into(),
+                "unprivileged".into(),
             ),
         ]);
 
@@ -839,21 +894,21 @@ mod tests {
             "rscript_executable": "/opt/R 4.5/bin/Rscript"
         })
         .to_string();
-        let mut runner = FakeRunner::new([
-            ("uname -s", "Linux"),
-            ("uname -m", "x86_64"),
-            ("hostname", "cpu2"),
+        let mut runner = FakeRunner::new(vec![
+            ("uname -s".into(), "Linux".into()),
+            ("uname -m".into(), "x86_64".into()),
+            ("hostname".into(), "cpu2".into()),
             (
-                "'/opt/conda env/bin/python' --version 2>&1",
-                "Python 3.12.2",
+                "'/opt/conda env/bin/python' --version 2>&1".into(),
+                "Python 3.12.2".into(),
             ),
             (
-                "'/opt/R 4.5/bin/Rscript' --version 2>&1",
-                "R scripting front-end version 4.5.2",
+                "'/opt/R 4.5/bin/Rscript' --version 2>&1".into(),
+                "R scripting front-end version 4.5.2".into(),
             ),
             (
-                "'/opt/R 4.5/bin/Rscript' --vanilla -e 'cat(requireNamespace(\"jsonlite\", quietly=TRUE))' 2>/dev/null",
-                "TRUE",
+                "'/opt/R 4.5/bin/Rscript' --vanilla -e 'cat(requireNamespace(\"jsonlite\", quietly=TRUE))' 2>/dev/null".into(),
+                "TRUE".into(),
             ),
         ]);
 
@@ -868,6 +923,49 @@ mod tests {
             Some("/opt/R 4.5/bin/Rscript")
         );
         assert_eq!(probe.r_jsonlite, Some(true));
+    }
+
+    #[test]
+    fn interpreter_discovery_prefers_path_then_common_install_dirs() {
+        let ctx = superscience_store::ExecutionContext::new("wsl:Ubuntu", "Ubuntu").unwrap();
+        let (specs, values) = probe_specs(&ctx).unwrap();
+        assert!(!values.contains_key("rscript_executable"));
+
+        let exe = specs
+            .iter()
+            .find(|spec| spec.key == "rscript_executable")
+            .unwrap();
+        assert!(exe.script.starts_with("command -v Rscript"));
+        assert!(exe.script.contains("/opt/homebrew/bin/Rscript"));
+        assert!(exe.script.contains("/opt/conda/bin/Rscript"));
+
+        // The version/jsonlite probes must reuse the discovered interpreter,
+        // otherwise an Rscript found outside PATH would still probe as missing.
+        let version = specs.iter().find(|spec| spec.key == "r_version").unwrap();
+        assert!(version.script.contains("RSCRIPT=$("));
+        assert!(version.script.contains("\"$RSCRIPT\" --version"));
+        let jsonlite = specs.iter().find(|spec| spec.key == "r_jsonlite").unwrap();
+        assert!(jsonlite.script.contains("RSCRIPT=$("));
+
+        let python = specs
+            .iter()
+            .find(|spec| spec.key == "python_executable")
+            .unwrap();
+        assert!(python
+            .script
+            .starts_with("command -v python3 || command -v python"));
+        assert!(python.script.contains("/opt/conda/bin/python3"));
+    }
+
+    #[test]
+    fn windows_discovery_scans_program_files_and_localappdata() {
+        let rscript = windows_rscript_discovery();
+        assert!(rscript.contains("Get-Command Rscript"));
+        assert!(rscript.contains("ProgramFiles"));
+        assert!(rscript.contains("bin\\Rscript.exe"));
+        let python = windows_python_discovery();
+        assert!(python.contains("Get-Command python"));
+        assert!(python.contains("Programs\\Python"));
     }
 
     #[test]
@@ -943,7 +1041,7 @@ mod tests {
         let error = probe_context_with_runner(&ctx, &mut runner).unwrap_err();
 
         assert!(error.contains("SSH authentication succeeded"));
-        assert!(error.contains("did not execute SuperScience's non-interactive probe commands"));
+        assert!(error.contains("did not execute Wisp's non-interactive probe commands"));
     }
 
     #[test]
@@ -989,7 +1087,7 @@ mod tests {
     #[tokio::test]
     async fn failed_probe_keeps_previous_capabilities() {
         let tmp = std::env::temp_dir().join(format!(
-            "superscience_probe_context_{}.sqlite",
+            "wisp_probe_context_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = superscience_store::Store::open(&tmp).await.unwrap();
@@ -1021,12 +1119,9 @@ mod tests {
     }
 
     impl FakeRunner {
-        fn new<const N: usize>(pairs: [(&str, &str); N]) -> Self {
+        fn new(pairs: Vec<(String, String)>) -> Self {
             Self {
-                outputs: pairs
-                    .into_iter()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect(),
+                outputs: pairs.into_iter().collect(),
             }
         }
     }

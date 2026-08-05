@@ -1,3 +1,4 @@
+use crate::app_support::compose_icon;
 use crate::bindings::invoke_checked;
 use crate::dto::{
     PublicationEvidenceBinding, PublicationFreezeOutcome, PublicationItemInfo,
@@ -10,8 +11,8 @@ use crate::window_capture_escape;
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 use std::collections::{HashMap, HashSet};
-use wasm_bindgen::JsValue;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PublicationEvidenceSource {
@@ -21,9 +22,7 @@ pub(super) struct PublicationEvidenceSource {
 }
 
 fn error_text(error: JsValue) -> String {
-    error
-        .as_string()
-        .unwrap_or_else(|| format!("{error:?}"))
+    error.as_string().unwrap_or_else(|| format!("{error:?}"))
 }
 
 fn install_workspace(
@@ -106,38 +105,32 @@ fn invoke_workspace(
     busy.set(true);
     error.set(None);
     spawn_local(async move {
-        let succeeded = match invoke_checked(
-            command,
-            to_value(&args).unwrap_or(JsValue::UNDEFINED),
-        )
-        .await
-        {
-            Ok(value) => match install_workspace(
-                value,
-                workspace,
-                publication_id,
-                revision_id,
-                selected_item_id,
-            ) {
-                Ok(()) => true,
-                Err(message) => {
-                    error.set(Some(message));
+        let succeeded =
+            match invoke_checked(command, to_value(&args).unwrap_or(JsValue::UNDEFINED)).await {
+                Ok(value) => match install_workspace(
+                    value,
+                    workspace,
+                    publication_id,
+                    revision_id,
+                    selected_item_id,
+                ) {
+                    Ok(()) => true,
+                    Err(message) => {
+                        error.set(Some(message));
+                        false
+                    }
+                },
+                Err(value) => {
+                    error.set(Some(error_text(value)));
                     false
                 }
-            },
-            Err(value) => {
-                error.set(Some(error_text(value)));
-                false
-            }
-        };
+            };
         busy.set(false);
         after(succeeded);
     });
 }
 
-pub(super) fn manuscript_rows(
-    items: &[PublicationItemInfo],
-) -> Vec<(PublicationItemInfo, usize)> {
+pub(super) fn manuscript_rows(items: &[PublicationItemInfo]) -> Vec<(PublicationItemInfo, usize)> {
     fn visit(
         parent: Option<&str>,
         children: &HashMap<Option<String>, Vec<PublicationItemInfo>>,
@@ -280,7 +273,9 @@ fn precise_evidence_source(
                 .parse::<usize>()
                 .map_err(|_| "Span end must be a byte offset.")?;
             if frame_id.trim().is_empty() || seq < 1 || start >= end {
-                return Err("MessageSpan requires a frame, message sequence, and valid range.".into());
+                return Err(
+                    "MessageSpan requires a frame, message sequence, and valid range.".into(),
+                );
             }
             Ok(PublicationEvidenceSource {
                 kind: "message_span",
@@ -462,11 +457,15 @@ pub(super) fn PublicationWorkspaceModal(
                         <button type="button" class="icon-btn"
                             title=move || t(locale.get(), "publication.refresh")
                             aria-label=move || t(locale.get(), "publication.refresh")
-                            on:click=move |event| refresh.call(event)>"↻"</button>
+                            on:click=move |event| refresh.call(event)>
+                            {compose_icon("sync")}
+                        </button>
                         <button type="button" class="ps-close"
                             title=move || t(locale.get(), "publication.close")
                             aria-label=move || t(locale.get(), "publication.close")
-                            on:click=move |_| on_close.call(())>"×"</button>
+                            on:click=move |_| on_close.call(())>
+                            {compose_icon("close")}
+                        </button>
                     </div>
                 </header>
 
@@ -1200,7 +1199,9 @@ pub(super) fn PublicationWorkspaceModal(
                             </div>
                             <button type="button" class="ps-close"
                                 aria-label=t(locale.get(), "publication.close")
-                                on:click=move |_| anchor_open.set(false)>"×"</button>
+                                on:click=move |_| anchor_open.set(false)>
+                                {compose_icon("close")}
+                            </button>
                         </header>
                         <label>
                             <span>{t(locale.get(), "publication.anchor_kind")}</span>
@@ -1343,7 +1344,9 @@ pub(super) fn PublicationWorkspaceModal(
                                     on:click=move |_| {
                                         binding_source.set(None);
                                         binding_seen.set(String::new());
-                                    }>"×"</button>
+                                    }>
+                                    {compose_icon("close")}
+                                </button>
                             </header>
                             {if !has_draft {
                                 view! {
@@ -1491,7 +1494,9 @@ pub(super) fn PublicationWorkspaceModal(
                                 </h3>
                                 <button type="button" class="ps-close"
                                     aria-label=t(locale.get(), "publication.close")
-                                    on:click=move |_| freeze_open.set(false)>"×"</button>
+                                    on:click=move |_| freeze_open.set(false)>
+                                    {compose_icon("close")}
+                                </button>
                             </header>
                             <label>
                                 <span>{t(locale.get(), "publication.target_visibility")}</span>
@@ -1592,7 +1597,9 @@ pub(super) fn PublicationWorkspaceModal(
                                 </div>
                                 <button type="button" class="ps-close"
                                     aria-label=t(locale.get(), "publication.close")
-                                    on:click=move |_| waiver_code.set(None)>"×"</button>
+                                    on:click=move |_| waiver_code.set(None)>
+                                    {compose_icon("close")}
+                                </button>
                             </header>
                             <label>
                                 <span>{t(locale.get(), "publication.waiver_author")}</span>
@@ -1697,27 +1704,14 @@ mod tests {
             rows.iter()
                 .map(|(item, depth)| (item.id.as_str(), *depth))
                 .collect::<Vec<_>>(),
-            [
-                ("root", 0),
-                ("child", 1),
-                ("later", 0),
-                ("orphan", 0),
-            ]
+            [("root", 0), ("child", 1), ("later", 0), ("orphan", 0),]
         );
     }
 
     #[test]
     fn message_span_source_uses_canonical_exact_locator() {
-        let source = precise_evidence_source(
-            "message_span",
-            "frame",
-            "8",
-            "2",
-            "11",
-            "",
-            "",
-        )
-        .unwrap();
+        let source =
+            precise_evidence_source("message_span", "frame", "8", "2", "11", "", "").unwrap();
         assert_eq!(source.kind, "message_span");
         assert_eq!(
             source.id,

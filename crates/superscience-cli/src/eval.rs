@@ -130,6 +130,7 @@ impl Output for EvalOutput {
         cached: u64,
         _ctx_tokens: usize,
         _max_context: usize,
+        _context_usage: superscience_core::ContextUsage,
     ) {
         let mut captured = self.captured.lock().expect("eval output mutex poisoned");
         captured.rounds += 1;

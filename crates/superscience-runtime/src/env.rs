@@ -124,10 +124,85 @@ impl PythonEnv {
     }
 }
 
-/// Locate `Rscript` on PATH. Context-specific interpreter paths are resolved by
-/// the host from persisted execution-context configuration.
+/// Locate `Rscript`: PATH first, then well-known install locations, so an R
+/// installed outside PATH (e.g. `D:\R-4.5.2` on Windows or a conda base env)
+/// is still found (issue #651). Context-specific interpreter paths are
+/// resolved by the host from persisted execution-context configuration.
 pub fn find_rscript() -> Option<PathBuf> {
-    which::which("Rscript").ok()
+    if let Ok(path) = which::which("Rscript") {
+        return Some(path);
+    }
+    rscript_common_install_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+/// Candidate `Rscript` paths in well-known install locations, most preferred
+/// first. Kept separate from `find_rscript` so the ordering stays testable
+/// without touching the host filesystem layout.
+fn rscript_common_install_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        // C:\Program Files\R\R-<version>\bin\Rscript.exe — newest version first.
+        let program_files = std::env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
+        let mut names: Vec<String> = std::fs::read_dir(program_files.join("R"))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().is_dir())
+                    .filter_map(|entry| Some(entry.file_name().into_string().ok()?))
+                    .collect()
+            })
+            .unwrap_or_default();
+        sort_r_install_dirs_newest_first(&mut names);
+        candidates.extend(names.into_iter().map(|name| {
+            program_files
+                .join("R")
+                .join(name)
+                .join("bin")
+                .join("Rscript.exe")
+        }));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        for path in [
+            "/usr/local/bin/Rscript",
+            "/opt/homebrew/bin/Rscript",
+            "/usr/bin/Rscript",
+        ] {
+            candidates.push(PathBuf::from(path));
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            for dir in ["miniconda3", "anaconda3", "miniforge3", "mambaforge"] {
+                candidates.push(Path::new(&home).join(dir).join("bin").join("Rscript"));
+            }
+        }
+        candidates.push(PathBuf::from("/opt/conda/bin/Rscript"));
+    }
+    candidates
+}
+
+/// Order `R-x.y.z` install directory names newest-first. Pure string parsing
+/// so it can be unit-tested on any host.
+#[cfg(any(target_os = "windows", test))]
+fn sort_r_install_dirs_newest_first(names: &mut [String]) {
+    names.sort_by_key(|name| std::cmp::Reverse(r_install_version_key(name)));
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn r_install_version_key(name: &str) -> (u64, u64, u64) {
+    let version = name.strip_prefix("R-").unwrap_or(name);
+    let mut parts = version
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0));
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
 }
 
 /// Path to the kernel worker bundled with the app (`python/kernel_worker.py`).
@@ -177,5 +252,30 @@ mod tests {
         std::fs::remove_file(venv.join(".superscience_deps_ok")).unwrap();
         assert!(PythonEnv::install_deps(nope, Path::new("/nonexistent/python"), &venv).is_err());
         let _ = std::fs::remove_dir_all(&venv);
+    }
+
+    #[test]
+    fn r_install_dirs_sort_newest_version_first() {
+        let mut names = vec![
+            "R-4.3.2".to_string(),
+            "R-4.10.0".to_string(),
+            "R-3.6.3".to_string(),
+            "R-4.5.2".to_string(),
+            "unrelated".to_string(),
+        ];
+        sort_r_install_dirs_newest_first(&mut names);
+        assert_eq!(
+            names,
+            ["R-4.10.0", "R-4.5.2", "R-4.3.2", "R-3.6.3", "unrelated"]
+        );
+    }
+
+    #[test]
+    fn rscript_candidates_are_absolute_and_prefer_standard_locations() {
+        let candidates = rscript_common_install_candidates();
+        assert!(!candidates.is_empty());
+        assert!(candidates.iter().all(|path| path.is_absolute()));
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(candidates[0], PathBuf::from("/usr/local/bin/Rscript"));
     }
 }

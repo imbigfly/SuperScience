@@ -244,7 +244,7 @@ impl Store {
     pub async fn request_run_cancellation(&self, id: &str) -> Result<bool> {
         let updated = sqlx::query(
             "UPDATE runs SET status='cancelling' \
-             WHERE id=? AND status IN ('submitted','running')",
+             WHERE id=? AND status IN ('draft','submitted','running','paused')",
         )
         .bind(id)
         .execute(&self.pool)
@@ -387,6 +387,33 @@ impl Store {
         .bind(id)
         .bind(owner)
         .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Force a Cancelling Run to a terminal status without holding the lease.
+    /// Used when a second cancel must unstick a wedged cancel/poll RPC.
+    pub async fn force_finish_cancelling_run(
+        &self,
+        id: &str,
+        status: RunStatus,
+        exit_code: Option<i64>,
+    ) -> Result<bool> {
+        if !status.is_terminal() {
+            anyhow::bail!("force_finish_cancelling_run requires a terminal status");
+        }
+        let now = chrono::Utc::now().timestamp();
+        let updated = sqlx::query(
+            "UPDATE runs SET status=?, started_at=COALESCE(started_at,?), ended_at=?, exit_code=?, \
+             lifecycle_owner=NULL, lifecycle_lease_until=NULL \
+             WHERE id=? AND status='cancelling'",
+        )
+        .bind(status.as_str())
+        .bind(now)
+        .bind(now)
+        .bind(exit_code)
+        .bind(id)
         .execute(&self.pool)
         .await?;
         Ok(updated.rows_affected() == 1)

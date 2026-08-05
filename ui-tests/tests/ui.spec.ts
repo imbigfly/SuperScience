@@ -7,7 +7,7 @@ const officeFixtures = {
   xlsxBase64: readFileSync(resolve(__dirname, "../fixtures/office-preview.xlsx")).toString("base64"),
   pptxBase64: readFileSync(resolve(__dirname, "../fixtures/office-preview.pptx")).toString("base64"),
 };
-const motifAppHtmlPath = process.env.SUPERSCIENCE_MOTIF_APP_HTML;
+const motifAppHtmlPath = process.env.WISP_MOTIF_APP_HTML;
 
 function providerSelect(page: Page) {
   return page.getByTestId("settings-provider");
@@ -230,12 +230,21 @@ test("Example project shows bundled demos as read-only transcripts", async ({ pa
   // The synthetic "Example project" opens a demo view whose sidebar lists the
   // bundled demos (no per-project "Open demo" button any more).
   await page.getByText("Example project").click();
-  await page.getByText("Design a genome-wide CRISPR").click();
+  await expect(page.getByText("Help me find RNA-seq knockdown datasets")).toBeVisible();
+  await expect(page.getByText("What specific samples are included in GSE153250")).toBeVisible();
+  await expect(page.getByText("Based on the upstream Counts data from GSE153250")).toBeVisible();
+  await expect(page.getByText("Based on the Counts data from our study")).toBeVisible();
+  await page.getByText("Connect to the remote compute host, locate the FASTQ data").click();
 
   // The demo request renders as the user turn…
-  await expect(page.getByText("Design a genome-wide CRISPR knockout screen targeting all kinases.")).toBeVisible();
+  await expect(
+    page.getByText("Connect to the remote compute host, locate the FASTQ data for GSE153250, keep only the siESR1 and siNT groups."),
+  ).toBeVisible();
   // …and the agent's final report renders as the assistant turn.
-  await expect(page.getByText("Human Kinome CRISPR-KO Screen")).toBeVisible();
+  await expect(page.getByText("GSE153250 RNA-seq Upstream Analysis")).toBeVisible();
+  // Full transcript includes SSH/run operation cards, not just the summary.
+  await expect(page.getByText("Re-run pipeline with fixed STAR index")).toBeVisible();
+  await expect(page.getByTestId("run-monitor-card")).toBeVisible();
 });
 
 test("send streams a mocked assistant reply", async ({ page, context }) => {
@@ -316,6 +325,98 @@ test("general settings can use Ctrl+Enter to send and Enter for newline", async 
   });
 });
 
+test("Usage groups workspaces, charts activity and models, and paginates sessions", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "Usage");
+
+  const usage = page.getByTestId("usage-pane");
+  await expect(usage).toBeVisible();
+  await expect(usage.locator(".usage-tile")).toHaveCount(4);
+  const activity = page.getByTestId("usage-activity");
+  await expect(activity.locator(".usage-activity-cell")).toHaveCount(371);
+
+  const daily = activity.getByRole("button", { name: "Daily", exact: true });
+  const weekly = activity.getByRole("button", { name: "Weekly", exact: true });
+  const cumulative = activity.getByRole("button", { name: "Cumulative", exact: true });
+  await expect(daily).toHaveAttribute("aria-pressed", "true");
+  await weekly.click();
+  await expect(weekly).toHaveAttribute("aria-pressed", "true");
+  await cumulative.click();
+  await expect(cumulative).toHaveAttribute("aria-pressed", "true");
+
+  const modelShare = page.getByTestId("usage-model-share");
+  await expect(modelShare.getByText("deepseek-v4-pro", { exact: true })).toBeVisible();
+  await expect(modelShare.getByText("opus-4.8", { exact: true })).toBeVisible();
+  await expect(modelShare.locator(".usage-model-pie")).toHaveCSS(
+    "background-image",
+    /conic-gradient/,
+  );
+
+  const workspaces = page.getByTestId("usage-workspace-row");
+  await expect(workspaces).toHaveCount(2);
+  await workspaces.first().click();
+  await expect(page.getByTestId("usage-session-row")).toHaveCount(20);
+  await expect(page.getByTestId("usage-pagination")).toContainText("Page 1 of 2");
+
+  await page.getByTestId("usage-pagination").getByRole("button", { name: "Next" }).click();
+  await expect(page.getByTestId("usage-session-row")).toHaveCount(3);
+  await expect(page.getByText("Workspace session 21", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("usage-pagination")).toContainText("Page 2 of 2");
+
+  await page.getByTestId("usage-back").click();
+  await expect(page.getByTestId("usage-workspace-row")).toHaveCount(2);
+});
+
+test("language select shows the saved locale so Chinese can switch to English directly (#431)", async ({ page }) => {
+  await page.goto("/?mockLocale=zh");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "新建会话" })).toBeVisible();
+
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "常规", exact: true }).click();
+  const language = page.getByTestId("settings-language");
+  // Regression: the select's value binding was applied before its options
+  // existed, so it fell back to the first option ("en") while the saved locale
+  // was Chinese — picking English then fired no change event and never saved.
+  await expect(language).toHaveValue("zh");
+
+  await language.selectOption("en");
+  // Selecting a language re-renders the UI in that language immediately.
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() =>
+    page.evaluate(() => (window as any).__lastSetSettings?.locale)
+  ).toBe("en");
+
+  // The app stays in English and the select stays on English after reopening.
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.getByTestId("settings-language")).toHaveValue("en");
+});
+
+test("storage separates project paths and filters usage when a project is clicked", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Storage");
+
+  const projects = page.getByTestId("storage-project-list");
+  const paths = projects.locator(".storage-project-path");
+  await expect(paths).toHaveCount(2);
+  await expect(paths.nth(0)).toHaveText("/mock/root");
+  await expect(paths.nth(1)).toHaveText("/mock/other");
+
+  const other = projects.locator('[data-project-id="other"]');
+  await other.click();
+  await expect(other).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".storage-path")).toHaveText("/mock/other");
+  await expect(page.locator(".storage-legend-row").filter({ hasText: "Workspace files" }))
+    .toContainText("24.0 MB");
+  await expect(page.locator(".storage-legend-row").filter({ hasText: "Python environment" }))
+    .toHaveCount(0);
+
+  await projects.locator(".storage-project-row").first().click();
+  await expect(page.locator(".storage-path")).toHaveText("C:\\mock\\AppData\\superscience");
+  await expect(page.locator(".storage-legend-row").filter({ hasText: "Workspace files" }))
+    .toContainText("120.0 MB");
+});
+
 test("problem reports stay local until a reviewed Markdown draft is explicitly opened (#596)", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await enterApp(page);
@@ -340,11 +441,11 @@ test("problem reports stay local until a reviewed Markdown draft is explicitly o
 
   const preview = modal.getByTestId("issue-report-preview");
   await expect(preview).toHaveValue(/The analysis stops before producing a result\./);
-  await expect(preview).toHaveValue(/SuperScience version: 0\.29\.0/);
+  await expect(preview).toHaveValue(/Wisp version: 0\.29\.0/);
   await expect(preview).toHaveValue(/OS \/ architecture: windows \/ x86_64/);
   await expect(preview).toHaveValue(/Model profile: deepseek-v4-pro/);
   await expect(preview).toHaveValue(/Execution context type: ssh/);
-  await expect(preview).toHaveValue(/SuperScience did not collect or upload an image/);
+  await expect(preview).toHaveValue(/Wisp did not collect or upload an image/);
   await expect(preview).not.toHaveValue(/\/mock\/root/);
 
   const github = modal.getByTestId("issue-report-github");
@@ -376,6 +477,111 @@ test("problem report consumes Escape before Settings (#596)", async ({ page }) =
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("issue-report-modal")).toHaveCount(0);
   await expect(page.locator(".settings-page")).toBeVisible();
+});
+
+test("Memory settings show the active project name", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+  const project = page.getByTestId("memory-project");
+  await expect(page.getByTestId("memory-project-select")).toHaveAttribute("data-project-id", "default");
+  await expect(page.getByTestId("memory-project-select")).toContainText("superscience");
+  await expect(project).toContainText("(1)");
+  await expect(page.locator(".conn-group-label")).toContainText("Project memory");
+});
+
+test("Memory settings can browse another project's notes without switching workspace", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+  await expect(page.getByText("2026-07-01.md", { exact: true })).toBeVisible();
+  const openProjectCalls = await invokeArgsList(page, "open_project");
+
+  await page.getByTestId("memory-project-select").click();
+  await expect(page.getByTestId("memory-project-menu")).toBeVisible();
+  await page.getByTestId("memory-project-option-other").click();
+  await expect(page.getByTestId("memory-project-menu")).toHaveCount(0);
+  await expect(page.getByTestId("memory-project-select")).toHaveAttribute("data-project-id", "other");
+  await expect(page.getByTestId("memory-project-select")).toContainText("Other project");
+  await expect(page.getByText("other-2026-07-02.md", { exact: true })).toBeVisible();
+  await expect(page.getByText("2026-07-01.md", { exact: true })).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "get_memory_view")).toMatchObject({
+    projectId: "other",
+  });
+  // Browsing memory must not switch the active chat project.
+  await expect.poll(() => invokeArgsList(page, "open_project")).toHaveLength(openProjectCalls.length);
+});
+
+test("Memory settings edit and delete notes in the browsed project", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+  await page.getByTestId("memory-project-select").click();
+  await page.getByTestId("memory-project-option-other").click();
+  await expect(page.getByText("other-2026-07-02.md", { exact: true })).toBeVisible();
+
+  await page.getByText("other-2026-07-02.md", { exact: true }).click();
+  const editor = page.locator(".memory-editor-text");
+  await expect(editor).toHaveValue("Notes for other workspace.");
+  await expect.poll(() => lastInvokeArgs(page, "read_memory_file")).toMatchObject({
+    name: "other-2026-07-02.md",
+    projectId: "other",
+  });
+
+  await editor.fill("Edited from the picker.");
+  await page.getByRole("button", { name: "Save note" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "write_memory_file")).toMatchObject({
+    name: "other-2026-07-02.md",
+    content: "Edited from the picker.",
+    projectId: "other",
+  });
+
+  await page.getByRole("button", { name: "Delete file" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "delete_memory_file")).toMatchObject({
+    name: "other-2026-07-02.md",
+    projectId: "other",
+  });
+  await expect(page.getByText("other-2026-07-02.md", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("No notes yet.")).toBeVisible();
+});
+
+test("Memory project picker consumes Escape before leaving Settings", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+  await page.getByTestId("memory-project-select").click();
+  await expect(page.getByTestId("memory-project-menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("memory-project-menu")).toHaveCount(0);
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect(page.locator(".settings-nav button.active")).toHaveText("Memory");
+});
+
+test("settings subpages consume Escape before leaving Settings", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+  await page.getByText("2026-07-01.md", { exact: true }).click();
+  await expect(page.locator(".memory-editor-text")).toBeVisible();
+  await expect(page.locator(".settings-breadcrumb")).toContainText("2026-07-01.md");
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".memory-editor-text")).toHaveCount(0);
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect(page.locator(".settings-nav button.active")).toHaveText("Memory");
+  await expect(page.getByText("2026-07-01.md", { exact: true })).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+});
+
+test("Workflow Studio Escape returns to Quick Actions before leaving Settings", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Workflows");
+  await expect(page.getByTestId("workflow-studio")).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("workflow-studio")).toHaveCount(0);
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect(page.locator(".settings-nav button.active")).toHaveText("Quick Actions");
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
 });
 
 test("background Agent completion appears in its owning conversation", async ({ page }) => {
@@ -470,7 +676,7 @@ test("model switch warning can be permanently dismissed", async ({ page }) => {
   await page.getByTestId("model-switch-confirm")
     .getByRole("button", { name: "Switch and don't ask again" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-model-switch-warning-disabled")))
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-model-switch-warning-disabled")))
     .toBe("1");
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 
@@ -621,13 +827,21 @@ test("ACP turn maps config, overlapping tools, plan, usage, and exact permission
     requestId: "permission-1", optionId: "allow",
   });
   await expect(permission).toHaveCount(0);
-  await expect(page.getByText("ACP context: 1200 / 8000 tokens")).toBeVisible();
+  const contextTrigger = page.getByTestId("context-usage-trigger");
+  await expect(contextTrigger).toContainText("15%");
+  await expect(page.locator(".topbar .hint")).toHaveCount(0);
+  await contextTrigger.click();
+  const contextPanel = page.getByTestId("context-usage-panel");
+  await expect(contextPanel).toContainText("1.2K / 8K Tokens");
+  await expect(contextPanel).toContainText("Agent-reported total");
+  await page.keyboard.press("Escape");
+  await expect(contextPanel).toHaveCount(0);
 
   await page.locator(".model-picker-btn").click();
   await expect(page.getByRole("button", { name: /deepseek-v4-pro/ })).toBeDisabled();
 });
 
-test("persisted superscience:plan reload rebuilds all entry states and priority", async ({ page }) => {
+test("persisted wisp:plan reload rebuilds all entry states and priority", async ({ page }) => {
   await openMockPlanSession(page, "acp");
 
   const assertPlan = async () => {
@@ -908,7 +1122,7 @@ test("Full Permission requires a warning and stays scoped to the conversation", 
   await expect(page.getByRole("heading", { name: "Enable Full Permission?" })).toHaveCount(0);
 });
 
-test("ACP turns retain explicitly selected SuperScience skills", async ({ page }) => {
+test("ACP turns retain explicitly selected Wisp skills", async ({ page }) => {
   await enterApp(page);
   await newSessionButton(page).click();
   await page.locator(".model-picker-btn").click();
@@ -971,9 +1185,9 @@ test("automatic reviewer resolves its finding and jumps past UI-only rows (#550)
 
   const handoffs = page.locator(".review-transition");
   await expect(handoffs).toHaveCount(2);
-  await expect(handoffs.nth(0)).toContainText("SuperScience nudged Reviewer");
+  await expect(handoffs.nth(0)).toContainText("superscience nudged Reviewer");
   await expect(handoffs.nth(0)).toHaveAttribute("data-phase", "reviewing");
-  await expect(handoffs.nth(1)).toContainText("Reviewer nudged SuperScience");
+  await expect(handoffs.nth(1)).toContainText("Reviewer nudged superscience");
   await expect(handoffs.nth(1)).toContainText("deepseek-v4-pro");
   await expect(handoffs.nth(1)).toHaveAttribute("data-phase", "correcting");
 
@@ -1178,6 +1392,18 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(workflowItem).toContainText("neutral chair synthesis");
   await workflowItem.click();
 
+  await composerInput.pressSequentially("@gpu");
+  const environmentItem = page.locator(".mention-menu .mention-item").filter({
+    has: page.locator(".mention-item-name", { hasText: /^gpu-server$/ }),
+  });
+  await expect(environmentItem).toContainText("ssh:gpu-server");
+  await environmentItem.click();
+  const composerEnvironment = page.locator(
+    '.composer-reference-card[data-reference-kind="context"]',
+  );
+  await expect(composerEnvironment).toContainText("gpu-server");
+  await expect(composerEnvironment).toContainText("Environment");
+
   await composerInput.fill("use the attached context");
   await page.getByRole("button", { name: "Send" }).click();
   await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
@@ -1187,16 +1413,22 @@ test("composer @ # and / add typed context references", async ({ page }) => {
       { kind: "project", id: "default" },
       { kind: "skill", name: "alphafold2" },
       { kind: "workflow", id: "roundtable" },
+      { kind: "context", id: "ssh:gpu-server" },
     ],
   });
   const sentContext = page.locator(".msg.user .user-context-card");
-  await expect(sentContext).toHaveCount(5);
+  await expect(sentContext).toHaveCount(6);
   await expect(page.locator('.msg.user [data-reference-kind="artifact"]')).toContainText("nif3.treefile");
   await expect(page.locator('.msg.user [data-reference-kind="session"]')).toContainText("Current analysis");
   await expect(page.locator('.msg.user [data-reference-kind="project"]')).toContainText("superscience");
   await expect(page.locator('.msg.user [data-reference-kind="skill"]')).toContainText("alphafold2");
   await expect(page.locator('.msg.user [data-reference-kind="workflow"]')).toContainText("Roundtable");
+  const sentEnvironment = page.locator('.msg.user [data-reference-kind="context"]');
+  await expect(sentEnvironment).toContainText("gpu-server");
+  await expect(sentEnvironment).toContainText("Environment");
+  await expect(sentEnvironment.locator("svg")).toBeVisible();
   await expect(page.locator(".msg.user .body")).not.toContainText("Selected skills:");
+  await expect(page.locator(".msg.user .body")).not.toContainText("Target environments:");
 });
 
 test("composer picker follows manual caret insertions and ignores pasted text", async ({ page }) => {
@@ -1334,6 +1566,73 @@ test("topbar groups chrome actions and hides an empty status hint", async ({ pag
   await expect(page.locator(".topbar .hint")).toHaveCount(0);
 });
 
+test("context usage moves out of the topbar and opens a categorized detail panel", async ({ page }) => {
+  await page.setViewportSize({ width: 1516, height: 671 });
+  await enterApp(page);
+  await page.locator("#composer-input").fill("CONTEXTUSAGE");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect(trigger).toContainText("27%");
+  await expect(page.locator(".topbar .hint")).toHaveCount(0);
+
+  await trigger.click();
+  const panel = page.getByTestId("context-usage-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "Context Usage" })).toBeVisible();
+  await expect(panel).toContainText("27% Full");
+  await expect(panel).toContainText("~79.9K / 300K Tokens");
+  await expect(panel.locator(".context-usage-row")).toHaveCount(7);
+  await expect(panel.locator(".context-usage-segment")).toHaveCount(7);
+  await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
+  await expect(panel.getByText("36.3K", { exact: true })).toBeVisible();
+  await expect(panel.locator(".context-usage-row.expandable")).toHaveCount(6);
+
+  await panel.getByText("System prompt", { exact: true }).click();
+  await expect(panel.locator(".context-usage-detail")).toContainText("You are superscience");
+  await panel.getByText("Tool definitions", { exact: true }).click();
+  await expect(panel.locator(".context-usage-detail")).toContainText("read");
+  await expect(panel.locator(".context-usage-detail")).toContainText("Read a file from disk");
+  await expect(panel.getByText("Conversation", { exact: true }).locator("xpath=..")).toBeDisabled();
+
+  // offsetWidth ignores the enter animation's scale transform; clientWidth is
+  // the absolute containing block (composer padding box).
+  const widths = await page.evaluate(() => {
+    const panelEl = document.querySelector(
+      "[data-testid='context-usage-panel']",
+    ) as HTMLElement | null;
+    const composerEl = document.querySelector(".composer-inner") as HTMLElement | null;
+    return {
+      panel: panelEl?.offsetWidth ?? 0,
+      composerClient: composerEl?.clientWidth ?? 0,
+    };
+  });
+  expect(Math.abs(widths.panel - widths.composerClient)).toBeLessThan(4);
+
+  // Window-level Escape must work immediately; focus never moves into the panel.
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveCount(0);
+  await expect(page.locator(".composer-inner")).toBeVisible();
+  await expect(trigger).toBeVisible();
+});
+
+test("legacy native usage totals fall back to Conversation, not Agent-managed", async ({ page }) => {
+  await enterApp(page);
+  await page.locator("#composer-input").fill("CONTEXTUSAGELEGACY");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect(trigger).toContainText("3%");
+  await trigger.click();
+  const panel = page.getByTestId("context-usage-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText("~25.4K / 1M Tokens");
+  await expect(panel.locator(".context-usage-row")).toHaveCount(7);
+  await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
+  await expect(panel.getByText("25.4K", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Agent-managed context")).toHaveCount(0);
+});
+
 test("artifact type badges stay neutral instead of rainbow pills", async ({ page }) => {
   await enterApp(page);
   await page
@@ -1378,7 +1677,7 @@ test("Cmd+Enter sends when the modifier shortcut is selected on macOS", async ({
       configurable: true,
       value: "MacIntel",
     });
-    localStorage.setItem("superscience-send-with-modifier", "1");
+    localStorage.setItem("wisp-send-with-modifier", "1");
   });
   await enterApp(page);
   await expect(page.locator(".composer-hint")).toContainText("Cmd+Enter to send · Enter for newline");
@@ -1443,7 +1742,7 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await input.fill("dark theme");
   await input.press("Enter");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-theme"))).toBe("dark");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-theme"))).toBe("dark");
 
   await page.keyboard.press("Control+p");
   await input.fill("open files");
@@ -1599,6 +1898,116 @@ test("conversation action button renames, transfers, and deletes sessions (#557)
   await expect.poll(() => page.evaluate(() =>
     ((window as any).__sendInvokeLog ?? []).some((call: any) => call.cmd === "delete_session")
   )).toBe(true);
+});
+
+test("session context menu near the window bottom stays fully visible (#650)", async ({ page }) => {
+  // Narrow + short window: labels wrap, so real item heights exceed the 38px
+  // estimate the initial placement uses — the menu must re-clamp after measuring.
+  await page.setViewportSize({ width: 180, height: 420 });
+  await page.addInitScript(parallelMock);
+  await page.goto("/");
+  await page.locator(".proj-card-main").first().click();
+  await expect(newSessionButton(page)).toBeVisible();
+
+  await composer(page).fill("ctx-bottom-edge");
+  await page.getByRole("button", { name: "Send" }).click();
+  const session = page.locator(".side-item.ses", { hasText: "ctx-bottom-edge" });
+  await expect(session).toBeVisible({ timeout: 10_000 });
+
+  // Right-click with the pointer at the very bottom edge of the window.
+  await session.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: Math.round(rect.left + 20),
+      clientY: window.innerHeight - 12,
+    }));
+  });
+
+  const menu = page.locator(".ctx-menu");
+  await expect(menu).toBeVisible();
+  await expect.poll(() => menu.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
+  })).toBe(true);
+  // The last (bottom-most) menu item must remain clickable.
+  await expect(menu.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
+});
+
+test("conversations can be selected and moved or deleted together", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await page.goto("/");
+  await page.locator(".proj-card-main").first().click();
+
+  await page.getByRole("button", { name: "New group" }).click();
+  const folderInput = page.locator("#folder-modal-input");
+  await folderInput.fill("Bulk destination");
+  await page.locator(".modal", { has: folderInput }).getByRole("button", { name: "Save" }).click();
+
+  const titles = ["actions-bulk-one", "actions-bulk-two", "actions-bulk-keep"];
+  for (const title of titles) {
+    await newSessionButton(page).click();
+    await composer(page).fill(title);
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.locator(".side-item.ses", { hasText: title })).toBeVisible({ timeout: 10_000 });
+  }
+
+  const sidebar = page.locator(".sidebar");
+  let first = sidebar.locator(".side-item.ses", { hasText: titles[0] });
+  let second = sidebar.locator(".side-item.ses", { hasText: titles[1] });
+  const keep = sidebar.locator(".side-item.ses", { hasText: titles[2] });
+  const firstId = await first.getAttribute("data-session-id");
+  const secondId = await second.getAttribute("data-session-id");
+
+  await sidebar.getByRole("button", { name: "Select", exact: true }).click();
+  await first.click();
+  await second.click();
+  await expect(first).toHaveAttribute("aria-pressed", "true");
+  await expect(second).toHaveAttribute("aria-pressed", "true");
+  await expect(sidebar.getByText("2 selected", { exact: true })).toBeVisible();
+
+  await sidebar.getByTestId("bulk-move-sessions").selectOption("folder-1");
+  await expect.poll(() => page.evaluate(({ firstId, secondId }) => {
+    const calls = ((window as any).__sendInvokeLog ?? [])
+      .filter((call: any) => call.cmd === "move_session")
+      .slice(-2)
+      .map((call: any) => call.args instanceof Map ? Object.fromEntries(call.args) : call.args)
+      .sort((a: any, b: any) => String(a.id).localeCompare(String(b.id)));
+    return calls;
+  }, { firstId, secondId })).toEqual([
+    { id: firstId, folderId: "folder-1" },
+    { id: secondId, folderId: "folder-1" },
+  ].sort((a, b) => String(a.id).localeCompare(String(b.id))));
+  await expect(sidebar.getByRole("button", { name: "Select", exact: true })).toBeVisible();
+
+  first = sidebar.locator(".side-item.ses", { hasText: titles[0] });
+  second = sidebar.locator(".side-item.ses", { hasText: titles[1] });
+  await sidebar.getByRole("button", { name: "Select", exact: true }).click();
+  await first.click();
+  await second.click();
+  await sidebar.getByTestId("bulk-delete-sessions").click();
+
+  const confirm = page.locator(".confirm-modal");
+  await expect(confirm).toContainText("Delete 2 conversations? This cannot be undone.");
+  await page.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  await expect(sidebar.getByTestId("bulk-delete-sessions")).toBeVisible();
+  await expect(first).toHaveAttribute("aria-pressed", "true");
+
+  await sidebar.getByTestId("bulk-delete-sessions").click();
+  await confirm.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(first).toHaveCount(0);
+  await expect(second).toHaveCount(0);
+  await expect(keep).toBeVisible();
+  await expect.poll(() => page.evaluate(({ firstId, secondId }) => {
+    const ids = ((window as any).__sendInvokeLog ?? [])
+      .filter((call: any) => call.cmd === "delete_session")
+      .map((call: any) => call.args instanceof Map ? Object.fromEntries(call.args) : call.args)
+      .map((args: any) => args.id);
+    return [firstId, secondId].every((id) => ids.includes(id));
+  }, { firstId, secondId })).toBe(true);
 });
 
 test("group action button visibly renames and deletes groups", async ({ page }) => {
@@ -1815,6 +2224,17 @@ test("Quick Actions opens its bound graph in the standalone Workflow Studio", as
   await expect(page.locator(".settings-nav")).toBeHidden();
   const studio = page.getByTestId("workflow-studio");
   await expect(studio).toBeVisible();
+  const libraryLayout = await studio.locator(".workflow-studio-library").evaluate((library) => {
+    const bounds = library.getBoundingClientRect();
+    const buttons = [...library.querySelectorAll<HTMLElement>(".workflow-studio-library-actions button")]
+      .map((button) => button.getBoundingClientRect());
+    return {
+      inside: buttons.every((button) => button.left >= bounds.left
+        && button.right <= bounds.right),
+      stacked: buttons.length === 2 && buttons[1].top > buttons[0].bottom,
+    };
+  });
+  expect(libraryLayout).toEqual({ inside: true, stacked: true });
   const studioBox = await studio.boundingBox();
   const viewport = page.viewportSize()!;
   expect(studioBox?.width ?? 0).toBeGreaterThan(viewport.width * 0.95);
@@ -1844,6 +2264,48 @@ test("Quick Actions opens its bound graph in the standalone Workflow Studio", as
   const inspector = studio.getByTestId("workflow-graph-inspector");
   await expect(inspector.getByTestId("dynamic-task-id")).toHaveValue("synthesize");
   await expect(inspector.getByTestId("workflow-graph-remove-edge")).toHaveCount(2);
+  const skillPicker = inspector.getByTestId("dynamic-task-skills");
+  await expect(skillPicker.getByTestId("dynamic-task-skill-option")).toHaveCount(0);
+  await skillPicker.getByTestId("dynamic-task-skill-search").fill("literature");
+  await expect(skillPicker.getByTestId("dynamic-task-skill-option")).toHaveCount(1);
+  await expect(skillPicker.getByTestId("dynamic-task-skill-option"))
+    .toContainText("literature-review");
+
+  const resizer = studio.getByTestId("workflow-graph-resizer");
+  await expect(resizer).toHaveAttribute("role", "separator");
+  const inspectorBeforeResize = await inspector.boundingBox();
+  await resizer.evaluate((handle) => {
+    const rect = handle.getBoundingClientRect();
+    const startX = rect.left + rect.width / 2;
+    const startY = rect.top + 60;
+    handle.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      button: 0,
+      pointerId: 17,
+      clientX: startX,
+      clientY: startY,
+    }));
+    handle.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      buttons: 1,
+      pointerId: 17,
+      clientX: startX - 80,
+      clientY: startY,
+    }));
+    handle.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      button: 0,
+      pointerId: 17,
+      clientX: startX - 80,
+      clientY: startY,
+    }));
+  });
+  await expect.poll(async () => {
+    const resized = await inspector.boundingBox();
+    return inspectorBeforeResize && resized
+      ? Math.round(resized.width - inspectorBeforeResize.width)
+      : 0;
+  }).toBeGreaterThan(60);
   await expect(studio.getByTestId("workflow-graph-minimap")).toBeVisible();
   await studio.getByTestId("workflow-graph-zoom-in").click();
   await expect(studio.getByTestId("workflow-graph-fit")).toHaveText("110%");
@@ -1892,6 +2354,77 @@ test("Workflow library includes a built-in Roundtable DAG", async ({ page }) => 
   expect(chair.x).toBeGreaterThan(reviews[0].x);
 });
 
+test("Workflow library includes the Wisp-native seven-node method-search DAG", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Workflows");
+  const studio = page.getByTestId("workflow-studio");
+  const template = studio.getByTestId("workflow-template-card")
+    .filter({ hasText: "Develop computational method" });
+  await expect(template).toContainText("durable method search");
+  await template.click();
+
+  const nodes = studio.getByTestId("workflow-graph-node");
+  await expect(nodes).toHaveCount(7);
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(8);
+  const rootPositions = await nodes.evaluateAll((items) => items
+    .filter((item) => ["literature_methods", "data_audit", "baseline_analysis"]
+      .includes(item.getAttribute("data-node-id") ?? ""))
+    .map((item) => item.getBoundingClientRect().x));
+  expect(rootPositions).toHaveLength(3);
+  expect(Math.max(...rootPositions) - Math.min(...rootPositions)).toBeLessThan(2);
+
+  const activityNode = studio.locator(
+    '[data-testid="workflow-graph-node"][data-node-id="method_search"]',
+  );
+  await expect(activityNode).toHaveClass(/run-activity/);
+  await activityNode.getByTestId("workflow-graph-node-select").click();
+  const inspector = studio.getByTestId("workflow-graph-inspector");
+  await expect(inspector.getByTestId("dynamic-task-type"))
+    .toHaveValue("run_activity");
+  await expect(inspector.getByTestId("run-activity-config")).toBeVisible();
+  await expect(inspector.getByTestId("run-activity-input-task"))
+    .toHaveValue("prepare_contract");
+  await expect(inspector.getByTestId("run-activity-max-candidates")).toHaveValue("20");
+  await expect(inspector.getByTestId("dynamic-task-capabilities")).toBeHidden();
+  await expect(inspector.getByTestId("dynamic-task-skills")).toBeHidden();
+  await expect(inspector.getByTestId("dynamic-task-specialist")).toBeHidden();
+  await expect(studio.getByTestId("workflow-save")).toHaveText("Save as copy");
+});
+
+test("Skill Portfolio Planner uses the selected model and opens an unbudgeted editable DAG", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Workflows");
+  const studio = page.getByTestId("workflow-studio");
+
+  await studio.getByTestId("portfolio-planner-open").click();
+  await expect(page.getByTestId("portfolio-planner-overlay")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("portfolio-planner-overlay")).toBeHidden();
+
+  await studio.getByTestId("portfolio-planner-open").click();
+  await expect(page.getByTestId("portfolio-planner-overlay")).toContainText(
+    "Ask a selected model to build an explainable workflow",
+  );
+  await expect(page.getByTestId("portfolio-tier")).toHaveCount(0);
+  await expect(page.getByTestId("portfolio-total")).toHaveCount(0);
+  await expect(page.getByTestId("portfolio-reserve")).toHaveCount(0);
+  await page.getByTestId("portfolio-model").selectOption("opus");
+  await page.getByTestId("portfolio-request").fill("Design an oncology omics study");
+  await page.getByTestId("portfolio-generate").click();
+  await expect.poll(() => lastInvokeArgs(page, "plan_skill_portfolio")).toEqual({
+    request: {
+      request: "Design an oncology omics study",
+      model_id: "opus",
+    },
+  });
+  const card = page.getByTestId("portfolio-plan-card");
+  await expect(card).toContainText("3 tasks · 2 Skills · planned by opus-4.8");
+  await expect(card).toContainText("Task budgets are unset");
+  await card.getByTestId("portfolio-edit-studio").click();
+  await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(3);
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(2);
+});
+
 test("Workflow Studio reuses the roundtable generator and saves a Quick Action binding", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Workflows");
@@ -1906,6 +2439,14 @@ test("Workflow Studio reuses the roundtable generator and saves a Quick Action b
   await studio.getByTestId("roundtable-apply").click();
   await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(5);
   await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(6);
+  const skillPicker = studio.getByTestId("workflow-graph-inspector")
+    .getByTestId("dynamic-task-skills");
+  await skillPicker.getByTestId("dynamic-task-skill-search").fill("analysis");
+  await skillPicker.getByTestId("dynamic-task-skill-option")
+    .filter({ hasText: "analysis-workflow" })
+    .click();
+  await expect(skillPicker.getByTestId("dynamic-task-selected-skills"))
+    .toContainText("analysis-workflow · bundled");
   await studio.getByTestId("workflow-save").click();
 
   await expect.poll(() => lastInvokeArgs(page, "save_workflow_template")).toMatchObject({
@@ -1915,7 +2456,7 @@ test("Workflow Studio reuses the roundtable generator and saves a Quick Action b
       proposal: {
         goal: "Choose a website architecture",
         tasks: [
-          { id: "seat_1_opening", depends_on: [] },
+          { id: "seat_1_opening", depends_on: [], skill_ids: ["analysis-workflow"] },
           { id: "seat_2_opening", depends_on: [] },
           {
             id: "seat_1_review",
@@ -1933,18 +2474,18 @@ test("Workflow Studio reuses the roundtable generator and saves a Quick Action b
       },
     },
   });
-  await expect(studio.getByTestId("workflow-template-card")).toHaveCount(3);
+  await expect(studio.getByTestId("workflow-template-card")).toHaveCount(4);
 
   await studio.getByTestId("workflow-studio-back").click();
   await expect(page.locator(".settings-nav")).toBeVisible();
   await page.getByTestId("quick-action-new").click();
   await page.getByTestId("quick-action-name").fill("Discuss selection");
-  await page.getByTestId("quick-action-workflow").selectOption("workflow_2");
+  await page.getByTestId("quick-action-workflow").selectOption("workflow_3");
   await page.getByTestId("quick-action-save").click();
   await expect.poll(() => lastInvokeArgs(page, "save_quick_action")).toMatchObject({
     action: {
       name: "Discuss selection",
-      workflow_template_id: "workflow_2",
+      workflow_template_id: "workflow_3",
       context: "selection",
       enabled: true,
     },
@@ -2132,6 +2673,93 @@ test("branch on an earlier user message opens a new session from that point", as
   });
 });
 
+test("editing a middle message asks for confirmation before rewinding", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("first idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+
+  await composer(page).fill("second idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  const firstUser = page.locator(".msg.user", { hasText: "first idea" });
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
+  await expect(page.locator(".msg.assistant")).toHaveCount(2, { timeout: 10_000 });
+  await expect(firstUser.getByRole("button", { name: "Edit" })).toBeEnabled();
+
+  const modal = page.getByTestId("edit-confirm-modal");
+  await firstUser.getByRole("button", { name: "Edit" }).click();
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("permanently deletes all conversation after this message");
+  // While the modal is open nothing is rewound and the transcript is intact.
+  expect(await lastInvokeArgs(page, "rewind_session")).toBeNull();
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
+
+  // Confirming Edit runs the destructive rewind to the first message.
+  await modal.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect(modal).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "rewind_session")).toMatchObject({
+    sessionId: expect.stringMatching(/^s-/),
+    userIndex: 0,
+  });
+  await expect(composer(page)).toHaveValue("first idea");
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toHaveCount(0);
+  await expect(page.locator(".msg.assistant")).toHaveCount(0);
+});
+
+test("edit confirmation can branch instead of rewinding", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("first idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+
+  await composer(page).fill("second idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  const firstUser = page.locator(".msg.user", { hasText: "first idea" });
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
+  await expect(page.locator(".msg.assistant")).toHaveCount(2, { timeout: 10_000 });
+  await expect(firstUser.getByRole("button", { name: "Edit" })).toBeEnabled();
+
+  const modal = page.getByTestId("edit-confirm-modal");
+  await firstUser.getByRole("button", { name: "Edit" }).click();
+  await expect(modal).toBeVisible();
+  await modal.getByRole("button", { name: "Branch" }).click();
+  await expect(modal).toHaveCount(0);
+
+  await expect.poll(() => lastInvokeArgs(page, "branch_session")).toMatchObject({
+    sessionId: expect.stringMatching(/^s-/),
+    title: "first idea",
+    userIndex: 0,
+  });
+  // Branching is non-destructive: no rewind happened.
+  expect(await lastInvokeArgs(page, "rewind_session")).toBeNull();
+  await expect(composer(page)).toHaveValue("first idea");
+});
+
+test("Escape closes only the edit confirmation modal and keeps the transcript", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("first idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+
+  await composer(page).fill("second idea");
+  await page.getByRole("button", { name: "Send" }).click();
+  const firstUser = page.locator(".msg.user", { hasText: "first idea" });
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
+  await expect(page.locator(".msg.assistant")).toHaveCount(2, { timeout: 10_000 });
+  await expect(firstUser.getByRole("button", { name: "Edit" })).toBeEnabled();
+
+  const modal = page.getByTestId("edit-confirm-modal");
+  await firstUser.getByRole("button", { name: "Edit" }).click();
+  await expect(modal).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  // One Escape closed the modal only — no rewind, no branch, transcript intact.
+  expect(await lastInvokeArgs(page, "rewind_session")).toBeNull();
+  expect(await lastInvokeArgs(page, "branch_session")).toBeNull();
+  await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
+  await expect(page.locator(".msg.assistant")).toHaveCount(2);
+});
+
 test("generic content menus do not expose session export", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("hello there");
@@ -2266,6 +2894,28 @@ test("workspace file context menu attaches its path to the composer", async ({ p
   await expect(composer(page)).toHaveValue("");
 });
 
+test("artifact tile attaches to the chat from its context and more menus", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("make a volcano plot volcano.png");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+
+  const tile = page.locator('.rp-tile[data-artifact-name="volcano.png"]');
+  await expect(tile).toBeVisible();
+
+  // Right-click → "Attach to chat" drops the artifact path into the composer.
+  await tile.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Attach to chat" }).click();
+  await expect(page.locator(".composer-attachment.ready")).toHaveText("volcano.png");
+  await expect(composer(page)).toHaveValue("");
+
+  // The "More" menu offers the same handoff; re-attaching dedupes to one chip.
+  await tile.getByRole("button", { name: "More" }).click();
+  await page.locator(".rp-tile-menu").getByRole("button", { name: "Attach to chat" }).click();
+  await expect(page.locator(".composer-attachment.ready")).toHaveCount(1);
+});
+
 test("workspace Files panel navigates deeply nested analysis modules", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Files" }).click();
@@ -2360,17 +3010,7 @@ test("Files creates, renames, deletes, and refreshes local entries", async ({ pa
   await expect.poll(() => lastInvokeArgs(page, "list_dir")).toMatchObject({ path: "." });
 });
 
-test("text-entry context menu pastes into the field that was clicked", async ({ page }) => {
-  await page.addInitScript(() => {
-    let clipboardText = "";
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        readText: async () => clipboardText,
-        writeText: async (value: string) => { clipboardText = value; },
-      },
-    });
-  });
+test("text entries keep the native context menu", async ({ page }) => {
   await enterApp(page);
   await page.locator(".proj-switch").click();
   await page.getByRole("button", { name: "Project settings" }).click();
@@ -2378,19 +3018,15 @@ test("text-entry context menu pastes into the field that was clicked", async ({ 
   const modal = page.locator(".proj-settings-modal");
   const name = modal.locator("input").first();
   const description = modal.locator("textarea").first();
-  await description.fill("");
-  await page.evaluate(() => navigator.clipboard.writeText("context-target"));
-  await description.click({ button: "right" });
-  await page.locator(".ctx-menu").getByRole("button", { name: "Paste" }).click();
-  await expect(description).toHaveValue("context-target");
-  await expect(name).not.toHaveValue("context-target");
-
-  await name.fill("");
-  await page.evaluate(() => navigator.clipboard.writeText("name-target"));
-  await name.click({ button: "right" });
-  await page.locator(".ctx-menu").getByRole("button", { name: "Paste" }).click();
-  await expect(name).toHaveValue("name-target");
-  await expect(description).toHaveValue("context-target");
+  for (const entry of [name, description]) {
+    const defaultPrevented = await entry.evaluate((element) => {
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      element.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+    expect(defaultPrevented).toBe(false);
+    await expect(page.locator(".ctx-menu")).toHaveCount(0);
+  }
 });
 
 test("center structure and FASTA previews fill the available height", async ({ page }) => {
@@ -2812,6 +3448,42 @@ test("settings manages servers and probes them with the default environment skil
   });
 });
 
+test("runtime interpreter dialog prefills probed paths and picks files (#651)", async ({ page }) => {
+  // Simulate a successful probe that found interpreters outside PATH: the
+  // context has no explicit config, only probe results. Patch the mock before
+  // the app boots so every fetch of the contexts sees the probe data.
+  await page.addInitScript(() => {
+    const local = (window as any).__mockExecutionContexts.find((item: any) => item.id === "local");
+    local.config_json = "{}";
+    local.capabilities_json = JSON.stringify({
+      python_executable: "/opt/conda/bin/python",
+      rscript_executable: "D:\\R-4.5.2\\bin\\Rscript.exe",
+      r_jsonlite: true,
+    });
+  });
+  await enterApp(page);
+  await openSettingsSection(page, "Environments");
+
+  const local = page.locator('.environment-settings-row[data-context-id="local"]');
+  await local.getByRole("button", { name: "Configure runtime interpreters" }).click();
+  const python = page.locator("#runtime-python-executable");
+  const rscript = page.locator("#runtime-rscript-executable");
+  await expect(python).toHaveValue("/opt/conda/bin/python");
+  await expect(rscript).toHaveValue("D:\\R-4.5.2\\bin\\Rscript.exe");
+
+  // The local context offers a native file picker (mocked) that fills the field.
+  const pythonPicker = page.locator(".runtime-config-picker", { has: python });
+  await pythonPicker.getByRole("button", { name: "Browse…" }).click();
+  await expect(python).toHaveValue("/mock/picked/Rscript");
+  await page.keyboard.press("Escape");
+
+  // Remote contexts have no local file picker, but still prefill probed paths.
+  const server = page.locator('.environment-settings-row[data-context-id="ssh:gpu-server"]');
+  await server.getByRole("button", { name: "Configure runtime interpreters" }).click();
+  await expect(page.locator("#runtime-rscript-executable")).toHaveValue("/opt/R/bin/Rscript");
+  await expect(page.getByRole("button", { name: "Browse…" })).toHaveCount(0);
+});
+
 test("environment probe shows progress and classifies password authentication failure", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Environments");
@@ -2901,7 +3573,7 @@ test("Escape closes the SSH connectivity dialog", async ({ page }) => {
     );
     context.last_probe_status = "error";
     context.last_probe_error =
-      "SSH authentication succeeded, but the remote account did not execute SuperScience's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early.";
+      "SSH authentication succeeded, but the remote account did not execute Wisp's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early.";
   });
 
   const menu = await openComputeMenu(page);
@@ -3117,6 +3789,42 @@ test("Run surface binds an exact publication evidence source", async ({ page }) 
   });
   await expect(dialog).toHaveCount(0);
   await expect(page.getByTestId("publication-workspace")).toContainText("run-kinase-001");
+});
+
+test("method-search Run reviews the frozen contract before start and exposes controls", async ({ page }) => {
+  await enterApp(page, "/?mockMethodSearch=1");
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "Local machine" })
+    .getByRole("button", { name: "View runs" }).click();
+
+  const card = page.locator(".run-card", { hasText: "Develop computational method" });
+  await expect(card).toContainText("awaiting_approval");
+  await card.getByTestId("method-search-inspect").click();
+  const details = card.getByTestId("method-search-details");
+  await expect(details).toContainText("analysis/model.py::fit_model");
+  await expect(details).toContainText("0.537200");
+  await expect(details).toContainText("Candidate reachability");
+  await expect(details).toContainText("runtime_seconds lte 120");
+  await expect(details.getByTestId("method-search-start")).toBeVisible();
+  await expect(details.getByTestId("method-search-lineage")).toContainText("Candidate lineage (2)");
+  await expect(details.getByTestId("method-search-outputs")).toContainText("selected_method");
+
+  await details.getByTestId("method-search-start").click();
+  await expect.poll(() => lastInvokeArgs(page, "start_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await expect(details.getByTestId("method-search-pause")).toBeVisible();
+  await details.getByTestId("method-search-pause").click();
+  await expect.poll(() => lastInvokeArgs(page, "pause_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await expect(details.getByTestId("method-search-resume")).toBeVisible();
+  await details.getByTestId("method-search-resume").click();
+  await expect.poll(() => lastInvokeArgs(page, "resume_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await details.getByTestId("method-search-cancel").click();
+  await expect.poll(() => lastInvokeArgs(page, "cancel_method_search"))
+    .toMatchObject({ runId: "method-search-001" });
+  await expect(details).toContainText("Cancelled");
 });
 
 test("precise message evidence uses a stable locator and Escape closes only the top layer", async ({ page }) => {
@@ -3396,6 +4104,89 @@ test("monitor_run renders a live Run card inline without get_run polling", async
   await expect(card).toContainText("Cancelled");
 });
 
+test("run monitor output stays pinned to the tail across poll rebuilds (#654)", async ({ page }) => {
+  // Eight long logical lines wrap far past the 150px pre, so it scrolls.
+  const longOutput = (tag: string) =>
+    Array.from({ length: 8 }, (_, index) => `${tag} line ${index} ` + "x".repeat(180)).join("\n");
+  const setOutput = (tag: string) =>
+    page.evaluate((stdout) => {
+      const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+      run.stdout_tail = stdout;
+    }, longOutput(tag));
+  const bottomGap = () =>
+    page
+      .locator('[data-run-id="run-local-002"] .run-monitor-output pre')
+      .evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+
+  await enterApp(page);
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      context_id: "local",
+      title: "Scrolling pipeline",
+      kind: "local",
+      status: "running",
+      created_at: Math.floor(Date.now() / 1000) - 30,
+      started_at: Math.floor(Date.now() / 1000) - 29,
+      // Non-empty progress keeps the one-second run refresh active.
+      progress_json: "{\"tick\":1}",
+    });
+  });
+  await setOutput("batch-1");
+
+  await composer(page).fill("MONITORRUN");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const output = page.locator('[data-run-id="run-local-002"] .run-monitor-output pre');
+  await expect(output).toBeVisible();
+  await expect.poll(bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(2);
+
+  // Fresh output on the next poll rebuilds the card; the panel must re-pin.
+  await setOutput("batch-2");
+  await expect(output).toContainText("batch-2");
+  await expect.poll(bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(2);
+
+  // A scrolled-up user keeps their place instead of being yanked back down.
+  await output.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await setOutput("batch-3");
+  await expect(output).toContainText("batch-3");
+  await page.waitForTimeout(1_500);
+  expect(await output.evaluate((el) => el.scrollTop)).toBeLessThanOrEqual(2);
+
+  // Scrolling back to the bottom re-engages follow.
+  await output.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await setOutput("batch-4");
+  await expect(output).toContainText("batch-4");
+  await expect.poll(bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(2);
+
+  // Leave the run settled so its one-second refresh stops with this page.
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, { status: "succeeded", ended_at: Math.floor(Date.now() / 1000), exit_code: 0 });
+  });
+});
+
+test("reasoning details stays open while more thinking streams in", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("RZSTREAM");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const rz = page.locator("details.rz");
+  await expect(rz).toBeVisible();
+  await rz.locator("summary").click();
+  await expect(rz).toHaveAttribute("open", "open");
+
+  // The next streaming delta rebuilds the fingerprint-keyed row; the open
+  // state must survive the rebuild.
+  await expect(rz).toContainText("More reasoning arrives.");
+  await expect(rz).toHaveAttribute("open", "open");
+  await expect(rz).toContainText("First thought.");
+});
+
 test("active session Runs appear automatically with elapsed time and heartbeat (#593)", async ({ page }) => {
   await page.goto("/");
   await page.evaluate(() => {
@@ -3419,6 +4210,17 @@ test("active session Runs appear automatically with elapsed time and heartbeat (
   await expect(automatic).toContainText("Elapsed 1m");
   await expect(automatic).toContainText("Heartbeat");
   await expect(automatic).toContainText("2 of 3 stages complete");
+});
+
+test("active Run elapsed time advances without waiting for a backend refresh (#663)", async ({ page }) => {
+  await page.goto("/?mockLiveRunClock=1");
+  await page.getByTestId("recent-session-card").nth(1).click();
+
+  const meta = page.getByTestId("auto-run-monitor").locator(".run-monitor-meta");
+  const elapsed = async () => (await meta.textContent())?.match(/Elapsed ([^·]+)/)?.[1].trim();
+  await expect.poll(elapsed).toMatch(/\d+s/);
+  const initial = await elapsed();
+  await expect.poll(elapsed, { timeout: 3_000 }).not.toBe(initial);
 });
 
 test("image generation shows a placeholder and replaces it with the PNG", async ({ page }) => {
@@ -3653,31 +4455,27 @@ test("runtime inspector lists object metadata without loading object contents", 
     .toHaveAttribute("aria-pressed", "true");
 
   const beforeDrag = await rEnvironment.boundingBox();
-  await rEnvironment.locator(".runtime-environment-title").evaluate((handle) => {
-    const rect = handle.getBoundingClientRect();
-    const startX = rect.left + rect.width / 2;
-    const startY = rect.top + rect.height / 2;
-    handle.dispatchEvent(new PointerEvent("pointerdown", {
-      bubbles: true,
-      button: 0,
-      pointerId: 7,
-      clientX: startX,
-      clientY: startY,
-    }));
-    handle.dispatchEvent(new PointerEvent("pointermove", {
-      bubbles: true,
-      buttons: 1,
-      pointerId: 7,
-      clientX: startX - 120,
-      clientY: startY + 48,
-    }));
-    handle.dispatchEvent(new PointerEvent("pointerup", {
-      bubbles: true,
-      button: 0,
-      pointerId: 7,
-      clientX: startX - 120,
-      clientY: startY + 48,
-    }));
+  const dragHandle = rEnvironment.locator(".runtime-environment-title");
+  const dragBox = await dragHandle.boundingBox();
+  expect(dragBox).not.toBeNull();
+  const startX = dragBox!.x + dragBox!.width / 2;
+  const startY = dragBox!.y + dragBox!.height / 2;
+  // Dispatch each pointer phase separately and wait for the drag state before
+  // moving. Sending all three events in one evaluate callback lets Leptos batch
+  // the state transitions on a busy CI worker, so the move can observe no
+  // active drag even though the same sequence passes locally.
+  await dragHandle.dispatchEvent("pointerdown", {
+    button: 0,
+    pointerId: 7,
+    clientX: startX,
+    clientY: startY,
+  });
+  await expect(rEnvironment).toHaveClass(/is-dragging/);
+  await dragHandle.dispatchEvent("pointermove", {
+    buttons: 1,
+    pointerId: 7,
+    clientX: startX - 120,
+    clientY: startY + 48,
   });
   await expect.poll(async () => {
     const afterDrag = await rEnvironment.boundingBox();
@@ -3687,6 +4485,13 @@ test("runtime inspector lists object metadata without loading object contents", 
     const afterDrag = await rEnvironment.boundingBox();
     return beforeDrag && afterDrag ? Math.round(afterDrag.y - beforeDrag.y) : 0;
   }).toBeGreaterThan(30);
+  await dragHandle.dispatchEvent("pointerup", {
+    button: 0,
+    pointerId: 7,
+    clientX: startX - 120,
+    clientY: startY + 48,
+  });
+  await expect(rEnvironment).not.toHaveClass(/is-dragging/);
 
   await page.keyboard.press("Escape");
   await expect(rEnvironment).toHaveCount(0);
@@ -4147,7 +4952,7 @@ test("PPTX files render lazily inside the app", async ({ page }) => {
   const presentation = page.locator(".artifact-modal .rp-pptx");
   await expect(presentation).toBeVisible();
   await expect(presentation.locator('[data-slide-index="0"]')).toBeVisible();
-  await expect(presentation).toContainText("SuperScience PPTX preview");
+  await expect(presentation).toContainText("Wisp PPTX preview");
   await expect.poll(() => lastInvokeArgs(page, "read_file_bytes"))
     .toMatchObject({ path: "office-preview.pptx", maxBytes: 32 * 1024 * 1024 });
 });
@@ -4468,11 +5273,11 @@ test("appearance settings persist separate light and dark palettes and font size
   await page.getByRole("slider", { name: "UI font size" }).fill("16");
   await page.getByRole("slider", { name: "Code font size" }).fill("15");
   await expect.poll(() => page.evaluate(() => ({
-    theme: localStorage.getItem("superscience-theme"),
-    light: localStorage.getItem("superscience-light-palette"),
-    dark: localStorage.getItem("superscience-dark-palette"),
+    theme: localStorage.getItem("wisp-theme"),
+    light: localStorage.getItem("wisp-light-palette"),
+    dark: localStorage.getItem("wisp-dark-palette"),
     ui: localStorage.getItem("superscience-ui-font-size"),
-    code: localStorage.getItem("superscience-code-font-size"),
+    code: localStorage.getItem("wisp-code-font-size"),
   }))).toEqual({ theme: "dark", light: "catppuccin", dark: "gruvbox", ui: "16", code: "15" });
 
   await page.reload();
@@ -4623,7 +5428,7 @@ test("model API URL explains that endpoint paths are added automatically", async
   await openModelsSettings(page);
 
   await expect(page.getByTestId("model-api-url-hint")).toHaveText(
-    "Enter the provider's API base URL. You do not need to append /chat/completions, /responses, or /v1/messages; SuperScience adds the matching request path automatically.",
+    "Enter the provider's API base URL. You do not need to append /chat/completions, /responses, or /v1/messages; Wisp adds the matching request path automatically.",
   );
   await expect(page.getByLabel("API URL")).toHaveAttribute(
     "aria-describedby",
@@ -4678,7 +5483,7 @@ test("check for updates shows an up-to-date modal", async ({ page }) => {
   const modal = page.getByTestId("update-check-modal");
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("You're up to date");
-  await expect(modal).toContainText("SuperScience 0.9.0 is already the latest version.");
+  await expect(modal).toContainText("Wisp 0.9.0 is already the latest version.");
   await modal.getByRole("button", { name: "OK" }).click();
   await expect(modal).toHaveCount(0);
 });
@@ -4697,7 +5502,7 @@ test("check for updates shows an available-update modal before opening releases"
   const modal = page.getByTestId("update-check-modal");
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("Update available");
-  await expect(modal).toContainText("SuperScience 1.2.3 is available.");
+  await expect(modal).toContainText("Wisp 1.2.3 is available.");
   await expect(await lastInvokeArgs(page, "open_external_url")).toBeNull();
   await page.getByTestId("update-check-open-releases").click();
   await expect(modal).toHaveCount(0);
@@ -4725,8 +5530,12 @@ test("macOS update download is verified before a separate install confirmation",
   await expect(await lastInvokeArgs(page, "install_update")).toBeNull();
 
   await modal.getByRole("button", { name: "Download update" }).click();
-  await expect(modal).toContainText("Downloading SuperScience 0.28.0");
+  await expect(modal).toContainText("Downloading Wisp 0.28.0");
   await expect(modal).toContainText("25 B / 100 B");
+  await modal.evaluate((element) => ((window as any).__downloadingModal = element));
+  await page.evaluate(() => (window as any).__mockUpdateProgress(10));
+  await expect(modal).toContainText("35 B / 100 B");
+  expect(await modal.evaluate((element) => element === (window as any).__downloadingModal)).toBe(true);
 
   // An in-flight update owns the top of the Escape stack and keeps Settings open.
   await page.keyboard.press("Escape");
@@ -4739,7 +5548,7 @@ test("macOS update download is verified before a separate install confirmation",
   await expect(await lastInvokeArgs(page, "install_update")).toBeNull();
 
   await modal.getByRole("button", { name: "Install and restart" }).click();
-  await expect(modal).toContainText("Installing SuperScience 0.28.0");
+  await expect(modal).toContainText("Installing Wisp 0.28.0");
   await expect.poll(() => page.evaluate(() => (window as any).__mockUpdateInstalled)).toBe(true);
 });
 
@@ -4841,7 +5650,7 @@ test("stale update card refreshes to the latest release before opening it (#521)
   await input.fill("check for updates");
   await input.press("Enter");
   let modal = page.getByTestId("update-check-modal");
-  await expect(modal).toContainText("SuperScience 0.24.0 is available.");
+  await expect(modal).toContainText("Wisp 0.24.0 is available.");
   await modal.getByRole("button", { name: "Later" }).click();
   await expect(page.getByTestId("update-card")).toContainText("v0.24.0");
 
@@ -4852,7 +5661,7 @@ test("stale update card refreshes to the latest release before opening it (#521)
   await page.getByTestId("update-card").click();
 
   modal = page.getByTestId("update-check-modal");
-  await expect(modal).toContainText("SuperScience 0.25.0 is available.");
+  await expect(modal).toContainText("Wisp 0.25.0 is available.");
   await expect(page.getByTestId("update-card")).toContainText("v0.25.0");
   await modal.getByTestId("update-check-open-releases").click();
   await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
@@ -4943,34 +5752,48 @@ test("credentials settings add, replace, clear, and remove a custom credential",
     .toMatchObject({ id: "custom-1" });
 });
 
-test("capability counts open skills, connections, and current-project memory", async ({ page }) => {
+test("capability counts open skills, connections, and editable project memory", async ({ page }) => {
   await enterApp(page);
 
   await page.getByRole("button", { name: "Capabilities" }).click();
   let capabilities = page.getByRole("dialog", { name: "Capabilities" });
-  await capabilities.getByRole("button", { name: "12 Skills" }).click();
+  await expect(capabilities.getByRole("button", { name: "2 Bundled Skills" })).toBeVisible();
+  await capabilities.getByRole("button", { name: "1 Project Skills" }).click();
   await expect(page.locator(".settings-nav button.active")).toHaveText("Skills");
 
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Capabilities" }).click();
   capabilities = page.getByRole("dialog", { name: "Capabilities" });
-  await capabilities.getByRole("button", { name: "2 MCP servers" }).click();
+  await expect(capabilities.getByRole("button", { name: "2 Bundled MCP" })).toBeVisible();
+  await capabilities.getByRole("button", { name: "1 Project MCP" }).click();
   await expect(page.locator(".settings-nav button.active")).toHaveText("Connections");
 
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Capabilities" }).click();
   capabilities = page.getByRole("dialog", { name: "Capabilities" });
   await capabilities.getByRole("button", { name: "1 Memory files" }).click();
+  await expect(page.locator(".settings-nav button.active")).toHaveText("Memory");
+  await expect(page.getByText("2026-07-01.md", { exact: true })).toBeVisible();
 
-  const memory = page.getByRole("dialog", { name: "Memory files" });
-  await expect(memory).toBeVisible();
-  await expect(memory).toContainText("Current project: superscience");
-  await expect(memory).toContainText("2026-07-01.md");
-  await expect(memory).toContainText("User prefers DeepSeek.");
+  await page.getByRole("button", { name: "Add note" }).click();
+  const editor = page.locator(".memory-editor-text");
+  await expect(editor).toHaveValue("");
+  await editor.fill("Prefer reproducible local workflows.");
+  await page.getByRole("button", { name: "Save note" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "write_memory_file")).toMatchObject({
+    name: "2026-07-04.md",
+    content: "Prefer reproducible local workflows.",
+  });
 
-  await page.keyboard.press("Escape");
-  await expect(memory).toHaveCount(0);
-  await expect(capabilities).toBeVisible();
+  await page.locator(".settings-head-back").click();
+  await page.getByText("2026-07-04.md", { exact: true }).click();
+  await expect(editor).toHaveValue("Prefer reproducible local workflows.");
+  await editor.fill("Prefer editable, reproducible local workflows.");
+  await page.getByRole("button", { name: "Save note" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "write_memory_file")).toMatchObject({
+    name: "2026-07-04.md",
+    content: "Prefer editable, reproducible local workflows.",
+  });
 });
 
 test("skill manager filters by tag and batch disables visible skills", async ({ page }) => {
@@ -5027,9 +5850,15 @@ test("skill manager updates and deletes user-added skills", async ({ page }) => 
   await openSettingsSection(page, "Skills");
 
   await page.getByText("Add skill", { exact: true }).click();
-  await page.getByRole("button", { name: "Add SKILL.md" }).click();
+  const addFile = page.getByRole("button", { name: "Add SKILL.md or ZIP" });
+  await page.keyboard.press("Escape");
+  await expect(addFile).not.toBeVisible();
+  await expect(page.locator(".settings-page")).toBeVisible();
+
+  await page.getByText("Add skill", { exact: true }).click();
+  await addFile.click();
   await expect.poll(() => lastInvokeArgs(page, "install_skill")).toMatchObject({
-    srcPath: "/downloads/paper-narrative/SKILL.md",
+    srcPath: "/downloads/paper-narrative.zip",
   });
   await expect(page.getByText("Skill added or updated.")).toBeVisible();
 
@@ -5296,13 +6125,82 @@ test("inline approval card keeps its buttons reachable with a long preview (#63)
   await expect(allow).toBeInViewport();
 });
 
+test("native approval remains clickable while the agent turn is blocked", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("BLOCKINGCONFIRM");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const allow = page.getByRole("button", { name: "Allow once" });
+  await expect(allow).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() =>
+    Object.values((window as any).__nativeConfirmPending ?? {}).some(Boolean)
+  )).toBe(true);
+
+  await allow.click();
+
+  await expect.poll(() => lastInvokeArgs(page, "confirm_response")).toMatchObject({
+    approved: true,
+    scope: "once",
+  });
+  await expect.poll(() => page.evaluate(() =>
+    Object.values((window as any).__nativeConfirmPending ?? {}).some(Boolean)
+  )).toBe(false);
+});
+
+test("background approval targets its session after switching conversations", async ({ page }) => {
+  await enterApp(page, "/?mockSessionModels=1&mockBackgroundApproval=1");
+  await page.locator('[data-session-id="s-model-a"]').click();
+  await expect(page.getByText("Answer in s-model-a")).toBeVisible();
+
+  await page.evaluate(() => (window as any).__tauriEmit("confirm-request", {
+    frame_id: "s-model-b",
+    message: "Run tool 'transfer_between_contexts'?",
+    tool: "transfer_between_contexts",
+    preview: "ssh:source:/data/results.tsv -> local:/project/data/results.tsv",
+  }));
+  await page.locator('[data-session-id="s-model-b"]').click();
+
+  const reject = page.getByRole("button", { name: "Deny" });
+  await expect(reject).toBeVisible();
+  await reject.click();
+
+  await expect.poll(() => lastInvokeArgs(page, "confirm_response")).toMatchObject({
+    sessionId: "s-model-b",
+    approved: false,
+  });
+  await expect(reject).toHaveCount(0);
+});
+
+test("resource conflict approval explains the owner and only offers wait or cancel", async ({ page }) => {
+  await enterApp(page, "/?mockSessionModels=1");
+  await page.locator('[data-session-id="s-model-a"]').click();
+  await page.evaluate(() => (window as any).__tauriEmit("confirm-request", {
+    frame_id: "s-model-a",
+    message: "WISP_RESOURCE_CONFLICT\nPlot analysis · abc123 is using `plot.R`.",
+    tool: "resource_conflict",
+    preview: "Plot analysis · abc123 is using `plot.R`. Approve to wait for the R call to finish.",
+  }));
+
+  await expect(page.getByText("Another conversation is using this resource")).toBeVisible();
+  await expect(page.getByText(/Plot analysis .* is using `plot\.R`/)).toBeVisible();
+  await expect(page.getByLabel("Approval scope")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Cancel operation" })).toBeVisible();
+  await page.getByRole("button", { name: "Wait & continue" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "confirm_response")).toMatchObject({
+    sessionId: "s-model-a",
+    approved: true,
+    scope: "once",
+  });
+});
+
 test("Escape closes plan feedback before rejecting the plan", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("NEEDPLAN");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Review plan before starting?")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Other" }).click();
-  const feedback = page.getByPlaceholder("Tell SuperScience what to change in this plan.");
+  const feedback = page.getByPlaceholder("Tell wisp what to change in this plan.");
   await expect(feedback).toBeVisible();
 
   await page.keyboard.press("Escape");
@@ -5333,76 +6231,6 @@ test("inline approval scope is sent with confirmation", async ({ page }) => {
       approved: true,
       scope: "project",
     },
-  });
-});
-
-test("approval allow stays clickable when command preview text is selected", async ({ page }) => {
-  await enterApp(page);
-  await composer(page).fill("NEEDCONFIRM");
-  await page.getByRole("button", { name: "Send" }).click();
-
-  const allow = page.getByRole("button", { name: "Allow once" });
-  await expect(allow).toBeVisible({ timeout: 10_000 });
-
-  // Selecting the preview (common while inspecting a dangerous command) used to
-  // raise the chat selection popup on the Allow button's mouseup and eat the click.
-  await page.evaluate(() => {
-    const code = document.querySelector(".approval-code code");
-    if (!code) throw new Error("missing approval code preview");
-    const range = document.createRange();
-    range.selectNodeContents(code);
-    const selection = window.getSelection()!;
-    selection.removeAllRanges();
-    selection.addRange(range);
-    code.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, button: 0 }));
-  });
-  await expect(page.locator(".selection-popup")).toHaveCount(0);
-
-  await page.getByLabel("Approval scope").selectOption("global");
-  await expect(page.getByRole("button", { name: "Allow globally" })).toBeVisible();
-  await page.getByRole("button", { name: "Allow globally" }).click();
-
-  await expect(page.locator(".selection-popup")).toHaveCount(0);
-  await expect.poll(async () => page.evaluate(() => {
-    const calls = ((window as any).__skillInvokeLog ?? []).map((c: any) => ({
-      cmd: c.cmd,
-      args: c.args instanceof Map ? Object.fromEntries(c.args) : (c.args ?? {}),
-    }));
-    return calls.find((c: any) => c.cmd === "confirm_response") ?? null;
-  })).toMatchObject({
-    cmd: "confirm_response",
-    args: { approved: true, scope: "global" },
-  });
-});
-
-test("approval deny stays clickable when command preview text is selected", async ({ page }) => {
-  await enterApp(page);
-  await composer(page).fill("NEEDCONFIRM");
-  await page.getByRole("button", { name: "Send" }).click();
-
-  const deny = page.getByRole("button", { name: "Deny" });
-  await expect(deny).toBeVisible({ timeout: 10_000 });
-  await page.evaluate(() => {
-    const code = document.querySelector(".approval-code code");
-    if (!code) throw new Error("missing approval code preview");
-    const range = document.createRange();
-    range.selectNodeContents(code);
-    const selection = window.getSelection()!;
-    selection.removeAllRanges();
-    selection.addRange(range);
-    code.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, button: 0 }));
-  });
-
-  await deny.click();
-  await expect.poll(async () => page.evaluate(() => {
-    const calls = ((window as any).__skillInvokeLog ?? []).map((c: any) => ({
-      cmd: c.cmd,
-      args: c.args instanceof Map ? Object.fromEntries(c.args) : (c.args ?? {}),
-    }));
-    return calls.find((c: any) => c.cmd === "confirm_response") ?? null;
-  })).toMatchObject({
-    cmd: "confirm_response",
-    args: { approved: false },
   });
 });
 
@@ -5469,44 +6297,36 @@ test("chat stays pinned to the bottom while streaming a long reply (#61)", async
     .toBeLessThan(8);
 });
 
-test("scrolling up mid-stream then back down keeps the pin at the bottom", async ({ page }) => {
+test("chat keeps the user's reading position when streaming finishes (#670)", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("SCROLLTEST");
   await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("line 39", { exact: false })).toBeVisible({ timeout: 10_000 });
 
   const scroller = page.locator("#chat-scroller");
-  const bottomGap = () =>
-    scroller.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
-  const scrollRoom = () =>
-    scroller.evaluate((el) => el.scrollHeight - el.clientHeight);
-
-  // Wait until the thread is tall enough that leaving the bottom is observable.
-  await expect.poll(scrollRoom, { timeout: 15_000 }).toBeGreaterThan(500);
-
-  // Wheel-up releases the pin. A bare scrollTop write looks like a reflow
-  // clamp and would be snapped back while follow is still true.
-  await scroller.evaluate((el) => {
-    el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
-    el.scrollTop = Math.max(0, el.scrollTop - 400);
+  await scroller.evaluate((element) => {
+    element.scrollTop = Math.max(80, element.scrollHeight / 3);
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -80, bubbles: true }));
   });
-  await expect.poll(bottomGap, { timeout: 2_000 }).toBeGreaterThan(40);
+  const readingTop = await scroller.evaluate((element) => element.scrollTop);
 
-  // Stay parked while more tokens stream in — pin must not yank us down.
-  const parkedGap = await bottomGap();
-  await page.waitForTimeout(200);
-  expect(await bottomGap()).toBeGreaterThan(40);
-  expect(await bottomGap()).toBeGreaterThanOrEqual(parkedGap - 20);
+  await expect(page.getByText("line 79", { exact: false })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(readingTop - 40);
+});
 
-  // Return to the live tail. A reflow right after this used to treat the
-  // downward scroll's gesture window as another unfollow and bounce away.
-  await scroller.evaluate((el) => {
-    el.dispatchEvent(new WheelEvent("wheel", { deltaY: 120, bubbles: true }));
-    el.scrollTop = el.scrollHeight;
-  });
-  await expect.poll(bottomGap, { timeout: 2_000 }).toBeLessThan(8);
+test("agent options stay mounted while chat content streams (#678)", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("SCROLLTEST");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("line 10", { exact: false })).toBeVisible({ timeout: 10_000 });
 
-  await expect(page.getByText("line 79")).toBeVisible({ timeout: 15_000 });
-  await expect.poll(bottomGap, { timeout: 5_000 }).toBeLessThan(8);
+  await page.getByRole("button", { name: "Agent options" }).click();
+  const menu = page.getByRole("menu", { name: "Agent options" });
+  await expect(menu).toBeVisible();
+  await menu.evaluate((element) => ((window as any).__streamingAgentMenu = element));
+
+  await expect(page.getByText("line 79", { exact: false })).toBeVisible({ timeout: 10_000 });
+  expect(await menu.evaluate((element) => element === (window as any).__streamingAgentMenu)).toBe(true);
 });
 
 test("recent sessions show only title and status badge", async ({ page }) => {
@@ -5657,6 +6477,35 @@ test("long transcripts load earlier turns without jumping to the new top", async
     null,
     41,
   ]);
+});
+
+test("opening a long conversation lands at the latest message and stays stable on scroll (#663)", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+  await page.getByText("Long transcript", { exact: true }).click();
+
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+
+  await scroller.hover();
+  const before = await scroller.evaluate((element) => element.scrollTop);
+  await page.mouse.wheel(0, -80);
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeLessThan(before);
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(before - 240);
+
+  const readingPosition = await scroller.evaluate((element) => element.scrollTop);
+  await page.evaluate(() => {
+    const thread = document.getElementById("chat-thread");
+    const spacer = document.createElement("div");
+    spacer.style.height = "480px";
+    spacer.style.flex = "0 0 480px";
+    thread?.prepend(spacer);
+  });
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(readingPosition + 400);
 });
 
 test("conversation outline loads and jumps to an older user question", async ({ page }) => {
@@ -5886,8 +6735,8 @@ test("reopening a saved session restores its MCP App workbench", async ({ page }
   await openSavedSession();
 });
 
-test("real Motif MCP App reaches ready state through the SuperScience host", async ({ page }) => {
-  test.skip(!motifAppHtmlPath, "set SUPERSCIENCE_MOTIF_APP_HTML for release acceptance");
+test("real Motif MCP App reaches ready state through the Wisp host", async ({ page }) => {
+  test.skip(!motifAppHtmlPath, "set WISP_MOTIF_APP_HTML for release acceptance");
   const html = readFileSync(motifAppHtmlPath!, "utf8");
   await enterApp(page);
   await composer(page).fill("open Motif acceptance");
@@ -5906,7 +6755,7 @@ test("real Motif MCP App reaches ready state through the SuperScience host", asy
           description: "Open the Motif workbench",
           inputSchema: { type: "object", properties: {} },
         },
-        arguments: { content: ">superscience-acceptance\nACGTACGT", filename: "superscience-acceptance.fasta" },
+        arguments: { content: ">wisp-acceptance\nACGTACGT", filename: "wisp-acceptance.fasta" },
         result: {
           content: [{ type: "text", text: "Motif acceptance payload" }],
           structuredContent: {
@@ -5916,8 +6765,8 @@ test("real Motif MCP App reaches ready state through the SuperScience host", asy
             residueCount: 8,
             payload: {
               schema: "motif.claude-science.inventory.v2",
-              inventory: { title: "SuperScience acceptance" },
-              records: [{ id: "superscience-acceptance", name: "SuperScience acceptance", sequence: "ACGTACGT", molecule: "dna" }],
+              inventory: { title: "Wisp acceptance" },
+              records: [{ id: "wisp-acceptance", name: "Wisp acceptance", sequence: "ACGTACGT", molecule: "dna" }],
             },
           },
           isError: false,
@@ -6010,7 +6859,7 @@ test("bound BibTeX resources open their immutable text preview", async ({ page }
   await expect(page.locator('.center-tab[data-center-path="artifact-version:resource-version-bib"]'))
     .toContainText("references.bib");
   await expect(page.locator(".center-file-preview"))
-    .toContainText("@article{superscience");
+    .toContainText("@article{wisp");
   await expect.poll(() => lastInvokeArgs(page, "read_artifact_version"))
     .toMatchObject({ versionId: "resource-version-bib" });
 });
@@ -6087,7 +6936,7 @@ test("projects landing stays centered on wide windows", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".projects-head")).toBeVisible();
   await expect(page.locator(".projects-brand-mark")).toBeVisible();
-  await expect(page.locator(".projects-title")).toContainText("SuperScience");
+  await expect(page.locator(".projects-title")).toContainText("Wisp Science");
   await expect.poll(async () => page.locator(".projects-head").evaluate((el) => {
     const rect = el.getBoundingClientRect();
     return Math.round(rect.width);
@@ -6137,6 +6986,10 @@ test("Windows uses the integrated title bar without covering the project landing
   await expect(exportCurrentProject).toBeEnabled();
   await exportCurrentProject.click();
   await expect.poll(() => lastInvokeArgs(page, "export_project")).toMatchObject({ id: "default" });
+  const transferModal = page.getByTestId("project-transfer-modal");
+  await expect(transferModal).toContainText("Project export complete");
+  await transferModal.getByRole("button", { name: "Done" }).click();
+  await expect(transferModal).toBeHidden();
 
   await page.getByRole("button", { name: "Edit", exact: true }).click();
   await page.getByRole("menuitem", { name: "Import Codex conversations" }).click();
@@ -6323,20 +7176,42 @@ test("new project form enables Create after name and folder are set", async ({ p
   await expect(create).toBeEnabled();
 });
 
-test("projects can be exported and imported from the landing screen", async ({ page }) => {
+test("project transfer exposes progress, blocks duplicate actions, and confirms completion", async ({ page }) => {
   await page.goto("/");
+  await expect.poll(async () => page.evaluate(() =>
+    (window as any).__tauriListenerReady?.("project-transfer-progress"),
+  )).toBe(true);
   const projectCard = page.locator(".proj-card:not(.proj-example)").first();
   const exportProject = projectCard.getByRole("button", { name: "Export project" });
   await expect.poll(() => exportProject.evaluate((el) => Number.parseFloat(getComputedStyle(el).opacity))).toBeGreaterThan(0);
+  await page.evaluate(() => (window as any).__delayNextProjectTransfer("export", 250));
   await exportProject.click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "export_project"),
   )).toBe(true);
+  const transferModal = page.getByTestId("project-transfer-modal");
+  await expect(transferModal).toContainText("Exporting project");
+  await expect(transferModal).toContainText("Compressing workspace files");
+  await expect(transferModal).toContainText("data/example.tsv");
+  await expect(page.getByRole("button", { name: "Import project" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(transferModal).toBeVisible();
+  await expect(transferModal).toContainText("Project export complete");
+  await page.keyboard.press("Escape");
+  await expect(transferModal).toBeHidden();
 
+  await page.evaluate(() => (window as any).__delayNextProjectTransfer("import", 250));
   await page.getByRole("button", { name: "Import project" }).click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "import_project"),
   )).toBe(true);
+  await expect(transferModal).toContainText("Importing project");
+  await expect(transferModal).toContainText("project-named subfolder");
+  await expect(transferModal).toContainText("Extracting workspace files");
+  await expect(transferModal).toContainText("workspace/data/example.tsv");
+  await expect(transferModal).toContainText("Project import complete");
+  await transferModal.getByRole("button", { name: "Done" }).click();
+  await expect(transferModal).toBeHidden();
 });
 
 test("projects sync manually, copy a device code, and join on another device", async ({ page }) => {
@@ -6388,6 +7263,21 @@ test("projects sync manually, copy a device code, and join on another device", a
   )).toBe(true);
 });
 
+test("project sync actions appear only after a sync backend is configured", async ({ page }) => {
+  await page.goto("/?mockSyncUnconfigured=1");
+  const projectCard = page.locator(".proj-card:not(.proj-example)").first();
+  await expect(projectCard.getByRole("button", { name: "Sync now" })).toHaveCount(0);
+  await expect(projectCard.getByRole("button", { name: "Copy device code" })).toHaveCount(0);
+
+  await openSettingsSection(page, "General");
+  await page.getByTestId("sync-relay-url").fill("https://relay.example.test");
+  await page.getByTestId("sync-relay-token").fill("secret-token");
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+
+  await expect(projectCard.getByRole("button", { name: "Sync now" })).toBeVisible();
+  await expect(projectCard.getByRole("button", { name: "Copy device code" })).toBeVisible();
+});
+
 test("general settings configure a cloud-drive sync folder", async ({ page }) => {
   await page.goto("/");
   await openSettingsSection(page, "General");
@@ -6410,6 +7300,101 @@ test("general settings save the maximum agent iterations", async ({ page }) => {
   });
 });
 
+test("general settings enable automatic context compaction by default", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "General");
+  const toggle = page.getByTestId("auto-compact-enabled");
+  await expect(toggle).toBeChecked();
+  await toggle.locator("..").click();
+  await expect(toggle).not.toBeChecked();
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
+    settings: { auto_compact: false },
+  });
+});
+
+test("context compaction leaves a visible timeline flag", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("start a context-heavy analysis");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
+
+  await emitTauriEvent(page, "agent", {
+    kind: "Compaction",
+    frame_id: frameId,
+    before: 812_000,
+    after: 236_000,
+    strategy: "auto",
+  });
+
+  const flag = page.getByTestId("context-compaction-flag");
+  await expect(flag).toContainText("Context automatically compacted");
+  await expect(flag).toContainText("812.0k → 236.0k");
+});
+
+test("context-limit recovery offers three actions and owns the first Escape", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("continue a long analysis");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
+  const overflow = {
+    kind: "Error",
+    frame_id: frameId,
+    message: 'api: 400 {"error":{"message":"maximum context length exceeded"}}',
+  };
+
+  await emitTauriEvent(page, "agent", overflow);
+  const modal = page.getByTestId("context-recovery-modal");
+  await expect(modal).toBeVisible();
+  await expect(page.getByTestId("context-recovery-compact")).toBeVisible();
+  await expect(page.getByTestId("context-recovery-new-session")).toBeVisible();
+  await expect(page.getByTestId("context-recovery-pause")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  await expect(page.getByText(/maximum context length exceeded/)).toBeVisible();
+
+  await emitTauriEvent(page, "agent", overflow);
+  await page.getByTestId("context-recovery-pause").click();
+  await expect(modal).toHaveCount(0);
+
+  await emitTauriEvent(page, "agent", overflow);
+  await page.getByTestId("context-recovery-compact").click();
+  await expect.poll(async () => {
+    const calls = await invokeArgsList(page, "send_message");
+    return calls.some((args) => args.message === "/compact")
+      && calls.some((args) => args.resume === true);
+  }).toBe(true);
+});
+
+test("context-limit recovery can continue in a new session with the old one attached", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("finish the long analysis");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
+
+  await emitTauriEvent(page, "agent", {
+    kind: "Error",
+    frame_id: frameId,
+    message: 'api: 400 {"error":{"message":"context window exceeded"}}',
+  });
+  await page.getByTestId("context-recovery-new-session").click();
+
+  await expect.poll(async () => {
+    const calls = await invokeArgsList(page, "send_message");
+    return calls.find((args) =>
+      Array.isArray(args.references)
+      && args.references.some((reference: any) =>
+        reference.kind === "session" && reference.id === frameId,
+      ),
+    ) ?? null;
+  }).toMatchObject({
+    references: [{ kind: "session", id: frameId }],
+  });
+});
+
 test("pet stays off until the user explicitly configures its directory", async ({ page }) => {
   await page.goto("/");
   await openSettingsSection(page, "Pet");
@@ -6428,7 +7413,7 @@ test("pet stays off until the user explicitly configures its directory", async (
   });
 
   await page.goto("/?pet=desktop&mockPet=1");
-  const pet = page.getByTestId("superscience-pet");
+  const pet = page.getByTestId("wisp-pet");
   await expect(pet).toBeVisible();
   await expect.poll(() => pet.getAttribute("data-state")).toMatch(/^(idle|looking)$/);
   await pet.click();
@@ -6438,7 +7423,7 @@ test("pet stays off until the user explicitly configures its directory", async (
 test("desktop pet remains independent and reflects global agent state", async ({ page }) => {
   await page.goto("/?pet=desktop&mockPet=1");
 
-  const pet = page.getByTestId("superscience-pet");
+  const pet = page.getByTestId("wisp-pet");
   await expect(page.getByTestId("pet-window-root")).toBeVisible();
   await expect(pet).toBeVisible();
   await expect(pet).toHaveAttribute("data-tauri-drag-region", "deep");
@@ -6669,18 +7654,70 @@ test("queued follow-ups can be reordered up and down (#433)", async ({ page }) =
   )).toEqual(["move_up", "move_down"]);
 });
 
-test("deleting a project uses an in-app confirm modal, not native confirm (#96)", async ({ page }) => {
+test("project removal offers a files-preserving action in the in-app dialog (#96)", async ({ page }) => {
   // Native window.confirm() is a no-op in this webview (wry's WKUIDelegate has
   // no JS confirm panel), so the ✕ silently did nothing. Deletion now goes
   // through an in-app modal.
   await page.goto("/");
   await page.locator(".proj-card:not(.proj-example) .pc-del").first().click();
-  const modal = page.locator(".confirm-modal");
+  const modal = page.locator(".project-delete-choice-modal");
   await expect(modal).toBeVisible();
-  await modal.locator("button.primary").click();
+  await expect(modal.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+  await expect(modal.getByRole("button", { name: "Remove from Wisp only", exact: true })).toBeVisible();
+  await expect(modal.getByRole("button", { name: "Delete project and local data", exact: true })).toBeVisible();
+
+  // Escape works immediately after opening; it does not depend on modal focus.
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  await page.locator(".proj-card:not(.proj-example) .pc-del").first().click();
+  await page.locator(".project-delete-choice-modal")
+    .getByRole("button", { name: "Remove from Wisp only", exact: true })
+    .click();
   await expect.poll(async () => page.evaluate(() =>
-    ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "delete_project"),
-  )).toBe(true);
+    ((window as any).__skillInvokeLog ?? [])
+      .filter((c: any) => c.cmd === "delete_project")
+      .map((c: any) => c.args instanceof Map ? c.args.get("deleteData") : c.args?.deleteData),
+  )).toContain(false);
+});
+
+test("deleting project data requires a second confirmation and five-second countdown", async ({ page }) => {
+  await page.clock.install();
+  await page.goto("/");
+  const deleteButton = page.locator(".proj-card:not(.proj-example) .pc-del").first();
+  await deleteButton.click();
+  await page.getByRole("button", { name: "Delete project and local data", exact: true }).click();
+
+  const destructiveModal = page.locator(".project-delete-data-modal");
+  await expect(destructiveModal).toBeVisible();
+  await expect(destructiveModal).toContainText("This cannot be undone");
+  const permanentDelete = destructiveModal.getByRole("button", { name: /Permanently delete/ });
+  expect(await permanentDelete.textContent()).toBe("Permanently delete (5s)");
+  await expect(permanentDelete).toBeDisabled();
+
+  // One Escape closes only the topmost confirmation and returns to the choice
+  // dialog. A second press closes that parent dialog.
+  await page.keyboard.press("Escape");
+  await expect(destructiveModal).toHaveCount(0);
+  await expect(page.locator(".project-delete-choice-modal")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".project-delete-choice-modal")).toHaveCount(0);
+
+  await deleteButton.click();
+  await page.getByRole("button", { name: "Delete project and local data", exact: true }).click();
+  const confirmedDelete = page.locator(".project-delete-data-modal")
+    .getByRole("button", { name: /Permanently delete/ });
+  await page.clock.fastForward(4_900);
+  await expect(confirmedDelete).toBeDisabled();
+  await page.clock.fastForward(200);
+  await expect(confirmedDelete).toBeEnabled();
+  await expect(confirmedDelete).toHaveText("Permanently delete");
+  await confirmedDelete.click();
+
+  await expect.poll(async () => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? [])
+      .filter((c: any) => c.cmd === "delete_project")
+      .map((c: any) => c.args instanceof Map ? c.args.get("deleteData") : c.args?.deleteData),
+  )).toContain(true);
 });
 
 test("external links open in the system browser, not the app webview (#97)", async ({ page }) => {
@@ -6868,6 +7905,7 @@ test("nested Agent workflows render under their root without independent control
 
 test("failed dynamic tasks and dependency-blocked tasks stay distinct", async ({ page }) => {
   await enterApp(page, "/?mockAgentWorkflow=partial");
+  await enableDelegation(page);
   await page.getByRole("button", { name: "Toggle panel" }).click();
   await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
   const card = page.getByTestId("agent-workflows").locator(".agent-workflow-card.dynamic").first();
@@ -6877,9 +7915,25 @@ test("failed dynamic tasks and dependency-blocked tasks stay distinct", async ({
   await expect(card.locator('[data-step-id$=":research_b"] .agent-attempt-status')).toHaveText("Succeeded");
   await expect(card.locator('[data-step-id$=":synthesize"] .agent-attempt-status')).toHaveText("Blocked");
   await expect(card.locator('[data-step-id$=":synthesize"]')).toContainText("Blocked by a failed dependency");
+
+  const retryBudget = card.locator('[data-step-id$=":research_a"]')
+    .getByTestId("agent-retry-max-tokens");
+  await expect(retryBudget).toHaveValue("8000");
+  await retryBudget.fill("16000");
+  const workflowId = await card.getAttribute("data-workflow-id");
+  await card.getByTestId("agent-retry").click();
+  await expect.poll(() => lastInvokeArgs(page, "retry_agent_workflow")).toMatchObject({
+    workflowId,
+    budgetOverrides: { research_a: { max_tokens: 16000 } },
+  });
+  await expect(card.locator(".agent-workflow-status")).toHaveText("Approved");
+  await expect(card.locator('[data-step-id$=":research_b"] .agent-attempt-status')).toHaveText("Succeeded");
+  await card.getByTestId("agent-run").click();
+  await expect(card.locator(".agent-workflow-status")).toHaveText("Succeeded", { timeout: 2_000 });
+  await expect(card.locator('[data-step-id$=":research_b"] .agent-attempt-status')).toHaveText("Succeeded");
 });
 
-test("full result inspection and Take over target the selected child Agent", async ({ page }) => {
+test("task results are readable without exposing the child Agent conversation", async ({ page }) => {
   await enterApp(page, "/?mockAgentWorkflow=succeeded");
   await page.getByRole("button", { name: "Toggle panel" }).click();
   await page.locator(".rightpane").getByRole("button", { name: "Agents", exact: true }).click();
@@ -6889,18 +7943,20 @@ test("full result inspection and Take over target the selected child Agent", asy
   await expect(synthesis).toContainText("1140 tokens · 3 tools");
 
   await synthesis.getByTestId("agent-inspect-result").click();
-  const dialog = page.getByRole("dialog", { name: "Full task result" });
-  await expect(dialog.getByTestId("agent-result-json")).toContainText('"task_id": "synthesize"');
-  await expect(dialog.getByTestId("agent-result-json")).toContainText("evidence-for-synthesize");
+  const dialog = page.getByRole("dialog", { name: "Task result" });
+  await expect(dialog).toHaveClass(/artifact-modal/);
+  await expect(dialog.getByTestId("agent-result-summary")).toContainText("Completed synthesize");
+  await expect(dialog.getByTestId("agent-result-artifacts")).toContainText("Readable result content for synthesize");
+  await expect(dialog.getByTestId("agent-result-evidence")).toContainText("evidence-for-synthesize");
+  await expect(dialog.getByTestId("agent-result-tests")).toContainText("Structure check passed");
+  await expect(dialog.getByTestId("agent-result-risks")).toContainText("Mock evidence only");
+  await expect(dialog).not.toContainText("agent-child-synthesize");
+  await expect(dialog.getByTestId("agent-result-json")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(page.getByTestId("agent-workflows")).toBeVisible();
   await expect(page.locator(".rightpane")).toBeVisible();
-
-  const researchB = card.locator('[data-step-id$=":research_b"]');
-  await researchB.getByRole("button", { name: "Take over" }).click();
-  await expect.poll(() => lastInvokeArgs(page, "load_session"))
-    .toMatchObject({ id: "agent-child-research_b" });
+  await expect(card.getByRole("button", { name: "Take over" })).toHaveCount(0);
 });
 
 test("disabled delegation preserves running history and blocks new starts and retries", async ({ page }) => {
@@ -7153,7 +8209,7 @@ test("the selection popup saves a highlight into the right pane and library", as
   // The Highlights tab opens with the excerpt, and the transcript is underlined.
   await expect(page.getByRole("button", { name: "Highlights (1)", exact: true })).toBeVisible();
   await expect(page.locator(".highlight-card .highlight-text")).toContainText(selected.trim().slice(0, 30));
-  await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("superscience-saved") ?? false)).toBe(true);
+  await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("wisp-saved") ?? false)).toBe(true);
 
   // The global library lists it under the Highlights filter.
   await page.getByRole("button", { name: "Library", exact: true }).click();
@@ -7182,19 +8238,6 @@ test("a ?project window opens straight into the project, skipping the landing (#
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "open_project"),
   )).toBe(true);
-});
-
-test("Escape closes settings-local menus before Settings", async ({ page }) => {
-  await enterApp(page);
-  await openSettingsSection(page, "Memory");
-  await page.getByRole("button", { name: /New category/ }).click();
-  const category = page.getByPlaceholder("Category name, press Enter");
-  await expect(category).toBeVisible();
-
-  await page.keyboard.press("Escape");
-
-  await expect(category).toHaveCount(0);
-  await expect(page.locator(".settings-page")).toBeVisible();
 });
 
 test("specialists page configures the builtin Reader and saves a custom specialist", async ({ page }) => {

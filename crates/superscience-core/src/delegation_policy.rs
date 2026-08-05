@@ -7,9 +7,10 @@
 use crate::orchestration::MAX_PARALLEL_AGENTS;
 use crate::{
     AgentAuthorizationSnapshot, AgentBackend, AgentBudget, AgentExecutorRef, AgentOrigin,
-    AgentOutputSchemaSource, AgentRole, AgentSessionPolicy, AgentSpec, AgentWorkspacePolicy,
-    CapabilityRevision, ContextPolicy, DelegationMode, DelegationPlan, DelegationPlanStep,
-    PermissionSet, SpecialistSnapshot, DYNAMIC_DELEGATION_SCHEMA_VERSION, MAX_DELEGATION_TASKS,
+    AgentOutputSchemaSource, AgentRole, AgentSessionPolicy, AgentSkillBinding, AgentSpec,
+    AgentWorkspacePolicy, CapabilityRevision, ContextPolicy, DelegationMode, DelegationPlan,
+    DelegationPlanStep, PermissionSet, SpecialistSnapshot, DYNAMIC_DELEGATION_SCHEMA_VERSION,
+    MAX_DELEGATION_TASKS,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -19,6 +20,11 @@ use thiserror::Error;
 
 const ELEVATED_TOKEN_THRESHOLD: u32 = 20_000;
 const ELEVATED_COST_THRESHOLD_MICROUNITS: u64 = 1_000_000;
+/// Ceiling on how much conversation context a delegated task may ingest. This
+/// bounds the prompt, not the run: run budgets (tokens/tool calls/cost) are
+/// unlimited by default and only constrained when the user explicitly sets
+/// them, so skill-bound tasks are never failed mid-work by a budget guess.
+const CONTEXT_TOKEN_CEILING: u32 = 64_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -145,6 +151,8 @@ pub struct DelegatedTaskProposal {
     pub depends_on: Vec<String>,
     pub capabilities: Vec<String>,
     #[serde(default)]
+    pub skill_bindings: Vec<AgentSkillBinding>,
+    #[serde(default)]
     pub specialist: Option<SpecialistSnapshot>,
     #[serde(default)]
     pub output_schema: Option<Value>,
@@ -228,8 +236,12 @@ pub enum ResolutionError {
     NoEligibleModel,
     #[error("no eligible executor is configured")]
     NoEligibleExecutor,
-    #[error("requested task budget exceeds the capability or host ceiling")]
-    BudgetExceeded,
+    #[error("requested task budget exceeds the {field} ceiling: requested {requested}, but the capability/host policy allows at most {ceiling}")]
+    BudgetExceeded {
+        field: &'static str,
+        requested: String,
+        ceiling: u64,
+    },
     #[error("dynamic delegation snapshot is stale: {0}")]
     StaleSnapshot(String),
     #[error("dynamic delegation snapshot integrity check failed")]
@@ -279,8 +291,8 @@ impl CapabilityRegistry {
             .iter_mut()
             .find(|definition| definition.id == "code_run")
             .expect("code_run capability")
-            .revision = 2;
-        Self::new("superscience-capabilities-v3", definitions)
+            .revision = 3;
+        Self::new("wisp-capabilities-v4", definitions)
             .expect("built-in capability definitions must be valid")
     }
 
@@ -357,8 +369,13 @@ impl CapabilityRegistry {
             &grant.budget_ceiling,
         )?;
         let timeout_secs = select_timeout(host)?;
-        let mut approval_reasons =
-            approval_reasons(&grant, model, &executor, workspace_policy, &budget);
+        let mut approval_reasons = approval_reasons(
+            &grant,
+            model,
+            &executor,
+            workspace_policy,
+            proposal.budget.as_ref(),
+        );
         approval_reasons.sort();
         approval_reasons.dedup();
 
@@ -413,6 +430,7 @@ impl CapabilityRegistry {
                 .any(|capability| capability == "delegation"),
             origin,
             capabilities: proposal.capabilities.clone(),
+            skill_bindings: proposal.skill_bindings.clone(),
             executor: Some(executor),
             request_preferences: Some(crate::AgentRequestPreferences {
                 model_id: proposal.model_id.clone(),
@@ -511,6 +529,8 @@ impl CapabilityRegistry {
                     id: task.spec.agent_id.clone(),
                     spec: task.spec,
                     input: task.input,
+                    task_kind: crate::WorkflowTaskKind::Agent,
+                    run_activity: None,
                 })
                 .collect(),
         };
@@ -581,27 +601,28 @@ impl CapabilityRegistry {
         plan.validate_structure()
             .map_err(|error| ResolutionError::InvalidProposal(error.to_string()))?;
         for step in &plan.steps {
-            self.validate_resolved_spec(&step.spec, host)?;
-        }
-        let proposals = plan
-            .steps
-            .iter()
-            .map(|step| {
-                let mut proposal = proposal_from_spec(&step.spec)?;
-                proposal.input = step.input.clone();
-                Ok(proposal)
-            })
-            .collect::<Result<Vec<_>, ResolutionError>>()?;
-        let expected = self.resolve_plan_with_id(
-            plan.id.clone(),
-            plan.goal.clone(),
-            plan.mode,
-            plan.max_parallel,
-            proposals,
-            host,
-        )?;
-        if expected.plan != *plan {
-            return Err(ResolutionError::SnapshotMismatch);
+            match step.task_kind {
+                crate::WorkflowTaskKind::Agent => {
+                    self.validate_resolved_spec(&step.spec, host)?;
+                    let mut proposal = proposal_from_spec(&step.spec)?;
+                    proposal.input = step.input.clone();
+                    let expected = self.resolve_task(proposal, host)?;
+                    if expected.spec != step.spec || expected.input != step.input {
+                        return Err(ResolutionError::SnapshotMismatch);
+                    }
+                }
+                crate::WorkflowTaskKind::RunActivity => {
+                    step.run_activity
+                        .as_ref()
+                        .ok_or_else(|| {
+                            ResolutionError::InvalidProposal(
+                                "Run activity metadata is missing".into(),
+                            )
+                        })?
+                        .validate()
+                        .map_err(|error| ResolutionError::InvalidProposal(error.to_string()))?;
+                }
+            }
         }
         Ok(())
     }
@@ -976,23 +997,53 @@ fn select_budget(
     ceiling: &AgentBudget,
 ) -> Result<AgentBudget, ResolutionError> {
     let selected = AgentBudget {
-        max_tokens: requested
-            .and_then(|value| value.max_tokens)
-            .or(defaults.max_tokens),
-        max_tool_calls: requested
-            .and_then(|value| value.max_tool_calls)
-            .or(defaults.max_tool_calls),
-        max_cost_microunits: requested
-            .and_then(|value| value.max_cost_microunits)
-            .or(defaults.max_cost_microunits),
+        max_tokens: clamp_budget_limit(
+            "max_tokens",
+            requested
+                .and_then(|value| value.max_tokens)
+                .or(defaults.max_tokens),
+            ceiling.max_tokens,
+        )?,
+        max_tool_calls: clamp_budget_limit(
+            "max_tool_calls",
+            requested
+                .and_then(|value| value.max_tool_calls)
+                .or(defaults.max_tool_calls),
+            ceiling.max_tool_calls,
+        )?,
+        max_cost_microunits: clamp_budget_limit(
+            "max_cost_microunits",
+            requested
+                .and_then(|value| value.max_cost_microunits)
+                .or(defaults.max_cost_microunits),
+            ceiling.max_cost_microunits,
+        )?,
     };
-    if !limit_within(selected.max_tokens, ceiling.max_tokens)
-        || !limit_within(selected.max_tool_calls, ceiling.max_tool_calls)
-        || !limit_within(selected.max_cost_microunits, ceiling.max_cost_microunits)
-    {
-        return Err(ResolutionError::BudgetExceeded);
-    }
     Ok(selected)
+}
+
+/// Resolve one budget dimension against its ceiling. `Some(0)` is normalized
+/// to `None` (unlimited) so users can opt back out of a finite budget. An
+/// unlimited selection under a finite ceiling clamps down to the ceiling; a
+/// finite selection above the ceiling is rejected with the field named.
+fn clamp_budget_limit<T: Ord + Copy + Into<u64>>(
+    field: &'static str,
+    selected: Option<T>,
+    ceiling: Option<T>,
+) -> Result<Option<T>, ResolutionError> {
+    let selected = selected.filter(|value| (*value).into() != 0);
+    match (selected, ceiling) {
+        (Some(selected), Some(ceiling)) if selected > ceiling => {
+            Err(ResolutionError::BudgetExceeded {
+                field,
+                requested: selected.into().to_string(),
+                ceiling: ceiling.into(),
+            })
+        }
+        (Some(selected), Some(_)) => Ok(Some(selected)),
+        (None, ceiling) => Ok(ceiling),
+        (selected, None) => Ok(selected),
+    }
 }
 
 fn select_timeout(host: &DelegationHostPolicy) -> Result<Option<u64>, ResolutionError> {
@@ -1009,7 +1060,7 @@ fn approval_reasons(
     model: Option<&ModelProfilePolicy>,
     executor: &AgentExecutorRef,
     workspace: AgentWorkspacePolicy,
-    budget: &AgentBudget,
+    requested_budget: Option<&AgentBudget>,
 ) -> Vec<String> {
     let mut reasons = grant.approval_reasons.clone();
     if grant.permissions.write {
@@ -1039,20 +1090,26 @@ fn approval_reasons(
                 .into(),
         );
     }
-    if budget_is_elevated(budget, &grant.default_budget) {
+    if budget_is_elevated(requested_budget, &grant.default_budget) {
         reasons.push("Task requests an elevated resource budget".into());
     }
     reasons
 }
 
-fn budget_is_elevated(selected: &AgentBudget, defaults: &AgentBudget) -> bool {
-    limit_greater(selected.max_tokens, defaults.max_tokens)
-        || limit_greater(selected.max_tool_calls, defaults.max_tool_calls)
-        || limit_greater(selected.max_cost_microunits, defaults.max_cost_microunits)
-        || selected
+/// Elevation is judged on what the task explicitly requested, not on the
+/// resolved budget: an unset or zero dimension is the unlimited default and
+/// must not turn a host ceiling clamp into a confirmation prompt.
+fn budget_is_elevated(requested: Option<&AgentBudget>, defaults: &AgentBudget) -> bool {
+    let Some(requested) = requested else {
+        return false;
+    };
+    limit_greater(requested.max_tokens, defaults.max_tokens)
+        || limit_greater(requested.max_tool_calls, defaults.max_tool_calls)
+        || limit_greater(requested.max_cost_microunits, defaults.max_cost_microunits)
+        || requested
             .max_tokens
             .is_some_and(|value| value > ELEVATED_TOKEN_THRESHOLD)
-        || selected
+        || requested
             .max_cost_microunits
             .is_some_and(|value| value > ELEVATED_COST_THRESHOLD_MICROUNITS)
 }
@@ -1076,6 +1133,7 @@ fn proposal_from_spec(spec: &AgentSpec) -> Result<DelegatedTaskProposal, Resolut
         context_summary: spec.context_summary.clone(),
         depends_on: spec.dependencies.clone(),
         capabilities: spec.capabilities.clone(),
+        skill_bindings: spec.skill_bindings.clone(),
         specialist,
         output_schema,
         isolated: preferences.map_or(
@@ -1106,7 +1164,7 @@ fn resolved_prompt(proposal: &DelegatedTaskProposal) -> String {
         "Do not delegate further."
     };
     let base = format!(
-        "You are a bounded SuperScience sub-Agent. Complete only the assigned task and return evidence to the parent Agent. {delegation}"
+        "You are a bounded Wisp sub-Agent. Complete only the assigned task and return evidence to the parent Agent. {delegation}"
     );
     match &proposal.specialist {
         Some(specialist) => format!(
@@ -1212,14 +1270,6 @@ fn insert_sorted<T: Ord + Copy>(target: &mut Vec<T>, value: T) {
     }
 }
 
-fn limit_within<T: Ord>(selected: Option<T>, ceiling: Option<T>) -> bool {
-    match (selected, ceiling) {
-        (_, None) => true,
-        (Some(selected), Some(ceiling)) => selected <= ceiling,
-        (None, Some(_)) => false,
-    }
-}
-
 fn limit_greater<T: Ord>(selected: Option<T>, defaults: Option<T>) -> bool {
     match (selected, defaults) {
         (Some(selected), Some(default)) => selected > default,
@@ -1251,8 +1301,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SharedReadOnly,
-            8_000,
-            16_000,
+            CONTEXT_TOKEN_CEILING,
         ),
         capability(
             "project_read",
@@ -1267,8 +1316,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SharedReadOnly,
-            8_000,
-            20_000,
+            CONTEXT_TOKEN_CEILING,
         ),
         capability(
             "project_write",
@@ -1283,8 +1331,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SerializedMutation,
-            10_000,
-            24_000,
+            CONTEXT_TOKEN_CEILING,
         ),
         capability(
             "code_run",
@@ -1298,6 +1345,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
                 "run_in_context",
                 "get_run",
                 "cancel_run",
+                "prepare_method_search",
             ],
             false,
             false,
@@ -1306,8 +1354,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SerializedMutation,
-            12_000,
-            32_000,
+            CONTEXT_TOKEN_CEILING,
         ),
         capability(
             "literature_search",
@@ -1325,8 +1372,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &["literature"],
             AgentWorkspacePolicy::SharedReadOnly,
-            10_000,
-            20_000,
+            CONTEXT_TOKEN_CEILING,
         ),
         capability(
             "external_research",
@@ -1341,8 +1387,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &["web"],
             AgentWorkspacePolicy::SharedReadOnly,
-            10_000,
-            20_000,
+            CONTEXT_TOKEN_CEILING,
         ),
         capability(
             "visualization",
@@ -1361,8 +1406,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SerializedMutation,
-            12_000,
-            32_000,
+            CONTEXT_TOKEN_CEILING,
         ),
         capability(
             "review",
@@ -1377,8 +1421,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &[],
             &[],
             AgentWorkspacePolicy::SharedReadOnly,
-            8_000,
-            16_000,
+            CONTEXT_TOKEN_CEILING,
         ),
         delegation_capability(),
         capability_with_model(
@@ -1389,8 +1432,7 @@ fn builtin_capabilities() -> Vec<CapabilityDefinition> {
             &["read", "view_image"],
             &[ExecutorFeature::ProjectRead, ExecutorFeature::Vision],
             &[ModelFeature::Vision],
-            8_000,
-            16_000,
+            CONTEXT_TOKEN_CEILING,
         ),
     ]
 }
@@ -1409,8 +1451,7 @@ fn delegation_capability() -> CapabilityDefinition {
         &[],
         &[],
         AgentWorkspacePolicy::SharedReadOnly,
-        8_000,
-        16_000,
+        CONTEXT_TOKEN_CEILING,
     );
     definition.approval_reason =
         Some("Task may create a bounded nested Agent batch within root-wide limits".into());
@@ -1431,8 +1472,7 @@ fn capability(
     skills: &[&str],
     connectors: &[&str],
     workspace_policy: AgentWorkspacePolicy,
-    default_tokens: u32,
-    max_tokens: u32,
+    context_tokens: u32,
 ) -> CapabilityDefinition {
     CapabilityDefinition {
         id: id.into(),
@@ -1458,18 +1498,13 @@ fn capability(
         context_ceiling: ContextPolicy {
             include_history: false,
             include_artifacts: true,
-            max_tokens: Some(max_tokens),
+            max_tokens: Some(context_tokens),
         },
-        default_budget: AgentBudget {
-            max_tokens: Some(default_tokens),
-            max_tool_calls: Some(32),
-            max_cost_microunits: Some(500_000),
-        },
-        budget_ceiling: AgentBudget {
-            max_tokens: Some(max_tokens),
-            max_tool_calls: Some(64),
-            max_cost_microunits: Some(1_000_000),
-        },
+        // Run budgets default to unlimited on every dimension; they remain an
+        // advanced per-task override validated against these (also unlimited)
+        // ceilings rather than a planner guess that can fail finished work.
+        default_budget: AgentBudget::default(),
+        budget_ceiling: AgentBudget::default(),
         workspace_policy,
         approval_reason: None,
     }
@@ -1484,8 +1519,7 @@ fn capability_with_model(
     tools: &[&str],
     executor_features: &[ExecutorFeature],
     model_features: &[ModelFeature],
-    default_tokens: u32,
-    max_tokens: u32,
+    context_tokens: u32,
 ) -> CapabilityDefinition {
     let mut definition = capability(
         id,
@@ -1500,8 +1534,7 @@ fn capability_with_model(
         &[],
         &[],
         AgentWorkspacePolicy::SharedReadOnly,
-        default_tokens,
-        max_tokens,
+        context_tokens,
     );
     definition.required_model_features = model_features.to_vec();
     definition
@@ -1603,6 +1636,7 @@ mod tests {
             context_summary: String::new(),
             depends_on: vec![],
             capabilities: capabilities.iter().map(|value| (*value).into()).collect(),
+            skill_bindings: vec![],
             specialist: None,
             output_schema: None,
             isolated: false,
@@ -1642,6 +1676,7 @@ mod tests {
                     "run_in_context",
                     "get_run",
                     "cancel_run",
+                    "prepare_method_search",
                 ],
                 false,
                 false,
@@ -1732,7 +1767,7 @@ mod tests {
             .resolve_task(proposal("work", &["project_read", "code_run"]), &host)
             .unwrap();
         assert_eq!(resolved.risk(), CapabilityRisk::Execute);
-        assert_eq!(resolved.budget_ceiling().max_tokens, Some(20_000));
+        assert_eq!(resolved.budget_ceiling().max_tokens, Some(32_000));
         assert!(resolved
             .spec()
             .permissions
@@ -1742,13 +1777,59 @@ mod tests {
 
         let mut too_large = proposal("work", &["project_read", "code_run"]);
         too_large.budget = Some(AgentBudget {
-            max_tokens: Some(20_001),
+            max_tokens: Some(32_001),
             ..Default::default()
         });
+        let error = registry.resolve_task(too_large, &host).unwrap_err();
         assert_eq!(
-            registry.resolve_task(too_large, &host).unwrap_err(),
-            ResolutionError::BudgetExceeded
+            error,
+            ResolutionError::BudgetExceeded {
+                field: "max_tokens",
+                requested: "32001".into(),
+                ceiling: 32_000,
+            }
         );
+        // The message must name the triggered limit and both numbers so the
+        // caller knows exactly which ceiling rejected the budget.
+        let message = error.to_string();
+        assert!(message.contains("max_tokens"));
+        assert!(message.contains("32001"));
+        assert!(message.contains("32000"));
+    }
+
+    #[test]
+    fn budgets_default_to_unlimited_and_zero_dimensions_normalize() {
+        let registry = CapabilityRegistry::builtins();
+
+        // With an unlimited host ceiling a task that asks for nothing gets no
+        // budget at all — and no confirmation prompt.
+        let mut open_host = host_policy();
+        open_host.budget_ceiling = AgentBudget::default();
+        let resolved = registry
+            .resolve_task(proposal("free", &["project_read"]), &open_host)
+            .unwrap();
+        assert_eq!(resolved.spec().budget, AgentBudget::default());
+        assert!(!resolved
+            .spec()
+            .approval_reasons
+            .iter()
+            .any(|reason| reason.contains("budget")));
+
+        // Zero dimensions are an explicit unlimited: they normalize away,
+        // then clamp to the ceiling when the host still sets a finite one.
+        let mut zeroed = proposal("zeroed", &["project_read"]);
+        zeroed.budget = Some(AgentBudget {
+            max_tokens: Some(0),
+            max_tool_calls: Some(0),
+            max_cost_microunits: Some(0),
+        });
+        let resolved = registry.resolve_task(zeroed, &host_policy()).unwrap();
+        assert_eq!(resolved.spec().budget.max_tokens, Some(32_000));
+        assert!(!resolved
+            .spec()
+            .approval_reasons
+            .iter()
+            .any(|reason| reason.contains("budget")));
     }
 
     #[test]
@@ -2051,7 +2132,7 @@ mod tests {
 
         let mut elevated = proposal("elevated", &["reasoning"]);
         elevated.budget = Some(AgentBudget {
-            max_tokens: Some(9_000),
+            max_tokens: Some(24_000),
             ..Default::default()
         });
         assert!(registry

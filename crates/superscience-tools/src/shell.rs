@@ -86,7 +86,7 @@ async fn run_shell(args: &serde_json::Value, env: &dyn ToolEnv, timeout: Duratio
         if let Some(danger) = crate::safety::check_command_safety(&cmd) {
             let msg = format!("Dangerous command detected ({}): {}", danger.label(), cmd);
             if !env.confirm(&msg).await {
-                return ToolResult::fail("error: User denied action");
+                return ToolResult::fail("error: User denied action").stop_batch();
             }
         }
     }
@@ -294,7 +294,7 @@ impl Tool for ShellTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::env::ToolEvent;
+    use crate::env::{ToolControl, ToolEvent};
     use crate::tool::Tool;
     use std::path::{Path, PathBuf};
 
@@ -308,6 +308,21 @@ mod tests {
 
         async fn confirm(&self, _message: &str) -> bool {
             true
+        }
+
+        async fn emit(&self, _event: ToolEvent) {}
+    }
+
+    struct DenyEnv(PathBuf);
+
+    #[async_trait::async_trait]
+    impl ToolEnv for DenyEnv {
+        fn project_root(&self) -> &Path {
+            &self.0
+        }
+
+        async fn confirm(&self, _message: &str) -> bool {
+            false
         }
 
         async fn emit(&self, _event: ToolEvent) {}
@@ -341,6 +356,20 @@ mod tests {
         );
         let preview = ShellTool.preview(&json!({ "cmd": cmd.clone() }));
         assert_eq!(preview, cmd);
+    }
+
+    #[tokio::test]
+    async fn denied_dangerous_command_stops_the_model_batch() {
+        let env = DenyEnv(std::env::current_dir().unwrap());
+        let result = run_shell(
+            &json!({ "cmd": "rm -rf generated-output" }),
+            &env,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(!result.success);
+        assert_eq!(result.control, ToolControl::StopBatch);
     }
 
     #[tokio::test]

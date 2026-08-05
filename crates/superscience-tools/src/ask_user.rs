@@ -127,7 +127,7 @@ impl Tool for AskUserTool {
     }
     async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
         match question_body(args) {
-            Ok(body) => ToolResult::ok(body.to_string()),
+            Ok(body) => ToolResult::ok(body.to_string()).stop_turn(),
             Err(error) => ToolResult::fail(error),
         }
     }
@@ -136,8 +136,25 @@ impl Tool for AskUserTool {
 #[cfg(test)]
 mod tests {
     use super::{question_body, AskUserTool, ASK_USER};
+    use crate::env::{ToolControl, ToolEnv, ToolEvent};
     use crate::tool::Tool;
     use serde_json::json;
+    use std::path::Path;
+
+    struct NoEnv;
+
+    #[async_trait::async_trait]
+    impl ToolEnv for NoEnv {
+        fn project_root(&self) -> &Path {
+            Path::new(".")
+        }
+
+        async fn confirm(&self, _message: &str) -> bool {
+            false
+        }
+
+        async fn emit(&self, _event: ToolEvent) {}
+    }
 
     #[test]
     fn builds_the_persisted_card_shape() {
@@ -165,6 +182,15 @@ mod tests {
             "the result has to stop the agent, not invite it to keep going"
         );
         assert_eq!(AskUserTool.name(), ASK_USER);
+    }
+
+    #[tokio::test]
+    async fn successful_question_is_a_hard_turn_boundary() {
+        let result = AskUserTool
+            .run(&json!({ "question": "Continue?" }), &NoEnv)
+            .await;
+        assert!(result.success);
+        assert_eq!(result.control, ToolControl::StopTurn);
     }
 
     #[test]

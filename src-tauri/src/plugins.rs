@@ -478,64 +478,76 @@ fn validate_plugin_url(value: &str) -> Result<url::Url, String> {
     Ok(parsed)
 }
 
-fn extract_zip(archive_path: &Path, destination: &Path) -> Result<(), String> {
-    let file = File::open(archive_path).map_err(|error| format!("open plugin ZIP: {error}"))?;
+pub(crate) fn extract_zip(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    let metadata =
+        std::fs::metadata(archive_path).map_err(|error| format!("stat ZIP archive: {error}"))?;
+    if metadata.len() > MAX_ARCHIVE_BYTES {
+        return Err(format!(
+            "ZIP archive exceeds {} MiB",
+            MAX_ARCHIVE_BYTES / 1024 / 1024
+        ));
+    }
+    let file = File::open(archive_path).map_err(|error| format!("open ZIP archive: {error}"))?;
     let mut archive =
-        zip::ZipArchive::new(file).map_err(|error| format!("read plugin ZIP: {error}"))?;
+        zip::ZipArchive::new(file).map_err(|error| format!("read ZIP archive: {error}"))?;
     if archive.len() > MAX_FILES {
-        return Err(format!("plugin ZIP contains more than {MAX_FILES} entries"));
+        return Err(format!(
+            "ZIP archive contains more than {MAX_FILES} entries"
+        ));
     }
     let mut seen = HashSet::new();
     let mut expanded = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
-            .map_err(|error| format!("read plugin ZIP entry: {error}"))?;
+            .map_err(|error| format!("read ZIP archive entry: {error}"))?;
         let Some(enclosed) = entry.enclosed_name() else {
             return Err(format!(
-                "plugin ZIP entry '{}' escapes the package",
+                "ZIP archive entry '{}' escapes the package",
                 entry.name()
             ));
         };
         let normalized = enclosed.to_string_lossy().replace('\\', "/");
         if normalized.is_empty() || normalized.len() > MAX_PATH_BYTES {
-            return Err("plugin ZIP contains an empty or overly long path".into());
+            return Err("ZIP archive contains an empty or overly long path".into());
         }
         if !seen.insert(normalized.clone()) {
-            return Err(format!("plugin ZIP contains duplicate path '{normalized}'"));
+            return Err(format!(
+                "ZIP archive contains duplicate path '{normalized}'"
+            ));
         }
         if entry
             .unix_mode()
             .is_some_and(|mode| mode & 0o170000 == 0o120000)
         {
-            return Err(format!("plugin ZIP contains symbolic link '{normalized}'"));
+            return Err(format!("ZIP archive contains symbolic link '{normalized}'"));
         }
         let size = entry.size();
         if size > MAX_FILE_BYTES {
-            return Err(format!("plugin ZIP entry '{normalized}' is too large"));
+            return Err(format!("ZIP archive entry '{normalized}' is too large"));
         }
         expanded = expanded.saturating_add(size);
         if expanded > MAX_EXPANDED_BYTES {
-            return Err("plugin ZIP expanded size exceeds safety limit".into());
+            return Err("ZIP archive expanded size exceeds safety limit".into());
         }
         let output = destination.join(&enclosed);
         if entry.is_dir() {
             std::fs::create_dir_all(&output)
-                .map_err(|error| format!("create plugin directory: {error}"))?;
+                .map_err(|error| format!("create ZIP archive directory: {error}"))?;
             continue;
         }
         let parent = output
             .parent()
-            .ok_or_else(|| "plugin ZIP entry has no parent".to_string())?;
+            .ok_or_else(|| "ZIP archive entry has no parent".to_string())?;
         std::fs::create_dir_all(parent)
-            .map_err(|error| format!("create plugin directory: {error}"))?;
+            .map_err(|error| format!("create ZIP archive directory: {error}"))?;
         let mut target = File::create(&output)
-            .map_err(|error| format!("create plugin file '{}': {error}", output.display()))?;
+            .map_err(|error| format!("create extracted file '{}': {error}", output.display()))?;
         std::io::copy(&mut entry, &mut target)
-            .map_err(|error| format!("extract plugin file '{}': {error}", output.display()))?;
+            .map_err(|error| format!("extract ZIP file '{}': {error}", output.display()))?;
         target
             .flush()
-            .map_err(|error| format!("flush plugin file '{}': {error}", output.display()))?;
+            .map_err(|error| format!("flush extracted file '{}': {error}", output.display()))?;
     }
     Ok(())
 }

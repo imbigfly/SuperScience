@@ -41,15 +41,62 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   };
 
   const demos = [
-    { id: "manifest_crispr_screen", title: "Design a genome-wide CRISPR knockout screen targeting all kinases" },
-    { id: "manifest_enzyme_engineering", title: "Engineer an enzyme for higher thermostability" },
+    { id: "manifest_esr1_01_datasets", title: "Help me find RNA-seq knockdown datasets involving ESR1" },
+    { id: "manifest_esr1_02_samples", title: "What specific samples are included in GSE153250" },
+    { id: "manifest_esr1_03_rnaseq", title: "Connect to the remote compute host, locate the FASTQ data for GSE153250" },
+    { id: "manifest_esr1_04_downstream", title: "Based on the upstream Counts data from GSE153250, perform transcriptome" },
+    { id: "manifest_esr1_05_hypotheses", title: "Based on the Counts data from our study, along with the differential e" },
   ];
+  const demoRunJson = JSON.stringify({
+    id: "demo-run-001",
+    frame_id: null,
+    context_id: "ssh:remote-host",
+    title: "Re-run pipeline with fixed STAR index",
+    kind: "ssh_direct",
+    status: "succeeded",
+    command: "cd ~/workspace/GSE153250 && bash pipeline.sh",
+    created_at: 1_700_000_000,
+    started_at: 1_700_000_001,
+    ended_at: 1_700_000_120,
+    exit_code: 0,
+    stdout_tail: "Pipeline finished: 38606 genes, 12 samples",
+    stderr_tail: "",
+    remote_workdir: null,
+    timeout_secs: null,
+    last_polled_at: 1_700_000_120,
+    last_poll_error: null,
+    progress_json: "{}",
+    env_snapshot_json: "{}",
+  });
   const demo = {
-    id: "manifest_crispr_screen",
-    title: "CRISPR screen",
-    request: "Design a genome-wide CRISPR knockout screen targeting all kinases.",
-    response: "## Human Kinome CRISPR-KO Screen\n\nDemo report: 2,072 targeting sgRNAs across 522 kinases.\n\n[Off-target analysis (figure)]",
-    thinking: "Let me plan the kinome list and guide selection.",
+    id: "manifest_esr1_03_rnaseq",
+    title: "ESR1 RNA-seq",
+    request: "Connect to the remote compute host, locate the FASTQ data for GSE153250, keep only the siESR1 and siNT groups.",
+    response: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.",
+    thinking: "Identify sample groups, download FASTQs, run the upstream pipeline.",
+    items: [
+      {
+        role: "user",
+        text: "Connect to the remote compute host, locate the FASTQ data for GSE153250, keep only the siESR1 and siNT groups.",
+        tool_name: null,
+        ok: null,
+        input: "",
+      },
+      {
+        role: "tool",
+        text: demoRunJson,
+        tool_name: "monitor_run",
+        ok: true,
+        input: "demo-run-001",
+      },
+      {
+        role: "assistant",
+        text: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.",
+        tool_name: null,
+        ok: null,
+        input: "",
+      },
+    ],
   };
 
   const project = {
@@ -70,6 +117,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockMcpAppSession = query.get("mockMcpAppSession") === "1";
   const mockOAuthPending = query.get("mockOAuthPending") === "1";
   const mockOnboarding = query.get("mockOnboarding") === "1";
+  const mockSyncUnconfigured = query.get("mockSyncUnconfigured") === "1";
+  let mockLocale = query.get("mockLocale") === "zh" ? "zh" : "en";
   const mockSessions: any[] = mockPlanFlow
     ? [{ id: "s1", title: "Plan mode regression", ts: 2000, running: false }]
     : mockPublication
@@ -90,7 +139,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
         : query.get("mockSessionModels") === "1"
           ? [
               { id: "s-model-a", title: "First model session", ts: 2000, running: false },
-              { id: "s-model-b", title: "Second model session", ts: 1900, running: false },
+              {
+                id: "s-model-b",
+                title: "Second model session",
+                ts: 1900,
+                running: query.get("mockBackgroundApproval") === "1",
+              },
             ]
           : [];
   const mockCodexSessions = [
@@ -137,6 +191,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const nextProjectOpenDelayMs: Record<string, number> = {};
   let nextProbeDelayMs = 0;
   let nextSessionImportDelayMs = 0;
+  const nextProjectTransferDelayMs: Record<string, number> = {};
   let failNextProjectOpenId: string | null = null;
   (window as any).__delayNextProjectOpen = (projectId: string, milliseconds: number) => {
     nextProjectOpenDelayMs[String(projectId)] = Math.max(0, Number(milliseconds) || 0);
@@ -146,6 +201,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   };
   (window as any).__delayNextSessionImport = (milliseconds: number) => {
     nextSessionImportDelayMs = Math.max(0, Number(milliseconds) || 0);
+  };
+  (window as any).__delayNextProjectTransfer = (direction: string, milliseconds: number) => {
+    nextProjectTransferDelayMs[String(direction)] = Math.max(0, Number(milliseconds) || 0);
   };
   (window as any).__failNextProjectOpen = (projectId: string) => {
     failNextProjectOpenId = String(projectId);
@@ -239,7 +297,35 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { path: "office-preview.xlsx", is_dir: false, size: 3600 },
     { path: "office-preview.pptx", is_dir: false, size: 8600 },
   ];
-  let memoryFiles = [{ name: "2026-07-01.md", preview: "User prefers DeepSeek.", bytes: 128 }];
+  type MemoryFile = { name: string; preview: string; bytes: number };
+  const memoryByProject: Record<string, MemoryFile[]> = {
+    default: [{ name: "2026-07-01.md", preview: "User prefers DeepSeek.", bytes: 128 }],
+    other: [{ name: "other-2026-07-02.md", preview: "Notes for other workspace.", bytes: 64 }],
+  };
+  const memoryFilesFor = (projectId: string) => {
+    const id = projectId || "default";
+    if (!memoryByProject[id]) memoryByProject[id] = [];
+    return memoryByProject[id];
+  };
+  const memoryProjectName = (projectId: string) =>
+    projectId === "other" ? "Other project" : project.name;
+  const memoryViewFor = (projectId: string) => {
+    const id = projectId || activeProjectId || "default";
+    return {
+      enabled: memoryEnabled,
+      project_id: id,
+      project_name: memoryProjectName(id),
+      today_file: "2026-07-04.md",
+      files: memoryFilesFor(id),
+    };
+  };
+  // Tauri v2 binds command arguments by camelCase name only, so the mock must
+  // reject snake_case here or it hides real "browsed project is ignored" bugs.
+  const resolveMemoryProjectId = (_args: any, arg: (key: string) => any) => {
+    const raw = arg("projectId");
+    if (raw == null || String(raw) === "") return activeProjectId || "default";
+    return String(raw);
+  };
   let mockSpecialists: any[] = [
     { id: "reviewer", name: "Reviewer", icon: "review", color: "clay", description: "", instructions: "rubric", model_id: "", skills: [], connectors: [], builtin: true },
     { id: "reader", name: "Reader", icon: "search", color: "clay", description: "Searches project sessions", instructions: "reader rubric", model_id: "", skills: [], connectors: [], builtin: true },
@@ -257,6 +343,67 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     sort_order: 0,
     builtin: true,
   }];
+  const mockMethodSearchWorkflowTemplate = {
+    id: "develop_computational_method",
+    name: "Develop computational method",
+    description: "Audit evidence and a baseline, freeze an evaluator contract, run a durable method search, then review verified finalists.",
+    builtin: true,
+    proposal: {
+      goal: "Develop and independently verify a reusable computational method",
+      context: "Supply project-local source, evaluator, data, metric, and guardrail details.",
+      approval_policy: "review_all",
+      tasks: [
+        { id: "literature_methods", instruction: "Review relevant methods", depends_on: [], task_kind: "agent", run_activity: null, capabilities: ["literature_search"], skill_ids: ["literature-review"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null } },
+        { id: "data_audit", instruction: "Audit validation data", depends_on: [], task_kind: "agent", run_activity: null, capabilities: ["project_read", "reasoning"], skill_ids: ["analysis-workflow"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null } },
+        { id: "baseline_analysis", instruction: "Inspect the baseline", depends_on: [], task_kind: "agent", run_activity: null, capabilities: ["project_read", "reasoning"], skill_ids: ["analysis-workflow"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null } },
+        {
+          id: "prepare_contract",
+          instruction: "Freeze and audit the evaluator contract",
+          depends_on: ["literature_methods", "data_audit", "baseline_analysis"],
+          task_kind: "agent",
+          run_activity: null,
+          capabilities: ["code_run"],
+          skill_ids: ["analysis-workflow"],
+          specialist_id: null,
+          output_schema: {
+            type: "object",
+            required: ["method_search_spec_artifact_version_id"],
+            properties: { method_search_spec_artifact_version_id: { type: "string" } },
+          },
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null },
+        },
+        {
+          id: "method_search",
+          instruction: "Run the durable method search",
+          depends_on: ["prepare_contract"],
+          task_kind: "run_activity",
+          run_activity: {
+            activity: "method_search",
+            context_id: "local",
+            input_task_id: "prepare_contract",
+            spec_output_pointer: "method_search_spec_artifact_version_id",
+            max_candidates: 20,
+            max_wall_seconds: 14400,
+            max_evaluator_seconds: 120,
+            max_cost_microunits: 5000000,
+          },
+          capabilities: [],
+          skill_ids: [],
+          specialist_id: null,
+          output_schema: null,
+          isolated: false,
+          model_id: null,
+          executor: null,
+          budget: null,
+        },
+        { id: "verify_finalists", instruction: "Review verified finalists", depends_on: ["method_search"], task_kind: "agent", run_activity: null, capabilities: ["project_read", "review"], skill_ids: [], specialist_id: null, output_schema: { type: "object" }, isolated: false, model_id: null, executor: null, budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null } },
+        { id: "method_report", instruction: "Write the method report", depends_on: ["prepare_contract", "method_search", "verify_finalists"], task_kind: "agent", run_activity: null, capabilities: ["reasoning"], skill_ids: [], specialist_id: null, output_schema: { type: "object" }, isolated: false, model_id: null, executor: null, budget: { max_tokens: 16000, max_tool_calls: 16, max_cost_microunits: null } },
+      ],
+    },
+  };
   let mockWorkflowTemplates: any[] = [{
     id: "literature_evidence_review",
     name: "Literature evidence review",
@@ -378,6 +525,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       ],
     },
   }];
+  mockWorkflowTemplates.push(mockMethodSearchWorkflowTemplate);
   const quickActionSessions: Record<string, string> = {};
   let mockModels = [
     {
@@ -428,6 +576,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       { id: "code_run", display_name: "Code execution", description: "Run bounded project code.", risk: "execute" },
       { id: "review", display_name: "Review", description: "Inspect project evidence without modifying it.", risk: "read_only" },
       { id: "delegation", display_name: "Nested delegation", description: "Create one bounded child batch within root-wide limits.", risk: "read_only" },
+    ],
+    skills: [
+      { id: "analysis-workflow", name: "analysis-workflow", scope: "bundled" },
+      { id: "literature-review", name: "literature-review", scope: "bundled" },
     ],
     models: [
       { id: "default", external: false },
@@ -582,6 +734,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const executeMockDynamicWorkflow = async (snapshot: any) => {
     snapshot.workflow.status = "running";
     for (const task of snapshot.dynamic.tasks) {
+      if (task.result?.status === "succeeded") continue;
       task.result = task.depends_on.length ? null : dynamicResult(task, "running");
     }
     const cancellationDemo = snapshot.workflow.goal.includes("CANCEL DEMO");
@@ -589,12 +742,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     if (snapshot.workflow.status === "cancelled") {
       return { workflow_id: snapshot.workflow.id, status: "cancelled", steps: [] };
     }
-    const partialDemo = snapshot.workflow.goal.includes("PARTIAL DEMO");
+    const partialDemo = snapshot.workflow.goal.includes("PARTIAL DEMO") && !snapshot.partialFailureRecorded;
     let failedTaskId: string | null = null;
     for (const task of snapshot.dynamic.tasks) {
       if (partialDemo && failedTaskId === null) {
         failedTaskId = task.id;
+        snapshot.partialFailureRecorded = true;
         task.result = dynamicResult(task, "failed");
+      } else if (task.result?.status === "succeeded") {
+        continue;
       } else if (failedTaskId && task.depends_on.includes(failedTaskId)) {
         task.result = dynamicResult(task, "blocked", { child_frame_id: null });
       } else {
@@ -651,6 +807,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       snapshot.dynamic.tasks[0].result = dynamicResult(snapshot.dynamic.tasks[0], "running");
       snapshot.dynamic.tasks[1].result = dynamicResult(snapshot.dynamic.tasks[1], "running");
     } else if (kind === "partial") {
+      snapshot.partialFailureRecorded = true;
       snapshot.workflow.status = "failed";
       snapshot.dynamic.tasks[0].result = dynamicResult(snapshot.dynamic.tasks[0], "failed");
       snapshot.dynamic.tasks[1].result = dynamicResult(snapshot.dynamic.tasks[1], "succeeded");
@@ -677,6 +834,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const acpPermissionFrames: Record<string, string> = {};
   const askUserFrames: Record<string, string> = {};
   const acpLongResolvers: Record<string, (value: string) => void> = {};
+  const nativeConfirmResolvers: Record<string, (value: string) => void> = {};
+  (window as any).__nativeConfirmPending = {};
   let mockCredentials: Record<string, boolean> = {
     openalex_api_key: false,
     infinisynapse_api_key: false,
@@ -811,7 +970,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       lastError: null,
     },
   ];
-  const runs = [
+  const runs: any[] = [
     {
       id: "run-kinase-001",
       project_id: "default",
@@ -863,7 +1022,126 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       env_snapshot_json: "{}",
     },
   ];
+  if (query.get("mockLiveRunClock") === "1") {
+    const run = runs.find((item) => item.id === "run-local-002");
+    const now = Math.floor(Date.now() / 1000);
+    Object.assign(run, {
+      created_at: now - 11,
+      started_at: now - 10,
+      last_polled_at: now,
+    });
+  }
+  if (query.get("mockMethodSearch") === "1") {
+    runs.push({
+      id: "method-search-001",
+      project_id: "default",
+      frame_id: "s-complete",
+      context_id: "local",
+      title: "Develop computational method",
+      kind: "method_search",
+      status: "draft",
+      command: null,
+      script_path: null,
+      input_refs_json: "[]",
+      output_specs_json: "[]",
+      created_at: 1783482800,
+      started_at: null,
+      ended_at: null,
+      exit_code: null,
+      stdout_tail: "",
+      stderr_tail: "",
+      remote_workdir: null,
+      remote_handle_json: null,
+      timeout_secs: 14400,
+      last_polled_at: null,
+      last_poll_error: null,
+      progress_json: JSON.stringify({
+        schema: "wisp.method-search-progress.v1",
+        phase: "awaiting_approval",
+        baseline_primary: 0.5372,
+        best_primary: 0.5717,
+        candidate_count: 21,
+        successful_count: 17,
+        failed_count: 4,
+        cost_microunits: 1300000,
+        current_strategy: "diagnostic:residual_slice",
+      }),
+      env_snapshot_json: "{}",
+    });
+  }
   (window as any).__mockRuns = runs;
+  const mockMethodSearchDetails = () => ({
+    run: runs.find((item) => item.id === "method-search-001"),
+    state: {
+      run_id: "method-search-001",
+      spec_artifact_version_id: "spec-version-001",
+      spec_sha256: "a".repeat(64),
+      activity_version: 1,
+      checkpoint_json: "{}",
+      control_state: "run",
+      result_status: null,
+      created_at: 1783482800,
+      updated_at: 1783482800,
+    },
+    spec: {
+      schema: "wisp.method-search.v1",
+      objective: "Improve validation AUPRC without violating runtime limits.",
+      target: {
+        language: "python",
+        source_artifact_version_id: "source-version-001",
+        source_path: "analysis/model.py",
+        symbol: "fit_model",
+      },
+      evaluator: {
+        artifact_version_id: "evaluator-version-001",
+        entry_path: "analysis/evaluate.py",
+        repetitions: 3,
+        timeout_seconds: 120,
+        protocol: "wisp_evaluate_jsonl_v1",
+      },
+      metrics: {
+        primary: "auprc",
+        direction: "maximize",
+        guardrails: [{ metric: "runtime_seconds", op: "lte", value: 120 }],
+      },
+      inputs: [],
+      protected_paths: ["analysis/evaluate.py", "data/validation.csv"],
+      constraints: ["Keep the target signature unchanged."],
+      budget: {
+        max_candidates: 20,
+        max_wall_seconds: 14400,
+        max_evaluator_seconds: 120,
+        max_cost_microunits: 5000000,
+      },
+      final_verification: { artifact_version_id: "holdout-version-001", path: "data/holdout.csv", repetitions: 5 },
+    },
+    audit: {
+      schema: "wisp.method-search-audit.v1",
+      preparationId: "prepare-001",
+      baseline: {
+        repetitions: 3,
+        successful_repetitions: 3,
+        failure_rate: 0,
+        median_primary: 0.5372,
+        spread: 0.001,
+        median_absolute_deviation: 0.0005,
+        noise_floor: 0.002,
+      },
+      sentinelReachable: true,
+      protectedFiles: [{ path: "analysis/evaluate.py", sha256: "b".repeat(64) }],
+      targetSourceSha256: "c".repeat(64),
+      evaluatorArtifactVersionId: "evaluator-version-001",
+      findings: ["Baseline stable across three repetitions."],
+    },
+    auditArtifactVersionId: "audit-version-001",
+    candidates: [
+      { id: "candidate-0", run_id: "method-search-001", parent_candidate_id: null, sequence: 0, strategy_key: "baseline", family: "baseline", status: "succeeded", primary_score: 0.5372, utility: 0.5372, metrics_json: "{}", runtime_ms: 1000, source_sha256: "d".repeat(64), patch_sha256: "e".repeat(64), source_blob_id: "blob-0", patch_blob_id: null, changed_lines: 0, dependency_count: 0, rationale: "Frozen baseline", diagnostic_summary: null, error: null, created_at: 1783482800, finished_at: 1783482801 },
+      { id: "candidate-21", run_id: "method-search-001", parent_candidate_id: "candidate-0", sequence: 21, strategy_key: "diagnostic:residual_slice", family: "ridge", status: "succeeded", primary_score: 0.5717, utility: 0.5717, metrics_json: "{}", runtime_ms: 900, source_sha256: "f".repeat(64), patch_sha256: "1".repeat(64), source_blob_id: "blob-21", patch_blob_id: "patch-21", changed_lines: 8, dependency_count: 0, rationale: "Use robust residual features.", diagnostic_summary: null, error: null, created_at: 1783482900, finished_at: 1783482901 },
+    ],
+    strategies: [{ run_id: "method-search-001", strategy_key: "diagnostic:residual_slice", category: "diagnostic", weight: 1.4, attempts: 4, improvements: 2, cumulative_reward: 3.2, summary: "Residual analysis", source_refs_json: "[]", updated_at: 1783482901 }],
+    outputs: [{ id: "output-selected", run_id: "method-search-001", artifact_version_id: "selected-version-001", role: "selected_method", logical_output_key: "selected_method", source_path: "method-search/selected_method.py", created_at: 1783483000 }],
+    activity: { attempt_id: "attempt-search", run_id: "method-search-001", activity: "method_search", state_json: "{}", created_at: 1783482800, updated_at: 1783482800 },
+  });
   let monitorRunFrameId: string | null = null;
   let resolveMonitorRun: ((frameId: string) => void) | null = null;
   const artifacts = [
@@ -1307,7 +1585,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 items: [
                   { role: "user", text: "Prepare the regression plan", tool_name: null, ok: null },
                   // This is the load_session row produced from the persisted
-                  // plan tool message — `superscience:plan` for ACP, the `propose_plan`
+                  // plan tool message — `wisp:plan` for ACP, the `propose_plan`
                   // result for built-in; LoadedItem::into_chat rebuilds both.
                   {
                     role: "plan",
@@ -1599,6 +1877,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             ];
           case "pick_directory":
             return "/mock/root/new-project";
+          case "pick_executable_file":
+            return "/mock/picked/Rscript";
           case "open_project": {
             const openingProjectId = String(arg("id") ?? "default");
             const delay = nextProjectOpenDelayMs[openingProjectId] ?? 0;
@@ -1615,12 +1895,29 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "create_project":
             activeProjectId = "default";
             return { id: "default", name: project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
-          case "import_project":
+          case "import_project": {
+            const delay = nextProjectTransferDelayMs.import ?? 0;
+            delete nextProjectTransferDelayMs.import;
+            if (delay > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(delay, 40)));
+            emit("project-transfer-progress", {
+              direction: "import", stage: "extracting", completedFiles: 1, totalFiles: 2,
+              completedBytes: 512, totalBytes: 1024, currentPath: "workspace/data/example.tsv",
+            });
+            if (delay > 40) await new Promise((resolve) => setTimeout(resolve, delay - 40));
             return { id: "default", name: project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
+          }
           case "join_synced_project":
             return { id: "other", name: "Other project", workspace_dir: "/mock/other", session_count: 1, updated_at: 2, running_count: 0, needs_you_count: 0 };
-          case "export_project":
-            return "/mock/superscience-project.zip";
+          case "export_project": {
+            const delay = nextProjectTransferDelayMs.export ?? 0;
+            delete nextProjectTransferDelayMs.export;
+            emit("project-transfer-progress", {
+              direction: "export", stage: "writing", completedFiles: 1, totalFiles: 2,
+              completedBytes: 512, totalBytes: 1024, currentPath: "data/example.tsv",
+            });
+            if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+            return "/mock/wisp-project.zip";
+          }
           case "sync_project":
             if ((window as any).__failSyncConflict) {
               (window as any).__failSyncConflict = false;
@@ -1659,19 +1956,91 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               api_url: "https://api.deepseek.com",
               model: "deepseek-v4-pro",
               has_api_key: true,
-              locale: "en",
+              locale: mockLocale,
               max_iter: 100,
+              auto_compact: true,
               max_tokens: 4096,
               reasoning_effort: "",
               supports_vision: true,
               sync_backend: "relay",
-              sync_relay_url: "https://relay.example.test",
+              sync_relay_url: mockSyncUnconfigured ? "" : "https://relay.example.test",
               sync_folder: "",
               sync_relay_token: "",
-              has_sync_relay_token: true,
+              has_sync_relay_token: !mockSyncUnconfigured,
               pet_enabled: mockPetEnabled,
               pet_directory: mockPetDirectory,
             };
+          case "get_context_usage_details":
+            return {
+              system_prompt: "You are superscience.\n\n## Environment\nWindows x86_64",
+              tool_definitions: [
+                { name: "read", description: "Read a file from disk." },
+                { name: "write", description: "Write a file to disk." },
+              ],
+              rules: "## Built-in Rules\n\nVerify before completion.",
+              skills: "## Skills Selection Guidelines\n\nUse use_skill before proceeding.",
+              mcp_dynamic_tools: [
+                { name: "search_mcp_tools", description: "Search configured MCP tools." },
+              ],
+              subagent_definitions: [
+                { name: "explore", description: "Explore the project independently." },
+              ],
+            };
+          case "get_token_usage":
+            return {
+              workspaces: [
+                {
+                  project_id: "default",
+                  name: project.name,
+                  workspace_dir: project.root,
+                  updated_at: Math.floor(Date.now() / 1000),
+                  session_count: 23,
+                  input: 120000,
+                  output: 30000,
+                  reasoning: 8000,
+                  cached: 90000,
+                },
+                {
+                  project_id: "other",
+                  name: "Other project",
+                  workspace_dir: "/mock/other",
+                  updated_at: Math.floor(Date.now() / 1000) - 3600,
+                  session_count: 2,
+                  input: 20000,
+                  output: 5000,
+                  reasoning: 1000,
+                  cached: 12000,
+                },
+              ],
+              days: Array.from({ length: 371 }, (_, index) => {
+                const date = new Date(Date.UTC(2025, 7, 4 + index));
+                return {
+                  date: date.toISOString().slice(0, 10),
+                  tokens: index % 9 === 0 ? (index + 1) * 75 : 0,
+                  future: index > 366,
+                };
+              }),
+              models: [
+                { model: "deepseek-v4-pro", tokens: 120000 },
+                { model: "opus-4.8", tokens: 30000 },
+              ],
+            };
+          case "get_session_token_usage": {
+            const projectId = String(arg("projectId") ?? "default");
+            const total = projectId === "default" ? 23 : 2;
+            const offset = Math.max(0, Number(arg("offset") ?? 0));
+            const limit = Math.max(1, Number(arg("limit") ?? 20));
+            const items = Array.from({ length: total }, (_, index) => ({
+              id: `${projectId}-usage-${index + 1}`,
+              title: `${projectId === "default" ? "Workspace" : "Other"} session ${index + 1}`,
+              updated_at: Math.floor(Date.now() / 1000) - index * 60,
+              input: 5000 + index,
+              output: 1000 + index,
+              reasoning: 200 + index,
+              cached: 3000 + index,
+            }));
+            return { items: items.slice(offset, offset + limit), total };
+          }
           case "get_pet":
             return {
               enabled: mockPetEnabled,
@@ -1693,6 +2062,22 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "list_models":
             return mockModels;
+          case "get_storage_usage":
+            return {
+              data_dir: "C:\\mock\\AppData\\superscience",
+              projects: [
+                { id: "default", name: project.name, path: project.root, bytes: 96 * 1024 * 1024 },
+                { id: "other", name: "Other project", path: "/mock/other", bytes: 24 * 1024 * 1024 },
+              ],
+              entries: [
+                { key: "database", bytes: 23 * 1024 * 1024 },
+                { key: "python", bytes: 428 * 1024 * 1024 },
+                { key: "plugins", bytes: 5632 * 1024 },
+                { key: "workspace", bytes: 120 * 1024 * 1024 },
+                { key: "other", bytes: 300 * 1024 },
+              ],
+              total_bytes: (23 + 428 + 120) * 1024 * 1024 + 5632 * 1024 + 300 * 1024,
+            };
           case "get_session_model": {
             const sessionId = String(arg("sessionId") ?? "");
             return sessionModels[sessionId] ?? activeHttpModelId();
@@ -1701,6 +2086,29 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return mockAcpAgents;
           case "get_dynamic_agent_options":
             return mockDynamicAgentOptions;
+          case "plan_skill_portfolio":
+            return {
+              plan: {
+                planner_model_id: String(plain(arg("request") ?? {}).model_id ?? "default"),
+                planner_model_label: String(plain(arg("request") ?? {}).model_id) === "opus" ? "opus-4.8" : "deepseek-v4-pro",
+                rationale: "Literature and analysis should run before evidence-grounded synthesis.",
+                tasks: [
+                  { id: "literature", rationale: "Find and verify published evidence.", skill_ids: ["literature-review"], depends_on: [] },
+                  { id: "analysis", rationale: "Analyze the research question using the reproducible workflow.", skill_ids: ["analysis-workflow"], depends_on: [] },
+                  { id: "synthesis", rationale: "Identify gaps only after both evidence streams finish.", skill_ids: [], depends_on: ["literature", "analysis"] },
+                ],
+              },
+              proposal: {
+                goal: "Design an evidence-grounded oncology study",
+                context: "Design an oncology omics study",
+                approval_policy: "review_all",
+                tasks: [
+                  { id: "literature", instruction: "Review the published evidence", depends_on: [], capabilities: ["literature_search"], skill_ids: ["literature-review"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: null },
+                  { id: "analysis", instruction: "Plan a reproducible analysis", depends_on: [], capabilities: ["code_run"], skill_ids: ["analysis-workflow"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: null },
+                  { id: "synthesis", instruction: "Synthesize the evidence and identify gaps", depends_on: ["literature", "analysis"], capabilities: ["reasoning"], skill_ids: [], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: null },
+                ],
+              },
+            };
           case "list_quick_actions":
             return mockQuickActions;
           case "list_workflow_templates":
@@ -1849,7 +2257,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (!snapshot.delegation_enabled) throw new Error("Sub-Agent delegation is off for this conversation.");
             snapshot.workflow.status = "approved";
             snapshot.workflow.version += 1;
-            for (const task of snapshot.dynamic.tasks) task.result = null;
+            const overrides = arg("budgetOverrides") ?? {};
+            for (const task of snapshot.dynamic.tasks) {
+              if (overrides[task.id]?.max_tokens) {
+                task.budget.max_tokens = overrides[task.id].max_tokens;
+              }
+              if (task.result?.status !== "succeeded") task.result = null;
+            }
             if (snapshot.workflow.mode === "automatic") {
               void executeMockDynamicWorkflow(snapshot);
             }
@@ -1868,9 +2282,38 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               attempt: 1,
               status: task.result.status,
               response: {
-                task_id: task.id,
-                summary: task.result.summary,
-                evidence: [`evidence-for-${task.id}`],
+                request_id: `request-${task.id}`,
+                status: task.result.status,
+                output: {
+                  task_id: task.id,
+                  summary: task.result.summary,
+                  files_changed: [`reports/${task.id}.md`],
+                  diff_summary: `Created the ${task.id} report.`,
+                  artifacts: [{
+                    name: `${task.id}.md`,
+                    kind: "markdown",
+                    content: `# ${task.id} result\n\nReadable result content for **${task.id}**.`,
+                  }],
+                  evidence: [`evidence-for-${task.id}`],
+                  tests: ["Structure check passed"],
+                  risks: ["Mock evidence only"],
+                },
+                artifact_ids: [`declared:${task.id}.md`],
+                artifacts: [{
+                  id: `declared:${task.id}.md`,
+                  name: `${task.id}.md`,
+                  kind: "markdown",
+                  path: null,
+                }],
+                evidence: [{
+                  kind: "agent",
+                  summary: `evidence-for-${task.id}`,
+                  reference: null,
+                }],
+                usage: { input_tokens: 900, output_tokens: 240, tool_calls: 3, cost_microunits: 19000 },
+                agent_session_id: null,
+                child_frame_id: `agent-child-${task.id}`,
+                error: null,
               },
             };
           }
@@ -2220,6 +2663,46 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "list_runs":
             return runs;
+          case "get_method_search_run":
+            return mockMethodSearchDetails();
+          case "start_method_search": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run || run.kind !== "method_search" || run.status !== "draft") {
+              throw new Error("Method-search Run could not start");
+            }
+            run.status = "submitted";
+            run.started_at = Math.floor(Date.now() / 1000);
+            run.progress_json = JSON.stringify({
+              ...JSON.parse(run.progress_json),
+              phase: "search",
+            });
+            return mockMethodSearchDetails();
+          }
+          case "pause_method_search": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run || !["submitted", "running"].includes(run.status)) {
+              throw new Error("Method-search Run is not running");
+            }
+            run.status = "paused";
+            return mockMethodSearchDetails();
+          }
+          case "resume_method_search": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run || run.status !== "paused") {
+              throw new Error("Method-search Run is not paused");
+            }
+            run.status = "submitted";
+            return mockMethodSearchDetails();
+          }
+          case "cancel_method_search": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run || run.kind !== "method_search") {
+              throw new Error("Method-search Run does not exist");
+            }
+            run.status = "cancelled";
+            run.ended_at = Math.floor(Date.now() / 1000);
+            return mockMethodSearchDetails();
+          }
           case "cancel_run": {
             const run = runs.find((r) => r.id === (arg("runId") ?? arg("run_id")));
             if (run) {
@@ -2294,8 +2777,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return {
               skills,
               mcp_servers: ["mcp_bio", "mcp_chem"],
-              memory_files: [{ name: "2026-07-01.md", preview: "User prefers DeepSeek.", bytes: 128 }],
+              memory_files: memoryFilesFor(activeProjectId),
               project,
+              skill_counts: { bundled: 2, project: 1 },
+              mcp_counts: { bundled: 2, project: 1 },
             };
           case "list_skills":
             return [
@@ -2341,7 +2826,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "pick_skill_source":
             return query.get("mockSkillImport") === "1"
-              ? "/downloads/paper-narrative/SKILL.md"
+              ? "/downloads/paper-narrative.zip"
               : null;
           case "install_skill":
             return "paper-narrative";
@@ -2653,7 +3138,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return { path, mime: "text/markdown", text: "# Draft manuscript\n\nOriginal body paragraph.\n", base64: null };
             }
             if (path.toLowerCase().includes(".json")) {
-              return { path, mime: "application/json", text: '{"model":{"name":"superscience","enabled":true}}', base64: null };
+              return { path, mime: "application/json", text: '{"model":{"name":"wisp","enabled":true}}', base64: null };
             }
             if (path.toLowerCase().includes(".html")) {
               return { path, mime: "text/html", text: '<style>#mode::after{content:"Desktop"}@media(max-width:900px){#mode::after{content:"Mobile"}}</style><div id="mode"></div>', base64: null };
@@ -2697,7 +3182,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return {
                 path: "artifact-version:resource-version-bib",
                 mime: "text/x-bibtex",
-                text: "@article{superscience,\n  title = {SuperScience}\n}",
+                text: "@article{wisp,\n  title = {Wisp Science}\n}",
                 base64: null,
               };
             }
@@ -2758,6 +3243,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const next = plain(arg("settings") ?? {});
             mockPetEnabled = Boolean(next.pet_enabled);
             mockPetDirectory = String(next.pet_directory ?? "");
+            mockLocale = String(next.locale ?? mockLocale);
+            (window as any).__lastSetSettings = next;
             return null;
           }
           case "check_for_updates":
@@ -2784,9 +3271,14 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               data: { chunk_length: 25 },
             });
             if (mockUpdateDownloadPending) {
+              (window as any).__mockUpdateProgress = (chunkLength: number) => onEvent?.onmessage?.({
+                event: "progress",
+                data: { chunk_length: chunkLength },
+              });
               await new Promise<void>((resolve) => {
                 resolveMockUpdateDownload = resolve;
               });
+              delete (window as any).__mockUpdateProgress;
               mockUpdateDownloadPending = false;
             }
             if (mockUpdateDownloadError) {
@@ -2816,10 +3308,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               : "Validated openai with deepseek-v4-pro";
           }
           case "get_memory_view":
-            return { enabled: memoryEnabled, today_file: "2026-07-04.md", files: memoryFiles };
+            return memoryViewFor(resolveMemoryProjectId(args, arg));
           case "set_memory_enabled":
-            memoryEnabled = !!args?.enabled;
-            return { enabled: memoryEnabled, today_file: "2026-07-04.md", files: memoryFiles };
+            memoryEnabled = !!(arg("enabled") ?? args?.enabled);
+            return memoryViewFor(resolveMemoryProjectId(args, arg));
           case "get_auto_review_enabled":
             return autoReviewEnabled;
           case "set_auto_review_enabled":
@@ -2873,12 +3365,34 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             sessionAgentCompletion[sessionId] = value;
             return value;
           }
-          case "write_memory_file":
-          case "delete_memory_file":
-          case "clear_memory":
-            return memoryFiles;
+          case "write_memory_file": {
+            const name = String(arg("name") ?? "");
+            const content = String(arg("content") ?? "");
+            const files = memoryFilesFor(resolveMemoryProjectId(args, arg));
+            const existing = files.find((file) => file.name === name);
+            if (existing) {
+              existing.preview = content.slice(0, 240);
+              existing.bytes = content.length;
+            } else if (name) {
+              files.push({ name, preview: content.slice(0, 240), bytes: content.length });
+            }
+            return files;
+          }
+          case "delete_memory_file": {
+            const projectId = resolveMemoryProjectId(args, arg);
+            memoryByProject[projectId] = memoryFilesFor(projectId).filter(
+              (file) => file.name !== arg("name"),
+            );
+            return memoryFilesFor(projectId);
+          }
+          case "clear_memory": {
+            const projectId = resolveMemoryProjectId(args, arg);
+            memoryByProject[projectId] = [];
+            return memoryFilesFor(projectId);
+          }
           case "read_memory_file":
-            return "User prefers DeepSeek.\n";
+            return memoryFilesFor(resolveMemoryProjectId(args, arg))
+              .find((file) => file.name === arg("name"))?.preview ?? "";
           case "new_session": {
             const id = `s-${Math.random().toString(36).slice(2)}`;
             sessionModels[id] = activeHttpModelId();
@@ -2927,7 +3441,24 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             return `Side answer: ${question}`;
           }
-          case "confirm_response":
+          case "confirm_response": {
+            const frameId = String(arg("sessionId") ?? "");
+            const resolve = nativeConfirmResolvers[frameId];
+            if (resolve) {
+              delete nativeConfirmResolvers[frameId];
+              (window as any).__nativeConfirmPending[frameId] = false;
+              emit("agent", {
+                kind: "ToolResult",
+                frame_id: frameId,
+                name: "shell",
+                ok: Boolean(arg("approved")),
+                content: arg("approved") ? "approved" : "denied",
+              });
+              emit("agent", { kind: "Done", frame_id: frameId, stop_reason: "end_turn" });
+              resolve(frameId);
+            }
+            return null;
+          }
           case "dismiss_onboarding":
             return null;
           case "stop_session":
@@ -3062,6 +3593,22 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               );
               return fid;
             }
+            if (String(arg("message") ?? "").includes("BLOCKINGCONFIRM")) {
+              setTimeout(
+                () =>
+                  emit("confirm-request", {
+                    frame_id: fid,
+                    message: "Dangerous command detected:\nRemove generated files?",
+                    tool: "shell",
+                    preview: "Remove-Item generated.tmp",
+                  }),
+                50,
+              );
+              (window as any).__nativeConfirmPending[fid] = true;
+              return await new Promise<string>((resolve) => {
+                nativeConfirmResolvers[fid] = resolve;
+              });
+            }
             if (String(arg("message") ?? "").includes("NEEDCONFIRM")) {
               const longBody = Array.from({ length: 120 }, (_, i) => `rm -rf /mock/path/line-${i}`).join("\n");
               setTimeout(
@@ -3091,17 +3638,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             // Long-stream path (#61 regression test): drip many text deltas so the
             // thread re-renders repeatedly and grows well past the viewport.
-            // Pad each line — markdown collapses lone newlines into spaces, so
-            // short `line N` tokens alone can still fit a 720p chat pane.
             if (String(arg("message") ?? "").includes("SCROLLTEST")) {
               let n = 0;
               const tick = () => {
                 if (n < 80) {
-                  emit("agent", {
-                    kind: "Text",
-                    frame_id: fid,
-                    delta: `line ${n} ${"x".repeat(96)}\n\n`,
-                  });
+                  emit("agent", { kind: "Text", frame_id: fid, delta: `line ${n}\n` });
                   n++;
                   setTimeout(tick, 6);
                 } else {
@@ -3133,6 +3674,53 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                   cached: 0,
                   ctx_tokens: 110,
                   max_context: 8_000,
+                });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
+            if (String(arg("message") ?? "").includes("CONTEXTUSAGELEGACY")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Legacy usage totals only." });
+                emit("agent", {
+                  kind: "Usage",
+                  frame_id: fid,
+                  round: 1,
+                  input: 25_000,
+                  output: 400,
+                  reasoning: 0,
+                  cached: 0,
+                  ctx_tokens: 25_400,
+                  max_context: 1_000_000,
+                });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
+            if (String(arg("message") ?? "").includes("CONTEXTUSAGE")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Context usage is ready." });
+                emit("agent", {
+                  kind: "Usage",
+                  frame_id: fid,
+                  round: 1,
+                  input: 79_200,
+                  output: 700,
+                  reasoning: 0,
+                  cached: 50_000,
+                  ctx_tokens: 79_900,
+                  max_context: 300_000,
+                  context_usage: {
+                    system_prompt: 6_000,
+                    tool_definitions: 22_700,
+                    rules: 2_200,
+                    skills: 6_100,
+                    mcp_dynamic_tools: 4_200,
+                    subagent_definitions: 2_400,
+                    conversation: 36_300,
+                  },
                 });
                 emit("agent", { kind: "Done", frame_id: fid });
               }, 30);
@@ -3243,6 +3831,24 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                   emit("agent", { kind: "Done", frame_id: fid });
                   resolve(fid);
                 }, 3_100);
+              });
+            }
+            if (String(arg("message") ?? "").includes("RZSTREAM")) {
+              // Staggered reasoning deltas keep rebuilding the fingerprint-keyed
+              // chat row; the expanded thinking block must not snap shut.
+              return await new Promise<string>((resolve) => {
+                setTimeout(() => {
+                  emit("agent", { kind: "User", frame_id: fid, text: msg });
+                  emit("agent", { kind: "Reasoning", frame_id: fid, delta: "First thought." });
+                }, 30);
+                setTimeout(() => {
+                  emit("agent", { kind: "Reasoning", frame_id: fid, delta: " More reasoning arrives." });
+                }, 1_200);
+                setTimeout(() => {
+                  emit("agent", { kind: "Text", frame_id: fid, delta: "Stream done." });
+                  emit("agent", { kind: "Done", frame_id: fid });
+                  resolve(fid);
+                }, 1_500);
               });
             }
             if (String(arg("message") ?? "").includes("RNOTEBOOK")) {
@@ -3435,7 +4041,7 @@ export function parallelMock(): void {
       windowListeners[event]?.({ payload });
     } catch { /* not registered yet */ }
   };
-  const sessions: { id: string; title: string; ts: number }[] = [];
+  const sessions: { id: string; title: string; ts: number; folder_id: string | null }[] = [];
   const folders: { id: string; name: string }[] = [];
   const queues: Record<string, Promise<void>> = {};
 
@@ -3486,6 +4092,7 @@ export function parallelMock(): void {
             status: "complete",
           }));
           case "pick_directory": return "/mock/root/new-project";
+          case "pick_executable_file": return "/mock/picked/Rscript";
           case "open_project":
           case "create_project":
             return { id: "default", name: project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
@@ -3513,6 +4120,7 @@ export function parallelMock(): void {
             label: "deepseek-v4-pro",
             has_api_key: true,
             locale: "en",
+            auto_compact: true,
             supports_vision: true,
             sync_backend: "relay",
             sync_relay_url: "https://relay.example.test",
@@ -3556,7 +4164,11 @@ export function parallelMock(): void {
             if (index >= 0) sessions.splice(index, 1);
             return null;
           }
-          case "move_session": return null;
+          case "move_session": {
+            const session = sessions.find((entry) => entry.id === arg("id"));
+            if (session) session.folder_id = (arg("folderId") as string | null) ?? null;
+            return null;
+          }
           case "transfer_session_to_project": {
             if (arg("mode") === "move") {
               const index = sessions.findIndex((entry) => entry.id === arg("id"));
@@ -3584,7 +4196,7 @@ export function parallelMock(): void {
             const msg = (args && args.message) || "";
             const run = async () => {
               if (!sessions.some((s) => s.id === fid)) {
-                sessions.push({ id: fid, title: msg, ts: Date.now() });
+                sessions.push({ id: fid, title: msg, ts: Date.now(), folder_id: null });
               }
               emit("agent", { kind: "User", frame_id: fid, text: msg });
               emit("agent", { kind: "Text", frame_id: fid, delta: `echo:${msg}` });

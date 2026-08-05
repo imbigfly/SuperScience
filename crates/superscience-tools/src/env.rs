@@ -3,6 +3,32 @@
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
+/// A host-owned resource lease held for one complete tool call.
+///
+/// The tools crate deliberately does not know how the desktop coordinates
+/// projects or conversations. Hosts that do coordinate them return a lease
+/// whose release callback removes the active claim when the tool finishes,
+/// fails, or is cancelled. Headless hosts keep the default `None` behavior.
+pub struct ToolResourceLease {
+    release: Option<Box<dyn FnOnce() + Send + 'static>>,
+}
+
+impl ToolResourceLease {
+    pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            release: Some(Box::new(release)),
+        }
+    }
+}
+
+impl Drop for ToolResourceLease {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            release();
+        }
+    }
+}
+
 /// Events a tool emits to the UI as it runs (tool-call card, diff preview,
 /// live stdout, result tick).
 #[derive(Debug, Clone)]
@@ -106,6 +132,16 @@ pub trait ToolEnv: Send + Sync {
     async fn approval_mode(&self, _tool: &str) -> Approval {
         Approval::Allow
     }
+    /// Acquire any cross-conversation resources needed by this call. The
+    /// registry holds the returned lease across `before` and `run`, so a host
+    /// can make a read-modify-write tool one indivisible coordinated action.
+    async fn acquire_tool_resources(
+        &self,
+        _tool: &str,
+        _args: &serde_json::Value,
+    ) -> Result<Option<ToolResourceLease>, String> {
+        Ok(None)
+    }
     /// Whether approval prompts should be bypassed for this conversation.
     /// Explicit host `Deny` rules and hard safety boundaries still win. This is
     /// stronger than returning [`Approval::Allow`]: it also suppresses a
@@ -155,6 +191,18 @@ pub struct ToolResult {
     pub success: bool,
     pub content: String,
     pub image: Option<ImageData>,
+    /// Code-level control flow for the agent loop. This keeps user-decision
+    /// boundaries out of prompt wording: stale sibling calls can be skipped,
+    /// and tools such as `ask_user` can end the turn outright.
+    pub control: ToolControl,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolControl {
+    #[default]
+    Continue,
+    StopBatch,
+    StopTurn,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +219,7 @@ impl ToolResult {
             success: true,
             content: content.into(),
             image: None,
+            control: ToolControl::Continue,
         }
     }
     pub fn fail(content: impl Into<String>) -> Self {
@@ -178,6 +227,7 @@ impl ToolResult {
             success: false,
             content: content.into(),
             image: None,
+            control: ToolControl::Continue,
         }
     }
     pub fn image(img: ImageData) -> Self {
@@ -186,6 +236,19 @@ impl ToolResult {
             success: true,
             content: label,
             image: Some(img),
+            control: ToolControl::Continue,
         }
+    }
+    /// Skip tool calls that the model placed later in the same batch, then let
+    /// the model react to this result in a fresh iteration.
+    pub fn stop_batch(mut self) -> Self {
+        self.control = ToolControl::StopBatch;
+        self
+    }
+    /// Skip later calls in the batch and return control to the user without
+    /// issuing another model request.
+    pub fn stop_turn(mut self) -> Self {
+        self.control = ToolControl::StopTurn;
+        self
     }
 }

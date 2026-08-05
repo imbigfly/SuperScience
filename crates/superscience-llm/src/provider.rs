@@ -50,6 +50,29 @@ pub enum LlmError {
 
 pub type Result<T> = std::result::Result<T, LlmError>;
 
+impl LlmError {
+    /// Provider rejected the request because the assembled prompt exceeds the
+    /// model context window.
+    pub fn is_context_overflow(&self) -> bool {
+        match self {
+            LlmError::Api { status, body } if matches!(*status, 400 | 413) => {
+                let lower = body.to_ascii_lowercase();
+                lower.contains("context length")
+                    || lower.contains("maximum context")
+                    || lower.contains("too many tokens")
+                    || lower.contains("context window")
+                    || lower.contains("prompt is too long")
+                    || lower.contains("token limit")
+                    || lower.contains("context_length_exceeded")
+                    || lower.contains("max context")
+                    || lower.contains("entity too large")
+                    || lower.contains("request entity too large")
+            }
+            _ => false,
+        }
+    }
+}
+
 /// True for transient provider failures worth retrying (rate limits, overload, 5xx).
 pub fn is_retriable(err: &LlmError) -> bool {
     match err {
@@ -323,5 +346,24 @@ mod tests {
         );
         assert!(!stream_was_cut(false, true), "user Stop is not a cut");
         assert!(!stream_was_cut(true, true));
+    }
+
+    #[test]
+    fn context_overflow_is_detected_from_provider_errors() {
+        assert!(LlmError::Api {
+            status: 400,
+            body: "maximum context length exceeded".into()
+        }
+        .is_context_overflow());
+        assert!(LlmError::Api {
+            status: 413,
+            body: "Request Entity Too Large".into()
+        }
+        .is_context_overflow());
+        assert!(!LlmError::Api {
+            status: 429,
+            body: "rate_limit".into()
+        }
+        .is_context_overflow());
     }
 }

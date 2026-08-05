@@ -34,6 +34,13 @@ OOXML validation as local previews. The remote size check runs before transfer;
 Office archives are then checked locally for entry count, expanded size,
 compression ratio, unsafe paths, macros, ActiveX, and embedded OLE content.
 
+Large text, code, CSV, and log previews (local or remote) load only a bounded
+head — about 1 MiB by default, and at most 8 000 rendered lines in the UI —
+instead of the whole file. Remote text uses an SSH `head`/`dd` sample plus the
+real file size so a multi-GB MEDLINE dump never crosses the wire just for a
+preview. The UI shows a short note when content is truncated. Binary and office
+previews still require a complete under-budget payload.
+
 ## Manual smoke test
 
 1. Register or import an SSH host, **Probe** it successfully with the configured

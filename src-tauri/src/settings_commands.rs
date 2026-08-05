@@ -7,11 +7,18 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use tauri::State;
 use superscience_llm::Message;
 use superscience_store::secrets::Secret;
-use tauri::State;
 
 const SYNC_RELAY_TOKEN: &str = "sync_relay_token";
+
+#[derive(serde::Serialize)]
+pub(super) struct TokenUsageOverview {
+    workspaces: Vec<superscience_store::ProjectTokenUsage>,
+    days: Vec<superscience_store::TokenUsageDay>,
+    models: Vec<superscience_store::ModelTokenUsage>,
+}
 
 async fn validate_provider_config(
     provider_name: &str,
@@ -114,6 +121,7 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         .flatten()
         .unwrap_or_default();
     let notifications_enabled = super::load_notifications_enabled(&state.store).await;
+    let auto_compact = super::load_auto_compact_enabled(&state.store).await;
     let proxy_url = state
         .store
         .get_setting("proxy_url")
@@ -130,6 +138,7 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         locale,
         workspace_dir,
         max_iter,
+        auto_compact,
         max_tokens,
         reasoning_effort,
         proxy_url,
@@ -203,7 +212,7 @@ pub(super) async fn set_settings(
         load_pet_asset(Path::new(pet_directory))?;
     }
     tracing::info!(
-        target: "superscience",
+        target: "wisp",
         provider = %provider,
         api_url = %api_url,
         model = %model,
@@ -291,6 +300,11 @@ pub(super) async fn set_settings(
         .map_err(|e| e.to_string())?;
     state
         .store
+        .set_setting("auto_compact", &settings.auto_compact.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
         .set_setting("proxy_url", proxy_url)
         .await
         .map_err(|e| e.to_string())?;
@@ -355,7 +369,7 @@ pub(super) async fn add_custom_credential(
 ) -> Result<models::CustomCredentialStatus, String> {
     let credential = models::add_custom_credential(&state.store, &name, &env_var, &value).await?;
     tracing::info!(
-        target: "superscience",
+        target: "wisp",
         id = %credential.id,
         env_var = %credential.env_var,
         "added custom credential"
@@ -370,7 +384,7 @@ pub(super) async fn remove_custom_credential(
     id: String,
 ) -> Result<(), String> {
     models::remove_custom_credential(&state.store, &id).await?;
-    tracing::info!(target: "superscience", id = %id, "removed custom credential");
+    tracing::info!(target: "wisp", id = %id, "removed custom credential");
     clear_idle_agents(&state).await;
     Ok(())
 }
@@ -542,7 +556,7 @@ pub(super) async fn set_credential(
     if id == "scimaster_api_key" {
         sync_scimaster_config(&value)?;
     }
-    tracing::info!(target: "superscience", id = %id, present = !value.is_empty(), "saving credential");
+    tracing::info!(target: "wisp", id = %id, present = !value.is_empty(), "saving credential");
     models::store_credential(&id, &value)?;
     // Respawn kernels/MCP on the next turn so they inherit the new env.
     clear_idle_agents(&state).await;
@@ -581,7 +595,7 @@ pub(super) async fn validate_settings(
     )?;
 
     tracing::info!(
-        target: "superscience",
+        target: "wisp",
         provider = %provider_name,
         api_url = %settings.api_url,
         model = %settings.model,
@@ -593,15 +607,15 @@ pub(super) async fn validate_settings(
     )
     .await
     .map_err(|_| {
-        tracing::warn!(target: "superscience", "settings validation timed out");
+        tracing::warn!(target: "wisp", "settings validation timed out");
         "Validation timed out after 30s".to_string()
     })?;
     if let Err(e) = result {
-        tracing::warn!(target: "superscience", error = %e, vision = settings.supports_vision, "settings validation failed");
+        tracing::warn!(target: "wisp", error = %e, vision = settings.supports_vision, "settings validation failed");
         return Err(e);
     }
 
-    tracing::info!(target: "superscience", "settings validation succeeded");
+    tracing::info!(target: "wisp", "settings validation succeeded");
     Ok(format!(
         "Validated {} with {}",
         provider_name, settings.model
@@ -632,7 +646,8 @@ fn vision_probe_message() -> Message {
 #[cfg(test)]
 mod tests {
     use super::{
-        merged_scimaster_config, sync_scimaster_config_at, validate_max_iter, vision_probe_message,
+        collect_storage_usage, merged_scimaster_config, sync_scimaster_config_at,
+        validate_max_iter, vision_probe_message,
     };
     use std::{
         fs,
@@ -684,7 +699,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "superscience-scimaster-config-test-{}-{unique}",
+            "wisp-scimaster-config-test-{}-{unique}",
             std::process::id()
         ));
         let path = dir.join("config.json");
@@ -705,6 +720,48 @@ mod tests {
         assert_eq!(v["defaults"]["mode"], "mid");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn storage_usage_keeps_project_workspaces_separate() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "wisp-storage-usage-test-{}-{unique}",
+            std::process::id()
+        ));
+        let app_data = root.join("app");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&app_data).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(app_data.join("superscience.sqlite"), [0u8; 3]).unwrap();
+        fs::write(workspace.join("results.csv"), [0u8; 7]).unwrap();
+
+        let usage = collect_storage_usage(
+            app_data,
+            vec![
+                ("a".into(), "Alpha".into(), workspace.clone()),
+                ("b".into(), "Beta".into(), workspace.clone()),
+            ],
+        );
+
+        assert_eq!(usage["projects"][0]["name"], "Alpha");
+        assert_eq!(usage["projects"][0]["bytes"], 7);
+        assert_eq!(usage["projects"][1]["name"], "Beta");
+        assert_eq!(usage["projects"][1]["bytes"], 7);
+        assert_eq!(
+            usage["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["key"] == "workspace")
+                .unwrap()["bytes"],
+            7
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
 
@@ -750,72 +807,121 @@ fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
+fn collect_storage_usage(
+    app_data: PathBuf,
+    projects: Vec<(String, String, PathBuf)>,
+) -> serde_json::Value {
+    let project_dirs = projects
+        .iter()
+        .map(|(_, _, root)| root.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let project_sizes = project_dirs
+        .iter()
+        .map(|root| (root.clone(), dir_size(root)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let (mut database, mut python, mut plugins, mut other) = (0u64, 0u64, 0u64, 0u64);
+    for entry in fs::read_dir(&app_data).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let bytes = if entry.path().is_dir() {
+            dir_size(&entry.path())
+        } else {
+            entry.metadata().map(|meta| meta.len()).unwrap_or(0)
+        };
+        match name.as_str() {
+            name if name.contains(".sqlite") => database += bytes,
+            "python" => python += bytes,
+            "plugins" | "plugin-staging" | "plugin-downloads" => plugins += bytes,
+            _ => other += bytes,
+        }
+    }
+    let workspace = project_dirs
+        .iter()
+        .filter(|root| !root.starts_with(&app_data))
+        .map(|root| project_sizes.get(root).copied().unwrap_or_default())
+        .sum();
+    let entries = [
+        ("database", database),
+        ("python", python),
+        ("plugins", plugins),
+        ("workspace", workspace),
+        ("other", other),
+    ];
+
+    json!({
+        "data_dir": app_data.to_string_lossy(),
+        "projects": projects
+            .into_iter()
+            .map(|(id, name, path)| json!({
+                "id": id,
+                "name": name,
+                "path": path.to_string_lossy(),
+                "bytes": project_sizes.get(&path).copied().unwrap_or_default(),
+            }))
+            .collect::<Vec<_>>(),
+        "entries": entries
+            .iter()
+            .map(|(key, bytes)| json!({ "key": key, "bytes": bytes }))
+            .collect::<Vec<_>>(),
+        "total_bytes": entries.iter().map(|(_, bytes)| bytes).sum::<u64>(),
+    })
+}
+
 #[tauri::command]
 pub(super) async fn get_storage_usage(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let app_data = state.app_data.clone();
-    // Every project workspace, deduped; roots inside app_data would double
-    // count the scan below, so they are skipped.
-    let workspace_dirs: Vec<PathBuf> = state
+    let projects = state
         .store
         .list_projects()
         .await
         .map_err(|error| error.to_string())?
         .into_iter()
-        .map(|(_, _, root, ..)| PathBuf::from(root))
-        .filter(|root| !root.as_os_str().is_empty() && !root.starts_with(&app_data))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
+        .map(|(id, name, root, ..)| (id, name, PathBuf::from(root)))
+        .filter(|(_, _, root)| !root.as_os_str().is_empty())
         .collect();
-    tokio::task::spawn_blocking(move || {
-        let (mut database, mut python, mut plugins, mut other) = (0u64, 0u64, 0u64, 0u64);
-        for entry in fs::read_dir(&app_data).into_iter().flatten().flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let bytes = if entry.path().is_dir() {
-                dir_size(&entry.path())
-            } else {
-                entry.metadata().map(|meta| meta.len()).unwrap_or(0)
-            };
-            match name.as_str() {
-                name if name.contains(".sqlite") => database += bytes,
-                "python" => python += bytes,
-                "plugins" | "plugin-staging" | "plugin-downloads" => plugins += bytes,
-                _ => other += bytes,
-            }
-        }
-        let workspace: u64 = workspace_dirs.iter().map(|dir| dir_size(dir)).sum();
-        let entries = [
-            ("database", database),
-            ("python", python),
-            ("plugins", plugins),
-            ("workspace", workspace),
-            ("other", other),
-        ];
-        Ok(json!({
-            "data_dir": app_data.to_string_lossy(),
-            "workspace_dirs": workspace_dirs
-                .iter()
-                .map(|dir| dir.to_string_lossy())
-                .collect::<Vec<_>>(),
-            "entries": entries
-                .iter()
-                .map(|(key, bytes)| json!({ "key": key, "bytes": bytes }))
-                .collect::<Vec<_>>(),
-            "total_bytes": entries.iter().map(|(_, bytes)| bytes).sum::<u64>(),
-        }))
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    tokio::task::spawn_blocking(move || collect_storage_usage(app_data, projects))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub(super) async fn get_token_usage(
     state: State<'_, AppState>,
-) -> Result<Vec<superscience_store::SessionTokenUsage>, String> {
+) -> Result<TokenUsageOverview, String> {
+    let workspaces = state
+        .store
+        .token_usage_by_project()
+        .await
+        .map_err(|error| error.to_string())?;
+    let days = state
+        .store
+        .token_usage_activity()
+        .await
+        .map_err(|error| error.to_string())?;
+    let models = state
+        .store
+        .token_usage_by_model()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(TokenUsageOverview {
+        workspaces,
+        days,
+        models,
+    })
+}
+
+#[tauri::command]
+pub(super) async fn get_session_token_usage(
+    state: State<'_, AppState>,
+    project_id: String,
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<superscience_store::SessionTokenUsagePage, String> {
     state
         .store
-        .token_usage_by_session()
+        .token_usage_by_session(&project_id, offset.unwrap_or(0), limit.unwrap_or(20))
         .await
         .map_err(|error| error.to_string())
 }

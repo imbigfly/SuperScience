@@ -16,7 +16,7 @@ use crate::text::{
 use crate::window_capture_escape;
 use leptos::*;
 use serde_wasm_bindgen::to_value;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use wasm_bindgen::JsValue;
 
 /// Pending "确定删除?" confirmation. Both models and ACP agents route through
@@ -66,6 +66,290 @@ fn storage_entry_label_key(key: &str) -> &'static str {
         "plugins" => "settings.storage.plugins",
         "workspace" => "settings.storage.workspace",
         _ => "settings.storage.other",
+    }
+}
+
+const USAGE_SESSION_PAGE_SIZE: usize = 20;
+const USAGE_MODEL_COLORS: [&str; 8] = [
+    "#7c3aed", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#ec4899", "#6366f1", "#64748b",
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UsageActivityMode {
+    Daily,
+    Weekly,
+    Cumulative,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct UsageActivityCell {
+    period: String,
+    tokens: i64,
+    level: u8,
+    future: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct UsageModelSlice {
+    label: String,
+    tokens: i64,
+    color: &'static str,
+}
+
+fn usage_level(value: i64, max: i64) -> u8 {
+    if value <= 0 || max <= 0 {
+        0
+    } else {
+        (((value as f64 / max as f64) * 4.0).ceil() as u8).clamp(1, 4)
+    }
+}
+
+fn usage_activity_cells(days: &[TokenUsageDay], mode: UsageActivityMode) -> Vec<UsageActivityCell> {
+    if mode == UsageActivityMode::Daily {
+        let max = days
+            .iter()
+            .filter(|day| !day.future)
+            .map(|day| day.tokens)
+            .max()
+            .unwrap_or(0);
+        return days
+            .iter()
+            .map(|day| UsageActivityCell {
+                period: day.date.clone(),
+                tokens: day.tokens,
+                level: if day.future {
+                    0
+                } else {
+                    usage_level(day.tokens, max)
+                },
+                future: day.future,
+            })
+            .collect();
+    }
+
+    let weekly = days
+        .chunks(7)
+        .map(|week| {
+            week.iter()
+                .filter(|day| !day.future)
+                .map(|day| day.tokens.max(0))
+                .sum::<i64>()
+        })
+        .collect::<Vec<_>>();
+    let amounts = if mode == UsageActivityMode::Cumulative {
+        let mut running = 0i64;
+        weekly
+            .iter()
+            .map(|tokens| {
+                running = running.saturating_add(*tokens);
+                running
+            })
+            .collect::<Vec<_>>()
+    } else {
+        weekly
+    };
+    let max = amounts.iter().copied().max().unwrap_or(0);
+    days.chunks(7)
+        .zip(amounts)
+        .flat_map(|(week, tokens)| {
+            let fill = if tokens <= 0 || max <= 0 {
+                0
+            } else {
+                ((tokens as f64 / max as f64 * week.len() as f64).ceil() as usize)
+                    .clamp(1, week.len())
+            };
+            let start = week.first().map(|day| day.date.as_str()).unwrap_or("");
+            let end = week
+                .iter()
+                .rev()
+                .find(|day| !day.future)
+                .or_else(|| week.last())
+                .map(|day| day.date.as_str())
+                .unwrap_or("");
+            let period = if mode == UsageActivityMode::Cumulative {
+                end.to_string()
+            } else {
+                format!("{start} – {end}")
+            };
+            (0..week.len())
+                .map(move |row| UsageActivityCell {
+                    period: period.clone(),
+                    tokens,
+                    level: if row + fill >= week.len() {
+                        usage_level(tokens, max).max(1)
+                    } else {
+                        0
+                    },
+                    future: false,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn usage_activity_months(days: &[TokenUsageDay]) -> Vec<(usize, u32)> {
+    let mut previous = None;
+    days.chunks(7)
+        .enumerate()
+        .filter_map(|(week, days)| {
+            let month = days.first()?.date.get(5..7)?.parse::<u32>().ok()?;
+            if previous == Some(month) {
+                None
+            } else {
+                previous = Some(month);
+                Some((week, month))
+            }
+        })
+        .collect()
+}
+
+fn usage_month_label(month: u32, locale: Locale) -> String {
+    const EN: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    if locale == Locale::Zh {
+        format!("{month}月")
+    } else {
+        EN.get(month.saturating_sub(1) as usize)
+            .copied()
+            .unwrap_or("")
+            .to_string()
+    }
+}
+
+fn usage_model_slices(
+    rows: &[ModelTokenUsage],
+    profiles: &[ModelProfile],
+    unknown: &str,
+    other: &str,
+) -> Vec<UsageModelSlice> {
+    let mut merged = HashMap::<String, i64>::new();
+    for row in rows.iter().filter(|row| row.tokens > 0) {
+        let label = profiles
+            .iter()
+            .find(|profile| profile.id == row.model)
+            .map(|profile| {
+                if profile.model.trim().is_empty() {
+                    profile.label.as_str()
+                } else {
+                    profile.model.as_str()
+                }
+            })
+            .unwrap_or_else(|| {
+                if row.model == "unknown" {
+                    unknown
+                } else {
+                    row.model.as_str()
+                }
+            })
+            .to_string();
+        *merged.entry(label).or_insert(0) += row.tokens;
+    }
+    let mut totals = merged.into_iter().collect::<Vec<_>>();
+    totals.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    if totals.len() > 8 {
+        let remainder = totals.drain(7..).map(|(_, tokens)| tokens).sum();
+        totals.push((other.to_string(), remainder));
+    }
+    totals
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, tokens))| UsageModelSlice {
+            label,
+            tokens,
+            color: USAGE_MODEL_COLORS[index % USAGE_MODEL_COLORS.len()],
+        })
+        .collect()
+}
+
+fn usage_model_gradient(slices: &[UsageModelSlice]) -> String {
+    let total = slices.iter().map(|slice| slice.tokens.max(0)).sum::<i64>();
+    if total <= 0 {
+        return "var(--bg-sunken)".into();
+    }
+    let mut start = 0.0;
+    let segments = slices
+        .iter()
+        .map(|slice| {
+            let end = start + slice.tokens.max(0) as f64 / total as f64 * 100.0;
+            let segment = format!("{} {start:.3}% {end:.3}%", slice.color);
+            start = end;
+            segment
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("conic-gradient({segments})")
+}
+
+fn usage_summary_view(loc: Locale, totals: (i64, i64, i64, i64)) -> impl IntoView {
+    let tokens = |value: i64| crate::fmt_tokens(value.max(0) as u64);
+    view! {
+        <div class="usage-summary">
+            {[
+                ("settings.usage.input", totals.0),
+                ("settings.usage.output", totals.1),
+                ("settings.usage.reasoning", totals.2),
+                ("settings.usage.cached", totals.3),
+            ].into_iter().map(|(key, value)| view! {
+                <div class="usage-tile">
+                    <span class="usage-tile-value">{tokens(value)}</span>
+                    <span class="usage-tile-label">{t(loc, key)}</span>
+                </div>
+            }).collect_view()}
+        </div>
+    }
+}
+
+#[cfg(test)]
+mod usage_dashboard_tests {
+    use super::*;
+
+    fn days(first_week: i64, second_week: i64) -> Vec<TokenUsageDay> {
+        (0..14)
+            .map(|index| TokenUsageDay {
+                date: format!("2026-07-{:02}", index + 1),
+                tokens: if index == 6 {
+                    first_week
+                } else if index == 13 {
+                    second_week
+                } else {
+                    0
+                },
+                future: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn activity_modes_keep_daily_values_and_aggregate_weeks() {
+        let days = days(10, 30);
+        let daily = usage_activity_cells(&days, UsageActivityMode::Daily);
+        assert_eq!(daily.len(), 14);
+        assert_eq!(daily[6].tokens, 10);
+        assert!(daily[13].level > daily[6].level);
+
+        let weekly = usage_activity_cells(&days, UsageActivityMode::Weekly);
+        assert_eq!(weekly[..7].iter().filter(|cell| cell.level > 0).count(), 3);
+        assert_eq!(weekly[7..].iter().filter(|cell| cell.level > 0).count(), 7);
+
+        let cumulative = usage_activity_cells(&days, UsageActivityMode::Cumulative);
+        assert_eq!(cumulative[0].tokens, 10);
+        assert_eq!(cumulative[7].tokens, 40);
+    }
+
+    #[test]
+    fn model_pie_caps_a_long_tail_as_other() {
+        let rows = (1..=9)
+            .map(|index| ModelTokenUsage {
+                model: format!("model-{index}"),
+                tokens: index,
+            })
+            .collect::<Vec<_>>();
+        let slices = usage_model_slices(&rows, &[], "Unknown", "Other");
+        assert_eq!(slices.len(), 8);
+        assert_eq!(slices.last().unwrap().label, "Other");
+        assert_eq!(slices.last().unwrap().tokens, 3);
+        assert!(usage_model_gradient(&slices).starts_with("conic-gradient("));
     }
 }
 
@@ -145,122 +429,6 @@ mod effort_values_tests {
             Some(&["low", "medium", "high"][..])
         );
         assert_eq!(known_effort_values("openai", "deepseek-v4-pro"), None);
-    }
-}
-
-/// Category of a memory file name: `"Projects--2026-07-26.md"` → `Some("Projects")`.
-/// Plain files (`"2026-07-26.md"`) belong to the default category (`None`).
-/// ponytail: category lives in the file-name prefix — no store table; empty
-/// categories are session-local until their first note is saved.
-pub(crate) fn memory_category_of(name: &str) -> Option<&str> {
-    name.split_once("--")
-        .map(|(cat, _)| cat.trim())
-        .filter(|cat| !cat.is_empty())
-}
-
-/// Note label shown inside a category: the file name minus its category prefix.
-pub(crate) fn memory_note_label(name: &str) -> &str {
-    match memory_category_of(name) {
-        Some(_) => name.split_once("--").map(|(_, rest)| rest).unwrap_or(name),
-        None => name,
-    }
-}
-
-/// Group memory files into (category, note count): default category always
-/// first (even at 0), then named categories alphabetically. `extra` holds
-/// user-created categories that have no notes yet this session.
-pub(crate) fn memory_categories(
-    files: &[MemoryFile],
-    extra: &[String],
-) -> Vec<(Option<String>, usize)> {
-    let mut named: BTreeMap<String, usize> = BTreeMap::new();
-    let mut default_count = 0usize;
-    for f in files {
-        match memory_category_of(&f.name) {
-            Some(cat) => *named.entry(cat.to_string()).or_insert(0) += 1,
-            None => default_count += 1,
-        }
-    }
-    for cat in extra {
-        named.entry(cat.clone()).or_insert(0);
-    }
-    std::iter::once((None, default_count))
-        .chain(named.into_iter().map(|(cat, n)| (Some(cat), n)))
-        .collect()
-}
-
-/// A category becomes a file-name prefix, so it must be file-name safe and
-/// must not contain the `--` separator itself.
-pub(crate) fn valid_memory_category(name: &str) -> bool {
-    !name.is_empty()
-        && !name.contains("--")
-        && !name.contains(['/', '\\'])
-        && !name.contains("..")
-        && !name.starts_with('.')
-}
-
-#[cfg(test)]
-mod memory_category_tests {
-    use super::*;
-
-    fn f(name: &str) -> MemoryFile {
-        MemoryFile {
-            name: name.into(),
-            preview: String::new(),
-            bytes: 0,
-        }
-    }
-
-    #[test]
-    fn category_of_splits_on_double_dash() {
-        assert_eq!(memory_category_of("2026-07-26.md"), None);
-        assert_eq!(
-            memory_category_of("Projects--2026-07-26.md"),
-            Some("Projects")
-        );
-        assert_eq!(memory_category_of("--x.md"), None);
-        assert_eq!(
-            memory_note_label("Projects--2026-07-26.md"),
-            "2026-07-26.md"
-        );
-        assert_eq!(memory_note_label("2026-07-26.md"), "2026-07-26.md");
-    }
-
-    #[test]
-    fn categories_group_default_first_then_sorted() {
-        let files = [
-            f("2026-07-01.md"),
-            f("Projects--a.md"),
-            f("Projects--b.md"),
-            f("About--c.md"),
-        ];
-        let cats = memory_categories(&files, &["Zed".into(), "Projects".into()]);
-        assert_eq!(
-            cats,
-            vec![
-                (None, 1),
-                (Some("About".into()), 1),
-                (Some("Projects".into()), 2),
-                (Some("Zed".into()), 0),
-            ]
-        );
-    }
-
-    #[test]
-    fn empty_file_list_still_has_default_category() {
-        assert_eq!(memory_categories(&[], &[]), vec![(None, 0)]);
-    }
-
-    #[test]
-    fn category_name_validation() {
-        assert!(valid_memory_category("Projects"));
-        assert!(valid_memory_category("About you"));
-        assert!(!valid_memory_category(""));
-        assert!(!valid_memory_category("a--b"));
-        assert!(!valid_memory_category("a/b"));
-        assert!(!valid_memory_category("a\\b"));
-        assert!(!valid_memory_category(".."));
-        assert!(!valid_memory_category(".hidden"));
     }
 }
 
@@ -616,12 +784,55 @@ pub(super) fn SettingsView(
         delete_confirm,
     } = state;
     let acp_form_open = create_memo(move |_| acp_form.get().is_some());
-    // Two-column Memory pane: selected category (None = default), plus
-    // session-local categories created before their first note exists.
-    let memory_cat = create_rw_signal(None::<String>);
-    let memory_new_cats = create_rw_signal(Vec::<String>::new());
-    let memory_new_cat_open = create_rw_signal(false);
-    let memory_new_cat_name = create_rw_signal(String::new());
+    let memory_projects = create_rw_signal(Vec::<ProjectSummary>::new());
+    let memory_project_menu_open = create_rw_signal(false);
+    create_effect(move |_| {
+        if settings_section.get() != "memory" {
+            memory_project_menu_open.set(false);
+            return;
+        }
+        spawn_local(async move {
+            let v = invoke("list_projects", JsValue::UNDEFINED).await;
+            if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(v) {
+                memory_projects.set(list);
+            }
+        });
+    });
+    let reset_memory_browse = move || {
+        memory_selected.set(None);
+        memory_editor.set(String::new());
+        memory_msg.set(None);
+        memory_project_menu_open.set(false);
+    };
+    let load_memory_project = Callback::new(move |id: String| {
+        let current = memory_view
+            .get_untracked()
+            .map(|view| view.project_id)
+            .unwrap_or_default();
+        if id == current {
+            memory_project_menu_open.set(false);
+            return;
+        }
+        reset_memory_browse();
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "projectId": id })).unwrap();
+            match invoke_checked("get_memory_view", arg).await {
+                Ok(v) => {
+                    if let Ok(view) = serde_wasm_bindgen::from_value::<MemoryView>(v) {
+                        memory_view.set(Some(view));
+                    } else {
+                        memory_msg.set(Some((
+                            false,
+                            t(locale.get_untracked(), "memory.load_failed").into(),
+                        )));
+                    }
+                }
+                Err(err) => {
+                    memory_msg.set(Some((false, js_error_text(err))));
+                }
+            }
+        });
+    });
     let joining = create_rw_signal(false);
     let join_code = create_rw_signal(String::new());
     let join_busy = create_rw_signal(false);
@@ -705,19 +916,36 @@ pub(super) fn SettingsView(
             joining.set(false);
             return true;
         }
-        if memory_new_cat_open.get_untracked() {
-            memory_new_cat_name.set(String::new());
-            memory_new_cat_open.set(false);
+        if memory_project_menu_open.get_untracked() {
+            memory_project_menu_open.set(false);
             return true;
         }
-        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-            return false;
-        };
-        let Ok(Some(details)) = document.query_selector("details.settings-add-menu[open]") else {
-            return false;
-        };
-        let _ = details.remove_attribute("open");
-        true
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            if let Ok(Some(details)) = document.query_selector("details.settings-add-menu[open]") {
+                let _ = details.remove_attribute("open");
+                return true;
+            }
+        }
+        if quick_action_form.get_untracked().is_some() {
+            quick_action_form.set(None);
+            return true;
+        }
+        // Breadcrumb subpages (memory file, model/ACP/specialist/conn/channel
+        // editors): one Escape returns to the section list, not the app.
+        let has_subpage = memory_selected.get_untracked().is_some()
+            || model_form.get_untracked().is_some()
+            || acp_form.get_untracked().is_some()
+            || specialist_form.get_untracked().is_some()
+            || conn_form.get_untracked().is_some()
+            || open_conn_key.get_untracked().is_some()
+            || channels_open.get_untracked().is_some();
+        if has_subpage {
+            close_settings_subpage.call(());
+            return true;
+        }
+        // Workflow Studio is a full-page settings surface; its own Escape
+        // stack (connect → portfolio → back) is registered later and wins.
+        false
     });
     create_effect(move |_| {
         if show_settings.get() && settings_section.get() == "environments" {
@@ -734,12 +962,23 @@ pub(super) fn SettingsView(
     // Storage / Usage panes fetch on every open; stale data stays visible
     // while the refresh (a blocking directory scan for storage) runs.
     let storage_usage = create_rw_signal(None::<StorageUsage>);
-    let token_usage = create_rw_signal(None::<Vec<SessionTokenUsage>>);
+    let storage_project = create_rw_signal(String::new());
+    let token_usage = create_rw_signal(None::<TokenUsageOverview>);
+    let selected_usage_workspace = create_rw_signal(None::<ProjectTokenUsage>);
+    let session_token_usage = create_rw_signal(None::<SessionTokenUsagePage>);
+    let usage_session_page = create_rw_signal(0usize);
+    let usage_activity_mode = create_rw_signal(UsageActivityMode::Daily);
     create_effect(move |_| {
         if show_settings.get() && settings_section.get() == "storage" {
             spawn_local(async move {
                 if let Ok(value) = invoke_checked("get_storage_usage", JsValue::UNDEFINED).await {
                     if let Ok(usage) = serde_wasm_bindgen::from_value::<StorageUsage>(value) {
+                        let selected = storage_project.get_untracked();
+                        if !selected.is_empty()
+                            && !usage.projects.iter().any(|project| project.id == selected)
+                        {
+                            storage_project.set(String::new());
+                        }
                         storage_usage.set(Some(usage));
                     }
                 }
@@ -750,14 +989,53 @@ pub(super) fn SettingsView(
         if show_settings.get() && settings_section.get() == "usage" {
             spawn_local(async move {
                 if let Ok(value) = invoke_checked("get_token_usage", JsValue::UNDEFINED).await {
-                    if let Ok(rows) =
-                        serde_wasm_bindgen::from_value::<Vec<SessionTokenUsage>>(value)
+                    if let Ok(overview) =
+                        serde_wasm_bindgen::from_value::<TokenUsageOverview>(value)
                     {
-                        token_usage.set(Some(rows));
+                        token_usage.set(Some(overview));
                     }
                 }
             });
         }
+    });
+    create_effect(move |_| {
+        if !show_settings.get() || settings_section.get() != "usage" {
+            return;
+        }
+        let Some(workspace) = selected_usage_workspace.get() else {
+            return;
+        };
+        let page = usage_session_page.get();
+        let project_id = workspace.project_id;
+        session_token_usage.set(None);
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({
+                "projectId": project_id,
+                "offset": page.saturating_mul(USAGE_SESSION_PAGE_SIZE),
+                "limit": USAGE_SESSION_PAGE_SIZE,
+            }))
+            .unwrap();
+            let Ok(value) = invoke_checked("get_session_token_usage", args).await else {
+                return;
+            };
+            let Ok(result) = serde_wasm_bindgen::from_value::<SessionTokenUsagePage>(value) else {
+                return;
+            };
+            if selected_usage_workspace
+                .get_untracked()
+                .as_ref()
+                .is_none_or(|workspace| workspace.project_id != project_id)
+                || usage_session_page.get_untracked() != page
+            {
+                return;
+            }
+            let page_count = (result.total.max(0) as usize).div_ceil(USAGE_SESSION_PAGE_SIZE);
+            if page > 0 && page >= page_count {
+                usage_session_page.set(page_count.saturating_sub(1));
+            } else {
+                session_token_usage.set(Some(result));
+            }
+        });
     });
     create_effect(move |_| {
         if joining.get() {
@@ -992,7 +1270,7 @@ pub(super) fn SettingsView(
                     <div class="settings-pane">
                         <div class="settings-form-grid">
                         <label class="span-2">{move || t(locale.get(), "settings.language")}
-                            <select
+                            <select data-testid="settings-language"
                                 on:change=move|ev| {
                                     let code = dom_value(&ev);
                                     let loc = Locale::from_code(&code);
@@ -1000,9 +1278,13 @@ pub(super) fn SettingsView(
                                     set_document_lang(loc);
                                     settings.update(|s| s.locale = code);
                                 }
-                                prop:value=move || locale.get().code().to_string()>
-                                <option value="en">{move || t(locale.get(), "settings.language.en")}</option>
-                                <option value="zh">{move || t(locale.get(), "settings.language.zh")}</option>
+                                // Bind `selected` on the options instead of `value` on the
+                                // select: the select's `value` property is applied before the
+                                // option children exist, so it falls back to the first option
+                                // and shows "English" while the locale is Chinese (#431).
+                                >
+                                <option value="en" prop:selected=move || locale.get() == Locale::En>{move || t(locale.get(), "settings.language.en")}</option>
+                                <option value="zh" prop:selected=move || locale.get() == Locale::Zh>{move || t(locale.get(), "settings.language.zh")}</option>
                             </select>
                         </label>
                         <label class="span-2">{move || t(locale.get(), "settings.workspace_dir")}
@@ -1022,6 +1304,18 @@ pub(super) fn SettingsView(
                                 prop:value=move || settings.get().max_iter.to_string() />
                             <span class="settings-field-hint">{move || t(locale.get(), "settings.max_iter_hint")}</span>
                         </label>
+                        <div class="span-2 appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "settings.auto_compact")}</strong>
+                                <span>{move || t(locale.get(), "settings.auto_compact_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="auto-compact-enabled"
+                                    prop:checked=move || settings.get().auto_compact
+                                    on:change=move |ev| settings.update(|current| current.auto_compact = event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
                         <label class="span-2">{move || t(locale.get(), "settings.proxy_url")}
                             <input data-testid="proxy-url" placeholder="http://127.0.0.1:7890"
                                 on:input=move |ev| settings.update(|s| {
@@ -1090,7 +1384,8 @@ pub(super) fn SettingsView(
                                 <strong>{move || t(locale.get(), "issue_report.entry_title")}</strong>
                                 <span>{move || t(locale.get(), "issue_report.entry_hint")}</span>
                             </div>
-                            <button type="button" on:click={
+                            <button type="button" class="settings-add-btn" data-testid="report-problem-open"
+                                on:click={
                                 let generate = generate_issue_report_open.clone();
                                 move |_| {
                                     issue_report_title.set(String::new());
@@ -1127,7 +1422,10 @@ pub(super) fn SettingsView(
                                             <input class="settings-path-input" data-testid="sync-folder"
                                                 prop:value=move || settings.get().sync_folder
                                                 on:input=move |ev| settings.update(|current| current.sync_folder = event_target_input(&ev).value()) />
-                                            <button type="button" on:click=choose_sync_folder>{move || t(locale.get(), "projects.choose_dir")}</button>
+                                            <button type="button" class="settings-add-btn" data-testid="sync-choose-folder"
+                                                on:click=choose_sync_folder>
+                                                {move || t(locale.get(), "projects.choose_dir")}
+                                            </button>
                                         </div>
                                         <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.folder_hint")}</span>
                                     </label>
@@ -1438,19 +1736,87 @@ pub(super) fn SettingsView(
                                     </div>
                                 }.into_view(),
                                 Some(usage) => {
-                                    let total = usage.total_bytes.max(1);
+                                    let selected = storage_project.get();
+                                    let selected_project = usage
+                                        .projects
+                                        .iter()
+                                        .find(|project| project.id == selected)
+                                        .cloned();
+                                    let project_only = selected_project.is_some();
+                                    let (path, entries, total_bytes) = match selected_project {
+                                        Some(project) => (
+                                            project.path,
+                                            vec![StorageEntry {
+                                                key: "workspace".into(),
+                                                bytes: project.bytes,
+                                            }],
+                                            project.bytes,
+                                        ),
+                                        None => (
+                                            usage.data_dir.clone(),
+                                            usage.entries.clone(),
+                                            usage.total_bytes,
+                                        ),
+                                    };
+                                    let total = total_bytes.max(1);
+                                    let projects = usage.projects.clone();
+                                    let all_bytes = format_bytes(usage.total_bytes);
                                     let loc = locale.get();
                                     view! {
                                         <div class="span-2 storage-block">
-                                            <code class="storage-path">{usage.data_dir.clone()}</code>
-                                            {(!usage.workspace_dirs.is_empty()).then(|| view! {
+                                            {(!projects.is_empty()).then(|| view! {
+                                                <section class="storage-project-section">
+                                                    <div class="storage-project-heading">
+                                                        <strong>{t(loc, "settings.storage.projects")}</strong>
+                                                        <span>{t(loc, "settings.storage.select_project")}</span>
+                                                    </div>
+                                                    <div class="storage-project-list" data-testid="storage-project-list">
+                                                        <button type="button" class="storage-project-row"
+                                                            class:active=move || storage_project.get().is_empty()
+                                                            aria-pressed=move || storage_project.get().is_empty().to_string()
+                                                            on:click=move |_| storage_project.set(String::new())>
+                                                            <span class="storage-project-main">
+                                                                <span class="storage-project-name">
+                                                                    {t(loc, "settings.storage.all_projects")}
+                                                                </span>
+                                                            </span>
+                                                            <span class="storage-project-bytes">{all_bytes}</span>
+                                                        </button>
+                                                        {projects.into_iter().map(|project| {
+                                                            let id = project.id;
+                                                            let active_id = id.clone();
+                                                            let pressed_id = id.clone();
+                                                            let select_id = id.clone();
+                                                            let path_title = project.path.clone();
+                                                            view! {
+                                                                <button type="button" class="storage-project-row"
+                                                                    class:active=move || storage_project.get() == active_id
+                                                                    data-project-id=id
+                                                                    aria-pressed=move || (storage_project.get() == pressed_id).to_string()
+                                                                    on:click=move |_| storage_project.set(select_id.clone())>
+                                                                    <span class="storage-project-main">
+                                                                        <span class="storage-project-name">{project.name}</span>
+                                                                        <code class="storage-project-path" title=path_title>
+                                                                            {project.path}
+                                                                        </code>
+                                                                    </span>
+                                                                    <span class="storage-project-bytes">
+                                                                        {format_bytes(project.bytes)}
+                                                                    </span>
+                                                                </button>
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                </section>
+                                            })}
+                                            <code class="storage-path">{path}</code>
+                                            {project_only.then(|| view! {
                                                 <span class="settings-field-hint">
-                                                    {tf(loc, "settings.storage.workspace_hint",
-                                                        &[("dirs", &usage.workspace_dirs.join(" · "))])}
+                                                    {t(loc, "settings.storage.project_hint")}
                                                 </span>
                                             })}
                                             <div class="storage-bar">
-                                                {usage.entries.iter().filter(|entry| entry.bytes > 0).map(|entry| {
+                                                {entries.iter().filter(|entry| entry.bytes > 0).map(|entry| {
                                                     let pct = entry.bytes as f64 / total as f64 * 100.0;
                                                     view! {
                                                         <span class=format!("storage-seg storage-seg-{}", entry.key)
@@ -1461,7 +1827,7 @@ pub(super) fn SettingsView(
                                                 }).collect_view()}
                                             </div>
                                             <div class="storage-legend">
-                                                {usage.entries.iter().map(|entry| view! {
+                                                {entries.iter().map(|entry| view! {
                                                     <div class="storage-legend-row">
                                                         <span class=format!("storage-dot storage-seg-{}", entry.key) aria-hidden="true"></span>
                                                         <span class="storage-legend-label">{t(loc, storage_entry_label_key(&entry.key))}</span>
@@ -1471,7 +1837,7 @@ pub(super) fn SettingsView(
                                                 <div class="storage-legend-row storage-legend-total">
                                                     <span class="storage-dot" aria-hidden="true"></span>
                                                     <span class="storage-legend-label">{t(loc, "settings.storage.total")}</span>
-                                                    <span class="storage-legend-bytes">{format_bytes(usage.total_bytes)}</span>
+                                                    <span class="storage-legend-bytes">{format_bytes(total_bytes)}</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -1482,61 +1848,294 @@ pub(super) fn SettingsView(
                     </div>
                 })}
                 {move || (settings_section.get() == "usage").then(|| view! {
-                    <div class="settings-pane">
+                    <div class="settings-pane settings-usage-pane" data-testid="usage-pane">
                         {move || match token_usage.get() {
                             None => view! {
                                 <div class="settings-field-hint">
-                                    {move || t(locale.get(), "settings.storage.loading")}
+                                    {move || t(locale.get(), "settings.usage.loading")}
                                 </div>
                             }.into_view(),
-                            Some(rows) if rows.is_empty() => view! {
+                            Some(overview) if overview.workspaces.is_empty() => view! {
                                 <div class="settings-field-hint">
                                     {move || t(locale.get(), "settings.usage.empty")}
                                 </div>
                             }.into_view(),
-                            Some(rows) => {
+                            Some(overview) => {
                                 let loc = locale.get();
-                                let totals = rows.iter().fold((0i64, 0i64, 0i64, 0i64), |acc, row| {
-                                    (acc.0 + row.input, acc.1 + row.output, acc.2 + row.reasoning, acc.3 + row.cached)
-                                });
                                 let tokens = |n: i64| crate::fmt_tokens(n.max(0) as u64);
-                                view! {
-                                    <p class="settings-field-hint">{t(loc, "settings.usage.hint")}</p>
-                                    <div class="usage-summary">
-                                        {[
-                                            ("settings.usage.input", totals.0),
-                                            ("settings.usage.output", totals.1),
-                                            ("settings.usage.reasoning", totals.2),
-                                            ("settings.usage.cached", totals.3),
-                                        ].into_iter().map(|(key, value)| view! {
-                                            <div class="usage-tile">
-                                                <span class="usage-tile-value">{tokens(value)}</span>
-                                                <span class="usage-tile-label">{t(loc, key)}</span>
+                                if let Some(workspace) = selected_usage_workspace.get() {
+                                    let totals = (
+                                        workspace.input,
+                                        workspace.output,
+                                        workspace.reasoning,
+                                        workspace.cached,
+                                    );
+                                    let workspace_name = if workspace.name.trim().is_empty() {
+                                        workspace.project_id.clone()
+                                    } else {
+                                        workspace.name.clone()
+                                    };
+                                    view! {
+                                        <div class="usage-detail-head">
+                                            <button type="button" class="btn-ghost" data-testid="usage-back"
+                                                on:click=move |_| {
+                                                    usage_session_page.set(0);
+                                                    session_token_usage.set(None);
+                                                    selected_usage_workspace.set(None);
+                                                }>
+                                                <span aria-hidden="true">"←"</span>
+                                                {t(loc, "settings.usage.all_workspaces")}
+                                            </button>
+                                            <div class="usage-detail-title">
+                                                <strong>{workspace_name}</strong>
+                                                {(!workspace.workspace_dir.is_empty()).then(|| view! {
+                                                    <span title=workspace.workspace_dir.clone()>{workspace.workspace_dir.clone()}</span>
+                                                })}
                                             </div>
-                                        }).collect_view()}
-                                    </div>
-                                    <div class="usage-table">
-                                        <div class="usage-row usage-row-head">
-                                            <span>{t(loc, "settings.usage.session")}</span>
-                                            <span class="usage-num">{t(loc, "settings.usage.input")}</span>
-                                            <span class="usage-num">{t(loc, "settings.usage.output")}</span>
-                                            <span class="usage-num">{t(loc, "settings.usage.reasoning")}</span>
-                                            <span class="usage-num">{t(loc, "settings.usage.cached")}</span>
                                         </div>
-                                        {rows.iter().map(|row| view! {
-                                            <div class="usage-row">
-                                                <span class="usage-session">
-                                                    <span class="usage-session-title">{row.title.clone()}</span>
-                                                    <span class="usage-session-when">{format_relative_time(row.updated_at, loc)}</span>
-                                                </span>
-                                                <span class="usage-num">{tokens(row.input)}</span>
-                                                <span class="usage-num">{tokens(row.output)}</span>
-                                                <span class="usage-num">{tokens(row.reasoning)}</span>
-                                                <span class="usage-num">{tokens(row.cached)}</span>
+                                        {usage_summary_view(loc, totals)}
+                                        {move || match session_token_usage.get() {
+                                            None => view! {
+                                                <div class="settings-field-hint">
+                                                    {t(locale.get(), "settings.usage.loading")}
+                                                </div>
+                                            }.into_view(),
+                                            Some(page) if page.items.is_empty() => view! {
+                                                <div class="settings-field-hint">
+                                                    {t(locale.get(), "settings.usage.sessions_empty")}
+                                                </div>
+                                            }.into_view(),
+                                            Some(page) => {
+                                                let loc = locale.get();
+                                                let current_page = usage_session_page.get();
+                                                let page_count = (page.total.max(0) as usize)
+                                                    .div_ceil(USAGE_SESSION_PAGE_SIZE)
+                                                    .max(1);
+                                                view! {
+                                                    <div class="usage-table" data-testid="usage-session-table">
+                                                        <div class="usage-row usage-row-head">
+                                                            <span>{t(loc, "settings.usage.session")}</span>
+                                                            <span class="usage-num">{t(loc, "settings.usage.input")}</span>
+                                                            <span class="usage-num">{t(loc, "settings.usage.output")}</span>
+                                                            <span class="usage-num">{t(loc, "settings.usage.reasoning")}</span>
+                                                            <span class="usage-num">{t(loc, "settings.usage.cached")}</span>
+                                                        </div>
+                                                        {page.items.into_iter().map(|row| view! {
+                                                            <div class="usage-row" data-testid="usage-session-row" data-session-id=row.id>
+                                                                <span class="usage-session">
+                                                                    <span class="usage-session-title">{row.title}</span>
+                                                                    <span class="usage-session-when">{format_relative_time(row.updated_at, loc)}</span>
+                                                                </span>
+                                                                <span class="usage-num">{tokens(row.input)}</span>
+                                                                <span class="usage-num">{tokens(row.output)}</span>
+                                                                <span class="usage-num">{tokens(row.reasoning)}</span>
+                                                                <span class="usage-num">{tokens(row.cached)}</span>
+                                                            </div>
+                                                        }).collect_view()}
+                                                    </div>
+                                                    {(page_count > 1).then(|| view! {
+                                                        <div class="usage-pagination" data-testid="usage-pagination">
+                                                            <button type="button" class="btn-ghost"
+                                                                disabled=(current_page == 0).then_some("")
+                                                                on:click=move |_| usage_session_page.update(|page| {
+                                                                    *page = page.saturating_sub(1);
+                                                                })>
+                                                                {t(loc, "settings.usage.previous")}
+                                                            </button>
+                                                            <span>{tf(loc, "settings.usage.page", &[
+                                                                ("page", &(current_page + 1).to_string()),
+                                                                ("pages", &page_count.to_string()),
+                                                            ])}</span>
+                                                            <button type="button" class="btn-ghost"
+                                                                disabled=(current_page + 1 >= page_count).then_some("")
+                                                                on:click=move |_| usage_session_page.update(|page| {
+                                                                    *page = (*page + 1).min(page_count - 1);
+                                                                })>
+                                                                {t(loc, "settings.usage.next")}
+                                                            </button>
+                                                        </div>
+                                                    })}
+                                                }.into_view()
+                                            }
+                                        }}
+                                    }.into_view()
+                                } else {
+                                    let totals = overview.workspaces.iter().fold(
+                                        (0i64, 0i64, 0i64, 0i64),
+                                        |acc, row| (
+                                            acc.0 + row.input,
+                                            acc.1 + row.output,
+                                            acc.2 + row.reasoning,
+                                            acc.3 + row.cached,
+                                        ),
+                                    );
+                                    let activity_cells = usage_activity_cells(
+                                        &overview.days,
+                                        usage_activity_mode.get(),
+                                    );
+                                    let activity_months = usage_activity_months(&overview.days);
+                                    let model_slices = usage_model_slices(
+                                        &overview.models,
+                                        &models.get(),
+                                        &t(loc, "settings.usage.unknown_model"),
+                                        &t(loc, "settings.usage.other_models"),
+                                    );
+                                    let model_total = model_slices
+                                        .iter()
+                                        .map(|slice| slice.tokens)
+                                        .sum::<i64>();
+                                    let model_gradient = usage_model_gradient(&model_slices);
+                                    view! {
+                                        <p class="settings-field-hint">{t(loc, "settings.usage.hint")}</p>
+                                        {usage_summary_view(loc, totals)}
+                                        <section class="usage-card usage-activity-card" data-testid="usage-activity">
+                                            <div class="usage-card-head">
+                                                <div>
+                                                    <h3>{t(loc, "settings.usage.activity")}</h3>
+                                                    <p>{t(loc, "settings.usage.activity_hint")}</p>
+                                                </div>
+                                                <div class="usage-mode-tabs" role="group"
+                                                    aria-label=t(loc, "settings.usage.activity")>
+                                                    {[
+                                                        (UsageActivityMode::Daily, "settings.usage.daily"),
+                                                        (UsageActivityMode::Weekly, "settings.usage.weekly"),
+                                                        (UsageActivityMode::Cumulative, "settings.usage.cumulative"),
+                                                    ].into_iter().map(|(mode, key)| view! {
+                                                        <button type="button"
+                                                            class:active=move || usage_activity_mode.get() == mode
+                                                            aria-pressed=move || if usage_activity_mode.get() == mode {
+                                                                "true"
+                                                            } else {
+                                                                "false"
+                                                            }
+                                                            on:click=move |_| usage_activity_mode.set(mode)>
+                                                            {t(loc, key)}
+                                                        </button>
+                                                    }).collect_view()}
+                                                </div>
                                             </div>
-                                        }).collect_view()}
-                                    </div>
-                                }.into_view()
+                                            <div class="usage-activity-scroll">
+                                                <div class="usage-activity-months" aria-hidden="true">
+                                                    {activity_months.into_iter().map(|(week, month)| view! {
+                                                        <span style=format!("grid-column:{}", week + 1)>
+                                                            {usage_month_label(month, loc)}
+                                                        </span>
+                                                    }).collect_view()}
+                                                </div>
+                                                <div class="usage-activity-grid" aria-label=t(loc, "settings.usage.activity")>
+                                                    {activity_cells.into_iter().map(|cell| {
+                                                        let title = if cell.future {
+                                                            String::new()
+                                                        } else {
+                                                            tf(loc, "settings.usage.activity_tooltip", &[
+                                                                ("period", &cell.period),
+                                                                ("tokens", &tokens(cell.tokens)),
+                                                            ])
+                                                        };
+                                                        view! {
+                                                            <span class=format!("usage-activity-cell level-{}", cell.level)
+                                                                class:future=cell.future title=title aria-hidden="true"></span>
+                                                        }
+                                                    }).collect_view()}
+                                                </div>
+                                            </div>
+                                        </section>
+                                        <div class="usage-overview-grid">
+                                            <section class="usage-card usage-model-card" data-testid="usage-model-share">
+                                                <div class="usage-card-head">
+                                                    <div>
+                                                        <h3>{t(loc, "settings.usage.model_share")}</h3>
+                                                        <p>{t(loc, "settings.usage.model_share_hint")}</p>
+                                                    </div>
+                                                </div>
+                                                {if model_slices.is_empty() {
+                                                    view! {
+                                                        <p class="settings-field-hint">{t(loc, "settings.usage.models_empty")}</p>
+                                                    }.into_view()
+                                                } else {
+                                                    let slices_for_legend = model_slices.clone();
+                                                    view! {
+                                                        <div class="usage-model-body">
+                                                            <div class="usage-model-pie" style=format!("background:{model_gradient}")
+                                                                role="img" aria-label=t(loc, "settings.usage.model_share")>
+                                                                <span>
+                                                                    <strong>{tokens(model_total)}</strong>
+                                                                    <small>{t(loc, "settings.usage.tokens")}</small>
+                                                                </span>
+                                                            </div>
+                                                            <div class="usage-model-legend">
+                                                                {slices_for_legend.into_iter().map(|slice| {
+                                                                    let pct = slice.tokens as f64 / model_total.max(1) as f64 * 100.0;
+                                                                    view! {
+                                                                        <div class="usage-model-row" data-testid="usage-model-row">
+                                                                            <i style:background=slice.color></i>
+                                                                            <span title=slice.label.clone()>{slice.label}</span>
+                                                                            <strong>{format!("{pct:.1}%")}</strong>
+                                                                            <small>{tokens(slice.tokens)}</small>
+                                                                        </div>
+                                                                    }
+                                                                }).collect_view()}
+                                                            </div>
+                                                        </div>
+                                                    }.into_view()
+                                                }}
+                                            </section>
+                                            <section class="usage-card usage-workspaces-card">
+                                                <div class="usage-card-head">
+                                                    <div>
+                                                        <h3>{t(loc, "settings.usage.workspaces")}</h3>
+                                                        <p>{t(loc, "settings.usage.workspaces_hint")}</p>
+                                                    </div>
+                                                </div>
+                                                <div class="usage-table">
+                                                    <div class="usage-row usage-row-head">
+                                                        <span>{t(loc, "settings.usage.workspace")}</span>
+                                                        <span class="usage-num">{t(loc, "settings.usage.input")}</span>
+                                                        <span class="usage-num">{t(loc, "settings.usage.output")}</span>
+                                                        <span class="usage-num">{t(loc, "settings.usage.reasoning")}</span>
+                                                        <span class="usage-num">{t(loc, "settings.usage.cached")}</span>
+                                                    </div>
+                                                    {overview.workspaces.into_iter().map(|row| {
+                                                        let selected = row.clone();
+                                                        let name = if row.name.trim().is_empty() {
+                                                            row.project_id.clone()
+                                                        } else {
+                                                            row.name.clone()
+                                                        };
+                                                        let sessions = tf(loc, "settings.usage.sessions", &[
+                                                            ("n", &row.session_count.max(0).to_string()),
+                                                        ]);
+                                                        view! {
+                                                            <button type="button" class="usage-row usage-workspace-row"
+                                                                data-testid="usage-workspace-row"
+                                                                data-workspace-id=row.project_id
+                                                                aria-label=tf(loc, "settings.usage.open_workspace", &[("name", &name)])
+                                                                on:click=move |_| {
+                                                                    usage_session_page.set(0);
+                                                                    session_token_usage.set(None);
+                                                                    selected_usage_workspace.set(Some(selected.clone()));
+                                                                }>
+                                                                <span class="usage-session">
+                                                                    <span class="usage-session-title">{name}</span>
+                                                                    <span class="usage-session-when">
+                                                                        {sessions}" · "{format_relative_time(row.updated_at, loc)}
+                                                                    </span>
+                                                                    {(!row.workspace_dir.is_empty()).then(|| view! {
+                                                                        <span class="usage-workspace-path" title=row.workspace_dir.clone()>{row.workspace_dir}</span>
+                                                                    })}
+                                                                </span>
+                                                                <span class="usage-num">{tokens(row.input)}</span>
+                                                                <span class="usage-num">{tokens(row.output)}</span>
+                                                                <span class="usage-num">{tokens(row.reasoning)}</span>
+                                                                <span class="usage-num">{tokens(row.cached)}</span>
+                                                            </button>
+                                                        }
+                                                    }).collect_view()}
+                                                </div>
+                                            </section>
+                                        </div>
+                                    }.into_view()
+                                }
                             }
                         }}
                     </div>
@@ -2270,7 +2869,8 @@ pub(super) fn SettingsView(
                                             prop:value=move || settings.get().pet_directory
                                             placeholder=move || t(locale.get(), "pet.directory_placeholder")
                                             on:input=move |ev| settings.update(|current| current.pet_directory = event_target_input(&ev).value()) />
-                                        <button type="button" data-testid="pet-choose" on:click=choose_pet_directory>
+                                        <button type="button" class="settings-add-btn" data-testid="pet-choose"
+                                            on:click=choose_pet_directory>
                                             {move || t(locale.get(), "projects.choose_dir")}
                                         </button>
                                     </div>
@@ -2821,8 +3421,16 @@ pub(super) fn SettingsView(
                                                 <button type="button" class="memory-delete-btn"
                                                     on:click=move |_| {
                                                         let n = name_del.clone();
+                                                        let project_id = memory_view
+                                                            .get_untracked()
+                                                            .map(|view| view.project_id)
+                                                            .unwrap_or_default();
                                                         spawn_local(async move {
-                                                            let arg = to_value(&serde_json::json!({ "name": n })).unwrap();
+                                                            let arg = to_value(&serde_json::json!({
+                                                                "name": n,
+                                                                "projectId": project_id,
+                                                            }))
+                                                            .unwrap();
                                                             if let Ok(files) = invoke_checked("delete_memory_file", arg).await {
                                                                 if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<MemoryFile>>(files) {
                                                                     memory_view.update(|o| if let Some(o)=o { o.files = list; });
@@ -2834,8 +3442,17 @@ pub(super) fn SettingsView(
                                                 <button type="button" class="primary" on:click=move |_| {
                                                     let n = name_save.clone();
                                                     let content = memory_editor.get();
+                                                    let project_id = memory_view
+                                                        .get_untracked()
+                                                        .map(|view| view.project_id)
+                                                        .unwrap_or_default();
                                                     spawn_local(async move {
-                                                        let arg = to_value(&serde_json::json!({ "name": n, "content": content })).unwrap();
+                                                        let arg = to_value(&serde_json::json!({
+                                                            "name": n,
+                                                            "content": content,
+                                                            "projectId": project_id,
+                                                        }))
+                                                        .unwrap();
                                                         match invoke_checked("write_memory_file", arg).await {
                                                             Ok(v) => {
                                                                 if let Ok(files) = serde_wasm_bindgen::from_value::<Vec<MemoryFile>>(v) {
@@ -2855,19 +3472,144 @@ pub(super) fn SettingsView(
                         }.into_view()
                     } else {
                         view! {
-                        <div class="settings-pane settings-pane-memory">
-                            <div class="settings-toolbar settings-toolbar-end memory-toolbar">
-                                <span class="settings-filter">{move || {
-                                    let n = memory_view.get().map(|v| v.files.len()).unwrap_or(0);
-                                    format!("{} ({n})", t(locale.get(), "memory.notes"))
-                                }}</span>
-                                <div class="memory-toolbar-actions">
+                        <div class="settings-pane settings-pane-list">
+                            <div class="settings-toolbar settings-toolbar-end">
+                                <div class="memory-project" data-testid="memory-project">
+                                    <div class="memory-project-picker">
+                                        <button
+                                            type="button"
+                                            class="settings-filter memory-project-trigger"
+                                            data-testid="memory-project-select"
+                                            aria-haspopup="listbox"
+                                            aria-expanded=move || memory_project_menu_open.get().to_string()
+                                            aria-label=move || t(locale.get(), "memory.choose_project")
+                                            attr:data-project-id=move || {
+                                                memory_view
+                                                    .get()
+                                                    .map(|view| view.project_id)
+                                                    .unwrap_or_default()
+                                            }
+                                            class:active=move || memory_project_menu_open.get()
+                                            on:click=move |_| {
+                                                memory_project_menu_open.update(|open| *open = !*open);
+                                            }>
+                                            <span class="memory-project-name">{move || {
+                                                let view = memory_view.get();
+                                                let id = view.as_ref().map(|v| v.project_id.as_str()).unwrap_or("");
+                                                let name = memory_projects
+                                                    .get()
+                                                    .into_iter()
+                                                    .find(|p| p.id == id)
+                                                    .map(|p| {
+                                                        if p.name.trim().is_empty() {
+                                                            p.id
+                                                        } else {
+                                                            p.name
+                                                        }
+                                                    })
+                                                    .or_else(|| {
+                                                        view.as_ref().map(|v| v.project_name.clone())
+                                                            .filter(|name| !name.trim().is_empty())
+                                                    })
+                                                    .unwrap_or_else(|| {
+                                                        t(locale.get(), "settings.nav.memory")
+                                                    });
+                                                let n = view.map(|v| v.files.len()).unwrap_or(0);
+                                                format!("{name} ({n})")
+                                            }}</span>
+                                            <span class="caret" aria-hidden="true">"▾"</span>
+                                        </button>
+                                        {move || memory_project_menu_open.get().then(|| view! {
+                                            <div class="memory-project-backdrop"
+                                                data-testid="memory-project-backdrop"
+                                                on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                    ev.prevent_default();
+                                                    memory_project_menu_open.set(false);
+                                                }></div>
+                                            <div class="memory-project-menu" role="listbox"
+                                                data-testid="memory-project-menu"
+                                                aria-label=move || t(locale.get(), "memory.choose_project")
+                                                on:mousedown=|ev: web_sys::MouseEvent| ev.stop_propagation()
+                                                on:click=|ev: web_sys::MouseEvent| ev.stop_propagation()>
+                                                <div class="memory-project-menu-list">
+                                                    <For
+                                                        each=move || memory_projects.get()
+                                                        key=|p| p.id.clone()
+                                                        let:project>
+                                                        {
+                                                            let id = project.id.clone();
+                                                            let id_aria = id.clone();
+                                                            let id_active = id.clone();
+                                                            let id_check = id.clone();
+                                                            let id_pick = id.clone();
+                                                            let name = if project.name.trim().is_empty() {
+                                                                project.id.clone()
+                                                            } else {
+                                                                project.name.clone()
+                                                            };
+                                                            let desc = project.description.clone();
+                                                            view! {
+                                                                <button type="button"
+                                                                    class="memory-project-option"
+                                                                    role="option"
+                                                                    data-testid=format!("memory-project-option-{id}")
+                                                                    aria-selected=move || {
+                                                                        memory_view
+                                                                            .get()
+                                                                            .map(|view| view.project_id == id_aria)
+                                                                            .unwrap_or(false)
+                                                                            .to_string()
+                                                                    }
+                                                                    class:active=move || {
+                                                                        memory_view
+                                                                            .get()
+                                                                            .map(|view| view.project_id == id_active)
+                                                                            .unwrap_or(false)
+                                                                    }
+                                                                    on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                                        ev.prevent_default();
+                                                                        ev.stop_propagation();
+                                                                        load_memory_project.call(id_pick.clone());
+                                                                    }>
+                                                                    <span class="memory-project-option-text">
+                                                                        <span class="memory-project-option-name">{name}</span>
+                                                                        {(!desc.trim().is_empty()).then(|| view! {
+                                                                            <span class="memory-project-option-desc">{desc.clone()}</span>
+                                                                        })}
+                                                                    </span>
+                                                                    {move || {
+                                                                        let selected = memory_view
+                                                                            .get()
+                                                                            .map(|view| view.project_id == id_check)
+                                                                            .unwrap_or(false);
+                                                                        selected.then(|| view! {
+                                                                            <span class="memory-project-option-check" aria-hidden="true">"✓"</span>
+                                                                        })
+                                                                    }}
+                                                                </button>
+                                                            }
+                                                        }
+                                                    </For>
+                                                </div>
+                                            </div>
+                                        })}
+                                    </div>
+                                </div>
+                                <div class="settings-toolbar-actions memory-toolbar-actions">
                                     <label class="toggle" title=move || t(locale.get(), "settings.nav.memory")>
                                         <input type="checkbox" prop:checked=move || memory_view.get().map(|v| v.enabled).unwrap_or(true)
                                             on:change=move |ev| {
                                                 let on = event_target_checked(&ev);
+                                                let project_id = memory_view
+                                                    .get_untracked()
+                                                    .map(|view| view.project_id)
+                                                    .unwrap_or_default();
                                                 spawn_local(async move {
-                                                    let arg = to_value(&serde_json::json!({ "enabled": on })).unwrap();
+                                                    let arg = to_value(&serde_json::json!({
+                                                        "enabled": on,
+                                                        "projectId": project_id,
+                                                    }))
+                                                    .unwrap();
                                                     if let Ok(v) = invoke_checked("set_memory_enabled", arg).await {
                                                         if let Ok(view) = serde_wasm_bindgen::from_value::<MemoryView>(v) {
                                                             memory_view.set(Some(view));
@@ -2877,28 +3619,50 @@ pub(super) fn SettingsView(
                                             } />
                                         <span class="toggle-track" aria-hidden="true"></span>
                                     </label>
-                                    <button type="button" class="memory-clear-btn" on:click=move |_| {
+                                    <button type="button" on:click=move |_| {
+                                        let project_id = memory_view
+                                            .get_untracked()
+                                            .map(|view| view.project_id)
+                                            .unwrap_or_default();
                                         spawn_local(async move {
-                                            let v = invoke("clear_memory", JsValue::UNDEFINED).await;
+                                            let arg = to_value(&serde_json::json!({
+                                                "projectId": project_id,
+                                            }))
+                                            .unwrap();
+                                            let v = invoke("clear_memory", arg).await;
                                             if let Ok(files) = serde_wasm_bindgen::from_value::<Vec<MemoryFile>>(v) {
                                                 memory_view.update(|o| if let Some(o)=o { o.files = files; });
-                                                memory_selected.set(None);
-                                                memory_editor.set(String::new());
-                                                memory_cat.set(None);
-                                                memory_new_cats.set(vec![]);
+                                                reset_memory_browse();
                                             }
                                         });
                                     }>{move || t(locale.get(), "memory.clear_all")}</button>
+                                    <button type="button" class="settings-add-btn" data-testid="memory-add-note"
+                                        on:click=move |_| {
+                                            if let Some(today) = memory_view.get().map(|v| v.today_file) {
+                                                load_memory_file.call(today);
+                                            }
+                                        }>{move || t(locale.get(), "memory.add")}</button>
                                 </div>
                             </div>
+                            {move || memory_msg.get().map(|(ok, text)| view! {
+                                <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
+                            })}
                             {move || {
                                 let off = memory_view.get().map(|v| !v.enabled).unwrap_or(false);
                                 off.then(|| view! {
                                 <div class="memory-off-banner">
                                     <span>{move || t(locale.get(), "memory.off_banner")}</span>
                                     <button type="button" class="settings-add-btn" on:click=move |_| {
+                                        let project_id = memory_view
+                                            .get_untracked()
+                                            .map(|view| view.project_id)
+                                            .unwrap_or_default();
                                         spawn_local(async move {
-                                            let arg = to_value(&serde_json::json!({ "enabled": true })).unwrap();
+                                            let arg = to_value(&serde_json::json!({
+                                                "enabled": true,
+                                                "projectId": project_id,
+                                            }))
+                                            .unwrap();
                                             if let Ok(v) = invoke_checked("set_memory_enabled", arg).await {
                                                 if let Ok(view) = serde_wasm_bindgen::from_value::<MemoryView>(v) {
                                                     memory_view.set(Some(view));
@@ -2909,101 +3673,32 @@ pub(super) fn SettingsView(
                                 </div>
                                 })
                             }}
-                            <div class="memory-split">
-                                <div class="memory-files">
-                                    <For each=move || {
-                                            let files = memory_view.get().map(|v| v.files).unwrap_or_default();
-                                            memory_categories(&files, &memory_new_cats.get())
-                                        }
-                                        key=|(cat, n)| (cat.clone(), *n) let:entry>
-                                        {
-                                            let (cat, count) = entry;
-                                            let cat_active = cat.clone();
-                                            let cat_label = cat.clone();
-                                            view! {
-                                                <button type="button" class="memory-file-row memory-cat-row"
-                                                    class:memory-file-row-active=move || memory_cat.get() == cat_active
-                                                    on:click=move |_| memory_cat.set(cat.clone())>
-                                                    <span class="memory-file-name">{move || match &cat_label {
-                                                        Some(c) => c.clone(),
-                                                        None => t(locale.get(), "memory.default_category"),
-                                                    }}</span>
-                                                    <span class="memory-file-meta">{count}</span>
-                                                </button>
-                                            }
-                                        }
-                                    </For>
-                                    {move || if memory_new_cat_open.get() {
+                            <div class="conn-group-label">{move || t(locale.get(), "memory.scope_hint")}</div>
+                            <div class="settings-list" data-testid="memory-notes">
+                                <For each=move || memory_view.get().map(|v| v.files).unwrap_or_default()
+                                    key=|f| f.name.clone() let:f>
+                                    {
+                                        let pick = f.name.clone();
                                         view! {
-                                            <input class="memory-cat-input" type="text"
-                                                placeholder=move || t(locale.get(), "memory.new_category_placeholder")
-                                                prop:value=move || memory_new_cat_name.get()
-                                                on:input=move |ev| memory_new_cat_name.set(event_target_value(&ev))
-                                                on:keydown=move |ev| {
-                                                    if ev.key() == "Enter" {
-                                                        let name = memory_new_cat_name.get().trim().to_string();
-                                                        if valid_memory_category(&name) {
-                                                            memory_new_cats.update(|v| if !v.contains(&name) { v.push(name.clone()); });
-                                                            memory_cat.set(Some(name));
-                                                            memory_new_cat_name.set(String::new());
-                                                            memory_new_cat_open.set(false);
-                                                        }
-                                                    }
-                                                } />
-                                        }.into_view()
-                                    } else {
-                                        view! {
-                                            <button type="button" class="memory-file-add"
-                                                on:click=move |_| memory_new_cat_open.set(true)>
-                                                {move || format!("+ {}", t(locale.get(), "memory.new_category"))}
-                                            </button>
-                                        }.into_view()
-                                    }}
-                                </div>
-                                <div class="memory-notes">
-                                    <div class="settings-list memory-file-list">
-                                        <For each=move || {
-                                                let sel = memory_cat.get();
-                                                memory_view.get().map(|v| v.files).unwrap_or_default()
-                                                    .into_iter()
-                                                    .filter(|f| memory_category_of(&f.name) == sel.as_deref())
-                                                    .collect::<Vec<_>>()
-                                            }
-                                            key=|f| f.name.clone() let:f>
-                                            {
-                                                let pick = f.name.clone();
-                                                view! {
-                                                    <div class="settings-list-row settings-list-row-link"
-                                                        on:click=move |_| load_memory_file.call(pick.clone())>
-                                                        <div class="settings-list-main">
-                                                            <span class="settings-list-title">{memory_note_label(&f.name).to_string()}</span>
-                                                            <span class="settings-list-sub">{format_bytes(f.bytes)}</span>
-                                                        </div>
-                                                        <span class="settings-list-chevron" aria-hidden="true">"›"</span>
-                                                    </div>
-                                                }
-                                            }
-                                        </For>
-                                    </div>
-                                    {move || {
-                                        let sel = memory_cat.get();
-                                        let empty = memory_view.get()
-                                            .map(|v| !v.files.iter().any(|f| memory_category_of(&f.name) == sel.as_deref()))
-                                            .unwrap_or(true);
-                                        empty.then(|| view! {
-                                            <p class="memory-empty">{move || t(locale.get(), "memory.empty")}</p>
-                                        })
-                                    }}
-                                    <button type="button" class="memory-file-add" on:click=move |_| {
-                                        if let Some(today) = memory_view.get().map(|v| v.today_file) {
-                                            let name = match memory_cat.get() {
-                                                Some(cat) => format!("{cat}--{today}"),
-                                                None => today,
-                                            };
-                                            load_memory_file.call(name);
+                                            <div class="settings-list-row settings-list-row-link"
+                                                on:click=move |_| load_memory_file.call(pick.clone())>
+                                                <div class="settings-list-main">
+                                                    <span class="settings-list-title">{f.name.clone()}</span>
+                                                    <span class="settings-list-sub">{format_bytes(f.bytes)}</span>
+                                                </div>
+                                                <div class="settings-list-actions">
+                                                    <span class="settings-list-chevron" aria-hidden="true">"›"</span>
+                                                </div>
+                                            </div>
                                         }
-                                    }>{move || format!("+ {}", t(locale.get(), "memory.add"))}</button>
-                                </div>
+                                    }
+                                </For>
+                                {move || {
+                                    let empty = memory_view.get().map(|v| v.files.is_empty()).unwrap_or(true);
+                                    empty.then(|| view! {
+                                        <p class="model-empty-hint">{move || t(locale.get(), "memory.empty")}</p>
+                                    })
+                                }}
                             </div>
                         </div>
                         }.into_view()
@@ -3021,7 +3716,8 @@ pub(super) fn SettingsView(
                                             <h3 id="plugin-install-title">{move || t(locale.get(), "plugins.install_title")}</h3>
                                             <p class="hint">{move || t(locale.get(), "plugins.install_safety")}</p>
                                         </div>
-                                        <button type="button" class="icon-btn"
+                                        <button type="button" class="ps-close"
+                                            title=move || t(locale.get(), "plugins.install_close")
                                             aria-label=move || t(locale.get(), "plugins.install_close")
                                             on:click=move |_| plugin_install_open.set(false)>
                                             {compose_icon("close")}
@@ -4215,7 +4911,15 @@ pub(super) fn SettingsView(
                     <div class="overlay" data-testid="issue-report-modal">
                         <div class="modal issue-report-modal" role="dialog" aria-modal="true"
                             aria-labelledby="issue-report-title">
-                            <h2 id="issue-report-title">{move || t(locale.get(), "issue_report.title")}</h2>
+                            <div class="ps-head">
+                                <h2 id="issue-report-title">{move || t(locale.get(), "issue_report.title")}</h2>
+                                <button type="button" class="ps-close"
+                                    title=move || t(locale.get(), "settings.cancel")
+                                    aria-label=move || t(locale.get(), "settings.cancel")
+                                    on:click=move |_| issue_report_open.set(false)>
+                                    {compose_icon("close")}
+                                </button>
+                            </div>
                             <p class="hint issue-report-privacy">{move || t(locale.get(), "issue_report.privacy")}</p>
                             <div class="issue-report-fields">
                                 <label>{move || t(locale.get(), "issue_report.issue_title")}
