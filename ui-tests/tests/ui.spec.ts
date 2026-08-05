@@ -3002,17 +3002,7 @@ test("Files creates, renames, deletes, and refreshes local entries", async ({ pa
   await expect.poll(() => lastInvokeArgs(page, "list_dir")).toMatchObject({ path: "." });
 });
 
-test("text-entry context menu pastes into the field that was clicked", async ({ page }) => {
-  await page.addInitScript(() => {
-    let clipboardText = "";
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        readText: async () => clipboardText,
-        writeText: async (value: string) => { clipboardText = value; },
-      },
-    });
-  });
+test("text entries keep the native context menu", async ({ page }) => {
   await enterApp(page);
   await page.locator(".proj-switch").click();
   await page.getByRole("button", { name: "Project settings" }).click();
@@ -3020,19 +3010,15 @@ test("text-entry context menu pastes into the field that was clicked", async ({ 
   const modal = page.locator(".proj-settings-modal");
   const name = modal.locator("input").first();
   const description = modal.locator("textarea").first();
-  await description.fill("");
-  await page.evaluate(() => navigator.clipboard.writeText("context-target"));
-  await description.click({ button: "right" });
-  await page.locator(".ctx-menu").getByRole("button", { name: "Paste" }).click();
-  await expect(description).toHaveValue("context-target");
-  await expect(name).not.toHaveValue("context-target");
-
-  await name.fill("");
-  await page.evaluate(() => navigator.clipboard.writeText("name-target"));
-  await name.click({ button: "right" });
-  await page.locator(".ctx-menu").getByRole("button", { name: "Paste" }).click();
-  await expect(name).toHaveValue("name-target");
-  await expect(description).toHaveValue("context-target");
+  for (const entry of [name, description]) {
+    const defaultPrevented = await entry.evaluate((element) => {
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      element.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+    expect(defaultPrevented).toBe(false);
+    await expect(page.locator(".ctx-menu")).toHaveCount(0);
+  }
 });
 
 test("center structure and FASTA previews fill the available height", async ({ page }) => {
@@ -5538,6 +5524,10 @@ test("macOS update download is verified before a separate install confirmation",
   await modal.getByRole("button", { name: "Download update" }).click();
   await expect(modal).toContainText("Downloading Wisp 0.28.0");
   await expect(modal).toContainText("25 B / 100 B");
+  await modal.evaluate((element) => ((window as any).__downloadingModal = element));
+  await page.evaluate(() => (window as any).__mockUpdateProgress(10));
+  await expect(modal).toContainText("35 B / 100 B");
+  expect(await modal.evaluate((element) => element === (window as any).__downloadingModal)).toBe(true);
 
   // An in-flight update owns the top of the Escape stack and keeps Settings open.
   await page.keyboard.press("Escape");
@@ -6297,6 +6287,23 @@ test("chat stays pinned to the bottom while streaming a long reply (#61)", async
       { timeout: 5000 },
     )
     .toBeLessThan(8);
+});
+
+test("chat keeps the user's reading position when streaming finishes (#670)", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("SCROLLTEST");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("line 39", { exact: false })).toBeVisible({ timeout: 10_000 });
+
+  const scroller = page.locator("#chat-scroller");
+  await scroller.evaluate((element) => {
+    element.scrollTop = Math.max(80, element.scrollHeight / 3);
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -80, bubbles: true }));
+  });
+  const readingTop = await scroller.evaluate((element) => element.scrollTop);
+
+  await expect(page.getByText("line 79", { exact: false })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(readingTop - 40);
 });
 
 test("recent sessions show only title and status badge", async ({ page }) => {

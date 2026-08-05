@@ -31,6 +31,7 @@ export function attach_chat_scroll(scrollerId, contentId) {
 
   let follow = true;
   let lastHeight = content.scrollHeight;
+  let readingTop = scroller.scrollTop;
   const setFollow = (value) => {
     follow = value;
     scroller.style.overflowAnchor = value ? "none" : "auto";
@@ -70,6 +71,7 @@ export function attach_chat_scroll(scrollerId, contentId) {
     // happened just now. Reflow-driven scrolls leave `follow` untouched.
     if (performance.now() - lastUserScroll < 500) {
       setFollow(false);
+      readingTop = scroller.scrollTop;
       return;
     }
     // Reflow-driven clamp while following (streaming rebuilds shrink the
@@ -84,6 +86,9 @@ export function attach_chat_scroll(scrollerId, contentId) {
     const grew = h > lastHeight;
     lastHeight = h;
     if (follow && grew) snapBottom(scroller);
+    else if (!follow && grew) {
+      scroller.scrollTop = Math.min(readingTop, scroller.scrollHeight - scroller.clientHeight);
+    }
     syncFollow();
   };
 
@@ -110,6 +115,7 @@ export function attach_chat_scroll(scrollerId, contentId) {
     onGrowth,
     unfollow: () => {
       setFollow(false);
+      readingTop = scroller.scrollTop;
       lastHeight = content.scrollHeight;
     },
     snap: () => {
