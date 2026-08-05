@@ -2918,9 +2918,7 @@ pub(super) fn workflow_studio(
     let connect_from_key = create_rw_signal::<Option<u32>>(None);
     let portfolio_open = create_rw_signal(false);
     let portfolio_request = create_rw_signal(String::new());
-    let portfolio_tier = create_rw_signal("standard".to_string());
-    let portfolio_total = create_rw_signal("0".to_string());
-    let portfolio_reserve = create_rw_signal("0".to_string());
+    let portfolio_model_id = create_rw_signal(String::new());
     let portfolio_draft = create_rw_signal::<Option<SkillPortfolioDraft>>(None);
     let portfolio_loading = create_rw_signal(false);
 
@@ -2932,16 +2930,28 @@ pub(super) fn workflow_studio(
         true
     });
 
+    create_effect(move |_| {
+        let available = state.options.get().models;
+        let profiles = models.get();
+        let current = portfolio_model_id.get_untracked();
+        if available.iter().any(|model| model.id == current) {
+            return;
+        }
+        let selected = profiles
+            .iter()
+            .find(|profile| {
+                profile.active && available.iter().any(|model| model.id == profile.id)
+            })
+            .map(|profile| profile.id.clone())
+            .or_else(|| available.first().map(|model| model.id.clone()))
+            .unwrap_or_default();
+        portfolio_model_id.set(selected);
+    });
+
     let generate_portfolio = move |_| {
         let request_text = portfolio_request.get_untracked().trim().to_string();
-        let total = portfolio_total.get_untracked().parse::<u32>().unwrap_or(0);
-        let reserve = portfolio_reserve
-            .get_untracked()
-            .parse::<u32>()
-            .unwrap_or(0);
-        // Budgets are an advanced override: 0 means unlimited. A bounded
-        // total still has to leave room for the synthesis reserve.
-        if request_text.is_empty() || (total > 0 && (reserve == 0 || reserve >= total)) {
+        let model_id = portfolio_model_id.get_untracked();
+        if request_text.is_empty() || model_id.is_empty() {
             state.error.set(Some(
                 t(locale.get_untracked(), "workflow_studio.portfolio.validation").into(),
             ));
@@ -2950,21 +2960,8 @@ pub(super) fn workflow_studio(
         portfolio_loading.set(true);
         let args = serde_json::json!({
             "request": {
-                "intent": ResearchIntentRequest {
-                    request: request_text,
-                    domains: vec![],
-                    research_stages: vec![],
-                    roles: vec![],
-                    evidence_types: vec![],
-                    outputs: vec![],
-                },
-                "config": PortfolioConfigRequest {
-                    tier: portfolio_tier.get_untracked(),
-                    total_token_budget: total,
-                    synthesis_reserve: reserve,
-                    node_output_tokens: 4_000,
-                    user_parallel_limit: 2,
-                }
+                "request": request_text,
+                "model_id": model_id,
             }
         });
         spawn_local(async move {
@@ -3414,89 +3411,91 @@ pub(super) fn workflow_studio(
                         </label>
                         <div class="portfolio-planner-fields">
                             <label>
-                                {move || t(locale.get(), "workflow_studio.portfolio.tier")}
-                                <select data-testid="portfolio-tier"
-                                    on:change=move |event| portfolio_tier.set(dom_value(&event))>
-                                    <option value="compact">
-                                        {move || t(locale.get(), "workflow_studio.portfolio.tier.compact")}
-                                    </option>
-                                    <option value="standard" selected>
-                                        {move || t(locale.get(), "workflow_studio.portfolio.tier.standard")}
-                                    </option>
-                                    <option value="deep">
-                                        {move || t(locale.get(), "workflow_studio.portfolio.tier.deep")}
-                                    </option>
+                                {move || t(locale.get(), "workflow_studio.portfolio.model")}
+                                <select data-testid="portfolio-model"
+                                    disabled=move || portfolio_loading.get()
+                                    on:change=move |event| portfolio_model_id.set(dom_value(&event))>
+                                    <For each=move || state.options.get().models key=|model| model.id.clone()
+                                        children=move |model_option| {
+                                            let id = model_option.id.clone();
+                                            let selected_id = id.clone();
+                                            let label = models.get().into_iter()
+                                                .find(|model| model.id == id)
+                                                .map(|model| model.label)
+                                                .unwrap_or_else(|| id.clone());
+                                            let display_label = if model_option.external {
+                                                tf(
+                                                    locale.get_untracked(),
+                                                    "workflow_studio.portfolio.model_external",
+                                                    &[("model", &label)],
+                                                )
+                                            } else {
+                                                label
+                                            };
+                                            view! {
+                                                <option value=id prop:selected=move || portfolio_model_id.get() == selected_id>
+                                                    {display_label}
+                                                </option>
+                                            }
+                                        }
+                                    />
+                                    {move || state.options.get().models.is_empty().then(|| view! {
+                                        <option value="">
+                                            {move || t(locale.get(), "workflow_studio.portfolio.no_models")}
+                                        </option>
+                                    })}
                                 </select>
-                            </label>
-                            <label>
-                                {move || t(locale.get(), "workflow_studio.portfolio.total")}
-                                <input data-testid="portfolio-total" type="number" min="0"
-                                    prop:value=move || portfolio_total.get()
-                                    on:input=move |event| portfolio_total.set(event_target_value(&event)) />
-                            </label>
-                            <label>
-                                {move || t(locale.get(), "workflow_studio.portfolio.reserve")}
-                                <input data-testid="portfolio-reserve" type="number" min="0"
-                                    prop:value=move || portfolio_reserve.get()
-                                    on:input=move |event| portfolio_reserve.set(event_target_value(&event)) />
                             </label>
                         </div>
                         {move || portfolio_draft.get().map(|draft| {
                             let plan = draft.plan.clone();
                             let proposal = draft.proposal.clone();
                             let loc = locale.get();
+                            let skill_count = plan.tasks.iter()
+                                .flat_map(|task| task.skill_ids.iter())
+                                .collect::<HashSet<_>>()
+                                .len();
+                            let planner_label = plan.planner_model_label.clone();
                             let summary = tf(
                                 loc,
                                 "workflow_studio.portfolio.summary",
                                 &[
-                                    ("skills", &plan.selected.len().to_string()),
-                                    ("batches", &plan.estimated_batches.to_string()),
-                                    ("parallel", &plan.max_parallel.to_string()),
+                                    ("tasks", &plan.tasks.len().to_string()),
+                                    ("skills", &skill_count.to_string()),
+                                    ("model", &planner_label),
                                 ],
                             );
-                            let budget = if plan.total_token_budget == 0 {
-                                tf(
-                                    loc,
-                                    "workflow_studio.portfolio.budget_unlimited",
-                                    &[("nodes", &plan.selected_node_budget.to_string())],
-                                )
-                            } else {
-                                tf(
-                                    loc,
-                                    "workflow_studio.portfolio.budget_bounded",
-                                    &[
-                                        ("total", &plan.total_token_budget.to_string()),
-                                        ("nodes", &plan.selected_node_budget.to_string()),
-                                        ("reserve", &plan.synthesis_reserve.to_string()),
-                                    ],
-                                )
-                            };
-                            let confirmation = if plan.requires_confirmation {
-                                t(loc, "workflow_studio.portfolio.review_required")
-                            } else {
-                                t(loc, "workflow_studio.portfolio.auto_ok")
-                            };
-                            let deferred = (!plan.deferred.is_empty()).then(|| {
-                                let items = plan
-                                    .deferred
-                                    .iter()
-                                    .map(|item| format!("{} ({})", item.name, item.reason))
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
-                                tf(loc, "workflow_studio.portfolio.deferred", &[("items", &items)])
-                            });
+                            let description_label = planner_label.clone();
                             view! {
                                 <section class="portfolio-plan-card" data-testid="portfolio-plan-card">
                                     <strong>{summary}</strong>
-                                    <p>{budget}</p>
-                                    <ul>{plan.selected.into_iter().map(|item| view! {
-                                        <li><code>{format!("{}:{}", item.scope, item.skill_id)}</code>
-                                            {format!(" · {} tokens · {}", item.node_budget, item.reasons.join("; "))}</li>
+                                    <p>{plan.rationale}</p>
+                                    <ul>{plan.tasks.into_iter().map(|task| {
+                                        let skills = task.skill_ids.join(", ");
+                                        let dependencies = task.depends_on.join(", ");
+                                        let skill_text = (!skills.is_empty()).then(|| tf(
+                                            loc,
+                                            "workflow_studio.portfolio.task_skills",
+                                            &[("skills", &skills)],
+                                        ));
+                                        let dependency_text = (!dependencies.is_empty()).then(|| tf(
+                                            loc,
+                                            "workflow_studio.portfolio.task_after",
+                                            &[("tasks", &dependencies)],
+                                        ));
+                                        view! {
+                                            <li><code>{task.id}</code>
+                                                {format!(" · {}", task.rationale)}
+                                                {skill_text.map(|text| view! {
+                                                    <span>{format!(" · {text}")}</span>
+                                                })}
+                                                {dependency_text.map(|text| view! {
+                                                    <span>{format!(" · {text}")}</span>
+                                                })}
+                                            </li>
+                                        }
                                     }).collect_view()}</ul>
-                                    {deferred.map(|text| view! {
-                                        <p data-testid="portfolio-deferred">{text}</p>
-                                    })}
-                                    <p>{confirmation}</p>
+                                    <p>{move || t(locale.get(), "workflow_studio.portfolio.validated_unbudgeted")}</p>
                                     <div class="row">
                                         <button type="button" class="primary" data-testid="portfolio-edit-studio"
                                             on:click=move |_| {
@@ -3507,11 +3506,11 @@ pub(super) fn workflow_studio(
                                                     t(locale.get_untracked(), "workflow_studio.portfolio.template_name").into(),
                                                 );
                                                 template_description.set(
-                                                    t(
+                                                    tf(
                                                         locale.get_untracked(),
                                                         "workflow_studio.portfolio.template_description",
-                                                    )
-                                                    .into(),
+                                                        &[("model", &description_label)],
+                                                    ),
                                                 );
                                                 creating.set(true);
                                                 loaded_id.set(None);
@@ -3530,7 +3529,7 @@ pub(super) fn workflow_studio(
                                 {move || t(locale.get(), "settings.cancel")}
                             </button>
                             <button type="button" class="primary" data-testid="portfolio-generate"
-                                disabled=move || portfolio_loading.get()
+                                disabled=move || portfolio_loading.get() || portfolio_model_id.get().is_empty()
                                 on:click=generate_portfolio>
                                 {move || if portfolio_loading.get() {
                                     t(locale.get(), "workflow_studio.portfolio.planning")

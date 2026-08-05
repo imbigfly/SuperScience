@@ -4378,7 +4378,7 @@ fn delegation_prompt(request: &AgentDelegationRequest) -> anyhow::Result<String>
 /// Models frequently wrap the requested JSON in Markdown fences or narrative
 /// text, so after a strict whole-message parse this scans for embedded
 /// balanced JSON values and skips past each recovered one.
-fn extract_json_candidates(raw: &str) -> Vec<Value> {
+pub(crate) fn extract_json_candidates(raw: &str) -> Vec<Value> {
     let trimmed = raw.trim();
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
         return vec![value];

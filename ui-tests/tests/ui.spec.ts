@@ -2211,7 +2211,7 @@ test("Workflow library includes the Wisp-native seven-node method-search DAG", a
   await expect(studio.getByTestId("workflow-save")).toHaveText("Save as copy");
 });
 
-test("Skill Portfolio Planner confirms budget and opens an editable DAG", async ({ page }) => {
+test("Skill Portfolio Planner uses the selected model and opens an unbudgeted editable DAG", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Workflows");
   const studio = page.getByTestId("workflow-studio");
@@ -2222,14 +2222,27 @@ test("Skill Portfolio Planner confirms budget and opens an editable DAG", async 
   await expect(page.getByTestId("portfolio-planner-overlay")).toBeHidden();
 
   await studio.getByTestId("portfolio-planner-open").click();
+  await expect(page.getByTestId("portfolio-planner-overlay")).toContainText(
+    "Ask a selected model to build an explainable workflow",
+  );
+  await expect(page.getByTestId("portfolio-tier")).toHaveCount(0);
+  await expect(page.getByTestId("portfolio-total")).toHaveCount(0);
+  await expect(page.getByTestId("portfolio-reserve")).toHaveCount(0);
+  await page.getByTestId("portfolio-model").selectOption("opus");
   await page.getByTestId("portfolio-request").fill("Design an oncology omics study");
   await page.getByTestId("portfolio-generate").click();
+  await expect.poll(() => lastInvokeArgs(page, "plan_skill_portfolio")).toEqual({
+    request: {
+      request: "Design an oncology omics study",
+      model_id: "opus",
+    },
+  });
   const card = page.getByTestId("portfolio-plan-card");
-  await expect(card).toContainText("3 Skills · 3 batches · max 2 parallel");
-  await expect(page.getByTestId("portfolio-deferred")).toContainText("insufficient_token_budget");
+  await expect(card).toContainText("3 tasks · 2 Skills · planned by opus-4.8");
+  await expect(card).toContainText("Task budgets are unset");
   await card.getByTestId("portfolio-edit-studio").click();
-  await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(4);
-  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(3);
+  await expect(studio.getByTestId("workflow-graph-node")).toHaveCount(3);
+  await expect(studio.getByTestId("workflow-graph-edge")).toHaveCount(2);
 });
 
 test("Workflow Studio reuses the roundtable generator and saves a Quick Action binding", async ({ page }) => {

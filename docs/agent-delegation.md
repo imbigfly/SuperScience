@@ -462,21 +462,17 @@ the coordination paths.
 
 ## Skill Portfolio Planner
 
-Workflow Studio can generate a draft from the current effective Skill Catalog. The planner
-normalizes the research request, applies deterministic lexical and `wisp` metadata scoring, and
-selects a compact, standard, or deep complementary portfolio. Budgets are an advanced override: a
-total budget of 0 (the default) leaves every node unlimited, and the preflight numbers are shown
-as estimates only. With a bounded total, preflight budgets each node for the rendered Skill
-instruction plus the request, a fixed sub-Agent loop allowance (system prompt, tool round trips,
-and search results), and the node output allowance; it reserves synthesis tokens before selecting
-child nodes and defers lower-ranked optional candidates when the remaining child budget is
-insufficient.
+Workflow Studio can ask a user-selected configured chat model to generate a draft from the current
+effective Skill Catalog. The planning Agent receives the research request plus catalog summaries
+and returns a structured goal, rationale, selected Skill ids, node instructions, and dependency
+graph. There is no lexical/metadata ranking fallback: an unavailable model, invalid response, or
+invented Skill fails explicitly.
 
-The confirmation card shows exact Skill sources and reasons, selected and deferred nodes, node and
-total budgets, the synthesis reserve, the runtime maximum of two parallel Agents, and estimated DAG
-batches. Applying the card opens the generated nodes in Workflow Studio for editing. Network,
-execution, write, external-service, multi-Skill, deferred, standard, and deep plans require review;
-only a compact, low-cost, read-only plan can remain auto-safe.
+The host, not the model, derives capabilities from each selected Skill and validates that every
+Skill is currently effective, the required resources are available, and the task graph is valid
+and acyclic. Generated drafts always require review and open in Workflow Studio for editing.
+Planning does not estimate, reserve, or enforce token budgets; every generated node is unlimited
+until the user explicitly adds limits in Workflow Studio.
 
 The built-in **Data-driven research design** Workflow is the first validation template. It keeps
 the general planner domain-neutral while giving the final synthesis a strict eight-part schema:
