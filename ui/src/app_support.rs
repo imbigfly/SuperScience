@@ -28,6 +28,10 @@ use wasm_bindgen::JsCast;
 
 const MODEL_SWITCH_WARNING_DISABLED_KEY: &str = "wisp-model-switch-warning-disabled";
 const SSH_RETRY_STOPPED_MARKER: &str = "ssh automatic retry stopped";
+/// Text/code/CSV UI previews only pull a head — never 32 MiB into the WebView.
+const TEXT_PREVIEW_MAX_BYTES: u64 = 1024 * 1024;
+/// Even after a byte cap, pathological 1-byte lines would thrash the gutter.
+const TEXT_PREVIEW_MAX_LINES: usize = 8_000;
 
 thread_local! {
     static RUN_REFRESH_INITIALIZED: Cell<bool> = const { Cell::new(false) };
@@ -7727,48 +7731,25 @@ mod remote_file_path_tests {
     }
 }
 
-#[component]
-pub(super) fn CsvFilePreview(path: String) -> impl IntoView {
-    let locale = use_locale();
-    let table = create_rw_signal::<Option<TableData>>(None);
-    let err = create_rw_signal::<Option<String>>(None);
-    create_effect(move |_| {
-        let path = path.clone();
-        let loc = locale.get();
-        spawn_local(async move {
-            table.set(None);
-            err.set(None);
-            let fc = match load_file_content(&path, loc).await {
-                Ok(fc) => fc,
-                Err(e) => {
-                    err.set(Some(e));
-                    return;
-                }
-            };
-            match fc.text.as_deref().and_then(parse_csv_text) {
-                Some(t) => table.set(Some(t)),
-                None => err.set(Some(tf(loc, "err.file_not_found", &[("path", &path)]))),
-            }
-        });
-    });
-    move || match (table.get(), err.get()) {
-        (Some(t), _) => table_view(&t, locale.get()).into_view(),
-        (_, Some(e)) => view! { <div class="rp-error">{e}</div> }.into_view(),
-        _ => view! { <div class="rp-heavy">{move || t(locale.get(), "loading")}</div> }.into_view(),
-    }
-}
-
 /// Read a workspace file, a remote (SSH) file, an artifact, or a pinned
 /// artifact version — the four path spellings a preview can be handed — into
 /// its `FileContent`. All previews route through here so every kind (html,
 /// notebook, code, image, …) works for every spelling.
-async fn load_file_content(path: &str, loc: Locale) -> Result<FileContent, String> {
+///
+/// `max_bytes` is a soft head budget for text-ish files (backend truncates
+/// instead of rejecting). Binary paths still hard-fail above the higher
+/// full-file ceiling used by PDF/office.
+async fn load_file_content(
+    path: &str,
+    loc: Locale,
+    max_bytes: Option<u64>,
+) -> Result<FileContent, String> {
     let result = if let Some((context_id, remote_path)) = remote_file_path(path) {
-        invoke_checked(
-            "read_remote_file",
-            to_value(&serde_json::json!({ "contextId": context_id, "path": remote_path })).unwrap(),
-        )
-        .await
+        let mut args = serde_json::json!({ "contextId": context_id, "path": remote_path });
+        if let Some(n) = max_bytes {
+            args["maxBytes"] = serde_json::json!(n);
+        }
+        invoke_checked("read_remote_file", to_value(&args).unwrap()).await
     } else if let Some(version_id) = artifact_version_id_path(path) {
         invoke_checked(
             "read_artifact_version",
@@ -7784,7 +7765,7 @@ async fn load_file_content(path: &str, loc: Locale) -> Result<FileContent, Strin
     } else {
         invoke_checked(
             "read_file",
-            to_value(&tauri_args::read_file(path, Some(32 * 1024 * 1024))).unwrap(),
+            to_value(&tauri_args::read_file(path, max_bytes)).unwrap(),
         )
         .await
     };
@@ -7795,6 +7776,87 @@ async fn load_file_content(path: &str, loc: Locale) -> Result<FileContent, Strin
     }
 }
 
+fn preview_truncation_note(fc: &FileContent, shown_len: usize, locale: Locale) -> Option<String> {
+    let total = fc.total_bytes.unwrap_or(shown_len as u64);
+    let from_backend = fc.truncated;
+    let from_lines = fc
+        .text
+        .as_ref()
+        .is_some_and(|t| shown_len < t.len());
+    if !from_backend && !from_lines {
+        return None;
+    }
+    Some(tf(
+        locale,
+        "preview.text_truncated",
+        &[
+            ("shown", &format_bytes(shown_len as u64)),
+            ("total", &format_bytes(total.max(shown_len as u64))),
+        ],
+    ))
+}
+
+/// Cap rendered lines so a 1 MiB file of one-char lines cannot paint 1M gutters.
+fn clip_preview_text(text: &str) -> (String, usize) {
+    let mut lines = 0usize;
+    for (i, ch) in text.char_indices() {
+        if ch == '\n' {
+            lines += 1;
+            if lines >= TEXT_PREVIEW_MAX_LINES {
+                let end = i + ch.len_utf8();
+                return (text[..end].to_string(), end);
+            }
+        }
+    }
+    (text.to_string(), text.len())
+}
+
+fn text_preview_banner(note: Option<String>) -> View {
+    match note {
+        Some(message) => view! { <div class="preview-trunc-note">{message}</div> }.into_view(),
+        None => view! { <></> }.into_view(),
+    }
+}
+
+#[component]
+pub(super) fn CsvFilePreview(path: String) -> impl IntoView {
+    let locale = use_locale();
+    let table = create_rw_signal::<Option<TableData>>(None);
+    let note = create_rw_signal::<Option<String>>(None);
+    let err = create_rw_signal::<Option<String>>(None);
+    create_effect(move |_| {
+        let path = path.clone();
+        let loc = locale.get();
+        spawn_local(async move {
+            table.set(None);
+            note.set(None);
+            err.set(None);
+            let fc = match load_file_content(&path, loc, Some(TEXT_PREVIEW_MAX_BYTES)).await {
+                Ok(fc) => fc,
+                Err(e) => {
+                    err.set(Some(e));
+                    return;
+                }
+            };
+            let shown = fc.text.as_ref().map(|t| t.len()).unwrap_or(0);
+            note.set(preview_truncation_note(&fc, shown, loc));
+            match fc.text.as_deref().and_then(parse_csv_text) {
+                Some(t) => table.set(Some(t)),
+                None => err.set(Some(tf(loc, "err.file_not_found", &[("path", &path)]))),
+            }
+        });
+    });
+    move || match (table.get(), err.get()) {
+        (Some(t), _) => view! {
+            {text_preview_banner(note.get())}
+            {table_view(&t, locale.get()).into_view()}
+        }
+        .into_view(),
+        (_, Some(e)) => view! { <div class="rp-error">{e}</div> }.into_view(),
+        _ => view! { <div class="rp-heavy">{move || t(locale.get(), "loading")}</div> }.into_view(),
+    }
+}
+
 /// Text/source preview: line-numbered and syntax-highlighted via `RpCodeView`.
 /// The old plain-text mount dropped the file's newlines (`textContent` on a
 /// non-`pre` div), which is what made R/shell scripts render as one paragraph.
@@ -7802,6 +7864,7 @@ async fn load_file_content(path: &str, loc: Locale) -> Result<FileContent, Strin
 pub(super) fn CodeFilePreview(path: String, lang: String) -> impl IntoView {
     let locale = use_locale();
     let body = create_rw_signal::<Option<String>>(None);
+    let note = create_rw_signal::<Option<String>>(None);
     let err = create_rw_signal::<Option<String>>(None);
     let is_json = lang == "json";
     create_effect(move |_| {
@@ -7809,8 +7872,9 @@ pub(super) fn CodeFilePreview(path: String, lang: String) -> impl IntoView {
         let loc = locale.get();
         spawn_local(async move {
             body.set(None);
+            note.set(None);
             err.set(None);
-            let fc = match load_file_content(&path, loc).await {
+            let fc = match load_file_content(&path, loc, Some(TEXT_PREVIEW_MAX_BYTES)).await {
                 Ok(fc) => fc,
                 Err(e) => {
                     err.set(Some(e));
@@ -7823,15 +7887,22 @@ pub(super) fn CodeFilePreview(path: String, lang: String) -> impl IntoView {
                 err.set(Some(t(loc, "preview.unsupported_file")));
                 return;
             };
-            body.set(Some(if is_json {
+            let rendered = if is_json {
                 pretty_json(text)
             } else {
                 text.to_string()
-            }));
+            };
+            let (clipped, shown) = clip_preview_text(&rendered);
+            note.set(preview_truncation_note(&fc, shown, loc));
+            body.set(Some(clipped));
         });
     });
     move || match (body.get(), err.get()) {
-        (Some(text), _) => view! { <RpCodeView lang=lang.clone() body=text /> }.into_view(),
+        (Some(text), _) => view! {
+            {text_preview_banner(note.get())}
+            <RpCodeView lang=lang.clone() body=text />
+        }
+        .into_view(),
         (_, Some(e)) => view! { <div class="rp-error">{e}</div> }.into_view(),
         _ => view! { <div class="rp-heavy">{move || t(locale.get(), "loading")}</div> }.into_view(),
     }
@@ -7907,11 +7978,28 @@ pub(super) fn NotebookFilePreview(path: String) -> impl IntoView {
         spawn_local(async move {
             nb.set(None);
             err.set(None);
-            match load_file_content(&path, loc).await {
+            // Notebooks are JSON documents; allow a larger budget than plain
+            // text/code previews, still truncating so multi-hundred-MB dumps
+            // cannot freeze the UI.
+            match load_file_content(&path, loc, Some(8 * 1024 * 1024)).await {
                 // A .ipynb that doesn't parse is corrupt or not really a notebook;
                 // say so rather than drawing an empty cell list.
                 Ok(fc) => match parse_notebook(fc.text.as_deref().unwrap_or("")) {
                     Some(parsed) => nb.set(Some(parsed)),
+                    None if fc.truncated => err.set(Some(tf(
+                        loc,
+                        "preview.text_truncated",
+                        &[
+                            (
+                                "shown",
+                                &format_bytes(fc.text.as_ref().map(|t| t.len() as u64).unwrap_or(0)),
+                            ),
+                            (
+                                "total",
+                                &format_bytes(fc.total_bytes.unwrap_or(0)),
+                            ),
+                        ],
+                    ))),
                     None => err.set(Some(t(loc, "preview.unsupported_file"))),
                 },
                 Err(e) => err.set(Some(e)),
@@ -8634,11 +8722,14 @@ pub(super) fn FilePreview(dom_id: String, path: String, kind: String) -> impl In
                 let _ = mount_preview(&kind, &dom_id, &payload.to_string()).await;
                 return;
             }
-            // `load_file_content` reads up to the backend's 32 MB ceiling so a large
-            // produced figure or PDF still renders (the default 8 MB cap silently
-            // rejected them, #35), and surfaces the real backend error (size limit /
-            // outside project root / …) instead of a blanket "file not found".
-            let fc = match load_file_content(&path, loc).await {
+            // Images need a full under-budget payload; text-ish kinds only pull a
+            // head so multi-GB logs never enter the WebView (#large-text-preview).
+            let budget = if kind == "image" {
+                Some(32 * 1024 * 1024)
+            } else {
+                Some(TEXT_PREVIEW_MAX_BYTES)
+            };
+            let fc = match load_file_content(&path, loc, budget).await {
                 Ok(fc) => fc,
                 Err(message) => {
                     if let Some(el) = el {
@@ -8657,8 +8748,18 @@ pub(super) fn FilePreview(dom_id: String, path: String, kind: String) -> impl In
             }
             if kind == "markdown" {
                 if let Some(el) = el {
+                    let raw = fc.text.as_deref().unwrap_or("");
+                    let (clipped, shown) = clip_preview_text(raw);
+                    let mut html = String::new();
+                    if let Some(note) = preview_truncation_note(&fc, shown, loc) {
+                        html.push_str(&format!(
+                            "<div class=\"preview-trunc-note\">{}</div>",
+                            html_escape(&note)
+                        ));
+                    }
+                    html.push_str(&md_document_to_html(&clipped));
                     el.set_class_name("rp-heavy md");
-                    el.set_inner_html(&md_document_to_html(fc.text.as_deref().unwrap_or("")));
+                    el.set_inner_html(&html);
                     schedule_highlight(dom_id.clone());
                 }
                 return;
@@ -9485,7 +9586,7 @@ pub(super) fn ImageGenerationCard(
         let load_path = path.clone();
         let loc = locale.get_untracked();
         spawn_local(async move {
-            match load_file_content(&load_path, loc).await {
+            match load_file_content(&load_path, loc, Some(32 * 1024 * 1024)).await {
                 Ok(file) => match file.base64 {
                     Some(base64) => source.set(Some(format!("data:{};base64,{base64}", file.mime))),
                     None => preview_failed.set(true),
@@ -9630,7 +9731,7 @@ fn ArtifactThumb(path: Option<String>, kind: &'static str) -> impl IntoView {
         // artifact:/version:/ssh:// spellings the previews accept.
         let loc = locale.get_untracked();
         spawn_local(async move {
-            if let Ok(file) = load_file_content(&path, loc).await {
+            if let Ok(file) = load_file_content(&path, loc, Some(32 * 1024 * 1024)).await {
                 if let Some(base64) = file.base64 {
                     source.set(Some(format!("data:{};base64,{base64}", file.mime)));
                 }

@@ -123,11 +123,11 @@
         }
       }
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600">${cells.join("")}</svg>`;
-      return { path: name, mime: "image/svg+xml", text: null, base64: btoa(svg) };
+      return { path: name, mime: "image/svg+xml", text: null, base64: btoa(svg), truncated: false };
     }
     const text = mockFiles[ext];
-    if (text !== undefined) return { path: name, mime: "text/plain", text, base64: null };
-    return { path: name, mime: "text/csv", text: "gene,score\nFX-cell,0.91", base64: null };
+    if (text !== undefined) return { path: name, mime: "text/plain", text, base64: null, truncated: false };
+    return { path: name, mime: "text/csv", text: "gene,score\nFX-cell,0.91", base64: null, truncated: false };
   }
   const mockCredentials = {
     openalex_api_key: false,
