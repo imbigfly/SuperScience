@@ -851,6 +851,7 @@ fn App() -> impl IntoView {
     // Configured model profiles + the composer's bottom-right picker state.
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
     let active_session = create_rw_signal::<Option<String>>(None);
+    let session_has_items = create_memo(move |_| items.with(|rows| !rows.is_empty()));
     let conversation_outline = create_memo(move |_| {
         let Some(id) = active_session.get() else {
             return Vec::new();
@@ -9988,7 +9989,7 @@ fn App() -> impl IntoView {
                                 {compose_icon("controls")}
                             </button>
                             {move || agent_menu_open.get().then(|| {
-                                let locked = items.with(|rows| !rows.is_empty());
+                                let locked = session_has_items.get();
                                 view! {
                                 <div class="compose-backdrop" on:click=move |_| {
                                     agent_menu_open.set(false);
@@ -10511,7 +10512,7 @@ fn App() -> impl IntoView {
                                                     session_model_ids.with(|models| models.get(&session_id).cloned())
                                                 });
                                                 let acp_selected = active_acp_agent_id.get().is_some();
-                                                let acp_locked = acp_selected && items.with(|rows| !rows.is_empty());
+                                                let acp_locked = acp_selected && session_has_items.get();
                                                 list.into_iter().filter(ModelProfile::is_chat_model).map(|m| {
                                                     let pick_id = m.id.clone();
                                                     let pick_label = m.label.clone();
@@ -10558,7 +10559,7 @@ fn App() -> impl IntoView {
                                                 {acp_agents.get().into_iter().map(|agent| {
                                                     let id = agent.id.clone();
                                                     let active = active_acp_agent_id.get().as_deref() == Some(agent.id.as_str());
-                                                    let starts_new_session = items.with(|rows| !rows.is_empty()) && !active;
+                                                    let starts_new_session = session_has_items.get() && !active;
                                                     view! {
                                                         <div class="model-menu-row" class:active=active>
                                                             <button type="button" class="model-menu-pick"
