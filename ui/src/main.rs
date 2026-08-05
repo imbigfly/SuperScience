@@ -8030,9 +8030,20 @@ fn App() -> impl IntoView {
                                         .map(|index| index.to_string())
                                         .collect::<Vec<_>>()
                                         .join(" ");
+                                    let user_index = list[..start]
+                                        .iter()
+                                        .filter(|item| matches!(item, ChatItem::User(_)))
+                                        .count()
+                                        .checked_sub(1)
+                                        .map(|index| index + user_offset);
+                                    let duration_ms = user_index
+                                        .and_then(|index| outline.iter().find(|entry| entry.user_index == index))
+                                        .and_then(|entry| turn_duration_ms(entry.sent_at, entry.response_at));
+                                    duration_ms.hash(&mut h);
                                     rows.push((thread_session_id.clone(), start, h.finish(), ThreadRow::Activity {
                                         indices,
                                         ui_indices,
+                                        duration_ms,
                                     }));
                                     i = end;
                                 } else if is_tool_activity(&list[i]) {
@@ -8162,13 +8173,14 @@ fn App() -> impl IntoView {
                                                 group_items,
                                                 live,
                                                 false,
+                                                None,
                                                 group_id,
                                                 step_disclosure_state,
                                             )
                                         }</div>
                                     }.into_view()
                                 },
-                                ThreadRow::Activity { indices, ui_indices } => {
+                                ThreadRow::Activity { indices, ui_indices, duration_ms } => {
                                     let group_id = format!("{session_id}:activity:{start}");
                                     let group_items = items.with_untracked(|list| {
                                         indices.iter().map(|&j| list[j].clone()).collect::<Vec<_>>()
@@ -8179,6 +8191,7 @@ fn App() -> impl IntoView {
                                                 group_items,
                                                 false,
                                                 true,
+                                                duration_ms,
                                                 group_id,
                                                 step_disclosure_state,
                                             )

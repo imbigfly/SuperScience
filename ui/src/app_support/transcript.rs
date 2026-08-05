@@ -145,6 +145,12 @@ pub(crate) fn transcript_item_timestamp(
     }
 }
 
+pub(crate) fn turn_duration_ms(sent_at: Option<i64>, response_at: Option<i64>) -> Option<u64> {
+    let sent_at = sent_at.filter(|timestamp| *timestamp > 0)?;
+    let response_at = response_at.filter(|timestamp| *timestamp >= sent_at)?;
+    Some(response_at.saturating_sub(sent_at) as u64 * 1_000)
+}
+
 pub(crate) fn merge_conversation_outline(
     persisted: &[SessionOutlineItem],
     items: &[ChatItem],
@@ -258,7 +264,7 @@ mod transcript_render_window_tests {
 mod conversation_outline_tests {
     use super::{
         conversation_outline_target_is_loaded, merge_conversation_outline,
-        transcript_item_timestamp, user_turn_index,
+        transcript_item_timestamp, turn_duration_ms, user_turn_index,
     };
     use crate::dto::{ChatItem, SessionOutlineItem};
 
@@ -324,6 +330,13 @@ mod conversation_outline_tests {
         assert_eq!(user_turn_index(&items, 2), Some(1));
         assert!(conversation_outline_target_is_loaded(&items, 1, 2));
         assert!(!conversation_outline_target_is_loaded(&items, 1, 0));
+    }
+
+    #[test]
+    fn turn_duration_uses_the_turn_boundaries() {
+        assert_eq!(turn_duration_ms(Some(100), Some(480)), Some(380_000));
+        assert_eq!(turn_duration_ms(Some(100), None), None);
+        assert_eq!(turn_duration_ms(Some(100), Some(99)), None);
     }
 }
 
