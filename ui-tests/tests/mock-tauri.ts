@@ -3836,6 +3836,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (String(arg("message") ?? "").includes("RZSTREAM")) {
               // Staggered reasoning deltas keep rebuilding the fingerprint-keyed
               // chat row; the expanded thinking block must not snap shut.
+              // `Done` settles the turn and moves the reasoning into the steps
+              // group (details.rz disappears), so it stays far out: on slow CI
+              // runners the click+assert chain itself can take several seconds,
+              // and the test must finish it inside the live window.
               return await new Promise<string>((resolve) => {
                 setTimeout(() => {
                   emit("agent", { kind: "User", frame_id: fid, text: msg });
@@ -3843,12 +3847,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 }, 30);
                 setTimeout(() => {
                   emit("agent", { kind: "Reasoning", frame_id: fid, delta: " More reasoning arrives." });
-                }, 1_200);
+                }, 3_000);
                 setTimeout(() => {
                   emit("agent", { kind: "Text", frame_id: fid, delta: "Stream done." });
                   emit("agent", { kind: "Done", frame_id: fid });
                   resolve(fid);
-                }, 1_500);
+                }, 12_000);
               });
             }
             if (String(arg("message") ?? "").includes("RNOTEBOOK")) {
