@@ -6497,6 +6497,12 @@ test("opening a long conversation lands at the latest message and stays stable o
   await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(before - 240);
 
   const readingPosition = await scroller.evaluate((element) => element.scrollTop);
+  // Unfollow flips overflow-anchor back to auto, but Chromium only picks a
+  // scroll anchor at layout time. Wait for a frame so the anchor is armed —
+  // otherwise a same-frame prepend is never compensated (#663).
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
   await page.evaluate(() => {
     const thread = document.getElementById("chat-thread");
     const spacer = document.createElement("div");
