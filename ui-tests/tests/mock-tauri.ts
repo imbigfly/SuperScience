@@ -319,8 +319,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       files: memoryFilesFor(id),
     };
   };
-  const resolveMemoryProjectId = (args: any, arg: (key: string) => any) => {
-    const raw = arg("project_id") ?? arg("projectId");
+  // Tauri v2 binds command arguments by camelCase name only, so the mock must
+  // reject snake_case here or it hides real "browsed project is ignored" bugs.
+  const resolveMemoryProjectId = (_args: any, arg: (key: string) => any) => {
+    const raw = arg("projectId");
     if (raw == null || String(raw) === "") return activeProjectId || "default";
     return String(raw);
   };

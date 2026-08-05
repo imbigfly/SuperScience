@@ -4190,7 +4190,7 @@ fn App() -> impl IntoView {
         spawn_local(async move {
             let arg = to_value(&serde_json::json!({
                 "name": name,
-                "project_id": project_id,
+                "projectId": project_id,
             }))
             .unwrap();
             let v = invoke("read_memory_file", arg).await;

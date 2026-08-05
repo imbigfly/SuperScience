@@ -2398,24 +2398,6 @@ button.workflow-graph-port.output.active {
   color: var(--text-muted);
   line-height: 1.5;
 }
-.memory-split {
-  display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
-  gap: 0;
-  min-height: 280px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-.memory-files {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  border-right: 1px solid var(--border);
-  background: var(--bg-sunken);
-  overflow-y: auto;
-  max-height: min(52vh, 420px);
-}
 .memory-file-add {
   margin: 10px;
   padding: 7px 10px;
@@ -2429,46 +2411,19 @@ button.workflow-graph-port.output.active {
   text-align: left;
 }
 .memory-file-add:hover { border-color: var(--clay); color: var(--clay); background: var(--bg-elev); }
-.memory-file-row {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  width: 100%;
-  padding: 10px 12px;
-  border: none;
-  border-bottom: 1px solid var(--border);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-  font: inherit;
-}
-.memory-file-row:hover { background: var(--bg-elev); }
-.memory-file-row-active { background: var(--bg-elev); box-shadow: inset 2px 0 0 var(--clay); }
-.memory-file-name { font-size: 13px; font-weight: 550; color: var(--text); word-break: break-all; }
-.memory-file-meta { font-size: 11px; color: var(--text-faint); }
-.memory-cat-row { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
-.memory-cat-input {
-  margin: 10px;
-  padding: 7px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-xs);
-  background: var(--bg-input);
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-}
 .memory-notes {
   display: flex;
   flex-direction: column;
   min-width: 0;
   background: var(--bg-elev);
-  max-height: min(52vh, 420px);
-  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden auto;
+  max-height: min(60vh, 480px);
 }
 .memory-notes .memory-file-list { margin: 0; border: none; border-radius: 0; }
 .memory-notes .memory-file-add { margin: 10px 12px; align-self: flex-start; }
-.memory-empty, .memory-select-hint {
+.memory-empty {
   margin: 0;
   padding: 16px 12px;
   font-size: 13px;
@@ -2495,10 +2450,6 @@ button.workflow-graph-port.output.active {
   font: inherit;
   font-size: 13px;
   line-height: 1.55;
-}
-@media (max-width: 680px) {
-  .memory-split { grid-template-columns: 1fr; }
-  .memory-files { border-right: none; border-bottom: 1px solid var(--border); max-height: 180px; }
 }
 .settings-list-remove,
 .settings-list-edit {

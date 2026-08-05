@@ -504,10 +504,42 @@ test("Memory settings can browse another project's notes without switching works
   await expect(page.getByText("other-2026-07-02.md", { exact: true })).toBeVisible();
   await expect(page.getByText("2026-07-01.md", { exact: true })).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "get_memory_view")).toMatchObject({
-    project_id: "other",
+    projectId: "other",
   });
   // Browsing memory must not switch the active chat project.
   await expect.poll(() => invokeArgsList(page, "open_project")).toHaveLength(openProjectCalls.length);
+});
+
+test("Memory settings edit and delete notes in the browsed project", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+  await page.getByTestId("memory-project-select").click();
+  await page.getByTestId("memory-project-option-other").click();
+  await expect(page.getByText("other-2026-07-02.md", { exact: true })).toBeVisible();
+
+  await page.getByText("other-2026-07-02.md", { exact: true }).click();
+  const editor = page.locator(".memory-editor-text");
+  await expect(editor).toHaveValue("Notes for other workspace.");
+  await expect.poll(() => lastInvokeArgs(page, "read_memory_file")).toMatchObject({
+    name: "other-2026-07-02.md",
+    projectId: "other",
+  });
+
+  await editor.fill("Edited from the picker.");
+  await page.getByRole("button", { name: "Save note" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "write_memory_file")).toMatchObject({
+    name: "other-2026-07-02.md",
+    content: "Edited from the picker.",
+    projectId: "other",
+  });
+
+  await page.getByRole("button", { name: "Delete file" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "delete_memory_file")).toMatchObject({
+    name: "other-2026-07-02.md",
+    projectId: "other",
+  });
+  await expect(page.getByText("other-2026-07-02.md", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("No notes yet.")).toBeVisible();
 });
 
 test("Memory project picker consumes Escape before leaving Settings", async ({ page }) => {
@@ -8176,19 +8208,6 @@ test("a ?project window opens straight into the project, skipping the landing (#
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "open_project"),
   )).toBe(true);
-});
-
-test("Escape closes settings-local menus before Settings", async ({ page }) => {
-  await enterApp(page);
-  await openSettingsSection(page, "Memory");
-  await page.getByRole("button", { name: /New category/ }).click();
-  const category = page.getByPlaceholder("Category name, press Enter");
-  await expect(category).toBeVisible();
-
-  await page.keyboard.press("Escape");
-
-  await expect(category).toHaveCount(0);
-  await expect(page.locator(".settings-page")).toBeVisible();
 });
 
 test("specialists page configures the builtin Reader and saves a custom specialist", async ({ page }) => {
