@@ -6306,6 +6306,21 @@ test("chat keeps the user's reading position when streaming finishes (#670)", as
   await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(readingTop - 40);
 });
 
+test("agent options stay mounted while chat content streams (#678)", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("SCROLLTEST");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("line 10", { exact: false })).toBeVisible({ timeout: 10_000 });
+
+  await page.getByRole("button", { name: "Agent options" }).click();
+  const menu = page.getByRole("menu", { name: "Agent options" });
+  await expect(menu).toBeVisible();
+  await menu.evaluate((element) => ((window as any).__streamingAgentMenu = element));
+
+  await expect(page.getByText("line 79", { exact: false })).toBeVisible({ timeout: 10_000 });
+  expect(await menu.evaluate((element) => element === (window as any).__streamingAgentMenu)).toBe(true);
+});
+
 test("recent sessions show only title and status badge", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 });
   await page.goto("/");
