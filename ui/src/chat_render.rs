@@ -235,6 +235,7 @@ pub(crate) enum ThreadRow {
     Activity {
         indices: Vec<usize>,
         ui_indices: String,
+        duration_ms: Option<u64>,
     },
 }
 
@@ -322,6 +323,7 @@ pub(crate) fn render_steps_group(
     items: Vec<ChatItem>,
     live: bool,
     completed_turn: bool,
+    turn_duration_ms: Option<u64>,
     group_id: String,
     disclosure_state: RwSignal<HashMap<String, bool>>,
 ) -> impl IntoView {
@@ -331,22 +333,27 @@ pub(crate) fn render_steps_group(
         .filter(|c| matches!(c, ChatItem::Tool { .. } | ChatItem::AcpTool { .. }))
         .count();
     let now = now_ms();
-    let total_ms: u64 = items
-        .iter()
-        .map(|c| match c {
-            ChatItem::Tool {
-                duration_ms: Some(d),
-                ..
-            } => *d,
-            ChatItem::Tool {
-                duration_ms: None,
-                started_at_ms: Some(s),
-                ok: None,
-                ..
-            } if live => now.saturating_sub(*s),
-            _ => 0,
-        })
-        .sum();
+    let total_ms = turn_duration_ms.unwrap_or_else(|| {
+        if completed_turn {
+            return 0;
+        }
+        items
+            .iter()
+            .map(|c| match c {
+                ChatItem::Tool {
+                    duration_ms: Some(d),
+                    ..
+                } => *d,
+                ChatItem::Tool {
+                    duration_ms: None,
+                    started_at_ms: Some(s),
+                    ok: None,
+                    ..
+                } if live => now.saturating_sub(*s),
+                _ => 0,
+            })
+            .sum()
+    });
     let total_label =
         (total_ms > 0 && (!live || n_tools > 0)).then(|| format_duration_ms(total_ms));
     // A settled step-count header reads better with the duration inline; the
