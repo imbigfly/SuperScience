@@ -709,14 +709,32 @@ pub(super) fn SettingsView(
             memory_new_cat_open.set(false);
             return true;
         }
-        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-            return false;
-        };
-        let Ok(Some(details)) = document.query_selector("details.settings-add-menu[open]") else {
-            return false;
-        };
-        let _ = details.remove_attribute("open");
-        true
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            if let Ok(Some(details)) = document.query_selector("details.settings-add-menu[open]") {
+                let _ = details.remove_attribute("open");
+                return true;
+            }
+        }
+        if quick_action_form.get_untracked().is_some() {
+            quick_action_form.set(None);
+            return true;
+        }
+        // Breadcrumb subpages (memory file, model/ACP/specialist/conn/channel
+        // editors): one Escape returns to the section list, not the app.
+        let has_subpage = memory_selected.get_untracked().is_some()
+            || model_form.get_untracked().is_some()
+            || acp_form.get_untracked().is_some()
+            || specialist_form.get_untracked().is_some()
+            || conn_form.get_untracked().is_some()
+            || open_conn_key.get_untracked().is_some()
+            || channels_open.get_untracked().is_some();
+        if has_subpage {
+            close_settings_subpage.call(());
+            return true;
+        }
+        // Workflow Studio is a full-page settings surface; its own Escape
+        // stack (connect → portfolio → back) is registered later and wins.
+        false
     });
     create_effect(move |_| {
         if show_settings.get() && settings_section.get() == "environments" {

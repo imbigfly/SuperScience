@@ -2046,6 +2046,16 @@ fn workflow_graph_editor(
         connect_dragging.set(false);
     };
 
+    // Studio-level Escape may clear `connect_from_key` without calling
+    // `cancel_connect`; keep the rubber-band state in sync.
+    create_effect(move |_| {
+        if connect_from_key.get().is_none() {
+            connect_cursor.set(None);
+            connect_origin.set(None);
+            connect_dragging.set(false);
+        }
+    });
+
     let mark_node_entering = move |key: u32| {
         entering_node_keys.update(|keys| {
             keys.insert(key);
@@ -2146,14 +2156,6 @@ fn workflow_graph_editor(
         entering_node_keys.update(|entering| {
             entering.retain(|key| keys.contains(key));
         });
-    });
-
-    window_capture_escape(move || {
-        if connect_from_key.get_untracked().is_some() {
-            cancel_connect();
-            return true;
-        }
-        false
     });
 
     let create_parallel_node = move || {
@@ -2924,11 +2926,18 @@ pub(super) fn workflow_studio(
     let portfolio_draft = create_rw_signal::<Option<SkillPortfolioDraft>>(None);
     let portfolio_loading = create_rw_signal(false);
 
+    // Escape stack for the studio surface (registered while Workflows is open):
+    // cancel in-progress connect → close portfolio planner → leave studio.
     window_capture_escape(move || {
-        if !portfolio_open.get_untracked() {
-            return false;
+        if connect_from_key.get_untracked().is_some() {
+            connect_from_key.set(None);
+            return true;
         }
-        portfolio_open.set(false);
+        if portfolio_open.get_untracked() {
+            portfolio_open.set(false);
+            return true;
+        }
+        on_back.call(());
         true
     });
 

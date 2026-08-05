@@ -412,6 +412,37 @@ test("problem report consumes Escape before Settings (#596)", async ({ page }) =
   await expect(page.locator(".settings-page")).toBeVisible();
 });
 
+test("settings subpages consume Escape before leaving Settings", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+  await page.getByText("2026-07-01.md", { exact: true }).click();
+  await expect(page.locator(".memory-editor-text")).toBeVisible();
+  await expect(page.locator(".settings-breadcrumb")).toContainText("2026-07-01.md");
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".memory-editor-text")).toHaveCount(0);
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect(page.locator(".settings-nav button.active")).toHaveText("Memory");
+  await expect(page.getByText("2026-07-01.md", { exact: true })).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+});
+
+test("Workflow Studio Escape returns to Quick Actions before leaving Settings", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Workflows");
+  await expect(page.getByTestId("workflow-studio")).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("workflow-studio")).toHaveCount(0);
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect(page.locator(".settings-nav button.active")).toHaveText("Quick Actions");
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+});
+
 test("background Agent completion appears in its owning conversation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("start background analysis");
