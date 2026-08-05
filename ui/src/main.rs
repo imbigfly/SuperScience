@@ -35,8 +35,8 @@ use bindings::{
     invoke, invoke_checked, invoke_timeout, is_mac, is_windows, jump_chat_to_item,
     jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
     listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_image_count,
-    preserve_chat_prepend_position, preview_selection, schedule_chat_follow, set_saved_marks,
-    CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    preserve_chat_prepend_position, preview_selection, schedule_chat_follow,
+    schedule_run_output_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -5430,6 +5430,10 @@ fn App() -> impl IntoView {
         let ticks = Cell::new(0_u8);
         let refresh = Closure::wrap(Box::new(move || {
             run_clock.set(now_secs());
+            // The clock rebuilds every active run card to redraw its elapsed
+            // time, which resets the output panel's scroll. Re-pin it here so
+            // the panel does not depend on a run-list poll landing this tick.
+            schedule_run_output_follow();
             let tick = (ticks.get() + 1) % 5;
             ticks.set(tick);
             let transfer_active = run_records.get_untracked().iter().any(|run| {

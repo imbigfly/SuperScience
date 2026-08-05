@@ -71,7 +71,16 @@ pub(crate) fn refresh_runs(into: RwSignal<Vec<RunRecord>>, locale: RwSignal<Loca
                 }
                 initialized && added
             });
-            into.set(list);
+            // The poll runs every second while the agent is busy. Setting the
+            // signal unconditionally rebuilds every run card, which resets the
+            // output panel's scroll to the top for a frame — a finished run
+            // visibly jumped once per poll with nothing to show for it (#654).
+            if into.with_untracked(|current| current != &list) {
+                into.set(list);
+            }
+            // Unconditional: the elapsed-time clock rebuilds active run cards
+            // even when this poll changed nothing, and a rebuilt panel needs
+            // re-pinning either way.
             schedule_run_output_follow();
             RUN_REFRESH_INITIALIZED.with(|ready| ready.set(true));
             if should_toast {
