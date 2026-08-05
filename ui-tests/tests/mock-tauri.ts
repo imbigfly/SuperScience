@@ -1968,6 +1968,61 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               pet_enabled: mockPetEnabled,
               pet_directory: mockPetDirectory,
             };
+          case "get_token_usage":
+            return {
+              workspaces: [
+                {
+                  project_id: "default",
+                  name: project.name,
+                  workspace_dir: project.root,
+                  updated_at: Math.floor(Date.now() / 1000),
+                  session_count: 23,
+                  input: 120000,
+                  output: 30000,
+                  reasoning: 8000,
+                  cached: 90000,
+                },
+                {
+                  project_id: "other",
+                  name: "Other project",
+                  workspace_dir: "/mock/other",
+                  updated_at: Math.floor(Date.now() / 1000) - 3600,
+                  session_count: 2,
+                  input: 20000,
+                  output: 5000,
+                  reasoning: 1000,
+                  cached: 12000,
+                },
+              ],
+              days: Array.from({ length: 371 }, (_, index) => {
+                const date = new Date(Date.UTC(2025, 7, 4 + index));
+                return {
+                  date: date.toISOString().slice(0, 10),
+                  tokens: index % 9 === 0 ? (index + 1) * 75 : 0,
+                  future: index > 366,
+                };
+              }),
+              models: [
+                { model: "deepseek-v4-pro", tokens: 120000 },
+                { model: "opus-4.8", tokens: 30000 },
+              ],
+            };
+          case "get_session_token_usage": {
+            const projectId = String(arg("projectId") ?? "default");
+            const total = projectId === "default" ? 23 : 2;
+            const offset = Math.max(0, Number(arg("offset") ?? 0));
+            const limit = Math.max(1, Number(arg("limit") ?? 20));
+            const items = Array.from({ length: total }, (_, index) => ({
+              id: `${projectId}-usage-${index + 1}`,
+              title: `${projectId === "default" ? "Workspace" : "Other"} session ${index + 1}`,
+              updated_at: Math.floor(Date.now() / 1000) - index * 60,
+              input: 5000 + index,
+              output: 1000 + index,
+              reasoning: 200 + index,
+              cached: 3000 + index,
+            }));
+            return { items: items.slice(offset, offset + limit), total };
+          }
           case "get_pet":
             return {
               enabled: mockPetEnabled,

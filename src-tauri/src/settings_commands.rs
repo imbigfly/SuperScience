@@ -13,6 +13,13 @@ use wisp_store::secrets::Secret;
 
 const SYNC_RELAY_TOKEN: &str = "sync_relay_token";
 
+#[derive(serde::Serialize)]
+pub(super) struct TokenUsageOverview {
+    workspaces: Vec<wisp_store::ProjectTokenUsage>,
+    days: Vec<wisp_store::TokenUsageDay>,
+    models: Vec<wisp_store::ModelTokenUsage>,
+}
+
 async fn validate_provider_config(
     provider_name: &str,
     mut cfg: wisp_llm::ProviderConfig,
@@ -882,10 +889,39 @@ pub(super) async fn get_storage_usage(
 #[tauri::command]
 pub(super) async fn get_token_usage(
     state: State<'_, AppState>,
-) -> Result<Vec<wisp_store::SessionTokenUsage>, String> {
+) -> Result<TokenUsageOverview, String> {
+    let workspaces = state
+        .store
+        .token_usage_by_project()
+        .await
+        .map_err(|error| error.to_string())?;
+    let days = state
+        .store
+        .token_usage_activity()
+        .await
+        .map_err(|error| error.to_string())?;
+    let models = state
+        .store
+        .token_usage_by_model()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(TokenUsageOverview {
+        workspaces,
+        days,
+        models,
+    })
+}
+
+#[tauri::command]
+pub(super) async fn get_session_token_usage(
+    state: State<'_, AppState>,
+    project_id: String,
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<wisp_store::SessionTokenUsagePage, String> {
     state
         .store
-        .token_usage_by_session()
+        .token_usage_by_session(&project_id, offset.unwrap_or(0), limit.unwrap_or(20))
         .await
         .map_err(|error| error.to_string())
 }

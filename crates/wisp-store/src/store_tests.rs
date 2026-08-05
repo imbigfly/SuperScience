@@ -140,7 +140,18 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
-    store.create_project("p", "proj", "").await.unwrap();
+    store
+        .create_project("p", "Workspace A", "/workspace/a")
+        .await
+        .unwrap();
+    store
+        .create_project("p2", "Workspace B", "/workspace/b")
+        .await
+        .unwrap();
+    store
+        .create_project("scratch:usage", "Scratch", "/tmp/scratch")
+        .await
+        .unwrap();
     store
         .create_frame("root", "p", "OPERON", "m")
         .await
@@ -153,13 +164,14 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
         .create_child_frame("child", "root", "p", "Sub", "m")
         .await
         .unwrap();
-    let usage = |input: i64, output: i64| {
+    let now = chrono::Utc::now().timestamp();
+    let usage = |input: i64, output: i64, model: &str| {
         format!(
-            "{{\"kind\":\"Usage\",\"frame_id\":\"x\",\"round\":1,\"input\":{input},\"output\":{output},\"reasoning\":1,\"cached\":2,\"ctx_tokens\":0,\"max_context\":0}}"
+            "{{\"kind\":\"Usage\",\"frame_id\":\"x\",\"round\":1,\"model\":\"{model}\",\"created_at\":{now},\"input\":{input},\"output\":{output},\"reasoning\":1,\"cached\":2,\"ctx_tokens\":0,\"max_context\":0}}"
         )
     };
     store
-        .append_session_ui_event("root", 1, &usage(100, 10))
+        .append_session_ui_event("root", 1, &usage(100, 10, "model-a"))
         .await
         .unwrap();
     store
@@ -171,7 +183,39 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
         .await
         .unwrap();
     store
-        .append_session_ui_event("child", 1, &usage(50, 5))
+        .append_session_ui_event("child", 1, &usage(50, 5, "model-b"))
+        .await
+        .unwrap();
+    store
+        .create_frame("second", "p", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_message("second", 1, &Message::user("second session"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("second", 1, &usage(25, 3, "model-a"))
+        .await
+        .unwrap();
+    store
+        .create_frame("other", "p2", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_message("other", 1, &Message::user("other workspace"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("other", 1, &usage(30, 4, "model-b"))
+        .await
+        .unwrap();
+    store
+        .create_frame("scratch", "scratch:usage", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("scratch", 1, &usage(999, 999, "scratch-model"))
         .await
         .unwrap();
     // A session with no usage events must not appear at all.
@@ -180,14 +224,67 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
         .await
         .unwrap();
 
-    let rows = store.token_usage_by_session().await.unwrap();
-    assert_eq!(rows.len(), 1);
-    let row = &rows[0];
+    let workspaces = store.token_usage_by_project().await.unwrap();
+    assert_eq!(workspaces.len(), 2, "scratch usage stays out of Settings");
+    let workspace = workspaces
+        .iter()
+        .find(|workspace| workspace.project_id == "p")
+        .unwrap();
+    assert_eq!(workspace.name, "Workspace A");
+    assert_eq!(workspace.workspace_dir, "/workspace/a");
+    assert_eq!(workspace.session_count, 2);
+    assert_eq!(
+        (
+            workspace.input,
+            workspace.output,
+            workspace.reasoning,
+            workspace.cached,
+        ),
+        (175, 18, 3, 6)
+    );
+
+    let first_page = store.token_usage_by_session("p", 0, 1).await.unwrap();
+    let second_page = store.token_usage_by_session("p", 1, 1).await.unwrap();
+    assert_eq!(first_page.total, 2);
+    assert_eq!(first_page.items.len(), 1);
+    assert_eq!(second_page.items.len(), 1);
+    assert_ne!(first_page.items[0].id, second_page.items[0].id);
+    let full_page = store.token_usage_by_session("p", 0, 20).await.unwrap();
+    let row = full_page.items.iter().find(|row| row.id == "root").unwrap();
     assert_eq!(row.id, "root");
     assert_eq!(row.title, "hello usage");
     assert_eq!(
         (row.input, row.output, row.reasoning, row.cached),
         (150, 15, 2, 4)
+    );
+
+    let models = store.token_usage_by_model().await.unwrap();
+    assert_eq!(models.len(), 2);
+    assert_eq!(
+        models
+            .iter()
+            .find(|model| model.model == "model-a")
+            .unwrap()
+            .tokens,
+        138
+    );
+    assert_eq!(
+        models
+            .iter()
+            .find(|model| model.model == "model-b")
+            .unwrap()
+            .tokens,
+        89
+    );
+    assert_eq!(
+        store
+            .token_usage_activity()
+            .await
+            .unwrap()
+            .iter()
+            .map(|day| day.tokens)
+            .sum::<i64>(),
+        227
     );
 
     let _ = std::fs::remove_file(&tmp);
