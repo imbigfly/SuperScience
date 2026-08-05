@@ -3951,8 +3951,35 @@ pub(super) fn SettingsView(
                 {move || (settings_section.get() == "credentials").then(|| view! {
                     <div class="settings-pane">
                         <p class="settings-note">{move || t(locale.get(), "cred.desc")}</p>
-                        {CRED_GROUPS.iter().map(|g| view! {
-                            <div class="conn-group-label">{move || t(locale.get(), g.name_key)}</div>
+                        {CRED_GROUPS.iter().map(|g| {
+                            let tooltip_id = format!("cred-help-{}", g.id);
+                            let described_by = tooltip_id.clone();
+                            view! {
+                            <div class="cred-group-heading">
+                                <div class="conn-group-label">{move || t(locale.get(), g.name_key)}</div>
+                                <span class="cred-help">
+                                    <button
+                                        type="button"
+                                        class="cred-help-trigger"
+                                        aria-label=move || format!("{}: {}", t(locale.get(), g.name_key), t(locale.get(), "cred.help.aria"))
+                                        aria-describedby=described_by
+                                    >"?"</button>
+                                    <span id=tooltip_id class="cred-help-tooltip" role="tooltip">
+                                        <span class="cred-help-section">
+                                            <strong>{move || t(locale.get(), "cred.help.what")}</strong>
+                                            <span>{move || t(locale.get(), g.about_key)}</span>
+                                        </span>
+                                        <span class="cred-help-section">
+                                            <strong>{move || t(locale.get(), "cred.help.configured")}</strong>
+                                            <span>{move || t(locale.get(), g.configured_key)}</span>
+                                        </span>
+                                        <span class="cred-help-section">
+                                            <strong>{move || t(locale.get(), "cred.help.unconfigured")}</strong>
+                                            <span>{move || t(locale.get(), g.unconfigured_key)}</span>
+                                        </span>
+                                    </span>
+                                </span>
+                            </div>
                             <div class="settings-form-grid">
                                 {g.fields.iter().map(|f| {
                                     let id = f.id;
@@ -3986,8 +4013,22 @@ pub(super) fn SettingsView(
                                     }
                                 }).collect_view()}
                             </div>
-                            <p class="settings-note">{move || t(locale.get(), g.hint_key)}</p>
-                        }).collect_view()}
+                            <div class="cred-setup-note">
+                                <span>{move || t(locale.get(), g.hint_key)}</span>
+                                <span class="cred-setup-links">
+                                    {g.links.iter().map(|link| {
+                                        let url = link.url;
+                                        view! {
+                                            <button type="button" class="cred-external-link"
+                                                on:click=move |_| crate::bindings::open_external_url(url.into())>
+                                                <span>{move || t(locale.get(), link.label_key)}</span>
+                                                <span aria-hidden="true">"↗"</span>
+                                            </button>
+                                        }
+                                    }).collect_view()}
+                                </span>
+                            </div>
+                        }}).collect_view()}
                         <div class="conn-group-label">{move || t(locale.get(), "cred.custom.name")}</div>
                         <p class="settings-note">{move || t(locale.get(), "cred.custom.hint")}</p>
                         <For

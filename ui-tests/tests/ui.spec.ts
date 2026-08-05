@@ -5758,6 +5758,61 @@ test("command palette click shows checking feedback immediately", async ({ page 
   await expect(modal).toContainText("You're up to date", { timeout: 2_000 });
 });
 
+test("credential services explain their behavior and open official setup links", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Credentials");
+
+  await expect(page.locator(".cred-help-trigger")).toHaveCount(4);
+  const openAlexHelp = page.getByRole("button", { name: "OpenAlex: About this credential" });
+  const openAlexTooltip = page.locator("#cred-help-openalex");
+  await expect(openAlexTooltip).not.toBeVisible();
+  await openAlexHelp.hover();
+  await expect(openAlexTooltip).toBeVisible();
+  await expect(openAlexTooltip).toContainText("What it is");
+  await expect(openAlexTooltip).toContainText("When configured");
+  await expect(openAlexTooltip).toContainText("When not configured");
+  await expect(openAlexTooltip).toContainText("falls back to anonymous OpenAlex requests");
+
+  const ncbiHelp = page.getByRole("button", { name: "NCBI E-utilities (PubMed): About this credential" });
+  await ncbiHelp.focus();
+  await expect(page.locator("#cred-help-ncbi")).toBeVisible();
+  await expect(page.locator("#cred-help-ncbi")).toContainText("3 requests/s limit");
+
+  const links = [
+    ["Get OpenAlex API key", "https://openalex.org/settings/api"],
+    ["Open InfiniSynapse console", "https://app.infinisynapse.cn/tasks"],
+    ["Visit InfiniSynapse", "https://infinisynapse.cn"],
+    ["Get SCIMaster API key", "https://scimaster.bohrium.com/vibe-write/home"],
+    ["Open NCBI account", "https://www.ncbi.nlm.nih.gov/account/"],
+  ] as const;
+  for (const [label, url] of links) {
+    await page.getByRole("button", { name: label, exact: true }).click();
+    await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({ url });
+  }
+  await expect(page.locator(".settings-page")).toBeVisible();
+});
+
+test("Chinese NCBI credential help gives the complete account navigation path", async ({ page }) => {
+  await page.goto("/?mockLocale=zh");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "新建会话" })).toBeVisible();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "凭据", exact: true }).click();
+
+  const help = page.getByRole("button", { name: /NCBI E-utilities.*了解该凭据/ });
+  await help.focus();
+  const tooltip = page.locator("#cred-help-ncbi");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText("这是什么");
+  await expect(tooltip).toContainText("配置后");
+  await expect(tooltip).toContainText("未配置时");
+  await expect(tooltip).toContainText("每秒 3 次");
+  await expect(page.locator(".cred-setup-note", { hasText: "API Key Management" }))
+    .toContainText("右上角用户名");
+  await expect(page.getByRole("button", { name: "打开 NCBI 账户页面", exact: true }))
+    .toBeVisible();
+});
+
 test("credentials settings include SCIMaster and save its key", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Credentials");

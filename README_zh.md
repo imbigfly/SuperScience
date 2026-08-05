@@ -178,6 +178,7 @@ Wisp 可以启动任何已安装、通过 stdio 使用 ACP v1 的本地 Agent—
 模型配置保存在 `.wisp/wisp.sqlite`（Settings → Models）；字段说明见
 [模型配置](docs/model-configuration.md)。自定义凭据将名称映射到环境变量，
 只注入新启动的本地 Python 与内置 MCP 进程，绝不复制到 SSH/WSL 主机。
+内置凭据项会链接到各服务的官方配置页面，并说明集成用途以及未配置时 Wisp 的运行方式。
 
 **设置 → 存储**会逐个列出项目工作区路径；选择项目后，可单独查看该工作区的
 本地占用，并与应用共享数据区分开。
