@@ -55,7 +55,10 @@ pub use project_sync::ProjectSyncState;
 pub use project_transfer::ProjectTransferStats;
 pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
 pub use provenance::{canonical_json, canonical_json_sha256};
-pub use sessions::{SessionTokenUsage, SessionTranscriptPage};
+pub use sessions::{
+    ModelTokenUsage, ProjectTokenUsage, SessionTokenUsage, SessionTokenUsagePage,
+    SessionTranscriptPage, TokenUsageDay,
+};
 
 use anyhow::Result;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};

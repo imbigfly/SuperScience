@@ -487,6 +487,8 @@ fn persisted_usage_folds_per_turn_and_floats_to_tail() {
     let usage = |round, input, output, cached| AgentEvent::Usage {
         frame_id: frame_id.clone(),
         round,
+        model: "model".into(),
+        created_at: 1,
         input,
         output,
         reasoning: 0,

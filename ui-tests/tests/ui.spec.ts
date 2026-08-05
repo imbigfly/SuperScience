@@ -325,6 +325,48 @@ test("general settings can use Ctrl+Enter to send and Enter for newline", async 
   });
 });
 
+test("Usage groups workspaces, charts activity and models, and paginates sessions", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "Usage");
+
+  const usage = page.getByTestId("usage-pane");
+  await expect(usage).toBeVisible();
+  await expect(usage.locator(".usage-tile")).toHaveCount(4);
+  const activity = page.getByTestId("usage-activity");
+  await expect(activity.locator(".usage-activity-cell")).toHaveCount(371);
+
+  const daily = activity.getByRole("button", { name: "Daily", exact: true });
+  const weekly = activity.getByRole("button", { name: "Weekly", exact: true });
+  const cumulative = activity.getByRole("button", { name: "Cumulative", exact: true });
+  await expect(daily).toHaveAttribute("aria-pressed", "true");
+  await weekly.click();
+  await expect(weekly).toHaveAttribute("aria-pressed", "true");
+  await cumulative.click();
+  await expect(cumulative).toHaveAttribute("aria-pressed", "true");
+
+  const modelShare = page.getByTestId("usage-model-share");
+  await expect(modelShare.getByText("deepseek-v4-pro", { exact: true })).toBeVisible();
+  await expect(modelShare.getByText("opus-4.8", { exact: true })).toBeVisible();
+  await expect(modelShare.locator(".usage-model-pie")).toHaveCSS(
+    "background-image",
+    /conic-gradient/,
+  );
+
+  const workspaces = page.getByTestId("usage-workspace-row");
+  await expect(workspaces).toHaveCount(2);
+  await workspaces.first().click();
+  await expect(page.getByTestId("usage-session-row")).toHaveCount(20);
+  await expect(page.getByTestId("usage-pagination")).toContainText("Page 1 of 2");
+
+  await page.getByTestId("usage-pagination").getByRole("button", { name: "Next" }).click();
+  await expect(page.getByTestId("usage-session-row")).toHaveCount(3);
+  await expect(page.getByText("Workspace session 21", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("usage-pagination")).toContainText("Page 2 of 2");
+
+  await page.getByTestId("usage-back").click();
+  await expect(page.getByTestId("usage-workspace-row")).toHaveCount(2);
+});
+
 test("language select shows the saved locale so Chinese can switch to English directly (#431)", async ({ page }) => {
   await page.goto("/?mockLocale=zh");
   await page.locator(".proj-card-main").first().click();

@@ -1065,8 +1065,21 @@ pub(crate) struct StorageUsage {
     pub(crate) total_bytes: u64,
 }
 
-/// Mirrors `SessionTokenUsage` in crates/wisp-store/src/sessions.rs — align
-/// field by field on both sides.
+/// Mirrors the token-usage payloads in crates/wisp-store/src/sessions.rs and
+/// src-tauri/src/settings_commands.rs — align field by field on both sides.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct ProjectTokenUsage {
+    pub(crate) project_id: String,
+    pub(crate) name: String,
+    pub(crate) workspace_dir: String,
+    pub(crate) updated_at: i64,
+    pub(crate) session_count: i64,
+    pub(crate) input: i64,
+    pub(crate) output: i64,
+    pub(crate) reasoning: i64,
+    pub(crate) cached: i64,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct SessionTokenUsage {
     pub(crate) id: String,
@@ -1076,6 +1089,37 @@ pub(crate) struct SessionTokenUsage {
     pub(crate) output: i64,
     pub(crate) reasoning: i64,
     pub(crate) cached: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct SessionTokenUsagePage {
+    #[serde(default)]
+    pub(crate) items: Vec<SessionTokenUsage>,
+    pub(crate) total: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct TokenUsageDay {
+    pub(crate) date: String,
+    pub(crate) tokens: i64,
+    #[serde(default)]
+    pub(crate) future: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct ModelTokenUsage {
+    pub(crate) model: String,
+    pub(crate) tokens: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct TokenUsageOverview {
+    #[serde(default)]
+    pub(crate) workspaces: Vec<ProjectTokenUsage>,
+    #[serde(default)]
+    pub(crate) days: Vec<TokenUsageDay>,
+    #[serde(default)]
+    pub(crate) models: Vec<ModelTokenUsage>,
 }
 
 /// Mirrors `SshTrustEdge` in src-tauri/src/run_context/transfer.rs — align

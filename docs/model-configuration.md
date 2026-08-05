@@ -120,6 +120,20 @@ Conversation until the next reply refreshes the full breakdown. ACP sessions
 expose only the total reported by the remote agent, so Wisp labels that value
 as an agent-reported total instead of inventing a breakdown it cannot observe.
 
+## Usage dashboard
+
+**Settings → Usage** shows global input, output, reasoning, and cached-token
+totals, a 53-week activity chart with **Daily**, **Weekly**, and **Cumulative**
+views, and an input-plus-output token share by model. Usage is grouped by
+project workspace. Open a workspace to inspect its sessions, which are loaded
+20 at a time with Previous/Next pagination; sub-agent rounds remain folded into
+their root session.
+
+New usage rounds persist the model and timestamp used for that request. Older
+usage events did not contain those fields, so their dashboard model falls back
+to the session's saved model binding and their activity date falls back to the
+session's latest activity date.
+
 When the provider explicitly rejects a built-in Wisp-agent request for
 exceeding its context window, the conversation opens a recovery dialog instead
 of leaving the raw error as a dead end. **Compact and continue** archives the

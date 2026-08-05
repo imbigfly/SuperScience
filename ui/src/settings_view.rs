@@ -69,6 +69,290 @@ fn storage_entry_label_key(key: &str) -> &'static str {
     }
 }
 
+const USAGE_SESSION_PAGE_SIZE: usize = 20;
+const USAGE_MODEL_COLORS: [&str; 8] = [
+    "#7c3aed", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#ec4899", "#6366f1", "#64748b",
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UsageActivityMode {
+    Daily,
+    Weekly,
+    Cumulative,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct UsageActivityCell {
+    period: String,
+    tokens: i64,
+    level: u8,
+    future: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct UsageModelSlice {
+    label: String,
+    tokens: i64,
+    color: &'static str,
+}
+
+fn usage_level(value: i64, max: i64) -> u8 {
+    if value <= 0 || max <= 0 {
+        0
+    } else {
+        (((value as f64 / max as f64) * 4.0).ceil() as u8).clamp(1, 4)
+    }
+}
+
+fn usage_activity_cells(days: &[TokenUsageDay], mode: UsageActivityMode) -> Vec<UsageActivityCell> {
+    if mode == UsageActivityMode::Daily {
+        let max = days
+            .iter()
+            .filter(|day| !day.future)
+            .map(|day| day.tokens)
+            .max()
+            .unwrap_or(0);
+        return days
+            .iter()
+            .map(|day| UsageActivityCell {
+                period: day.date.clone(),
+                tokens: day.tokens,
+                level: if day.future {
+                    0
+                } else {
+                    usage_level(day.tokens, max)
+                },
+                future: day.future,
+            })
+            .collect();
+    }
+
+    let weekly = days
+        .chunks(7)
+        .map(|week| {
+            week.iter()
+                .filter(|day| !day.future)
+                .map(|day| day.tokens.max(0))
+                .sum::<i64>()
+        })
+        .collect::<Vec<_>>();
+    let amounts = if mode == UsageActivityMode::Cumulative {
+        let mut running = 0i64;
+        weekly
+            .iter()
+            .map(|tokens| {
+                running = running.saturating_add(*tokens);
+                running
+            })
+            .collect::<Vec<_>>()
+    } else {
+        weekly
+    };
+    let max = amounts.iter().copied().max().unwrap_or(0);
+    days.chunks(7)
+        .zip(amounts)
+        .flat_map(|(week, tokens)| {
+            let fill = if tokens <= 0 || max <= 0 {
+                0
+            } else {
+                ((tokens as f64 / max as f64 * week.len() as f64).ceil() as usize)
+                    .clamp(1, week.len())
+            };
+            let start = week.first().map(|day| day.date.as_str()).unwrap_or("");
+            let end = week
+                .iter()
+                .rev()
+                .find(|day| !day.future)
+                .or_else(|| week.last())
+                .map(|day| day.date.as_str())
+                .unwrap_or("");
+            let period = if mode == UsageActivityMode::Cumulative {
+                end.to_string()
+            } else {
+                format!("{start} – {end}")
+            };
+            (0..week.len())
+                .map(move |row| UsageActivityCell {
+                    period: period.clone(),
+                    tokens,
+                    level: if row + fill >= week.len() {
+                        usage_level(tokens, max).max(1)
+                    } else {
+                        0
+                    },
+                    future: false,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn usage_activity_months(days: &[TokenUsageDay]) -> Vec<(usize, u32)> {
+    let mut previous = None;
+    days.chunks(7)
+        .enumerate()
+        .filter_map(|(week, days)| {
+            let month = days.first()?.date.get(5..7)?.parse::<u32>().ok()?;
+            if previous == Some(month) {
+                None
+            } else {
+                previous = Some(month);
+                Some((week, month))
+            }
+        })
+        .collect()
+}
+
+fn usage_month_label(month: u32, locale: Locale) -> String {
+    const EN: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    if locale == Locale::Zh {
+        format!("{month}月")
+    } else {
+        EN.get(month.saturating_sub(1) as usize)
+            .copied()
+            .unwrap_or("")
+            .to_string()
+    }
+}
+
+fn usage_model_slices(
+    rows: &[ModelTokenUsage],
+    profiles: &[ModelProfile],
+    unknown: &str,
+    other: &str,
+) -> Vec<UsageModelSlice> {
+    let mut merged = HashMap::<String, i64>::new();
+    for row in rows.iter().filter(|row| row.tokens > 0) {
+        let label = profiles
+            .iter()
+            .find(|profile| profile.id == row.model)
+            .map(|profile| {
+                if profile.model.trim().is_empty() {
+                    profile.label.as_str()
+                } else {
+                    profile.model.as_str()
+                }
+            })
+            .unwrap_or_else(|| {
+                if row.model == "unknown" {
+                    unknown
+                } else {
+                    row.model.as_str()
+                }
+            })
+            .to_string();
+        *merged.entry(label).or_insert(0) += row.tokens;
+    }
+    let mut totals = merged.into_iter().collect::<Vec<_>>();
+    totals.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    if totals.len() > 8 {
+        let remainder = totals.drain(7..).map(|(_, tokens)| tokens).sum();
+        totals.push((other.to_string(), remainder));
+    }
+    totals
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, tokens))| UsageModelSlice {
+            label,
+            tokens,
+            color: USAGE_MODEL_COLORS[index % USAGE_MODEL_COLORS.len()],
+        })
+        .collect()
+}
+
+fn usage_model_gradient(slices: &[UsageModelSlice]) -> String {
+    let total = slices.iter().map(|slice| slice.tokens.max(0)).sum::<i64>();
+    if total <= 0 {
+        return "var(--bg-sunken)".into();
+    }
+    let mut start = 0.0;
+    let segments = slices
+        .iter()
+        .map(|slice| {
+            let end = start + slice.tokens.max(0) as f64 / total as f64 * 100.0;
+            let segment = format!("{} {start:.3}% {end:.3}%", slice.color);
+            start = end;
+            segment
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("conic-gradient({segments})")
+}
+
+fn usage_summary_view(loc: Locale, totals: (i64, i64, i64, i64)) -> impl IntoView {
+    let tokens = |value: i64| crate::fmt_tokens(value.max(0) as u64);
+    view! {
+        <div class="usage-summary">
+            {[
+                ("settings.usage.input", totals.0),
+                ("settings.usage.output", totals.1),
+                ("settings.usage.reasoning", totals.2),
+                ("settings.usage.cached", totals.3),
+            ].into_iter().map(|(key, value)| view! {
+                <div class="usage-tile">
+                    <span class="usage-tile-value">{tokens(value)}</span>
+                    <span class="usage-tile-label">{t(loc, key)}</span>
+                </div>
+            }).collect_view()}
+        </div>
+    }
+}
+
+#[cfg(test)]
+mod usage_dashboard_tests {
+    use super::*;
+
+    fn days(first_week: i64, second_week: i64) -> Vec<TokenUsageDay> {
+        (0..14)
+            .map(|index| TokenUsageDay {
+                date: format!("2026-07-{:02}", index + 1),
+                tokens: if index == 6 {
+                    first_week
+                } else if index == 13 {
+                    second_week
+                } else {
+                    0
+                },
+                future: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn activity_modes_keep_daily_values_and_aggregate_weeks() {
+        let days = days(10, 30);
+        let daily = usage_activity_cells(&days, UsageActivityMode::Daily);
+        assert_eq!(daily.len(), 14);
+        assert_eq!(daily[6].tokens, 10);
+        assert!(daily[13].level > daily[6].level);
+
+        let weekly = usage_activity_cells(&days, UsageActivityMode::Weekly);
+        assert_eq!(weekly[..7].iter().filter(|cell| cell.level > 0).count(), 3);
+        assert_eq!(weekly[7..].iter().filter(|cell| cell.level > 0).count(), 7);
+
+        let cumulative = usage_activity_cells(&days, UsageActivityMode::Cumulative);
+        assert_eq!(cumulative[0].tokens, 10);
+        assert_eq!(cumulative[7].tokens, 40);
+    }
+
+    #[test]
+    fn model_pie_caps_a_long_tail_as_other() {
+        let rows = (1..=9)
+            .map(|index| ModelTokenUsage {
+                model: format!("model-{index}"),
+                tokens: index,
+            })
+            .collect::<Vec<_>>();
+        let slices = usage_model_slices(&rows, &[], "Unknown", "Other");
+        assert_eq!(slices.len(), 8);
+        assert_eq!(slices.last().unwrap().label, "Other");
+        assert_eq!(slices.last().unwrap().tokens, 3);
+        assert!(usage_model_gradient(&slices).starts_with("conic-gradient("));
+    }
+}
+
 fn valid_sha256(value: &str) -> bool {
     let value = value.trim();
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -809,7 +1093,11 @@ pub(super) fn SettingsView(
     // while the refresh (a blocking directory scan for storage) runs.
     let storage_usage = create_rw_signal(None::<StorageUsage>);
     let storage_project = create_rw_signal(String::new());
-    let token_usage = create_rw_signal(None::<Vec<SessionTokenUsage>>);
+    let token_usage = create_rw_signal(None::<TokenUsageOverview>);
+    let selected_usage_workspace = create_rw_signal(None::<ProjectTokenUsage>);
+    let session_token_usage = create_rw_signal(None::<SessionTokenUsagePage>);
+    let usage_session_page = create_rw_signal(0usize);
+    let usage_activity_mode = create_rw_signal(UsageActivityMode::Daily);
     create_effect(move |_| {
         if show_settings.get() && settings_section.get() == "storage" {
             spawn_local(async move {
@@ -831,14 +1119,53 @@ pub(super) fn SettingsView(
         if show_settings.get() && settings_section.get() == "usage" {
             spawn_local(async move {
                 if let Ok(value) = invoke_checked("get_token_usage", JsValue::UNDEFINED).await {
-                    if let Ok(rows) =
-                        serde_wasm_bindgen::from_value::<Vec<SessionTokenUsage>>(value)
+                    if let Ok(overview) =
+                        serde_wasm_bindgen::from_value::<TokenUsageOverview>(value)
                     {
-                        token_usage.set(Some(rows));
+                        token_usage.set(Some(overview));
                     }
                 }
             });
         }
+    });
+    create_effect(move |_| {
+        if !show_settings.get() || settings_section.get() != "usage" {
+            return;
+        }
+        let Some(workspace) = selected_usage_workspace.get() else {
+            return;
+        };
+        let page = usage_session_page.get();
+        let project_id = workspace.project_id;
+        session_token_usage.set(None);
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({
+                "projectId": project_id,
+                "offset": page.saturating_mul(USAGE_SESSION_PAGE_SIZE),
+                "limit": USAGE_SESSION_PAGE_SIZE,
+            }))
+            .unwrap();
+            let Ok(value) = invoke_checked("get_session_token_usage", args).await else {
+                return;
+            };
+            let Ok(result) = serde_wasm_bindgen::from_value::<SessionTokenUsagePage>(value) else {
+                return;
+            };
+            if selected_usage_workspace
+                .get_untracked()
+                .as_ref()
+                .is_none_or(|workspace| workspace.project_id != project_id)
+                || usage_session_page.get_untracked() != page
+            {
+                return;
+            }
+            let page_count = (result.total.max(0) as usize).div_ceil(USAGE_SESSION_PAGE_SIZE);
+            if page > 0 && page >= page_count {
+                usage_session_page.set(page_count.saturating_sub(1));
+            } else {
+                session_token_usage.set(Some(result));
+            }
+        });
     });
     create_effect(move |_| {
         if joining.get() {
@@ -1651,61 +1978,294 @@ pub(super) fn SettingsView(
                     </div>
                 })}
                 {move || (settings_section.get() == "usage").then(|| view! {
-                    <div class="settings-pane">
+                    <div class="settings-pane settings-usage-pane" data-testid="usage-pane">
                         {move || match token_usage.get() {
                             None => view! {
                                 <div class="settings-field-hint">
-                                    {move || t(locale.get(), "settings.storage.loading")}
+                                    {move || t(locale.get(), "settings.usage.loading")}
                                 </div>
                             }.into_view(),
-                            Some(rows) if rows.is_empty() => view! {
+                            Some(overview) if overview.workspaces.is_empty() => view! {
                                 <div class="settings-field-hint">
                                     {move || t(locale.get(), "settings.usage.empty")}
                                 </div>
                             }.into_view(),
-                            Some(rows) => {
+                            Some(overview) => {
                                 let loc = locale.get();
-                                let totals = rows.iter().fold((0i64, 0i64, 0i64, 0i64), |acc, row| {
-                                    (acc.0 + row.input, acc.1 + row.output, acc.2 + row.reasoning, acc.3 + row.cached)
-                                });
                                 let tokens = |n: i64| crate::fmt_tokens(n.max(0) as u64);
-                                view! {
-                                    <p class="settings-field-hint">{t(loc, "settings.usage.hint")}</p>
-                                    <div class="usage-summary">
-                                        {[
-                                            ("settings.usage.input", totals.0),
-                                            ("settings.usage.output", totals.1),
-                                            ("settings.usage.reasoning", totals.2),
-                                            ("settings.usage.cached", totals.3),
-                                        ].into_iter().map(|(key, value)| view! {
-                                            <div class="usage-tile">
-                                                <span class="usage-tile-value">{tokens(value)}</span>
-                                                <span class="usage-tile-label">{t(loc, key)}</span>
+                                if let Some(workspace) = selected_usage_workspace.get() {
+                                    let totals = (
+                                        workspace.input,
+                                        workspace.output,
+                                        workspace.reasoning,
+                                        workspace.cached,
+                                    );
+                                    let workspace_name = if workspace.name.trim().is_empty() {
+                                        workspace.project_id.clone()
+                                    } else {
+                                        workspace.name.clone()
+                                    };
+                                    view! {
+                                        <div class="usage-detail-head">
+                                            <button type="button" class="btn-ghost" data-testid="usage-back"
+                                                on:click=move |_| {
+                                                    usage_session_page.set(0);
+                                                    session_token_usage.set(None);
+                                                    selected_usage_workspace.set(None);
+                                                }>
+                                                <span aria-hidden="true">"←"</span>
+                                                {t(loc, "settings.usage.all_workspaces")}
+                                            </button>
+                                            <div class="usage-detail-title">
+                                                <strong>{workspace_name}</strong>
+                                                {(!workspace.workspace_dir.is_empty()).then(|| view! {
+                                                    <span title=workspace.workspace_dir.clone()>{workspace.workspace_dir.clone()}</span>
+                                                })}
                                             </div>
-                                        }).collect_view()}
-                                    </div>
-                                    <div class="usage-table">
-                                        <div class="usage-row usage-row-head">
-                                            <span>{t(loc, "settings.usage.session")}</span>
-                                            <span class="usage-num">{t(loc, "settings.usage.input")}</span>
-                                            <span class="usage-num">{t(loc, "settings.usage.output")}</span>
-                                            <span class="usage-num">{t(loc, "settings.usage.reasoning")}</span>
-                                            <span class="usage-num">{t(loc, "settings.usage.cached")}</span>
                                         </div>
-                                        {rows.iter().map(|row| view! {
-                                            <div class="usage-row">
-                                                <span class="usage-session">
-                                                    <span class="usage-session-title">{row.title.clone()}</span>
-                                                    <span class="usage-session-when">{format_relative_time(row.updated_at, loc)}</span>
-                                                </span>
-                                                <span class="usage-num">{tokens(row.input)}</span>
-                                                <span class="usage-num">{tokens(row.output)}</span>
-                                                <span class="usage-num">{tokens(row.reasoning)}</span>
-                                                <span class="usage-num">{tokens(row.cached)}</span>
+                                        {usage_summary_view(loc, totals)}
+                                        {move || match session_token_usage.get() {
+                                            None => view! {
+                                                <div class="settings-field-hint">
+                                                    {t(locale.get(), "settings.usage.loading")}
+                                                </div>
+                                            }.into_view(),
+                                            Some(page) if page.items.is_empty() => view! {
+                                                <div class="settings-field-hint">
+                                                    {t(locale.get(), "settings.usage.sessions_empty")}
+                                                </div>
+                                            }.into_view(),
+                                            Some(page) => {
+                                                let loc = locale.get();
+                                                let current_page = usage_session_page.get();
+                                                let page_count = (page.total.max(0) as usize)
+                                                    .div_ceil(USAGE_SESSION_PAGE_SIZE)
+                                                    .max(1);
+                                                view! {
+                                                    <div class="usage-table" data-testid="usage-session-table">
+                                                        <div class="usage-row usage-row-head">
+                                                            <span>{t(loc, "settings.usage.session")}</span>
+                                                            <span class="usage-num">{t(loc, "settings.usage.input")}</span>
+                                                            <span class="usage-num">{t(loc, "settings.usage.output")}</span>
+                                                            <span class="usage-num">{t(loc, "settings.usage.reasoning")}</span>
+                                                            <span class="usage-num">{t(loc, "settings.usage.cached")}</span>
+                                                        </div>
+                                                        {page.items.into_iter().map(|row| view! {
+                                                            <div class="usage-row" data-testid="usage-session-row" data-session-id=row.id>
+                                                                <span class="usage-session">
+                                                                    <span class="usage-session-title">{row.title}</span>
+                                                                    <span class="usage-session-when">{format_relative_time(row.updated_at, loc)}</span>
+                                                                </span>
+                                                                <span class="usage-num">{tokens(row.input)}</span>
+                                                                <span class="usage-num">{tokens(row.output)}</span>
+                                                                <span class="usage-num">{tokens(row.reasoning)}</span>
+                                                                <span class="usage-num">{tokens(row.cached)}</span>
+                                                            </div>
+                                                        }).collect_view()}
+                                                    </div>
+                                                    {(page_count > 1).then(|| view! {
+                                                        <div class="usage-pagination" data-testid="usage-pagination">
+                                                            <button type="button" class="btn-ghost"
+                                                                disabled=(current_page == 0).then_some("")
+                                                                on:click=move |_| usage_session_page.update(|page| {
+                                                                    *page = page.saturating_sub(1);
+                                                                })>
+                                                                {t(loc, "settings.usage.previous")}
+                                                            </button>
+                                                            <span>{tf(loc, "settings.usage.page", &[
+                                                                ("page", &(current_page + 1).to_string()),
+                                                                ("pages", &page_count.to_string()),
+                                                            ])}</span>
+                                                            <button type="button" class="btn-ghost"
+                                                                disabled=(current_page + 1 >= page_count).then_some("")
+                                                                on:click=move |_| usage_session_page.update(|page| {
+                                                                    *page = (*page + 1).min(page_count - 1);
+                                                                })>
+                                                                {t(loc, "settings.usage.next")}
+                                                            </button>
+                                                        </div>
+                                                    })}
+                                                }.into_view()
+                                            }
+                                        }}
+                                    }.into_view()
+                                } else {
+                                    let totals = overview.workspaces.iter().fold(
+                                        (0i64, 0i64, 0i64, 0i64),
+                                        |acc, row| (
+                                            acc.0 + row.input,
+                                            acc.1 + row.output,
+                                            acc.2 + row.reasoning,
+                                            acc.3 + row.cached,
+                                        ),
+                                    );
+                                    let activity_cells = usage_activity_cells(
+                                        &overview.days,
+                                        usage_activity_mode.get(),
+                                    );
+                                    let activity_months = usage_activity_months(&overview.days);
+                                    let model_slices = usage_model_slices(
+                                        &overview.models,
+                                        &models.get(),
+                                        &t(loc, "settings.usage.unknown_model"),
+                                        &t(loc, "settings.usage.other_models"),
+                                    );
+                                    let model_total = model_slices
+                                        .iter()
+                                        .map(|slice| slice.tokens)
+                                        .sum::<i64>();
+                                    let model_gradient = usage_model_gradient(&model_slices);
+                                    view! {
+                                        <p class="settings-field-hint">{t(loc, "settings.usage.hint")}</p>
+                                        {usage_summary_view(loc, totals)}
+                                        <section class="usage-card usage-activity-card" data-testid="usage-activity">
+                                            <div class="usage-card-head">
+                                                <div>
+                                                    <h3>{t(loc, "settings.usage.activity")}</h3>
+                                                    <p>{t(loc, "settings.usage.activity_hint")}</p>
+                                                </div>
+                                                <div class="usage-mode-tabs" role="group"
+                                                    aria-label=t(loc, "settings.usage.activity")>
+                                                    {[
+                                                        (UsageActivityMode::Daily, "settings.usage.daily"),
+                                                        (UsageActivityMode::Weekly, "settings.usage.weekly"),
+                                                        (UsageActivityMode::Cumulative, "settings.usage.cumulative"),
+                                                    ].into_iter().map(|(mode, key)| view! {
+                                                        <button type="button"
+                                                            class:active=move || usage_activity_mode.get() == mode
+                                                            aria-pressed=move || if usage_activity_mode.get() == mode {
+                                                                "true"
+                                                            } else {
+                                                                "false"
+                                                            }
+                                                            on:click=move |_| usage_activity_mode.set(mode)>
+                                                            {t(loc, key)}
+                                                        </button>
+                                                    }).collect_view()}
+                                                </div>
                                             </div>
-                                        }).collect_view()}
-                                    </div>
-                                }.into_view()
+                                            <div class="usage-activity-scroll">
+                                                <div class="usage-activity-months" aria-hidden="true">
+                                                    {activity_months.into_iter().map(|(week, month)| view! {
+                                                        <span style=format!("grid-column:{}", week + 1)>
+                                                            {usage_month_label(month, loc)}
+                                                        </span>
+                                                    }).collect_view()}
+                                                </div>
+                                                <div class="usage-activity-grid" aria-label=t(loc, "settings.usage.activity")>
+                                                    {activity_cells.into_iter().map(|cell| {
+                                                        let title = if cell.future {
+                                                            String::new()
+                                                        } else {
+                                                            tf(loc, "settings.usage.activity_tooltip", &[
+                                                                ("period", &cell.period),
+                                                                ("tokens", &tokens(cell.tokens)),
+                                                            ])
+                                                        };
+                                                        view! {
+                                                            <span class=format!("usage-activity-cell level-{}", cell.level)
+                                                                class:future=cell.future title=title aria-hidden="true"></span>
+                                                        }
+                                                    }).collect_view()}
+                                                </div>
+                                            </div>
+                                        </section>
+                                        <div class="usage-overview-grid">
+                                            <section class="usage-card usage-model-card" data-testid="usage-model-share">
+                                                <div class="usage-card-head">
+                                                    <div>
+                                                        <h3>{t(loc, "settings.usage.model_share")}</h3>
+                                                        <p>{t(loc, "settings.usage.model_share_hint")}</p>
+                                                    </div>
+                                                </div>
+                                                {if model_slices.is_empty() {
+                                                    view! {
+                                                        <p class="settings-field-hint">{t(loc, "settings.usage.models_empty")}</p>
+                                                    }.into_view()
+                                                } else {
+                                                    let slices_for_legend = model_slices.clone();
+                                                    view! {
+                                                        <div class="usage-model-body">
+                                                            <div class="usage-model-pie" style=format!("background:{model_gradient}")
+                                                                role="img" aria-label=t(loc, "settings.usage.model_share")>
+                                                                <span>
+                                                                    <strong>{tokens(model_total)}</strong>
+                                                                    <small>{t(loc, "settings.usage.tokens")}</small>
+                                                                </span>
+                                                            </div>
+                                                            <div class="usage-model-legend">
+                                                                {slices_for_legend.into_iter().map(|slice| {
+                                                                    let pct = slice.tokens as f64 / model_total.max(1) as f64 * 100.0;
+                                                                    view! {
+                                                                        <div class="usage-model-row" data-testid="usage-model-row">
+                                                                            <i style:background=slice.color></i>
+                                                                            <span title=slice.label.clone()>{slice.label}</span>
+                                                                            <strong>{format!("{pct:.1}%")}</strong>
+                                                                            <small>{tokens(slice.tokens)}</small>
+                                                                        </div>
+                                                                    }
+                                                                }).collect_view()}
+                                                            </div>
+                                                        </div>
+                                                    }.into_view()
+                                                }}
+                                            </section>
+                                            <section class="usage-card usage-workspaces-card">
+                                                <div class="usage-card-head">
+                                                    <div>
+                                                        <h3>{t(loc, "settings.usage.workspaces")}</h3>
+                                                        <p>{t(loc, "settings.usage.workspaces_hint")}</p>
+                                                    </div>
+                                                </div>
+                                                <div class="usage-table">
+                                                    <div class="usage-row usage-row-head">
+                                                        <span>{t(loc, "settings.usage.workspace")}</span>
+                                                        <span class="usage-num">{t(loc, "settings.usage.input")}</span>
+                                                        <span class="usage-num">{t(loc, "settings.usage.output")}</span>
+                                                        <span class="usage-num">{t(loc, "settings.usage.reasoning")}</span>
+                                                        <span class="usage-num">{t(loc, "settings.usage.cached")}</span>
+                                                    </div>
+                                                    {overview.workspaces.into_iter().map(|row| {
+                                                        let selected = row.clone();
+                                                        let name = if row.name.trim().is_empty() {
+                                                            row.project_id.clone()
+                                                        } else {
+                                                            row.name.clone()
+                                                        };
+                                                        let sessions = tf(loc, "settings.usage.sessions", &[
+                                                            ("n", &row.session_count.max(0).to_string()),
+                                                        ]);
+                                                        view! {
+                                                            <button type="button" class="usage-row usage-workspace-row"
+                                                                data-testid="usage-workspace-row"
+                                                                data-workspace-id=row.project_id
+                                                                aria-label=tf(loc, "settings.usage.open_workspace", &[("name", &name)])
+                                                                on:click=move |_| {
+                                                                    usage_session_page.set(0);
+                                                                    session_token_usage.set(None);
+                                                                    selected_usage_workspace.set(Some(selected.clone()));
+                                                                }>
+                                                                <span class="usage-session">
+                                                                    <span class="usage-session-title">{name}</span>
+                                                                    <span class="usage-session-when">
+                                                                        {sessions}" · "{format_relative_time(row.updated_at, loc)}
+                                                                    </span>
+                                                                    {(!row.workspace_dir.is_empty()).then(|| view! {
+                                                                        <span class="usage-workspace-path" title=row.workspace_dir.clone()>{row.workspace_dir}</span>
+                                                                    })}
+                                                                </span>
+                                                                <span class="usage-num">{tokens(row.input)}</span>
+                                                                <span class="usage-num">{tokens(row.output)}</span>
+                                                                <span class="usage-num">{tokens(row.reasoning)}</span>
+                                                                <span class="usage-num">{tokens(row.cached)}</span>
+                                                            </button>
+                                                        }
+                                                    }).collect_view()}
+                                                </div>
+                                            </section>
+                                        </div>
+                                    }.into_view()
+                                }
                             }
                         }}
                     </div>

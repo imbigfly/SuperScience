@@ -145,6 +145,10 @@ enum AgentEvent {
     Usage {
         frame_id: String,
         round: u64,
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        created_at: i64,
         input: u64,
         output: u64,
         reasoning: u64,
@@ -2162,6 +2166,7 @@ fn ensure_writable(dir: PathBuf, app_data: &std::path::Path) -> PathBuf {
 struct TauriOutput {
     app: AppHandle,
     frame_id: String,
+    model: String,
     project_id: String,
     project_root: PathBuf,
     store: Store,
@@ -2395,6 +2400,8 @@ impl Output for TauriOutput {
         self.emit(AgentEvent::Usage {
             frame_id: self.frame_id.clone(),
             round: round as u64,
+            model: self.model.clone(),
+            created_at: chrono::Utc::now().timestamp(),
             input,
             output,
             reasoning,
@@ -5337,6 +5344,7 @@ async fn send_message_inner(
     let output = TauriOutput {
         app: app.clone(),
         frame_id: frame_id.clone(),
+        model: model.clone(),
         project_id: ap.id.clone(),
         project_root: ap.root.clone(),
         store: state.store.clone(),
@@ -6916,6 +6924,7 @@ pub fn run() {
             settings_commands::set_settings,
             settings_commands::get_storage_usage,
             settings_commands::get_token_usage,
+            settings_commands::get_session_token_usage,
             settings_commands::credential_status,
             settings_commands::set_credential,
             settings_commands::list_custom_credentials,
