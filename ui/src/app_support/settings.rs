@@ -1,0 +1,872 @@
+use super::*;
+
+pub(crate) fn normalize_settings_mut(cfg: &mut Settings) {
+    cfg.provider = provider_value(&cfg.provider).into();
+    cfg.api_url = cfg.api_url.trim().into();
+    cfg.model = cfg.model.trim().into();
+    cfg.sync_backend = if cfg.sync_backend == "folder" {
+        "folder".into()
+    } else {
+        "relay".into()
+    };
+    cfg.sync_relay_url = cfg.sync_relay_url.trim().into();
+    cfg.sync_folder = cfg.sync_folder.trim().into();
+}
+
+pub(crate) fn normalized_settings(mut cfg: Settings) -> Settings {
+    normalize_settings_mut(&mut cfg);
+    cfg
+}
+
+pub(crate) fn project_sync_backend_configured(cfg: &Settings) -> bool {
+    match cfg.sync_backend.as_str() {
+        "folder" => !cfg.sync_folder.trim().is_empty(),
+        "relay" => {
+            !cfg.sync_relay_url.trim().is_empty()
+                && (cfg.has_sync_relay_token || !cfg.sync_relay_token.trim().is_empty())
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod project_sync_backend_tests {
+    use super::{project_sync_backend_configured, Settings};
+
+    #[test]
+    fn requires_a_complete_configuration_for_the_selected_backend() {
+        let mut settings = Settings::default();
+        assert!(!project_sync_backend_configured(&settings));
+
+        settings.sync_relay_url = "https://relay.example.test".into();
+        assert!(!project_sync_backend_configured(&settings));
+
+        settings.has_sync_relay_token = true;
+        assert!(project_sync_backend_configured(&settings));
+
+        settings.sync_backend = "folder".into();
+        assert!(!project_sync_backend_configured(&settings));
+
+        settings.sync_folder = "C:\\Wisp Sync".into();
+        assert!(project_sync_backend_configured(&settings));
+    }
+}
+
+pub(crate) fn settings_required_error_key(cfg: &Settings, key: &str) -> Option<&'static str> {
+    if cfg.api_url.trim().is_empty() {
+        return Some("err.api_url_required");
+    }
+    if cfg.model.trim().is_empty() {
+        return Some("err.model_required");
+    }
+    let has_new_key = !key.trim().is_empty();
+    if !cfg.has_api_key && !has_new_key {
+        return Some("err.api_key_required");
+    }
+    None
+}
+
+/// Single source of truth for `invoke` argument payloads.
+///
+/// Tauri v2 deserializes command arguments from JS **camelCase** keys onto the
+/// Rust **snake_case** parameters. A snake_case key (`session_id`) never binds:
+/// an `Option` param silently becomes `None`, which once made every send fork a
+/// brand-new conversation instead of continuing the active one. Keep every
+/// multi-word key camelCase here; `tauri_args_tests` pins them.
+pub(crate) mod tauri_args {
+    use serde_json::{json, Value};
+
+    pub fn stop_agent(session_id: &Option<String>) -> Value {
+        json!({ "sessionId": session_id })
+    }
+    pub fn review_session(session_id: &Option<String>) -> Value {
+        json!({ "sessionId": session_id })
+    }
+    pub fn branch_session(
+        session_id: &Option<String>,
+        title: Option<&str>,
+        user_index: Option<usize>,
+    ) -> Value {
+        let mut payload = json!({ "sessionId": session_id });
+        if let Some(title) = title.map(str::trim).filter(|s| !s.is_empty()) {
+            payload["title"] = json!(title);
+        }
+        if let Some(user_index) = user_index {
+            payload["userIndex"] = json!(user_index);
+        }
+        payload
+    }
+    pub fn rewind_session(session_id: &Option<String>, user_index: usize) -> Value {
+        json!({ "sessionId": session_id, "userIndex": user_index })
+    }
+    pub fn turn_undo(session_id: &str, user_index: usize) -> Value {
+        json!({ "sessionId": session_id, "userIndex": user_index })
+    }
+    pub fn confirm_response(
+        session_id: &str,
+        approved: bool,
+        feedback: Option<&str>,
+        scope: Option<&str>,
+    ) -> Value {
+        let mut payload = json!({ "sessionId": session_id, "approved": approved });
+        if let Some(feedback) = feedback.map(str::trim).filter(|s| !s.is_empty()) {
+            payload["feedback"] = json!(feedback);
+        }
+        if let Some(scope) = scope.map(str::trim).filter(|s| !s.is_empty()) {
+            payload["scope"] = json!(scope);
+        }
+        payload
+    }
+    pub fn read_file(path: &str, max_bytes: Option<u64>) -> Value {
+        match max_bytes {
+            Some(n) => json!({ "path": path, "maxBytes": n }),
+            None => json!({ "path": path }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tauri_args_tests {
+    use super::*;
+
+    // Guard the exact regression: `session_id` must reach the backend as the
+    // camelCase `sessionId`, or `send_message` starts a new conversation.
+    #[test]
+    fn send_message_args_serialize_camel_case() {
+        let v = serde_json::to_value(SendMessageArgs {
+            session_id: Some("frame-1".into()),
+            message: "hi".into(),
+            attachments: vec!["a.png".into()],
+            references: vec![],
+            resume: false,
+            acp_agent_id: None,
+            guide: None,
+            replace: None,
+        })
+        .unwrap();
+        assert_eq!(v["sessionId"], "frame-1");
+        assert_eq!(v["message"], "hi");
+        assert_eq!(v["attachments"][0], "a.png");
+        assert!(
+            v.get("session_id").is_none(),
+            "snake_case key would bind to None on the backend"
+        );
+    }
+
+    #[test]
+    fn session_command_args_use_camel_case_keys() {
+        let sid = Some("frame-1".to_string());
+
+        let v = tauri_args::stop_agent(&sid);
+        assert_eq!(v["sessionId"], "frame-1");
+        assert!(v.get("session_id").is_none());
+
+        let v = tauri_args::review_session(&sid);
+        assert_eq!(v["sessionId"], "frame-1");
+
+        let v = tauri_args::branch_session(&sid, Some("fork here"), Some(2));
+        assert_eq!(v["sessionId"], "frame-1");
+        assert_eq!(v["title"], "fork here");
+        assert_eq!(v["userIndex"], 2);
+        assert!(v.get("session_id").is_none());
+        assert!(v.get("user_index").is_none());
+
+        let v = tauri_args::rewind_session(&sid, 3);
+        assert_eq!(v["sessionId"], "frame-1");
+        assert_eq!(v["userIndex"], 3);
+        assert!(v.get("user_index").is_none());
+
+        let v = tauri_args::turn_undo("frame-1", 4);
+        assert_eq!(v["sessionId"], "frame-1");
+        assert_eq!(v["userIndex"], 4);
+        assert!(v.get("session_id").is_none());
+        assert!(v.get("user_index").is_none());
+
+        let v = tauri_args::confirm_response("frame-1", true, None, Some("once"));
+        assert_eq!(v["sessionId"], "frame-1");
+        assert_eq!(v["approved"], true);
+        assert_eq!(v["scope"], "once");
+        assert!(v.get("feedback").is_none());
+
+        let v = tauri_args::confirm_response("frame-1", false, Some("split the plan"), None);
+        assert_eq!(v["feedback"], "split the plan");
+        assert!(v.get("scope").is_none());
+
+        let v = tauri_args::read_file("a.txt", Some(1024));
+        assert_eq!(v["path"], "a.txt");
+        assert_eq!(v["maxBytes"], 1024);
+        assert!(v.get("max_bytes").is_none());
+    }
+
+    // The agent is told to emit absolute paths, so a clicked file link must reach
+    // the backend intact. Stripping the leading slash turned `/Users/…/fig.png`
+    // into a bad root-relative path that 404'd on click (#12).
+    #[test]
+    fn normalize_path_keeps_absolute_paths() {
+        assert_eq!(
+            normalize_path("/Users/x/proj/results/fig.png"),
+            "/Users/x/proj/results/fig.png"
+        );
+        assert_eq!(normalize_path("C:\\proj\\out.csv"), "C:\\proj\\out.csv");
+        // Redundant current-dir prefixes are still trimmed; relative stays relative.
+        assert_eq!(normalize_path("./results/fig.png"), "results/fig.png");
+        assert_eq!(normalize_path(".\\results\\fig.png"), "results\\fig.png");
+        assert_eq!(normalize_path("results/fig.png"), "results/fig.png");
+        assert_eq!(normalize_path("  /a/b.txt  "), "/a/b.txt");
+        assert_eq!(
+            normalize_path("figures/panel_I_heatmap_4genes_median.png/.pdf"),
+            "figures/panel_I_heatmap_4genes_median.png"
+        );
+        assert_eq!(
+            normalize_path("./figures/plot.JPG/.PDF"),
+            "figures/plot.JPG"
+        );
+        assert_eq!(
+            normalize_path("C:\\proj\\fig.png\\.pdf"),
+            "C:\\proj\\fig.png"
+        );
+    }
+
+    #[test]
+    fn collect_artifacts_normalizes_image_pdf_shorthand() {
+        let items = vec![ChatItem::Assistant {
+            text: "`figures/panel_I_heatmap_4genes_median.png/.pdf`".into(),
+            model: None,
+            resources: Vec::new(),
+        }];
+        let arts = collect_artifacts(&items, Locale::En, &mut ProtoCache::new());
+        let a = arts
+            .iter()
+            .find(|a| a.name == "panel_I_heatmap_4genes_median.png")
+            .unwrap();
+        assert_eq!(a.kind, "image");
+        match &a.data {
+            PreviewData::File { path, kind } => {
+                assert_eq!(path, "figures/panel_I_heatmap_4genes_median.png");
+                assert_eq!(kind, "image");
+            }
+            _ => panic!("expected file artifact"),
+        }
+    }
+}
+
+pub(crate) fn split_tags(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+pub(crate) fn join_tags(tags: &[String]) -> String {
+    tags.join(", ")
+}
+
+pub(crate) fn skill_matches_filter(skill: &SkillRow, tag: &str, query: &str) -> bool {
+    let tag_match = match tag {
+        "" => true,
+        "__untagged" => skill.tags.is_empty(),
+        "__enabled" => skill.enabled,
+        "__disabled" => !skill.enabled,
+        t => skill.tags.iter().any(|s| s == t),
+    };
+    let q = query.trim().to_ascii_lowercase();
+    tag_match
+        && (q.is_empty()
+            || skill.name.to_ascii_lowercase().contains(&q)
+            || skill.description.to_ascii_lowercase().contains(&q))
+}
+
+#[cfg(test)]
+mod skill_filter_tests {
+    use super::*;
+
+    fn skill(name: &str, enabled: bool, tags: &[&str]) -> SkillRow {
+        SkillRow {
+            name: name.into(),
+            description: "Scientific workflow".into(),
+            tags: tags.iter().map(|tag| (*tag).into()).collect(),
+            scope: "bundled".into(),
+            enabled,
+            builtin: true,
+            managed: false,
+            managed_by: None,
+            dir: String::new(),
+        }
+    }
+
+    #[test]
+    fn skill_status_filters_compose_with_search() {
+        let enabled = skill("remote-compute", true, &["compute"]);
+        let disabled = skill("literature-review", false, &[]);
+
+        assert!(skill_matches_filter(&enabled, "__enabled", "remote"));
+        assert!(!skill_matches_filter(&enabled, "__disabled", ""));
+        assert!(skill_matches_filter(&disabled, "__disabled", "workflow"));
+        assert!(!skill_matches_filter(&disabled, "__enabled", ""));
+    }
+}
+
+pub(crate) fn refresh_capabilities(caps: RwSignal<Option<Capabilities>>) {
+    spawn_local(async move {
+        let v = invoke("get_capabilities", JsValue::UNDEFINED).await;
+        if let Ok(data) = serde_wasm_bindgen::from_value::<Capabilities>(v) {
+            caps.set(Some(data));
+        }
+    });
+}
+
+/// Decide how `get_acp_session_agent` should update the picker selection.
+///
+/// Returning `None` means "leave the current selection alone" — needed when the
+/// first ACP turn is still binding the session and the backend still reports
+/// `None` (otherwise the picker snaps back to the HTTP model mid-send).
+pub(crate) fn acp_agent_selection_after_fetch(
+    fetched: Option<String>,
+    session_id: &str,
+    pending: &HashMap<String, usize>,
+    running: &HashSet<String>,
+    provisional: Option<&(String, String)>,
+) -> Option<Option<String>> {
+    match fetched {
+        Some(id) => Some(Some(id)),
+        None if provisional.is_some_and(|(frame_id, _)| frame_id == session_id) => {
+            Some(provisional.map(|(_, agent_id)| agent_id.clone()))
+        }
+        None if pending.contains_key(session_id) || running.contains(session_id) => None,
+        None => Some(None),
+    }
+}
+
+/// Fold a `CurrentModeUpdate` payload into the stored SessionModeState.
+///
+/// The update only carries `currentModeId`, so when we already hold the initial
+/// `SessionModeState` we keep its `availableModes` (which the mode picker needs)
+/// and only swap the current id. With no prior object, the payload stands alone.
+pub(crate) fn merge_current_mode(
+    existing: Option<&serde_json::Value>,
+    payload: serde_json::Value,
+) -> serde_json::Value {
+    if let (Some(serde_json::Value::Object(existing)), Some(id)) =
+        (existing, payload.get("currentModeId"))
+    {
+        let mut merged = existing.clone();
+        merged.insert("currentModeId".into(), id.clone());
+        return serde_json::Value::Object(merged);
+    }
+    payload
+}
+
+#[cfg(test)]
+mod merge_current_mode_tests {
+    use super::merge_current_mode;
+    use serde_json::json;
+
+    #[test]
+    fn preserves_available_modes_on_update() {
+        let existing = json!({
+            "currentModeId": "full-access",
+            "availableModes": [{"id": "agent", "name": "Agent"}, {"id": "full-access", "name": "Full Access"}],
+        });
+        let merged = merge_current_mode(Some(&existing), json!({ "currentModeId": "agent" }));
+        assert_eq!(merged["currentModeId"], json!("agent"));
+        assert_eq!(merged["availableModes"], existing["availableModes"]);
+    }
+
+    #[test]
+    fn falls_back_to_payload_without_prior_state() {
+        let merged = merge_current_mode(None, json!({ "currentModeId": "agent" }));
+        assert_eq!(merged, json!({ "currentModeId": "agent" }));
+    }
+}
+
+#[cfg(test)]
+mod acp_agent_selection_tests {
+    use super::acp_agent_selection_after_fetch;
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn applies_bound_agent() {
+        let pending = HashMap::new();
+        let running = HashSet::new();
+        assert_eq!(
+            acp_agent_selection_after_fetch(Some("agent-1".into()), "s1", &pending, &running, None),
+            Some(Some("agent-1".into()))
+        );
+    }
+
+    #[test]
+    fn preserves_selection_while_first_turn_pending() {
+        let mut pending = HashMap::new();
+        pending.insert("s1".into(), 1);
+        let running = HashSet::new();
+        assert_eq!(
+            acp_agent_selection_after_fetch(None, "s1", &pending, &running, None),
+            None
+        );
+    }
+
+    #[test]
+    fn preserves_provisional_agent_on_a_fresh_session() {
+        let pending = HashMap::new();
+        let running = HashSet::new();
+        let provisional = ("s1".into(), "agent-1".into());
+        assert_eq!(
+            acp_agent_selection_after_fetch(None, "s1", &pending, &running, Some(&provisional)),
+            Some(Some("agent-1".into()))
+        );
+    }
+
+    #[test]
+    fn clears_when_session_has_no_binding() {
+        let pending = HashMap::new();
+        let running = HashSet::new();
+        assert_eq!(
+            acp_agent_selection_after_fetch(None, "s1", &pending, &running, None),
+            Some(None)
+        );
+    }
+}
+
+pub(crate) fn reviewer_backend_key(reviewer: &Specialist) -> String {
+    match &reviewer.review_backend {
+        Some(ReviewBackendConfig::FollowSession) => "follow_session".into(),
+        Some(ReviewBackendConfig::AcpAgent { profile_id }) => format!("acp:{profile_id}"),
+        Some(ReviewBackendConfig::HttpModel { profile_id }) => format!("http:{profile_id}"),
+        None => format!("http:{}", reviewer.model_id),
+    }
+}
+
+pub(crate) fn set_reviewer_backend(reviewer: &mut Specialist, key: &str) {
+    if key == "follow_session" {
+        reviewer.review_backend = Some(ReviewBackendConfig::follow_session());
+    } else if let Some(profile_id) = key.strip_prefix("acp:") {
+        reviewer.review_backend = Some(ReviewBackendConfig::acp(profile_id));
+    } else {
+        let profile_id = key.strip_prefix("http:").unwrap_or(key);
+        reviewer.model_id = profile_id.to_string();
+        reviewer.review_backend = Some(ReviewBackendConfig::http(profile_id));
+    }
+}
+
+pub(crate) fn reviewer_backend_label(
+    reviewer: &Specialist,
+    models: &[ModelProfile],
+    acp_agents: &[AcpAgentProfile],
+    follow_session_label: &str,
+    missing_acp_label: &str,
+) -> Option<String> {
+    match &reviewer.review_backend {
+        Some(ReviewBackendConfig::FollowSession) => Some(follow_session_label.into()),
+        Some(ReviewBackendConfig::AcpAgent { profile_id }) => Some(
+            acp_agents
+                .iter()
+                .find(|profile| profile.id == *profile_id)
+                .map(|profile| format!("{} · ACP", profile.label))
+                .unwrap_or_else(|| format!("{missing_acp_label} · {profile_id}")),
+        ),
+        Some(ReviewBackendConfig::HttpModel { profile_id }) => {
+            if profile_id.is_empty() {
+                None
+            } else {
+                models
+                    .iter()
+                    .find(|profile| profile.id == *profile_id)
+                    .map(|profile| profile.label.clone())
+            }
+        }
+        None => {
+            if reviewer.model_id.is_empty() {
+                None
+            } else {
+                models
+                    .iter()
+                    .find(|profile| profile.id == reviewer.model_id)
+                    .map(|profile| profile.label.clone())
+            }
+        }
+    }
+}
+
+pub(crate) fn reviewer_missing_acp_profile_id(
+    reviewer: &Specialist,
+    acp_agents: &[AcpAgentProfile],
+) -> Option<String> {
+    let Some(ReviewBackendConfig::AcpAgent { profile_id }) = &reviewer.review_backend else {
+        return None;
+    };
+    (!acp_agents.iter().any(|profile| profile.id == *profile_id)).then(|| profile_id.clone())
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::{
+        reviewer_backend_key, reviewer_backend_label, reviewer_missing_acp_profile_id,
+        set_reviewer_backend, upsert_review,
+    };
+    use crate::dto::{AcpAgentProfile, ChatItem, ReviewBackendConfig, ReviewReport, Specialist};
+
+    fn report(id: &str, summary: &str) -> ReviewReport {
+        ReviewReport {
+            id: id.into(),
+            summary: summary.into(),
+            findings: vec![],
+            reviewer_model: "review-model".into(),
+            reviewer_effort: String::new(),
+            reviewer_backend: "http_model".into(),
+            review_status: "passed".into(),
+            evidence_coverage: 100,
+            coverage_gaps: vec![],
+        }
+    }
+
+    #[test]
+    fn follow_up_review_replaces_the_original_card() {
+        let mut items = vec![ChatItem::Assistant {
+            text: "answer".into(),
+            model: None,
+            resources: Vec::new(),
+        }];
+        upsert_review(&mut items, report("r1", "first"));
+        upsert_review(&mut items, report("r1", "verified"));
+
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            &items[1],
+            ChatItem::Review(report) if report.summary == "verified"
+        ));
+    }
+
+    #[test]
+    fn reviewer_backend_keys_roundtrip_http_acp_and_follow_session() {
+        let mut reviewer = Specialist {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            icon: String::new(),
+            color: String::new(),
+            description: String::new(),
+            instructions: String::new(),
+            model_id: String::new(),
+            review_backend: None,
+            skills: Some(vec![]),
+            connectors: Some(vec![]),
+            builtin: true,
+        };
+
+        set_reviewer_backend(&mut reviewer, "acp:codex");
+        assert_eq!(reviewer_backend_key(&reviewer), "acp:codex");
+        assert_eq!(
+            reviewer.review_backend,
+            Some(ReviewBackendConfig::acp("codex"))
+        );
+
+        set_reviewer_backend(&mut reviewer, "http:review-model");
+        assert_eq!(reviewer_backend_key(&reviewer), "http:review-model");
+        assert_eq!(reviewer.model_id, "review-model");
+
+        set_reviewer_backend(&mut reviewer, "follow_session");
+        assert_eq!(reviewer_backend_key(&reviewer), "follow_session");
+    }
+
+    #[test]
+    fn missing_acp_reviewer_stays_visible_instead_of_looking_like_http() {
+        let mut reviewer = Specialist {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            icon: String::new(),
+            color: String::new(),
+            description: String::new(),
+            instructions: String::new(),
+            model_id: String::new(),
+            review_backend: None,
+            skills: Some(vec![]),
+            connectors: Some(vec![]),
+            builtin: true,
+        };
+        set_reviewer_backend(&mut reviewer, "acp:deleted-profile");
+        let agents = vec![AcpAgentProfile {
+            id: "other".into(),
+            label: "Other ACP".into(),
+            command: "other-acp".into(),
+            args: vec![],
+        }];
+
+        assert_eq!(
+            reviewer_missing_acp_profile_id(&reviewer, &agents).as_deref(),
+            Some("deleted-profile")
+        );
+        assert_eq!(
+            reviewer_backend_label(
+                &reviewer,
+                &[],
+                &agents,
+                "Follow session backend",
+                "Missing ACP Agent",
+            )
+            .as_deref(),
+            Some("Missing ACP Agent · deleted-profile")
+        );
+    }
+}
+
+pub(crate) fn profile_to_form(m: &ModelProfile) -> ModelForm {
+    ModelForm {
+        id: Some(m.id.clone()),
+        label: m.label.clone(),
+        provider: m.provider.clone(),
+        api_url: m.api_url.clone(),
+        model: m.model.clone(),
+        max_tokens: if m.max_tokens >= 16 {
+            m.max_tokens
+        } else {
+            8192
+        },
+        context_window: if m.context_window >= 4_096 {
+            m.context_window
+        } else {
+            128_000
+        },
+        reasoning_effort: m.reasoning_effort.clone(),
+        supports_vision: m.supports_vision,
+        use_for_vision: m.use_for_vision,
+        use_for_image_generation: m.use_for_image_generation,
+    }
+}
+
+pub(crate) fn new_model_form() -> ModelForm {
+    let (api_url, model) = provider_defaults("openai");
+    ModelForm {
+        provider: "openai".into(),
+        api_url: api_url.into(),
+        model: model.into(),
+        max_tokens: 8192,
+        context_window: 128_000,
+        ..Default::default()
+    }
+}
+
+pub(crate) fn new_acp_form() -> AcpAgentProfile {
+    AcpAgentProfile {
+        id: String::new(),
+        label: String::new(),
+        command: String::new(),
+        args: Vec::new(),
+    }
+}
+
+pub(crate) fn model_form_to_settings(form: &ModelForm, has_api_key: bool) -> Settings {
+    let mut cfg = Settings::default();
+    cfg.provider = provider_value(&form.provider).into();
+    cfg.api_url = form.api_url.trim().into();
+    cfg.model = form.model.trim().into();
+    cfg.label = form.label.trim().into();
+    cfg.has_api_key = has_api_key;
+    cfg.max_tokens = form.max_tokens;
+    cfg.reasoning_effort = form.reasoning_effort.clone();
+    cfg.supports_vision = form.supports_vision;
+    cfg
+}
+
+pub(crate) fn settings_section_label(loc: Locale, section: &str) -> String {
+    match section {
+        "appearance" => t(loc, "settings.nav.appearance"),
+        "pet" => t(loc, "settings.nav.pet"),
+        "environments" => t(loc, "settings.nav.environments"),
+        "models" => t(loc, "settings.nav.models"),
+        "quick-actions" => t(loc, "settings.nav.quick_actions"),
+        "workflows" => t(loc, "settings.nav.workflows"),
+        "specialists" => t(loc, "settings.nav.specialists"),
+        "memory" => t(loc, "settings.nav.memory"),
+        "skills" => t(loc, "settings.nav.skills"),
+        "plugins" => t(loc, "settings.nav.plugins"),
+        "connections" => t(loc, "settings.nav.connections"),
+        "channels" => t(loc, "settings.nav.channels"),
+        "credentials" => t(loc, "settings.nav.credentials"),
+        "permissions" => t(loc, "settings.nav.permissions"),
+        "storage" => t(loc, "settings.nav.storage"),
+        "usage" => t(loc, "settings.nav.usage"),
+        _ => t(loc, "settings.title"),
+    }
+    .into()
+}
+
+/// A field within a credential service group: (credential id, i18n label key,
+/// whether to mask the value like a password).
+pub(crate) struct CredField {
+    pub(crate) id: &'static str,
+    pub(crate) label_key: &'static str,
+    pub(crate) secret: bool,
+}
+
+/// A credential service shown in Settings → Credentials: display name, help
+/// text, and its fields. Mirrors the backend `CREDENTIALS` registry in
+/// models.rs — keep ids in sync.
+pub(crate) struct CredGroup {
+    pub(crate) name_key: &'static str,
+    pub(crate) hint_key: &'static str,
+    pub(crate) fields: &'static [CredField],
+}
+
+pub(crate) const CRED_GROUPS: &[CredGroup] = &[
+    CredGroup {
+        name_key: "cred.openalex.name",
+        hint_key: "cred.openalex.hint",
+        fields: &[CredField {
+            id: "openalex_api_key",
+            label_key: "cred.openalex_api_key.label",
+            secret: true,
+        }],
+    },
+    CredGroup {
+        name_key: "cred.infinisynapse.name",
+        hint_key: "cred.infinisynapse.hint",
+        fields: &[CredField {
+            id: "infinisynapse_api_key",
+            label_key: "cred.infinisynapse_api_key.label",
+            secret: true,
+        }],
+    },
+    CredGroup {
+        name_key: "cred.scimaster.name",
+        hint_key: "cred.scimaster.hint",
+        fields: &[CredField {
+            id: "scimaster_api_key",
+            label_key: "cred.scimaster_api_key.label",
+            secret: true,
+        }],
+    },
+    CredGroup {
+        name_key: "cred.ncbi.name",
+        hint_key: "cred.ncbi.hint",
+        fields: &[
+            CredField {
+                id: "ncbi_api_key",
+                label_key: "cred.ncbi_api_key.label",
+                secret: true,
+            },
+            CredField {
+                id: "ncbi_email",
+                label_key: "cred.ncbi_email.label",
+                secret: false,
+            },
+        ],
+    },
+];
+
+pub(crate) fn settings_subpage_label(
+    loc: Locale,
+    section: &str,
+    model_form: Option<&ModelForm>,
+    conn_form: Option<&ConnForm>,
+    open_conn: Option<&str>,
+    memory_selected: Option<&str>,
+    specialist_form: Option<&Specialist>,
+    acp_form: Option<&AcpAgentProfile>,
+    channels_open: Option<&str>,
+) -> Option<String> {
+    match section {
+        "models" => acp_form
+            .map(|f| {
+                if f.id.is_empty() {
+                    t(loc, "models.add_acp").into()
+                } else {
+                    t(loc, "models.edit_acp").into()
+                }
+            })
+            .or_else(|| {
+                model_form.map(|f| {
+                    if f.id.is_some() {
+                        t(loc, "models.edit").into()
+                    } else {
+                        t(loc, "models.add").into()
+                    }
+                })
+            }),
+        "specialists" => specialist_form.map(|s| {
+            if s.id.is_empty() {
+                t(loc, "specialists.add")
+            } else {
+                s.name.clone()
+            }
+        }),
+        "connections" => conn_form
+            .map(|f| {
+                if f.id.is_some() {
+                    t(loc, "conn.edit").into()
+                } else {
+                    t(loc, "conn.add").into()
+                }
+            })
+            .or_else(|| open_conn.map(|s| s.to_string())),
+        "memory" => memory_selected.map(|s| s.to_string()),
+        "channels" => channels_open.map(|key| match key {
+            "feishu" => t(loc, "channels.feishu.title").into(),
+            "weixin" => t(loc, "channels.weixin.title").into(),
+            "sticks3" => t(loc, "channels.device.title").into(),
+            other => other.to_string(),
+        }),
+        _ => None,
+    }
+}
+
+pub(crate) fn build_conn_json(f: &ConnForm, assign_id: bool) -> serde_json::Value {
+    let id = f.id.clone().unwrap_or_else(|| {
+        if assign_id {
+            format!("conn-{}", (js_sys::Math::random() * 1e9) as u64)
+        } else {
+            "test".into()
+        }
+    });
+    let transport = if f.kind == "http" {
+        let headers: Vec<(String, String)> = f
+            .headers
+            .lines()
+            .filter_map(|l| {
+                l.split_once(':')
+                    .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            })
+            .collect();
+        let auth = if f.auth == "oauth" { "oauth" } else { "none" };
+        serde_json::json!({ "kind": "http", "url": f.url.trim(), "headers": headers, "auth": auth })
+    } else {
+        let args: Vec<String> = f.args.split_whitespace().map(|s| s.to_string()).collect();
+        serde_json::json!({ "kind": "stdio", "command": f.command.trim(), "args": args, "env": [], "cwd": null })
+    };
+    serde_json::json!({ "id": id, "name": f.name.trim(), "enabled": f.enabled, "transport": transport })
+}
+
+pub(crate) fn conn_form_from_row(row: &ConnRow) -> ConnForm {
+    match &row.transport {
+        ConnTransport::Stdio { command, args, .. } => ConnForm {
+            id: Some(row.id.clone()),
+            name: row.name.clone(),
+            kind: "stdio".into(),
+            command: command.clone(),
+            args: args.join(" "),
+            url: String::new(),
+            headers: String::new(),
+            auth: "none".into(),
+            enabled: row.enabled,
+        },
+        ConnTransport::Http { url, headers, auth } => ConnForm {
+            id: Some(row.id.clone()),
+            name: row.name.clone(),
+            kind: "http".into(),
+            command: String::new(),
+            args: String::new(),
+            url: url.clone(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            auth: if auth == "oauth" {
+                "oauth".into()
+            } else {
+                "none".into()
+            },
+            enabled: row.enabled,
+        },
+    }
+}

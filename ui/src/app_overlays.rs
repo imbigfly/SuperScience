@@ -1,0 +1,804 @@
+use crate::app_support::{
+    classify_ssh_failure, js_error_text, refresh_execution_contexts, refresh_remote_dir,
+    show_probe_stopped_toast, show_toast, show_warning_toast, ssh_connectivity_gap,
+    ssh_context_known_good, ssh_fail_cause_keys, AvailableUpdate, SshCheckPhase,
+    SshConnectivityModal, SshFailKind, UpdateCheckModal,
+};
+use crate::bindings::{download_app_update, invoke, invoke_checked, open_external_url};
+use crate::dto::*;
+use crate::i18n::{localize_backend, t, tf, Locale};
+use crate::text::{format_bytes, md_to_html};
+use leptos::*;
+use serde_wasm_bindgen::to_value;
+use std::rc::Rc;
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+
+fn project_transfer_stage_label(locale: Locale, stage: &str) -> String {
+    let key = match stage {
+        "selecting_export_destination" => "projects.transfer.selecting_export_destination",
+        "selecting_import_destination" => "projects.transfer.selecting_import_destination",
+        "selecting_archive" => "projects.transfer.selecting_archive",
+        "preparing" => "projects.transfer.preparing",
+        "scanning" => "projects.transfer.scanning",
+        "writing" => "projects.transfer.writing",
+        "validating" => "projects.transfer.validating",
+        "publishing" => "projects.transfer.publishing",
+        "reading" => "projects.transfer.reading",
+        "extracting" => "projects.transfer.extracting",
+        "registering" => "projects.transfer.registering",
+        _ => "projects.transfer.preparing",
+    };
+    t(locale, key)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ProjectTransferOverlayState {
+    pub(crate) locale: RwSignal<Locale>,
+    pub(crate) project_transfer: RwSignal<Option<ProjectTransferProgress>>,
+}
+
+#[component]
+pub(crate) fn ProjectTransferOverlay(state: ProjectTransferOverlayState) -> impl IntoView {
+    let ProjectTransferOverlayState {
+        locale,
+        project_transfer,
+    } = state;
+    view! {
+        {move || project_transfer.get().map(|transfer| {
+            let complete = transfer.is_complete();
+            let title = if complete {
+                t(
+                    locale.get(),
+                    if transfer.direction == "export" {
+                        "projects.transfer.export_complete"
+                    } else {
+                        "projects.transfer.import_complete"
+                    },
+                )
+            } else if transfer.direction == "export" {
+                t(locale.get(), "projects.transfer.export_title")
+            } else {
+                t(locale.get(), "projects.transfer.import_title")
+            };
+            let stage = if complete {
+                String::new()
+            } else {
+                project_transfer_stage_label(locale.get(), &transfer.stage)
+            };
+            let byte_progress = transfer.total_bytes.map(|total| {
+                format!(
+                    "{} / {}",
+                    format_bytes(transfer.completed_bytes),
+                    format_bytes(total),
+                )
+            });
+            let file_progress = transfer.total_files.map(|total| {
+                tf(
+                    locale.get(),
+                    "projects.transfer.files",
+                    &[
+                        ("done", &transfer.completed_files.to_string()),
+                        ("total", &total.to_string()),
+                    ],
+                )
+            });
+            let detail = transfer.current_path.clone();
+            let import_hint = (!complete && transfer.direction == "import")
+                .then(|| t(locale.get(), "projects.transfer.import_destination_hint"));
+            let max = transfer.total_bytes.unwrap_or(1).to_string();
+            let value = transfer.total_bytes.map(|_| transfer.completed_bytes.to_string());
+            view! {
+                <div class="overlay project-transfer-overlay">
+                    <div class="modal confirm-modal project-transfer-modal"
+                        data-testid="project-transfer-modal"
+                        role="dialog" aria-modal="true" aria-live="polite">
+                        <h2>{title}</h2>
+                        {(!complete).then(|| view! {
+                            <div class="project-transfer-progress" role="status">
+                                <span class="project-transfer-stage">{stage}</span>
+                                <progress max=max value=value></progress>
+                                <div class="project-transfer-meta">
+                                    {byte_progress.map(|progress| view! { <span>{progress}</span> })}
+                                    {file_progress.map(|progress| view! { <span>{progress}</span> })}
+                                </div>
+                            </div>
+                        })}
+                        {import_hint.map(|hint| view! {
+                            <div class="project-transfer-hint">{hint}</div>
+                        })}
+                        {detail.map(|path| view! {
+                            <div class="project-transfer-path" title=path.clone()>{path}</div>
+                        })}
+                        {complete.then(|| view! {
+                            <div class="row">
+                                <button type="button" class="primary"
+                                    on:click=move |_| project_transfer.set(None)>
+                                    {move || t(locale.get(), "projects.transfer.done")}
+                                </button>
+                            </div>
+                        })}
+                    </div>
+                </div>
+            }
+        })}
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct UpdateCheckOverlayState {
+    pub(crate) locale: RwSignal<Locale>,
+    pub(crate) update_check_modal: RwSignal<Option<UpdateCheckModal>>,
+    pub(crate) update_check_enabled: RwSignal<bool>,
+    pub(crate) update_banner: RwSignal<Option<AvailableUpdate>>,
+}
+
+#[component]
+pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoView {
+    let UpdateCheckOverlayState {
+        locale,
+        update_check_modal,
+        update_check_enabled,
+        update_banner,
+    } = state;
+    view! {
+        {move || update_check_modal.get().map(|modal| match modal {
+            UpdateCheckModal::Checking => view! {
+                <div class="overlay">
+                    <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
+                        <h2>{move || t(locale.get(), "update_modal.checking_title")}</h2>
+                        <div class="hint">{move || t(locale.get(), "update_modal.checking_body")}</div>
+                    </div>
+                </div>
+            }
+            .into_view(),
+            UpdateCheckModal::Available {
+                version,
+                notes,
+                release_url,
+                install_supported,
+                downloading,
+            } => {
+                let body = tf(locale.get(), "update_modal.available_body", &[("version", &version)]);
+                let notes_html = (!notes.trim().is_empty()).then(|| md_to_html(&notes));
+                let release_for_open = release_url.clone();
+                let version_for_download = version.clone();
+                let release_for_download = release_url.clone();
+                view! {
+                    <div class="overlay">
+                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
+                            <h2>{move || t(locale.get(), "update_modal.available_title")}</h2>
+                            <div class="hint">{body}</div>
+                            {notes_html.map(|html| view! {
+                                <div class="update-notes md markdown" inner_html=html></div>
+                            })}
+                            <div class="row">
+                                <button
+                                    type="button"
+                                    class="update-modal-dismiss"
+                                    data-testid="update-check-dismiss"
+                                    on:click=move |_| {
+                                        update_check_enabled.set(false);
+                                        update_banner.set(None);
+                                        update_check_modal.set(None);
+                                        spawn_local(async {
+                                            let arg = to_value(&serde_json::json!({ "enabled": false })).unwrap_or(JsValue::NULL);
+                                            let _ = invoke("set_update_check_enabled", arg).await;
+                                        });
+                                    }
+                                >
+                                    {move || t(locale.get(), "update_modal.never")}
+                                </button>
+                                <button
+                                    type="button"
+                                    on:click=move |_| update_check_modal.set(None)
+                                >
+                                    {move || t(locale.get(), "update_modal.later")}
+                                </button>
+                                <button
+                                    type="button"
+                                    class:primary=move || !install_supported
+                                    data-testid="update-check-open-releases"
+                                    on:click=move |_| {
+                                        open_external_url(release_for_open.clone());
+                                        update_check_modal.set(None);
+                                    }
+                                >
+                                    {move || t(locale.get(), "update_modal.open_releases")}
+                                </button>
+                                {install_supported.then(|| view! {
+                                    <button
+                                        type="button"
+                                        class="primary"
+                                        data-testid="update-check-download"
+                                        prop:disabled=downloading
+                                        on:click=move |_| {
+                                            let version = version_for_download.clone();
+                                            let release_url = release_for_download.clone();
+                                            let downloaded_bytes = create_rw_signal(0_u64);
+                                            let total_bytes = create_rw_signal(None::<u64>);
+                                            update_check_modal.set(Some(UpdateCheckModal::Downloading {
+                                                version: version.clone(),
+                                                downloaded_bytes,
+                                                total_bytes,
+                                            }));
+                                            spawn_local(async move {
+                                                let callback = Closure::<dyn FnMut(JsValue)>::wrap(Box::new(
+                                                    move |value: JsValue| {
+                                                        let Ok(event) = serde_wasm_bindgen::from_value::<UpdateDownloadEvent>(value) else {
+                                                            return;
+                                                        };
+                                                        match event {
+                                                            UpdateDownloadEvent::Started { content_length } => {
+                                                                total_bytes.set(content_length);
+                                                            }
+                                                            UpdateDownloadEvent::Progress { chunk_length } => {
+                                                                downloaded_bytes.update(|bytes| {
+                                                                    *bytes = bytes.saturating_add(chunk_length);
+                                                                });
+                                                            }
+                                                            UpdateDownloadEvent::Verified => {}
+                                                        }
+                                                    },
+                                                ));
+                                                let result = download_app_update(
+                                                    callback.as_ref().unchecked_ref(),
+                                                ).await;
+                                                drop(callback);
+                                                match result {
+                                                    Ok(_) => update_check_modal.set(Some(
+                                                        UpdateCheckModal::ReadyToInstall {
+                                                            version,
+                                                            release_url,
+                                                        },
+                                                    )),
+                                                    Err(error) => update_check_modal.set(Some(
+                                                        UpdateCheckModal::Failed {
+                                                            message: localize_backend(
+                                                                locale.get_untracked(),
+                                                                &js_error_text(error),
+                                                            ),
+                                                            release_url: Some(release_url),
+                                                        },
+                                                    )),
+                                                }
+                                            });
+                                        }
+                                    >
+                                        {move || if downloading {
+                                            t(locale.get(), "transfer.downloading")
+                                        } else {
+                                            t(locale.get(), "update_modal.download")
+                                        }}
+                                    </button>
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                }
+                .into_view()
+            }
+            UpdateCheckModal::Downloading {
+                version,
+                downloaded_bytes,
+                total_bytes,
+            } => {
+                let title = tf(
+                    locale.get(),
+                    "update_modal.downloading_title",
+                    &[("version", &version)],
+                );
+                view! {
+                    <div class="overlay">
+                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
+                            <h2>{title}</h2>
+                            <div class="hint">{move || t(locale.get(), "update_modal.downloading_body")}</div>
+                            <div class="update-download-progress" role="status" aria-live="polite">
+                                <progress
+                                    max=move || total_bytes.get().unwrap_or(1).to_string()
+                                    value=move || total_bytes.get().map(|_| downloaded_bytes.get().to_string())
+                                ></progress>
+                                <span>{move || if let Some(total) = total_bytes.get() {
+                                    format!("{} / {}", format_bytes(downloaded_bytes.get()), format_bytes(total))
+                                } else {
+                                    format_bytes(downloaded_bytes.get())
+                                }}</span>
+                            </div>
+                        </div>
+                    </div>
+                }
+                .into_view()
+            }
+            UpdateCheckModal::ReadyToInstall { version, release_url } => {
+                let body = tf(
+                    locale.get(),
+                    "update_modal.ready_body",
+                    &[("version", &version)],
+                );
+                let release_for_open = release_url.clone();
+                let version_for_install = version.clone();
+                let release_for_install = release_url.clone();
+                view! {
+                    <div class="overlay">
+                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
+                            <h2>{move || t(locale.get(), "update_modal.ready_title")}</h2>
+                            <div class="hint">{body}</div>
+                            <div class="row">
+                                <button
+                                    type="button"
+                                    on:click=move |_| update_check_modal.set(None)
+                                >
+                                    {move || t(locale.get(), "update_modal.later")}
+                                </button>
+                                <button
+                                    type="button"
+                                    data-testid="update-check-open-releases"
+                                    on:click=move |_| {
+                                        open_external_url(release_for_open.clone());
+                                        update_check_modal.set(None);
+                                    }
+                                >
+                                    {move || t(locale.get(), "update_modal.open_releases")}
+                                </button>
+                                <button
+                                    type="button"
+                                    class="primary"
+                                    data-testid="update-check-install"
+                                    on:click=move |_| {
+                                        let version = version_for_install.clone();
+                                        let release_url = release_for_install.clone();
+                                        update_check_modal.set(Some(UpdateCheckModal::Installing {
+                                            version: version.clone(),
+                                        }));
+                                        spawn_local(async move {
+                                            if let Err(error) = invoke_checked(
+                                                "install_update",
+                                                JsValue::UNDEFINED,
+                                            ).await {
+                                                update_check_modal.set(Some(UpdateCheckModal::Failed {
+                                                    message: localize_backend(
+                                                        locale.get_untracked(),
+                                                        &js_error_text(error),
+                                                    ),
+                                                    release_url: Some(release_url),
+                                                }));
+                                            }
+                                        });
+                                    }
+                                >
+                                    {move || t(locale.get(), "update_modal.install")}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }
+                .into_view()
+            }
+            UpdateCheckModal::Installing { version } => {
+                let title = tf(
+                    locale.get(),
+                    "update_modal.installing_title",
+                    &[("version", &version)],
+                );
+                view! {
+                    <div class="overlay">
+                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
+                            <h2>{title}</h2>
+                            <div class="hint">{move || t(locale.get(), "update_modal.installing_body")}</div>
+                        </div>
+                    </div>
+                }
+                .into_view()
+            }
+            UpdateCheckModal::UpToDate { version } => {
+                let body = tf(locale.get(), "update_modal.up_to_date_body", &[("version", &version)]);
+                view! {
+                    <div class="overlay">
+                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
+                            <h2>{move || t(locale.get(), "update_modal.up_to_date_title")}</h2>
+                            <div class="hint">{body}</div>
+                            <div class="row">
+                                <button
+                                    type="button"
+                                    class="primary"
+                                    on:click=move |_| update_check_modal.set(None)
+                                >
+                                    {move || t(locale.get(), "update_modal.ok")}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }
+                .into_view()
+            }
+            UpdateCheckModal::Failed { message, release_url } => {
+                let has_release = release_url.is_some();
+                view! {
+                    <div class="overlay">
+                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
+                            <h2>{move || t(locale.get(), "update_modal.failed_title")}</h2>
+                            <div class="hint" role="alert">{message}</div>
+                            <div class="row">
+                                <button
+                                    type="button"
+                                    class:primary=move || !has_release
+                                    on:click=move |_| update_check_modal.set(None)
+                                >
+                                    {move || t(locale.get(), "update_modal.ok")}
+                                </button>
+                                {release_url.map(|url| view! {
+                                    <button
+                                        type="button"
+                                        class="primary"
+                                        data-testid="update-check-open-releases"
+                                        on:click=move |_| {
+                                            open_external_url(url.clone());
+                                            update_check_modal.set(None);
+                                        }
+                                    >
+                                        {move || t(locale.get(), "update_modal.open_releases")}
+                                    </button>
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                }
+                .into_view()
+            }
+        })}
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SshConnectivityOverlayState {
+    pub(crate) locale: RwSignal<Locale>,
+    pub(crate) ssh_connectivity_modal: RwSignal<Option<SshConnectivityModal>>,
+    pub(crate) ssh_connectivity_busy: RwSignal<bool>,
+    pub(crate) execution_contexts: RwSignal<Vec<ExecutionContext>>,
+    pub(crate) remote_file_cwd: RwSignal<String>,
+    pub(crate) remote_file_entries: RwSignal<Vec<DirEntry>>,
+    pub(crate) remote_file_loading: RwSignal<bool>,
+    pub(crate) remote_file_error: RwSignal<Option<String>>,
+    pub(crate) file_source: RwSignal<String>,
+}
+
+#[component]
+pub(crate) fn SshConnectivityOverlay(
+    state: SshConnectivityOverlayState,
+    apply_session_compute_resource: Callback<(String, bool)>,
+    edit_ssh_host: Callback<String>,
+    open_settings: Callback<Option<String>>,
+) -> impl IntoView {
+    let SshConnectivityOverlayState {
+        locale,
+        ssh_connectivity_modal,
+        ssh_connectivity_busy,
+        execution_contexts,
+        remote_file_cwd,
+        remote_file_entries,
+        remote_file_loading,
+        remote_file_error,
+        file_source,
+    } = state;
+    view! {
+        {move || ssh_connectivity_modal.get().map(|modal| {
+            let host = modal.label.clone();
+            let raw_detail = modal.detail.clone();
+            let context_id = modal.context_id.clone();
+            let enable_after = modal.enable_after_probe;
+            let failed = modal.phase == SshCheckPhase::Failed;
+            let fail_kind = classify_ssh_failure(&raw_detail);
+            let loc = locale.get();
+            let detail = localize_backend(loc, &raw_detail);
+            let title = if failed {
+                match fail_kind {
+                    SshFailKind::ProbeOutput => t(loc, "ssh_check.probe_output_title"),
+                    SshFailKind::PasswordAuth => t(loc, "ssh_check.password_title"),
+                    SshFailKind::KeyAuth => t(loc, "ssh_check.key_title"),
+                    _ => t(loc, "ssh_check.fail_title"),
+                }
+            } else {
+                t(loc, "ssh_check.title")
+            };
+            let body = if failed {
+                let key = match fail_kind {
+                    SshFailKind::ProbeOutput => "ssh_check.probe_output_body",
+                    SshFailKind::PasswordAuth => "ssh_check.password_body",
+                    SshFailKind::KeyAuth => "ssh_check.key_body",
+                    _ => "ssh_check.fail_body",
+                };
+                tf(loc, key, &[("host", &host)])
+            } else {
+                tf(loc, "ssh_check.body", &[("host", &host)])
+            };
+            let detail_line = tf(loc, "ssh_check.detail", &[("detail", &detail)]);
+            let cause_keys = ssh_fail_cause_keys(fail_kind);
+            let host_for_probe = host.clone();
+            let run_probe = Rc::new({
+                let context_id = context_id.clone();
+                move || {
+                    let context_id = context_id.clone();
+                    let host_for_probe = host_for_probe.clone();
+                    ssh_connectivity_busy.set(true);
+                    spawn_local(async move {
+                        let arg =
+                            to_value(&serde_json::json!({ "contextId": context_id.clone() }))
+                                .unwrap();
+                        match invoke_checked("probe_execution_context", arg).await {
+                            Ok(value) => {
+                                show_probe_stopped_toast(&value, locale);
+                                refresh_execution_contexts(execution_contexts);
+                                let Ok(updated) =
+                                    serde_wasm_bindgen::from_value::<ExecutionContext>(value)
+                                else {
+                                    ssh_connectivity_busy.set(false);
+                                    return;
+                                };
+                                if ssh_context_known_good(&updated) {
+                                    if enable_after {
+                                        apply_session_compute_resource
+                                            .call((context_id.clone(), true));
+                                        show_toast(&t(
+                                            locale.get_untracked(),
+                                            "ssh_check.enabled",
+                                        ));
+                                    } else {
+                                        show_toast(&t(
+                                            locale.get_untracked(),
+                                            "ssh_check.probed_ok",
+                                        ));
+                                    }
+                                    if file_source.get_untracked() == context_id {
+                                        refresh_remote_dir(
+                                            context_id.clone(),
+                                            remote_file_cwd,
+                                            remote_file_entries,
+                                            remote_file_loading,
+                                            remote_file_error,
+                                            file_source,
+                                        );
+                                    }
+                                    ssh_connectivity_modal.set(None);
+                                } else {
+                                    // Stop probing loop: switch to diagnosis + fix.
+                                    let detail = ssh_connectivity_gap(&updated)
+                                        .unwrap_or_else(|| "probe failed".into());
+                                    let label = if updated.label.trim().is_empty() {
+                                        updated.id.clone()
+                                    } else {
+                                        updated.label.clone()
+                                    };
+                                    ssh_connectivity_modal.set(Some(SshConnectivityModal::failed(
+                                        context_id.clone(),
+                                        label,
+                                        detail,
+                                        enable_after,
+                                    )));
+                                    show_warning_toast(&t(
+                                        locale.get_untracked(),
+                                        "ssh_check.still_failed",
+                                    ));
+                                }
+                            }
+                            Err(error) => {
+                                let message = localize_backend(
+                                    locale.get_untracked(),
+                                    &js_error_text(error),
+                                );
+                                show_toast(&message);
+                                ssh_connectivity_modal.set(Some(SshConnectivityModal::failed(
+                                    context_id.clone(),
+                                    host_for_probe,
+                                    message,
+                                    enable_after,
+                                )));
+                            }
+                        }
+                        ssh_connectivity_busy.set(false);
+                    });
+                }
+            });
+            let open_edit_host = Rc::new({
+                let context_id = context_id.clone();
+                move || {
+                    let alias = context_id
+                        .strip_prefix("ssh:")
+                        .unwrap_or(context_id.as_str())
+                        .to_string();
+                    edit_ssh_host.call(alias);
+                }
+            });
+            view! {
+                <div class="overlay" data-testid="ssh-connectivity-modal">
+                    <div class="modal confirm-modal update-check-modal ssh-check-modal"
+                        class:ssh-check-failed=failed role="dialog" aria-modal="true">
+                        <h2>{title}</h2>
+                        <div class="hint ssh-check-scroll">
+                            <p>{body}</p>
+                            <p class="ssh-check-error">{detail_line}</p>
+                            {failed.then(|| view! {
+                                <div class="ssh-check-causes" data-testid="ssh-check-causes">
+                                    <div class="ssh-check-causes-title">
+                                        {t(loc, "ssh_check.causes_title")}
+                                    </div>
+                                    <ul>
+                                        {cause_keys.iter().map(|key| view! {
+                                            <li>{t(loc, key)}</li>
+                                        }).collect_view()}
+                                    </ul>
+                                </div>
+                            })}
+                            {(!failed).then(|| view! {
+                                <p>{t(loc, "ssh_check.hint")}</p>
+                            })}
+                        </div>
+                        <div class="row ssh-check-actions">
+                            <button
+                                type="button"
+                                prop:disabled=move || ssh_connectivity_busy.get()
+                                on:click=move |_| {
+                                    ssh_connectivity_modal.set(None);
+                                    ssh_connectivity_busy.set(false);
+                                }
+                            >
+                                {t(loc, "ssh_check.cancel")}
+                            </button>
+                            {if failed {
+                                let edit = open_edit_host.clone();
+                                let reprobe = run_probe.clone();
+                                view! {
+                                    <button
+                                        type="button"
+                                        data-testid="ssh-connectivity-settings"
+                                        prop:disabled=move || ssh_connectivity_busy.get()
+                                        on:click=move |_| {
+                                            ssh_connectivity_modal.set(None);
+                                            open_settings.call(Some("environments".into()));
+                                        }
+                                    >
+                                        {t(loc, "ssh_check.jump")}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="primary"
+                                        data-testid="ssh-connectivity-fix-host"
+                                        prop:disabled=move || ssh_connectivity_busy.get()
+                                        on:click=move |_| edit()
+                                    >
+                                        {t(loc, "ssh_check.fix_host")}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        data-testid="ssh-connectivity-reprobe"
+                                        prop:disabled=move || ssh_connectivity_busy.get()
+                                        on:click=move |_| reprobe()
+                                    >
+                                        {move || if ssh_connectivity_busy.get() {
+                                            t(locale.get(), "ssh_check.probing")
+                                        } else {
+                                            t(locale.get(), "ssh_check.reprobe_after_fix")
+                                        }}
+                                    </button>
+                                }.into_view()
+                            } else {
+                                let probe = run_probe.clone();
+                                view! {
+                                    <button
+                                        type="button"
+                                        class="primary"
+                                        data-testid="ssh-connectivity-probe"
+                                        prop:disabled=move || ssh_connectivity_busy.get()
+                                        on:click=move |_| probe()
+                                    >
+                                        {move || if ssh_connectivity_busy.get() {
+                                            t(locale.get(), "ssh_check.probing")
+                                        } else {
+                                            t(locale.get(), "ssh_check.probe")
+                                        }}
+                                    </button>
+                                }.into_view()
+                            }}
+                        </div>
+                    </div>
+                </div>
+            }
+            .into_view()
+        })}
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ContextRecoveryOverlayState {
+    pub(crate) locale: RwSignal<Locale>,
+    pub(crate) context_recovery_dialog: RwSignal<Option<String>>,
+    pub(crate) context_recovery_busy: RwSignal<bool>,
+    pub(crate) context_recovery_error: RwSignal<Option<String>>,
+}
+
+#[component]
+pub(crate) fn ContextRecoveryOverlay(
+    state: ContextRecoveryOverlayState,
+    on_compact: Callback<String>,
+    on_new_session: Callback<String>,
+) -> impl IntoView {
+    let ContextRecoveryOverlayState {
+        locale,
+        context_recovery_dialog,
+        context_recovery_busy,
+        context_recovery_error,
+    } = state;
+    view! {
+        {move || context_recovery_dialog.get().map(|frame_id| {
+            let compact_id = frame_id.clone();
+            let new_session_id = frame_id;
+            view! {
+                <div class="overlay context-recovery-overlay">
+                    <div
+                        class="modal context-recovery-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="context-recovery-title"
+                        data-testid="context-recovery-modal"
+                    >
+                        <h2 id="context-recovery-title">
+                            {move || t(locale.get(), "context_recovery.title")}
+                        </h2>
+                        <p class="context-recovery-body">
+                            {move || t(locale.get(), "context_recovery.body")}
+                        </p>
+                        <div class="context-recovery-options">
+                            <button
+                                type="button"
+                                class="context-recovery-option recommended"
+                                data-testid="context-recovery-compact"
+                                disabled=move || context_recovery_busy.get()
+                                on:click=move |_| on_compact.call(compact_id.clone())
+                            >
+                                <span class="context-recovery-option-title">
+                                    {move || t(locale.get(), "context_recovery.compact")}
+                                </span>
+                                <span class="context-recovery-option-hint">
+                                    {move || t(locale.get(), "context_recovery.compact_hint")}
+                                </span>
+                            </button>
+                            <button
+                                type="button"
+                                class="context-recovery-option"
+                                data-testid="context-recovery-new-session"
+                                disabled=move || context_recovery_busy.get()
+                                on:click=move |_| on_new_session.call(new_session_id.clone())
+                            >
+                                <span class="context-recovery-option-title">
+                                    {move || t(locale.get(), "context_recovery.new_session")}
+                                </span>
+                                <span class="context-recovery-option-hint">
+                                    {move || t(locale.get(), "context_recovery.new_session_hint")}
+                                </span>
+                            </button>
+                            <button
+                                type="button"
+                                class="context-recovery-option"
+                                data-testid="context-recovery-pause"
+                                disabled=move || context_recovery_busy.get()
+                                on:click=move |_| {
+                                    context_recovery_dialog.set(None);
+                                    context_recovery_error.set(None);
+                                }
+                            >
+                                <span class="context-recovery-option-title">
+                                    {move || t(locale.get(), "context_recovery.pause")}
+                                </span>
+                                <span class="context-recovery-option-hint">
+                                    {move || t(locale.get(), "context_recovery.pause_hint")}
+                                </span>
+                            </button>
+                        </div>
+                        {move || context_recovery_error.get().map(|error| view! {
+                            <div class="context-recovery-error" role="alert">{error}</div>
+                        })}
+                    </div>
+                </div>
+            }
+        })}
+    }
+}
