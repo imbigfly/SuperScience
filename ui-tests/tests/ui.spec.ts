@@ -4170,6 +4170,50 @@ test("run monitor output stays pinned to the tail across poll rebuilds (#654)", 
   });
 });
 
+test("a settled run card stops rebuilding itself on every poll (#654)", async ({ page }) => {
+  const longOutput = Array.from(
+    { length: 8 },
+    (_, index) => `settled line ${index} ` + "x".repeat(180),
+  ).join("\n");
+
+  await enterApp(page);
+  // The MONITORRUN turn never resolves, so the agent stays busy and the run
+  // list is polled once a second even though this run is already finished.
+  await page.evaluate((stdout) => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      context_id: "local",
+      title: "Settled pipeline",
+      kind: "local",
+      status: "failed",
+      created_at: Math.floor(Date.now() / 1000) - 30,
+      started_at: Math.floor(Date.now() / 1000) - 29,
+      ended_at: Math.floor(Date.now() / 1000) - 5,
+      exit_code: 1,
+      stdout_tail: stdout,
+      progress_json: "{}",
+    });
+  }, longOutput);
+
+  await composer(page).fill("MONITORRUN");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const output = page.locator('[data-run-id="run-local-002"] .run-monitor-output pre');
+  await expect(output).toBeVisible();
+  const bottomGap = () =>
+    output.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+  await expect.poll(bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(2);
+
+  // Tag the live node. Identical poll results must leave it in place: replacing
+  // it is what reset the panel to its top edge for a frame, once per second.
+  await output.evaluate((el) => {
+    (el as any).__stableProbe = true;
+  });
+  await page.waitForTimeout(3_000);
+  expect(await output.evaluate((el) => (el as any).__stableProbe === true)).toBe(true);
+  expect(await bottomGap()).toBeLessThanOrEqual(2);
+});
+
 test("reasoning details stays open while more thinking streams in", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("RZSTREAM");

@@ -3167,7 +3167,7 @@ pub(crate) struct RuntimeSlot {
 /// the always-NULL `script_path`). No blanket `allow(dead_code)`: an unread
 /// field here means the UI is dropping data again, and the warning is the
 /// whole point.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, PartialEq)]
 pub(crate) struct RunRecord {
     pub(crate) id: String,
     pub(crate) frame_id: Option<String>,
