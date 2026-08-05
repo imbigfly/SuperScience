@@ -8,10 +8,6 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen(module = "/src/context_menu.js")]
 extern "C" {
     fn isDevMode() -> bool;
-    #[wasm_bindgen(js_name = captureTextEntryTarget)]
-    fn capture_text_entry_target(target: web_sys::Element);
-    #[wasm_bindgen(js_name = textEntryCommand)]
-    fn text_entry_command(kind: &str);
     #[wasm_bindgen(catch, js_name = copyImage)]
     async fn copy_image_js(src: &str) -> Result<JsValue, JsValue>;
 }
@@ -123,6 +119,12 @@ fn editable_text_entry(el: &web_sys::Element) -> Option<web_sys::Element> {
         }
     }
     Some(entry)
+}
+
+pub(crate) fn uses_native_text_menu(ev: &web_sys::MouseEvent) -> bool {
+    event_target(ev)
+        .and_then(|target| editable_text_entry(&target))
+        .is_some()
 }
 
 pub(crate) fn selection_text() -> Option<String> {
@@ -397,24 +399,6 @@ pub fn build(
         }
     }
 
-    if let Some(entry) = text_entry {
-        capture_text_entry_target(entry);
-        return Some(CtxMenu {
-            x,
-            y,
-            items: vec![
-                item("cut", i18n::t(locale, "ctx.cut"), String::new()),
-                item("copy", i18n::t(locale, "ctx.copy"), String::new()),
-                item("paste", i18n::t(locale, "ctx.paste"), String::new()),
-                item(
-                    "selectAll",
-                    i18n::t(locale, "ctx.select_all"),
-                    String::new(),
-                ),
-            ],
-        });
-    }
-
     if let Some(code) = text_from_code_block(&target) {
         return Some(CtxMenu {
             x,
@@ -604,8 +588,6 @@ pub fn build(
 
 pub fn run_action(action: &str, payload: &str, copy: impl Fn(String)) {
     match action {
-        "cut" | "paste" | "selectAll" => text_entry_command(action),
-        "copy" if payload.is_empty() => text_entry_command("copy"),
         "copy" | "copyCode" | "copyTitle" | "copyName" | "copyMessage" if !payload.is_empty() => {
             copy(payload.to_string());
         }

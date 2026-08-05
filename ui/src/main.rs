@@ -6472,6 +6472,10 @@ fn App() -> impl IntoView {
         })
     };
     let on_context_menu = move |ev: web_sys::MouseEvent| {
+        if context_menu::uses_native_text_menu(&ev) {
+            ctx_menu.set(None);
+            return;
+        }
         let loc = locale.get();
         let center = center_file.get_untracked();
         if let Some(menu) = context_menu::build(
@@ -8151,17 +8155,14 @@ fn App() -> impl IntoView {
                                         on:click=move |_| {
                                             let version = version_for_download.clone();
                                             let release_url = release_for_download.clone();
+                                            let downloaded_bytes = create_rw_signal(0_u64);
+                                            let total_bytes = create_rw_signal(None::<u64>);
                                             update_check_modal.set(Some(UpdateCheckModal::Downloading {
                                                 version: version.clone(),
-                                                downloaded_bytes: 0,
-                                                total_bytes: None,
+                                                downloaded_bytes,
+                                                total_bytes,
                                             }));
                                             spawn_local(async move {
-                                                let downloaded = Rc::new(Cell::new(0_u64));
-                                                let total = Rc::new(Cell::new(None::<u64>));
-                                                let event_downloaded = downloaded.clone();
-                                                let event_total = total.clone();
-                                                let event_version = version.clone();
                                                 let callback = Closure::<dyn FnMut(JsValue)>::wrap(Box::new(
                                                     move |value: JsValue| {
                                                         let Ok(event) = serde_wasm_bindgen::from_value::<UpdateDownloadEvent>(value) else {
@@ -8169,20 +8170,15 @@ fn App() -> impl IntoView {
                                                         };
                                                         match event {
                                                             UpdateDownloadEvent::Started { content_length } => {
-                                                                event_total.set(content_length);
+                                                                total_bytes.set(content_length);
                                                             }
                                                             UpdateDownloadEvent::Progress { chunk_length } => {
-                                                                event_downloaded.set(
-                                                                    event_downloaded.get().saturating_add(chunk_length),
-                                                                );
+                                                                downloaded_bytes.update(|bytes| {
+                                                                    *bytes = bytes.saturating_add(chunk_length);
+                                                                });
                                                             }
                                                             UpdateDownloadEvent::Verified => {}
                                                         }
-                                                        update_check_modal.set(Some(UpdateCheckModal::Downloading {
-                                                            version: event_version.clone(),
-                                                            downloaded_bytes: event_downloaded.get(),
-                                                            total_bytes: event_total.get(),
-                                                        }));
                                                     },
                                                 ));
                                                 let result = download_app_update(
@@ -8232,11 +8228,6 @@ fn App() -> impl IntoView {
                     "update_modal.downloading_title",
                     &[("version", &version)],
                 );
-                let progress = if let Some(total) = total_bytes {
-                    format!("{} / {}", format_bytes(downloaded_bytes), format_bytes(total))
-                } else {
-                    format_bytes(downloaded_bytes)
-                };
                 view! {
                     <div class="overlay">
                         <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
@@ -8244,10 +8235,14 @@ fn App() -> impl IntoView {
                             <div class="hint">{move || t(locale.get(), "update_modal.downloading_body")}</div>
                             <div class="update-download-progress" role="status" aria-live="polite">
                                 <progress
-                                    max=total_bytes.unwrap_or(1).to_string()
-                                    value=total_bytes.map(|_| downloaded_bytes.to_string())
+                                    max=move || total_bytes.get().unwrap_or(1).to_string()
+                                    value=move || total_bytes.get().map(|_| downloaded_bytes.get().to_string())
                                 ></progress>
-                                <span>{progress}</span>
+                                <span>{move || if let Some(total) = total_bytes.get() {
+                                    format!("{} / {}", format_bytes(downloaded_bytes.get()), format_bytes(total))
+                                } else {
+                                    format_bytes(downloaded_bytes.get())
+                                }}</span>
                             </div>
                         </div>
                     </div>

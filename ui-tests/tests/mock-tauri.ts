@@ -3255,9 +3255,14 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               data: { chunk_length: 25 },
             });
             if (mockUpdateDownloadPending) {
+              (window as any).__mockUpdateProgress = (chunkLength: number) => onEvent?.onmessage?.({
+                event: "progress",
+                data: { chunk_length: chunkLength },
+              });
               await new Promise<void>((resolve) => {
                 resolveMockUpdateDownload = resolve;
               });
+              delete (window as any).__mockUpdateProgress;
               mockUpdateDownloadPending = false;
             }
             if (mockUpdateDownloadError) {

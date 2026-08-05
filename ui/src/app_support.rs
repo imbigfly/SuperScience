@@ -460,8 +460,8 @@ pub(super) enum UpdateCheckModal {
     },
     Downloading {
         version: String,
-        downloaded_bytes: u64,
-        total_bytes: Option<u64>,
+        downloaded_bytes: RwSignal<u64>,
+        total_bytes: RwSignal<Option<u64>>,
     },
     ReadyToInstall {
         version: String,
