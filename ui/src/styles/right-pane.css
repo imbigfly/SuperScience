@@ -386,6 +386,17 @@ button.run-status:hover { filter:brightness(0.96); }
 .rp-pre { margin: 0; padding: 10px 12px; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 12px; line-height: 1.5; overflow: auto; max-height: min(520px, 55vh); white-space: pre-wrap; }
 .rp-view .tbl-wrap { flex: 1 1 auto; min-height: 0; max-height: min(640px, 62vh); }
 .rp-heavy { min-height: 120px; }
+.preview-trunc-note {
+  flex: 0 0 auto;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
 .rp-error { color: var(--err); font-size: 13px; }
 .rp-pdf { display: flex; width: 100%; min-height: 120px; height: auto; flex-direction: column; gap: 12px; padding: 12px; box-sizing: border-box; border-radius: var(--radius-sm); background: var(--bg-sunken); }
 .rp-pdf-toolbar { display: flex; justify-content: center; align-items: center; }

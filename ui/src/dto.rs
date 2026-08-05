@@ -1788,6 +1788,12 @@ pub(crate) struct FileContent {
     pub(crate) mime: String,
     pub(crate) text: Option<String>,
     pub(crate) base64: Option<String>,
+    /// Set when the backend returned only a leading prefix of a large text file.
+    #[serde(default)]
+    pub(crate) truncated: bool,
+    /// Full on-disk size (bytes), present when known.
+    #[serde(default)]
+    pub(crate) total_bytes: Option<u64>,
 }
 
 #[derive(Deserialize, Clone)]
