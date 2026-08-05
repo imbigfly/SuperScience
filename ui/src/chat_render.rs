@@ -213,23 +213,27 @@ mod token_format_tests {
 }
 
 /// One thread render unit: either a single message, or a coalesced steps panel.
+///
+/// Rows store message indices, not cloned messages: the keyed `<For>` rebuilds
+/// a row only when its fingerprint key changes, so cloning the message lazily
+/// inside `children` (via `items.with_untracked`) turns per-flush deep clones
+/// of the whole render window into one clone per actually-changed row.
 #[derive(Clone)]
 pub(crate) enum ThreadRow {
     Item {
         i: usize,
-        item: ChatItem,
         timestamp: Option<i64>,
         commentary: bool,
         compact_assistant: bool,
         can_undo: bool,
     },
     Steps {
-        items: Vec<ChatItem>,
+        indices: Vec<usize>,
         live: bool,
         ui_indices: String,
     },
     Activity {
-        items: Vec<ChatItem>,
+        indices: Vec<usize>,
         ui_indices: String,
     },
 }

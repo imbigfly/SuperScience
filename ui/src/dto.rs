@@ -409,6 +409,25 @@ pub(crate) enum ReviewTransitionPhase {
     Passed,
 }
 
+/// Hashes a string in O(1): short strings hash whole, long ones hash their
+/// length plus a head/tail sample. Full-text hashing made every streaming
+/// flush re-hash megabytes of transcript in long sessions, saturating the
+/// WebView main thread. Streaming appends always change the tail sample, so
+/// row keys still track content; a same-length edit confined to the middle of
+/// a long message could miss a rebuild, which we accept for the O(1) cost.
+fn hash_text_sampled<H: std::hash::Hasher>(h: &mut H, s: &str) {
+    use std::hash::Hash;
+    const SAMPLE: usize = 128;
+    let bytes = s.as_bytes();
+    bytes.len().hash(h);
+    if bytes.len() <= 2 * SAMPLE {
+        bytes.hash(h);
+    } else {
+        bytes[..SAMPLE].hash(h);
+        bytes[bytes.len() - SAMPLE..].hash(h);
+    }
+}
+
 impl ChatItem {
     /// Content hash used as the keyed-list key in the chat thread: a row is
     /// rebuilt only when this changes, so streaming updates to one message
@@ -417,14 +436,26 @@ impl ChatItem {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         match self {
-            Self::User(s) => (0u8, s).hash(&mut h),
-            Self::QueuedUser { id, text } => (1u8, id, text).hash(&mut h),
+            Self::User(s) => {
+                0u8.hash(&mut h);
+                hash_text_sampled(&mut h, s);
+            }
+            Self::QueuedUser { id, text } => {
+                (1u8, id).hash(&mut h);
+                hash_text_sampled(&mut h, text);
+            }
             Self::Assistant {
                 text,
                 model,
                 resources,
-            } => (2u8, text, model, resources).hash(&mut h),
-            Self::Reasoning(s) => (3u8, s).hash(&mut h),
+            } => {
+                (2u8, model, resources).hash(&mut h);
+                hash_text_sampled(&mut h, text);
+            }
+            Self::Reasoning(s) => {
+                3u8.hash(&mut h);
+                hash_text_sampled(&mut h, s);
+            }
             Self::Tool {
                 name,
                 ok,
@@ -432,12 +463,20 @@ impl ChatItem {
                 output,
                 duration_ms,
                 ..
-            } => (4u8, name, ok, input, output, duration_ms).hash(&mut h),
+            } => {
+                (4u8, name, ok, duration_ms).hash(&mut h);
+                hash_text_sampled(&mut h, input);
+                hash_text_sampled(&mut h, output);
+            }
             Self::ApprovalPending {
                 tool,
                 preview,
                 message,
-            } => (6u8, tool, preview, message).hash(&mut h),
+            } => {
+                (6u8, tool).hash(&mut h);
+                hash_text_sampled(&mut h, preview);
+                hash_text_sampled(&mut h, message);
+            }
             Self::AcpPermission {
                 request_id,
                 tool,
@@ -450,7 +489,11 @@ impl ChatItem {
                 status,
                 content,
                 locations,
-            } => (10u8, call_id, title, kind, status, content, locations).hash(&mut h),
+            } => {
+                (10u8, call_id, title, kind, status).hash(&mut h);
+                hash_text_sampled(&mut h, content);
+                hash_text_sampled(&mut h, locations);
+            }
             Self::Usage {
                 input,
                 output,
@@ -481,6 +524,72 @@ impl ChatItem {
             Self::Question(question) => (12u8, question).hash(&mut h),
         }
         h.finish()
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    fn assistant(text: String) -> ChatItem {
+        ChatItem::Assistant {
+            text,
+            model: None,
+            resources: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn same_content_same_fingerprint() {
+        let text = "a".repeat(1000);
+        assert_eq!(assistant(text.clone()).fingerprint(), assistant(text).fingerprint());
+    }
+
+    #[test]
+    fn streaming_append_changes_fingerprint() {
+        let base = "partial answer ".repeat(100);
+        let mut appended = base.clone();
+        appended.push_str("next delta");
+        assert_ne!(
+            assistant(base).fingerprint(),
+            assistant(appended).fingerprint()
+        );
+    }
+
+    #[test]
+    fn short_text_edit_changes_fingerprint() {
+        assert_ne!(
+            ChatItem::User("run the analysis".into()).fingerprint(),
+            ChatItem::User("run the other analysis".into()).fingerprint()
+        );
+    }
+
+    #[test]
+    fn long_text_head_or_tail_edit_changes_fingerprint() {
+        let middle = "x".repeat(1000);
+        let head_edit = format!("EDIT{middle}");
+        let tail_edit = format!("{middle}EDIT");
+        assert_ne!(
+            ChatItem::Reasoning(middle.clone()).fingerprint(),
+            ChatItem::Reasoning(head_edit).fingerprint()
+        );
+        assert_ne!(
+            ChatItem::Reasoning(middle.clone()).fingerprint(),
+            ChatItem::Reasoning(tail_edit).fingerprint()
+        );
+    }
+
+    /// Accepted tradeoff of sampled hashing: a same-length edit confined to
+    /// the middle of a long message keeps the old fingerprint, so a keyed row
+    /// would not rebuild. Streaming appends and typical edits always touch the
+    /// length, head, or tail, so this does not occur in practice.
+    #[test]
+    fn middle_only_same_length_edit_is_not_detected() {
+        let mut a = "y".repeat(1000);
+        let mut b = a.clone();
+        a.replace_range(500..503, "foo");
+        b.replace_range(500..503, "bar");
+        assert_eq!(ChatItem::User(a).fingerprint(), ChatItem::User(b).fingerprint());
     }
 }
 

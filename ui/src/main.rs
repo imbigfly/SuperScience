@@ -7975,8 +7975,9 @@ fn App() -> impl IntoView {
                                     .map(|page| page.window_user_start)
                                     .unwrap_or(usize::MAX)
                             };
-                            // `with` avoids deep-cloning every message per flush;
-                            // only rows being built clone their item below.
+                            // Rows carry message indices, never cloned messages;
+                            // `children` clones lazily, so a flush only pays for
+                            // rows whose fingerprint key actually changed.
                             items.with(|list| {
                             // Queued user turns live after the active turn and
                             // must not make its process group look historical.
@@ -8011,33 +8012,32 @@ fn App() -> impl IntoView {
                                 if renders_nothing(&list[i]) { i += 1; continue; }
                                 if let Some(end) = completed_activity_end(list, i, busy_now) {
                                     let start = i;
-                                    let mut run: Vec<(usize, ChatItem)> = Vec::new();
+                                    let mut indices: Vec<usize> = Vec::new();
                                     for j in i..end {
                                         if is_turn_activity_at(list, j) {
-                                            run.push((j, list[j].clone()));
+                                            indices.push(j);
                                         }
                                     }
                                     let mut h = std::collections::hash_map::DefaultHasher::new();
-                                    for (idx, it) in &run { (idx, it.fingerprint()).hash(&mut h); }
+                                    for idx in &indices { (idx, list[*idx].fingerprint()).hash(&mut h); }
                                     true.hash(&mut h);
-                                    let ui_indices = run
+                                    let ui_indices = indices
                                         .iter()
-                                        .map(|(index, _)| index.to_string())
+                                        .map(|index| index.to_string())
                                         .collect::<Vec<_>>()
                                         .join(" ");
-                                    let items_only = run.into_iter().map(|(_, item)| item).collect();
                                     rows.push((thread_session_id.clone(), start, h.finish(), ThreadRow::Activity {
-                                        items: items_only,
+                                        indices,
                                         ui_indices,
                                     }));
                                     i = end;
                                 } else if is_tool_activity(&list[i]) {
                                     let start = i;
-                                    let mut run: Vec<(usize, ChatItem)> = Vec::new();
+                                    let mut indices: Vec<usize> = Vec::new();
                                     let mut j = i;
                                     while j < window.end {
                                         if renders_nothing(&list[j]) { j += 1; continue; }
-                                        if is_tool_activity(&list[j]) { run.push((j, list[j].clone())); j += 1; }
+                                        if is_tool_activity(&list[j]) { indices.push(j); j += 1; }
                                         else { break; }
                                     }
                                     // Usage is metadata for the whole reply, not
@@ -8046,16 +8046,15 @@ fn App() -> impl IntoView {
                                         renders_nothing(item) || matches!(item, ChatItem::Usage { .. })
                                     }));
                                     let mut h = std::collections::hash_map::DefaultHasher::new();
-                                    for (idx, it) in &run { (idx, it.fingerprint()).hash(&mut h); }
+                                    for idx in &indices { (idx, list[*idx].fingerprint()).hash(&mut h); }
                                     live.hash(&mut h);
-                                    let ui_indices = run
+                                    let ui_indices = indices
                                         .iter()
-                                        .map(|(index, _)| index.to_string())
+                                        .map(|index| index.to_string())
                                         .collect::<Vec<_>>()
                                         .join(" ");
-                                    let items_only: Vec<ChatItem> = run.into_iter().map(|(_, c)| c).collect();
                                     rows.push((thread_session_id.clone(), start, h.finish(), ThreadRow::Steps {
-                                        items: items_only,
+                                        indices,
                                         live,
                                         ui_indices,
                                     }));
@@ -8086,7 +8085,6 @@ fn App() -> impl IntoView {
                                     fp ^= timestamp.unwrap_or_default() as u64;
                                     rows.push((thread_session_id.clone(), i, fp, ThreadRow::Item {
                                         i,
-                                        item: list[i].clone(),
                                         timestamp,
                                         commentary,
                                         compact_assistant,
@@ -8103,12 +8101,14 @@ fn App() -> impl IntoView {
                             match row {
                                 ThreadRow::Item {
                                     i,
-                                    item,
                                     timestamp,
                                     commentary,
                                     compact_assistant,
                                     can_undo,
                                 } => {
+                                    // Rebuilt only when the fingerprint key changed,
+                                    // so this is the one clone that actually pays off.
+                                    let item = items.with_untracked(|list| list[i].clone());
                                     let arts = artifacts.get_untracked();
                                     let on_resume = Callback::new(resume_turn);
                                     let class = if commentary {
@@ -8145,14 +8145,17 @@ fn App() -> impl IntoView {
                                         </div>
                                     }.into_view()
                                 }
-                                ThreadRow::Steps { items, live, ui_indices } => {
+                                ThreadRow::Steps { indices, live, ui_indices } => {
                                     // ponytail: position-keyed; move to stable
                                     // row ids if mid-list edits ever shift groups.
                                     let group_id = format!("{session_id}:steps:{start}");
+                                    let group_items = items.with_untracked(|list| {
+                                        indices.iter().map(|&j| list[j].clone()).collect::<Vec<_>>()
+                                    });
                                     view! {
                                         <div class="steps-wrap" data-ui-indices=ui_indices>{
                                             render_steps_group(
-                                                items,
+                                                group_items,
                                                 live,
                                                 false,
                                                 group_id,
@@ -8161,12 +8164,15 @@ fn App() -> impl IntoView {
                                         }</div>
                                     }.into_view()
                                 },
-                                ThreadRow::Activity { items, ui_indices } => {
+                                ThreadRow::Activity { indices, ui_indices } => {
                                     let group_id = format!("{session_id}:activity:{start}");
+                                    let group_items = items.with_untracked(|list| {
+                                        indices.iter().map(|&j| list[j].clone()).collect::<Vec<_>>()
+                                    });
                                     view! {
                                         <div class="steps-wrap" data-ui-indices=ui_indices>{
                                             render_steps_group(
-                                                items,
+                                                group_items,
                                                 false,
                                                 true,
                                                 group_id,
