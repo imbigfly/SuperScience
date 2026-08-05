@@ -2962,7 +2962,11 @@ pub(super) fn workflow_studio(
         let model_id = portfolio_model_id.get_untracked();
         if request_text.is_empty() || model_id.is_empty() {
             state.error.set(Some(
-                t(locale.get_untracked(), "workflow_studio.portfolio.validation").into(),
+                t(
+                    locale.get_untracked(),
+                    "workflow_studio.portfolio.validation",
+                )
+                .into(),
             ));
             return;
         }
