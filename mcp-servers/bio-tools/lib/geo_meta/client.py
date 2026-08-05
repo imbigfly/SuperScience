@@ -23,7 +23,7 @@ from mcp_servers_common.ua import product_ua
 
 # NCBI identification (legal Y12): the stdio server runs on the user's box,
 # so the UA identifies the user's install. The `email=` query param (built in
-# core._eutils_params with NCBI_EMAIL > OPERON_CONTACT_EMAIL > omit
+# core._eutils_params with NCBI_EMAIL > SUPERSCIENCE_CONTACT_EMAIL > omit
 # precedence) is what NCBI reads for warn-before-block.
 DEFAULT_USER_AGENT = product_ua("geo-meta")
 

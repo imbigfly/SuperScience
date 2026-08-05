@@ -36,7 +36,7 @@ from mcp_servers_common.ua import contact_email
 
 TOOL_NAME = "geo-meta"
 # Operator contact (legal Y12): NCBI_EMAIL > user-consented
-# OPERON_CONTACT_EMAIL > omit. NCBI accepts omitting email=.
+# SUPERSCIENCE_CONTACT_EMAIL > omit. NCBI accepts omitting email=.
 TOOL_EMAIL = os.environ.get("NCBI_EMAIL") or contact_email()
 
 _GSE_RE = re.compile(r"^GSE\d+$")

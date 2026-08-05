@@ -39,7 +39,7 @@ DEFAULT_SV_DATASET = "gnomad_sv_r4"
 DEFAULT_CADD_VERSION = "GRCh38-v1.7"
 
 # NCBI asks clients to identify themselves (ClinVar/dbSNP tools below).
-# Precedence (legal Y12): NCBI_EMAIL > user-consented OPERON_CONTACT_EMAIL >
+# Precedence (legal Y12): NCBI_EMAIL > user-consented SUPERSCIENCE_CONTACT_EMAIL >
 # structured contact_email_required tool result. Resolved lazily inside the
 # per-process client factories so import never fails and the message reaches
 # the agent as a clean tool result, not a server-startup crash.

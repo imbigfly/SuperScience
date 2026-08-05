@@ -1,0 +1,14 @@
+[package]
+name = "superscience-skills"
+description = "SKILL.md discovery + frontmatter parsing, and the `use_skill` tool."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+async-trait = "0.1"
+walkdir = { workspace = true }
+superscience-llm = { workspace = true }
+superscience-tools = { workspace = true }
+superscience-paths = { workspace = true }

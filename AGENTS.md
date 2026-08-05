@@ -2,17 +2,17 @@
 
 ## Project Orientation
 
-wisp-science is a Rust/Tauri/Leptos local-first scientific computing agent. The long-term product direction is a research workbench: local, WSL, SSH servers, GPU hosts, schedulers, literature tools, runs, data assets, artifacts, papers, and decisions should be represented as one project-level control plane. The durable product nouns are `Project`, `ExecutionContext`, `DataAsset`, `Run`, `Artifact`, `Paper`, and `Decision`.
+superscience is a Rust/Tauri/Leptos local-first scientific computing agent. The long-term product direction is a research workbench: local, WSL, SSH servers, GPU hosts, schedulers, literature tools, runs, data assets, artifacts, papers, and decisions should be represented as one project-level control plane. The durable product nouns are `Project`, `ExecutionContext`, `DataAsset`, `Run`, `Artifact`, `Paper`, and `Decision`.
 
 Do not implement broad product vision in one change. Prefer small PRs that add one durable abstraction, persistence table, tool, UI surface, or testable behavior at a time.
 
 ## Repository Layout
 
-- `crates/wisp-core/`: agent loop, context management, memory, provenance helpers.
-- `crates/wisp-tools/`: built-in tools such as read/write/edit/search/grep/shell.
-- `crates/wisp-store/`: sqlx SQLite store. Migrations are in `crates/wisp-store/migrations/0000_init.sql`; idempotent migration code lives in `crates/wisp-store/src/lib.rs`.
-- `crates/wisp-runtime/`: managed runtime support (currently the persistent Python REPL tool).
-- `crates/wisp-skills/`: SKILL.md discovery and use_skill tool.
+- `crates/superscience-core/`: agent loop, context management, memory, provenance helpers.
+- `crates/superscience-tools/`: built-in tools such as read/write/edit/search/grep/shell.
+- `crates/superscience-store/`: sqlx SQLite store. Migrations are in `crates/superscience-store/migrations/0000_init.sql`; idempotent migration code lives in `crates/superscience-store/src/lib.rs`.
+- `crates/superscience-runtime/`: managed runtime support (currently the persistent Python REPL tool).
+- `crates/superscience-skills/`: SKILL.md discovery and use_skill tool.
 - `src-tauri/`: desktop shell, Tauri commands, app state, SSH host registry.
 - `ui/`: Leptos frontend.
 - `ui-tests/`: Playwright tests with mocked Tauri bridge.
@@ -26,7 +26,7 @@ Do not implement broad product vision in one change. Prefer small PRs that add o
 - Store secrets in the existing keyring path, not SQLite. SSH private key contents must never be copied into SQLite.
 - For long-running compute, do not extend the existing `shell` tool timeout as the main solution. Add a structured run/job abstraction.
 - For large scientific data, do not default to local sync. Represent large data as remote references with checksums/metadata where possible.
-- Keep schemas backward-compatible and migrations idempotent, following the existing `wisp-store` style.
+- Keep schemas backward-compatible and migrations idempotent, following the existing `superscience-store` style.
 - Do not refactor or split modules solely because a file is long. Require a concrete reason tied to the active change, such as mixed responsibilities causing repeated edits, a needed dependency or test boundary, or a measured maintenance problem, and stop once that problem is solved. Large composition/root modules are acceptable; do not pursue arbitrary line-count targets or speculative abstractions.
 - Every dismissible overlay, dialog, menu, and popover must participate in a window-level Escape stack ordered from the visually topmost surface down. Root-owned state belongs in the app stack; component-local state may use a scoped window listener that is removed on cleanup. Do not rely on a DOM `keydown` handler receiving a bubbled event or on `autofocus`. A local handler is only appropriate when an inner state must consume Escape before its parent; it must prevent propagation. Tests must press Escape immediately after opening, without first moving focus inside, and verify that one press closes only the topmost layer while its parent remains open.
 - Add or update tests with every behavior change.
@@ -52,7 +52,7 @@ cd ../ui-tests && npm ci && npx playwright test
 For MCP-related changes, also run:
 
 ```bash
-cargo run -p wisp-mcp --example smoke
+cargo run -p superscience-mcp --example smoke
 ```
 
 ## PR Expectations

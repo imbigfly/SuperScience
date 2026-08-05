@@ -1,13 +1,13 @@
-use wisp_llm::ToolSchema;
-use wisp_tools::{Tool, ToolEnv, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_tools::{Tool, ToolEnv, ToolResult};
 
 pub struct ResearchGraphTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     project_id: String,
 }
 
 impl ResearchGraphTool {
-    pub fn new(store: wisp_store::Store, project_id: String) -> Self {
+    pub fn new(store: superscience_store::Store, project_id: String) -> Self {
         Self { store, project_id }
     }
 }
@@ -61,7 +61,7 @@ impl Tool for ResearchGraphTool {
         let Some(title) = args.get("title").and_then(|value| value.as_str()) else {
             return ToolResult::fail("Recording a research object requires title");
         };
-        let mut node = match wisp_store::ResearchNode::new(
+        let mut node = match superscience_store::ResearchNode::new(
             uuid::Uuid::new_v4().to_string(),
             &self.project_id,
             kind,
@@ -99,7 +99,7 @@ impl ResearchGraphTool {
         let Some(relation) = args.get("relation").and_then(|value| value.as_str()) else {
             return ToolResult::fail("Linking research objects requires relation");
         };
-        let mut edge = match wisp_store::ResearchEdge::new(
+        let mut edge = match superscience_store::ResearchEdge::new(
             uuid::Uuid::new_v4().to_string(),
             &self.project_id,
             source_id,
@@ -123,11 +123,11 @@ impl ResearchGraphTool {
     }
 }
 
-fn kind_for_action(action: &str) -> Option<wisp_store::ResearchNodeKind> {
+fn kind_for_action(action: &str) -> Option<superscience_store::ResearchNodeKind> {
     match action {
-        "record_data_asset" => Some(wisp_store::ResearchNodeKind::DataAsset),
-        "record_paper" => Some(wisp_store::ResearchNodeKind::Paper),
-        "record_decision" => Some(wisp_store::ResearchNodeKind::Decision),
+        "record_data_asset" => Some(superscience_store::ResearchNodeKind::DataAsset),
+        "record_paper" => Some(superscience_store::ResearchNodeKind::Paper),
+        "record_decision" => Some(superscience_store::ResearchNodeKind::Decision),
         _ => None,
     }
 }
@@ -148,16 +148,16 @@ mod tests {
             true
         }
 
-        async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+        async fn emit(&self, _event: superscience_tools::ToolEvent) {}
     }
 
     #[tokio::test]
     async fn records_research_objects_and_links_them() {
         let path = std::env::temp_dir().join(format!(
-            "wisp_research_graph_tool_{}.sqlite",
+            "superscience_research_graph_tool_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&path).await.unwrap();
+        let store = superscience_store::Store::open(&path).await.unwrap();
         store
             .create_project("project", "Project", "")
             .await

@@ -3,7 +3,7 @@
 //! OAuth 2.0 authorization-code flow with PKCE, protected-resource metadata,
 //! and dynamic client registration are handled without exposing credentials
 //! to the UI. Connection metadata stays in normal MCP settings while every
-//! credential remains in `wisp_store::secrets`.
+//! credential remains in `superscience_store::secrets`.
 
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -236,7 +236,7 @@ pub async fn begin_authorization(
             .post(registration_endpoint)
             .header("accept", "application/json")
             .json(&json!({
-                "client_name": "Wisp Science",
+                "client_name": "SuperScience",
                 "client_uri": "https://github.com/xuzhougeng/wisp-science",
                 "redirect_uris": [redirect_uri],
                 "grant_types": ["authorization_code", "refresh_token"],
@@ -245,7 +245,7 @@ pub async fn begin_authorization(
             }))
             .send()
             .await
-            .context("register Wisp with MCP OAuth server")?,
+            .context("register SuperScience with MCP OAuth server")?,
         "MCP dynamic client registration",
     )
     .await?;
@@ -328,7 +328,7 @@ async fn reply_callback(stream: &mut TcpStream, ok: bool, message: &str) {
         "MCP connection failed"
     };
     let message = html_escape(message);
-    let body = format!("<!doctype html><meta charset=\"utf-8\"><title>{title}</title><h1>{title}</h1><p>{message}</p><p>You can close this tab and return to Wisp.</p>");
+    let body = format!("<!doctype html><meta charset=\"utf-8\"><title>{title}</title><h1>{title}</h1><p>{message}</p><p>You can close this tab and return to SuperScience.</p>");
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -448,7 +448,7 @@ pub async fn finish_authorization(
             let credential = exchange_code(&pending, &code).await?;
             let secret =
                 serde_json::to_string(&credential).context("serialize MCP OAuth credential")?;
-            wisp_store::secrets::Secret::set(&secret_name(connection_id), &secret)
+            superscience_store::secrets::Secret::set(&secret_name(connection_id), &secret)
                 .context("save MCP OAuth credential in OS keyring")?;
             Ok(())
         }
@@ -500,7 +500,7 @@ async fn refresh(connection_id: &str, credential: &mut Credential) -> Result<()>
         .map(|seconds| Utc::now().timestamp() + seconds);
     let secret =
         serde_json::to_string(credential).context("serialize refreshed MCP OAuth credential")?;
-    wisp_store::secrets::Secret::set(&secret_name(connection_id), &secret)
+    superscience_store::secrets::Secret::set(&secret_name(connection_id), &secret)
         .context("save refreshed MCP OAuth credential in OS keyring")?;
     Ok(())
 }
@@ -511,8 +511,8 @@ pub async fn connect(
     connection_id: &str,
     resource_url: &str,
     headers: &[(String, String)],
-) -> Result<wisp_mcp::McpClient> {
-    let raw = wisp_store::secrets::Secret::get(&secret_name(connection_id))
+) -> Result<superscience_mcp::McpClient> {
+    let raw = superscience_store::secrets::Secret::get(&secret_name(connection_id))
         .map_err(|_| anyhow!("OAuth authorization is not complete; reconnect the MCP service"))?;
     let mut credential: Credential =
         serde_json::from_str(&raw).context("parse saved MCP OAuth credential")?;
@@ -531,15 +531,15 @@ pub async fn connect(
         "Authorization".to_string(),
         format!("Bearer {}", credential.access_token),
     ));
-    wisp_mcp::McpClient::connect_http(resource_url, &authorized_headers).await
+    superscience_mcp::McpClient::connect_http(resource_url, &authorized_headers).await
 }
 
 pub fn has_credential(connection_id: &str) -> bool {
-    wisp_store::secrets::Secret::get(&secret_name(connection_id)).is_ok()
+    superscience_store::secrets::Secret::get(&secret_name(connection_id)).is_ok()
 }
 
 pub fn forget(connection_id: &str) {
-    let _ = wisp_store::secrets::Secret::delete(&secret_name(connection_id));
+    let _ = superscience_store::secrets::Secret::delete(&secret_name(connection_id));
 }
 
 #[cfg(test)]

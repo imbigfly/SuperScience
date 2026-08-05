@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Wisp Science mark">
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SuperScience mark">
   <defs>
-    <linearGradient id="wisp" x1="56" y1="204" x2="200" y2="52" gradientUnits="userSpaceOnUse">
+    <linearGradient id="superscience" x1="56" y1="204" x2="200" y2="52" gradientUnits="userSpaceOnUse">
       <stop stop-color="#F59E0B" stop-opacity="0.35"/>
       <stop offset="0.5" stop-color="#FB7185"/>
       <stop offset="1" stop-color="#FB7185" stop-opacity="0.45"/>
@@ -29,7 +29,7 @@
 
   <path
     d="M54 198 C92 172 112 140 128 118 C144 96 170 74 202 54"
-    stroke="url(#wisp)"
+    stroke="url(#superscience)"
     stroke-width="4"
     stroke-linecap="round"
     fill="none"/>

@@ -1,10 +1,10 @@
 //! Agent tool for saving an interpreter on an existing ExecutionContext.
 
 use serde::Deserialize;
-use wisp_llm::ToolSchema;
-use wisp_runtime::{RuntimeKey, RuntimeLanguage, RuntimeManager};
-use wisp_store::Store;
-use wisp_tools::{Tool, ToolEnv, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_runtime::{RuntimeKey, RuntimeLanguage, RuntimeManager};
+use superscience_store::Store;
+use superscience_tools::{Tool, ToolEnv, ToolResult};
 
 pub struct SetRuntimeInterpreterTool {
     store: Store,
@@ -49,7 +49,7 @@ impl Tool for SetRuntimeInterpreterTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "set_runtime_interpreter",
-            "Save the Python or R executable for an existing execution context. This writes Wisp's persisted context settings; it does not set host environment variables or install software. If this project's matching REPL already exists, it is restarted and its in-memory variables are cleared.",
+            "Save the Python or R executable for an existing execution context. This writes SuperScience's persisted context settings; it does not set host environment variables or install software. If this project's matching REPL already exists, it is restarted and its in-memory variables are cleared.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -164,7 +164,7 @@ mod tests {
             true
         }
 
-        async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+        async fn emit(&self, _event: superscience_tools::ToolEvent) {}
     }
 
     fn manager() -> RuntimeManager {
@@ -179,11 +179,11 @@ mod tests {
     #[tokio::test]
     async fn sets_one_context_interpreter_without_changing_the_other_fields() {
         let db = std::env::temp_dir().join(format!(
-            "wisp_runtime_config_tool_{}.sqlite",
+            "superscience_runtime_config_tool_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&db).await.unwrap();
-        let mut context = wisp_store::ExecutionContext::new("ssh:CPU2", "CPU2").unwrap();
+        let mut context = superscience_store::ExecutionContext::new("ssh:CPU2", "CPU2").unwrap();
         context.config_json = serde_json::json!({
             "alias": "CPU2",
             "python_executable": "/opt/python/bin/python"
@@ -220,11 +220,11 @@ mod tests {
     #[tokio::test]
     async fn rejects_unknown_languages_without_changing_the_context() {
         let db = std::env::temp_dir().join(format!(
-            "wisp_runtime_config_tool_invalid_{}.sqlite",
+            "superscience_runtime_config_tool_invalid_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&db).await.unwrap();
-        let context = wisp_store::ExecutionContext::new("local", "Local").unwrap();
+        let context = superscience_store::ExecutionContext::new("local", "Local").unwrap();
         let original = context.config_json.clone();
         store.upsert_execution_context(&context).await.unwrap();
         let tool = SetRuntimeInterpreterTool::new(store.clone(), manager(), "project-1");
@@ -250,7 +250,7 @@ mod tests {
     #[tokio::test]
     async fn schema_and_preview_make_the_scope_explicit() {
         let db = std::env::temp_dir().join(format!(
-            "wisp_runtime_config_tool_schema_{}.sqlite",
+            "superscience_runtime_config_tool_schema_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&db).await.unwrap();

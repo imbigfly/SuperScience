@@ -5,10 +5,10 @@
 
 ## 背景与目标
 
-当前 wisp-science 的 Skill 和 MCP 都是固定的:
+当前 superscience 的 Skill 和 MCP 都是固定的:
 
-- **Skills** 从 `skill_paths()`(内置资源目录 + `<workspace>/.wisp/skills` + `~/.wisp/skills` + `WISP_SKILLS_PATH`)全量发现,全部注入 agent,**无 UI 开关、无添加入口**。
-- **MCP** 只有内置 bio-tools 聚合包,通过 `wire_python_and_mcp` 在 agent 创建时挂载;仅能靠 `WISP_MCP_PKG` / `WISP_MCP_COMMAND` 环境变量控制;**无 UI、无远程支持**。
+- **Skills** 从 `skill_paths()`(内置资源目录 + `<workspace>/.superscience/skills` + `~/.superscience/skills` + `SUPERSCIENCE_SKILLS_PATH`)全量发现,全部注入 agent,**无 UI 开关、无添加入口**。
+- **MCP** 只有内置 bio-tools 聚合包,通过 `wire_python_and_mcp` 在 agent 创建时挂载;仅能靠 `SUPERSCIENCE_MCP_PKG` / `SUPERSCIENCE_MCP_COMMAND` 环境变量控制;**无 UI、无远程支持**。
 - `Capabilities` 弹窗展示只读摘要；摘要数字可作为入口跳转到相应管理页面。
 
 目标:提供一个**多分区 Settings 页面**,支持:
@@ -19,11 +19,11 @@
 ## 关键架构约束(已核实)
 
 - 前端:Leptos 0.6(Rust→WASM),单文件 `ui/src/main.rs`,通过 Tauri `invoke`/`listen` 与后端通信。
-- 持久化:SQLite key-value(`wisp-store`),API key 走系统钥匙串。
+- 持久化:SQLite key-value(`superscience-store`),API key 走系统钥匙串。
 - **Agent 生命周期**:每会话惰性创建一次(`ensure_active_frame`/`send_message`,lib.rs:571-588),缓存在 `SessionRuntime.agent`。Skill 描述在 `seed_system_prompt` 时写入 system prompt(仅当 `ctx.is_empty()`);MCP 工具在 `wire_python_and_mcp` 时挂载。→ **开关改动对新会话生效,不影响已运行会话**。
-- **MCP 传输当前只有 stdio**(`crates/wisp-mcp/src/client.rs`)。远程支持需新增 HTTP 传输。
+- **MCP 传输当前只有 stdio**(`crates/superscience-mcp/src/client.rs`)。远程支持需新增 HTTP 传输。
 - 依赖已就绪:`reqwest` 0.12(workspace,含 `stream`/`json`/`rustls-tls`)、`tauri-plugin-dialog` v2。**无 `zip` 依赖**(故 .zip 上传延后)。
-- 用户可写 skill 目录:`~/.wisp/skills/`;内置 skill 来自只读资源目录 `wisp_skills::bundled_dir()`。
+- 用户可写 skill 目录:`~/.superscience/skills/`;内置 skill 来自只读资源目录 `superscience_skills::bundled_dir()`。
 
 ## 数据模型与持久化
 
@@ -35,7 +35,7 @@
 | `mcp_connections` | JSON `Vec<McpConnection>` | 用户自定义 MCP 连接 |
 | `bio_tools_enabled` | JSON `bool` | 内置 bio-tools 总开关,默认 `true` |
 
-连接配置(定义在 `wisp-mcp` 或 src-tauri,序列化用 serde):
+连接配置(定义在 `superscience-mcp` 或 src-tauri,序列化用 serde):
 
 ```rust
 struct McpConnection {
@@ -59,12 +59,12 @@ enum McpTransport {
 - `list_skills()` —— 扩展现有命令,每项返回 `{ name, description, enabled, builtin, dir }`。`enabled = !disabled_skills.contains(name)`;`builtin = dir 在内置资源目录下`。
 - `set_skill_enabled(name: String, enabled: bool)` —— 更新 `disabled_skills` 集合并持久化。
 - `install_skill(src_path: String)` —— 前端用 `tauri-plugin-dialog` 选文件/文件夹后调用:
-  - 若 `src_path` 是目录且含 `SKILL.md` → 递归拷贝到 `~/.wisp/skills/<name>/`。
-  - 若 `src_path` 是 `SKILL.md` 文件 → 拷到 `~/.wisp/skills/<name>/SKILL.md`。
+  - 若 `src_path` 是目录且含 `SKILL.md` → 递归拷贝到 `~/.superscience/skills/<name>/`。
+  - 若 `src_path` 是 `SKILL.md` 文件 → 拷到 `~/.superscience/skills/<name>/SKILL.md`。
   - 解析 frontmatter 取 `name`;校验有 `name` 和 `description`,否则报错。
   - 若同名用户 skill 已存在,先将新目录完整复制到同级临时目录,再替换旧目录;复制失败时保留旧版本。
   - 成功后重载 `ActiveProject.skills`(见"运行时重挂载")。
-- `remove_skill(name: String)` —— 仅允许删除 `~/.wisp/skills/<name>/`;内置 skill 拒绝(只能禁用)。UI 提供常显的删除按钮和二次确认,删后重载 SkillIndex。
+- `remove_skill(name: String)` —— 仅允许删除 `~/.superscience/skills/<name>/`;内置 skill 拒绝(只能禁用)。UI 提供常显的删除按钮和二次确认,删后重载 SkillIndex。
 
 Agent 创建路径(lib.rs:573/581):seed 前用 `disabled_skills` 过滤 `ap.skills`。新增 `SkillIndex::filtered(&HashSet<String>) -> SkillIndex`(或在传给 `Agent::new` / `seed_system_prompt` 前构造过滤后的 `Arc<SkillIndex>`)。`use_skill` 工具也用过滤后的索引,禁用的 skill 不可调用。
 
@@ -79,7 +79,7 @@ Agent 创建路径(lib.rs:573/581):seed 前用 `disabled_skills` 过滤 `ap.skil
 
 > 注:`wire_python_and_mcp` 目前只拿 `app_data`,需能读到 settings(传入 `&Store` 或预先取好 config)。
 
-### wisp-mcp:新增 HTTP 传输
+### superscience-mcp:新增 HTTP 传输
 
 - Cargo.toml 加 `reqwest = { workspace = true }`。
 - `McpClient` 内部改为 `enum Transport { Stdio(现有 child+pipes), Http(HttpTransport) }`,`request(method, params)` 内 match 分派。对外 `tools_list()` / `call()` 签名不变 → **`McpTool` 零改动**。
@@ -128,7 +128,7 @@ Agent 创建路径(lib.rs:573/581):seed 前用 `disabled_skills` 过滤 `ap.skil
 
 ## 涉及文件
 
-- `crates/wisp-mcp/src/client.rs`、`Cargo.toml` —— Transport 枚举 + HTTP 客户端。
-- `crates/wisp-skills/src/index.rs` —— `SkillIndex::filtered`。
+- `crates/superscience-mcp/src/client.rs`、`Cargo.toml` —— Transport 枚举 + HTTP 客户端。
+- `crates/superscience-skills/src/index.rs` —— `SkillIndex::filtered`。
 - `src-tauri/src/lib.rs` —— 新命令、`wire_python_and_mcp` 扩展、skill 安装/删除/重载、命令注册。
 - `ui/src/main.rs`、`ui/src/i18n.rs`、`ui/styles.css` —— 多分区 Settings UI + 文案 + 样式。

@@ -74,7 +74,7 @@ const RIGHT_PANE_MIN_WIDTH: f64 = 320.0;
 const RIGHT_PANE_MAX_WIDTH: f64 = 900.0;
 const PANE_RESIZER_WIDTH: f64 = 5.0;
 const SIDEBAR_RESIZER_WIDTH: f64 = 10.0;
-const THEME_STORAGE_KEY: &str = "wisp-theme";
+const THEME_STORAGE_KEY: &str = "superscience-theme";
 const SIDE_CHAT_SCROLLER_ID: &str = "side-chat-scroller";
 const SIDE_CHAT_INPUT_ID: &str = "side-chat-input";
 
@@ -2542,6 +2542,45 @@ fn App() -> impl IntoView {
     spawn_local(async move {
         let _ = listen("confirm-request", &confirm_js).await;
     });
+    // Backend timed out the confirm channel — remove the zombie card so Allow
+    // cannot look clickable against a confirm that no longer exists.
+    let expired_active = active_session;
+    let expired_items = items;
+    let expired_transcripts = transcripts;
+    let expired_pending = approval_pending;
+    let expired_cb = Closure::wrap(Box::new(move |payload: JsValue| {
+        let fid = payload.as_string().unwrap_or_else(|| {
+            serde_wasm_bindgen::from_value::<serde_json::Value>(payload)
+                .ok()
+                .and_then(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .or_else(|| v.get("frame_id").and_then(|m| m.as_str()).map(str::to_string))
+                })
+                .unwrap_or_default()
+        });
+        if fid.is_empty() {
+            return;
+        }
+        route_items(
+            expired_active,
+            expired_items,
+            expired_transcripts,
+            &fid,
+            strip_approval_pending,
+        );
+        expired_pending.update(|s| {
+            s.remove(&fid);
+        });
+    }) as Box<dyn FnMut(JsValue)>);
+    let expired_js = expired_cb
+        .as_ref()
+        .unchecked_ref::<js_sys::Function>()
+        .clone();
+    std::mem::forget(expired_cb);
+    spawn_local(async move {
+        let _ = listen("confirm-expired", &expired_js).await;
+    });
     let acp_permission_items = items;
     let acp_permission_active = active_session;
     let acp_permission_transcripts = transcripts;
@@ -3459,7 +3498,7 @@ fn App() -> impl IntoView {
                 return;
             };
             if active_acp_agent_id.get().is_some() {
-                status.set("ACP protocol v1 cannot replay a Wisp transcript.".into());
+                status.set("ACP protocol v1 cannot replay a SuperScience transcript.".into());
                 return;
             }
             let model = session_model_label(&models.get(), &session_model_ids.get(), Some(&id));
@@ -6615,7 +6654,7 @@ fn App() -> impl IntoView {
 
     // A cropped image region fires this only after the user chooses one of the
     // preview popup actions. The jump action also exits either preview surface.
-    window_event_listener_untyped("wisp:region-attach", move |ev| {
+    window_event_listener_untyped("superscience:region-attach", move |ev| {
         use wasm_bindgen::JsCast;
         let Some(detail) = ev
             .dyn_ref::<web_sys::CustomEvent>()
@@ -6634,7 +6673,7 @@ fn App() -> impl IntoView {
     // Image comment pins → one revision-request quote in the composer, the
     // same landing as "Ask AI in the conversation". A center-pane preview
     // stays open beside the chat (like ask-AI); a modal preview closes.
-    window_event_listener_untyped("wisp:pins-ask-ai", move |ev| {
+    window_event_listener_untyped("superscience:pins-ask-ai", move |ev| {
         use wasm_bindgen::JsCast;
         let Some(detail) = ev
             .dyn_ref::<web_sys::CustomEvent>()
@@ -8677,13 +8716,18 @@ fn App() -> impl IntoView {
                     // Primary button only: a right-click mouseup would re-raise
                     // the popup on top of the context menu. Also honors the
                     // "selection quick actions" setting.
-                    if ev.button() != 0 {
+                    if ev.button() != 0 || !selection_popup_enabled.get_untracked() {
                         return;
                     }
-                    let popup = selection_popup_enabled
-                        .get_untracked()
-                        .then(context_menu::selection_text)
-                        .flatten()
+                    // Approval Allow/Deny (and other controls) must keep their
+                    // click: a selected command preview must not spawn the
+                    // quote bar on top of the button.
+                    if context_menu::selection_mouseup_on_control(&ev)
+                        || context_menu::selection_in_approval_card()
+                    {
+                        return;
+                    }
+                    let popup = context_menu::selection_text()
                         .map(|text| (text, None, ev.client_x(), ev.client_y()));
                     selection_popup.set(popup);
                 }

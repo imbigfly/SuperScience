@@ -1,11 +1,11 @@
 use super::{
     RunManager, RunPreflightReport, RunPreflightSpec, RunPreflightStatus, SubmitRunRequest,
 };
-use wisp_llm::ToolSchema;
-use wisp_tools::{Tool, ToolEnv, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_tools::{Tool, ToolEnv, ToolResult};
 
 pub struct RunInContextTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     manager: RunManager,
     project_id: String,
     frame_id: Option<String>,
@@ -13,7 +13,7 @@ pub struct RunInContextTool {
 
 impl RunInContextTool {
     pub fn new(
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         manager: RunManager,
         project_id: String,
         frame_id: Option<String>,
@@ -131,7 +131,8 @@ impl Tool for RunInContextTool {
             ));
         }
         if !env.danger_auto_approve() {
-            if let Some(danger) = wisp_tools::safety::check_command_safety(&request.command) {
+            if let Some(danger) = superscience_tools::safety::check_command_safety(&request.command)
+            {
                 let msg = format!(
                     "Dangerous command detected in run_in_context ({}): {}",
                     danger.label(),
@@ -245,12 +246,12 @@ fn preflight_blocked_result(report: &RunPreflightReport, requires_confirmation: 
 }
 
 pub struct GetRunTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     project_id: String,
 }
 
 impl GetRunTool {
-    pub fn new(store: wisp_store::Store, project_id: String) -> Self {
+    pub fn new(store: superscience_store::Store, project_id: String) -> Self {
         Self { store, project_id }
     }
 }
@@ -304,12 +305,12 @@ impl Tool for GetRunTool {
 }
 
 pub struct MonitorRunTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     project_id: String,
 }
 
 impl MonitorRunTool {
-    pub fn new(store: wisp_store::Store, project_id: String) -> Self {
+    pub fn new(store: superscience_store::Store, project_id: String) -> Self {
         Self { store, project_id }
     }
 }
@@ -323,7 +324,7 @@ impl Tool for MonitorRunTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "monitor_run",
-            "Monitor one existing long-running Run until it finishes. Call this exactly once instead of repeatedly calling get_run. Wisp shows a live Run card, suspends the agent without model calls or token use, and resumes it with the terminal result.",
+            "Monitor one existing long-running Run until it finishes. Call this exactly once instead of repeatedly calling get_run. SuperScience shows a live Run card, suspends the agent without model calls or token use, and resumes it with the terminal result.",
             serde_json::json!({
                 "type": "object",
                 "properties": { "run_id": { "type": "string" } },
@@ -357,10 +358,10 @@ impl Tool for MonitorRunTool {
 }
 
 async fn wait_for_terminal(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     run_id: &str,
     env: &dyn ToolEnv,
-) -> Result<(wisp_store::RunRecord, bool), String> {
+) -> Result<(superscience_store::RunRecord, bool), String> {
     loop {
         let run = store
             .get_run(run_id)
@@ -382,8 +383,8 @@ async fn wait_for_terminal(
     }
 }
 
-fn run_wait_result(run: wisp_store::RunRecord, detached: bool) -> ToolResult {
-    let succeeded = run.status == wisp_store::RunStatus::Succeeded;
+fn run_wait_result(run: superscience_store::RunRecord, detached: bool) -> ToolResult {
+    let succeeded = run.status == superscience_store::RunStatus::Succeeded;
     let mut value = serde_json::to_value(run).unwrap_or_default();
     if detached {
         value["wait_detached"] = serde_json::Value::Bool(true);
@@ -397,13 +398,13 @@ fn run_wait_result(run: wisp_store::RunRecord, detached: bool) -> ToolResult {
 }
 
 pub struct CancelRunTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     manager: RunManager,
     project_id: String,
 }
 
 impl CancelRunTool {
-    pub fn new(store: wisp_store::Store, manager: RunManager, project_id: String) -> Self {
+    pub fn new(store: superscience_store::Store, manager: RunManager, project_id: String) -> Self {
         Self {
             store,
             manager,

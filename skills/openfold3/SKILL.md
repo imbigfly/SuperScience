@@ -129,7 +129,7 @@ let you supply your own a3m instead of the server.
 | `--use-templates` | true | ColabFold template search + RCSB remap |
 | `--inference-ckpt-path` | auto-discovered under `$OPENFOLD_CACHE` | Override only — for non-standard layouts or to pin a specific checkpoint file |
 
-## Wisp execution
+## SuperScience execution
 
 Use `python` only for bounded interactive checks. For a long or GPU-backed
 workload, require a selected and probed `ssh:<alias>` context and load

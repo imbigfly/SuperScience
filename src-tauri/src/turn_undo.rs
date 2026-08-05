@@ -28,7 +28,7 @@ struct AppliedFileUndo {
 
 fn persist_snapshot(root: &Path, text: &str, checksum: &str) -> Result<String, String> {
     let path = root
-        .join(".wisp")
+        .join(".superscience")
         .join("undo")
         .join("sha256")
         .join(&checksum[..2])
@@ -51,7 +51,7 @@ pub(super) async fn persist_provenance_changes(
     root: &Path,
     frame_id: &str,
     user_message_seq: i64,
-    changes: &[wisp_core::provenance::ProvenanceFileChange],
+    changes: &[superscience_core::provenance::ProvenanceFileChange],
 ) {
     for change in changes {
         let snapshot = match (
@@ -120,8 +120,9 @@ async fn target_for_user_index(
         .iter()
         .enumerate()
         .filter(|(_, (_, message))| {
-            message.role == wisp_llm::Role::User
-                && message.tool_name.as_deref() != Some(wisp_store::AGENT_WORKFLOW_COMPLETION_TOOL)
+            message.role == superscience_llm::Role::User
+                && message.tool_name.as_deref()
+                    != Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL)
                 && !message.content.as_text().trim().is_empty()
         })
         .collect::<Vec<_>>();
@@ -131,7 +132,7 @@ async fn target_for_user_index(
     let (message_index, (user_seq, _)) = users[user_index];
     if !messages[message_index + 1..]
         .iter()
-        .any(|(_, message)| message.role == wisp_llm::Role::Assistant)
+        .any(|(_, message)| message.role == superscience_llm::Role::Assistant)
     {
         return Err("The latest turn has no completed reply to undo.".into());
     }
@@ -150,14 +151,14 @@ fn checksum_file(path: &Path) -> Result<String, String> {
         return Err("file now exceeds the 10 MiB undo limit".into());
     }
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    Ok(wisp_sync::sha256_hex(&bytes))
+    Ok(superscience_sync::sha256_hex(&bytes))
 }
 
 fn current_matches(
     root: &Path,
-    change: &wisp_store::TurnFileUndo,
+    change: &superscience_store::TurnFileUndo,
 ) -> Result<(PathBuf, bool), String> {
-    let real = wisp_tools::safety::validate_file_path(root, &change.path)?;
+    let real = superscience_tools::safety::validate_file_path(root, &change.path)?;
     let Some(after) = change.after_checksum.as_deref() else {
         return Err("missing post-change checksum".into());
     };
@@ -184,7 +185,7 @@ async fn build_preview(
     root: &Path,
     frame_id: &str,
     target: &UndoTarget,
-) -> Result<(TurnUndoPreview, Vec<wisp_store::TurnFileUndo>), String> {
+) -> Result<(TurnUndoPreview, Vec<superscience_store::TurnFileUndo>), String> {
     let changes = store
         .list_turn_file_undo(frame_id, target.user_seq)
         .await
@@ -216,7 +217,7 @@ async fn build_preview(
             .iter()
             .any(|change| change.path == name || change.path.ends_with(&format!("/{name}")));
         if !mime.starts_with("text/")
-            && !wisp_core::provenance::is_text_path(Path::new(&name))
+            && !superscience_core::provenance::is_text_path(Path::new(&name))
             && !tracked_file
             && !preview
                 .unsupported_files
@@ -245,7 +246,7 @@ fn trash_path(root: &Path, real: &Path) -> Result<PathBuf, String> {
         .strip_prefix(&root)
         .map_err(|_| "undo target is outside the project root".to_string())?;
     Ok(root
-        .join(".wisp")
+        .join(".superscience")
         .join("undo")
         .join("trash")
         .join(Uuid::new_v4().to_string())
@@ -254,7 +255,7 @@ fn trash_path(root: &Path, real: &Path) -> Result<PathBuf, String> {
 
 fn apply_file_undo(
     root: &Path,
-    changes: &[wisp_store::TurnFileUndo],
+    changes: &[superscience_store::TurnFileUndo],
 ) -> Result<Vec<AppliedFileUndo>, String> {
     for change in changes.iter().filter(|change| change.reversible) {
         current_matches(root, change)
@@ -277,9 +278,9 @@ fn apply_file_undo(
                     .before_snapshot_path
                     .as_deref()
                     .ok_or_else(|| format!("Missing undo snapshot for '{}'.", change.path))?;
-                let snapshot = wisp_tools::safety::validate_file_path(root, snapshot)?;
+                let snapshot = superscience_tools::safety::validate_file_path(root, snapshot)?;
                 let bytes = std::fs::read(&snapshot).map_err(|error| error.to_string())?;
-                let checksum = wisp_sync::sha256_hex(&bytes);
+                let checksum = superscience_sync::sha256_hex(&bytes);
                 if change.before_checksum.as_deref() != Some(checksum.as_str()) {
                     return Err(format!("Undo snapshot for '{}' is corrupt.", change.path));
                 }
@@ -463,20 +464,22 @@ mod tests {
 
     #[tokio::test]
     async fn only_the_latest_completed_user_turn_is_targetable() {
-        let database =
-            std::env::temp_dir().join(format!("wisp_turn_undo_target_{}.sqlite", Uuid::new_v4()));
+        let database = std::env::temp_dir().join(format!(
+            "superscience_turn_undo_target_{}.sqlite",
+            Uuid::new_v4()
+        ));
         let store = Store::open(&database).await.unwrap();
         store.create_project("p", "Project", "").await.unwrap();
         store
-            .create_frame("f", "p", "OPERON", "model")
+            .create_frame("f", "p", "SUPERSCIENCE", "model")
             .await
             .unwrap();
         for (seq, message) in [
-            wisp_llm::Message::system("system"),
-            wisp_llm::Message::user("first"),
-            wisp_llm::Message::assistant("first reply"),
-            wisp_llm::Message::user("second"),
-            wisp_llm::Message::assistant("second reply"),
+            superscience_llm::Message::system("system"),
+            superscience_llm::Message::user("first"),
+            superscience_llm::Message::assistant("first reply"),
+            superscience_llm::Message::user("second"),
+            superscience_llm::Message::assistant("second reply"),
         ]
         .iter()
         .enumerate()
@@ -492,7 +495,7 @@ mod tests {
         assert_eq!(target.keep_seq, 3);
         assert_eq!(target.user_seq, 4);
         store
-            .append_message("f", 6, &wisp_llm::Message::user("unfinished"))
+            .append_message("f", 6, &superscience_llm::Message::user("unfinished"))
             .await
             .unwrap();
         assert!(target_for_user_index(&store, "f", 2)
@@ -504,20 +507,20 @@ mod tests {
 
     #[test]
     fn applying_text_undo_restores_existing_and_trashes_new_files() {
-        let root = std::env::temp_dir().join(format!("wisp_turn_undo_{}", Uuid::new_v4()));
-        std::fs::create_dir_all(root.join(".wisp/undo/sha256/aa")).unwrap();
+        let root = std::env::temp_dir().join(format!("superscience_turn_undo_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(".superscience/undo/sha256/aa")).unwrap();
         std::fs::write(root.join("notes.md"), "after\n").unwrap();
         std::fs::write(root.join("new.md"), "new\n").unwrap();
         let before = "before\n";
-        let before_checksum = wisp_sync::sha256_hex(before.as_bytes());
+        let before_checksum = superscience_sync::sha256_hex(before.as_bytes());
         let snapshot = root
-            .join(".wisp/undo/sha256")
+            .join(".superscience/undo/sha256")
             .join(&before_checksum[..2])
             .join(&before_checksum);
         std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
         std::fs::write(&snapshot, before).unwrap();
         let changes = vec![
-            wisp_store::TurnFileUndo {
+            superscience_store::TurnFileUndo {
                 frame_id: "f".into(),
                 user_message_seq: 2,
                 path: "notes.md".into(),
@@ -530,18 +533,18 @@ mod tests {
                         .replace('\\', "/"),
                 ),
                 before_checksum: Some(before_checksum),
-                after_checksum: Some(wisp_sync::sha256_hex(b"after\n")),
+                after_checksum: Some(superscience_sync::sha256_hex(b"after\n")),
                 reversible: true,
                 reason: None,
             },
-            wisp_store::TurnFileUndo {
+            superscience_store::TurnFileUndo {
                 frame_id: "f".into(),
                 user_message_seq: 2,
                 path: "new.md".into(),
                 before_exists: false,
                 before_snapshot_path: None,
                 before_checksum: None,
-                after_checksum: Some(wisp_sync::sha256_hex(b"new\n")),
+                after_checksum: Some(superscience_sync::sha256_hex(b"new\n")),
                 reversible: true,
                 reason: None,
             },
@@ -560,24 +563,27 @@ mod tests {
             before
         );
         assert!(!root.join("new.md").exists());
-        assert!(root.join(".wisp/undo/trash").exists());
+        assert!(root.join(".superscience/undo/trash").exists());
         std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
     fn applied_text_undo_can_be_rolled_forward_after_a_later_failure() {
-        let root = std::env::temp_dir().join(format!("wisp_turn_undo_rollback_{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_turn_undo_rollback_{}",
+            Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("notes.md"), "after\n").unwrap();
         let before = "before\n";
-        let before_checksum = wisp_sync::sha256_hex(before.as_bytes());
+        let before_checksum = superscience_sync::sha256_hex(before.as_bytes());
         let snapshot = root
-            .join(".wisp/undo/sha256")
+            .join(".superscience/undo/sha256")
             .join(&before_checksum[..2])
             .join(&before_checksum);
         std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
         std::fs::write(&snapshot, before).unwrap();
-        let change = wisp_store::TurnFileUndo {
+        let change = superscience_store::TurnFileUndo {
             frame_id: "f".into(),
             user_message_seq: 2,
             path: "notes.md".into(),
@@ -590,7 +596,7 @@ mod tests {
                     .replace('\\', "/"),
             ),
             before_checksum: Some(before_checksum),
-            after_checksum: Some(wisp_sync::sha256_hex(b"after\n")),
+            after_checksum: Some(superscience_sync::sha256_hex(b"after\n")),
             reversible: true,
             reason: None,
         };
@@ -606,17 +612,20 @@ mod tests {
 
     #[test]
     fn applying_text_undo_rejects_a_later_user_edit() {
-        let root = std::env::temp_dir().join(format!("wisp_turn_undo_conflict_{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_turn_undo_conflict_{}",
+            Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("notes.md"), "user changed it\n").unwrap();
-        let change = wisp_store::TurnFileUndo {
+        let change = superscience_store::TurnFileUndo {
             frame_id: "f".into(),
             user_message_seq: 2,
             path: "notes.md".into(),
             before_exists: true,
-            before_snapshot_path: Some(".wisp/undo/missing".into()),
-            before_checksum: Some(wisp_sync::sha256_hex(b"before\n")),
-            after_checksum: Some(wisp_sync::sha256_hex(b"after\n")),
+            before_snapshot_path: Some(".superscience/undo/missing".into()),
+            before_checksum: Some(superscience_sync::sha256_hex(b"before\n")),
+            after_checksum: Some(superscience_sync::sha256_hex(b"after\n")),
             reversible: true,
             reason: None,
         };

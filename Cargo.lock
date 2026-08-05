@@ -4477,6 +4477,234 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "superscience-acp"
+version = "0.30.0"
+dependencies = [
+ "agent-client-protocol",
+ "async-process",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "superscience-cli"
+version = "0.30.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs 5.0.1",
+ "serde",
+ "serde_json",
+ "sha2",
+ "superscience-core",
+ "superscience-llm",
+ "superscience-mcp",
+ "superscience-runtime",
+ "superscience-skills",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "superscience-core"
+version = "0.30.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "glob",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "superscience-llm",
+ "superscience-skills",
+ "superscience-tools",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "superscience-llm"
+version = "0.30.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "url",
+]
+
+[[package]]
+name = "superscience-mcp"
+version = "0.30.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "superscience-llm",
+ "superscience-paths",
+ "superscience-tools",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "superscience-paths"
+version = "0.30.0"
+
+[[package]]
+name = "superscience-runtime"
+version = "0.30.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "superscience-llm",
+ "superscience-paths",
+ "superscience-tools",
+ "tokio",
+ "uuid",
+ "which",
+]
+
+[[package]]
+name = "superscience-skills"
+version = "0.30.0"
+dependencies = [
+ "async-trait",
+ "serde_json",
+ "superscience-llm",
+ "superscience-paths",
+ "superscience-tools",
+ "walkdir",
+]
+
+[[package]]
+name = "superscience-store"
+version = "0.30.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures-util",
+ "hex",
+ "keyring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "superscience-llm",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "superscience-sync"
+version = "0.30.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "hex",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "superscience-tauri"
+version = "0.30.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "dirs 5.0.1",
+ "dunce",
+ "flate2",
+ "futures-util",
+ "glob",
+ "hex",
+ "image",
+ "mac-notification-sys",
+ "portable-pty",
+ "pulldown-cmark",
+ "qrcode",
+ "regex",
+ "reqwest 0.12.28",
+ "ring",
+ "same-file",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "superscience-acp",
+ "superscience-core",
+ "superscience-llm",
+ "superscience-mcp",
+ "superscience-paths",
+ "superscience-runtime",
+ "superscience-skills",
+ "superscience-store",
+ "superscience-sync",
+ "superscience-tools",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tauri-winrt-notification",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "walkdir",
+ "which",
+ "winreg 0.55.0",
+ "zip 2.4.2",
+]
+
+[[package]]
+name = "superscience-tools"
+version = "0.30.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "dunce",
+ "glob",
+ "regex",
+ "serde_json",
+ "superscience-llm",
+ "tokio",
+ "walkdir",
+]
+
+[[package]]
 name = "swift-rs"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6504,234 +6732,6 @@ name = "winsafe"
 version = "0.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
-
-[[package]]
-name = "wisp-acp"
-version = "0.30.0"
-dependencies = [
- "agent-client-protocol",
- "async-process",
- "futures",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "wisp-cli"
-version = "0.30.0"
-dependencies = [
- "anyhow",
- "chrono",
- "dirs 5.0.1",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tracing-subscriber",
- "wisp-core",
- "wisp-llm",
- "wisp-mcp",
- "wisp-runtime",
- "wisp-skills",
-]
-
-[[package]]
-name = "wisp-core"
-version = "0.30.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "futures-util",
- "glob",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "wisp-llm",
- "wisp-skills",
- "wisp-tools",
-]
-
-[[package]]
-name = "wisp-llm"
-version = "0.30.0"
-dependencies = [
- "async-trait",
- "futures-util",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "url",
-]
-
-[[package]]
-name = "wisp-mcp"
-version = "0.30.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "wisp-llm",
- "wisp-paths",
- "wisp-tools",
-]
-
-[[package]]
-name = "wisp-paths"
-version = "0.30.0"
-
-[[package]]
-name = "wisp-runtime"
-version = "0.30.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
- "which",
- "wisp-llm",
- "wisp-paths",
- "wisp-tools",
-]
-
-[[package]]
-name = "wisp-skills"
-version = "0.30.0"
-dependencies = [
- "async-trait",
- "serde_json",
- "walkdir",
- "wisp-llm",
- "wisp-paths",
- "wisp-tools",
-]
-
-[[package]]
-name = "wisp-store"
-version = "0.30.0"
-dependencies = [
- "anyhow",
- "chrono",
- "futures-util",
- "hex",
- "keyring",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "tokio",
- "uuid",
- "wisp-llm",
-]
-
-[[package]]
-name = "wisp-sync"
-version = "0.30.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "hex",
- "reqwest 0.12.28",
- "ring",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "wisp-tauri"
-version = "0.30.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "chrono",
- "dirs 5.0.1",
- "dunce",
- "flate2",
- "futures-util",
- "glob",
- "hex",
- "image",
- "mac-notification-sys",
- "portable-pty",
- "pulldown-cmark",
- "qrcode",
- "regex",
- "reqwest 0.12.28",
- "ring",
- "same-file",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tauri-winrt-notification",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "walkdir",
- "which",
- "winreg 0.55.0",
- "wisp-acp",
- "wisp-core",
- "wisp-llm",
- "wisp-mcp",
- "wisp-paths",
- "wisp-runtime",
- "wisp-skills",
- "wisp-store",
- "wisp-sync",
- "wisp-tools",
- "zip 2.4.2",
-]
-
-[[package]]
-name = "wisp-tools"
-version = "0.30.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "dunce",
- "glob",
- "regex",
- "serde_json",
- "tokio",
- "walkdir",
- "wisp-llm",
-]
 
 [[package]]
 name = "wit-bindgen"

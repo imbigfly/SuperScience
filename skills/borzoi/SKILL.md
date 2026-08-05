@@ -66,12 +66,12 @@ submit a self-contained runner with `run_in_context`:
 {
   "context_id": "ssh:gpu-box",
   "title": "Borzoi prediction for one locus",
-  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate borzoi && HF_HOME=/srv/model-cache python borzoi_run.py --output /home/me/wisp-results/borzoi/tracks.npz",
+  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate borzoi && HF_HOME=/srv/model-cache python borzoi_run.py --output /home/me/superscience-results/borzoi/tracks.npz",
   "timeout_secs": 1800,
   "input_paths": ["runs/borzoi_run.py"],
   "output_specs": [
     {
-      "glob": "ssh://gpu-box/home/me/wisp-results/borzoi/tracks.npz",
+      "glob": "ssh://gpu-box/home/me/superscience-results/borzoi/tracks.npz",
       "kind": "npz",
       "residency": "remote"
     }

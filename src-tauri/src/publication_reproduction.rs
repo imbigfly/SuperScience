@@ -20,7 +20,7 @@ use std::io::{BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use wisp_store::{
+use superscience_store::{
     canonical_json, canonical_json_sha256, PublicationCapabilityLevel, ReproductionComparatorKind,
     ReproductionResult, ReproductionRun, ReproductionRunCommit, ReproductionRunStart, Store,
 };
@@ -53,7 +53,7 @@ struct IsolatedWorkspace(PathBuf);
 impl IsolatedWorkspace {
     fn create() -> Result<Self, String> {
         let path = std::env::temp_dir().join(format!(
-            "wisp-publication-reproduction-{}",
+            "superscience-publication-reproduction-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir(&path)
@@ -207,7 +207,7 @@ fn command_is_isolated(command: &str) -> bool {
     })
 }
 
-fn reproduction_environment(context: &wisp_store::ExecutionContext) -> (String, String) {
+fn reproduction_environment(context: &superscience_store::ExecutionContext) -> (String, String) {
     canonical_json_sha256(&run_environment_snapshot(context))
 }
 
@@ -682,7 +682,7 @@ pub(crate) async fn verify_publication_revision_with_runner(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Source Run execution context no longer exists".to_string())?;
-    if context.kind != wisp_store::ExecutionContextKind::Local {
+    if context.kind != superscience_store::ExecutionContextKind::Local {
         return Err("Clean verification currently supports only local Runs".into());
     }
     let outputs = output_expectations(&manifest, &blobs, source_run_id)?;
@@ -821,7 +821,7 @@ mod tests {
     use crate::run_context::{RunCommand, RunCommandOutput};
     use crate::snapshot_store::{capture_file, SnapshotPolicy};
     use std::sync::Mutex;
-    use wisp_store::{
+    use superscience_store::{
         ArtifactCaptureTiming, ArtifactMaterialization, ArtifactVersionDraft, EvidenceBindingDraft,
         EvidenceSelectionState, EvidenceSourceKind, EvidenceVisibility, LineageBasis,
         LineageConfidence, PublicationFreezePolicy, PublicationItem, PublicationItemKind,
@@ -885,7 +885,7 @@ mod tests {
     #[test]
     fn exact_and_tolerant_comparators_report_pass_and_fail() {
         let root = std::env::temp_dir().join(format!(
-            "wisp-reproduction-comparator-{}",
+            "superscience-reproduction-comparator-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
@@ -1010,7 +1010,7 @@ mod tests {
     #[tokio::test]
     async fn frozen_run_verifies_from_only_allowlisted_snapshots() {
         let root = std::env::temp_dir().join(format!(
-            "wisp-reproduction-fixture-{}",
+            "superscience-reproduction-fixture-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(root.join("data")).unwrap();
@@ -1024,7 +1024,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_frame("frame", "project", "OPERON", "model")
+            .create_frame("frame", "project", "SUPERSCIENCE", "model")
             .await
             .unwrap();
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal mock MCP stdio server for testing wisp-mcp.
+"""Minimal mock MCP stdio server for testing superscience-mcp.
 
 Speaks newline-delimited JSON-RPC 2.0: responds to `initialize`,
 `notifications/initialized`, `tools/list` (one `echo` tool), and `tools/call`.

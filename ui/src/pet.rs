@@ -223,6 +223,28 @@ pub(crate) fn PetDesktop() -> impl IntoView {
             }) as Box<dyn FnMut(JsValue)>),
         );
     }
+    install_listener(
+        "confirm-expired",
+        Closure::wrap(Box::new(move |payload: JsValue| {
+            let frame_id = payload.as_string().unwrap_or_else(|| {
+                serde_wasm_bindgen::from_value::<serde_json::Value>(payload)
+                    .ok()
+                    .and_then(|value| {
+                        value.as_str().map(str::to_string).or_else(|| {
+                            value
+                                .get("frame_id")
+                                .or_else(|| value.get("frameId"))
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string)
+                        })
+                    })
+                    .unwrap_or_default()
+            });
+            if !frame_id.is_empty() {
+                activity.update(|current| current.mark_running(frame_id));
+            }
+        }) as Box<dyn FnMut(JsValue)>),
+    );
 
     create_effect(move |_| {
         let status = status.get();
@@ -251,14 +273,14 @@ pub(crate) fn PetDesktop() -> impl IntoView {
             "roam": false,
         });
         if let Ok(json) = serde_json::to_string(&config) {
-            sync_pet("wisp-pet", &json);
+            sync_pet("superscience-pet", &json);
         }
     });
 
     view! {
         <main class="pet-window-root" data-testid="pet-window-root">
-            <button id="wisp-pet" class="wisp-pet desktop-pet" type="button"
-                data-testid="wisp-pet"
+            <button id="superscience-pet" class="superscience-pet desktop-pet" type="button"
+                data-testid="superscience-pet"
                 data-tauri-drag-region="deep"
                 on:click:undelegated=move |_| {
                     let Some(session_id) = activity.with_untracked(|current| current.waiting_target.clone()) else {
@@ -278,9 +300,9 @@ pub(crate) fn PetDesktop() -> impl IntoView {
                         .unwrap_or_else(|| "Pet".into());
                     format!("{name}: {}", desktop_state_label(current.state()))
                 }>
-                <span class="wisp-pet-sprite" aria-hidden="true"></span>
-                <span class="wisp-pet-status" aria-hidden="true"></span>
-                <span class="wisp-pet-state-label">
+                <span class="superscience-pet-sprite" aria-hidden="true"></span>
+                <span class="superscience-pet-status" aria-hidden="true"></span>
+                <span class="superscience-pet-state-label">
                     {move || desktop_state_label(activity.get().state())}
                 </span>
             </button>
@@ -347,15 +369,15 @@ pub(crate) fn PetOverlay(
             "frameCounts": frame_counts,
         });
         if let Ok(json) = serde_json::to_string(&config) {
-            sync_pet("wisp-pet", &json);
+            sync_pet("superscience-pet", &json);
         }
     });
 
     view! {
-        <button id="wisp-pet" class="wisp-pet" type="button" data-testid="wisp-pet"
+        <button id="superscience-pet" class="superscience-pet" type="button" data-testid="superscience-pet"
             aria-label=move || status.get().asset.map(|asset| asset.display_name).unwrap_or_else(|| "Pet".into())>
-            <span class="wisp-pet-sprite" aria-hidden="true"></span>
-            <span class="wisp-pet-status" aria-hidden="true"></span>
+            <span class="superscience-pet-sprite" aria-hidden="true"></span>
+            <span class="superscience-pet-status" aria-hidden="true"></span>
         </button>
     }
 }

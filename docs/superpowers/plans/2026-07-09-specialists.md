@@ -6,7 +6,7 @@
 
 **Architecture:** A new `specialists.rs` module stores specialists as a JSON array in the sqlite settings (same pattern as `model_profiles`), with the builtin Reviewer materialized on first read. Personas take effect at the existing Agent-construction point in `send_message` (prompt append, skill/connector whitelist filters, model override) — no `agent_loop` changes. Spec: `docs/superpowers/specs/2026-07-09-specialists-design.md`.
 
-**Tech Stack:** Rust (tauri backend, `cargo test -p wisp-tauri`), Leptos 0.6 CSR UI (`cd ui && cargo test` + `cargo check --target wasm32-unknown-unknown`), Playwright (`cd ui-tests && npx playwright test`).
+**Tech Stack:** Rust (tauri backend, `cargo test -p superscience-tauri`), Leptos 0.6 CSR UI (`cd ui && cargo test` + `cargo check --target wasm32-unknown-unknown`), Playwright (`cd ui-tests && npx playwright test`).
 
 ## Global Constraints
 
@@ -40,9 +40,9 @@
 mod tests {
     use super::*;
 
-    async fn test_store() -> (wisp_store::Store, std::path::PathBuf) {
-        let tmp = std::env::temp_dir().join(format!("wisp_spec_{}.sqlite", uuid::Uuid::new_v4()));
-        (wisp_store::Store::open(&tmp).await.unwrap(), tmp)
+    async fn test_store() -> (superscience_store::Store, std::path::PathBuf) {
+        let tmp = std::env::temp_dir().join(format!("superscience_spec_{}.sqlite", uuid::Uuid::new_v4()));
+        (superscience_store::Store::open(&tmp).await.unwrap(), tmp)
     }
 
     #[tokio::test]
@@ -107,7 +107,7 @@ mod tests {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test -p wisp-tauri specialists 2>&1 | tail -5`
+Run: `cargo test -p superscience-tauri specialists 2>&1 | tail -5`
 Expected: compile error (module missing) — that is the failure for this step.
 
 - [ ] **Step 3: Write the module**
@@ -121,7 +121,7 @@ Expected: compile error (module missing) — that is the failure for this step.
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use wisp_store::Store;
+use superscience_store::Store;
 
 pub const SPECIALISTS_KEY: &str = "specialists";
 
@@ -280,7 +280,7 @@ And in `src-tauri/src/models.rs`, below `active_llm_advanced`:
 /// Full LLM config for one profile id: (provider, api_url, model, api_key,
 /// max_tokens, reasoning_effort). None when the id doesn't exist.
 pub async fn profile_llm(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     id: &str,
 ) -> Option<(String, String, String, String, u64, String)> {
     let profiles = ensure(store).await;
@@ -298,7 +298,7 @@ pub async fn profile_llm(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test -p wisp-tauri specialists 2>&1 | tail -5`
+Run: `cargo test -p superscience-tauri specialists 2>&1 | tail -5`
 Expected: `3 passed`
 
 - [ ] **Step 5: Commit**
@@ -343,7 +343,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
         let (store, tmp) = test_store().await;
         ensure(&store).await;
         store.create_project("p1", "proj", "").await.unwrap();
-        store.create_frame("f1", "p1", "OPERON", "m").await.unwrap();
+        store.create_frame("f1", "p1", "SUPERSCIENCE", "m").await.unwrap();
         set_frame_specialist(&store, "f1", "reviewer").await.unwrap();
         assert_eq!(session_specialist(&store, "f1").await.unwrap().id, "reviewer");
         // Clearing works.
@@ -355,7 +355,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test -p wisp-tauri specialists 2>&1 | tail -5`
+Run: `cargo test -p superscience-tauri specialists 2>&1 | tail -5`
 Expected: compile error — `specialist_llm` / `set_frame_specialist` not found.
 
 - [ ] **Step 3: Implement** (append to `specialists.rs`)
@@ -409,7 +409,7 @@ pub async fn set_session_specialist(
         .load_messages(&frame_id)
         .await
         .map_err(|e| format!("{e}"))?;
-    if msgs.iter().any(|m| m.role != wisp_llm::Role::System) {
+    if msgs.iter().any(|m| m.role != superscience_llm::Role::System) {
         return Err("Specialist is locked once the session has messages.".into());
     }
     if !id.is_empty() && get(&state.store, &id).await.is_none() {
@@ -429,7 +429,7 @@ pub async fn get_session_specialist(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test -p wisp-tauri specialists 2>&1 | tail -5`
+Run: `cargo test -p superscience-tauri specialists 2>&1 | tail -5`
 Expected: `5 passed`
 
 - [ ] **Step 5: Commit**
@@ -479,7 +479,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p wisp-tauri specialist_prompt 2>&1 | tail -3`
+Run: `cargo test -p superscience-tauri specialist_prompt 2>&1 | tail -3`
 Expected: compile error — function not defined.
 
 - [ ] **Step 3: Implement**
@@ -498,7 +498,7 @@ Change `wire_python_and_mcp`'s signature and the two filter points:
 
 ```rust
 async fn wire_python_and_mcp(
-    agent: &mut wisp_core::Agent,
+    agent: &mut superscience_core::Agent,
     app_data: &std::path::Path,
     store: &Store,
     connector_allow: Option<&HashSet<String>>,
@@ -568,7 +568,7 @@ After the existing `agent.seed_system_prompt(&skills, compute);` line:
             if agent.ctx.messages.len() == 1 && !spec.instructions.trim().is_empty() {
                 let section = specialist_prompt_section(spec);
                 if let Some(m) = agent.ctx.messages.first_mut() {
-                    if let wisp_llm::Content::Text(t) = &mut m.content {
+                    if let superscience_llm::Content::Text(t) = &mut m.content {
                         t.push_str(&section);
                     }
                 }
@@ -591,7 +591,7 @@ Check for any other `wire_python_and_mcp(` caller (`grep -n 'wire_python_and_mcp
 
 - [ ] **Step 4: Run tests + full crate check**
 
-Run: `cargo test -p wisp-tauri 2>&1 | grep -E 'test result|FAILED' | head -4`
+Run: `cargo test -p superscience-tauri 2>&1 | grep -E 'test result|FAILED' | head -4`
 Expected: all pass (new test included), no failures.
 
 - [ ] **Step 5: Commit**
@@ -634,7 +634,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p wisp-tauri reviewer_model_binding 2>&1 | tail -3`
+Run: `cargo test -p superscience-tauri reviewer_model_binding 2>&1 | tail -3`
 Expected: FAIL only if Tasks 1–2 are incomplete; if it passes immediately, continue (the test pins behavior for the refactor below).
 
 - [ ] **Step 3: Re-source `review_session`**
@@ -655,7 +655,7 @@ Replace the config lines inside `review_session` (currently `load_settings` + `a
             max_tokens,
             &reasoning_effort,
         )?;
-        let llm = wisp_llm::build(cfg);
+        let llm = superscience_llm::build(cfg);
 
         let review_msgs = vec![
             Message::system(reviewer.instructions.clone()),
@@ -665,7 +665,7 @@ Replace the config lines inside `review_session` (currently `load_settings` + `a
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p wisp-tauri 2>&1 | grep -E 'test result|FAILED' | head -4`
+Run: `cargo test -p superscience-tauri 2>&1 | grep -E 'test result|FAILED' | head -4`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
@@ -698,7 +698,7 @@ Add to the `tauri::generate_handler![...]` list:
 
 - [ ] **Step 2: Full backend sweep**
 
-Run: `cargo test --workspace 2>&1 | grep -E 'test result|FAILED' | tail -8` and `cargo check -p wisp-tauri`
+Run: `cargo test --workspace 2>&1 | grep -E 'test result|FAILED' | tail -8` and `cargo check -p superscience-tauri`
 Expected: all green.
 
 - [ ] **Step 3: Commit and open PR 1**
@@ -1007,20 +1007,20 @@ gh pr create --base main --title "feat: specialists UI (专家系统 PR 2/3)" --
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wisp_tools::Tool;
+    use superscience_tools::Tool;
 
     struct NoEnv(std::path::PathBuf);
     #[async_trait::async_trait]
-    impl wisp_tools::ToolEnv for NoEnv {
+    impl superscience_tools::ToolEnv for NoEnv {
         fn project_root(&self) -> &std::path::Path { &self.0 }
         async fn confirm(&self, _m: &str) -> bool { true }
-        async fn emit(&self, _e: wisp_tools::ToolEvent) {}
+        async fn emit(&self, _e: superscience_tools::ToolEvent) {}
     }
 
     #[tokio::test]
     async fn creates_a_specialist_and_never_touches_builtin() {
-        let tmp = std::env::temp_dir().join(format!("wisp_sptool_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let tmp = std::env::temp_dir().join(format!("superscience_sptool_{}.sqlite", uuid::Uuid::new_v4()));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         let tool = SaveSpecialistTool { store: store.clone() };
         let env = NoEnv(std::env::temp_dir());
         let r = tool
@@ -1038,7 +1038,7 @@ mod tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p wisp-tauri specialist_tool 2>&1 | tail -3`
+Run: `cargo test -p superscience-tauri specialist_tool 2>&1 | tail -3`
 Expected: compile error — module missing.
 
 - [ ] **Step 3: Implement**
@@ -1050,9 +1050,9 @@ Expected: compile error — module missing.
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use wisp_llm::ToolSchema;
-use wisp_store::Store;
-use wisp_tools::{Tool, ToolEnv, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_store::Store;
+use superscience_tools::{Tool, ToolEnv, ToolResult};
 
 pub struct SaveSpecialistTool {
     pub store: Store,
@@ -1142,7 +1142,7 @@ And `mod specialist_tool;` in the module list.
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p wisp-tauri 2>&1 | grep -E 'test result|FAILED' | head -4`
+Run: `cargo test -p superscience-tauri 2>&1 | grep -E 'test result|FAILED' | head -4`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**

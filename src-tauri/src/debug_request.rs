@@ -15,9 +15,9 @@
 
 use super::AppState;
 use serde::Serialize;
+use superscience_core::ContextManager;
+use superscience_llm::{Message, Role, ToolSchema};
 use tauri::{AppHandle, State};
-use wisp_core::ContextManager;
-use wisp_llm::{Message, Role, ToolSchema};
 
 #[derive(Serialize)]
 struct DebugToolCall {
@@ -218,7 +218,7 @@ pub(super) async fn export_debug_request(
 
     let json = serde_json::to_string_pretty(&snapshot).map_err(|e| format!("{e}"))?;
     let default_name = format!(
-        "wisp-debug-request-{}.json",
+        "superscience-debug-request-{}.json",
         sanitize_component(&session_id)
     );
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn snapshot_breaks_out_system_prompt_and_sums_tokens() {
         let msgs = vec![
-            Message::system("You are wisp-science. ".repeat(50)),
+            Message::system("You are SuperScience. ".repeat(50)),
             Message::user("analyze the uploaded sheet"),
             Message::assistant("on it"),
         ];

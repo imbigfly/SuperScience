@@ -66,7 +66,9 @@ pub(super) async fn set_session_full_permission(
     if enabled {
         let pending = state.confirms.lock().unwrap().remove(&session_id);
         if let Some(pending) = pending {
-            let _ = pending.tx.send(wisp_tools::ConfirmDecision::Approved);
+            let _ = pending
+                .tx
+                .send(superscience_tools::ConfirmDecision::Approved);
             state.awaiting_confirm.lock().unwrap().remove(&session_id);
             state.device_hub.resolve_needs_user(&session_id);
         }
@@ -83,9 +85,9 @@ pub(super) async fn confirm_response(
     scope: Option<String>,
 ) -> Result<(), String> {
     let decision = if approved {
-        wisp_tools::ConfirmDecision::Approved
+        superscience_tools::ConfirmDecision::Approved
     } else {
-        wisp_tools::ConfirmDecision::Denied {
+        superscience_tools::ConfirmDecision::Denied {
             feedback: feedback
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
@@ -94,6 +96,10 @@ pub(super) async fn confirm_response(
     let pending = state.confirms.lock().unwrap().remove(&session_id);
     if let Some(pending) = pending {
         state.device_hub.resolve_needs_user(&session_id);
+        // Deliver the live decision before persistence: a disk failure must not
+        // strand the agent on a removed confirm channel (especially "global" /
+        // "project" grants, which write SQLite).
+        let _ = pending.tx.send(decision);
         if approved {
             let scope = scope.unwrap_or_else(|| "once".into());
             if matches!(scope.as_str(), "session" | "project" | "global") {
@@ -104,12 +110,18 @@ pub(super) async fn confirm_response(
                         grants.clone()
                     };
                     if scope != "session" {
-                        save_approval_grants(&state.store, &snapshot).await?;
+                        if let Err(error) = save_approval_grants(&state.store, &snapshot).await {
+                            tracing::warn!(
+                                target: "superscience",
+                                error = %error,
+                                scope = %scope,
+                                "failed to persist approval grant after confirm"
+                            );
+                        }
                     }
                 }
             }
         }
-        let _ = pending.tx.send(decision);
         Ok(())
     } else {
         Err("no pending confirmation".into())

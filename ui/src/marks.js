@@ -2,7 +2,7 @@
 // with the CSS Custom Highlight API so the Leptos-managed DOM is never
 // mutated. No-op on WebViews without CSS.highlights.
 
-const NAME = "wisp-saved";
+const NAME = "superscience-saved";
 let needles = [];
 let pending = 0;
 

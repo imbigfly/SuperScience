@@ -164,13 +164,13 @@ Acceptance:
 
 ### PR 8: Workspace Manifest v1
 
-Add `.wisp/project.toml` or `.wisp/WISP.md` generation and enforce typed directories through helper functions.
+Add `.superscience/project.toml` or `.superscience/SUPERSCIENCE.md` generation and enforce typed directories through helper functions.
 
 Default layout:
 
 ```text
 project/
-  .wisp/
+  .superscience/
   data/raw/
   data/external/
   data/processed/

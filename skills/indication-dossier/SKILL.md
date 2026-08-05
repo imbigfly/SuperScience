@@ -82,7 +82,7 @@ file and emit a ≤200-word summary of what you found and what's uncertain,
 then proceed directly to the next phase. The one exception is Phase 1: after
 writing `meta.json`, show the resolved indication identity and end the turn
 with a concise request for **Proceed**, **Revise identity**, or **Stop**. Do
-not start the expensive phases until the user answers; Wisp has no separate
+not start the expensive phases until the user answers; SuperScience has no separate
 interactive-question tool that can be called from the workflow.
 
 ### Phase 1 — Meta initialization

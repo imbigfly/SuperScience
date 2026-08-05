@@ -64,7 +64,7 @@ Output is `out/seqs/<stem>.fa` with `score=` and `seq_recovery=` in each
 header. Expect recovery against a native structure to drop a few points
 relative to vanilla — that is the prior working, not a bug.
 
-## Wisp execution
+## SuperScience execution
 
 Use `python` only for bounded interactive checks. For a long or GPU-backed
 workload, require a selected and probed `ssh:<alias>` context and load

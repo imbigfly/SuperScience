@@ -1,0 +1,15 @@
+[package]
+name = "superscience-llm"
+description = "Provider-agnostic LLM client: OpenAI-compatible + Anthropic Messages, with SSE streaming."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+futures-util = { workspace = true }
+async-trait = "0.1"
+thiserror = { workspace = true }
+url = { workspace = true }

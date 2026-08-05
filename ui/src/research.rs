@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use wasm_bindgen::JsValue;
 
 /// Node kinds in display order, paired with their i18n key. Closed set — it
-/// mirrors `wisp_store::ResearchNodeKind`, so every stored node lands in a
+/// mirrors `superscience_store::ResearchNodeKind`, so every stored node lands in a
 /// section here.
 const KINDS: [(&str, &str); 5] = [
     ("decision", "graph.kind.decision"),

@@ -2,9 +2,9 @@ use super::AppState;
 use crate::file_browser::mime_for_path;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
+use superscience_llm::Message;
+use superscience_store::Store;
 use tauri::{AppHandle, State};
-use wisp_llm::Message;
-use wisp_store::Store;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct PipPkg {
@@ -126,18 +126,18 @@ fn markdown_fence(lang: &str, body: &str) -> String {
 }
 
 fn render_export_transcript(messages: &[Message]) -> String {
-    let mut out = String::from("# wisp-science session export\n\n");
+    let mut out = String::from("# superscience session export\n\n");
     for (idx, msg) in messages.iter().enumerate() {
         match msg.role {
-            wisp_llm::Role::System => {}
-            wisp_llm::Role::User => {
+            superscience_llm::Role::System => {}
+            superscience_llm::Role::User => {
                 out.push_str(&format!(
                     "## User {}\n\n{}\n\n",
                     idx + 1,
                     msg.content.as_text()
                 ));
             }
-            wisp_llm::Role::Assistant => {
+            superscience_llm::Role::Assistant => {
                 if let Some(reasoning) = msg.reasoning.as_deref().filter(|s| !s.trim().is_empty()) {
                     out.push_str("### Reasoning\n\n");
                     out.push_str(&markdown_fence("text", reasoning));
@@ -161,7 +161,7 @@ fn render_export_transcript(messages: &[Message]) -> String {
                     out.push('\n');
                 }
             }
-            wisp_llm::Role::Tool => {
+            superscience_llm::Role::Tool => {
                 let name = msg.tool_name.as_deref().unwrap_or("tool");
                 out.push_str(&format!("## Tool result: {name}\n\n"));
                 out.push_str(&markdown_fence("text", &msg.content.as_text()));
@@ -175,7 +175,7 @@ fn render_export_transcript(messages: &[Message]) -> String {
 fn export_tool_calls(messages: &[Message]) -> Vec<ExportToolCall> {
     let mut results = HashMap::<String, ExportToolResult>::new();
     for msg in messages {
-        if msg.role != wisp_llm::Role::Tool {
+        if msg.role != superscience_llm::Role::Tool {
             continue;
         }
         let Some(id) = msg.tool_call_id.clone() else {
@@ -193,7 +193,7 @@ fn export_tool_calls(messages: &[Message]) -> Vec<ExportToolCall> {
 
     let mut calls = vec![];
     for msg in messages {
-        if msg.role != wisp_llm::Role::Assistant {
+        if msg.role != superscience_llm::Role::Assistant {
             continue;
         }
         for tc in &msg.tool_calls {
@@ -228,7 +228,7 @@ fn collect_export_artifacts(
     let mut files = vec![];
     let mut missing = vec![];
     for source_path in candidates {
-        let real = match wisp_tools::safety::validate_file_path(root, &source_path) {
+        let real = match superscience_tools::safety::validate_file_path(root, &source_path) {
             Ok(real) => real,
             Err(error) => {
                 missing.push(MissingExportArtifact {
@@ -341,17 +341,17 @@ fn parse_pip_list(json: &str) -> Vec<PipPkg> {
 /// Capture the kernel venv's package list once; store it hashed; return the hash.
 /// Non-fatal: any failure returns `None` and the Environment panel shows "unavailable".
 pub(super) async fn capture_env(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     app_data: &std::path::Path,
 ) -> Option<String> {
     let venv = app_data.join("python").join(".venv");
-    let python = wisp_runtime::PythonEnv { venv }.python();
-    let uv = wisp_runtime::PythonEnv::find_uv()?;
+    let python = superscience_runtime::PythonEnv { venv }.python();
+    let uv = superscience_runtime::PythonEnv::find_uv()?;
     let mut command = tokio::process::Command::new(&uv);
     command
         .args(["pip", "list", "--format=json", "--python"])
         .arg(&python);
-    wisp_tools::process::hide_console_async(&mut command);
+    superscience_tools::process::hide_console_async(&mut command);
     let out = command.output().await.ok()?;
     if !out.status.success() || out.stdout.is_empty() {
         return None;
@@ -517,7 +517,7 @@ pub(super) async fn export_session(
         missing_artifacts,
     };
 
-    let default_name = format!("wisp-session-{}.zip", zip_component(&session_id));
+    let default_name = format!("superscience-session-{}.zip", zip_component(&session_id));
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -552,7 +552,7 @@ pub(super) async fn export_session(
         zip_json(&mut zip, "messages.json", &messages)?;
         zip_json(&mut zip, "tool-calls.json", &tool_calls)?;
         for file in &files {
-            let source = wisp_tools::safety::validate_file_path(
+            let source = superscience_tools::safety::validate_file_path(
                 &export_root,
                 &file.real_path.to_string_lossy(),
             )?;
@@ -577,10 +577,10 @@ mod tests {
     #[test]
     fn export_tool_calls_matches_results_by_id() {
         let mut assistant = Message::assistant("");
-        assistant.tool_calls = vec![wisp_llm::ToolCall {
+        assistant.tool_calls = vec![superscience_llm::ToolCall {
             id: "call_1".into(),
             kind: "function".into(),
-            function: wisp_llm::FunctionCall {
+            function: superscience_llm::FunctionCall {
                 name: "python".into(),
                 arguments: r#"{"code":"print(1)"}"#.into(),
             },
@@ -619,7 +619,8 @@ mod tests {
 
     #[test]
     fn artifact_contents_are_streamed_into_zip() {
-        let root = std::env::temp_dir().join(format!("wisp_export_{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("superscience_export_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("results")).unwrap();
         std::fs::write(root.join("results/data.txt"), b"stream me").unwrap();
 

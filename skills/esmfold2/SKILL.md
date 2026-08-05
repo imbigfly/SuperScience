@@ -63,14 +63,14 @@ MAX_JOBS=8 uv pip install --no-deps --no-build-isolation "flash-attn<3"
 
 For remote execution, install this version-pinned recipe on a selected and
 probed direct SSH GPU context, then submit inference through
-`run_in_context`. Wisp does not currently provide a Modal execution backend.
+`run_in_context`. SuperScience does not currently provide a Modal execution backend.
 
 **Gotchas:**
 - **Default kernel backend is `None`** (reference PyTorch, ~12x slower than paper). Call `model.set_kernel_backend('fused')` after `from_pretrained()`. See section below.
 - Match torch CUDA build to your driver; the pin `<2.8` targets CUDA 12.2.
 - Weights via Xet bridge ~300 MB/s: ESMFold2 1.36 GB, ESMFold2-Fast 0.76 GB. Set `HF_HOME=/work/hf_cache`.
 
-## Wisp execution
+## SuperScience execution
 
 Use `python` only for bounded interactive checks. For structure prediction,
 require a selected and probed `ssh:<alias>` GPU context and load

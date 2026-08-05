@@ -4,12 +4,12 @@ use std::{
     path::Path,
     sync::{atomic::AtomicBool, Arc, Mutex},
 };
-use wisp_core::{
+use superscience_core::{
     agent_loop, AgentBudget, AgentDelegationRequest, AgentUsage, ContextManager, Output,
 };
-use wisp_llm::{Completion, LlmError, Message, Provider, StreamSink, ToolSchema};
-use wisp_store::{ExecLog, Store};
-use wisp_tools::{Approval, Registry};
+use superscience_llm::{Completion, LlmError, Message, Provider, StreamSink, ToolSchema};
+use superscience_store::{ExecLog, Store};
+use superscience_tools::{Approval, Registry};
 
 pub(crate) struct NativeAgentRun {
     pub(crate) result: Result<String, String>,
@@ -62,7 +62,7 @@ impl Provider for BudgetedProvider<'_> {
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
-    ) -> wisp_llm::Result<Completion> {
+    ) -> superscience_llm::Result<Completion> {
         let completion = self.inner.complete(messages, tools).await?;
         self.usage.record(&completion, self.budget)?;
         Ok(completion)
@@ -73,7 +73,7 @@ impl Provider for BudgetedProvider<'_> {
         messages: &[Message],
         tools: &[ToolSchema],
         sink: &mut dyn StreamSink,
-    ) -> wisp_llm::Result<Completion> {
+    ) -> superscience_llm::Result<Completion> {
         let completion = self.inner.stream(messages, tools, sink).await?;
         self.usage.record(&completion, self.budget)?;
         Ok(completion)
@@ -83,7 +83,7 @@ impl Provider for BudgetedProvider<'_> {
 struct NativeOutput {
     allowed_tools: HashSet<String>,
     messages: tokio::sync::mpsc::UnboundedSender<Message>,
-    provenance: tokio::sync::mpsc::UnboundedSender<wisp_core::ProvenanceRecord>,
+    provenance: tokio::sync::mpsc::UnboundedSender<superscience_core::ProvenanceRecord>,
 }
 
 impl Output for NativeOutput {
@@ -107,7 +107,7 @@ impl Output for NativeOutput {
         let _ = self.messages.send(message.clone());
     }
 
-    fn provenance(&self, record: &wisp_core::ProvenanceRecord) {
+    fn provenance(&self, record: &superscience_core::ProvenanceRecord) {
         let _ = self.provenance.send(record.clone());
     }
 
@@ -138,14 +138,14 @@ pub(crate) async fn run_native_agent(
     let message_task = tokio::spawn(async move {
         let mut sequence = 0i64;
         while let Some(mut message) = message_rx.recv().await {
-            if message.role == wisp_llm::Role::Assistant && message.model_name.is_none() {
+            if message.role == superscience_llm::Role::Assistant && message.model_name.is_none() {
                 message.model_name = Some(model.clone());
             }
             sequence += 1;
             message_store
                 .append_message(&message_frame_id, sequence, &message)
                 .await?;
-            if message.role == wisp_llm::Role::Assistant {
+            if message.role == superscience_llm::Role::Assistant {
                 crate::resource_refs::bind_new_message_resources(
                     &message_store,
                     &message_project_root,
@@ -161,7 +161,7 @@ pub(crate) async fn run_native_agent(
     });
 
     let (provenance_tx, mut provenance_rx) =
-        tokio::sync::mpsc::unbounded_channel::<wisp_core::ProvenanceRecord>();
+        tokio::sync::mpsc::unbounded_channel::<superscience_core::ProvenanceRecord>();
     let provenance_store = store.clone();
     let provenance_frame_id = child_frame_id.to_string();
     let provenance_task = tokio::spawn(async move {
@@ -240,7 +240,7 @@ pub(crate) async fn run_native_agent(
         .messages
         .iter()
         .rev()
-        .find(|message| message.role == wisp_llm::Role::Assistant)
+        .find(|message| message.role == superscience_llm::Role::Assistant)
         .map(|message| message.content.as_text());
     drop(output);
     message_task.await??;
@@ -280,7 +280,7 @@ fn budget_violation(usage: &AgentUsage, budget: &AgentBudget) -> Option<String> 
 mod tests {
     use super::*;
     use std::{collections::VecDeque, path::PathBuf, sync::atomic::Ordering};
-    use wisp_llm::{FunctionCall, ToolCall, Usage};
+    use superscience_llm::{FunctionCall, ToolCall, Usage};
 
     struct SequenceProvider {
         completions: Mutex<VecDeque<Completion>>,
@@ -295,7 +295,7 @@ mod tests {
             }
         }
 
-        fn pop(&self, tools: &[ToolSchema]) -> wisp_llm::Result<Completion> {
+        fn pop(&self, tools: &[ToolSchema]) -> superscience_llm::Result<Completion> {
             self.schemas.lock().unwrap().push(
                 tools
                     .iter()
@@ -324,7 +324,7 @@ mod tests {
             &self,
             _messages: &[Message],
             tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             self.pop(tools)
         }
 
@@ -333,7 +333,7 @@ mod tests {
             _messages: &[Message],
             tools: &[ToolSchema],
             _sink: &mut dyn StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             self.pop(tools)
         }
     }
@@ -354,7 +354,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             Err(LlmError::Config("complete should not be called".into()))
         }
 
@@ -363,7 +363,7 @@ mod tests {
             _messages: &[Message],
             _tools: &[ToolSchema],
             sink: &mut dyn StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             loop {
                 if sink.is_cancelled() {
                     return Err(LlmError::Config("stream cancelled".into()));
@@ -434,7 +434,7 @@ mod tests {
 
     async fn fixture() -> (Store, PathBuf, PathBuf) {
         let base = std::env::temp_dir().join(format!(
-            "wisp_native_agent_{}_{}",
+            "superscience_native_agent_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -510,12 +510,12 @@ mod tests {
         let messages = store.load_messages("child").await.unwrap();
         assert_eq!(messages.len(), 4);
         assert!(messages.iter().any(|message| {
-            message.role == wisp_llm::Role::Tool
+            message.role == superscience_llm::Role::Tool
                 && message.content.as_text().contains("verified evidence")
         }));
         assert!(messages
             .iter()
-            .filter(|message| message.role == wisp_llm::Role::Assistant)
+            .filter(|message| message.role == superscience_llm::Role::Assistant)
             .all(|message| message.model_name.as_deref() == Some("sequence-model")));
         drop(store);
         std::fs::remove_dir_all(base).ok();
@@ -553,7 +553,7 @@ mod tests {
         let artifacts = store.list_artifacts("child").await.unwrap();
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].1, "report.md");
-        assert!(artifacts[0].3.contains(".wisp/artifacts/sha256"));
+        assert!(artifacts[0].3.contains(".superscience/artifacts/sha256"));
         drop(store);
         std::fs::remove_dir_all(base).ok();
     }
@@ -582,7 +582,7 @@ mod tests {
         assert!(!workspace.join("blocked.txt").exists());
         let messages = store.load_messages("child").await.unwrap();
         assert!(messages.iter().any(|message| {
-            message.role == wisp_llm::Role::Tool
+            message.role == superscience_llm::Role::Tool
                 && message.content.as_text().contains("unknown tool 'write'")
         }));
         drop(store);
@@ -613,7 +613,7 @@ mod tests {
         assert!(run.result.is_ok());
         let messages = store.load_messages("child").await.unwrap();
         assert!(messages.iter().any(|message| {
-            message.role == wisp_llm::Role::Tool
+            message.role == superscience_llm::Role::Tool
                 && message.content.as_text().contains("outside project root")
         }));
         assert!(!messages

@@ -560,7 +560,7 @@ async fn ask_user_items(state: &AppState, frame_id: &str) -> Vec<UiItem> {
 }
 
 pub(super) fn transcript_page_items(
-    page: &wisp_store::SessionTranscriptPage,
+    page: &superscience_store::SessionTranscriptPage,
 ) -> Result<Vec<UiItem>, String> {
     let msgs = page
         .messages

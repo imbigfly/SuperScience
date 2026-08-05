@@ -1,14 +1,14 @@
 # Feature plugins
 
-Wisp feature plugins package reusable Skills, local stdio MCP servers, and MCP
+SuperScience feature plugins package reusable Skills, local stdio MCP servers, and MCP
 Apps as one installable unit. A plugin is installed globally and enabled per
 project. Installation never starts package code; enabling the plugin makes its
 Skills available and starts its MCP servers when a new agent session is built.
 
 ## Supported packages
 
-The native format uses `.wisp-plugin/plugin.json` with schema
-`wisp.plugin.v1`. Wisp also accepts the Claude plugin layout used by Motif:
+The native format uses `.superscience-plugin/plugin.json` with schema
+`superscience.plugin.v1`. SuperScience also accepts the Claude plugin layout used by Motif:
 
 ```text
 .claude-plugin/plugin.json
@@ -18,7 +18,7 @@ server/...
 ```
 
 Claude packages are normalized into the native manifest at install time.
-`${CLAUDE_PLUGIN_ROOT}` and `${WISP_PLUGIN_ROOT}` are both resolved to the
+`${CLAUDE_PLUGIN_ROOT}` and `${SUPERSCIENCE_PLUGIN_ROOT}` are both resolved to the
 immutable installed package directory. MCP processes are launched directly,
 without a command shell.
 
@@ -36,7 +36,7 @@ fails. Removing an installed plugin always requires confirmation.
 The manifest `id` is the plugin identity. Installing another valid package with
 the same ID replaces the existing files and installation record, including
 when the version changes. Existing per-project enabled state and permission
-grants follow the replacement version. Wisp validates and stages the new
+grants follow the replacement version. SuperScience validates and stages the new
 package before moving the previous files aside.
 
 Review the displayed MCP command and runtime status, then enable the plugin for
@@ -50,16 +50,16 @@ Plugin-provided Skills appear in **Settings → Skills** with a “Managed by �
 badge. Their files, enabled state, and removal are owned by the parent plugin,
 so they do not expose duplicate Skill controls.
 
-When a tool presents an MCP App such as Motif, Wisp opens it as a center tab and
+When a tool presents an MCP App such as Motif, SuperScience opens it as a center tab and
 turns on the existing chat/workbench split. Switching back to the conversation
 parks the live app without reloading it; closing its tab tears the app down.
 The latest presented workbench is saved with the conversation and restored when
-that conversation is reopened, including after Wisp restarts.
+that conversation is reopened, including after SuperScience restarts.
 
 MCP Apps may publish their current selection or other bounded live state through
-the standard `ui/update-model-context` request. Wisp keeps only the latest update
+the standard `ui/update-model-context` request. SuperScience keeps only the latest update
 from each open App and adds it to the next model turn in that conversation.
-Closing the App clears its state. Wisp currently accepts text content blocks and
+Closing the App clears its state. SuperScience currently accepts text content blocks and
 structured JSON up to 64 KiB; the App should send a compact selection or summary
 rather than its entire workspace.
 
@@ -75,14 +75,14 @@ rather than its entire workspace.
   installed plugin. Arguments are passed as an argv array, never through a
   shell. Child processes are terminated when their owning agent session is
   released.
-- Third-party MCP tool names may not replace an existing Wisp tool.
+- Third-party MCP tool names may not replace an existing SuperScience tool.
 - MCP Apps receive structured tool input/results in a script-only, opaque-origin
   iframe. Network origins are restricted to the resource's declared CSP. Apps may
-  update the next model turn's bounded text/JSON context, but Wisp does not
+  update the next model turn's bounded text/JSON context, but SuperScience does not
   currently grant app-initiated tool calls, external links, downloads, forms,
   camera, microphone, or geolocation.
 - Embedded `text/html` MCP resources are materialized under
-  `.wisp/plugin-artifacts/` and opened through Wisp's sandboxed HTML preview.
+  `.superscience/plugin-artifacts/` and opened through SuperScience's sandboxed HTML preview.
 
 This is a process and browser isolation boundary, not a complete operating
 system sandbox: an enabled local MCP process runs with the current user's file
@@ -112,9 +112,9 @@ guessing MCP tools from its display name. The acceptance checks are:
 3. Calling `motif_open_workbench` opens `ui://motif/workbench.html` and loads
    the structured demo payload in the isolated MCP App.
 4. Calling `motif_create_workbench_artifact` creates a self-contained HTML file
-   under `.wisp/plugin-artifacts/`, and that file opens in Wisp's artifact
+   under `.superscience/plugin-artifacts/`, and that file opens in SuperScience's artifact
    preview.
 
-Run this acceptance test natively on Windows as well. Wisp keeps canonical
+Run this acceptance test natively on Windows as well. SuperScience keeps canonical
 containment checks but passes ordinary drive-letter paths to Node MCP entrypoints;
 Windows verbatim (`\\?\`) paths are not valid Node entry-script arguments.

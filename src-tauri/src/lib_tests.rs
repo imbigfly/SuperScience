@@ -87,7 +87,10 @@ fn mcp_app_instance_id_carries_its_session() {
 
 #[test]
 fn image_attachments_are_loaded_for_model_input() {
-    let root = std::env::temp_dir().join(format!("wisp_message_images_{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!(
+        "superscience_message_images_{}",
+        uuid::Uuid::new_v4()
+    ));
     let uploads = root.join("uploads");
     std::fs::create_dir_all(&uploads).unwrap();
     std::fs::write(uploads.join("plot.PNG"), b"image bytes").unwrap();
@@ -107,12 +110,19 @@ fn image_attachments_are_loaded_for_model_input() {
 
 #[test]
 fn configured_image_generation_tool_is_available_without_a_specialist() {
-    let root = std::env::temp_dir().join(format!("wisp_image_tool_agent_{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!(
+        "superscience_image_tool_agent_{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir_all(&root).unwrap();
-    let skills = Arc::new(wisp_skills::SkillIndex::load(&[]));
-    let memory = Arc::new(wisp_core::MemoryManager::new(&root));
-    let mut agent = wisp_core::Agent::new(
-        wisp_llm::ProviderConfig::openai("http://127.0.0.1:9/v1", "sk-chat-test", "chat-model"),
+    let skills = Arc::new(superscience_skills::SkillIndex::load(&[]));
+    let memory = Arc::new(superscience_core::MemoryManager::new(&root));
+    let mut agent = superscience_core::Agent::new(
+        superscience_llm::ProviderConfig::openai(
+            "http://127.0.0.1:9/v1",
+            "sk-chat-test",
+            "chat-model",
+        ),
         skills,
         memory,
         root.clone(),
@@ -182,8 +192,9 @@ fn reviewer_explicit_backend_does_not_follow_session() {
 
 #[tokio::test]
 async fn auto_review_is_off_by_default_and_persists_changes() {
-    let dir = std::env::temp_dir().join(format!("wisp_auto_review_{}", uuid::Uuid::new_v4()));
-    let store = wisp_store::Store::open(&dir.join("wisp.sqlite"))
+    let dir =
+        std::env::temp_dir().join(format!("superscience_auto_review_{}", uuid::Uuid::new_v4()));
+    let store = superscience_store::Store::open(&dir.join("superscience.sqlite"))
         .await
         .unwrap();
 
@@ -264,27 +275,27 @@ fn mac_menu_action_maps_update_and_settings_ids() {
 
 #[test]
 fn reloaded_tool_items_keep_notebook_source() {
-    let mut assistant = wisp_llm::Message::assistant("");
+    let mut assistant = superscience_llm::Message::assistant("");
     assistant.tool_calls = vec![
-        wisp_llm::ToolCall {
+        superscience_llm::ToolCall {
             id: "call-python".into(),
             kind: "function".into(),
-            function: wisp_llm::FunctionCall {
+            function: superscience_llm::FunctionCall {
                 name: "python".into(),
                 arguments: r#"{"code":"print(1)"}"#.into(),
             },
         },
-        wisp_llm::ToolCall {
+        superscience_llm::ToolCall {
             id: "call-r".into(),
             kind: "function".into(),
-            function: wisp_llm::FunctionCall {
+            function: superscience_llm::FunctionCall {
                 name: "r".into(),
                 arguments: r#"{"code":"summary(data)"}"#.into(),
             },
         },
     ];
-    let result = wisp_llm::Message::tool("call-python", "python", "1");
-    let r_result = wisp_llm::Message::tool("call-r", "r", "summary");
+    let result = superscience_llm::Message::tool("call-python", "python", "1");
+    let r_result = superscience_llm::Message::tool("call-r", "r", "summary");
 
     let items = messages_to_items(&[assistant, result, r_result]);
 
@@ -299,9 +310,9 @@ fn reloaded_tool_items_keep_notebook_source() {
 
 #[test]
 fn reloaded_propose_plan_result_rebuilds_the_plan_card() {
-    let plan = wisp_llm::Message::tool(
+    let plan = superscience_llm::Message::tool(
         "call-plan",
-        wisp_tools::plan::PROPOSE_PLAN,
+        superscience_tools::plan::PROPOSE_PLAN,
         r#"{"v":1,"source":"native","entries":[{"content":"Read the loader","status":"pending","priority":"high"}]}"#,
     );
 
@@ -316,9 +327,9 @@ fn reloaded_propose_plan_result_rebuilds_the_plan_card() {
 
 #[test]
 fn reloaded_ask_user_result_rebuilds_the_question_card() {
-    let question = wisp_llm::Message::tool(
+    let question = superscience_llm::Message::tool(
         "call-ask",
-        wisp_tools::ask_user::ASK_USER,
+        superscience_tools::ask_user::ASK_USER,
         r#"{"v":1,"source":"native","question":"Which aligner?","options":[{"label":"STAR","description":""}],"allow_freeform":true}"#,
     );
 
@@ -333,10 +344,10 @@ fn reloaded_ask_user_result_rebuilds_the_question_card() {
 
 #[test]
 fn reloaded_background_completion_keeps_terminal_status() {
-    let mut completion = wisp_llm::Message::user(
+    let mut completion = superscience_llm::Message::user(
         r#"{"type":"delegated_batch_completion","result":{"status":"cancelled"}}"#,
     );
-    completion.tool_name = Some(wisp_store::AGENT_WORKFLOW_COMPLETION_TOOL.into());
+    completion.tool_name = Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL.into());
 
     let items = messages_to_items(&[completion]);
     assert_eq!(items.len(), 1);
@@ -525,8 +536,8 @@ fn pending_ui_event_merge_stays_bounded() {
 
 #[tokio::test]
 async fn ui_events_are_persisted_before_the_turn_ends() {
-    let base = std::env::temp_dir().join(format!("wisp_ui_flush_{}", uuid::Uuid::new_v4()));
-    let store = wisp_store::Store::open(&base.join("wisp.sqlite"))
+    let base = std::env::temp_dir().join(format!("superscience_ui_flush_{}", uuid::Uuid::new_v4()));
+    let store = superscience_store::Store::open(&base.join("superscience.sqlite"))
         .await
         .unwrap();
     store
@@ -534,7 +545,7 @@ async fn ui_events_are_persisted_before_the_turn_ends() {
         .await
         .unwrap();
     store
-        .create_frame("f", "p", "OPERON", "model")
+        .create_frame("f", "p", "SUPERSCIENCE", "model")
         .await
         .unwrap();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -569,13 +580,13 @@ async fn ui_events_are_persisted_before_the_turn_ends() {
 
 #[tokio::test]
 async fn composer_references_resolve_non_reader_context() {
-    let base = std::env::temp_dir().join(format!("wisp_refs_{}", uuid::Uuid::new_v4()));
+    let base = std::env::temp_dir().join(format!("superscience_refs_{}", uuid::Uuid::new_v4()));
     let root_a = base.join("alpha");
     let root_b = base.join("beta");
     std::fs::create_dir_all(root_a.join("uploads")).unwrap();
     std::fs::create_dir_all(&root_b).unwrap();
     std::fs::write(root_a.join("uploads/data.csv"), "x,y\n1,2\n").unwrap();
-    let store = wisp_store::Store::open(&base.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&base.join("superscience.sqlite"))
         .await
         .unwrap();
     store
@@ -587,19 +598,23 @@ async fn composer_references_resolve_non_reader_context() {
         .await
         .unwrap();
     store
-        .create_frame("target", "a", "OPERON", "m")
+        .create_frame("target", "a", "SUPERSCIENCE", "m")
         .await
         .unwrap();
     store
-        .append_message("target", 1, &wisp_llm::Message::user("current"))
+        .append_message("target", 1, &superscience_llm::Message::user("current"))
         .await
         .unwrap();
     store
-        .create_frame("source", "b", "OPERON", "m")
+        .create_frame("source", "b", "SUPERSCIENCE", "m")
         .await
         .unwrap();
     store
-        .append_message("source", 1, &wisp_llm::Message::user("prior result"))
+        .append_message(
+            "source",
+            1,
+            &superscience_llm::Message::user("prior result"),
+        )
         .await
         .unwrap();
     store
@@ -620,9 +635,11 @@ async fn composer_references_resolve_non_reader_context() {
         "---\nname: test-skill\ndescription: test\n---\nUse the test workflow.",
     )
     .unwrap();
-    let skills = wisp_skills::SkillIndex::load(&[base.join("skills")]);
+    let skills = superscience_skills::SkillIndex::load(&[base.join("skills")]);
     store
-        .upsert_execution_context(&wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap(),
+        )
         .await
         .unwrap();
     let refs = vec![
@@ -713,22 +730,29 @@ async fn composer_references_resolve_non_reader_context() {
 
 #[tokio::test]
 async fn at_mentioning_a_server_turns_it_on_for_the_session() {
-    let base = std::env::temp_dir().join(format!("wisp_ctx_on_{}", uuid::Uuid::new_v4()));
+    let base = std::env::temp_dir().join(format!("superscience_ctx_on_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&base).unwrap();
-    let store = wisp_store::Store::open(&base.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&base.join("superscience.sqlite"))
         .await
         .unwrap();
     store
         .create_project("p", "P", &base.to_string_lossy())
         .await
         .unwrap();
-    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
-        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+        .create_frame("f", "p", "SUPERSCIENCE", "m")
         .await
         .unwrap();
     store
-        .upsert_execution_context(&wisp_store::ExecutionContext::new("ssh:cpu1", "CPU1").unwrap())
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
+        )
+        .await
+        .unwrap();
+    store
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("ssh:cpu1", "CPU1").unwrap(),
+        )
         .await
         .unwrap();
     assert!(store
@@ -819,16 +843,16 @@ fn branch_title_marks_new_session_without_long_labels() {
 
 #[test]
 fn user_message_start_points_at_selected_turn() {
-    let mut completion = wisp_llm::Message::user("background completion");
-    completion.tool_name = Some(wisp_store::AGENT_WORKFLOW_COMPLETION_TOOL.into());
+    let mut completion = superscience_llm::Message::user("background completion");
+    completion.tool_name = Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL.into());
     let msgs = vec![
-        wisp_llm::Message::system("sys"),
-        wisp_llm::Message::user("first"),
-        wisp_llm::Message::assistant("first answer"),
-        wisp_llm::Message::tool("call-1", "python", "ok"),
+        superscience_llm::Message::system("sys"),
+        superscience_llm::Message::user("first"),
+        superscience_llm::Message::assistant("first answer"),
+        superscience_llm::Message::tool("call-1", "python", "ok"),
         completion,
-        wisp_llm::Message::user("second"),
-        wisp_llm::Message::assistant("second answer"),
+        superscience_llm::Message::user("second"),
+        superscience_llm::Message::assistant("second answer"),
     ];
     assert_eq!(user_message_start(&msgs, 0), 1);
     assert_eq!(user_message_start(&msgs, 1), 5);
@@ -847,10 +871,10 @@ fn transcript_page_reconstructs_legacy_prefix_before_persisted_events() {
             seq: 2,
         },
     ];
-    let page = wisp_store::SessionTranscriptPage {
+    let page = superscience_store::SessionTranscriptPage {
         messages: vec![
-            (1, wisp_llm::Message::user("legacy question")),
-            (2, wisp_llm::Message::assistant("fallback answer")),
+            (1, superscience_llm::Message::user("legacy question")),
+            (2, superscience_llm::Message::assistant("fallback answer")),
         ],
         reviews: vec![],
         resources: vec![],
@@ -874,11 +898,11 @@ fn transcript_page_reconstructs_legacy_prefix_before_persisted_events() {
 #[test]
 fn resource_bindings_cover_messages_rendered_as_assistant_output() {
     assert!(message_uses_resource_bindings(
-        &wisp_llm::Message::assistant("answer")
+        &superscience_llm::Message::assistant("answer")
     ));
-    let completion = wisp_llm::Message::tool("call-1", "attempt_completion", "result");
+    let completion = superscience_llm::Message::tool("call-1", "attempt_completion", "result");
     assert!(message_uses_resource_bindings(&completion));
-    let ordinary_tool = wisp_llm::Message::tool("call-2", "read_file", "result");
+    let ordinary_tool = superscience_llm::Message::tool("call-2", "read_file", "result");
     assert!(!message_uses_resource_bindings(&ordinary_tool));
 }
 
@@ -897,7 +921,7 @@ fn side_chat_prompt_keeps_context_read_only() {
 fn scope_gates_per_tool_modes() {
     use super::{ApprovalMode, ApprovalPolicy, Scope};
     use std::collections::HashMap;
-    use wisp_tools::Approval;
+    use superscience_tools::Approval;
 
     let policy = |scope: Scope| {
         let mut tools = HashMap::new();
@@ -981,7 +1005,7 @@ fn approval_grant_key_skips_plan_and_normalizes_shell() {
     assert_eq!(
         approval_grant_key(&format!(
             "{}[ ] Inspect",
-            wisp_tools::plan::PLAN_APPROVAL_PREFIX
+            superscience_tools::plan::PLAN_APPROVAL_PREFIX
         )),
         None
     );
@@ -990,7 +1014,7 @@ fn approval_grant_key_skips_plan_and_normalizes_shell() {
 #[test]
 fn copy_dir_recursive_copies_nested_files() {
     let base = std::env::temp_dir().join(format!(
-        "wisp_copy_dir_test_{}_{}",
+        "superscience_copy_dir_test_{}_{}",
         std::process::id(),
         line!()
     ));
@@ -1042,7 +1066,7 @@ fn parse_disabled_skills_handles_missing_and_valid() {
 
 #[test]
 fn resolve_workspace_prefers_env_then_setting_then_default() {
-    let default = PathBuf::from("/nonexistent/wisp/default");
+    let default = PathBuf::from("/nonexistent/superscience/default");
     // Blank/whitespace candidates are skipped → default wins (never created).
     assert_eq!(
         resolve_workspace(Some("   ".into()), Some(String::new()), default.clone()),
@@ -1050,7 +1074,7 @@ fn resolve_workspace_prefers_env_then_setting_then_default() {
     );
     assert!(!default.exists());
 
-    let base = std::env::temp_dir().join(format!("wisp_ws_test_{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("superscience_ws_test_{}", std::process::id()));
     let env_dir = base.join("env");
     let set_dir = base.join("set");
     // A creatable env path wins over the setting, and gets created.

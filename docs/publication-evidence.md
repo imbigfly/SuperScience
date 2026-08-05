@@ -77,7 +77,7 @@ Draft revisions expose **Add precise evidence**. It accepts an exact
 `MessageSpan`, `ToolCall`, `ExecutionLog`, `CodeCell`, or `ExternalResource`
 identity. Message and tool locators contain the frame, persisted message
 sequence, and UTF-8 byte range or tool-call ID. Execution and code anchors use
-the exact execution-log ID, never the most recent execution for a path. Wisp
+the exact execution-log ID, never the most recent execution for a path. SuperScience
 copies the selected text, arguments, result, code, log, or resource metadata
 into a hash-authenticated binding snapshot when it is selected. Later Session
 compaction or deletion cannot change that snapshot.
@@ -103,7 +103,7 @@ SHA-256 by default and shows environment parity, comparator, output path, and
 pass/fail status.
 
 `reproduced` is an effective display capability, not a mutation of the frozen
-manifest. Wisp shows it only when every Run named by that manifest has a
+manifest. SuperScience shows it only when every Run named by that manifest has a
 completed report with parity for every captured environment field, exit code
 zero, and all required comparisons passing. A failed or mismatched rerun
 remains `re_executable`.
@@ -128,7 +128,7 @@ capabilities. A `reproduced` report therefore means the declared outputs were
 reproduced under the recorded fingerprint; it is not proof that an
 uncaptured dependency was identical.
 
-Wisp does not currently expose destructive garbage collection for
+SuperScience does not currently expose destructive garbage collection for
 content-addressed Artifact blobs. Frozen source records are protected from
 ordinary deletion; any future blob collector must treat Frozen and Published
 manifests as retention roots.

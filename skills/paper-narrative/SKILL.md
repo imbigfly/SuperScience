@@ -8,7 +8,7 @@ license: Apache-2.0
 
 Use this skill before `figure-composer`. The sidecar only builds schemas and
 self-contained reviewer instructions. Model reasoning happens in the current
-Agent or an explicitly delegated Wisp Agent, never inside Python.
+Agent or an explicitly delegated SuperScience Agent, never inside Python.
 
 ## Workflow
 

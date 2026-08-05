@@ -2,12 +2,12 @@
 //!
 //! The extension runs inside the user's existing browser profile, so page
 //! execution keeps that profile's cookies, login state, extensions, GPU, and
-//! browser fingerprint. Wisp never launches a separate automation browser.
+//! browser fingerprint. SuperScience never launches a separate automation browser.
 //!
 //! Design acknowledgement: this bridge is inspired by GenericAgent's GA Web /
 //! TMWebDriver real-browser architecture and compatible loopback protocol:
 //! https://github.com/lsdefine/GenericAgent (MIT, Copyright 2025 lsdefine).
-//! This module is Wisp's independent Rust implementation; see
+//! This module is SuperScience's independent Rust implementation; see
 //! `browser-extension/NOTICE.md` for provenance details.
 
 use async_trait::async_trait;
@@ -19,6 +19,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use superscience_llm::ToolSchema;
+use superscience_tools::{Approval, ImageData, Tool, ToolEnv, ToolResult};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -26,8 +28,6 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
 use uuid::Uuid;
-use wisp_llm::ToolSchema;
-use wisp_tools::{Approval, ImageData, Tool, ToolEnv, ToolResult};
 
 const BRIDGE_ADDR: &str = "127.0.0.1:18765";
 const EXTENSION_ORIGIN: &str = "chrome-extension://gnkjgagleagkgdlkkcianolobfdoocnp";
@@ -93,7 +93,7 @@ impl BrowserBridge {
             }
             Err(error) => {
                 bridge.state.lock().await.startup_error = Some(format!(
-                    "cannot listen on {BRIDGE_ADDR}: {error}; stop any other TMWebDriver/Wisp browser bridge using this port"
+                    "cannot listen on {BRIDGE_ADDR}: {error}; stop any other TMWebDriver/SuperScience browser bridge using this port"
                 ));
             }
         }
@@ -115,12 +115,12 @@ impl BrowserBridge {
         };
         let steps = extension_path.as_ref().map_or_else(Vec::new, |path| {
             vec![
-                "Start Wisp Science and keep it running.".to_string(),
-                "Open chrome://extensions in the Chrome/Chromium profile Wisp should control."
+                "Start SuperScience and keep it running.".to_string(),
+                "Open chrome://extensions in the Chrome/Chromium profile SuperScience should control."
                     .to_string(),
                 "Enable Developer mode.".to_string(),
                 format!("Click Load unpacked and select this exact folder: {path}"),
-                "Open the Wisp Real Browser Bridge extension popup and confirm Connected to Wisp."
+                "Open the SuperScience Real Browser Bridge extension popup and confirm Connected to SuperScience."
                     .to_string(),
             ]
         });
@@ -129,7 +129,7 @@ impl BrowserBridge {
             "status": status,
             "connected_tabs": state.tabs.len(),
             "runtime_os": std::env::consts::OS,
-            "path_source": "wisp_tauri_resource_dir",
+            "path_source": "superscience_tauri_resource_dir",
             "extension_path": extension_path,
             "extension_path_verified": extension_ready,
             "extension_id": EXTENSION_ORIGIN.trim_start_matches("chrome-extension://"),
@@ -138,7 +138,7 @@ impl BrowserBridge {
             "assistant_instruction": if extension_ready {
                 "Copy extension_path character-for-character. Never translate, infer, normalize, or replace any path segment."
             } else {
-                "The running Wisp build has no verified bundled extension path. Do not invent a path or claim the extension exists."
+                "The running SuperScience build has no verified bundled extension path. Do not invent a path or claim the extension exists."
             },
             "steps": steps,
             "download_automation": {
@@ -167,12 +167,12 @@ impl BrowserBridge {
                     let bridge = self.clone();
                     tokio::spawn(async move {
                         if let Err(error) = bridge.accept_connection(stream).await {
-                            tracing::warn!(target: "wisp", "browser bridge connection rejected: {error}");
+                            tracing::warn!(target: "superscience", "browser bridge connection rejected: {error}");
                         }
                     });
                 }
                 Err(error) => {
-                    tracing::warn!(target: "wisp", "browser bridge accept failed: {error}");
+                    tracing::warn!(target: "superscience", "browser bridge accept failed: {error}");
                 }
             }
         }
@@ -382,11 +382,11 @@ impl BrowserBridge {
     fn unavailable_message(&self, reason: &str) -> String {
         match self.verified_extension_path() {
             Some(path) => format!(
-                "real-browser bridge unavailable: {reason}. In Chrome/Chromium open chrome://extensions, enable Developer mode, and Load unpacked from this exact native {} path: '{path}'. Keep Wisp running; the extension connects only to {BRIDGE_ADDR}.",
+                "real-browser bridge unavailable: {reason}. In Chrome/Chromium open chrome://extensions, enable Developer mode, and Load unpacked from this exact native {} path: '{path}'. Keep SuperScience running; the extension connects only to {BRIDGE_ADDR}.",
                 std::env::consts::OS
             ),
             None => format!(
-                "real-browser bridge unavailable: {reason}. This Wisp build has no verified bundled browser extension; do not infer an installation path."
+                "real-browser bridge unavailable: {reason}. This SuperScience build has no verified bundled browser extension; do not infer an installation path."
             ),
         }
     }
@@ -407,7 +407,7 @@ fn forbidden_response() -> ErrorResponse {
     tokio_tungstenite::tungstenite::http::Response::builder()
         .status(StatusCode::FORBIDDEN)
         .body(Some(
-            "Wisp browser bridge accepts Chrome extensions only".into(),
+            "SuperScience browser bridge accepts Chrome extensions only".into(),
         ))
         .expect("static browser bridge rejection response")
 }
@@ -593,7 +593,7 @@ impl Tool for BrowserSetupTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             self.name(),
-            "Call when the user asks to configure, install, set up, or connect the real browser. The result is derived from the running Wisp binary's native Tauri resource directory and includes the manual settings required for unattended single and multiple downloads. Copy extension_path character-for-character and never convert it between Windows, WSL, macOS, or Linux. If extension_path_verified is false, report the missing bundled extension and never invent a path.",
+            "Call when the user asks to configure, install, set up, or connect the real browser. The result is derived from the running SuperScience binary's native Tauri resource directory and includes the manual settings required for unattended single and multiple downloads. Copy extension_path character-for-character and never convert it between Windows, WSL, macOS, or Linux. If extension_path_verified is false, report the missing bundled extension and never invent a path.",
             json!({
                 "type": "object",
                 "properties": {},
@@ -944,7 +944,7 @@ mod tests {
 
     #[test]
     fn manifest_key_matches_the_only_accepted_extension_origin() {
-        let manifest_path = wisp_paths::browser_extension_dir()
+        let manifest_path = superscience_paths::browser_extension_dir()
             .unwrap()
             .join("manifest.json");
         let manifest: Value =
@@ -1015,14 +1015,14 @@ mod tests {
 
     #[tokio::test]
     async fn setup_reports_the_extension_folder_without_requiring_approval() {
-        let extension_dir = wisp_paths::browser_extension_dir().unwrap();
+        let extension_dir = superscience_paths::browser_extension_dir().unwrap();
         let bridge = Arc::new(BrowserBridge::new(extension_dir.clone()));
         let info = bridge.setup_info().await;
         let expected_path = dunce::canonicalize(extension_dir).unwrap();
 
         assert_eq!(info["status"], "disconnected");
         assert_eq!(info["runtime_os"], std::env::consts::OS);
-        assert_eq!(info["path_source"], "wisp_tauri_resource_dir");
+        assert_eq!(info["path_source"], "superscience_tauri_resource_dir");
         assert_eq!(info["extension_path"], expected_path.display().to_string());
         assert_eq!(info["extension_path_verified"], true);
         assert_eq!(info["install_scope"], "once_per_browser_profile");
@@ -1071,7 +1071,7 @@ mod tests {
     #[tokio::test]
     async fn setup_never_offers_an_unverified_extension_path() {
         let missing = std::env::temp_dir().join(format!(
-            "wisp-browser-extension-missing-{}",
+            "superscience-browser-extension-missing-{}",
             std::process::id()
         ));
         let bridge = BrowserBridge::new(missing.clone());

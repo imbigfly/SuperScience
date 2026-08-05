@@ -38,7 +38,7 @@ upgrading old messages.
 
 During export, artifact and artifact-version storage paths are normalized to
 project-relative forward-slash paths. Content-addressed snapshots therefore
-travel as `.wisp/artifacts/sha256/...` workspace files. Import restores those
+travel as `.superscience/artifacts/sha256/...` workspace files. Import restores those
 paths under the newly selected project directory, including across Windows and
 macOS. The Markdown text and `original_reference` are deliberately not rewritten:
 they identify the original tag, while preview always reads the imported immutable

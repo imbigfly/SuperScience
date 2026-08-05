@@ -79,7 +79,7 @@ applies to `--chain_id_jsonl` and `--tied_positions_jsonl`.
 | `v_48_030` | 0.30 Å | very rough backbones; lowest recovery |
 | `--use_soluble_model` | — | swaps to the soluble-trained set; see `solublempnn` |
 
-## Wisp execution
+## SuperScience execution
 
 Use `python` only for bounded interactive checks. For a long or GPU-backed
 workload, require a selected and probed `ssh:<alias>` context and load

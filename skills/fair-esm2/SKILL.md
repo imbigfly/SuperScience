@@ -99,12 +99,12 @@ torch-hub cache, then submit a self-contained runner with `run_in_context`:
 {
   "context_id": "ssh:gpu-box",
   "title": "ESM-2 embeddings for 200 sequences",
-  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate fair-esm && TORCH_HOME=/srv/torch-cache python embed_esm2.py --input seqs.fasta --output /home/me/wisp-results/esm2/embeddings.pt",
+  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate fair-esm && TORCH_HOME=/srv/torch-cache python embed_esm2.py --input seqs.fasta --output /home/me/superscience-results/esm2/embeddings.pt",
   "timeout_secs": 1800,
   "input_paths": ["runs/embed_esm2.py", "data/seqs.fasta"],
   "output_specs": [
     {
-      "glob": "ssh://gpu-box/home/me/wisp-results/esm2/embeddings.pt",
+      "glob": "ssh://gpu-box/home/me/superscience-results/esm2/embeddings.pt",
       "kind": "pytorch",
       "residency": "remote"
     }

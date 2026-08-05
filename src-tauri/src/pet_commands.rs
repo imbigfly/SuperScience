@@ -238,7 +238,7 @@ pub(super) fn load_pet_source(directory: &Path) -> Result<ValidatedPetSource, St
     }
     let (frame_counts, validation_bytes) = validation_frame_counts(&root)?;
     let mut revision = Sha256::new();
-    revision.update(b"wisp-pet-package-v2\0pet.json\0");
+    revision.update(b"superscience-pet-package-v2\0pet.json\0");
     revision.update((manifest_bytes.len() as u64).to_le_bytes());
     revision.update(&manifest_bytes);
     revision.update(b"\0spritesheet\0");
@@ -379,7 +379,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("wisp-pet-{name}-{nonce}"));
+        let dir = std::env::temp_dir().join(format!("superscience-pet-{name}-{nonce}"));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

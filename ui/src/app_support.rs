@@ -3,8 +3,9 @@ use super::{
     HOME_SEARCH_SESSION_LIMIT, THEME_STORAGE_KEY,
 };
 use crate::bindings::{
-    attach_cropped_region, crop_region_to_upload, invoke, invoke_checked, is_mac, mount_preview,
-    open_external_url, schedule_highlight, upload_files, upload_input_files, upload_pasted_images,
+    attach_cropped_region, clear_selection, crop_region_to_upload, invoke, invoke_checked, is_mac,
+    mount_preview, open_external_url, schedule_highlight, upload_files, upload_input_files,
+    upload_pasted_images,
 };
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, use_locale, Locale};
@@ -25,7 +26,7 @@ use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-const MODEL_SWITCH_WARNING_DISABLED_KEY: &str = "wisp-model-switch-warning-disabled";
+const MODEL_SWITCH_WARNING_DISABLED_KEY: &str = "superscience-model-switch-warning-disabled";
 const SSH_RETRY_STOPPED_MARKER: &str = "ssh automatic retry stopped";
 
 thread_local! {
@@ -54,7 +55,7 @@ pub(super) fn disable_model_switch_warning() {
 }
 
 const SELECTION_POPUP_DISABLED_KEY: &str = "selectionPopupDisabled";
-const SEND_WITH_MODIFIER_KEY: &str = "wisp-send-with-modifier";
+const SEND_WITH_MODIFIER_KEY: &str = "superscience-send-with-modifier";
 
 pub(super) fn load_selection_popup_enabled() -> bool {
     !web_sys::window()
@@ -120,7 +121,7 @@ fn load_palette_mode(key: &str, fallback: &str, valid: &[&str]) -> String {
 
 pub(super) fn load_light_palette() -> String {
     load_palette_mode(
-        "wisp-light-palette",
+        "superscience-light-palette",
         "paper",
         &["paper", "codex", "github", "catppuccin", "everforest"],
     )
@@ -128,7 +129,7 @@ pub(super) fn load_light_palette() -> String {
 
 pub(super) fn load_dark_palette() -> String {
     load_palette_mode(
-        "wisp-dark-palette",
+        "superscience-dark-palette",
         "charcoal",
         &["charcoal", "codex", "github", "catppuccin", "gruvbox"],
     )
@@ -143,8 +144,8 @@ pub(super) fn apply_palette_modes(light: &str, dark: &str) {
         let _ = root.set_attribute("data-dark-palette", dark);
     }
     if let Ok(Some(storage)) = window.local_storage() {
-        let _ = storage.set_item("wisp-light-palette", light);
-        let _ = storage.set_item("wisp-dark-palette", dark);
+        let _ = storage.set_item("superscience-light-palette", light);
+        let _ = storage.set_item("superscience-dark-palette", dark);
     }
 }
 
@@ -174,11 +175,11 @@ fn load_font_size(key: &str, fallback: u16, min: u16, max: u16) -> u16 {
 }
 
 pub(super) fn load_ui_font_size() -> u16 {
-    load_font_size("wisp-ui-font-size", 14, 12, 18)
+    load_font_size("superscience-ui-font-size", 14, 12, 18)
 }
 
 pub(super) fn load_code_font_size() -> u16 {
-    load_font_size("wisp-code-font-size", 12, 10, 18)
+    load_font_size("superscience-code-font-size", 12, 10, 18)
 }
 
 pub(super) fn apply_font_sizes(ui_size: u16, code_size: u16) {
@@ -190,8 +191,8 @@ pub(super) fn apply_font_sizes(ui_size: u16, code_size: u16) {
         let _ = root.set_attribute("style", &style);
     }
     if let Ok(Some(storage)) = window.local_storage() {
-        let _ = storage.set_item("wisp-ui-font-size", &ui_size.to_string());
-        let _ = storage.set_item("wisp-code-font-size", &code_size.to_string());
+        let _ = storage.set_item("superscience-ui-font-size", &ui_size.to_string());
+        let _ = storage.set_item("superscience-code-font-size", &code_size.to_string());
     }
 }
 
@@ -1664,7 +1665,7 @@ pub(super) fn inspect_runtime_objects(
     });
 }
 
-/// Mirrors `wisp_runtime::LOCAL_CONTEXT_ID`. `ui/` is a separate workspace and
+/// Mirrors `superscience_runtime::LOCAL_CONTEXT_ID`. `ui/` is a separate workspace and
 /// cannot depend on the runtime crate, so the default binding is spelled here.
 pub(super) const LOCAL_CONTEXT_ID: &str = "local";
 
@@ -4596,7 +4597,7 @@ pub(super) fn process_item_insert_index(items: &[ChatItem]) -> usize {
 }
 
 pub(super) fn is_run_monitor_tool(name: &str) -> bool {
-    matches!(name, "monitor_run" | "wisp_monitor_run")
+    matches!(name, "monitor_run" | "superscience_monitor_run")
 }
 
 pub(super) fn is_image_generation_tool(name: &str) -> bool {
@@ -7600,7 +7601,7 @@ fn dispatch_pins_ask_ai(path: &str, text: &str) {
     };
     let init = web_sys::CustomEventInit::new();
     init.set_detail(&detail);
-    let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("wisp:pins-ask-ai", &init)
+    let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("superscience:pins-ask-ai", &init)
     else {
         return;
     };
@@ -9724,7 +9725,7 @@ pub(super) fn ToolBlock(
 
 /// Parse a rendered plan checklist line
 /// (`[x] text` / `[~] text` / `[ ] text` / `[-] text`)
-/// into (status_class, text). Mirrors `update_plan`'s render in wisp-tools.
+/// into (status_class, text). Mirrors `update_plan`'s render in superscience-tools.
 pub(super) fn plan_step_line(line: &str) -> Option<(&'static str, &str)> {
     for (prefix, cls) in [
         ("[x] ", "done"),
@@ -9748,6 +9749,22 @@ pub(super) fn approval_allow_label_key(scope: &str) -> &'static str {
     }
 }
 
+fn commit_approval_decision(
+    decided: RwSignal<bool>,
+    on_decide: Callback<(String, bool, Option<String>, String)>,
+    sid: String,
+    approved: bool,
+    feedback: Option<String>,
+    scope: String,
+) {
+    if decided.get_untracked() {
+        return;
+    }
+    decided.set(true);
+    clear_selection();
+    on_decide.call((sid, approved, feedback, scope));
+}
+
 #[component]
 pub(super) fn ApprovalCard(
     tool: String,
@@ -9760,6 +9777,8 @@ pub(super) fn ApprovalCard(
     let show_feedback = create_rw_signal(false);
     let feedback = create_rw_signal(String::new());
     let approval_scope = create_rw_signal(String::from("once"));
+    // Guard against double submit from pointerdown + click, or rapid repeats.
+    let decided = create_rw_signal(false);
     let feedback_ready = move || !feedback.get().trim().is_empty();
     if is_plan {
         window_capture_escape(move || {
@@ -9797,11 +9816,11 @@ pub(super) fn ApprovalCard(
             _ => tf(loc, "approval.run_tool", &[("tool", &tool_for_title)]),
         }
     };
-    let sid_allow = session_id.clone();
-    let sid_deny = session_id.clone();
-    let sid_feedback = create_rw_signal(session_id);
+    let session_id = create_rw_signal(session_id);
     view! {
-        <div class="approval-wrap">
+        <div class="approval-wrap"
+            on:mouseup=|ev| ev.stop_propagation()
+            on:mousedown=|ev| ev.stop_propagation()>
             <div class="approval-wait-line">{move || t(locale.get(), "approval.waiting_line")}</div>
             <div class="approval-card" class:plan=is_plan>
                 <div class="approval-head">
@@ -9841,13 +9860,17 @@ pub(super) fn ApprovalCard(
                     }.into_view()
                 }}
                 <p class="approval-hint">{move || t(locale.get(), if is_plan { "approval.plan_hint" } else { "approval.hint" })}</p>
-                <div class="approval-actions">
+                <div class="approval-actions"
+                    on:mouseup=|ev| ev.stop_propagation()
+                    on:mousedown=|ev| ev.stop_propagation()
+                    on:pointerdown=|ev| ev.stop_propagation()>
                     {(!is_plan).then(|| view! {
                         <label class="approval-scope">
                             <span>{move || t(locale.get(), "approval.scope")}</span>
                             <select
                                 aria-label=move || t(locale.get(), "approval.scope")
                                 prop:value=move || approval_scope.get()
+                                disabled=move || decided.get()
                                 on:change=move |ev| approval_scope.set(dom_value(&ev))>
                                 <option value="once">{move || t(locale.get(), "approval.scope.once")}</option>
                                 <option value="session">{move || t(locale.get(), "approval.scope.session")}</option>
@@ -9857,9 +9880,44 @@ pub(super) fn ApprovalCard(
                         </label>
                     })}
                     <button type="button" class="primary"
-                        on:click=move |_| {
-                            let scope = if is_plan { "once".into() } else { approval_scope.get() };
-                            on_decide.call((sid_allow.clone(), true, None, scope));
+                        disabled=move || decided.get()
+                        on:pointerdown=move |ev| {
+                            if ev.button() != 0 {
+                                return;
+                            }
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                            let scope = if is_plan {
+                                "once".into()
+                            } else {
+                                approval_scope.get_untracked()
+                            };
+                            commit_approval_decision(
+                                decided,
+                                on_decide,
+                                session_id.get_untracked(),
+                                true,
+                                None,
+                                scope,
+                            );
+                        }
+                        on:click=move |ev| {
+                            // Keyboard activation (Enter/Space) has no pointerdown.
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                            let scope = if is_plan {
+                                "once".into()
+                            } else {
+                                approval_scope.get_untracked()
+                            };
+                            commit_approval_decision(
+                                decided,
+                                on_decide,
+                                session_id.get_untracked(),
+                                true,
+                                None,
+                                scope,
+                            );
                         }>
                         {move || {
                             if is_plan {
@@ -9870,11 +9928,47 @@ pub(super) fn ApprovalCard(
                         }}
                     </button>
                     <button type="button"
-                        on:click=move |_| on_decide.call((sid_deny.clone(), false, None, "once".into()))>
+                        disabled=move || decided.get()
+                        on:pointerdown=move |ev| {
+                            if ev.button() != 0 {
+                                return;
+                            }
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                            commit_approval_decision(
+                                decided,
+                                on_decide,
+                                session_id.get_untracked(),
+                                false,
+                                None,
+                                "once".into(),
+                            );
+                        }
+                        on:click=move |ev| {
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                            commit_approval_decision(
+                                decided,
+                                on_decide,
+                                session_id.get_untracked(),
+                                false,
+                                None,
+                                "once".into(),
+                            );
+                        }>
                         {move || t(locale.get(), if is_plan { "approval.plan_reject" } else { "confirm.deny" })}
                     </button>
                     {is_plan.then(|| view! {
-                        <button type="button" on:click=move |_| show_feedback.update(|open| *open = !*open)>
+                        <button type="button"
+                            disabled=move || decided.get()
+                            on:pointerdown=move |ev| {
+                                if ev.button() != 0 {
+                                    return;
+                                }
+                                ev.prevent_default();
+                                ev.stop_propagation();
+                                show_feedback.update(|open| *open = !*open);
+                            }>
                             {move || t(locale.get(), "approval.plan_other")}
                         </button>
                     })}
@@ -9895,11 +9989,23 @@ pub(super) fn ApprovalCard(
                                     <button
                                         type="button"
                                         class="primary"
-                                        disabled=move || !feedback_ready()
-                                        on:click=move |_| {
-                                            let text = feedback.get().trim().to_string();
+                                        disabled=move || !feedback_ready() || decided.get()
+                                        on:pointerdown=move |ev| {
+                                            if ev.button() != 0 {
+                                                return;
+                                            }
+                                            ev.prevent_default();
+                                            ev.stop_propagation();
+                                            let text = feedback.get_untracked().trim().to_string();
                                             if !text.is_empty() {
-                                                on_decide.call((sid_feedback.get_untracked(), false, Some(text), "once".into()));
+                                                commit_approval_decision(
+                                                    decided,
+                                                    on_decide,
+                                                    session_id.get_untracked(),
+                                                    false,
+                                                    Some(text),
+                                                    "once".into(),
+                                                );
                                             }
                                         }
                                     >
@@ -9907,7 +10013,12 @@ pub(super) fn ApprovalCard(
                                     </button>
                                     <button
                                         type="button"
-                                        on:click=move |_| {
+                                        on:pointerdown=move |ev| {
+                                            if ev.button() != 0 {
+                                                return;
+                                            }
+                                            ev.prevent_default();
+                                            ev.stop_propagation();
                                             feedback.set(String::new());
                                             show_feedback.set(false);
                                         }
@@ -9951,7 +10062,7 @@ mod layout_block_tests {
 
 /// Add or remove the standard-layout convention block in the new-project Agent
 /// Context field (#405). The block is plain editable text, not hidden state:
-/// whatever ends up in the textarea is what gets written to `.wisp/WISP.md`.
+/// whatever ends up in the textarea is what gets written to `.superscience/SUPERSCIENCE.md`.
 /// Strip-then-append keeps repeated toggles idempotent.
 pub(super) fn apply_layout_block(ctx: &str, block: &str, on: bool) -> String {
     let rest = ctx.replace(block, "");
@@ -10303,7 +10414,7 @@ pub(super) fn ProjectsScreen(
             <div class="projects-head">
                 <div class="projects-brand">
                     <span class="projects-brand-mark" aria-hidden="true"></span>
-                    <div class="projects-title">"Wisp Science"<span class="beta">"Beta"</span></div>
+                    <div class="projects-title">"SuperScience"<span class="beta">"Beta"</span></div>
                 </div>
                 <div class="projects-actions">
                     <button type="button" class="projects-icon-btn"
@@ -10742,13 +10853,6 @@ pub(super) fn ProjectsScreen(
                         }
                     }).collect_view()}
                 </div>
-            </div>
-            <div class="projects-footer">
-                <span>{move || t(locale.get(), "projects.star_hint")}</span>
-                <button type="button" class="projects-star-link"
-                    on:click=move |_| open_external_url("https://github.com/xuzhougeng/wisp-science".into())>
-                    {move || t(locale.get(), "projects.star_link")}
-                </button>
             </div>
             {move || sync_notice.get().map(|(ok, text)| view! {
                 <div class="projects-sync-notice" class:ok=move || ok>{text}</div>

@@ -12,7 +12,7 @@
 
 - Deleting a project MUST NOT touch the user's files on disk — DB rows only.
 - Never panic at startup or on open if a workspace dir is unwritable — fall back to `app_data/workspace` and warn (matches existing PR #18 behavior).
-- `WISP_WORKSPACE` env override still wins for the *active project's root at startup* only; it is never persisted into a project row.
+- `SUPERSCIENCE_WORKSPACE` env override still wins for the *active project's root at startup* only; it is never persisted into a project row.
 - API keys stay global in the OS keyring — no per-project keys.
 - `ActiveProject` reads take a read guard, clone, and drop it immediately — never hold the guard across an `.await`.
 - UI compile check: `~/.rustup/toolchains/stable-*/bin/cargo check --target wasm32-unknown-unknown` (cargo is not on PATH; a prebuilt `trunk` is in the session scratchpad — see memory note `ui-claude-science-reference`).
@@ -24,8 +24,8 @@
 ### Task 1: Store — schema migration + project methods
 
 **Files:**
-- Modify: `crates/wisp-store/migrations/0000_init.sql` (add column to fresh-install CREATE)
-- Modify: `crates/wisp-store/src/lib.rs` (idempotent ALTER in `migrate`, extend `create_project`, add `get_project` / `list_projects` / `delete_project` / `list_recent_sessions`, update tests + callers)
+- Modify: `crates/superscience-store/migrations/0000_init.sql` (add column to fresh-install CREATE)
+- Modify: `crates/superscience-store/src/lib.rs` (idempotent ALTER in `migrate`, extend `create_project`, add `get_project` / `list_projects` / `delete_project` / `list_recent_sessions`, update tests + callers)
 
 **Interfaces:**
 - Produces:
@@ -37,7 +37,7 @@
 
 - [ ] **Step 1: Add `workspace_dir` to the fresh-install schema**
 
-In `crates/wisp-store/migrations/0000_init.sql`, add the column to the `projects` CREATE:
+In `crates/superscience-store/migrations/0000_init.sql`, add the column to the `projects` CREATE:
 
 ```sql
 CREATE TABLE IF NOT EXISTS projects (
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 - [ ] **Step 2: Idempotent ALTER for existing DBs in `migrate`**
 
-In `crates/wisp-store/src/lib.rs`, at the end of `migrate` (before `Ok(())`), add — so DBs created before this change gain the column, while fresh DBs (which already have it) skip it:
+In `crates/superscience-store/src/lib.rs`, at the end of `migrate` (before `Ok(())`), add — so DBs created before this change gain the column, while fresh DBs (which already have it) skip it:
 
 ```rust
         // Add projects.workspace_dir on DBs that predate it (fresh DBs already
@@ -72,12 +72,12 @@ In `crates/wisp-store/src/lib.rs`, at the end of `migrate` (before `Ok(())`), ad
 
 - [ ] **Step 3: Write failing tests for the new methods**
 
-In `crates/wisp-store/src/lib.rs` `mod tests`, add:
+In `crates/superscience-store/src/lib.rs` `mod tests`, add:
 
 ```rust
     #[tokio::test]
     async fn project_crud_and_listing() {
-        let tmp = std::env::temp_dir().join(format!("wisp_store_proj_{}.sqlite", uuid::Uuid::new_v4()));
+        let tmp = std::env::temp_dir().join(format!("superscience_store_proj_{}.sqlite", uuid::Uuid::new_v4()));
         let store = Store::open(&tmp).await.unwrap();
 
         // create + get roundtrips workspace_dir
@@ -86,7 +86,7 @@ In `crates/wisp-store/src/lib.rs` `mod tests`, add:
         assert_eq!(store.get_project("a").await.unwrap(), Some(("Alpha".into(), "/tmp/alpha".into())));
 
         // one session under "a" (root frame with a user turn), none under "b"
-        store.create_frame("f1", "a", "OPERON", "m").await.unwrap();
+        store.create_frame("f1", "a", "SUPERSCIENCE", "m").await.unwrap();
         store.append_message("f1", 1, &Message::user("hi")).await.unwrap();
 
         let projs = store.list_projects().await.unwrap();
@@ -99,7 +99,7 @@ In `crates/wisp-store/src/lib.rs` `mod tests`, add:
         assert_eq!(b.5, 0, "project b has no sessions");
 
         // recent sessions span projects
-        store.create_frame("f2", "b", "OPERON", "m").await.unwrap();
+        store.create_frame("f2", "b", "SUPERSCIENCE", "m").await.unwrap();
         store.append_message("f2", 1, &Message::user("yo")).await.unwrap();
         let recent = store.list_recent_sessions(10).await.unwrap();
         assert_eq!(recent.len(), 2);
@@ -118,12 +118,12 @@ In `crates/wisp-store/src/lib.rs` `mod tests`, add:
 
 - [ ] **Step 4: Run tests to verify they fail**
 
-Run: `cargo test -p wisp-store project_crud_and_listing -- --nocapture`
+Run: `cargo test -p superscience-store project_crud_and_listing -- --nocapture`
 Expected: FAIL to compile — `create_project` takes 2 args, `get_project`/`list_projects`/`delete_project`/`list_recent_sessions` don't exist.
 
 - [ ] **Step 5: Extend `create_project` and add the new methods**
 
-In `crates/wisp-store/src/lib.rs`, replace the existing `create_project` with:
+In `crates/superscience-store/src/lib.rs`, replace the existing `create_project` with:
 
 ```rust
     pub async fn create_project(&self, id: &str, name: &str, workspace_dir: &str) -> Result<()> {
@@ -199,7 +199,7 @@ In `crates/wisp-store/src/lib.rs`, replace the existing `create_project` with:
             let created: i64 = row.try_get("created_at")?;
             let first_user: Option<String> = row.try_get("first_user")?;
             let title = first_user
-                .and_then(|c| serde_json::from_str::<wisp_llm::Content>(&c).ok())
+                .and_then(|c| serde_json::from_str::<superscience_llm::Content>(&c).ok())
                 .map(|c| c.as_text().chars().take(80).collect::<String>())
                 .unwrap_or_default();
             out.push((id, pid, title, created));
@@ -219,13 +219,13 @@ In the same file's `mod tests`, update every existing `create_project` call to p
 
 - [ ] **Step 7: Run tests to verify they pass**
 
-Run: `cargo test -p wisp-store -- --nocapture`
+Run: `cargo test -p superscience-store -- --nocapture`
 Expected: PASS (all store tests including `project_crud_and_listing`).
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/wisp-store
+git add crates/superscience-store
 git commit -m "store: per-project workspace_dir + project list/get/delete/recent-sessions"
 ```
 
@@ -342,7 +342,7 @@ In `run()`'s `.setup(...)` closure, replace the block from `let _ = ...create_pr
                 // platform default) so its existing sessions stay reachable. Env
                 // override is applied to the *root* below, not persisted here.
                 let default_workspace = app.path().document_dir()
-                    .map(|d| d.join("wisp-science"))
+                    .map(|d| d.join("SuperScience"))
                     .unwrap_or_else(|_| app_data.join("workspace"));
                 let legacy_ws = store.get_setting("workspace_dir").await.ok().flatten()
                     .filter(|s| !s.trim().is_empty())
@@ -366,7 +366,7 @@ Wait — capture the returned `(active_id, ws)`:
 ```rust
             let (active_id, ws) = tauri::async_runtime::block_on(async {
                 let default_workspace = app.path().document_dir()
-                    .map(|d| d.join("wisp-science"))
+                    .map(|d| d.join("SuperScience"))
                     .unwrap_or_else(|_| app_data.join("workspace"));
                 let legacy_ws = store.get_setting("workspace_dir").await.ok().flatten()
                     .filter(|s| !s.trim().is_empty())
@@ -383,9 +383,9 @@ Wait — capture the returned `(active_id, ws)`:
 
             // Env override wins for the active root only (dev escape hatch; not persisted).
             let default_workspace = app.path().document_dir()
-                .map(|d| d.join("wisp-science"))
+                .map(|d| d.join("SuperScience"))
                 .unwrap_or_else(|_| app_data.join("workspace"));
-            let root = resolve_workspace(std::env::var("WISP_WORKSPACE").ok(), Some(ws), default_workspace);
+            let root = resolve_workspace(std::env::var("SUPERSCIENCE_WORKSPACE").ok(), Some(ws), default_workspace);
             let root = ensure_writable(root, &app_data);
 
             let skills = Arc::new(SkillIndex::load(&skill_paths(&root)));
@@ -516,7 +516,7 @@ async fn create_project(state: State<'_, AppState>, name: String, workspace_dir:
     let path = PathBuf::from(dir);
     std::fs::create_dir_all(&path).map_err(|e| format!("Failed to create working directory: {e}"))?;
     // Writability probe: create + remove a temp marker.
-    let marker = path.join(".wisp-write-test");
+    let marker = path.join(".superscience-write-test");
     std::fs::write(&marker, b"").map_err(|e| format!("Working directory is not writable: {e}"))?;
     let _ = std::fs::remove_file(&marker);
 
@@ -635,7 +635,7 @@ In `ui/src/i18n.rs`, add to both locales:
         ("projects.sessions_n", "{n} sessions"),        // zh: "{n} 个会话"
         ("projects.empty", "No projects yet — create one to start."), // zh: "还没有项目 —— 新建一个开始。"
         ("projects.delete", "Delete"),                  // zh: "删除"
-        ("projects.delete_confirm", "Remove this project from Wisp? Your files on disk are kept."), // zh: "从 Wisp 移除该项目？磁盘上的文件会保留。"
+        ("projects.delete_confirm", "Remove this project from SuperScience? Your files on disk are kept."), // zh: "从 SuperScience 移除该项目？磁盘上的文件会保留。"
         ("projects.back", "Projects"),                  // zh: "项目"
 ```
 
@@ -721,7 +721,7 @@ fn ProjectsScreen(locale: RwSignal<String>, on_open: Callback<String>) -> impl I
     view! {
         <div class="projects-screen">
             <div class="projects-head">
-                <div class="projects-title">"Wisp Science"<span class="beta">"Beta"</span></div>
+                <div class="projects-title">"SuperScience"<span class="beta">"Beta"</span></div>
                 <button class="btn-primary" on:click=move |_| creating.set(true)>
                     {move || t(locale.get(), "projects.new")}
                 </button>

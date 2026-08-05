@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 
-# Persistent R execution over Wisp's versioned JSON-lines protocol.
+# Persistent R execution over SuperScience's versioned JSON-lines protocol.
 # stdout is reserved for protocol frames; user output is captured in results.
 
 MAX_OUTPUT_SIZE <- 1024L * 1024L

@@ -8,15 +8,15 @@ use crate::{delegation_tool, AgentEvent, AppState, SessionRuntime};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc, time::Duration};
-use tauri::{AppHandle, Manager, State};
-use wisp_core::{
+use superscience_core::{
     AgentDelegationResponse, AgentUsage, DelegationExecutionResult, DelegationExecutionStatus,
     DelegationStatus, DelegationStepExecution,
 };
-use wisp_store::{
+use superscience_store::{
     AgentWorkflowAttempt, AgentWorkflowAttemptStatus, AgentWorkflowDelivery, AgentWorkflowStatus,
     Store,
 };
+use tauri::{AppHandle, Manager, State};
 
 const COMPLETION_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -263,7 +263,7 @@ pub(crate) async fn load_workflow_execution(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Nested Agent workflow no longer exists.".to_string())?;
-    let plan: wisp_core::DelegationPlan = serde_json::from_str(&workflow.plan_json)
+    let plan: superscience_core::DelegationPlan = serde_json::from_str(&workflow.plan_json)
         .map_err(|error| format!("Nested Agent workflow plan is invalid: {error}"))?;
     let attempts = store
         .list_agent_workflow_attempts(workflow_id)
@@ -299,7 +299,7 @@ async fn reconstruct_delivery_result(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Agent workflow disappeared before completion delivery.".to_string())?;
-    let plan: wisp_core::DelegationPlan = serde_json::from_str(&workflow.plan_json)
+    let plan: superscience_core::DelegationPlan = serde_json::from_str(&workflow.plan_json)
         .map_err(|error| format!("Agent workflow plan is invalid: {error}"))?;
     let attempts = store
         .list_agent_workflow_attempts(&delivery.workflow_id)
@@ -335,13 +335,13 @@ async fn repair_incomplete_deliveries(store: &Store) {
     let deliveries = match store.list_incomplete_agent_workflow_deliveries().await {
         Ok(deliveries) => deliveries,
         Err(error) => {
-            tracing::warn!(target: "wisp", %error, "failed to inspect Agent completion recovery");
+            tracing::warn!(target: "superscience", %error, "failed to inspect Agent completion recovery");
             return;
         }
     };
     for delivery in deliveries {
         if let Err(error) = reconstruct_delivery_result(store, &delivery).await {
-            tracing::warn!(target: "wisp", delivery_id = %delivery.id, %error, "failed to recover Agent completion");
+            tracing::warn!(target: "superscience", delivery_id = %delivery.id, %error, "failed to recover Agent completion");
         }
     }
 }
@@ -391,7 +391,7 @@ async fn dispatch_frame(app: AppHandle, frame_id: String) {
     {
         Ok(delivered) => delivered,
         Err(error) => {
-            tracing::warn!(target: "wisp", %frame_id, %error, "failed to deliver Agent completion");
+            tracing::warn!(target: "superscience", %frame_id, %error, "failed to deliver Agent completion");
             return;
         }
     };
@@ -421,7 +421,7 @@ async fn dispatch_frame(app: AppHandle, frame_id: String) {
     {
         Ok(claimed) => claimed,
         Err(error) => {
-            tracing::warn!(target: "wisp", %frame_id, %error, "failed to claim Agent auto-resume");
+            tracing::warn!(target: "superscience", %frame_id, %error, "failed to claim Agent auto-resume");
             return;
         }
     };
@@ -458,7 +458,7 @@ async fn dispatch_frame(app: AppHandle, frame_id: String) {
         .finish_agent_workflow_auto_resumes(&ids, success, error)
         .await
     {
-        tracing::warn!(target: "wisp", %error, "failed to finalize Agent auto-resume");
+        tracing::warn!(target: "superscience", %error, "failed to finalize Agent auto-resume");
     }
 }
 
@@ -475,7 +475,7 @@ pub(crate) fn start_dispatcher(app: &AppHandle) {
             {
                 Ok(frames) => frames,
                 Err(error) => {
-                    tracing::warn!(target: "wisp", %error, "failed to poll Agent completions");
+                    tracing::warn!(target: "superscience", %error, "failed to poll Agent completions");
                     tokio::time::sleep(COMPLETION_POLL_INTERVAL).await;
                     continue;
                 }
@@ -520,7 +520,7 @@ mod tests {
     #[tokio::test]
     async fn busy_parent_queues_delivery_and_idle_parent_claims_resume_once() {
         let path = std::env::temp_dir().join(format!(
-            "wisp_background_completion_lock_{}.sqlite",
+            "superscience_background_completion_lock_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&path).await.unwrap();
@@ -537,7 +537,8 @@ mod tests {
             .await
             .unwrap();
         assert!(!session_completion_settings(&store, "f").await.auto_resume);
-        let mut workflow = wisp_store::AgentWorkflow::new("wf", "p", "workspace", "batch").unwrap();
+        let mut workflow =
+            superscience_store::AgentWorkflow::new("wf", "p", "workspace", "batch").unwrap();
         workflow.frame_id = Some("f".into());
         store
             .create_agent_workflow_plan(&workflow, &[])

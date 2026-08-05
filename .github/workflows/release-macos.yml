@@ -118,7 +118,7 @@ jobs:
           projectPath: src-tauri
           tauriScript: cargo tauri
           tagName: ${{ env.RELEASE_TAG }}
-          releaseName: wisp-science ${{ env.RELEASE_TAG }}
+          releaseName: superscience ${{ env.RELEASE_TAG }}
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false
@@ -143,7 +143,7 @@ jobs:
       - name: Verify updater manifest and both macOS architectures
         run: |
           set -euo pipefail
-          manifest_dir="${RUNNER_TEMP}/wisp-updater-manifest"
+          manifest_dir="${RUNNER_TEMP}/superscience-updater-manifest"
           mkdir -p "${manifest_dir}"
           gh release download "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \

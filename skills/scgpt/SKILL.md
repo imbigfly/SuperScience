@@ -85,12 +85,12 @@ and checkpoint with bounded read-only discovery, then write a self-contained
 {
   "context_id": "ssh:gpu-box",
   "title": "scGPT embedding for 50k cells",
-  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate scgpt && python scgpt_embed.py --input dataset.h5ad --model-dir /srv/models/scgpt-human --output /home/me/wisp-results/scgpt/embedded.h5ad",
+  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate scgpt && python scgpt_embed.py --input dataset.h5ad --model-dir /srv/models/scgpt-human --output /home/me/superscience-results/scgpt/embedded.h5ad",
   "timeout_secs": 1800,
   "input_paths": ["runs/scgpt_embed.py", "data/dataset.h5ad"],
   "output_specs": [
     {
-      "glob": "ssh://gpu-box/home/me/wisp-results/scgpt/embedded.h5ad",
+      "glob": "ssh://gpu-box/home/me/superscience-results/scgpt/embedded.h5ad",
       "kind": "h5ad",
       "residency": "remote"
     }

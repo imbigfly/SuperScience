@@ -12,16 +12,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use tauri::{AppHandle, State};
-use tauri_plugin_dialog::DialogExt;
-use wisp_store::{
+use superscience_store::{
     canonical_json, canonical_json_sha256, ArtifactMaterialization, CapsuleBuild,
     EvidenceVisibility, PublicationRevisionState, Store,
 };
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::AppState;
 
-const CAPSULE_KIND: &str = "wisp.publication_evidence_capsule";
+const CAPSULE_KIND: &str = "superscience.publication_evidence_capsule";
 const CAPSULE_SCHEMA_VERSION: i64 = 1;
 const SECURITY_SCAN_OVERLAP: usize = 2_048;
 
@@ -183,7 +183,7 @@ fn safe_snapshot_path(
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| "Capsule snapshot path contains an unsafe component".to_string())?;
     if components.len() != 5
-        || components[0] != ".wisp"
+        || components[0] != ".superscience"
         || components[1] != "artifacts"
         || components[2] != "sha256"
         || components[3] != checksum[..2]
@@ -313,7 +313,7 @@ fn render_readme(manifest: &Value, manifest_sha256: &str) -> String {
         .unwrap_or("private");
     format!(
         "# {title}\n\n\
-         This is a Wisp Publication Evidence Capsule for revision `{revision_id}`.\n\n\
+         This is a SuperScience Publication Evidence Capsule for revision `{revision_id}`.\n\n\
          - Revision manifest SHA-256: `{manifest_sha256}`\n\
          - Capability level: `{capability}`\n\
          - Visibility: `{visibility}`\n\n\
@@ -936,7 +936,7 @@ fn capsule_filename(title: &str, revision_id: &str) -> String {
     }
     let safe = safe.trim_matches('-').chars().take(100).collect::<String>();
     format!(
-        "wisp-publication-{}.zip",
+        "superscience-publication-{}.zip",
         if safe.is_empty() { "capsule" } else { &safe }
     )
 }
@@ -985,7 +985,7 @@ mod tests {
     use super::*;
     use crate::publication_freeze::freeze_publication_revision_in_store;
     use crate::snapshot_store::{capture_file, SnapshotPolicy};
-    use wisp_store::{
+    use superscience_store::{
         ArtifactCaptureTiming, ArtifactVersionDraft, EvidenceBindingDraft, EvidenceSelectionState,
         EvidenceSourceKind, PublicationFreezePolicy, PublicationItem, PublicationItemKind,
     };
@@ -999,8 +999,10 @@ mod tests {
     }
 
     async fn frozen_artifact_fixture(name: &str, visibility: EvidenceVisibility) -> FrozenFixture {
-        let root =
-            std::env::temp_dir().join(format!("wisp_capsule_{name}_{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_capsule_{name}_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(root.join("results")).unwrap();
         let store = Store::open(&root.join("store.sqlite")).await.unwrap();
         store
@@ -1008,7 +1010,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_frame("frame", "project", "OPERON", "model")
+            .create_frame("frame", "project", "SUPERSCIENCE", "model")
             .await
             .unwrap();
         let source = root.join("results/supplement.txt");
@@ -1122,7 +1124,7 @@ mod tests {
         assert!(!allowed_artifact_path(r"figures\figure.png"));
         assert!(!allowed_artifact_path("figures/C:figure.png"));
         let checksum = "a".repeat(64);
-        let portable = format!(".wisp/artifacts/sha256/aa/{checksum}.txt");
+        let portable = format!(".superscience/artifacts/sha256/aa/{checksum}.txt");
         assert!(safe_snapshot_path(Path::new("workspace"), &portable, &checksum).is_ok());
         assert!(safe_snapshot_path(
             Path::new("workspace"),
@@ -1142,7 +1144,7 @@ mod tests {
     fn capsule_names_are_portable() {
         assert_eq!(
             capsule_filename("T cells: a study", "revision 1"),
-            "wisp-publication-T-cells-a-study-revision-1.zip"
+            "superscience-publication-T-cells-a-study-revision-1.zip"
         );
     }
 

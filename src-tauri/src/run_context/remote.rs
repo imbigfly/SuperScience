@@ -122,7 +122,7 @@ pub(super) fn handle_from_ack(
     handle: &RemoteRunHandle,
     stdout: &str,
 ) -> Result<RemoteRunHandle, String> {
-    const PREFIX: &str = "__WISP_HANDLE__:";
+    const PREFIX: &str = "__SUPERSCIENCE_HANDLE__:";
     let line = stdout
         .lines()
         .find_map(|line| line.strip_prefix(PREFIX))
@@ -162,7 +162,7 @@ pub(super) fn handle_from_ack(
 }
 
 pub(super) fn command_delimiter(token: &str, command: &str) -> String {
-    let mut delimiter = format!("__WISP_COMMAND_{}__", token.replace('-', "_"));
+    let mut delimiter = format!("__SUPERSCIENCE_COMMAND_{}__", token.replace('-', "_"));
     while command.lines().any(|line| line == delimiter) {
         delimiter.push('X');
     }
@@ -179,13 +179,13 @@ workdir="$HOME/{workdir}"
 mkdir -p "$workdir"
 mkdir -p "$workdir/inputs"
 if [ -f "$workdir/token" ]; then
-  [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'wisp token mismatch' >&2; exit 73; }}
+  [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'superscience token mismatch' >&2; exit 73; }}
 else
   printf '%s\n' '{token}' > "$workdir/token.tmp"
   mv "$workdir/token.tmp" "$workdir/token"
 fi
 if [ -f "$workdir/_submitted" ]; then
-  printf '__WISP_HANDLE__:'
+  printf '__SUPERSCIENCE_HANDLE__:'
   cat "$workdir/_submitted"
   exit 0
 fi
@@ -195,7 +195,7 @@ set -euo pipefail
 cd "$(dirname "$0")/inputs"
 {command}
 {delimiter}
-cat > "$workdir/supervisor.sh" <<'__WISP_SUPERVISOR__'
+cat > "$workdir/supervisor.sh" <<'__SUPERSCIENCE_SUPERVISOR__'
 #!/bin/sh
 set +e
 umask 077
@@ -243,9 +243,9 @@ else
   write_state _status "done:$rc"
 fi
 exit "$rc"
-__WISP_SUPERVISOR__
+__SUPERSCIENCE_SUPERVISOR__
 chmod 700 "$workdir/command.sh" "$workdir/supervisor.sh"
-printf '__WISP_PREPARED__\n'
+printf '__SUPERSCIENCE_PREPARED__\n'
 "#,
         command = remote.command,
         timeout_secs = remote.timeout.as_secs(),
@@ -269,7 +269,7 @@ pub(super) async fn prepare_remote(
     if output
         .stdout
         .lines()
-        .any(|line| line == "__WISP_PREPARED__")
+        .any(|line| line == "__SUPERSCIENCE_PREPARED__")
     {
         Ok(PrepareRemote::Prepared)
     } else {
@@ -281,7 +281,7 @@ pub(super) async fn prepare_remote(
 }
 
 pub(super) async fn stage_remote_inputs(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     owner_id: &str,
     runner: &dyn RunCommandRunner,
     remote: &RemoteRun,
@@ -419,7 +419,7 @@ fn input_progress_payload(workdir: &str, inputs: &[(String, u64)]) -> String {
     let mut payload = format!("set -u\nbase=\"$HOME/{workdir}/inputs\"\n");
     for (name, _) in inputs {
         payload.push_str(&format!(
-            "if [ -f \"$base/{name}\" ]; then bytes=$(wc -c < \"$base/{name}\" 2>/dev/null || printf 0); printf '__WISP_TRANSFER_FILE__:{name}:%s\\n' \"$bytes\"; fi\n"
+            "if [ -f \"$base/{name}\" ]; then bytes=$(wc -c < \"$base/{name}\" 2>/dev/null || printf 0); printf '__SUPERSCIENCE_TRANSFER_FILE__:{name}:%s\\n' \"$bytes\"; fi\n"
         ));
     }
     payload
@@ -429,7 +429,7 @@ pub(super) fn parse_input_progress(stdout: &str) -> HashMap<String, u64> {
     stdout
         .lines()
         .filter_map(|line| {
-            let value = line.strip_prefix("__WISP_TRANSFER_FILE__:")?;
+            let value = line.strip_prefix("__SUPERSCIENCE_TRANSFER_FILE__:")?;
             let (name, bytes) = value.rsplit_once(':')?;
             Some((name.to_string(), bytes.parse().ok()?))
         })
@@ -477,7 +477,7 @@ pub(super) fn launch_payload(handle: &RemoteRunHandle) -> String {
     format!(
         r#"set -eu
 workdir="$HOME/{workdir}"
-[ -f "$workdir/token" ] && [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'wisp token mismatch' >&2; exit 73; }}
+[ -f "$workdir/token" ] && [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'superscience token mismatch' >&2; exit 73; }}
 lock="$workdir/_launch_lock"
 if [ -d "$lock" ] && [ ! -f "$workdir/_submitted" ]; then
   owner=$(cat "$lock/owner" 2>/dev/null || true)
@@ -506,7 +506,7 @@ if [ ! -f "$workdir/_submitted" ]; then
   done
 fi
 [ -f "$workdir/_submitted" ] || {{ echo 'remote supervisor did not acknowledge launch' >&2; exit 70; }}
-printf '__WISP_HANDLE__:'
+printf '__SUPERSCIENCE_HANDLE__:'
 cat "$workdir/_submitted"
 "#,
     )
@@ -530,7 +530,7 @@ pub(super) async fn launch_remote(
 }
 
 pub(super) async fn ensure_remote_started(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     owner_id: &str,
     runner: &dyn RunCommandRunner,
     remote: &mut RemoteRun,
@@ -567,7 +567,7 @@ pub(super) async fn ensure_remote_started(
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("Run not found: {}", remote.run_id))?;
-            if run.status == wisp_store::RunStatus::Cancelling {
+            if run.status == superscience_store::RunStatus::Cancelling {
                 return Err("SSH Run was cancelled before launch".into());
             }
             if !store
@@ -640,19 +640,19 @@ if [ -f "$workdir/token" ] && [ "$(cat "$workdir/token")" = "{token}" ]; then
     fi
   fi
 fi
-printf '__WISP_RUN_STATUS__:%s\n' "$state"
-printf '__WISP_STDOUT__\n'
+printf '__SUPERSCIENCE_RUN_STATUS__:%s\n' "$state"
+printf '__SUPERSCIENCE_STDOUT__\n'
 tail -c 4000 "$workdir/stdout.log" 2>/dev/null || true
-printf '\n__WISP_STDERR__\n'
+printf '\n__SUPERSCIENCE_STDERR__\n'
 tail -c 4000 "$workdir/stderr.log" 2>/dev/null || true
 "#,
     ))
 }
 
 pub(super) fn parse_remote_poll(stdout: &str) -> Result<RemotePoll, String> {
-    const STATUS: &str = "__WISP_RUN_STATUS__:";
-    const STDOUT: &str = "__WISP_STDOUT__\n";
-    const STDERR: &str = "\n__WISP_STDERR__\n";
+    const STATUS: &str = "__SUPERSCIENCE_RUN_STATUS__:";
+    const STDOUT: &str = "__SUPERSCIENCE_STDOUT__\n";
+    const STDERR: &str = "\n__SUPERSCIENCE_STDERR__\n";
     let start = stdout
         .find(STATUS)
         .ok_or_else(|| "SSH poll response omitted status".to_string())?;
@@ -733,25 +733,25 @@ same_identity() {{
 terminal_status() {{
   status=$(cat "$workdir/_status" 2>/dev/null || true)
   case "$status" in
-    done:*) printf '__WISP_CANCEL__:finished:%s\n' "${{status#done:}}"; return 0 ;;
-    timed_out:*) printf '__WISP_CANCEL__:timed_out:%s\n' "${{status#timed_out:}}"; return 0 ;;
-    cancelled) printf '__WISP_CANCEL__:cancelled\n'; return 0 ;;
+    done:*) printf '__SUPERSCIENCE_CANCEL__:finished:%s\n' "${{status#done:}}"; return 0 ;;
+    timed_out:*) printf '__SUPERSCIENCE_CANCEL__:timed_out:%s\n' "${{status#timed_out:}}"; return 0 ;;
+    cancelled) printf '__SUPERSCIENCE_CANCEL__:cancelled\n'; return 0 ;;
   esac
   return 1
 }}
 if [ ! -f "$workdir/token" ] || [ "$(cat "$workdir/token")" != "{token}" ]; then
-  printf '__WISP_CANCEL__:lost:token mismatch\n'
+  printf '__SUPERSCIENCE_CANCEL__:lost:token mismatch\n'
   exit 0
 fi
 terminal_status && exit 0 || true
 if ! same_identity; then
   sleep 1
   terminal_status && exit 0 || true
-  printf '__WISP_CANCEL__:retry:process identity changed\n'
+  printf '__SUPERSCIENCE_CANCEL__:retry:process identity changed\n'
   exit 0
 fi
 if ! kill -TERM "-{pgid}" 2>/dev/null; then
-  printf '__WISP_CANCEL__:retry:TERM was not confirmed\n'
+  printf '__SUPERSCIENCE_CANCEL__:retry:TERM was not confirmed\n'
   exit 0
 fi
 tmp="$workdir/_cancel_requested.tmp.$$"
@@ -773,18 +773,18 @@ while kill -0 "-{pgid}" 2>/dev/null && [ "$i" -lt 5 ]; do
 done
 terminal_status && exit 0 || true
 if kill -0 "-{pgid}" 2>/dev/null; then
-  printf '__WISP_CANCEL__:retry:process group survived cancellation\n'
+  printf '__SUPERSCIENCE_CANCEL__:retry:process group survived cancellation\n'
   exit 0
 fi
 tmp="$workdir/_status.tmp.$$"
 printf 'cancelled\n' > "$tmp" && mv "$tmp" "$workdir/_status"
-printf '__WISP_CANCEL__:cancelled\n'
+printf '__SUPERSCIENCE_CANCEL__:cancelled\n'
 "#,
     ))
 }
 
 pub(super) fn parse_remote_cancel(stdout: &str) -> Result<RemoteCancel, String> {
-    const PREFIX: &str = "__WISP_CANCEL__:";
+    const PREFIX: &str = "__SUPERSCIENCE_CANCEL__:";
     let value = stdout
         .lines()
         .find_map(|line| line.strip_prefix(PREFIX))
@@ -823,10 +823,10 @@ pub(super) async fn cancel_remote(
     parse_remote_cancel(&output.stdout)
 }
 
-pub(super) fn remote_terminal_status(exit_code: i64) -> wisp_store::RunStatus {
+pub(super) fn remote_terminal_status(exit_code: i64) -> superscience_store::RunStatus {
     match exit_code {
-        0 => wisp_store::RunStatus::Succeeded,
-        _ => wisp_store::RunStatus::Failed,
+        0 => superscience_store::RunStatus::Succeeded,
+        _ => superscience_store::RunStatus::Failed,
     }
 }
 

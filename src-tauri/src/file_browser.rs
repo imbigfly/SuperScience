@@ -5,8 +5,8 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use tauri::{ipc::Response, State, WebviewWindow};
 
-const REMOTE_DIR_PROTOCOL: &[u8] = b"WISP_REMOTE_DIR_V1\0";
-const REMOTE_FILE_PROTOCOL: &[u8] = b"WISP_REMOTE_FILE_V1\0";
+const REMOTE_DIR_PROTOCOL: &[u8] = b"SUPERSCIENCE_REMOTE_DIR_V1\0";
+const REMOTE_FILE_PROTOCOL: &[u8] = b"SUPERSCIENCE_REMOTE_FILE_V1\0";
 /// Remote previews stay capped at 32 MB: the bytes cross an SSH connection.
 const REMOTE_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// Local previews match the 100 MB upload cap — a 38 MB journal PDF is routine
@@ -78,7 +78,7 @@ impl RemoteRunner for ProcessRemoteRunner {
         if !command.envs.is_empty() {
             process.envs(command.envs.iter().cloned());
         }
-        wisp_tools::process::hide_console(&mut process);
+        superscience_tools::process::hide_console(&mut process);
         let output = process
             .output()
             .map_err(|e| format!("failed to run {}: {e}", command.program))?;
@@ -387,7 +387,7 @@ fn collect_file_search_hits(
     if out.len() >= limit {
         return Ok(());
     }
-    let dir = wisp_tools::safety::resolve_under_root(root, rel_base)?;
+    let dir = superscience_tools::safety::resolve_under_root(root, rel_base)?;
     if !dir.is_dir() {
         return Ok(());
     }
@@ -455,7 +455,7 @@ pub(super) fn list_dir(
 ) -> Result<Vec<DirEntry>, String> {
     let ap = state.active(window.label());
     let rel = path.unwrap_or_else(|| ".".into());
-    let dir = wisp_tools::safety::resolve_under_root(&ap.root, &rel)?;
+    let dir = superscience_tools::safety::resolve_under_root(&ap.root, &rel)?;
     if !dir.is_dir() {
         return Err(format!("'{}' is not a directory", rel));
     }
@@ -503,12 +503,12 @@ fn workspace_entry_path(root: &Path, path: &str) -> Result<PathBuf, String> {
     let parent = absolute
         .parent()
         .ok_or_else(|| format!("path '{path}' has no parent directory"))?;
-    let parent = wisp_tools::safety::resolve_under_root(root, &parent.to_string_lossy())?;
+    let parent = superscience_tools::safety::resolve_under_root(root, &parent.to_string_lossy())?;
     if !parent.is_dir() {
         return Err(format!("parent of '{path}' is not a directory"));
     }
     let target = parent.join(name);
-    let root = wisp_tools::safety::resolve_under_root(root, ".")?;
+    let root = superscience_tools::safety::resolve_under_root(root, ".")?;
     if target == root {
         return Err("the project root cannot be changed".into());
     }
@@ -643,7 +643,7 @@ if ! CDPATH= cd "$dir" 2>/dev/null; then
   printf 'Cannot open remote directory: %s\n' "$dir" >&2
   exit 66
 fi
-printf 'WISP_REMOTE_DIR_V1\000%s\000' "$(pwd -P)"
+printf 'SUPERSCIENCE_REMOTE_DIR_V1\000%s\000' "$(pwd -P)"
 for entry in ./*; do
   if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
     continue
@@ -664,7 +664,7 @@ done"#
 }
 
 fn build_remote_directory_command(
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     path: Option<&str>,
 ) -> Result<RemoteCommand, String> {
     let connection = crate::ssh_hosts::SshConnection::from_execution_context(context)?;
@@ -733,7 +733,7 @@ fn parse_remote_directory(stdout: &[u8]) -> Result<DirectoryListing, String> {
 }
 
 fn list_remote_dir_with_runner(
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     path: Option<&str>,
     runner: &mut dyn RemoteRunner,
 ) -> Result<DirectoryListing, String> {
@@ -787,13 +787,13 @@ if [ "$size" -gt {cap} ]; then
   printf 'Remote file exceeds {cap} byte limit: %s\n' "$f" >&2
   exit 67
 fi
-printf 'WISP_REMOTE_FILE_V1\000'
+printf 'SUPERSCIENCE_REMOTE_FILE_V1\000'
 cat "$f""#
     ))
 }
 
 fn build_remote_file_command(
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     path: &str,
     cap: u64,
 ) -> Result<RemoteCommand, String> {
@@ -809,7 +809,7 @@ fn build_remote_file_command(
 }
 
 fn read_remote_file_bytes_with_runner(
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     path: &str,
     max_bytes: Option<u64>,
     runner: &mut dyn RemoteRunner,
@@ -854,7 +854,7 @@ fn read_remote_file_bytes_with_runner(
 }
 
 fn read_remote_file_with_runner(
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     path: &str,
     runner: &mut dyn RemoteRunner,
 ) -> Result<FileContent, String> {
@@ -931,7 +931,7 @@ pub(super) fn read_file_at(
     path: String,
     max_bytes: Option<u64>,
 ) -> Result<FileContent, String> {
-    let real = wisp_tools::safety::validate_file_path(root, &path)?;
+    let real = superscience_tools::safety::validate_file_path(root, &path)?;
     let mime = mime_for_path(&real);
     let cap = preview_byte_cap(max_bytes);
     // Size check before the read: the old order slurped a file of any size
@@ -953,7 +953,7 @@ pub(super) fn read_file_bytes_at(
     path: &str,
     max_bytes: Option<u64>,
 ) -> Result<Vec<u8>, String> {
-    let real = wisp_tools::safety::validate_file_path(root, path)?;
+    let real = superscience_tools::safety::validate_file_path(root, path)?;
     let cap = preview_byte_cap(max_bytes);
     let len = std::fs::metadata(&real).map_err(|e| format!("{e}"))?.len();
     if len > cap {
@@ -1038,7 +1038,7 @@ pub(super) fn append_review_note_at(
         .map_err(|e| format!("could not create reviews folder: {e}"))?;
 
     let rel = format!("reviews/{stem}.md");
-    let real = wisp_tools::safety::validate_file_path(root, &rel)?;
+    let real = superscience_tools::safety::validate_file_path(root, &rel)?;
 
     let source_name = Path::new(source_path)
         .file_name()
@@ -1116,15 +1116,15 @@ mod tests {
 
     fn test_identity_file() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "wisp-file-browser-test-key-{}",
+            "superscience-file-browser-test-key-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::write(&path, b"test-key\n").unwrap();
         path
     }
 
-    fn ssh_context(identity_file: &std::path::Path) -> wisp_store::ExecutionContext {
-        let mut context = wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
+    fn ssh_context(identity_file: &std::path::Path) -> superscience_store::ExecutionContext {
+        let mut context = superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
         context.config_json = serde_json::json!({
             "alias": "gpu.example",
             "user": "researcher",
@@ -1174,7 +1174,7 @@ mod tests {
             .any(|arg| arg == "researcher@gpu.example"));
         let script = command.args.last().unwrap();
         assert!(script.contains("dir='/work/O'\"'\"'Brien; printf unsafe'"));
-        assert!(script.contains("WISP_REMOTE_DIR_V1\\000"));
+        assert!(script.contains("SUPERSCIENCE_REMOTE_DIR_V1\\000"));
         assert!(script.contains("stat -c '%s'"));
         assert!(script.contains("stat -f '%z'"));
         assert!(!script.contains("wc -c"));
@@ -1189,7 +1189,7 @@ mod tests {
     #[test]
     fn remote_directory_runner_parses_banner_and_sorts_directories_first() {
         let identity = test_identity_file();
-        let stdout = b"login banner\nWISP_REMOTE_DIR_V1\0/home/research\0f\012\0notes.txt\0d\00\0projects\0f\03\0a.csv\0".to_vec();
+        let stdout = b"login banner\nSUPERSCIENCE_REMOTE_DIR_V1\0/home/research\0f\012\0notes.txt\0d\00\0projects\0f\03\0a.csv\0".to_vec();
         let mut runner = FakeRemoteRunner::returning(RemoteOutput {
             status: 0,
             stdout,
@@ -1247,7 +1247,7 @@ mod tests {
         assert_eq!(command.program, "ssh");
         let script = command.args.last().unwrap();
         assert!(script.contains("f='/work/O'\"'\"'Brien results.html'"));
-        assert!(script.contains("WISP_REMOTE_FILE_V1\\000"));
+        assert!(script.contains("SUPERSCIENCE_REMOTE_FILE_V1\\000"));
         assert!(script.contains(&format!("-gt {REMOTE_FILE_MAX_BYTES}")));
         assert!(script.contains("cat \"$f\""));
     }
@@ -1317,7 +1317,7 @@ mod tests {
     #[test]
     fn raw_file_reader_preserves_binary_bytes_and_validates_ooxml() {
         let base = std::env::temp_dir().join(format!(
-            "wisp_raw_preview_test_{}_{}",
+            "superscience_raw_preview_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1399,7 +1399,7 @@ mod tests {
     #[test]
     fn remote_file_runner_sniffs_text_after_banner() {
         let identity = test_identity_file();
-        let stdout = b"motd noise\nWISP_REMOTE_FILE_V1\0print('hi')\n".to_vec();
+        let stdout = b"motd noise\nSUPERSCIENCE_REMOTE_FILE_V1\0print('hi')\n".to_vec();
         let mut runner = FakeRemoteRunner::returning(RemoteOutput {
             status: 0,
             stdout,
@@ -1417,7 +1417,7 @@ mod tests {
     #[test]
     fn remote_file_runner_returns_binary_as_base64() {
         let identity = test_identity_file();
-        let stdout = b"WISP_REMOTE_FILE_V1\0\x89PNG\0\x01".to_vec();
+        let stdout = b"SUPERSCIENCE_REMOTE_FILE_V1\0\x89PNG\0\x01".to_vec();
         let mut runner = FakeRemoteRunner::returning(RemoteOutput {
             status: 0,
             stdout,
@@ -1455,7 +1455,7 @@ mod tests {
     #[test]
     fn collect_file_search_hits_matches_by_name_across_dirs() {
         let base = std::env::temp_dir().join(format!(
-            "wisp_search_files_test_{}_{}",
+            "superscience_search_files_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1485,7 +1485,7 @@ mod tests {
     #[test]
     fn workspace_entry_operations_create_rename_and_delete_files_and_directories() {
         let base = std::env::temp_dir().join(format!(
-            "wisp_file_operations_test_{}_{}",
+            "superscience_file_operations_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1514,7 +1514,7 @@ mod tests {
     #[test]
     fn workspace_entry_operations_stay_inside_root_and_never_overwrite() {
         let base = std::env::temp_dir().join(format!(
-            "wisp_file_operation_safety_test_{}_{}",
+            "superscience_file_operation_safety_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1537,7 +1537,7 @@ mod tests {
     #[test]
     fn script_files_are_text_and_unnamed_extensions_fall_back_to_sniffing() {
         let base = std::env::temp_dir().join(format!(
-            "wisp_script_preview_test_{}_{}",
+            "superscience_script_preview_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
@@ -1577,7 +1577,7 @@ mod tests {
     #[test]
     fn append_review_note_creates_sidecar_and_appends_quotes() {
         let base = std::env::temp_dir().join(format!(
-            "wisp_review_note_test_{}_{}",
+            "superscience_review_note_test_{}_{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));

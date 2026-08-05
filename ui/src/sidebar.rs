@@ -93,12 +93,12 @@ pub(super) fn Sidebar(
     // so it stays out of the shared SidebarState). Sort is client-side over the
     // sessions already loaded; group is a pure render toggle over existing data.
     let sort_by = create_rw_signal(load_view_pref(
-        "wisp-session-sort",
+        "superscience-session-sort",
         "newest",
         &["newest", "name"],
     ));
     let group_by = create_rw_signal(load_view_pref(
-        "wisp-session-group",
+        "superscience-session-group",
         "folder",
         &["folder", "date", "none"],
     ));
@@ -189,7 +189,7 @@ pub(super) fn Sidebar(
                                     {group_opts.into_iter().map(|(val, key)| view! {
                                         <button type="button" class="side-sort-opt"
                                             class:active=move || group_by.get().as_str() == val
-                                            on:click=move |_| { group_by.set(val.into()); save_view_pref("wisp-session-group", val); sort_menu_open.set(false); }>
+                                            on:click=move |_| { group_by.set(val.into()); save_view_pref("superscience-session-group", val); sort_menu_open.set(false); }>
                                             <span>{t(loc, key)}</span>
                                             <span class="side-sort-check" class:on=move || group_by.get().as_str() == val>{compose_icon("check")}</span>
                                         </button>
@@ -201,7 +201,7 @@ pub(super) fn Sidebar(
                                     {sort_opts.into_iter().map(|(val, key)| view! {
                                         <button type="button" class="side-sort-opt"
                                             class:active=move || sort_by.get().as_str() == val
-                                            on:click=move |_| { sort_by.set(val.into()); save_view_pref("wisp-session-sort", val); sort_menu_open.set(false); }>
+                                            on:click=move |_| { sort_by.set(val.into()); save_view_pref("superscience-session-sort", val); sort_menu_open.set(false); }>
                                             <span>{t(loc, key)}</span>
                                             <span class="side-sort-check" class:on=move || sort_by.get().as_str() == val>{compose_icon("check")}</span>
                                         </button>

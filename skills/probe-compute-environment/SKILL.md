@@ -5,11 +5,11 @@ description: Inspect a registered execution server before compute planning and i
 
 # Probe compute environment
 
-Use Wisp's environment Probe action. It performs bounded, read-only checks and
+Use SuperScience's environment Probe action. It performs bounded, read-only checks and
 stores the result on the `ExecutionContext`. An SSH probe batches every check
 into one authenticated session; do not replace it with an ad-hoc SSH discovery
 loop. Batch SSH uses `IdentitiesOnly=yes`; users relying on a non-default
-ssh-agent key must configure its `IdentityFile` in Wisp or SSH config.
+ssh-agent key must configure its `IdentityFile` in SuperScience or SSH config.
 
 After probing:
 

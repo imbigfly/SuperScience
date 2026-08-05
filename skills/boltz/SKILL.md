@@ -107,7 +107,7 @@ falls back to the reference PyTorch path — roughly 2× slower, numerically
 identical, so it is the right unblock for a one-off and the wrong choice for a
 campaign.
 
-## Wisp execution
+## SuperScience execution
 
 Use `python` only for bounded interactive checks. For a long or GPU-backed
 workload, require a selected and probed `ssh:<alias>` context and load

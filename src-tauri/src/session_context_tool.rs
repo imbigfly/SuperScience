@@ -1,18 +1,18 @@
 //! Live per-session authorization for agent tools that accept `context_id`.
 
-use wisp_llm::ToolSchema;
-use wisp_tools::{Tool, ToolEnv, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_tools::{Tool, ToolEnv, ToolResult};
 
 pub struct SessionExecutionContextTool {
     inner: Box<dyn Tool>,
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     frame_id: String,
 }
 
 impl SessionExecutionContextTool {
     pub fn new(
         inner: Box<dyn Tool>,
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         frame_id: impl Into<String>,
     ) -> Self {
         Self {
@@ -109,18 +109,25 @@ mod tests {
             true
         }
 
-        async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+        async fn emit(&self, _event: superscience_tools::ToolEvent) {}
     }
 
     #[tokio::test]
     async fn remote_context_requires_selection_in_the_same_session() {
-        let path =
-            std::env::temp_dir().join(format!("wisp_session_tool_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&path).await.unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "superscience_session_tool_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&path).await.unwrap();
         store.create_project("p", "Project", "").await.unwrap();
-        store.create_frame("f", "p", "OPERON", "m").await.unwrap();
         store
-            .upsert_execution_context(&wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+            .create_frame("f", "p", "SUPERSCIENCE", "m")
+            .await
+            .unwrap();
+        store
+            .upsert_execution_context(
+                &superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap(),
+            )
             .await
             .unwrap();
         let tool = SessionExecutionContextTool::new(Box::new(EchoTool), store.clone(), "f");

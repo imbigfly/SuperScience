@@ -33,7 +33,7 @@ pub struct HarvestedArtifact {
 }
 
 pub async fn harvest_run_outputs(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     project_id: &str,
     root_frame_id: &str,
     run_id: &str,
@@ -129,7 +129,7 @@ pub async fn harvest_run_outputs(
 }
 
 async fn register_local_artifact(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     project_id: &str,
     root_frame_id: &str,
     run_id: &str,
@@ -140,7 +140,7 @@ async fn register_local_artifact(
     source_path: &str,
     as_reference: bool,
 ) -> Result<HarvestedArtifact, String> {
-    let artifact_id = wisp_store::logical_artifact_id(project_id, logical_key);
+    let artifact_id = superscience_store::logical_artifact_id(project_id, logical_key);
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -162,7 +162,7 @@ async fn register_local_artifact(
         .map_err(|e| e.to_string())?
         .map(|snapshot| snapshot.hash);
     let version_id = store
-        .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+        .save_artifact_version(&superscience_store::ArtifactVersionDraft {
             version_id: None,
             artifact_id: artifact_id.clone(),
             project_id: project_id.to_string(),
@@ -176,7 +176,7 @@ async fn register_local_artifact(
             producing_run_id: Some(run_id.to_string()),
             env_snapshot_hash,
             materialization: captured.materialization,
-            capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+            capture_timing: superscience_store::ArtifactCaptureTiming::AtCreation,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -207,7 +207,7 @@ async fn register_local_artifact(
 }
 
 async fn register_reference_artifact(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     project_id: &str,
     root_frame_id: &str,
     run_id: &str,
@@ -216,7 +216,7 @@ async fn register_reference_artifact(
     size: Option<u64>,
     logical_key: &str,
 ) -> Result<HarvestedArtifact, String> {
-    let artifact_id = wisp_store::logical_artifact_id(project_id, logical_key);
+    let artifact_id = superscience_store::logical_artifact_id(project_id, logical_key);
     let filename = uri
         .rsplit('/')
         .next()
@@ -232,7 +232,7 @@ async fn register_reference_artifact(
         .map_err(|e| e.to_string())?
         .map(|snapshot| snapshot.hash);
     let version_id = store
-        .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+        .save_artifact_version(&superscience_store::ArtifactVersionDraft {
             version_id: None,
             artifact_id: artifact_id.clone(),
             project_id: project_id.to_string(),
@@ -245,8 +245,8 @@ async fn register_reference_artifact(
             checksum: None,
             producing_run_id: Some(run_id.to_string()),
             env_snapshot_hash,
-            materialization: wisp_store::ArtifactMaterialization::External,
-            capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+            materialization: superscience_store::ArtifactMaterialization::External,
+            capture_timing: superscience_store::ArtifactCaptureTiming::AtCreation,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -273,7 +273,7 @@ async fn register_reference_artifact(
 }
 
 async fn link_run_artifact(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     run_id: &str,
     artifact_id: &str,
     artifact_version_id: &str,
@@ -282,7 +282,7 @@ async fn link_run_artifact(
     source_path: &str,
 ) -> Result<(), String> {
     store
-        .save_run_output(&wisp_store::RunOutput {
+        .save_run_output(&superscience_store::RunOutput {
             id: uuid::Uuid::new_v4().to_string(),
             run_id: run_id.to_string(),
             artifact_version_id: artifact_version_id.to_string(),
@@ -333,11 +333,14 @@ mod tests {
 
     #[tokio::test]
     async fn harvest_registers_small_local_file_and_run_link() {
-        let tmp = std::env::temp_dir().join(format!("wisp_harvest_small_{}", uuid::Uuid::new_v4()));
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_harvest_small_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(tmp.join("results")).unwrap();
         std::fs::write(tmp.join("results/table.tsv"), b"a\tb\n1\t2\n").unwrap();
-        let db = tmp.join("wisp.sqlite");
-        let store = wisp_store::Store::open(&db).await.unwrap();
+        let db = tmp.join("superscience.sqlite");
+        let store = superscience_store::Store::open(&db).await.unwrap();
         seed_run(&store).await;
 
         let harvested = harvest_run_outputs(
@@ -363,7 +366,7 @@ mod tests {
         assert_eq!(harvested[0].residency, OutputResidency::Local);
         let artifacts = store.list_artifacts("f").await.unwrap();
         assert_eq!(artifacts.len(), 1);
-        assert!(artifacts[0].3.contains(".wisp/artifacts/sha256"));
+        assert!(artifacts[0].3.contains(".superscience/artifacts/sha256"));
         let outputs = store.list_run_outputs("r").await.unwrap();
         assert_eq!(outputs.len(), 1);
         assert_eq!(
@@ -378,7 +381,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             version.materialization,
-            wisp_store::ArtifactMaterialization::Snapshot
+            superscience_store::ArtifactMaterialization::Snapshot
         );
         assert!(version.checksum.is_some());
         let graph = store.research_graph("p").await.unwrap();
@@ -393,11 +396,14 @@ mod tests {
 
     #[tokio::test]
     async fn harvest_oversized_local_file_as_reference() {
-        let tmp = std::env::temp_dir().join(format!("wisp_harvest_large_{}", uuid::Uuid::new_v4()));
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_harvest_large_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(tmp.join("results")).unwrap();
         std::fs::write(tmp.join("results/big.tsv"), vec![b'x'; 1024]).unwrap();
-        let db = tmp.join("wisp.sqlite");
-        let store = wisp_store::Store::open(&db).await.unwrap();
+        let db = tmp.join("superscience.sqlite");
+        let store = superscience_store::Store::open(&db).await.unwrap();
         seed_run(&store).await;
 
         let harvested = harvest_run_outputs(
@@ -432,7 +438,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             version.materialization,
-            wisp_store::ArtifactMaterialization::Reference
+            superscience_store::ArtifactMaterialization::Reference
         );
         assert!(version.checksum.is_some());
 
@@ -441,10 +447,12 @@ mod tests {
 
     #[tokio::test]
     async fn harvest_registers_remote_uri_reference() {
-        let tmp =
-            std::env::temp_dir().join(format!("wisp_harvest_remote_{}", uuid::Uuid::new_v4()));
-        let db = tmp.join("wisp.sqlite");
-        let store = wisp_store::Store::open(&db).await.unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_harvest_remote_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let db = tmp.join("superscience.sqlite");
+        let store = superscience_store::Store::open(&db).await.unwrap();
         seed_run(&store).await;
 
         let harvested = harvest_run_outputs(
@@ -481,7 +489,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             version.materialization,
-            wisp_store::ArtifactMaterialization::External
+            superscience_store::ArtifactMaterialization::External
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -489,11 +497,13 @@ mod tests {
 
     #[tokio::test]
     async fn logical_output_key_forms_one_artifact_version_chain() {
-        let tmp =
-            std::env::temp_dir().join(format!("wisp_harvest_logical_{}", uuid::Uuid::new_v4()));
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_harvest_logical_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(tmp.join("results")).unwrap();
         std::fs::write(tmp.join("results/figure.png"), b"figure-v1").unwrap();
-        let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
             .await
             .unwrap();
         seed_run(&store).await;
@@ -510,7 +520,7 @@ mod tests {
             .unwrap();
 
         store
-            .create_run(&wisp_store::RunRecord::new(
+            .create_run(&superscience_store::RunRecord::new(
                 "r2", "p", "local", "Run 2", "command",
             ))
             .await
@@ -535,15 +545,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    async fn seed_run(store: &wisp_store::Store) {
+    async fn seed_run(store: &superscience_store::Store) {
         store.create_project("p", "proj", "").await.unwrap();
-        store.create_frame("f", "p", "OPERON", "m").await.unwrap();
         store
-            .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+            .create_frame("f", "p", "SUPERSCIENCE", "m")
             .await
             .unwrap();
         store
-            .create_run(&wisp_store::RunRecord::new(
+            .upsert_execution_context(
+                &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .create_run(&superscience_store::RunRecord::new(
                 "r", "p", "local", "Run", "command",
             ))
             .await

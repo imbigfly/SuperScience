@@ -54,7 +54,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
 
   const project = {
     id: "default",
-    name: "wisp-science",
+    name: "superscience",
     root: "/mock/root",
     skill_count: 12,
     mcp_server_count: 8,
@@ -183,7 +183,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   let skills = [
     { name: "remote-compute-modal", description: "Run jobs on Modal", tags: ["compute"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/remote-compute-modal" },
     { name: "alphafold2", description: "Predict protein structures", tags: ["protein", "structure"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/alphafold2" },
-    { name: "paper-narrative", description: "Shape a paper story", tags: [], scope: "global", enabled: true, builtin: false, dir: "/home/me/.wisp/skills/paper-narrative" },
+    { name: "paper-narrative", description: "Shape a paper story", tags: [], scope: "global", enabled: true, builtin: false, dir: "/home/me/.superscience/skills/paper-narrative" },
   ];
   let plugins = [
     {
@@ -830,7 +830,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       exit_code: 0,
       stdout_tail: "wrote qc table",
       stderr_tail: "",
-      remote_workdir: "~/.wisp-science/runs/run-kinase-001",
+      remote_workdir: "~/.superscience/runs/run-kinase-001",
       remote_handle_json: "{\"kind\":\"ssh_direct\"}",
       timeout_secs: 14400,
       last_polled_at: 1783482609,
@@ -867,11 +867,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   let monitorRunFrameId: string | null = null;
   let resolveMonitorRun: ((frameId: string) => void) | null = null;
   const artifacts = [
-    { id: "art-tree", name: "nif3.treefile", kind: "text/treefile", path: "nif3.treefile", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "wisp-science", session_id: "s-current", session_title: "Current analysis", origin: "output" },
-    { id: "art-profile", name: "plddt_profile.png", kind: "image/png", path: "plddt_profile.png", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "wisp-science", session_id: "s-old", session_title: "Older structure run", origin: "output" },
+    { id: "art-tree", name: "nif3.treefile", kind: "text/treefile", path: "nif3.treefile", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "superscience", session_id: "s-current", session_title: "Current analysis", origin: "output" },
+    { id: "art-profile", name: "plddt_profile.png", kind: "image/png", path: "plddt_profile.png", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "superscience", session_id: "s-old", session_title: "Older structure run", origin: "output" },
     { id: "art-counts", name: "counts.csv", kind: "text/csv", path: "counts.csv", ts: Math.floor(Date.now() / 1000), project_id: "other", project_name: "Other project", session_id: "s-other", session_title: "Cross-project counts", origin: "upload" },
-    { id: "art-html", name: "dashboard.html", kind: "text/html", path: "dashboard.html", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "wisp-science", session_id: "s-current", session_title: "Current analysis", origin: "output" },
-    { id: "art-markdown", name: "analysis-report.md", kind: "text/markdown", path: "analysis-report.md", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "wisp-science", session_id: "s-current", session_title: "Current analysis", origin: "output" },
+    { id: "art-html", name: "dashboard.html", kind: "text/html", path: "dashboard.html", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "superscience", session_id: "s-current", session_title: "Current analysis", origin: "output" },
+    { id: "art-markdown", name: "analysis-report.md", kind: "text/markdown", path: "analysis-report.md", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "superscience", session_id: "s-current", session_title: "Current analysis", origin: "output" },
   ];
   let libraryItems: any[] = [];
   const libraryVersions: Record<string, any[]> = {};
@@ -1307,7 +1307,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 items: [
                   { role: "user", text: "Prepare the regression plan", tool_name: null, ok: null },
                   // This is the load_session row produced from the persisted
-                  // plan tool message — `wisp:plan` for ACP, the `propose_plan`
+                  // plan tool message — `superscience:plan` for ACP, the `propose_plan`
                   // result for built-in; LoadedItem::into_chat rebuilds both.
                   {
                     role: "plan",
@@ -1348,7 +1348,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                       text: `<!doctype html><html><body><div id="state">waiting</div><script>
                         addEventListener("message", (event) => {
                           const message = event.data || {};
-                          if (message.id === 1 && message.result?.hostInfo?.name === "wisp-science") {
+                          if (message.id === 1 && message.result?.hostInfo?.name === "superscience") {
                             document.getElementById("state").textContent = "restored";
                             parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} }, "*");
                           }
@@ -1620,7 +1620,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "join_synced_project":
             return { id: "other", name: "Other project", workspace_dir: "/mock/other", session_count: 1, updated_at: 2, running_count: 0, needs_you_count: 0 };
           case "export_project":
-            return "/mock/wisp-project.zip";
+            return "/mock/superscience-project.zip";
           case "sync_project":
             if ((window as any).__failSyncConflict) {
               (window as any).__failSyncConflict = false;
@@ -1631,7 +1631,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "resolve_project_sync":
             return { status: "synced", direction: arg("strategy") === "remote" ? "pull" : "push", revision: "revision-2", uploadedFiles: 1, downloadedFiles: 1, skippedPaths: [] };
           case "project_sync_code":
-            return "wisp-sync:mock-secret-code";
+            return "superscience-sync:mock-secret-code";
           case "delete_project":
             return null;
           case "open_project_window":
@@ -2321,7 +2321,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 scope: "project",
                 enabled: true,
                 builtin: false,
-                dir: "/mock/project/.wisp/skills/fresh-project-skill",
+                dir: "/mock/project/.superscience/skills/fresh-project-skill",
               });
             }
             return [
@@ -2576,10 +2576,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "search_sessions": {
             const q = String(arg("query") ?? "").toLowerCase();
             const rows = [
-              { id: "s-current", project_id: "default", project_name: "wisp-science", title: "Current analysis", ts: 1, activity_at: 3, status: "complete" },
-              { id: "s-old", project_id: "default", project_name: "wisp-science", title: "Older structure run", ts: 1, activity_at: 2, status: "complete" },
+              { id: "s-current", project_id: "default", project_name: "superscience", title: "Current analysis", ts: 1, activity_at: 3, status: "complete" },
+              { id: "s-old", project_id: "default", project_name: "superscience", title: "Older structure run", ts: 1, activity_at: 2, status: "complete" },
               { id: "s-other", project_id: "other", project_name: "Other project", title: "Cross-project counts", ts: 1, activity_at: 1, status: "needs_you" },
-              { id: "s-complete", project_id: "default", project_name: "wisp-science", title: "Enumerate MCP bio-tools databases", ts: 1, activity_at: 1, status: "complete" },
+              { id: "s-complete", project_id: "default", project_name: "superscience", title: "Enumerate MCP bio-tools databases", ts: 1, activity_at: 1, status: "complete" },
             ];
             return q ? rows.filter((s) => s.title.toLowerCase().includes(q)) : rows;
           }
@@ -2653,7 +2653,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return { path, mime: "text/markdown", text: "# Draft manuscript\n\nOriginal body paragraph.\n", base64: null };
             }
             if (path.toLowerCase().includes(".json")) {
-              return { path, mime: "application/json", text: '{"model":{"name":"wisp","enabled":true}}', base64: null };
+              return { path, mime: "application/json", text: '{"model":{"name":"superscience","enabled":true}}', base64: null };
             }
             if (path.toLowerCase().includes(".html")) {
               return { path, mime: "text/html", text: '<style>#mode::after{content:"Desktop"}@media(max-width:900px){#mode::after{content:"Mobile"}}</style><div id="mode"></div>', base64: null };
@@ -2697,7 +2697,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return {
                 path: "artifact-version:resource-version-bib",
                 mime: "text/x-bibtex",
-                text: "@article{wisp,\n  title = {Wisp Science}\n}",
+                text: "@article{superscience,\n  title = {SuperScience}\n}",
                 base64: null,
               };
             }
@@ -3091,11 +3091,17 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             // Long-stream path (#61 regression test): drip many text deltas so the
             // thread re-renders repeatedly and grows well past the viewport.
+            // Pad each line — markdown collapses lone newlines into spaces, so
+            // short `line N` tokens alone can still fit a 720p chat pane.
             if (String(arg("message") ?? "").includes("SCROLLTEST")) {
               let n = 0;
               const tick = () => {
                 if (n < 80) {
-                  emit("agent", { kind: "Text", frame_id: fid, delta: `line ${n}\n` });
+                  emit("agent", {
+                    kind: "Text",
+                    frame_id: fid,
+                    delta: `line ${n} ${"x".repeat(96)}\n\n`,
+                  });
                   n++;
                   setTimeout(tick, 6);
                 } else {
@@ -3335,7 +3341,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               emit("agent", { kind: "ToolCall", frame_id: fid, name: "read", preview: "mock context" });
               emit("agent", { kind: "ToolResult", frame_id: fid, name: "read", ok: true, content: "ok" });
               emit("agent", { kind: "Text", frame_id: fid, delta: "Hello " });
-              emit("agent", { kind: "Text", frame_id: fid, delta: "from mock wisp-science." });
+              emit("agent", { kind: "Text", frame_id: fid, delta: "from mock superscience." });
               emit("agent", { kind: "Done", frame_id: fid });
             }, 50);
             return fid;
@@ -3433,7 +3439,7 @@ export function parallelMock(): void {
   const folders: { id: string; name: string }[] = [];
   const queues: Record<string, Promise<void>> = {};
 
-  const project = { id: "default", name: "wisp-science", root: "/mock/root", skill_count: 12, mcp_server_count: 8, memory_file_count: 2, has_api_key: true };
+  const project = { id: "default", name: "superscience", root: "/mock/root", skill_count: 12, mcp_server_count: 8, memory_file_count: 2, has_api_key: true };
 
   (window as any).__TAURI__ = {
     core: {

@@ -4,9 +4,9 @@ The stdio bio servers run on the END USER's machine, so the operator
 identified to upstream APIs is the user, not Anthropic. These helpers read
 the spawn-time env injected by the CLI's connector provider:
 
-- ``OPERON_VERSION``       — product version (defaults to ``dev``);
-- ``OPERON_INSTALL_ID``    — opaque per-install identifier (optional);
-- ``OPERON_CONTACT_EMAIL`` — set ONLY when the user has affirmatively
+- ``SUPERSCIENCE_VERSION``       — product version (defaults to ``dev``);
+- ``SUPERSCIENCE_INSTALL_ID``    — opaque per-install identifier (optional);
+- ``SUPERSCIENCE_CONTACT_EMAIL`` — set ONLY when the user has affirmatively
   consented via the #contact-email-v2 flow (governing ``allowed`` row,
   current notice). Absent on declined/revoked/unset.
 
@@ -27,7 +27,7 @@ class ContactEmailRequired(RuntimeError):
 
 def contact_email() -> str | None:
     """User-consented contact email, or ``None`` when not provided."""
-    return os.environ.get("OPERON_CONTACT_EMAIL") or None
+    return os.environ.get("SUPERSCIENCE_CONTACT_EMAIL") or None
 
 
 def require_contact_email(*, env_override: str = "NCBI_EMAIL") -> str:
@@ -52,7 +52,7 @@ def require_contact_email(*, env_override: str = "NCBI_EMAIL") -> str:
 def product_ua(component: str, *, include_email: bool = True) -> str:
     """Descriptive per-install User-Agent for ``component``.
 
-    Shape: ``operon-{component}/{ver} ({parts})`` where ``parts`` carries the
+    Shape: ``superscience-{component}/{ver} ({parts})`` where ``parts`` carries the
     install id and/or consented mailto, falling back to
     ``contact-not-provided`` when neither is available. A non-ASCII consented
     address is OMITTED from the UA (not lossy-rewritten — that could identify
@@ -61,9 +61,9 @@ def product_ua(component: str, *, include_email: bool = True) -> str:
     final guard so the header is always latin-1-safe regardless of
     install-id/version content.
     """
-    ver = os.environ.get("OPERON_VERSION", "dev")
+    ver = os.environ.get("SUPERSCIENCE_VERSION", "dev")
     parts: list[str] = []
-    install_id = os.environ.get("OPERON_INSTALL_ID")
+    install_id = os.environ.get("SUPERSCIENCE_INSTALL_ID")
     if install_id:
         parts.append(f"install:{install_id}")
     email = contact_email() if include_email else None
@@ -71,5 +71,5 @@ def product_ua(component: str, *, include_email: bool = True) -> str:
         parts.append(f"mailto:{email}")
     if not parts:
         parts = ["contact-not-provided"]
-    ua = f"operon-{component}/{ver} ({'; '.join(parts)})"
+    ua = f"superscience-{component}/{ver} ({'; '.join(parts)})"
     return ua.encode("ascii", "ignore").decode()

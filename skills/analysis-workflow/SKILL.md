@@ -79,7 +79,7 @@ thresholds, seeds, and other result-changing parameters>
 ## Software and data sources
 - R/Python package: exact version
 - External API/database: release or access date
-- Wisp/model/runtime metadata: exact recorded value when available
+- SuperScience/model/runtime metadata: exact recorded value when available
 
 ## Commands and scripts
 - `<project-relative script>` — how it was executed
@@ -105,7 +105,7 @@ Record direct dependencies used by the module:
   file when it is the authoritative environment record.
 - External databases/APIs: release identifier when available, otherwise access
   date plus endpoint/source.
-- Wisp version and model profile: use runtime/session metadata only when it is
+- SuperScience version and model profile: use runtime/session metadata only when it is
   available. Write `unavailable` rather than guessing.
 
 Do not paste an entire global `pip freeze` into every module. If a complete

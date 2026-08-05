@@ -1,0 +1,25 @@
+[package]
+name = "superscience-cli"
+description = "Headless superscience agent — terminal smoke binary for the agent loop, tools, and providers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "superscience"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = "5"
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+superscience-runtime = { workspace = true }
+superscience-mcp = { workspace = true }
+superscience-llm = { workspace = true }
+superscience-core = { workspace = true }
+superscience-skills = { workspace = true }

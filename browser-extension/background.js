@@ -1,9 +1,9 @@
 // Inspired by GenericAgent's GA Web / TMWebDriver real-browser bridge.
-// Independent Wisp implementation; attribution: https://github.com/lsdefine/GenericAgent
+// Independent SuperScience implementation; attribution: https://github.com/lsdefine/GenericAgent
 // GenericAgent is MIT-licensed, Copyright (c) 2025 lsdefine. See NOTICE.md.
 
 const BRIDGE_URL = "ws://127.0.0.1:18765";
-const RECONNECT_ALARM = "wisp-browser-reconnect";
+const RECONNECT_ALARM = "superscience-browser-reconnect";
 
 let socket = null;
 let keepAliveTimer = null;
@@ -65,7 +65,7 @@ function connect() {
     }
   };
   socket.onerror = () => {
-    lastError = "Cannot connect to Wisp on 127.0.0.1:18765";
+    lastError = "Cannot connect to SuperScience on 127.0.0.1:18765";
   };
   socket.onclose = () => {
     clearInterval(keepAliveTimer);
@@ -264,13 +264,13 @@ chrome.tabs.onUpdated.addListener((_id, change) => {
   if (change.status === "complete" || change.url) sendTabs();
 });
 chrome.runtime.onMessage.addListener((message, _sender, reply) => {
-  if (message?.type === "wisp_bridge_status") {
+  if (message?.type === "superscience_bridge_status") {
     reply({
       connected: socket?.readyState === WebSocket.OPEN,
       endpoint: BRIDGE_URL,
       error: lastError,
     });
-  } else if (message?.type === "wisp_bridge_connect") {
+  } else if (message?.type === "superscience_bridge_connect") {
     connect();
     reply({ ok: true });
   }

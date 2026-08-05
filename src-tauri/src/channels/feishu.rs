@@ -59,7 +59,7 @@ impl FeishuRest {
     pub fn new(app_id: &str, app_secret: &str, international: bool) -> Result<Self> {
         Ok(Self {
             http: reqwest::Client::builder()
-                .user_agent("wisp-science")
+                .user_agent("superscience")
                 .timeout(Duration::from_secs(30))
                 .build()?,
             app_id: app_id.to_string(),
@@ -442,7 +442,7 @@ pub async fn run(
             Err(e) => (format!("{e:#}"), Duration::from_secs(30)),
         };
         set_status(&status, "error", &detail);
-        tracing::warn!(target: "wisp", channel = "feishu", detail, "channel disconnected");
+        tracing::warn!(target: "superscience", channel = "feishu", detail, "channel disconnected");
         tokio::select! {
             _ = tokio::time::sleep(wait) => {}
             _ = shutdown.changed() => break,
@@ -485,7 +485,7 @@ async fn connect_once(
                         .send_text(&msg.chat_id, "暂不支持该消息类型,请发送文本消息。")
                         .await
                     {
-                        tracing::warn!(target: "wisp", channel = "feishu", error = %e, "send unsupported-message reply failed");
+                        tracing::warn!(target: "superscience", channel = "feishu", error = %e, "send unsupported-message reply failed");
                     }
                     continue;
                 };
@@ -503,11 +503,11 @@ async fn connect_once(
                                 continue;
                             }
                             Err(error) => {
-                                tracing::warn!(target: "wisp", channel = "feishu", %error, "send progress card failed; falling back to text");
+                                tracing::warn!(target: "superscience", channel = "feishu", %error, "send progress card failed; falling back to text");
                             }
                         },
                         Err(error) => {
-                            tracing::warn!(target: "wisp", channel = "feishu", %error, "create progress card failed; falling back to text");
+                            tracing::warn!(target: "superscience", channel = "feishu", %error, "create progress card failed; falling back to text");
                         }
                     }
                 }
@@ -517,7 +517,7 @@ async fn connect_once(
                     continue;
                 }
                 if let Err(e) = rest.send_text(&msg.chat_id, &reply).await {
-                    tracing::warn!(target: "wisp", channel = "feishu", error = %e, "send reply failed");
+                    tracing::warn!(target: "superscience", channel = "feishu", error = %e, "send reply failed");
                 }
             }
         })
@@ -546,7 +546,7 @@ async fn connect_once(
                     Err(e) => break Err(anyhow!("读取失败:{e}")),
                 };
                 let Ok(frame) = pbbp2::decode(&data) else {
-                    tracing::warn!(target: "wisp", channel = "feishu", "frame decode error ({} bytes)", data.len());
+                    tracing::warn!(target: "superscience", channel = "feishu", "frame decode error ({} bytes)", data.len());
                     continue;
                 };
                 if frame.method != 1 {
@@ -608,14 +608,14 @@ async fn run_streamed_turn(
         )
         .await;
     if let Err(error) = update {
-        tracing::warn!(target: "wisp", channel = "feishu", %error, "final progress-card update failed; sending text fallback");
+        tracing::warn!(target: "superscience", channel = "feishu", %error, "final progress-card update failed; sending text fallback");
         let _ = rest.send_text(chat_id, final_text).await;
     }
     if let Err(error) = rest
         .close_streaming_card(&card_id, sequence.fetch_add(1, Ordering::SeqCst))
         .await
     {
-        tracing::warn!(target: "wisp", channel = "feishu", %error, "close progress card failed");
+        tracing::warn!(target: "superscience", channel = "feishu", %error, "close progress card failed");
     }
 }
 
@@ -661,7 +661,7 @@ async fn stream_progress_events(
                     &rendered,
                     sequence.fetch_add(1, Ordering::SeqCst),
                 ).await {
-                    tracing::warn!(target: "wisp", channel = "feishu", %error, "progress-card update failed");
+                    tracing::warn!(target: "superscience", channel = "feishu", %error, "progress-card update failed");
                 }
                 dirty = false;
             }

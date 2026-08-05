@@ -1,6 +1,6 @@
 # Model configuration
 
-wisp-science calls remote LLM APIs through model profiles. Desktop users
+superscience calls remote LLM APIs through model profiles. Desktop users
 configure these in **Settings -> Models**. Each row is a model profile with its
 own display name, provider, API URL, model ID, advanced options, and API key.
 
@@ -10,14 +10,14 @@ does not change any other conversation. Empty conversations switch immediately
 without a warning. The active profile in Settings remains the default for new
 conversations.
 
-Model profiles describe model access and capabilities for the **built-in Wisp
+Model profiles describe model access and capabilities for the **built-in SuperScience
 agent**. External coding agents (Codex / Claude via ACP) are configured under
 **Settings → Models → ACP Agents** — see [ACP Agents](acp-agents.md). Do not put
 an ACP launch command in an HTTP model profile.
 
 For image workflows, mark an API profile as **Supports image input** and
 optionally **Use for image analysis**. Image attachments are sent directly to a
-visual input model. When the input model is non-visual, Wisp first calls the
+visual input model. When the input model is non-visual, SuperScience first calls the
 assigned vision model and passes its text observations to the input model.
 `view_image` and image reads use the assigned vision model in the same way.
 Raster image input supports PNG, JPEG, GIF, and WebP files up to 5 MiB.
@@ -27,7 +27,7 @@ explains that previously sent images will be omitted from future requests to
 that model. This substitution happens only while preparing the API request; it
 does not delete or rewrite the saved conversation. A new image attached after
 the switch is analyzed through the assigned vision model. Without an assigned
-vision model, Wisp rejects that new image before starting the main model turn.
+vision model, SuperScience rejects that new image before starting the main model turn.
 
 Image generation is a separate model role. Create an OpenAI profile with model
 ID `gpt-image-2`, then enable **Use for image generation**. The built-in
@@ -57,7 +57,7 @@ provider credentials, but it remains a separate API capability.
 
 The **Validate** action checks `gpt-image-2` access through OpenAI's model
 metadata endpoint. If a compatible gateway does not implement the single-model
-route and returns `404` or `405`, Wisp checks its model-list endpoint instead.
+route and returns `404` or `405`, SuperScience checks its model-list endpoint instead.
 It does not send the image-only model to Responses/Chat Completions and does not
 generate a billable validation image.
 
@@ -70,7 +70,7 @@ generate a billable validation image.
 | Anthropic | Claude API through `/v1/messages` | API URL, Model ID, API key |
 
 Enter the provider's API base URL. Do not append `/chat/completions`,
-`/responses`, or `/v1/messages`; Wisp adds the matching request path for the
+`/responses`, or `/v1/messages`; SuperScience adds the matching request path for the
 selected provider.
 
 OpenAI-compatible reasoning streams are normalized into one reasoning channel.
@@ -78,23 +78,23 @@ Empty `content` placeholders sent alongside Alibaba/DashScope
 `reasoning_content` chunks are ignored, so a continuous thought process remains
 one disclosure in the conversation.
 
-For OpenAI-compatible and Responses API profiles, Wisp sends its internal
-`python` REPL tool as `wisp_python` and maps returned calls back to `python`.
+For OpenAI-compatible and Responses API profiles, SuperScience sends its internal
+`python` REPL tool as `superscience_python` and maps returned calls back to `python`.
 This avoids the reserved `python` function-name collision on Codex models,
 including when the request is translated by gateways such as CLIProxyAPI.
 
 API keys are stored in the OS keyring. They are not stored in SQLite.
 
-The desktop app stores model profile metadata in `.wisp/wisp.sqlite`. Existing single-model installs are migrated into a `default` model profile the first time settings are loaded.
+The desktop app stores model profile metadata in `.superscience/superscience.sqlite`. Existing single-model installs are migrated into a `default` model profile the first time settings are loaded.
 
 ## Headless CLI
 
-The `wisp-science` headless CLI uses environment variables and supports API providers:
+The `superscience` headless CLI uses environment variables and supports API providers:
 
 ```powershell
-$env:WISP_PROVIDER = "openai"           # openai, openai_responses, or anthropic
-$env:WISP_API_URL  = "https://api.deepseek.com"
-$env:WISP_MODEL    = "deepseek-v4-pro"
-$env:WISP_API_KEY  = "<your provider key>"
-cargo run -p wisp-cli
+$env:SUPERSCIENCE_PROVIDER = "openai"           # openai, openai_responses, or anthropic
+$env:SUPERSCIENCE_API_URL  = "https://api.deepseek.com"
+$env:SUPERSCIENCE_MODEL    = "deepseek-v4-pro"
+$env:SUPERSCIENCE_API_KEY  = "<your provider key>"
+cargo run -p superscience-cli
 ```

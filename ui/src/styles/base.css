@@ -1,4 +1,4 @@
-/* Wisp UI — warm paper theme aligned with web-dist (Operon / Claude Science). */
+/* SuperScience UI — warm paper theme aligned with web-dist (Operon / Claude Science). */
 :root {
   --bg-app: #faf9f6;
   --bg-elev: #ffffff;
@@ -353,7 +353,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   border-bottom: 1px solid var(--border); user-select: none;
 }
 .window-brand { display: flex; align-items: center; gap: 7px; padding: 0 12px; font-size: 12px; color: var(--text); }
-.window-brand-icon { width: 18px; height: 18px; border-radius: 5px; background: center / contain no-repeat url("logo.svg"); }
+.window-brand-icon { width: 18px; height: 18px; background: center / contain no-repeat url("logo.png"); }
 .window-brand-version { color: var(--text-faint); font-size: 11px; }
 .window-menu { display: flex; align-items: stretch; height: 100%; font-size: 13px; }
 .window-menu-group { position: relative; display: flex; align-items: stretch; }

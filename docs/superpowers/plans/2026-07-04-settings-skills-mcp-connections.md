@@ -4,19 +4,19 @@
 
 **Goal:** Add a multi-section Settings page (General / Skills / Connections) that lets users enable/disable and add skills, and configure local (stdio) or remote (HTTP) MCP servers.
 
-**Architecture:** Persistence reuses the existing SQLite key-value store (three new JSON keys, no schema change). A new HTTP transport is added to `wisp-mcp` behind the existing `McpClient` API. Skill filtering and MCP wiring happen at agent-creation time, so toggles apply to new sessions; idle cached agents are reset (reusing the pattern already in `set_settings`) so changes land on the next turn. The Leptos Settings modal becomes a left-nav shell hosting the three sections.
+**Architecture:** Persistence reuses the existing SQLite key-value store (three new JSON keys, no schema change). A new HTTP transport is added to `superscience-mcp` behind the existing `McpClient` API. Skill filtering and MCP wiring happen at agent-creation time, so toggles apply to new sessions; idle cached agents are reset (reusing the pattern already in `set_settings`) so changes land on the next turn. The Leptos Settings modal becomes a left-nav shell hosting the three sections.
 
-**Tech Stack:** Rust, Tauri v2, Leptos 0.6 (CSR→WASM, Trunk), SQLite (`wisp-store`), `reqwest` 0.12 (already a workspace dep, has `stream`+`json`+`rustls-tls`), `tauri-plugin-dialog` v2 (already installed).
+**Tech Stack:** Rust, Tauri v2, Leptos 0.6 (CSR→WASM, Trunk), SQLite (`superscience-store`), `reqwest` 0.12 (already a workspace dep, has `stream`+`json`+`rustls-tls`), `tauri-plugin-dialog` v2 (already installed).
 
 ## Global Constraints
 
 - MCP transport values are serde-tagged: `#[serde(tag = "kind", rename_all = "lowercase")]` → JSON `"kind": "stdio"` / `"kind": "http"`.
 - Settings JSON keys (exact): `disabled_skills`, `mcp_connections`, `bio_tools_enabled`.
-- User-writable skill dir: `~/.wisp/skills/<name>/` via `dirs::home_dir().join(".wisp").join("skills")`. Bundled skills live under `wisp_skills::bundled_dir()` and may be disabled but never removed.
-- Public `wisp-mcp` API (`McpClient::tools_list`, `McpClient::tool_call`, `McpTool`) MUST remain unchanged — `McpTool` holds `Arc<McpClient>` and must not need edits.
+- User-writable skill dir: `~/.superscience/skills/<name>/` via `dirs::home_dir().join(".superscience").join("skills")`. Bundled skills live under `superscience_skills::bundled_dir()` and may be disabled but never removed.
+- Public `superscience-mcp` API (`McpClient::tools_list`, `McpClient::tool_call`, `McpTool`) MUST remain unchanged — `McpTool` holds `Arc<McpClient>` and must not need edits.
 - Toggle/skill changes take effect on new sessions (skills) / next turn for idle sessions (MCP). Do NOT attempt mid-conversation hot-swap.
 - No new heavy dependencies. `.zip` skill upload and GitHub import are explicitly out of scope.
-- Rust package names for commands: `wisp-mcp`, `wisp-skills`, `wisp-tauri` (the Tauri backend crate in `src-tauri/`), `wisp-ui` (Leptos frontend in `ui/`).
+- Rust package names for commands: `superscience-mcp`, `superscience-skills`, `superscience-tauri` (the Tauri backend crate in `src-tauri/`), `superscience-ui` (Leptos frontend in `ui/`).
 - Follow existing patterns: `#[tauri::command]` fns registered in the `generate_handler!` block (lib.rs:1430); frontend uses `invoke`/`invoke_checked` (ui/src/api.js) and the `t(locale, key)` i18n helper.
 
 ---
@@ -24,10 +24,10 @@
 ## File Structure
 
 **Backend crates:**
-- `crates/wisp-mcp/Cargo.toml` — add `reqwest` dep.
-- `crates/wisp-mcp/src/client.rs` — `Transport` enum (Stdio/Http), `connect_http`, SSE parsing. Public API unchanged.
-- `crates/wisp-mcp/src/lib.rs` — re-export nothing new (connect_http is a `McpClient` method).
-- `crates/wisp-skills/src/index.rs` — `SkillIndex::filtered`.
+- `crates/superscience-mcp/Cargo.toml` — add `reqwest` dep.
+- `crates/superscience-mcp/src/client.rs` — `Transport` enum (Stdio/Http), `connect_http`, SSE parsing. Public API unchanged.
+- `crates/superscience-mcp/src/lib.rs` — re-export nothing new (connect_http is a `McpClient` method).
+- `crates/superscience-skills/src/index.rs` — `SkillIndex::filtered`.
 
 **Tauri backend:**
 - `src-tauri/src/lib.rs` — new types (`McpConnection`, `McpTransport`, extended `SkillInfo`), settings load/save helpers, skill install/remove, connection CRUD + test commands, `wire_python_and_mcp` extension, agent-creation filter, `generate_handler!` registration.
@@ -39,21 +39,21 @@
 
 ---
 
-## Phase A — wisp-mcp HTTP transport
+## Phase A — superscience-mcp HTTP transport
 
 ### Task A1: Refactor `McpClient` to a transport enum (no behavior change)
 
 **Files:**
-- Modify: `crates/wisp-mcp/src/client.rs`
-- Modify: `crates/wisp-mcp/Cargo.toml`
+- Modify: `crates/superscience-mcp/src/client.rs`
+- Modify: `crates/superscience-mcp/Cargo.toml`
 
 **Interfaces:**
 - Consumes: nothing new.
 - Produces: `McpClient` with a private `transport: Transport` field; public methods `launch`, `launch_bio_tools`, `tools_list`, `tool_call` unchanged. New private `enum Transport { Stdio { stdin, stdout, next_id }, Http(HttpTransport) }` (HttpTransport added in A2). `McpClient::request(&self, method, params)` dispatches on `transport`.
 
-- [ ] **Step 1: Add reqwest to wisp-mcp Cargo.toml**
+- [ ] **Step 1: Add reqwest to superscience-mcp Cargo.toml**
 
-In `crates/wisp-mcp/Cargo.toml` under `[dependencies]`, add:
+In `crates/superscience-mcp/Cargo.toml` under `[dependencies]`, add:
 
 ```toml
 reqwest = { workspace = true }
@@ -84,7 +84,7 @@ impl McpClient {
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
-        wisp_tools::process::hide_console_async(&mut cmd);
+        superscience_tools::process::hide_console_async(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| anyhow!("spawn MCP server '{command}': {e}"))?;
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
@@ -100,7 +100,7 @@ impl McpClient {
         let init_params = json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": { "name": "wisp-science", "version": env!("CARGO_PKG_VERSION") }
+            "clientInfo": { "name": "superscience", "version": env!("CARGO_PKG_VERSION") }
         });
         let _ = client.request("initialize", Some(init_params)).await?;
         client.notify("notifications/initialized", json!({})).await?;
@@ -160,13 +160,13 @@ Delete the now-unused `send_raw` and `read_response` methods (their logic moved 
 
 - [ ] **Step 3: Verify it compiles and existing behavior is intact**
 
-Run: `cargo build -p wisp-mcp`
+Run: `cargo build -p superscience-mcp`
 Expected: builds with no errors (warnings about unused imports are fine to clean up).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/wisp-mcp/Cargo.toml crates/wisp-mcp/src/client.rs
+git add crates/superscience-mcp/Cargo.toml crates/superscience-mcp/src/client.rs
 git commit -m "refactor(mcp): move stdio state behind a Transport enum"
 ```
 
@@ -175,8 +175,8 @@ git commit -m "refactor(mcp): move stdio state behind a Transport enum"
 ### Task A2: Add Streamable-HTTP transport + SSE parsing
 
 **Files:**
-- Modify: `crates/wisp-mcp/src/client.rs`
-- Test: inline `#[cfg(test)] mod tests` in `crates/wisp-mcp/src/client.rs`
+- Modify: `crates/superscience-mcp/src/client.rs`
+- Test: inline `#[cfg(test)] mod tests` in `crates/superscience-mcp/src/client.rs`
 
 **Interfaces:**
 - Consumes: `Transport` enum from A1.
@@ -187,7 +187,7 @@ git commit -m "refactor(mcp): move stdio state behind a Transport enum"
 
 - [ ] **Step 1: Write the failing test for SSE parsing**
 
-Add to the bottom of `crates/wisp-mcp/src/client.rs`:
+Add to the bottom of `crates/superscience-mcp/src/client.rs`:
 
 ```rust
 #[cfg(test)]
@@ -220,7 +220,7 @@ mod tests {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test -p wisp-mcp sse_body`
+Run: `cargo test -p superscience-mcp sse_body`
 Expected: FAIL — `parse_jsonrpc_from_sse` not found.
 
 - [ ] **Step 3: Implement the HTTP transport and SSE parser**
@@ -287,7 +287,7 @@ impl McpClient {
         let init_params = json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": { "name": "wisp-science", "version": env!("CARGO_PKG_VERSION") }
+            "clientInfo": { "name": "superscience", "version": env!("CARGO_PKG_VERSION") }
         });
         let _ = client.request("initialize", Some(init_params)).await?;
         client.notify("notifications/initialized", json!({})).await?;
@@ -352,13 +352,13 @@ Transport::Http(h) => {
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cargo test -p wisp-mcp`
+Run: `cargo test -p superscience-mcp`
 Expected: PASS (both `sse_body_*` tests) and the crate builds.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/wisp-mcp/src/client.rs
+git add crates/superscience-mcp/src/client.rs
 git commit -m "feat(mcp): add Streamable-HTTP transport with SSE response parsing"
 ```
 
@@ -369,15 +369,15 @@ git commit -m "feat(mcp): add Streamable-HTTP transport with SSE response parsin
 ### Task B1: `SkillIndex::filtered`
 
 **Files:**
-- Modify: `crates/wisp-skills/src/index.rs`
-- Test: inline `#[cfg(test)] mod tests` in `crates/wisp-skills/src/index.rs`
+- Modify: `crates/superscience-skills/src/index.rs`
+- Test: inline `#[cfg(test)] mod tests` in `crates/superscience-skills/src/index.rs`
 
 **Interfaces:**
 - Produces: `pub fn SkillIndex::filtered(&self, disabled: &std::collections::HashSet<String>) -> SkillIndex` — returns a new index containing only skills whose `name` is NOT in `disabled`. Both `descriptions()` and `get()` on the returned index then exclude disabled skills.
 
 - [ ] **Step 1: Write the failing test**
 
-Add to the bottom of `crates/wisp-skills/src/index.rs`:
+Add to the bottom of `crates/superscience-skills/src/index.rs`:
 
 ```rust
 #[cfg(test)]
@@ -405,7 +405,7 @@ mod tests {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test -p wisp-skills filtered_drops_disabled`
+Run: `cargo test -p superscience-skills filtered_drops_disabled`
 Expected: FAIL — no method named `filtered`.
 
 - [ ] **Step 3: Implement `filtered`**
@@ -423,13 +423,13 @@ Add to `impl SkillIndex` (after `find`):
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `cargo test -p wisp-skills filtered_drops_disabled`
+Run: `cargo test -p superscience-skills filtered_drops_disabled`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/wisp-skills/src/index.rs
+git add crates/superscience-skills/src/index.rs
 git commit -m "feat(skills): add SkillIndex::filtered to exclude disabled skills"
 ```
 
@@ -467,7 +467,7 @@ In the `mod tests` block at the bottom of `src-tauri/src/lib.rs`, add:
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test -p wisp-tauri parse_disabled_skills`
+Run: `cargo test -p superscience-tauri parse_disabled_skills`
 Expected: FAIL — `parse_disabled_skills` not found.
 
 - [ ] **Step 3: Implement the helpers**
@@ -529,7 +529,7 @@ In `send_message`, replace the agent-build block (lib.rs ~571-582). The change: 
 
 - [ ] **Step 5: Run tests + build**
 
-Run: `cargo test -p wisp-tauri parse_disabled_skills && cargo build -p wisp-tauri`
+Run: `cargo test -p superscience-tauri parse_disabled_skills && cargo build -p superscience-tauri`
 Expected: test PASS, crate builds.
 
 - [ ] **Step 6: Commit**
@@ -553,7 +553,7 @@ git commit -m "feat(settings): persist disabled_skills and filter them at agent 
   - `async fn list_skills(state) -> Vec<SkillInfo>` (now async: reads disabled set).
   - `async fn set_skill_enabled(state, name: String, enabled: bool) -> Result<(), String>`.
   - `async fn pick_skill_source(app) -> Result<Option<String>, String>` — dialog picks a folder OR a SKILL.md file.
-  - `async fn install_skill(state, src_path: String) -> Result<String, String>` — copies into `~/.wisp/skills/<name>/`, returns the installed name; reloads `ActiveProject.skills`.
+  - `async fn install_skill(state, src_path: String) -> Result<String, String>` — copies into `~/.superscience/skills/<name>/`, returns the installed name; reloads `ActiveProject.skills`.
   - `async fn remove_skill(state, name: String) -> Result<(), String>` — deletes a user skill dir only; reloads.
 
 - [ ] **Step 1: Extend the `SkillInfo` struct**
@@ -573,14 +573,14 @@ struct SkillInfo {
 
 - [ ] **Step 2: Rewrite `list_skills` (async, with status)**
 
-Replace `list_skills` (lib.rs:877-881). A skill is `builtin` when its dir is under `wisp_skills::bundled_dir()`:
+Replace `list_skills` (lib.rs:877-881). A skill is `builtin` when its dir is under `superscience_skills::bundled_dir()`:
 
 ```rust
 #[tauri::command]
 async fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillInfo>, String> {
     let ap = state.active();
     let disabled = load_disabled_skills(&state.store).await;
-    let bundled = wisp_skills::bundled_dir();
+    let bundled = superscience_skills::bundled_dir();
     Ok(ap.skills.all().iter().map(|s| {
         let builtin = bundled.as_ref().map(|b| s.dir.starts_with(b)).unwrap_or(false);
         SkillInfo {
@@ -637,7 +637,7 @@ async fn pick_skill_source(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 fn user_skills_dir() -> Result<PathBuf, String> {
-    dirs::home_dir().map(|h| h.join(".wisp").join("skills"))
+    dirs::home_dir().map(|h| h.join(".superscience").join("skills"))
         .ok_or_else(|| "no home directory".to_string())
 }
 
@@ -655,7 +655,7 @@ async fn install_skill(state: State<'_, AppState>, src_path: String) -> Result<S
         return Err("select a skill folder or a SKILL.md file".into());
     };
     // Parse name from frontmatter (fall back to dir name), validate description.
-    let skill = wisp_skills::parse_skill_file(&skill_md)
+    let skill = superscience_skills::parse_skill_file(&skill_md)
         .ok_or_else(|| "could not parse SKILL.md frontmatter".to_string())?;
     if skill.description.trim().is_empty() {
         return Err("SKILL.md is missing a description".into());
@@ -704,7 +704,7 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 ```
 
-> `install_skill` uses `wisp_skills::parse_skill_file` — the existing `parse_skill` in `crates/wisp-skills/src/index.rs` is private and takes `(path, dir)`. Add a thin public wrapper in that crate:
+> `install_skill` uses `superscience_skills::parse_skill_file` — the existing `parse_skill` in `crates/superscience-skills/src/index.rs` is private and takes `(path, dir)`. Add a thin public wrapper in that crate:
 > ```rust
 > pub fn parse_skill_file(md: &Path) -> Option<Skill> {
 >     let dir = md.parent().map(PathBuf::from).unwrap_or_default();
@@ -719,13 +719,13 @@ In the `generate_handler!` block (lib.rs:1430), add: `set_skill_enabled, pick_sk
 
 - [ ] **Step 6: Build**
 
-Run: `cargo build -p wisp-tauri`
+Run: `cargo build -p superscience-tauri`
 Expected: builds. Fix any call sites of `list_skills`/`SkillInfo` the compiler flags (e.g. `get_capabilities`).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src-tauri/src/lib.rs crates/wisp-skills/src/index.rs
+git add src-tauri/src/lib.rs crates/superscience-skills/src/index.rs
 git commit -m "feat(skills): list status + enable/disable + install/remove commands"
 ```
 
@@ -776,7 +776,7 @@ In `mod tests` at the bottom of `src-tauri/src/lib.rs`:
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test -p wisp-tauri mcp_connection_serde`
+Run: `cargo test -p superscience-tauri mcp_connection_serde`
 Expected: FAIL — types not found.
 
 - [ ] **Step 3: Implement the types + helpers**
@@ -835,7 +835,7 @@ async fn save_bio_tools_enabled(store: &Store, on: bool) -> Result<(), String> {
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `cargo test -p wisp-tauri mcp_connection_serde`
+Run: `cargo test -p superscience-tauri mcp_connection_serde`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -865,33 +865,33 @@ git commit -m "feat(connections): McpConnection model + settings persistence"
 - [ ] **Step 1: Add a helper that builds an `McpClient` from a connection**
 
 ```rust
-async fn connect_mcp(conn: &McpConnection, py_python: Option<&std::path::Path>) -> anyhow::Result<wisp_mcp::McpClient> {
+async fn connect_mcp(conn: &McpConnection, py_python: Option<&std::path::Path>) -> anyhow::Result<superscience_mcp::McpClient> {
     match &conn.transport {
         McpTransport::Stdio { command, args, env, cwd } => {
             // env/cwd support: set via std::env for the spawned process is unsafe globally;
-            // instead prepend `env`-style not needed — wisp_mcp::launch takes command+args.
+            // instead prepend `env`-style not needed — superscience_mcp::launch takes command+args.
             // For env/cwd we build the command ourselves.
             let mut cmd = tokio::process::Command::new(command);
             cmd.args(args);
             for (k, v) in env { cmd.env(k, v); }
             if let Some(dir) = cwd { if !dir.is_empty() { cmd.current_dir(dir); } }
             let _ = py_python; // reserved; user stdio connections use their own command
-            wisp_mcp::McpClient::launch_with_command(cmd).await
+            superscience_mcp::McpClient::launch_with_command(cmd).await
         }
         McpTransport::Http { url, headers } => {
-            wisp_mcp::McpClient::connect_http(url, headers).await
+            superscience_mcp::McpClient::connect_http(url, headers).await
         }
     }
 }
 ```
 
-> This needs a `McpClient::launch_with_command(cmd: tokio::process::Command)` constructor in `wisp-mcp` (the current `launch` builds its own `Command` and can't carry env/cwd). Add it in `crates/wisp-mcp/src/client.rs` by extracting the body of `launch` to take a pre-built `Command`:
+> This needs a `McpClient::launch_with_command(cmd: tokio::process::Command)` constructor in `superscience-mcp` (the current `launch` builds its own `Command` and can't carry env/cwd). Add it in `crates/superscience-mcp/src/client.rs` by extracting the body of `launch` to take a pre-built `Command`:
 > ```rust
 > pub async fn launch_with_command(mut cmd: tokio::process::Command) -> Result<Self> {
 >     cmd.stdin(std::process::Stdio::piped())
 >         .stdout(std::process::Stdio::piped())
 >         .stderr(std::process::Stdio::null());
->     wisp_tools::process::hide_console_async(&mut cmd);
+>     superscience_tools::process::hide_console_async(&mut cmd);
 >     let mut child = cmd.spawn().map_err(|e| anyhow!("spawn MCP server: {e}"))?;
 >     let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
 >     let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
@@ -902,22 +902,22 @@ async fn connect_mcp(conn: &McpConnection, py_python: Option<&std::path::Path>) 
 >         next_id: AtomicU64::new(1),
 >     }};
 >     let init_params = json!({ "protocolVersion": "2024-11-05", "capabilities": {},
->         "clientInfo": { "name": "wisp-science", "version": env!("CARGO_PKG_VERSION") } });
+>         "clientInfo": { "name": "superscience", "version": env!("CARGO_PKG_VERSION") } });
 >     let _ = client.request("initialize", Some(init_params)).await?;
 >     client.notify("notifications/initialized", json!({})).await?;
 >     Ok(client)
 > }
 > ```
-> Then make `launch` delegate: build the `Command` and call `launch_with_command`. Commit this wisp-mcp change with this task.
+> Then make `launch` delegate: build the `Command` and call `launch_with_command`. Commit this superscience-mcp change with this task.
 
 - [ ] **Step 2: Extend `wire_python_and_mcp` to 3 args and wire connections**
 
 Change the signature (lib.rs:457) and the bio-tools block:
 
 ```rust
-async fn wire_python_and_mcp(agent: &mut wisp_core::Agent, app_data: &std::path::Path, store: &Store) -> Vec<String> {
+async fn wire_python_and_mcp(agent: &mut superscience_core::Agent, app_data: &std::path::Path, store: &Store) -> Vec<String> {
     let mut errors = vec![];
-    let py_env = match wisp_runtime::PythonEnv::ensure(app_data) {
+    let py_env = match superscience_runtime::PythonEnv::ensure(app_data) {
         Ok(env) => Some(env),
         Err(e) => { errors.push(format!("Python environment: {e}")); None }
     };
@@ -926,11 +926,11 @@ async fn wire_python_and_mcp(agent: &mut wisp_core::Agent, app_data: &std::path:
 
     // Bundled bio-tools (gated by the settings toggle, default on).
     if load_bio_tools_enabled(store).await {
-        if let Ok(cmdline) = std::env::var("WISP_MCP_COMMAND") {
-            // ... existing WISP_MCP_COMMAND branch unchanged ...
+        if let Ok(cmdline) = std::env::var("SUPERSCIENCE_MCP_COMMAND") {
+            // ... existing SUPERSCIENCE_MCP_COMMAND branch unchanged ...
         } else if let Some(env) = &py_env {
-            let pkg = std::env::var("WISP_MCP_PKG").unwrap_or_else(|_| "mcp_bio".into());
-            match wisp_mcp::McpClient::launch_bio_tools(&env.python(), &pkg).await {
+            let pkg = std::env::var("SUPERSCIENCE_MCP_PKG").unwrap_or_else(|_| "mcp_bio".into());
+            match superscience_mcp::McpClient::launch_bio_tools(&env.python(), &pkg).await {
                 Ok(client) => register_mcp(agent, std::sync::Arc::new(client)).await,
                 Err(e) => errors.push(format!("MCP {pkg}: {e}")),
             }
@@ -1021,7 +1021,7 @@ async fn set_bio_tools_enabled(state: State<'_, AppState>, enabled: bool) -> Res
 
 #[tauri::command]
 async fn test_mcp_connection(state: State<'_, AppState>, conn: McpConnection) -> Result<usize, String> {
-    let py = wisp_runtime::PythonEnv::ensure(&state.app_data).ok().map(|e| e.python());
+    let py = superscience_runtime::PythonEnv::ensure(&state.app_data).ok().map(|e| e.python());
     let client = connect_mcp(&conn, py.as_deref()).await.map_err(|e| format!("{e}"))?;
     let tools = client.tools_list().await.map_err(|e| format!("{e}"))?;
     Ok(tools.len())
@@ -1034,13 +1034,13 @@ In `generate_handler!` add: `list_mcp_connections, add_mcp_connection, update_mc
 
 - [ ] **Step 5: Build the whole backend**
 
-Run: `cargo build -p wisp-tauri && cargo test -p wisp-tauri && cargo test -p wisp-mcp`
+Run: `cargo build -p superscience-tauri && cargo test -p superscience-tauri && cargo test -p superscience-mcp`
 Expected: builds; all tests pass.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src-tauri/src/lib.rs crates/wisp-mcp/src/client.rs
+git add src-tauri/src/lib.rs crates/superscience-mcp/src/client.rs
 git commit -m "feat(connections): wire user MCP connections + CRUD/test commands"
 ```
 
@@ -1496,7 +1496,7 @@ git commit -m "feat(ui): connections section — bio-tools toggle + local/remote
 - Bio-tools toggle (`bio_tools_enabled`) → C1/C2 + D3. ✓
 - Connection CRUD + enable + test → C2 + D3. ✓
 - Wiring gated by settings, applied to new sessions / idle-agent reset → B2/C2 (`reset_idle_agents`). ✓
-- Public wisp-mcp API unchanged (`McpTool` untouched) → A1 keeps signatures; `launch_with_command` is additive. ✓
+- Public superscience-mcp API unchanged (`McpTool` untouched) → A1 keeps signatures; `launch_with_command` is additive. ✓
 - Tests: SkillIndex filter (B1), connection serde roundtrip (C1), SSE parse (A2), disabled_skills parse (B2). ✓
 
 **Deferred (per spec, intentional):** `.zip` upload, GitHub import, splitting bio-tools into 87 connections, per-project disabled skills, mid-conversation hot-swap.

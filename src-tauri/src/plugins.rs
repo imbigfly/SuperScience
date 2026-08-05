@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, State};
 
-const PLUGIN_SCHEMA: &str = "wisp.plugin.v1";
+const PLUGIN_SCHEMA: &str = "superscience.plugin.v1";
 const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_EXPANDED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
@@ -73,7 +73,7 @@ pub(crate) struct PluginRuntimeError {
 
 impl NormalizedPluginManifest {
     pub(crate) fn from_installation(
-        installation: &wisp_store::PluginInstallation,
+        installation: &superscience_store::PluginInstallation,
     ) -> Result<Self, String> {
         serde_json::from_str(&installation.manifest_json)
             .map_err(|error| format!("invalid installed plugin manifest: {error}"))
@@ -148,7 +148,7 @@ struct PluginFileCommit {
     plugin_root: PathBuf,
     previous_root: Option<PathBuf>,
     staging_root: PathBuf,
-    installation: wisp_store::PluginInstallation,
+    installation: superscience_store::PluginInstallation,
 }
 
 fn validate_plugin_id(value: &str) -> Result<(), String> {
@@ -201,7 +201,7 @@ fn author_name(value: &serde_json::Value) -> String {
 
 fn find_package_root(root: &Path) -> Result<PathBuf, String> {
     let direct = [
-        root.join(".wisp-plugin").join("plugin.json"),
+        root.join(".superscience-plugin").join("plugin.json"),
         root.join(".claude-plugin").join("plugin.json"),
     ];
     if direct.iter().any(|path| path.is_file()) {
@@ -218,7 +218,7 @@ fn find_package_root(root: &Path) -> Result<PathBuf, String> {
             .is_dir()
         {
             let path = entry.path();
-            if path.join(".wisp-plugin/plugin.json").is_file()
+            if path.join(".superscience-plugin/plugin.json").is_file()
                 || path.join(".claude-plugin/plugin.json").is_file()
             {
                 candidates.push(path);
@@ -228,19 +228,20 @@ fn find_package_root(root: &Path) -> Result<PathBuf, String> {
     match candidates.len() {
         1 => Ok(candidates.remove(0)),
         0 => Err(
-            "plugin package has no .wisp-plugin/plugin.json or .claude-plugin/plugin.json".into(),
+            "plugin package has no .superscience-plugin/plugin.json or .claude-plugin/plugin.json"
+                .into(),
         ),
         _ => Err("plugin package contains more than one plugin root".into()),
     }
 }
 
 fn parse_manifest(package_root: &Path) -> Result<NormalizedPluginManifest, String> {
-    let native = package_root.join(".wisp-plugin/plugin.json");
+    let native = package_root.join(".superscience-plugin/plugin.json");
     if native.is_file() {
         let bytes = std::fs::read(&native)
-            .map_err(|error| format!("read Wisp plugin manifest: {error}"))?;
+            .map_err(|error| format!("read SuperScience plugin manifest: {error}"))?;
         let manifest: NormalizedPluginManifest = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("parse Wisp plugin manifest: {error}"))?;
+            .map_err(|error| format!("parse SuperScience plugin manifest: {error}"))?;
         validate_manifest(package_root, manifest)
     } else {
         parse_claude_plugin(package_root)
@@ -647,7 +648,7 @@ fn install_prepared(
     let plugin_root = app_data.join("plugins").join(&prepared.manifest.id);
     let install_root = plugin_root.join(&prepared.manifest.version);
     let now = chrono::Utc::now().timestamp();
-    let installation = wisp_store::PluginInstallation {
+    let installation = superscience_store::PluginInstallation {
         plugin_id: prepared.manifest.id.clone(),
         version: prepared.manifest.version.clone(),
         display_name: prepared.manifest.display_name.clone(),
@@ -713,7 +714,7 @@ fn restore_plugin_files(plugin_root: &Path, previous_root: Option<&Path>) -> Res
 }
 
 fn plugin_view(
-    installation: wisp_store::PluginInstallation,
+    installation: superscience_store::PluginInstallation,
     enabled: bool,
 ) -> Result<PluginView, String> {
     let manifest = NormalizedPluginManifest::from_installation(&installation)?;
@@ -783,9 +784,12 @@ fn apply_observed_runtime_errors(view: &mut PluginView, errors: &[String]) {
 }
 
 pub(crate) async fn enabled_plugin_manifests(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     project_id: &str,
-) -> Vec<(wisp_store::PluginInstallation, NormalizedPluginManifest)> {
+) -> Vec<(
+    superscience_store::PluginInstallation,
+    NormalizedPluginManifest,
+)> {
     let installations = store
         .list_enabled_plugin_installations(project_id)
         .await
@@ -804,7 +808,7 @@ fn expand_plugin_root(value: &str, install_root: &Path) -> Result<String, String
     let root = install_root.to_string_lossy();
     let expanded = value
         .replace("${CLAUDE_PLUGIN_ROOT}", &root)
-        .replace("${WISP_PLUGIN_ROOT}", &root);
+        .replace("${SUPERSCIENCE_PLUGIN_ROOT}", &root);
     if expanded.contains("${") || expanded.contains('\0') {
         return Err(format!("unsupported variable in plugin value '{value}'"));
     }
@@ -812,7 +816,7 @@ fn expand_plugin_root(value: &str, install_root: &Path) -> Result<String, String
 }
 
 fn plugin_mcp_launch(
-    installation: &wisp_store::PluginInstallation,
+    installation: &superscience_store::PluginInstallation,
     manifest: &NormalizedPluginManifest,
     server: &PluginMcpServer,
 ) -> Result<PluginMcpLaunch, String> {
@@ -879,7 +883,7 @@ fn plugin_mcp_launch(
 }
 
 pub(crate) async fn enabled_plugin_mcp_launches(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     project_id: &str,
 ) -> (Vec<PluginMcpLaunch>, Vec<PluginRuntimeError>) {
     let mut launches = Vec::new();
@@ -956,7 +960,7 @@ pub(super) async fn pick_plugin_source(app: AppHandle) -> Result<Option<String>,
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .add_filter("Wisp or Claude plugin", &["zip"])
+        .add_filter("SuperScience or Claude plugin", &["zip"])
         .pick_file(move |path| {
             let _ = sender.send(path);
         });
@@ -1238,7 +1242,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::{Arc, Mutex};
-    use wisp_tools::{Tool, ToolEnv, ToolEvent};
+    use superscience_tools::{Tool, ToolEnv, ToolEvent};
 
     struct AcceptanceEnv {
         root: PathBuf,
@@ -1284,7 +1288,8 @@ mod tests {
 
     #[test]
     fn claude_plugin_is_normalized_without_executing_it() {
-        let root = std::env::temp_dir().join(format!("wisp-plugin-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("superscience-plugin-{}", uuid::Uuid::new_v4()));
         fixture(&root);
         let manifest = parse_manifest(&root).unwrap();
         assert_eq!(manifest.id, "motif");
@@ -1296,7 +1301,8 @@ mod tests {
 
     #[test]
     fn zip_extraction_rejects_parent_traversal() {
-        let root = std::env::temp_dir().join(format!("wisp-plugin-zip-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("superscience-plugin-zip-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let archive_path = root.join("bad.zip");
         let file = File::create(&archive_path).unwrap();
@@ -1337,11 +1343,12 @@ mod tests {
 
     #[test]
     fn plugin_view_reports_an_unavailable_mcp_runtime() {
-        let root = std::env::temp_dir().join(format!("wisp-plugin-view-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("superscience-plugin-view-{}", uuid::Uuid::new_v4()));
         fixture(&root);
         let mut manifest = parse_manifest(&root).unwrap();
-        manifest.mcp_servers[0].command = "wisp-definitely-missing-runtime".into();
-        let installation = wisp_store::PluginInstallation {
+        manifest.mcp_servers[0].command = "superscience-definitely-missing-runtime".into();
+        let installation = superscience_store::PluginInstallation {
             plugin_id: manifest.id.clone(),
             version: manifest.version.clone(),
             display_name: manifest.display_name.clone(),
@@ -1360,17 +1367,19 @@ mod tests {
         let view = plugin_view(installation, false).unwrap();
         assert_eq!(view.runtime_status, "unavailable");
         assert_eq!(view.runtime_errors.len(), 1);
-        assert!(view.runtime_errors[0].contains("wisp-definitely-missing-runtime"));
+        assert!(view.runtime_errors[0].contains("superscience-definitely-missing-runtime"));
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn plugin_view_includes_errors_observed_during_new_session_startup() {
-        let root =
-            std::env::temp_dir().join(format!("wisp-plugin-observed-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience-plugin-observed-{}",
+            uuid::Uuid::new_v4()
+        ));
         fixture(&root);
         let manifest = parse_manifest(&root).unwrap();
-        let installation = wisp_store::PluginInstallation {
+        let installation = superscience_store::PluginInstallation {
             plugin_id: manifest.id.clone(),
             version: manifest.version.clone(),
             display_name: manifest.display_name.clone(),
@@ -1401,13 +1410,15 @@ mod tests {
 
     #[test]
     fn plugin_launch_expands_a_spawnable_canonical_root() {
-        let root =
-            std::env::temp_dir().join(format!("wisp-plugin-launch-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience-plugin-launch-{}",
+            uuid::Uuid::new_v4()
+        ));
         fixture(&root);
         std::fs::write(root.join("server/fake-runtime"), "").unwrap();
         let mut manifest = parse_manifest(&root).unwrap();
         manifest.mcp_servers[0].command = "${CLAUDE_PLUGIN_ROOT}/server/fake-runtime".into();
-        let installation = wisp_store::PluginInstallation {
+        let installation = superscience_store::PluginInstallation {
             plugin_id: manifest.id.clone(),
             version: manifest.version.clone(),
             display_name: manifest.display_name.clone(),
@@ -1436,8 +1447,10 @@ mod tests {
 
     #[test]
     fn same_id_install_replaces_files_and_can_roll_back() {
-        let root =
-            std::env::temp_dir().join(format!("wisp-plugin-replace-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience-plugin-replace-{}",
+            uuid::Uuid::new_v4()
+        ));
         let app_data = root.join("app-data");
         let first_source = root.join("first");
         fixture(&first_source);
@@ -1498,12 +1511,13 @@ mod tests {
     /// published archive checksum.
     #[tokio::test]
     async fn motif_release_bundle_acceptance() {
-        let Ok(zip_path) = std::env::var("WISP_MOTIF_PLUGIN_ZIP") else {
+        let Ok(zip_path) = std::env::var("SUPERSCIENCE_MOTIF_PLUGIN_ZIP") else {
             return;
         };
-        let expected = std::env::var("WISP_MOTIF_PLUGIN_SHA256")
-            .expect("WISP_MOTIF_PLUGIN_SHA256 accompanies WISP_MOTIF_PLUGIN_ZIP");
-        let root = std::env::temp_dir().join(format!("wisp-motif-e2e-{}", uuid::Uuid::new_v4()));
+        let expected = std::env::var("SUPERSCIENCE_MOTIF_PLUGIN_SHA256")
+            .expect("SUPERSCIENCE_MOTIF_PLUGIN_SHA256 accompanies SUPERSCIENCE_MOTIF_PLUGIN_ZIP");
+        let root =
+            std::env::temp_dir().join(format!("superscience-motif-e2e-{}", uuid::Uuid::new_v4()));
         let app_data = root.join("app-data");
         let project_root = root.join("project");
         std::fs::create_dir_all(&app_data).unwrap();
@@ -1520,7 +1534,7 @@ mod tests {
         assert_eq!(prepared.trust_state, "checksum_verified");
         let installation = install_prepared(&prepared, &app_data).unwrap().installation;
 
-        let store = wisp_store::Store::open(&app_data.join("wisp.sqlite"))
+        let store = superscience_store::Store::open(&app_data.join("superscience.sqlite"))
             .await
             .unwrap();
         store
@@ -1564,7 +1578,7 @@ mod tests {
             root: project_root.clone(),
             events: Mutex::new(Vec::new()),
         };
-        let open_result = wisp_mcp::McpTool::new(open, client.clone())
+        let open_result = superscience_mcp::McpTool::new(open, client.clone())
             .run(&serde_json::json!({}), &env)
             .await;
         assert!(open_result.success, "{}", open_result.content);
@@ -1580,12 +1594,12 @@ mod tests {
             .into_iter()
             .find(|tool| tool.name == "motif_create_workbench_artifact")
             .unwrap();
-        let artifact_result = wisp_mcp::McpTool::new(artifact, client.clone())
+        let artifact_result = superscience_mcp::McpTool::new(artifact, client.clone())
             .run(
                 &serde_json::json!({
                     "content": ">MOTIFDEMO\nACGTACGTACGT",
                     "filename": "motif-demo.fasta",
-                    "title": "Wisp Motif acceptance",
+                    "title": "SuperScience Motif acceptance",
                     "outputFilename": "motif-demo-workbench.html"
                 }),
                 &env,

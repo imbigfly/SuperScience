@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
-use wisp_store::{
+use superscience_store::{
     canonical_json, canonical_json_sha256, ArtifactCaptureTiming, ArtifactMaterialization,
     ArtifactVersionContext, EvidenceBinding, EvidenceReproductionState, EvidenceSelectionState,
     EvidenceSourceKind, EvidenceVisibility, ExternalResource, LineageBasis, LineageConfidence,
@@ -1073,7 +1073,7 @@ async fn prepare_publication_freeze(
     let mut inputs = BTreeMap::<String, RunInput>::new();
     let mut outputs = BTreeMap::<String, RunOutput>::new();
     let mut code = BTreeMap::<String, RunCodeSnapshot>::new();
-    let mut environments = BTreeMap::<String, wisp_store::EnvironmentSnapshot>::new();
+    let mut environments = BTreeMap::<String, superscience_store::EnvironmentSnapshot>::new();
     let mut external_resources = BTreeMap::<String, ExternalResource>::new();
 
     for (resource_id, bindings) in direct_external_bindings {
@@ -1656,8 +1656,14 @@ async fn prepare_publication_freeze(
                     let missing_fields = [
                         ("context.id", parsed.pointer("/context/id")),
                         ("context.kind", parsed.pointer("/context/kind")),
-                        ("wisp_host.os", parsed.pointer("/wisp_host/os")),
-                        ("wisp_host.arch", parsed.pointer("/wisp_host/arch")),
+                        (
+                            "superscience_host.os",
+                            parsed.pointer("/superscience_host/os"),
+                        ),
+                        (
+                            "superscience_host.arch",
+                            parsed.pointer("/superscience_host/arch"),
+                        ),
                     ]
                     .into_iter()
                     .filter_map(|(field, value)| {
@@ -2412,14 +2418,16 @@ async fn prepare_publication_freeze(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wisp_store::{
+    use superscience_store::{
         ArtifactCaptureTiming, ArtifactMaterialization, ArtifactVersionDraft, EvidenceBindingDraft,
         ExternalResource, PublicationItem,
     };
 
     async fn fixture(name: &str) -> (PathBuf, Store) {
-        let root =
-            std::env::temp_dir().join(format!("wisp_publication_{name}_{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_publication_{name}_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let store = Store::open(&root.join("store.sqlite")).await.unwrap();
         store
@@ -2427,7 +2435,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_frame("frame", "project", "OPERON", "model")
+            .create_frame("frame", "project", "SUPERSCIENCE", "model")
             .await
             .unwrap();
         (root, store)
@@ -2491,7 +2499,7 @@ mod tests {
         run.env_snapshot_json = canonical_json(&json!({
             "context": {"id": "local", "kind": "local"},
             "schema_version": 1,
-            "wisp_host": {"arch": std::env::consts::ARCH, "os": std::env::consts::OS},
+            "superscience_host": {"arch": std::env::consts::ARCH, "os": std::env::consts::OS},
         }));
         store.create_run(&run).await.unwrap();
         assert!(store
@@ -2695,7 +2703,7 @@ mod tests {
             .append_message(
                 "frame",
                 1,
-                &wisp_llm::Message::user("prefix stable evidence suffix"),
+                &superscience_llm::Message::user("prefix stable evidence suffix"),
             )
             .await
             .unwrap();
@@ -2918,7 +2926,7 @@ mod tests {
         run.env_snapshot_json = canonical_json(&json!({
             "context": {"id": "local", "kind": "local"},
             "schema_version": 1,
-            "wisp_host": {"arch": std::env::consts::ARCH, "os": std::env::consts::OS},
+            "superscience_host": {"arch": std::env::consts::ARCH, "os": std::env::consts::OS},
         }));
         store.create_run(&run).await.unwrap();
         assert!(store

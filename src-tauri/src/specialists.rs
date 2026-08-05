@@ -5,8 +5,8 @@
 //! to their model bindings persist like any other row.
 
 use serde::{Deserialize, Serialize};
+use superscience_store::Store;
 use tauri::State;
-use wisp_store::Store;
 
 pub const SPECIALISTS_KEY: &str = "specialists";
 pub const SCIENTIFIC_ILLUSTRATOR_RUBRIC: &str = "\
@@ -59,7 +59,7 @@ pub struct Specialist {
     pub model_id: String,
     /// Reviewer-only backend selection. `None` preserves the legacy behavior:
     /// use `model_id`, falling back to the active HTTP model. Other specialist
-    /// personas continue to run inside Wisp's native agent loop.
+    /// personas continue to run inside SuperScience's native agent loop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_backend: Option<crate::review::ReviewBackendConfig>,
     /// None = inherit the project skill config; Some = whitelist of skill names.
@@ -334,7 +334,10 @@ pub async fn set_session_specialist(
         .load_messages(&frame_id)
         .await
         .map_err(|e| format!("{e}"))?;
-    if msgs.iter().any(|m| m.role != wisp_llm::Role::System) {
+    if msgs
+        .iter()
+        .any(|m| m.role != superscience_llm::Role::System)
+    {
         return Err("Specialist is locked once the session has messages.".into());
     }
     if !id.is_empty() && get(&state.store, &id).await.is_none() {
@@ -376,9 +379,10 @@ mod tests {
         assert!(rubric.contains("do not silently substitute"));
     }
 
-    async fn test_store() -> (wisp_store::Store, std::path::PathBuf) {
-        let tmp = std::env::temp_dir().join(format!("wisp_spec_{}.sqlite", uuid::Uuid::new_v4()));
-        (wisp_store::Store::open(&tmp).await.unwrap(), tmp)
+    async fn test_store() -> (superscience_store::Store, std::path::PathBuf) {
+        let tmp =
+            std::env::temp_dir().join(format!("superscience_spec_{}.sqlite", uuid::Uuid::new_v4()));
+        (superscience_store::Store::open(&tmp).await.unwrap(), tmp)
     }
 
     #[tokio::test]
@@ -509,7 +513,10 @@ mod tests {
         let (store, tmp) = test_store().await;
         ensure(&store).await;
         store.create_project("p1", "proj", "").await.unwrap();
-        store.create_frame("f1", "p1", "OPERON", "m").await.unwrap();
+        store
+            .create_frame("f1", "p1", "SUPERSCIENCE", "m")
+            .await
+            .unwrap();
         set_frame_specialist(&store, "f1", "reviewer")
             .await
             .unwrap();

@@ -20,14 +20,14 @@ Default language: Chinese, with key technical terms preserved in English when he
 7. **End with evaluation.** The deck must discuss strengths, limitations, unanswered questions, and possible follow-up experiments/analyses.
 8. **Slide count is a hard quality gate.** The final PPT must contain **at least 10 and at most 30 slides**, including title and conclusion/discussion slides. Use 10–12 slides for short papers, 14–18 for standard research articles, 19–24 for complex multi-omics or method-heavy papers, and 25–30 only when the paper genuinely needs it.
 
-## Wisp-specific workflow
+## SuperScience-specific workflow
 
-Use Wisp's strengths rather than treating the PDF as static screenshots:
+Use SuperScience's strengths rather than treating the PDF as static screenshots:
 
 - Use PDF text extraction / `pdf-explore`-style helpers when available to read abstract, introduction, results, methods, discussion, captions, author information, and references.
 - Use vision on rendered PDF pages to inspect figures, layouts, panel labels, legends, axes, scale bars, and multi-panel structure.
 - Use Python to render PDF pages at high DPI, crop selected figure panels, name crops consistently, and build a figure ledger.
-- Use Wisp's persistent Python runtime to keep intermediate objects: paper outline, figure inventory, selected crop paths, and slide plan.
+- Use SuperScience's persistent Python runtime to keep intermediate objects: paper outline, figure inventory, selected crop paths, and slide plan.
 - Use MCP/web/PubMed/ORCID/lab pages only for textual author/background verification when helpful. External visual assets remain forbidden.
 
 ## Phase 1 — Paper logic reconstruction

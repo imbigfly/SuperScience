@@ -10,17 +10,17 @@ use std::{
     },
     time::Duration,
 };
-use tauri::{AppHandle, Emitter, State};
-use tokio::sync::Mutex;
-use uuid::Uuid;
-use wisp_acp::{
+use superscience_acp::{
     acp::schema::v1::{
         ContentBlock, McpServer, McpServerStdio, ResourceLink, SessionId, TextContent,
     },
     AcpAgentProfile as LaunchProfile, AcpPermissionKind, AcpPermissionRequest, AcpSessionEvent,
     AcpSessionHandle, AcpStopReason, AcpUpdateKind,
 };
-use wisp_llm::Message;
+use superscience_llm::Message;
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Mutex;
+use uuid::Uuid;
 
 const PROFILES_KEY: &str = "acp_agent_profiles";
 const ACP_READ_ONLY_TIMEOUT: Duration = Duration::from_secs(90);
@@ -63,7 +63,7 @@ pub(crate) struct AcpRuntime {
     pub fingerprint: String,
     pub cwd: PathBuf,
     pub session_id: SessionId,
-    pub session_state: Mutex<Option<wisp_acp::AcpSessionState>>,
+    pub session_state: Mutex<Option<superscience_acp::AcpSessionState>>,
     pub handle: Arc<AcpSessionHandle>,
 }
 
@@ -91,7 +91,7 @@ pub(crate) fn fingerprint(profile: &AcpAgentProfile) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
-pub(crate) async fn profiles(store: &wisp_store::Store) -> Vec<AcpAgentProfile> {
+pub(crate) async fn profiles(store: &superscience_store::Store) -> Vec<AcpAgentProfile> {
     store
         .get_setting(PROFILES_KEY)
         .await
@@ -102,7 +102,7 @@ pub(crate) async fn profiles(store: &wisp_store::Store) -> Vec<AcpAgentProfile> 
 }
 
 async fn save_profiles(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     profiles: &[AcpAgentProfile],
 ) -> Result<(), String> {
     let raw = serde_json::to_string(profiles).map_err(|error| error.to_string())?;
@@ -422,7 +422,10 @@ pub(crate) async fn acp_side_chat_once(
     acp_read_only_once(state, cwd, profile_id, prompt_text, None).await
 }
 
-pub(crate) async fn profile_label(store: &wisp_store::Store, profile_id: &str) -> Option<String> {
+pub(crate) async fn profile_label(
+    store: &superscience_store::Store,
+    profile_id: &str,
+) -> Option<String> {
     profiles(store)
         .await
         .into_iter()
@@ -447,7 +450,7 @@ pub(crate) fn project_mcp_server(
 ) -> Result<McpServer, String> {
     let (command, args) = acp_bridge_launch(app_data, project, frame_id, allowed_tools)?;
     Ok(McpServer::Stdio(
-        McpServerStdio::new("wisp-science", PathBuf::from(command)).args(args),
+        McpServerStdio::new("superscience", PathBuf::from(command)).args(args),
     ))
 }
 
@@ -533,10 +536,10 @@ async fn runtime_for(
             .await
         {
             Ok(state) => (id, state),
-            Err(wisp_acp::AcpError::Unsupported(_)) => {
+            Err(superscience_acp::AcpError::Unsupported(_)) => {
                 match handle.load_session(id.clone(), &cwd, bridge).await {
                     Ok(state) => (id, state),
-                    Err(wisp_acp::AcpError::Unsupported(_)) => {
+                    Err(superscience_acp::AcpError::Unsupported(_)) => {
                         return Err("This ACP Agent cannot resume or load the saved session.".into())
                     }
                     Err(error) => return Err(error.to_string()),
@@ -582,7 +585,7 @@ async fn runtime_for(
         let now = chrono::Utc::now().timestamp();
         state
             .store
-            .save_acp_session(&wisp_store::AcpSessionBinding {
+            .save_acp_session(&superscience_store::AcpSessionBinding {
                 frame_id: frame_id.to_string(),
                 agent_profile_id: profile.id,
                 profile_fingerprint,
@@ -652,7 +655,7 @@ impl AcpToolEnvelope {
 
 /// Tool name marking a persisted plan snapshot. Deliberately outside the `acp:`
 /// prefix so plan rows never land in the ACP tool transcript or review evidence.
-pub(crate) const PLAN_TOOL_NAME: &str = "wisp:plan";
+pub(crate) const PLAN_TOOL_NAME: &str = "superscience:plan";
 
 /// The turn's final plan, stored in the ACP entry shape so the UI parses live
 /// and reloaded plans with one function.
@@ -755,11 +758,11 @@ fn permission_event(frame_id: &str, request: &AcpPermissionRequest) -> Permissio
                     "id": option.id,
                     "name": option.name,
                     "kind": match option.kind {
-                        wisp_acp::AcpPermissionKind::AllowOnce => "allow_once",
-                        wisp_acp::AcpPermissionKind::AllowAlways => "allow_always",
-                        wisp_acp::AcpPermissionKind::RejectOnce => "reject_once",
-                        wisp_acp::AcpPermissionKind::RejectAlways => "reject_always",
-                        wisp_acp::AcpPermissionKind::Unknown => "unknown",
+                        superscience_acp::AcpPermissionKind::AllowOnce => "allow_once",
+                        superscience_acp::AcpPermissionKind::AllowAlways => "allow_always",
+                        superscience_acp::AcpPermissionKind::RejectOnce => "reject_once",
+                        superscience_acp::AcpPermissionKind::RejectAlways => "reject_always",
+                        superscience_acp::AcpPermissionKind::Unknown => "unknown",
                     },
                 })
             })
@@ -767,7 +770,7 @@ fn permission_event(frame_id: &str, request: &AcpPermissionRequest) -> Permissio
     }
 }
 
-/// Full Permission remains owned by Wisp, so prefer the protocol's one-shot
+/// Full Permission remains owned by SuperScience, so prefer the protocol's one-shot
 /// allow option and auto-select it for every request. Falling back to
 /// `AllowAlways` is necessary for agents that do not offer a one-shot choice;
 /// requests without any allow option still surface to the user.
@@ -792,7 +795,7 @@ enum AcpTurnKind {
 }
 
 async fn begin_acp_turn(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     frame_id: &str,
     message: &str,
     kind: AcpTurnKind,
@@ -1033,8 +1036,9 @@ async fn run_acp_turn_inner(
     let mut content = acp_text_content(message, injected_context);
     let mut linked_paths = HashSet::new();
     for attachment in attachments {
-        let path = wisp_tools::safety::validate_file_path(project.root.as_path(), attachment)
-            .map_err(|_| format!("Attachment '{attachment}' is outside the active project."))?;
+        let path =
+            superscience_tools::safety::validate_file_path(project.root.as_path(), attachment)
+                .map_err(|_| format!("Attachment '{attachment}' is outside the active project."))?;
         if linked_paths.insert(path.clone()) {
             content.push(acp_resource_link(&path)?);
         }
@@ -1239,7 +1243,7 @@ async fn run_acp_turn_inner(
     Ok(stop_reason(outcome.stop_reason).into())
 }
 
-/// ACP has no Wisp-reference block type. Render trusted, host-resolved Wisp
+/// ACP has no SuperScience-reference block type. Render trusted, host-resolved SuperScience
 /// context as ordinary text blocks, which every ACP v1 Agent accepts.
 fn acp_text_content(message: &str, injected_context: &[String]) -> Vec<ContentBlock> {
     let mut content = vec![ContentBlock::Text(TextContent::new(message.to_string()))];
@@ -1603,12 +1607,12 @@ mod tests {
             session_id: "session-1".into(),
             tool_call: serde_json::json!({}),
             options: vec![
-                wisp_acp::AcpPermissionOption {
+                superscience_acp::AcpPermissionOption {
                     id: "always".into(),
                     name: "Always".into(),
                     kind: AcpPermissionKind::AllowAlways,
                 },
-                wisp_acp::AcpPermissionOption {
+                superscience_acp::AcpPermissionOption {
                     id: "once".into(),
                     name: "Once".into(),
                     kind: AcpPermissionKind::AllowOnce,
@@ -1618,7 +1622,7 @@ mod tests {
         assert_eq!(full_permission_option(&request).as_deref(), Some("once"));
 
         let rejected_only = AcpPermissionRequest {
-            options: vec![wisp_acp::AcpPermissionOption {
+            options: vec![superscience_acp::AcpPermissionOption {
                 id: "reject".into(),
                 name: "Reject".into(),
                 kind: AcpPermissionKind::RejectOnce,
@@ -1638,7 +1642,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_wisp_context_becomes_standard_acp_text() {
+    fn explicit_superscience_context_becomes_standard_acp_text() {
         let content = acp_text_content(
             "analyse this",
             &["The user explicitly selected these skills:\n# Skill: bear-map".into()],
@@ -1682,10 +1686,10 @@ mod tests {
     #[tokio::test]
     async fn internal_turn_does_not_persist_a_user_authored_message() {
         let tmp = std::env::temp_dir().join(format!(
-            "wisp_acp_internal_turn_{}.sqlite",
+            "superscience_acp_internal_turn_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         store.create_project("p", "Project", "").await.unwrap();
         store
             .create_frame("f", "p", "Agent", "model")

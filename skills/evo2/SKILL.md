@@ -105,12 +105,12 @@ self-contained scoring script through one `run_in_context` call:
 {
   "context_id": "ssh:gpu-box",
   "title": "Evo 2 variant scoring",
-  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate evo2 && HF_HOME=/srv/model-cache HF_HUB_OFFLINE=1 python score_evo2.py --output /home/me/wisp-results/evo2/scores.json",
+  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate evo2 && HF_HOME=/srv/model-cache HF_HUB_OFFLINE=1 python score_evo2.py --output /home/me/superscience-results/evo2/scores.json",
   "timeout_secs": 1800,
   "input_paths": ["runs/score_evo2.py"],
   "output_specs": [
     {
-      "glob": "ssh://gpu-box/home/me/wisp-results/evo2/scores.json",
+      "glob": "ssh://gpu-box/home/me/superscience-results/evo2/scores.json",
       "kind": "json",
       "residency": "remote"
     }

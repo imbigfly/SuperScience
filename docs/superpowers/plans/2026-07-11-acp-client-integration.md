@@ -5,7 +5,7 @@
 >
 > **Date:** 2026-07-11
 >
-> **Scope:** Add Wisp as an ACP v1 client, then retire the Codex App Server,
+> **Scope:** Add SuperScience as an ACP v1 client, then retire the Codex App Server,
 > `codex exec`, Codex-as-tool, and Claude Code JSONL integrations.
 
 ## Goal
@@ -13,14 +13,14 @@
 Make external coding agents a protocol-level backend rather than a collection
 of vendor-specific providers and tools:
 
-- Wisp is the **ACP Client**.
+- SuperScience is the **ACP Client**.
 - Codex, Claude, Gemini, or another implementation is an **ACP Agent** launched
   as a local child process.
-- Wisp speaks only stable ACP v1 over stdio. Vendor adapters live outside this
+- SuperScience speaks only stable ACP v1 over stdio. Vendor adapters live outside this
   repository.
-- Wisp's existing direct HTTP model path remains available for its built-in
-  `wisp-core::Agent`.
-- Existing MCP connections and the Wisp scientific MCP bridge remain separate
+- SuperScience's existing direct HTTP model path remains available for its built-in
+  `superscience-core::Agent`.
+- Existing MCP connections and the SuperScience scientific MCP bridge remain separate
   from ACP and are reused through ACP's `mcpServers` session field.
 
 The intended result is a net deletion: one small protocol client replaces more
@@ -29,7 +29,7 @@ configuration mirroring, and fallback behavior.
 
 ## Decisions
 
-1. **ACP is a conversation backend, not a `wisp_llm::Provider` and not a Wisp
+1. **ACP is a conversation backend, not a `superscience_llm::Provider` and not a SuperScience
    tool.** An ACP Agent owns its session, model loop, tools, and permissions.
    The existing provider trait represents one model completion and cannot model
    the ACP lifecycle without rebuilding the protocol incorrectly.
@@ -42,7 +42,7 @@ configuration mirroring, and fallback behavior.
 5. **Advertise only implemented client capabilities.** The first usable slice
    does not advertise client filesystem or terminal methods. ACP agents may use
    their own filesystem and terminal implementation in the project `cwd`.
-6. **One ACP process per active Wisp frame.** This is the smallest lifecycle
+6. **One ACP process per active SuperScience frame.** This is the smallest lifecycle
    that preserves frame isolation. Do not add a cross-session process pool
    until measured process cost requires it.
 7. **Remove both private CLI integrations.** There is no Claude Code
@@ -64,7 +64,7 @@ configuration mirroring, and fallback behavior.
 - `src-tauri/src/local_runner.rs` is a 2,285-line mixed Codex/Claude command,
   JSONL, WSL, prompt, and private session compatibility layer.
 - `src-tauri/src/lib.rs:2253-2957` selects Codex App Server, falls back to
-  `codex exec`, or launches Claude Code before reaching the normal Wisp Agent.
+  `codex exec`, or launches Claude Code before reaching the normal SuperScience Agent.
 - `src-tauri/src/models.rs:37-83` stores CLI executable, sandbox, Plan model,
   and other Codex-only fields inside `ModelProfile`.
 - `ui/src/dto.rs:388-637` and large sections of `ui/src/main.rs` model Codex
@@ -74,13 +74,13 @@ These are multiple implementations of the role ACP standardizes.
 
 ### Boundaries worth keeping
 
-- `crates/wisp-llm/` and `crates/wisp-core/` remain the built-in, direct HTTP
+- `crates/superscience-llm/` and `crates/superscience-core/` remain the built-in, direct HTTP
   agent backend.
-- `crates/wisp-tools/`, `crates/wisp-runtime/`, and `crates/wisp-skills/` remain
-  Wisp-native capabilities.
-- `crates/wisp-mcp/` remains Wisp's MCP client implementation.
+- `crates/superscience-tools/`, `crates/superscience-runtime/`, and `crates/superscience-skills/` remain
+  SuperScience-native capabilities.
+- `crates/superscience-mcp/` remains SuperScience's MCP client implementation.
 - The stdio `BridgeServer` in `src-tauri/src/mcp_bridge.rs` remains useful. It
-  exposes Wisp skills, scientific MCP tools, custom MCP connections, and Run
+  exposes SuperScience skills, scientific MCP tools, custom MCP connections, and Run
   Manager tools to any ACP Agent.
 - `src-tauri/src/mcp_bridge.rs:442-537` (`WispToolRouter`) is Codex App Server
   dynamic-tool glue and can be removed.
@@ -110,9 +110,9 @@ Reconnection is capability-gated:
 1. Prefer `session/resume` when advertised; it restores agent state without
    replaying history.
 2. Otherwise use `session/load` when `loadSession` is advertised; suppress
-   replay notifications from being appended to Wisp's already persisted
+   replay notifications from being appended to SuperScience's already persisted
    transcript.
-3. If neither exists, the saved Wisp transcript remains readable, but the ACP
+3. If neither exists, the saved SuperScience transcript remains readable, but the ACP
    session cannot continue after its process exits.
 
 Only stdio is in scope. ACP messages are newline-delimited UTF-8 JSON-RPC 2.0;
@@ -128,7 +128,7 @@ stdout is protocol-only and stderr is diagnostic output.
 | Session updates | Handle messages, thoughts, tools, plans, commands, config/mode, session info, and usage without panics. |
 | Permissions | Implement `session/request_permission` with the exact options supplied by the Agent. |
 | Cancellation | Send `session/cancel`, cancel pending permission requests, drain final updates, then force-kill only after a grace timeout. |
-| MCP | Pass the existing Wisp stdio MCP bridge in `session/new` and reconnect requests. |
+| MCP | Pass the existing SuperScience stdio MCP bridge in `session/new` and reconnect requests. |
 | Session config | Prefer generic `configOptions`; support legacy ACP modes only as a fallback. |
 | Client filesystem | Do not advertise in v1. |
 | Client terminal | Do not advertise in v1. |
@@ -145,20 +145,20 @@ Tauri backend router
    |                              |
    | internal HTTP model          | ACP agent profile
    v                              v
-wisp-core::Agent             crates/wisp-acp
+superscience-core::Agent             crates/superscience-acp
    |                              |
    v                              | stdio ACP v1
-wisp-llm provider                 v
+superscience-llm provider                 v
                             external ACP Agent
                                   |
-                                  | session/new(mcpServers=[wisp_bridge])
+                                  | session/new(mcpServers=[superscience_bridge])
                                   v
-                            existing Wisp MCP bridge
+                            existing SuperScience MCP bridge
 
 ACP updates/permissions -> Tauri generic events -> existing chat/event surface
 ```
 
-### New crate: `crates/wisp-acp`
+### New crate: `crates/superscience-acp`
 
 This crate is the protocol and process boundary. It should initially stay
 small; split files only when the process actor and protocol mappings require a
@@ -170,7 +170,7 @@ Owned responsibilities:
   shell command string.
 - Own stdin/stdout/stderr and the official ACP connection.
 - Perform initialize/auth/session/prompt/config/cancel/close operations.
-- Convert official SDK callbacks into a small Wisp-neutral event enum.
+- Convert official SDK callbacks into a small SuperScience-neutral event enum.
 - Correlate permission requests and return the selected protocol option.
 - Bound stderr memory and guarantee child cleanup on handle drop.
 
@@ -195,8 +195,8 @@ real Agent requires them.
 This module owns application semantics, not JSON-RPC:
 
 - CRUD and validation commands for ACP agent profiles.
-- Wisp frame to ACP session binding.
-- Construction of the Wisp MCP server descriptor for `session/new`.
+- SuperScience frame to ACP session binding.
+- Construction of the SuperScience MCP server descriptor for `session/new`.
 - Mapping `AcpSessionEvent` to generic `AgentEvent` values.
 - Transcript persistence and UI permission routing.
 - Cleanup on stop, frame deletion, project deletion, and app exit.
@@ -207,11 +207,11 @@ dispatch before the existing internal Agent path:
 ```text
 existing frame has ACP binding -> run ACP turn with the bound profile
 new empty frame + acp_agent_id -> create binding and run ACP turn
-otherwise -> existing wisp-core Agent path
+otherwise -> existing superscience-core Agent path
 ```
 
 An ACP Agent may only be attached to an empty frame. Do not pretend that an
-existing Wisp or legacy CLI transcript can be injected as native ACP history.
+existing SuperScience or legacy CLI transcript can be injected as native ACP history.
 
 ### Runtime ownership
 
@@ -298,7 +298,7 @@ of SSH keys in this table.
   `Message.reasoning` field. Tool updates, plans, and permissions remain live
   structured events in v1. Do not introduce a general event-sourcing table
   solely for ACP.
-- Existing export and manual review continue to operate on the plain Wisp
+- Existing export and manual review continue to operate on the plain SuperScience
   transcript.
 - Rich tool/plan replay after app restart is an explicit later feature.
 
@@ -307,7 +307,7 @@ of SSH keys in this table.
 Do not reuse Codex DTOs with renamed fields. Add the smallest generic shapes
 needed by both ACP and the current UI.
 
-| ACP update | Wisp mapping |
+| ACP update | SuperScience mapping |
 | --- | --- |
 | `user_message_chunk` | Used only for `session/load` replay reconciliation; do not duplicate locally persisted user messages. |
 | `agent_message_chunk` | `AgentEvent::Text`; aggregate for assistant persistence. |
@@ -345,7 +345,7 @@ Add:
 
 The UI may reuse the existing inline approval card styling, but it must render
 the Agent's `allow_once`, `allow_always`, `reject_once`, and `reject_always`
-choices rather than translating them into Wisp's unrelated project/global
+choices rather than translating them into SuperScience's unrelated project/global
 approval grants.
 
 When a prompt is cancelled or a frame is deleted, resolve every pending ACP
@@ -363,7 +363,7 @@ Replace the hard-coded Codex model/effort/Plan controls with generic ACP
 - use deprecated ACP modes only when the Agent does not provide config options;
 - keep config state scoped to the bound ACP frame.
 
-ACP Plan notifications are progress display. They do not imply Wisp's old
+ACP Plan notifications are progress display. They do not imply SuperScience's old
 Codex-specific “approve this Plan, then start another turn” workflow.
 
 ## MCP Reuse
@@ -379,11 +379,11 @@ Refactor `src-tauri/src/mcp_bridge.rs` only where the old providers leak in:
   custom MCP proxying, and Run Manager tools;
 - delete `WispToolRouter`, which only served Codex App Server dynamic tools;
 - delete Codex/Claude `plan_safe` assumptions. ACP config option IDs are opaque,
-  so Wisp cannot infer read-only policy from a mode name;
+  so SuperScience cannot infer read-only policy from a mode name;
 - retain the existing hard failure for dangerous non-interactive Run commands.
 
 ACP does not replace MCP: ACP owns the editor/client-to-agent conversation;
-MCP gives the selected Agent access to Wisp's scientific tools.
+MCP gives the selected Agent access to SuperScience's scientific tools.
 
 ## Retirement Matrix
 
@@ -412,9 +412,9 @@ MCP gives the selected Agent access to Wisp's scientific tools.
 ### Keep or generalize
 
 - direct HTTP `ModelProfile` and keyring behavior
-- `wisp-core::Agent`, Wisp tools, skills, Python, reviews, store, and Run Manager
-- `crates/wisp-mcp`
-- stdio Wisp MCP bridge, minus Codex dynamic-tool and Plan-mode branches
+- `superscience-core::Agent`, SuperScience tools, skills, Python, reviews, store, and Run Manager
+- `crates/superscience-mcp`
+- stdio SuperScience MCP bridge, minus Codex dynamic-tool and Plan-mode branches
 - generic chat text, reasoning, tool-card, usage, error, and done UI
 - generic plan-card visuals if useful for ACP's structured plan entries; replace
   the Codex plan IDs/revisions/actions rather than preserving their semantics
@@ -436,15 +436,15 @@ MCP gives the selected Agent access to Wisp's scientific tools.
    `retired_local_runner_profiles_v1` setting for recovery. If the active model
    is retired, select the first valid HTTP profile and show a one-time migration
    notice directing the user to add an ACP Agent.
-3. Do not delete `.wisp/codex-home`, global Codex/Claude config, or Agent-owned
+3. Do not delete `.superscience/codex-home`, global Codex/Claude config, or Agent-owned
    session history automatically. Cleanup is documented and user-controlled.
-4. Old Wisp transcripts remain readable and exportable. Old Codex/Claude
+4. Old SuperScience transcripts remain readable and exportable. Old Codex/Claude
    external thread IDs are not ACP session IDs and cannot be resumed through
-   ACP. Starting an ACP turn requires a new empty Wisp frame.
+   ACP. Starting an ACP turn requires a new empty SuperScience frame.
 5. Keep already shipped migration versions and legacy SQL tables intact. Stop
    writing them, remove unused runtime CRUD, and add the new ACP table
    additively. Do not `DROP` legacy tables in this migration.
-6. Deleting a Wisp session calls capability-gated `session/close` and terminates
+6. Deleting a SuperScience session calls capability-gated `session/close` and terminates
    its local process. It must not call destructive `session/delete` without a
    separate explicit user action.
 7. Branching a frame copies messages but never copies an ACP binding. Rewind or
@@ -460,11 +460,11 @@ depends on it.
 
 Changes:
 
-- Raise workspace `rust-version` from 1.80 to 1.88; keep Wisp crates on edition
+- Raise workspace `rust-version` from 1.80 to 1.88; keep SuperScience crates on edition
   2021.
 - Update README prerequisites and add an explicit Rust 1.88 CI check rather
   than relying only on floating `stable`.
-- Add a minimal `crates/wisp-acp` workspace member with an exact
+- Add a minimal `crates/superscience-acp` workspace member with an exact
   `agent-client-protocol = "=1.2.0"` dependency and no unstable features.
 - Compile a minimal in-memory client/agent handshake.
 
@@ -487,7 +487,7 @@ Changes:
 
 - Implement process launch, initialization, stable authentication, new session,
   prompt/update streaming, permission response, cancellation, config changes,
-  resume/load/close, stderr capture, and shutdown in `crates/wisp-acp`.
+  resume/load/close, stderr capture, and shutdown in `crates/superscience-acp`.
 - Add an in-process or re-exec fake ACP Agent. It must not require an installed
   Codex, Claude, network, API key, or shell.
 
@@ -507,7 +507,7 @@ Changes:
 
 - Add `acp_agent_profiles` CRUD and connection-test/auth commands in
   `src-tauri/src/acp.rs`.
-- Add `0007_acp_sessions`, `crates/wisp-store/src/acp_sessions.rs`, and store
+- Add `0007_acp_sessions`, `crates/superscience-store/src/acp_sessions.rs`, and store
   round-trip APIs.
 - Add the ACP handle variant to `SessionRuntime` and cleanup hooks for stop,
   session delete, project delete, and app exit.
@@ -523,14 +523,14 @@ Acceptance:
 - Store migrations are idempotent on a new DB and on a pre-ACP DB.
 - Deleting a frame cascades its ACP binding without dropping legacy data.
 
-### PR 3: End-to-end ACP turn and Wisp MCP bridge
+### PR 3: End-to-end ACP turn and SuperScience MCP bridge
 
 **Purpose:** Make one ACP Agent usable from the existing chat command.
 
 Changes:
 
 - Add the small `send_message` backend dispatch and `run_acp_turn` path.
-- Pass text, file `ResourceLink`s, and the Wisp MCP bridge to `session/new`.
+- Pass text, file `ResourceLink`s, and the SuperScience MCP bridge to `session/new`.
 - Map ACP events, persist user/final assistant text, and implement permission
   request/response.
 - Implement stop/cancel/graceful-kill behavior and capability-gated reconnect.
@@ -555,7 +555,7 @@ Changes:
 
 - Add an Agents settings page for command/args, Test Connection, agent info,
   auth methods, and delete.
-- Group the composer selector into Wisp Models and ACP Agents without adding ACP
+- Group the composer selector into SuperScience Models and ACP Agents without adding ACP
   as a fake model provider.
 - Lock the ACP Agent selection after the first prompt.
 - Render generic config options/mode fallback, ID-addressed tool updates,
@@ -571,7 +571,7 @@ Acceptance:
 - Unsupported prompt content is disabled or sent as a baseline ResourceLink;
   the UI never sends image/audio/embedded blocks without capability support.
 - Existing HTTP models and Specialists UI continue to work. Specialists remain
-  an internal Wisp Agent feature in this release.
+  an internal SuperScience Agent feature in this release.
 
 ### PR 5: Remove private Codex and Claude integrations
 
@@ -594,7 +594,7 @@ Acceptance:
   `codex_runtime`, `codex_tool`, `local_runner`, `codex_cli`, or `claude_code`.
 - A retired profile can never fall through to the HTTP provider builder.
 - Historical transcripts and exports still load.
-- ACP Codex and ACP Claude use the same Wisp code path and differ only by their
+- ACP Codex and ACP Claude use the same SuperScience code path and differ only by their
   configured executable/arguments and negotiated capabilities.
 
 ## Verification Matrix
@@ -603,9 +603,9 @@ Run narrow tests first in every PR, followed by the repository-required suite.
 
 ```bash
 cargo fmt --all -- --check
-cargo test -p wisp-acp
-cargo test -p wisp-store acp
-cargo test -p wisp-tauri acp
+cargo test -p superscience-acp
+cargo test -p superscience-store acp
+cargo test -p superscience-tauri acp
 cargo test --workspace
 cd ui && cargo check --target wasm32-unknown-unknown
 cd ../ui-tests && npm ci && npx playwright test
@@ -619,11 +619,11 @@ Manual smoke, after the automated fake-Agent path passes:
 
 1. Configure one already-installed ACP Agent command.
 2. Test connection and complete agent-managed authentication if advertised.
-3. Create a new Wisp session, select the ACP Agent, and send a text prompt.
+3. Create a new SuperScience session, select the ACP Agent, and send a text prompt.
 4. Verify text, plan, tool, permission, config, and stop behavior.
-5. Restart Wisp and verify resume/load or the explicit non-resumable message.
+5. Restart SuperScience and verify resume/load or the explicit non-resumable message.
 6. Run the same steps with two different ACP Agents to prove there is no vendor
-   branch in Wisp.
+   branch in SuperScience.
 
 ## Known Initial Limitations
 
@@ -640,17 +640,17 @@ Manual smoke, after the automated fake-Agent path passes:
 - No rich tool/plan event replay from SQLite in the first release.
 - No process pool; an active ACP frame owns its Agent process.
 - ACP permission requests improve UX but are not a sandbox. The configured
-  local Agent process has the operating-system access granted to Wisp's user.
+  local Agent process has the operating-system access granted to SuperScience's user.
 
 ## Definition of Done
 
 ACP support is complete for this plan when:
 
-- Wisp can configure and launch an arbitrary local stdio ACP v1 Agent.
+- SuperScience can configure and launch an arbitrary local stdio ACP v1 Agent.
 - Stable authentication, session creation, prompts, updates, permissions,
   cancellation, generic configuration, and capability-gated reconnect work.
-- Wisp scientific capabilities reach the Agent through the retained MCP bridge.
-- Direct HTTP Wisp Agent behavior remains intact.
+- SuperScience scientific capabilities reach the Agent through the retained MCP bridge.
+- Direct HTTP SuperScience Agent behavior remains intact.
 - Codex and Claude private protocols, CLI JSONL parsers, runtime mirroring, and
   provider-specific frontend state are gone.
 - No legacy profile silently becomes an HTTP request or an ACP command.

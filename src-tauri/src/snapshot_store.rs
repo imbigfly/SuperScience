@@ -23,7 +23,7 @@ pub(crate) struct CapturedFile {
     pub checksum: String,
     pub size_bytes: u64,
     pub storage_path: String,
-    pub materialization: wisp_store::ArtifactMaterialization,
+    pub materialization: superscience_store::ArtifactMaterialization,
 }
 
 pub(crate) fn capture_file(
@@ -46,7 +46,7 @@ pub(crate) fn capture_file(
         ));
     }
 
-    let temp_dir = secure_directory(&root, &[".wisp", "artifacts", "tmp"])?;
+    let temp_dir = secure_directory(&root, &[".superscience", "artifacts", "tmp"])?;
     let mut temp_path = None;
     let should_start_copy = !matches!(policy, SnapshotPolicy::Reference);
     let mut output = if should_start_copy {
@@ -90,8 +90,10 @@ pub(crate) fn capture_file(
 
         let checksum = hex::encode(digest.finalize());
         if output.is_some() {
-            let destination_dir =
-                secure_directory(&root, &[".wisp", "artifacts", "sha256", &checksum[..2]])?;
+            let destination_dir = secure_directory(
+                &root,
+                &[".superscience", "artifacts", "sha256", &checksum[..2]],
+            )?;
             let destination = destination_dir.join(snapshot_filename(&checksum, &source));
             let temp = temp_path
                 .as_ref()
@@ -113,7 +115,7 @@ pub(crate) fn capture_file(
                 checksum,
                 size_bytes,
                 storage_path: relative_path(&root, &destination),
-                materialization: wisp_store::ArtifactMaterialization::Snapshot,
+                materialization: superscience_store::ArtifactMaterialization::Snapshot,
             })
         } else {
             if let Some(temp) = temp_path.as_ref().filter(|path| path.exists()) {
@@ -123,7 +125,7 @@ pub(crate) fn capture_file(
                 checksum,
                 size_bytes,
                 storage_path: relative_path(&root, &source),
-                materialization: wisp_store::ArtifactMaterialization::Reference,
+                materialization: superscience_store::ArtifactMaterialization::Reference,
             })
         }
     })();
@@ -193,15 +195,32 @@ fn verify_blob(path: &Path, expected_checksum: &str, expected_size: u64) -> Resu
 }
 
 fn reject_project_symlinks(project_root: &Path, source: &Path) -> Result<(), String> {
-    let source = if source.is_absolute() {
+    // Canonicalize the project root so macOS /var vs /private/var matches absolute
+    // inputs returned by SSH path resolution. Never canonicalize `source` before
+    // the symlink walk — that would hide the symlink we must reject.
+    let root = dunce::canonicalize(project_root).map_err(|error| error.to_string())?;
+    let absolute = if source.is_absolute() {
         source.to_path_buf()
     } else {
-        project_root.join(source)
+        root.join(source)
     };
-    let relative = source
-        .strip_prefix(project_root)
-        .map_err(|_| "artifact path is outside project root".to_string())?;
-    let mut current = project_root.to_path_buf();
+    if let Ok(metadata) = std::fs::symlink_metadata(&absolute) {
+        if metadata.file_type().is_symlink() {
+            return Err("artifact snapshots do not follow symlinks".into());
+        }
+    }
+    let relative = match absolute.strip_prefix(&root) {
+        Ok(relative) => relative.to_path_buf(),
+        Err(_) => {
+            let canonical_source =
+                dunce::canonicalize(&absolute).map_err(|error| error.to_string())?;
+            canonical_source
+                .strip_prefix(&root)
+                .map_err(|_| "artifact path is outside project root".to_string())?
+                .to_path_buf()
+        }
+    };
+    let mut current = root;
     for component in relative.components() {
         match component {
             std::path::Component::CurDir => continue,
@@ -243,7 +262,8 @@ mod tests {
 
     #[test]
     fn streams_snapshots_and_references_without_changing_identity() {
-        let root = std::env::temp_dir().join(format!("wisp_snapshot_{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("superscience_snapshot_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("results")).unwrap();
         let source = root.join("results/table.tsv");
         std::fs::write(&source, b"a\tb\n1\t2\n").unwrap();
@@ -251,7 +271,7 @@ mod tests {
         let copied = capture_file(&root, &source, SnapshotPolicy::Always).unwrap();
         assert_eq!(
             copied.materialization,
-            wisp_store::ArtifactMaterialization::Snapshot
+            superscience_store::ArtifactMaterialization::Snapshot
         );
         assert_eq!(copied.size_bytes, 8);
         assert_eq!(
@@ -262,12 +282,12 @@ mod tests {
         let referenced = capture_file(&root, &source, SnapshotPolicy::UpTo(1)).unwrap();
         assert_eq!(
             referenced.materialization,
-            wisp_store::ArtifactMaterialization::Reference
+            superscience_store::ArtifactMaterialization::Reference
         );
         assert_eq!(referenced.storage_path, "results/table.tsv");
         assert_eq!(referenced.checksum, copied.checksum);
         assert!(!root
-            .join(".wisp/artifacts/tmp")
+            .join(".superscience/artifacts/tmp")
             .read_dir()
             .unwrap()
             .any(|_| true));
@@ -284,8 +304,10 @@ mod tests {
     fn rejects_symlink_sources() {
         use std::os::unix::fs::symlink;
 
-        let root =
-            std::env::temp_dir().join(format!("wisp_snapshot_link_{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_snapshot_link_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("real.txt"), b"secret").unwrap();
         symlink(root.join("real.txt"), root.join("link.txt")).unwrap();
@@ -302,14 +324,18 @@ mod tests {
     fn rejects_symlinked_snapshot_storage() {
         use std::os::unix::fs::symlink;
 
-        let root =
-            std::env::temp_dir().join(format!("wisp_snapshot_store_link_{}", uuid::Uuid::new_v4()));
-        let outside =
-            std::env::temp_dir().join(format!("wisp_snapshot_outside_{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_snapshot_store_link_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "superscience_snapshot_outside_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(root.join("source.txt"), b"result").unwrap();
-        symlink(&outside, root.join(".wisp")).unwrap();
+        symlink(&outside, root.join(".superscience")).unwrap();
 
         let error =
             capture_file(&root, &root.join("source.txt"), SnapshotPolicy::Always).unwrap_err();

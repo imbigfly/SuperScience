@@ -75,7 +75,7 @@ jobs:
           projectPath: src-tauri
           tauriScript: cargo tauri
           tagName: ${{ env.RELEASE_TAG }}
-          releaseName: wisp-science ${{ env.RELEASE_TAG }}
+          releaseName: superscience ${{ env.RELEASE_TAG }}
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false

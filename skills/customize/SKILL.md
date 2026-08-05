@@ -1,11 +1,11 @@
 ---
 name: customize
-description: Create a Wisp specialist or author a project-local skill using the tools Wisp actually exposes. Use when the user wants a custom Agent persona, a restricted specialist loadout, a new skill, or changes to an existing project-local skill.
+description: Create a SuperScience specialist or author a project-local skill using the tools SuperScience actually exposes. Use when the user wants a custom Agent persona, a restricted specialist loadout, a new skill, or changes to an existing project-local skill.
 ---
 
-# Customize Wisp
+# Customize SuperScience
 
-Wisp exposes customization through explicit tools and Settings UI. Python has
+SuperScience exposes customization through explicit tools and Settings UI. Python has
 no control-plane SDK. Never invent profile, connector, or skill CRUD methods.
 
 ## Create a specialist
@@ -15,7 +15,7 @@ create-only.
 
 1. Ask what single job the specialist owns and what it must not do.
 2. Draft a display name, one-line description, and concise instructions that
-   extend Wisp's base prompt.
+   extend SuperScience's base prompt.
 3. Decide whether to inherit project skills/connectors or use explicit
    whitelists. Use exact installed skill names returned by `search_skills`.
    Include connector names only when the user supplied or confirmed them.
@@ -34,25 +34,25 @@ explicit zero-access whitelist and is not equivalent to omission.
 Load `skill-creator`. For a project-local skill, edit files under:
 
 ```text
-.wisp/skills/<skill-name>/SKILL.md
+.superscience/skills/<skill-name>/SKILL.md
 ```
 
 Use `read`, `write`, and `edit`. `search_skills` and `use_skill` are discovery
 and loading tools, not mutation tools. If a newly created project skill is not
-visible immediately, refresh or reopen the project so Wisp rebuilds its skill
+visible immediately, refresh or reopen the project so SuperScience rebuilds its skill
 index.
 
 For a user-wide skill, create the folder in the project first, validate it, then
-ask the user to install that folder through **Settings → Skills**. Wisp copies
+ask the user to install that folder through **Settings → Skills**. SuperScience copies
 installed skills to its user skill directory; there is no Agent-side publish or
 delete interface.
 
 ## Boundaries
 
-- Do not modify Wisp's SQLite store directly.
+- Do not modify SuperScience's SQLite store directly.
 - Do not use `python`, `shell`, or `run_in_context` to bypass Settings or tool
   authorization.
 - Do not promise conversation identity switching; the user selects specialists
-  through Wisp's UI.
+  through SuperScience's UI.
 - Do not claim connector enumeration when no connector-management tool is
   advertised.

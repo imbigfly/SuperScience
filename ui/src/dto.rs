@@ -345,7 +345,7 @@ impl ChatItem {
 }
 
 /// One checklist row of a plan. Mirrors the ACP `plan` update entry shape,
-/// which is also what Wisp persists, so one parser serves both.
+/// which is also what SuperScience persists, so one parser serves both.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, Hash, PartialEq, Eq)]
 pub(crate) struct PlanEntry {
     #[serde(default)]
@@ -757,7 +757,7 @@ pub(crate) struct RegionAttach {
     pub(crate) jump_to_chat: bool,
 }
 
-/// Detail of the `wisp:pins-ask-ai` event: image comment pins assembled into
+/// Detail of the `superscience:pins-ask-ai` event: image comment pins assembled into
 /// one composer message by the preview. Serialized as a struct (not
 /// `serde_json::json!`) so serde-wasm-bindgen emits a plain JS object — a
 /// `Value::Object` would become an ES Map the listener cannot deserialize.
@@ -837,7 +837,7 @@ pub(crate) struct LibraryItemDetail {
     pub(crate) base64: Option<String>,
 }
 
-/// One immutable version of a library item's code — mirrors the wisp-store
+/// One immutable version of a library item's code — mirrors the superscience-store
 /// `LibraryItemVersion` returned by `list_library_item_versions` /
 /// `update_library_code`. Version 1 is the original snapshot (`id` equals the
 /// item id); higher numbers are user edits.
@@ -939,7 +939,7 @@ pub(crate) struct StorageUsage {
     pub(crate) total_bytes: u64,
 }
 
-/// Mirrors `SessionTokenUsage` in crates/wisp-store/src/sessions.rs — align
+/// Mirrors `SessionTokenUsage` in crates/superscience-store/src/sessions.rs — align
 /// field by field on both sides.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct SessionTokenUsage {
@@ -1656,7 +1656,7 @@ pub(crate) struct ProjectSummary {
 }
 
 /// Editable project settings (Project Settings modal). `agent_context` is the
-/// project's `.wisp/WISP.md`, injected into every seeded system prompt.
+/// project's `.superscience/SUPERSCIENCE.md`, injected into every seeded system prompt.
 #[derive(Clone, Deserialize, Default)]
 pub(crate) struct ProjectSettings {
     #[allow(dead_code)]
@@ -2043,7 +2043,7 @@ pub(crate) struct OnboardingState {
     pub(crate) has_api_key: bool,
 }
 
-/// Mirrors `wisp_store::ResearchNode`. `kind` stays a plain string because the
+/// Mirrors `superscience_store::ResearchNode`. `kind` stays a plain string because the
 /// backend enum serializes to snake_case and the pane only ever groups on it.
 /// `metadata_json` arrives as the store's raw JSON string, not an object.
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2647,7 +2647,7 @@ pub(crate) struct RuntimeSlot {
     pub(crate) info: Option<RuntimeInfo>,
 }
 
-/// Mirrors `wisp_store::Run`, minus the columns only the backend acts on
+/// Mirrors `superscience_store::Run`, minus the columns only the backend acts on
 /// (`input_refs_json` / `output_specs_json` / `remote_handle_json` /
 /// the always-NULL `script_path`). No blanket `allow(dead_code)`: an unread
 /// field here means the UI is dropping data again, and the warning is the

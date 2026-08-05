@@ -15,7 +15,7 @@ use crate::AppState;
 
 /// Bundled demo manifests (`seed/`).
 pub fn bundled_dir() -> Option<PathBuf> {
-    wisp_paths::seed_dir()
+    superscience_paths::seed_dir()
 }
 
 #[derive(Serialize, Clone)]
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn extracts_enzyme_demo_assets() {
-        let tmp = std::env::temp_dir().join(format!("wisp-seed-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("superscience-seed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let id = "manifest_enzyme_engineering";

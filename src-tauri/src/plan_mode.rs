@@ -7,8 +7,8 @@
 //! migration, and it must never touch the `frames.model` column (that field's
 //! `acp:<label>` marker is a contract with the UI's model badge).
 
+use superscience_store::Store;
 use tauri::State;
-use wisp_store::Store;
 
 const PLAN_PROMPT_START: &str = "\n\n<plan_mode>";
 const PLAN_PROMPT_END: &str = "</plan_mode>";
@@ -119,8 +119,10 @@ mod tests {
 
     #[tokio::test]
     async fn flag_round_trips_per_frame() {
-        let path =
-            std::env::temp_dir().join(format!("wisp_plan_mode_{}.sqlite", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "superscience_plan_mode_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
         let store = Store::open(&path).await.unwrap();
         store.create_project("p", "One", "").await.unwrap();
         store

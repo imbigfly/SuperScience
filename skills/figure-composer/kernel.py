@@ -121,7 +121,7 @@ composer's panel letter.
 
 Render with matplotlib at exactly {width}×{height} px and 300 dpi. Do not use
 `bbox_inches='tight'`, `tight_layout`, or constrained layout. Verify the saved
-PNG with Pillow, inspect it with Wisp's `view_image` tool, fix visible defects,
+PNG with Pillow, inspect it with SuperScience's `view_image` tool, fix visible defects,
 and return its concrete project-relative filename. Do not return an artifact id
 or placeholder marker."""
 
@@ -263,7 +263,7 @@ def composite_review_task(
     rules_line = f"\n**Design-rule source:** `{rules_path}`" if rules_path else ""
     return f"""Review the complete multi-panel figure as an adversarial journal production editor.
 
-Inspect `{composite_path}` with Wisp's `view_image` tool. If panel-level inspection
+Inspect `{composite_path}` with SuperScience's `view_image` tool. If panel-level inspection
 is needed, use Python and Pillow to save concrete crop files, then inspect those
 files with `view_image`. Do not assume an image-crop method exists inside Python.
 

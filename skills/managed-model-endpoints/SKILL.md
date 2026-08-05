@@ -1,12 +1,12 @@
 ---
 name: managed-model-endpoints
-description: Explain Wisp's current managed-model endpoint boundary and plan a safe integration. Use when the user asks to register, start, stop, tunnel, authenticate, or manage a persistent inference service.
+description: Explain SuperScience's current managed-model endpoint boundary and plan a safe integration. Use when the user asks to register, start, stop, tunnel, authenticate, or manage a persistent inference service.
 license: Apache-2.0
 ---
 
 # Managed model endpoint boundary
 
-Wisp does not currently expose an endpoint registry or a service-lifecycle
+SuperScience does not currently expose an endpoint registry or a service-lifecycle
 backend. The Agent cannot allocate ports, configure tunnels, read secrets,
 register health checks, or start and stop a persistent inference service
 through Python.
@@ -17,12 +17,12 @@ identity, health, routing, authentication, restart policy, and ownership.
 
 ## Supported path
 
-If the user already operates an endpoint outside Wisp and the selected local,
+If the user already operates an endpoint outside SuperScience and the selected local,
 WSL, or SSH context can reach it using credentials already configured in that
 execution environment, load `using-model-endpoint` to run a bounded inference
 client. Never request or print secret values merely to make the call.
 
 Otherwise explain that endpoint registration and service management are not
-available in this Wisp build. A future implementation should add a typed service
+available in this SuperScience build. A future implementation should add a typed service
 or execution-context backend with keyring-backed secret binding, health checks,
 start/stop/recovery semantics, and auditable invocation Runs.

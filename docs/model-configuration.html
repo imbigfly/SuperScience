@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Wisp Science 模型配置说明：OpenAI 兼容、OpenAI Responses 和 Anthropic API。">
-  <title>模型配置 | Wisp Science</title>
-  <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+  <meta name="description" content="SuperScience 模型配置说明：OpenAI 兼容、OpenAI Responses 和 Anthropic API。">
+  <title>模型配置 | SuperScience</title>
+  <link rel="icon" href="assets/logo.png" type="image/png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400;500;600;700&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet">
@@ -15,8 +15,8 @@
   <header class="site-nav">
     <div class="container">
       <a class="brand" href="index.html#top">
-        <img src="assets/logo.svg" alt="" width="28" height="28">
-        <span class="brand-name">Wisp Science</span>
+        <img src="assets/logo.png" alt="" width="28" height="28">
+        <span class="brand-name">SuperScience</span>
       </a>
       <nav class="nav-links" aria-label="页面导航">
         <a href="index.html#features">功能</a>
@@ -40,7 +40,7 @@
         <div class="eyebrow">Settings -> Models</div>
         <h1>模型配置</h1>
         <p class="lead">
-          Wisp Science 的桌面版使用模型 profile 管理远程 API 后端。每个 profile
+          SuperScience 的桌面版使用模型 profile 管理远程 API 后端。每个 profile
           可以配置 provider、API URL、模型 ID、高级参数和独立 API key。
         </p>
         <div class="hero-actions">
@@ -72,7 +72,7 @@
           </div>
           <div class="feature-list-item">
             <h4>Keyring + SQLite</h4>
-            <p>API key 存入系统 keyring；profile 名称、provider、URL、模型 ID 和能力标注存入项目的 <code>.wisp/wisp.sqlite</code>。</p>
+            <p>API key 存入系统 keyring；profile 名称、provider、URL、模型 ID 和能力标注存入项目的 <code>.superscience/superscience.sqlite</code>。</p>
           </div>
         </div>
       </div>
@@ -116,7 +116,7 @@
               <tr>
                 <td>API URL / API key</td>
                 <td>API provider</td>
-                <td>远程 API 的 base URL 和密钥。无需追加 <code>/chat/completions</code>、<code>/responses</code> 或 <code>/v1/messages</code>，Wisp 会根据 provider 自动补全请求路径。桌面版密钥不写入 SQLite。</td>
+                <td>远程 API 的 base URL 和密钥。无需追加 <code>/chat/completions</code>、<code>/responses</code> 或 <code>/v1/messages</code>，SuperScience 会根据 provider 自动补全请求路径。桌面版密钥不写入 SQLite。</td>
               </tr>
             </tbody>
           </table>
@@ -132,13 +132,13 @@
         </div>
         <div class="section-head">
           <h2>Headless CLI</h2>
-          <p><code>wisp-science</code> headless CLI 使用环境变量配置远程 API provider。</p>
+          <p><code>superscience</code> headless CLI 使用环境变量配置远程 API provider。</p>
         </div>
         <div class="feature-visual">
-          <pre>export WISP_PROVIDER=openai
-export WISP_API_URL=https://api.deepseek.com
-export WISP_MODEL=deepseek-chat
-export WISP_API_KEY=&lt;your provider key&gt;</pre>
+          <pre>export SUPERSCIENCE_PROVIDER=openai
+export SUPERSCIENCE_API_URL=https://api.deepseek.com
+export SUPERSCIENCE_MODEL=deepseek-chat
+export SUPERSCIENCE_API_KEY=&lt;your provider key&gt;</pre>
         </div>
       </div>
     </section>
@@ -147,8 +147,8 @@ export WISP_API_KEY=&lt;your provider key&gt;</pre>
   <footer class="site-footer">
     <div class="container footer-inner">
       <a class="brand" href="index.html#top">
-        <img src="assets/logo.svg" alt="" width="24" height="24">
-        Wisp Science
+        <img src="assets/logo.png" alt="" width="24" height="24">
+        SuperScience
       </a>
       <nav class="footer-links">
         <a href="https://github.com/xuzhougeng/wisp-science">GitHub</a>
@@ -158,7 +158,7 @@ export WISP_API_KEY=&lt;your provider key&gt;</pre>
         <a href="https://github.com/xuzhougeng/wisp-science/issues">Issues</a>
         <a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE">AGPL-3.0-only</a>
       </nav>
-      <p class="footer-copy">© 2026 Wisp Science · 开源科学计算 Agent</p>
+      <p class="footer-copy">© 2026 SuperScience · 开源科学计算 Agent</p>
     </div>
   </footer>
 </body>

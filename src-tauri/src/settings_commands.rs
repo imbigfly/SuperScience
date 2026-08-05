@@ -7,15 +7,15 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use superscience_llm::Message;
+use superscience_store::secrets::Secret;
 use tauri::State;
-use wisp_llm::Message;
-use wisp_store::secrets::Secret;
 
 const SYNC_RELAY_TOKEN: &str = "sync_relay_token";
 
 async fn validate_provider_config(
     provider_name: &str,
-    mut cfg: wisp_llm::ProviderConfig,
+    mut cfg: superscience_llm::ProviderConfig,
     supports_vision: bool,
 ) -> Result<(), String> {
     if models::is_image_generation_model(&cfg.model) {
@@ -42,7 +42,7 @@ async fn validate_provider_config(
     } else {
         Message::user("Reply with OK.")
     };
-    wisp_llm::build(cfg)
+    superscience_llm::build(cfg)
         .complete(&[probe], &[])
         .await
         .map(|_| ())
@@ -203,7 +203,7 @@ pub(super) async fn set_settings(
         load_pet_asset(Path::new(pet_directory))?;
     }
     tracing::info!(
-        target: "wisp",
+        target: "superscience",
         provider = %provider,
         api_url = %api_url,
         model = %model,
@@ -355,7 +355,7 @@ pub(super) async fn add_custom_credential(
 ) -> Result<models::CustomCredentialStatus, String> {
     let credential = models::add_custom_credential(&state.store, &name, &env_var, &value).await?;
     tracing::info!(
-        target: "wisp",
+        target: "superscience",
         id = %credential.id,
         env_var = %credential.env_var,
         "added custom credential"
@@ -370,7 +370,7 @@ pub(super) async fn remove_custom_credential(
     id: String,
 ) -> Result<(), String> {
     models::remove_custom_credential(&state.store, &id).await?;
-    tracing::info!(target: "wisp", id = %id, "removed custom credential");
+    tracing::info!(target: "superscience", id = %id, "removed custom credential");
     clear_idle_agents(&state).await;
     Ok(())
 }
@@ -405,7 +405,7 @@ async fn init_agent_infini(api_key: &str) -> Result<(), String> {
     })?;
     let mut command = tokio::process::Command::new(&bin);
     command.arg("init").arg("--api-key").arg(api_key);
-    wisp_tools::process::hide_console_async(&mut command);
+    superscience_tools::process::hide_console_async(&mut command);
     let out = command
         .output()
         .await
@@ -521,7 +521,7 @@ pub(super) async fn set_credential(
     // standalone probe, so they're stored as-is.
     if id == "openalex_api_key" && !value.is_empty() {
         let resp = reqwest::Client::builder()
-            .user_agent("wisp-science")
+            .user_agent("superscience")
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .map_err(|e| e.to_string())?
@@ -542,7 +542,7 @@ pub(super) async fn set_credential(
     if id == "scimaster_api_key" {
         sync_scimaster_config(&value)?;
     }
-    tracing::info!(target: "wisp", id = %id, present = !value.is_empty(), "saving credential");
+    tracing::info!(target: "superscience", id = %id, present = !value.is_empty(), "saving credential");
     models::store_credential(&id, &value)?;
     // Respawn kernels/MCP on the next turn so they inherit the new env.
     clear_idle_agents(&state).await;
@@ -581,7 +581,7 @@ pub(super) async fn validate_settings(
     )?;
 
     tracing::info!(
-        target: "wisp",
+        target: "superscience",
         provider = %provider_name,
         api_url = %settings.api_url,
         model = %settings.model,
@@ -593,15 +593,15 @@ pub(super) async fn validate_settings(
     )
     .await
     .map_err(|_| {
-        tracing::warn!(target: "wisp", "settings validation timed out");
+        tracing::warn!(target: "superscience", "settings validation timed out");
         "Validation timed out after 30s".to_string()
     })?;
     if let Err(e) = result {
-        tracing::warn!(target: "wisp", error = %e, vision = settings.supports_vision, "settings validation failed");
+        tracing::warn!(target: "superscience", error = %e, vision = settings.supports_vision, "settings validation failed");
         return Err(e);
     }
 
-    tracing::info!(target: "wisp", "settings validation succeeded");
+    tracing::info!(target: "superscience", "settings validation succeeded");
     Ok(format!(
         "Validated {} with {}",
         provider_name, settings.model
@@ -611,7 +611,7 @@ pub(super) async fn validate_settings(
 /// 16x16 PNG — small enough to be free, large enough that vision APIs with a
 /// minimum-dimension rule don't reject it for the wrong reason.
 fn vision_probe_message() -> Message {
-    use wisp_llm::message::{Content, ImageUrl, Part};
+    use superscience_llm::message::{Content, ImageUrl, Part};
     const PROBE_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mM4EWBDEmIY1TCqYfhqAABNl1QQCkyLAQAAAABJRU5ErkJggg==";
     let mut msg = Message::user("");
     msg.content = Content::Parts(vec![
@@ -684,7 +684,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "wisp-scimaster-config-test-{}-{unique}",
+            "superscience-scimaster-config-test-{}-{unique}",
             std::process::id()
         ));
         let path = dir.join("config.json");
@@ -812,7 +812,7 @@ pub(super) async fn get_storage_usage(
 #[tauri::command]
 pub(super) async fn get_token_usage(
     state: State<'_, AppState>,
-) -> Result<Vec<wisp_store::SessionTokenUsage>, String> {
+) -> Result<Vec<superscience_store::SessionTokenUsage>, String> {
     state
         .store
         .token_usage_by_session()

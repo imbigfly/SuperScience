@@ -6,13 +6,13 @@
 
 **Architecture:** A tauri-layer module (`ssh_hosts.rs`) owns a `SshHost` model, pure list/parse/render helpers, and 4 commands persisting a JSON blob under the `ssh_hosts` store key. The rendered host list is injected as a `## Compute hosts` section in the agent's system prompt at session start. The Leptos UI adds a composer popover, an add-host modal, and a `RightTab::Hosts` tab.
 
-**Tech Stack:** Rust (tauri 2, wisp-core, wisp-store, serde_json, `dirs`), Leptos 0.6 WASM, existing `Store::{get,set}_setting`.
+**Tech Stack:** Rust (tauri 2, superscience-core, superscience-store, serde_json, `dirs`), Leptos 0.6 WASM, existing `Store::{get,set}_setting`.
 
 ## Global Constraints
 
 - Rust WASM compile-check: `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo check --target wasm32-unknown-unknown` from `ui/` (cargo is not on PATH).
-- Native build/test: same cargo, `--manifest-path <repo>/Cargo.toml -p wisp-tauri`.
-- Package names: backend `wisp-tauri`, frontend `wisp-ui`, core `wisp-core`, store `wisp-store`.
+- Native build/test: same cargo, `--manifest-path <repo>/Cargo.toml -p superscience-tauri`.
+- Package names: backend `superscience-tauri`, frontend `superscience-ui`, core `superscience-core`, store `superscience-store`.
 - i18n: every user-facing string needs both `Locale::En` and `Locale::Zh` in `ui/src/i18n.rs` (missing key renders the raw key).
 - Do NOT bundle upstream proprietary prompts; host-guidance text is self-authored.
 - Store setting key: `ssh_hosts` (JSON array). No new DB table.
@@ -75,7 +75,7 @@ Add `mod ssh_hosts;` in `src-tauri/src/lib.rs` immediately after the `mod review
 
 - [ ] **Step 2: Run the test — verify it fails**
 
-Run: `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test --manifest-path /Users/xuzhougeng/Documents/Code/wisp-science/Cargo.toml -p wisp-tauri --lib ssh_hosts::`
+Run: `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test --manifest-path /Users/xuzhougeng/Documents/Code/superscience/Cargo.toml -p superscience-tauri --lib ssh_hosts::`
 Expected: FAIL — `assertion failed`, left is `[]`.
 
 - [ ] **Step 3: Implement the parser**
@@ -183,7 +183,7 @@ fn remove_drops_matching_alias() {
 
 - [ ] **Step 2: Run tests — verify they fail**
 
-Run: `... -p wisp-tauri --lib ssh_hosts::`
+Run: `... -p superscience-tauri --lib ssh_hosts::`
 Expected: FAIL — `upsert_adds_new...` and `remove_drops...` fail (empty vecs).
 
 - [ ] **Step 3: Implement the transforms**
@@ -257,7 +257,7 @@ fn render_lists_conn_and_notes() {
 
 - [ ] **Step 2: Run tests — verify they fail**
 
-Run: `... -p wisp-tauri --lib ssh_hosts::`
+Run: `... -p superscience-tauri --lib ssh_hosts::`
 Expected: FAIL — `render_lists_conn_and_notes` (None.unwrap panics).
 
 - [ ] **Step 3: Implement the renderer**
@@ -313,7 +313,7 @@ git commit -m "feat(ssh): render Compute hosts system-prompt section"
 - Modify: `src-tauri/src/lib.rs` (register 4 commands in `generate_handler![]`)
 
 **Interfaces:**
-- Consumes: `AppState.store: wisp_store::Store` (has `get_setting`/`set_setting`); `parse_ssh_config_aliases`, `upsert_host`, `remove_host` (Tasks 1-2).
+- Consumes: `AppState.store: superscience_store::Store` (has `get_setting`/`set_setting`); `parse_ssh_config_aliases`, `upsert_host`, `remove_host` (Tasks 1-2).
 - Produces (tauri commands, callable from FE via `invoke`):
   - `list_ssh_hosts() -> Vec<SshHost>`
   - `add_ssh_host(host: SshHost) -> Vec<SshHost>`
@@ -329,7 +329,7 @@ use tauri::State;
 
 const KEY: &str = "ssh_hosts";
 
-async fn load(store: &wisp_store::Store) -> Vec<SshHost> {
+async fn load(store: &superscience_store::Store) -> Vec<SshHost> {
     store
         .get_setting(KEY)
         .await
@@ -339,13 +339,13 @@ async fn load(store: &wisp_store::Store) -> Vec<SshHost> {
         .unwrap_or_default()
 }
 
-async fn save(store: &wisp_store::Store, hosts: &[SshHost]) -> Result<(), String> {
+async fn save(store: &superscience_store::Store, hosts: &[SshHost]) -> Result<(), String> {
     let json = serde_json::to_string(hosts).map_err(|e| e.to_string())?;
     store.set_setting(KEY, &json).await.map_err(|e| e.to_string())
 }
 
 /// Public: read the persisted hosts for system-prompt injection (Task 5).
-pub async fn stored_hosts(store: &wisp_store::Store) -> Vec<SshHost> {
+pub async fn stored_hosts(store: &superscience_store::Store) -> Vec<SshHost> {
     load(store).await
 }
 
@@ -397,12 +397,12 @@ In `src-tauri/src/lib.rs`, inside `tauri::generate_handler![ ... ]`, add after `
 
 - [ ] **Step 3: Compile-check the backend**
 
-Run: `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo check --manifest-path /Users/xuzhougeng/Documents/Code/wisp-science/Cargo.toml -p wisp-tauri --message-format=short`
+Run: `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo check --manifest-path /Users/xuzhougeng/Documents/Code/superscience/Cargo.toml -p superscience-tauri --message-format=short`
 Expected: `Finished`, no errors. Fix any `AppState.store` visibility error by marking the field `pub(crate)`.
 
 - [ ] **Step 4: Re-run the unit tests (still green)**
 
-Run: `... -p wisp-tauri --lib ssh_hosts::`
+Run: `... -p superscience-tauri --lib ssh_hosts::`
 Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
@@ -417,8 +417,8 @@ git commit -m "feat(ssh): tauri commands + JSON persistence for host registry"
 ### Task 5: Inject hosts into the system prompt
 
 **Files:**
-- Modify: `crates/wisp-core/src/system_prompt.rs` (add `compute_hosts` field + param, include in `assemble`)
-- Modify: `crates/wisp-core/src/lib.rs` (`seed_system_prompt` signature)
+- Modify: `crates/superscience-core/src/system_prompt.rs` (add `compute_hosts` field + param, include in `assemble`)
+- Modify: `crates/superscience-core/src/lib.rs` (`seed_system_prompt` signature)
 - Modify: `src-tauri/src/lib.rs` (both `seed_system_prompt` call sites: load hosts, render, pass)
 
 **Interfaces:**
@@ -427,13 +427,13 @@ git commit -m "feat(ssh): tauri commands + JSON persistence for host registry"
 
 - [ ] **Step 1: Failing test for assemble including the section**
 
-Add to `crates/wisp-core/src/system_prompt.rs` a `#[cfg(test)] mod tests` (or extend one):
+Add to `crates/superscience-core/src/system_prompt.rs` a `#[cfg(test)] mod tests` (or extend one):
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wisp_skills::SkillIndex;
+    use superscience_skills::SkillIndex;
 
     #[test]
     fn assemble_includes_compute_hosts_when_present() {
@@ -452,11 +452,11 @@ mod tests {
 }
 ```
 
-If `SkillIndex::default()` does not exist, construct an empty index the same way existing wisp-core tests do (check `crates/wisp-core/src` for an existing `SkillIndex` test constructor and reuse it verbatim).
+If `SkillIndex::default()` does not exist, construct an empty index the same way existing superscience-core tests do (check `crates/superscience-core/src` for an existing `SkillIndex` test constructor and reuse it verbatim).
 
 - [ ] **Step 2: Run — verify it fails to compile (arity mismatch)**
 
-Run: `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test --manifest-path /Users/xuzhougeng/Documents/Code/wisp-science/Cargo.toml -p wisp-core --lib system_prompt::`
+Run: `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test --manifest-path /Users/xuzhougeng/Documents/Code/superscience/Cargo.toml -p superscience-core --lib system_prompt::`
 Expected: FAIL — `SystemPrompt::new` takes 2 args, not 3.
 
 - [ ] **Step 3: Add the field, param, and assemble line**
@@ -473,7 +473,7 @@ pub struct SystemPrompt<'a> {
 
 impl<'a> SystemPrompt<'a> {
     pub fn new(project_root: &'a Path, skills: &'a SkillIndex, compute_hosts: Option<String>) -> Self {
-        let user_rules = std::fs::read_to_string(project_root.join(".wisp").join("WISP.md")).ok().filter(|s| !s.trim().is_empty());
+        let user_rules = std::fs::read_to_string(project_root.join(".superscience").join("SUPERSCIENCE.md")).ok().filter(|s| !s.trim().is_empty());
         Self { project_root, skills, user_rules, compute_hosts }
     }
 ```
@@ -498,7 +498,7 @@ Change `assemble` to build a Vec so the section is conditional:
     }
 ```
 
-- [ ] **Step 4: Update `seed_system_prompt` in `crates/wisp-core/src/lib.rs`**
+- [ ] **Step 4: Update `seed_system_prompt` in `crates/superscience-core/src/lib.rs`**
 
 ```rust
     pub fn seed_system_prompt(&mut self, skills: &SkillIndex, compute_hosts: Option<String>) {
@@ -522,15 +522,15 @@ In `send_message`, the call is currently `agent.seed_system_prompt(&ap.skills);`
 
 In `new_session`, the call is `agent.seed_system_prompt(&ap.skills);`. Replace with the same two lines (load `hosts`, pass `render_hosts_section(&hosts)`). Confirm `state.store` / `ap`/`state` are in scope at that site; if `new_session` builds the agent from a different binding, load hosts from the `Store` it has access to.
 
-- [ ] **Step 6: Run wisp-core tests + backend check**
+- [ ] **Step 6: Run superscience-core tests + backend check**
 
-Run: `... -p wisp-core --lib system_prompt::` → PASS (2 tests).
-Run: `... -p wisp-tauri --message-format=short` → `Finished`, no errors.
+Run: `... -p superscience-core --lib system_prompt::` → PASS (2 tests).
+Run: `... -p superscience-tauri --message-format=short` → `Finished`, no errors.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/wisp-core/src/system_prompt.rs crates/wisp-core/src/lib.rs src-tauri/src/lib.rs
+git add crates/superscience-core/src/system_prompt.rs crates/superscience-core/src/lib.rs src-tauri/src/lib.rs
 git commit -m "feat(ssh): inject Compute hosts section into the system prompt"
 ```
 
@@ -944,9 +944,9 @@ git commit -m "feat(ssh): right-sidebar Hosts tab with add/remove"
 
 - [ ] **Step 1: Full backend gate**
 
-Run: `... test --manifest-path <repo>/Cargo.toml -p wisp-tauri --lib ssh_hosts::` → PASS (5).
-Run: `... test --manifest-path <repo>/Cargo.toml -p wisp-core --lib system_prompt::` → PASS (2).
-Run: `... check --manifest-path <repo>/Cargo.toml -p wisp-tauri` → `Finished`.
+Run: `... test --manifest-path <repo>/Cargo.toml -p superscience-tauri --lib ssh_hosts::` → PASS (5).
+Run: `... test --manifest-path <repo>/Cargo.toml -p superscience-core --lib system_prompt::` → PASS (2).
+Run: `... check --manifest-path <repo>/Cargo.toml -p superscience-tauri` → `Finished`.
 
 - [ ] **Step 2: Full frontend gate**
 

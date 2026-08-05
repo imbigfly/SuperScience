@@ -27,7 +27,7 @@ serialized across both channels, so simultaneous first messages cannot split
 into separate sessions. The last-message pointer is updated before waiting for
 a busy session, so a queued desktop follow-up becomes the Feishu/WeChat target
 immediately instead of remaining stuck behind the running turn. On upgrade,
-Wisp recovers the latest persisted user message once, then records accepted
+SuperScience recovers the latest persisted user message once, then records accepted
 sends directly going forward.
 
 Only plain text is supported in v1 (WeChat voice messages arrive as transcripts
@@ -40,7 +40,7 @@ Uses a **self-built app** over Feishu's official long connection, so no public
 callback URL is needed. The recommended setup is **Settings → Remote Access →
 Create by QR code**. Choose Feishu China or Lark International first, scan with
 the matching mobile app, and finish the app setup in the page opened by Feishu.
-Wisp stores the returned App Secret directly in the OS keyring; the device code
+SuperScience stores the returned App Secret directly in the OS keyring; the device code
 and secret are never exposed to the webview or written to SQLite.
 
 An existing app can still be configured manually on
@@ -63,7 +63,7 @@ Raw model reasoning, tool output, and command output are never copied into the
 external progress card. Slash-command replies remain plain text.
 
 If CardKit creation or delivery is unavailable (for example because the app is
-missing CardKit permissions), Wisp falls back to one plain-text final reply.
+missing CardKit permissions), SuperScience falls back to one plain-text final reply.
 Current limits: text input only; files/images and interactive approval buttons
 are not yet supported. Use `/stop` to cancel a running turn.
 

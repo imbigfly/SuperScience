@@ -1,5 +1,5 @@
 export function isDevMode() {
-  return window.__WISP_DEV__ === true;
+  return window.__SUPERSCIENCE_DEV__ === true;
 }
 
 let contextTextEntry = null;

@@ -17,7 +17,7 @@ If `agent_infini` is not on `PATH`, call the full path.
 
 ## Credential setup
 
-wisp-science stores the InfiniSynapse API key in Settings -> Credentials and initializes the CLI with:
+superscience stores the InfiniSynapse API key in Settings -> Credentials and initializes the CLI with:
 
 ```bash
 agent_infini init --api-key "sk-xxx"

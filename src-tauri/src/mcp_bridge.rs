@@ -1,9 +1,9 @@
 //! Stdio MCP bridge exposed to external ACP agents.
 //!
-//! The bridge intentionally exposes Wisp's scientific capabilities (skills,
-//! bundled bio MCP, custom MCP, run contexts) without forwarding Wisp's generic
+//! The bridge intentionally exposes SuperScience's scientific capabilities (skills,
+//! bundled bio MCP, custom MCP, run contexts) without forwarding SuperScience's generic
 //! shell/edit/read tools. Local runners already have their own filesystem tools;
-//! this process is only for Wisp-native capabilities and policy/config reuse.
+//! this process is only for SuperScience-native capabilities and policy/config reuse.
 
 use crate::{
     bio_domains, connect_mcp, load_disabled_connectors, load_disabled_skills,
@@ -16,10 +16,10 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use superscience_skills::{list_resources, SkillIndex, SkillSource};
+use superscience_store::Store;
+use superscience_tools::{Approval, Tool, ToolEnv, ToolEvent, ToolResult};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use wisp_skills::{list_resources, SkillIndex, SkillSource};
-use wisp_store::Store;
-use wisp_tools::{Approval, Tool, ToolEnv, ToolEvent, ToolResult};
 
 const DEFAULT_TOOL_SEARCH_LIMIT: usize = 5;
 const MAX_TOOL_SEARCH_LIMIT: usize = 10;
@@ -47,14 +47,14 @@ struct JsonRpcIn {
 enum Route {
     Bio {
         connector_id: String,
-        client: Arc<wisp_mcp::McpClient>,
+        client: Arc<superscience_mcp::McpClient>,
         remote_name: String,
         description: String,
         input_schema: Value,
     },
     Custom {
         connector_id: String,
-        client: Arc<wisp_mcp::McpClient>,
+        client: Arc<superscience_mcp::McpClient>,
         remote_name: String,
         description: String,
         input_schema: Value,
@@ -64,9 +64,9 @@ enum Route {
 struct BridgeServer {
     cfg: BridgeConfig,
     store: Store,
-    memory: wisp_core::MemoryManager,
+    memory: superscience_core::MemoryManager,
     run_manager: run_context::RunManager,
-    runtime_manager: wisp_runtime::RuntimeManager,
+    runtime_manager: superscience_runtime::RuntimeManager,
     skills: Arc<SkillIndex>,
     routes: HashMap<String, Route>,
     bundled_bio_tools_loaded: bool,
@@ -76,18 +76,18 @@ struct BridgeServer {
 impl BridgeServer {
     async fn new(cfg: BridgeConfig) -> Result<Self> {
         if let Some(root) = &cfg.resource_root {
-            wisp_paths::set_resource_root(root.clone());
+            superscience_paths::set_resource_root(root.clone());
         }
         std::fs::create_dir_all(&cfg.app_data).ok();
-        let store = Store::open(&cfg.app_data.join("wisp.sqlite"))
+        let store = Store::open(&cfg.app_data.join("superscience.sqlite"))
             .await
-            .context("open Wisp store for MCP bridge")?;
+            .context("open SuperScience store for MCP bridge")?;
         let run_manager = run_context::RunManager::new();
         run_manager
             .recover(&store)
             .await
             .map_err(anyhow::Error::msg)?;
-        let runtime_manager = wisp_runtime::RuntimeManager::new(Arc::new(
+        let runtime_manager = superscience_runtime::RuntimeManager::new(Arc::new(
             crate::runtime_launcher::TauriRuntimeLauncher::new(
                 store.clone(),
                 cfg.app_data.clone(),
@@ -128,7 +128,7 @@ impl BridgeServer {
             }
             None => Arc::new(project_skills),
         };
-        let memory = wisp_core::MemoryManager::new(&cfg.project_root);
+        let memory = superscience_core::MemoryManager::new(&cfg.project_root);
         Ok(Self {
             cfg,
             store,
@@ -148,7 +148,7 @@ impl BridgeServer {
             "initialize" => Ok(json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "wisp_bridge", "version": env!("CARGO_PKG_VERSION") }
+                "serverInfo": { "name": "superscience_bridge", "version": env!("CARGO_PKG_VERSION") }
             })),
             "tools/list" => self.tools_list().await,
             "tools/call" => self.tools_call(req.params.unwrap_or_default()).await,
@@ -168,16 +168,16 @@ impl BridgeServer {
         let mut tools = vec![
             get_capabilities_tool_schema(),
             json!({
-                "name": "wisp_list_skills",
-                "description": "List skills currently available from the active Wisp project/profile.",
+                "name": "superscience_list_skills",
+                "description": "List skills currently available from the active SuperScience project/profile.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
             }),
             json!({
-                "name": "wisp_use_skill",
-                "description": "Load a Wisp skill's SKILL.md guidance plus script/reference file paths.",
+                "name": "superscience_use_skill",
+                "description": "Load a SuperScience skill's SKILL.md guidance plus script/reference file paths.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": { "name": { "type": "string", "description": "Wisp skill name" } },
+                    "properties": { "name": { "type": "string", "description": "SuperScience skill name" } },
                     "required": ["name"]
                 }
             }),
@@ -236,7 +236,9 @@ impl BridgeServer {
             id: self.cfg.project_id.clone(),
             root: self.cfg.project_root.clone(),
             skills: self.skills.clone(),
-            memory: Arc::new(wisp_core::MemoryManager::new(&self.cfg.project_root)),
+            memory: Arc::new(superscience_core::MemoryManager::new(
+                &self.cfg.project_root,
+            )),
         }
     }
 
@@ -262,7 +264,8 @@ impl BridgeServer {
     fn tool_authorized(&self, name: &str) -> bool {
         self.cfg.allowed_tools.as_ref().is_none_or(|allowed| {
             allowed.contains(name)
-                || (matches!(name, "wisp_list_skills" | "wisp_use_skill") && self.has_skill_grant())
+                || (matches!(name, "superscience_list_skills" | "superscience_use_skill")
+                    && self.has_skill_grant())
                 || self.routes.get(name).is_some_and(|route| {
                     let connector_id = match route {
                         Route::Bio { connector_id, .. } | Route::Custom { connector_id, .. } => {
@@ -292,17 +295,17 @@ impl BridgeServer {
             .cloned()
             .unwrap_or_else(|| json!({}));
         let (text, is_error) = match name {
-            "wisp_get_capabilities" => (self.capabilities_text().await?, false),
-            "wisp_list_skills" => (self.list_skills_text(), false),
-            "wisp_use_skill" => match self.use_skill_text(&args) {
+            "superscience_get_capabilities" => (self.capabilities_text().await?, false),
+            "superscience_list_skills" => (self.list_skills_text(), false),
+            "superscience_use_skill" => match self.use_skill_text(&args) {
                 Ok(s) => (s, false),
                 Err(e) => (e.to_string(), true),
             },
-            "wisp_search_tools" => match self.search_tools_text(&args).await {
+            "superscience_search_tools" => match self.search_tools_text(&args).await {
                 Ok(s) => (s, false),
                 Err(e) => (e.to_string(), true),
             },
-            "wisp_use_tool" => {
+            "superscience_use_tool" => {
                 let Some(tool_name) = args.get("tool_name").and_then(Value::as_str) else {
                     return Ok(tool_call_result(
                         "missing required argument 'tool_name'",
@@ -318,39 +321,39 @@ impl BridgeServer {
                     Err(error) => (error.to_string(), true),
                 }
             }
-            "wisp_search_memory" => match self.search_memory_text(&args) {
+            "superscience_search_memory" => match self.search_memory_text(&args) {
                 Ok(s) => (s, false),
                 Err(e) => (e.to_string(), true),
             },
-            "wisp_list_artifacts" => match self.list_artifacts_text(&args).await {
+            "superscience_list_artifacts" => match self.list_artifacts_text(&args).await {
                 Ok(s) => (s, false),
                 Err(e) => (e.to_string(), true),
             },
-            "wisp_get_research_graph" => match self.research_graph_text().await {
+            "superscience_get_research_graph" => match self.research_graph_text().await {
                 Ok(s) => (s, false),
                 Err(e) => (e.to_string(), true),
             },
-            "wisp_list_execution_contexts" => match self.execution_contexts_text().await {
+            "superscience_list_execution_contexts" => match self.execution_contexts_text().await {
                 Ok(s) => (s, false),
                 Err(e) => (e.to_string(), true),
             },
-            "wisp_run_in_context" => {
+            "superscience_run_in_context" => {
                 let result = self.run_in_context(&args).await;
                 (result.content, !result.success)
             }
-            "wisp_get_run" => {
+            "superscience_get_run" => {
                 let result = self.get_run(&args).await;
                 (result.content, !result.success)
             }
-            "wisp_monitor_run" => {
+            "superscience_monitor_run" => {
                 let result = self.monitor_run(&args).await;
                 (result.content, !result.success)
             }
-            "wisp_cancel_run" => {
+            "superscience_cancel_run" => {
                 let result = self.cancel_run(&args).await;
                 (result.content, !result.success)
             }
-            "wisp_delegate_tasks" => {
+            "superscience_delegate_tasks" => {
                 let Some(frame_id) = self.cfg.frame_id.as_deref() else {
                     return Err(anyhow!("delegation requires a conversation frame"));
                 };
@@ -384,7 +387,7 @@ impl BridgeServer {
                     Err(e) => (e.to_string(), true),
                 }
             }
-            "wisp_get_delegated_result" => {
+            "superscience_get_delegated_result" => {
                 let Some(frame_id) = self.cfg.frame_id.as_deref() else {
                     return Err(anyhow!("delegation requires a conversation frame"));
                 };
@@ -421,7 +424,7 @@ impl BridgeServer {
     }
 
     async fn register_bundled_bio_tools(&mut self) {
-        if let Ok(command) = std::env::var("WISP_MCP_COMMAND") {
+        if let Ok(command) = std::env::var("SUPERSCIENCE_MCP_COMMAND") {
             let allowed = self.allowed_connectors();
             if self.cfg.allowed_tools.is_some() && !allowed.contains("dev-mcp") {
                 return;
@@ -434,7 +437,7 @@ impl BridgeServer {
                 .iter()
                 .map(|arg| (*arg).to_string())
                 .collect::<Vec<_>>();
-            let Ok(client) = wisp_mcp::McpClient::launch(program, &args).await else {
+            let Ok(client) = superscience_mcp::McpClient::launch(program, &args).await else {
                 return;
             };
             let client = Arc::new(client);
@@ -445,7 +448,10 @@ impl BridgeServer {
                 if tool.name.is_empty() || !tool.visible_to_model() {
                     continue;
                 }
-                let exposed = format!("wisp_custom_dev_mcp__{}", sanitize_tool_part(&tool.name));
+                let exposed = format!(
+                    "superscience_custom_dev_mcp__{}",
+                    sanitize_tool_part(&tool.name)
+                );
                 if self.is_reserved(&exposed) {
                     continue;
                 }
@@ -492,11 +498,11 @@ impl BridgeServer {
             .collect::<HashMap<_, _>>();
         // Venv only (#477); if the deps are still installing the launch below
         // fails fast on a missing import instead of stalling the turn.
-        let Ok(env) = wisp_runtime::PythonEnv::ensure_venv(&self.cfg.app_data) else {
+        let Ok(env) = superscience_runtime::PythonEnv::ensure_venv(&self.cfg.app_data) else {
             return;
         };
-        let pkg = std::env::var("WISP_MCP_PKG").unwrap_or_else(|_| "mcp_bio".into());
-        let client = match wisp_mcp::McpClient::launch_bio_tools(
+        let pkg = std::env::var("SUPERSCIENCE_MCP_PKG").unwrap_or_else(|_| "mcp_bio".into());
+        let client = match superscience_mcp::McpClient::launch_bio_tools(
             &env.python(),
             &pkg,
             &crate::models::service_env(),
@@ -552,7 +558,7 @@ impl BridgeServer {
             let Ok(tools) = client.tools_list().await else {
                 continue;
             };
-            let prefix = format!("wisp_custom_{}__", sanitize_tool_part(&conn.id));
+            let prefix = format!("superscience_custom_{}__", sanitize_tool_part(&conn.id));
             for tool in tools {
                 if tool.name.is_empty() || !tool.visible_to_model() {
                     continue;
@@ -589,7 +595,10 @@ impl BridgeServer {
             let Ok(tools) = client.tools_list().await else {
                 continue;
             };
-            let prefix = format!("wisp_custom_{}__", sanitize_tool_part(&connector_id));
+            let prefix = format!(
+                "superscience_custom_{}__",
+                sanitize_tool_part(&connector_id)
+            );
             for tool in tools {
                 if tool.name.is_empty() || !tool.visible_to_model() {
                     continue;
@@ -624,7 +633,7 @@ impl BridgeServer {
                         ..
                     } => (
                         if description.trim().is_empty() {
-                            format!("Bundled Wisp bio MCP tool `{remote_name}`.")
+                            format!("Bundled SuperScience bio MCP tool `{remote_name}`.")
                         } else {
                             description.clone()
                         },
@@ -637,7 +646,7 @@ impl BridgeServer {
                         ..
                     } => (
                         if description.trim().is_empty() {
-                            format!("Custom Wisp MCP tool `{remote_name}`.")
+                            format!("Custom SuperScience MCP tool `{remote_name}`.")
                         } else {
                             description.clone()
                         },
@@ -664,7 +673,7 @@ impl BridgeServer {
             .routes
             .get(name)
             .cloned()
-            .ok_or_else(|| anyhow!("unknown Wisp bridge tool '{name}'"))?;
+            .ok_or_else(|| anyhow!("unknown SuperScience bridge tool '{name}'"))?;
         let (client, remote_name) = match route {
             Route::Bio {
                 client,
@@ -689,7 +698,7 @@ impl BridgeServer {
 
     fn list_skills_text(&self) -> String {
         if self.skills.is_empty() {
-            return "No Wisp skills are currently available. If this is a portable build, verify the skills/ resource directory is next to wisp-tauri.exe.".into();
+            return "No SuperScience skills are currently available. If this is a portable build, verify the skills/ resource directory is next to superscience-tauri.exe.".into();
         }
         self.skills
             .all()
@@ -749,23 +758,23 @@ impl BridgeServer {
             "actor": "acp_agent",
             "scope": "active_project",
             "capabilities": [
-                { "name": "skills.read", "allowed": true, "tools": ["wisp_list_skills", "wisp_use_skill"] },
-                { "name": "memory.read", "allowed": true, "tools": ["wisp_search_memory"] },
-                { "name": "artifacts.read", "allowed": true, "tools": ["wisp_list_artifacts"] },
-                { "name": "research_graph.read", "allowed": true, "tools": ["wisp_get_research_graph"] },
-                { "name": "execution_contexts.read", "allowed": true, "tools": ["wisp_list_execution_contexts"] },
-                { "name": "runs.read", "allowed": true, "tools": ["wisp_get_run", "wisp_monitor_run"] },
+                { "name": "skills.read", "allowed": true, "tools": ["superscience_list_skills", "superscience_use_skill"] },
+                { "name": "memory.read", "allowed": true, "tools": ["superscience_search_memory"] },
+                { "name": "artifacts.read", "allowed": true, "tools": ["superscience_list_artifacts"] },
+                { "name": "research_graph.read", "allowed": true, "tools": ["superscience_get_research_graph"] },
+                { "name": "execution_contexts.read", "allowed": true, "tools": ["superscience_list_execution_contexts"] },
+                { "name": "runs.read", "allowed": true, "tools": ["superscience_get_run", "superscience_monitor_run"] },
                 {
                     "name": "runs.execute",
                     "allowed": true,
-                    "tools": ["wisp_run_in_context", "wisp_cancel_run"],
+                    "tools": ["superscience_run_in_context", "superscience_cancel_run"],
                     "policy": "non_interactive; dangerous commands requiring confirmation are denied"
                 },
                 {
                     "name": "scientific_mcp",
                     "allowed": true,
-                    "tools": ["wisp_search_tools", "wisp_use_tool"],
-                    "discovery": "wisp_search_tools"
+                    "tools": ["superscience_search_tools", "superscience_use_tool"],
+                    "discovery": "superscience_search_tools"
                 },
                 {
                     "name": "harness.write",
@@ -776,9 +785,9 @@ impl BridgeServer {
                     "name": "delegation.inline",
                     "allowed": delegation_enabled || result_access,
                     "tools": match (delegation_enabled, result_access) {
-                        (true, true) => vec!["wisp_delegate_tasks", "wisp_get_delegated_result"],
-                        (true, false) => vec!["wisp_delegate_tasks"],
-                        (false, true) => vec!["wisp_get_delegated_result"],
+                        (true, true) => vec!["superscience_delegate_tasks", "superscience_get_delegated_result"],
+                        (true, false) => vec!["superscience_delegate_tasks"],
+                        (false, true) => vec!["superscience_get_delegated_result"],
                         (false, false) => vec![],
                     },
                     "policy": "bounded Native child Agents; read-only batches run inline; any requested approval is denied by this non-interactive bridge"
@@ -847,7 +856,7 @@ impl BridgeServer {
                 None => HashSet::new(),
             };
             contexts.retain(|context| {
-                context.kind == wisp_store::ExecutionContextKind::Local
+                context.kind == superscience_store::ExecutionContextKind::Local
                     || selected.contains(&context.id)
             });
         }
@@ -925,9 +934,9 @@ impl BridgeServer {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             match self.store.poll_ask_user_answer(&request_id).await? {
-                wisp_store::AskUserPoll::Pending => {}
-                wisp_store::AskUserPoll::Answered(answer) => return Ok(answer),
-                wisp_store::AskUserPoll::Gone => {
+                superscience_store::AskUserPoll::Pending => {}
+                superscience_store::AskUserPoll::Answered(answer) => return Ok(answer),
+                superscience_store::AskUserPoll::Gone => {
                     return Err(anyhow!("the question expired before it was answered"))
                 }
             }
@@ -958,7 +967,7 @@ async fn filter_skills(
 }
 
 fn pretty_json(value: &Value) -> Result<String> {
-    serde_json::to_string_pretty(value).context("serialize Wisp bridge response")
+    serde_json::to_string_pretty(value).context("serialize SuperScience bridge response")
 }
 
 fn required_string<'a>(args: &'a Value, name: &str) -> Result<&'a str> {
@@ -1056,7 +1065,7 @@ fn search_tool_catalog(tools: Vec<Value>, args: &Value) -> Result<String> {
         "results": results,
         "matched_tools": matched_tools,
         "total_hidden_tools": total_hidden_tools,
-        "next": "Call 'wisp_use_tool' with a returned tool_name and matching tool_input. Use query '*' to browse.",
+        "next": "Call 'superscience_use_tool' with a returned tool_name and matching tool_input. Use query '*' to browse.",
     }))?)
 }
 
@@ -1071,8 +1080,8 @@ fn truncate_catalog_description(value: &str) -> String {
 
 fn search_tools_tool_schema() -> Value {
     json!({
-        "name": "wisp_search_tools",
-        "description": "Search enabled Wisp scientific and custom MCP tools. Returns only matching input schemas instead of exposing the full catalog on every request.",
+        "name": "superscience_search_tools",
+        "description": "Search enabled SuperScience scientific and custom MCP tools. Returns only matching input schemas instead of exposing the full catalog on every request.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1087,12 +1096,12 @@ fn search_tools_tool_schema() -> Value {
 
 fn use_tool_tool_schema() -> Value {
     json!({
-        "name": "wisp_use_tool",
-        "description": "Call a Wisp MCP tool found by wisp_search_tools. tool_input must match the returned input_schema.",
+        "name": "superscience_use_tool",
+        "description": "Call a SuperScience MCP tool found by superscience_search_tools. tool_input must match the returned input_schema.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "tool_name": { "type": "string", "description": "Exact tool_name returned by wisp_search_tools" },
+                "tool_name": { "type": "string", "description": "Exact tool_name returned by superscience_search_tools" },
                 "tool_input": { "type": "object", "description": "Arguments matching the selected tool's input_schema", "additionalProperties": true }
             },
             "required": ["tool_name", "tool_input"],
@@ -1103,8 +1112,8 @@ fn use_tool_tool_schema() -> Value {
 
 fn get_capabilities_tool_schema() -> Value {
     json!({
-        "name": "wisp_get_capabilities",
-        "description": "Describe the project-scoped Wisp Harness capabilities granted to this ACP session, including intentionally unavailable write operations.",
+        "name": "superscience_get_capabilities",
+        "description": "Describe the project-scoped SuperScience Harness capabilities granted to this ACP session, including intentionally unavailable write operations.",
         "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
     })
 }
@@ -1114,7 +1123,7 @@ fn get_capabilities_tool_schema() -> Value {
 /// end its turn and wait for the next user message; here the answer returns
 /// inside this very tool call, so it would only mislead.
 fn acp_question_body(args: &Value) -> Result<Value, String> {
-    let mut body = wisp_tools::ask_user::question_body(args)?;
+    let mut body = superscience_tools::ask_user::question_body(args)?;
     body["source"] = json!("acp");
     body.as_object_mut()
         .expect("question_body returns an object")
@@ -1125,7 +1134,7 @@ fn acp_question_body(args: &Value) -> Result<Value, String> {
 fn ask_user_tool_schema() -> Value {
     json!({
         "name": "ask_user",
-        "description": "Ask the Wisp user a question and wait for their decision. Use it when you hit \
+        "description": "Ask the SuperScience user a question and wait for their decision. Use it when you hit \
              a real fork only they can settle — a destructive step, a choice between approaches, \
              missing requirements — not for confirmations you can infer. Offer the plausible choices \
              as options and leave freeform on unless the answer must be one of them. This call blocks \
@@ -1156,8 +1165,8 @@ fn ask_user_tool_schema() -> Value {
 
 fn search_memory_tool_schema() -> Value {
     json!({
-        "name": "wisp_search_memory",
-        "description": "Search the active project's durable Wisp memory. Read-only; does not append or alter memory.",
+        "name": "superscience_search_memory",
+        "description": "Search the active project's durable SuperScience memory. Read-only; does not append or alter memory.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1172,8 +1181,8 @@ fn search_memory_tool_schema() -> Value {
 
 fn list_artifacts_tool_schema() -> Value {
     json!({
-        "name": "wisp_list_artifacts",
-        "description": "List persisted artifacts owned by the active Wisp project, optionally filtering by filename.",
+        "name": "superscience_list_artifacts",
+        "description": "List persisted artifacts owned by the active SuperScience project, optionally filtering by filename.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1187,24 +1196,24 @@ fn list_artifacts_tool_schema() -> Value {
 
 fn get_research_graph_tool_schema() -> Value {
     json!({
-        "name": "wisp_get_research_graph",
-        "description": "Read the active project's Wisp research graph (nodes and edges).",
+        "name": "superscience_get_research_graph",
+        "description": "Read the active project's SuperScience research graph (nodes and edges).",
         "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
     })
 }
 
 fn list_execution_contexts_tool_schema() -> Value {
     json!({
-        "name": "wisp_list_execution_contexts",
-        "description": "List Wisp execution contexts and probe/capability summaries without exposing stored connection configuration.",
+        "name": "superscience_list_execution_contexts",
+        "description": "List SuperScience execution contexts and probe/capability summaries without exposing stored connection configuration.",
         "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
     })
 }
 
 fn run_in_context_tool_schema() -> Value {
     json!({
-        "name": "wisp_run_in_context",
-        "description": "Submit a persisted background Wisp Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). For Python/R work, declare a safe preflight for interpreter, package, file, and syntax checks; it never installs packages or executes the requested command as a dry run. Set wait_for_completion=true for direct model-free waiting, or call wisp_monitor_run exactly once with the returned id. Never poll with wisp_get_run. Dangerous commands require approval and are rejected in this non-interactive bridge.",
+        "name": "superscience_run_in_context",
+        "description": "Submit a persisted background SuperScience Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). For Python/R work, declare a safe preflight for interpreter, package, file, and syntax checks; it never installs packages or executes the requested command as a dry run. Set wait_for_completion=true for direct model-free waiting, or call superscience_monitor_run exactly once with the returned id. Never poll with superscience_get_run. Dangerous commands require approval and are rejected in this non-interactive bridge.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1212,7 +1221,7 @@ fn run_in_context_tool_schema() -> Value {
                 "command": { "type": "string", "description": "Command to execute in that context" },
                 "title": { "type": "string", "description": "Short run title" },
                 "timeout_secs": { "type": "integer", "description": "Job wall timeout. SSH: 1s..7d (default 4h); local/WSL: 1s..300s" },
-                "wait_for_completion": { "type": "boolean", "description": "Suspend the tool until the Run is terminal without repeatedly calling wisp_get_run (default false)" },
+                "wait_for_completion": { "type": "boolean", "description": "Suspend the tool until the Run is terminal without repeatedly calling superscience_get_run (default false)" },
                 "preflight": {
                     "type": "object",
                     "description": "Safe declarative Python/R checks performed before Run submission",
@@ -1272,8 +1281,8 @@ fn run_in_context_tool_schema() -> Value {
 
 fn get_run_tool_schema() -> Value {
     json!({
-        "name": "wisp_get_run",
-        "description": "Read one immediate Run status snapshot. Do not call repeatedly to wait; call wisp_monitor_run exactly once for live monitoring.",
+        "name": "superscience_get_run",
+        "description": "Read one immediate Run status snapshot. Do not call repeatedly to wait; call superscience_monitor_run exactly once for live monitoring.",
         "inputSchema": {
             "type": "object",
             "properties": { "run_id": { "type": "string" } },
@@ -1285,8 +1294,8 @@ fn get_run_tool_schema() -> Value {
 
 fn monitor_run_tool_schema() -> Value {
     json!({
-        "name": "wisp_monitor_run",
-        "description": "Monitor one existing long-running Run until it finishes. Call once instead of repeatedly calling wisp_get_run; Wisp waits without repeated model calls or token use.",
+        "name": "superscience_monitor_run",
+        "description": "Monitor one existing long-running Run until it finishes. Call once instead of repeatedly calling superscience_get_run; SuperScience waits without repeated model calls or token use.",
         "inputSchema": {
             "type": "object",
             "properties": { "run_id": { "type": "string" } },
@@ -1298,7 +1307,7 @@ fn monitor_run_tool_schema() -> Value {
 
 fn cancel_run_tool_schema() -> Value {
     json!({
-        "name": "wisp_cancel_run",
+        "name": "superscience_cancel_run",
         "description": "Request cancellation of a submitted or running Run. SSH Runs remain `cancelling` until the remote process group confirms termination.",
         "inputSchema": {
             "type": "object",
@@ -1319,7 +1328,7 @@ async fn delegate_tasks_tool_schema(
         .await
         .map_err(anyhow::Error::msg)?;
     Ok(json!({
-        "name": "wisp_delegate_tasks",
+        "name": "superscience_delegate_tasks",
         "description": schema.function.description,
         "inputSchema": schema.function.parameters,
     }))
@@ -1328,7 +1337,7 @@ async fn delegate_tasks_tool_schema(
 fn get_delegated_result_tool_schema() -> Value {
     let schema = crate::delegation_tool::get_delegated_result_schema();
     json!({
-        "name": "wisp_get_delegated_result",
+        "name": "superscience_get_delegated_result",
         "description": schema.function.description,
         "inputSchema": schema.function.parameters,
     })
@@ -1337,21 +1346,21 @@ fn get_delegated_result_tool_schema() -> Value {
 fn is_builtin_tool(name: &str) -> bool {
     matches!(
         name,
-        "wisp_get_capabilities"
-            | "wisp_list_skills"
-            | "wisp_use_skill"
-            | "wisp_search_tools"
-            | "wisp_use_tool"
-            | "wisp_search_memory"
-            | "wisp_list_artifacts"
-            | "wisp_get_research_graph"
-            | "wisp_list_execution_contexts"
-            | "wisp_run_in_context"
-            | "wisp_get_run"
-            | "wisp_monitor_run"
-            | "wisp_cancel_run"
-            | "wisp_delegate_tasks"
-            | "wisp_get_delegated_result"
+        "superscience_get_capabilities"
+            | "superscience_list_skills"
+            | "superscience_use_skill"
+            | "superscience_search_tools"
+            | "superscience_use_tool"
+            | "superscience_search_memory"
+            | "superscience_list_artifacts"
+            | "superscience_get_research_graph"
+            | "superscience_list_execution_contexts"
+            | "superscience_run_in_context"
+            | "superscience_get_run"
+            | "superscience_monitor_run"
+            | "superscience_cancel_run"
+            | "superscience_delegate_tasks"
+            | "superscience_get_delegated_result"
     )
 }
 
@@ -1420,7 +1429,7 @@ pub(crate) async fn run_stdio(cfg: BridgeConfig) -> Result<()> {
     Ok(())
 }
 
-/// CLI args for the `--wisp-mcp-bridge` re-exec mode used by ACP agents.
+/// CLI args for the `--superscience-mcp-bridge` re-exec mode used by ACP agents.
 fn parse_mcp_bridge_cli_args() -> BridgeConfig {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let mut app_data: Option<PathBuf> = None;
@@ -1468,8 +1477,8 @@ fn parse_mcp_bridge_cli_args() -> BridgeConfig {
     }
     let app_data = app_data.unwrap_or_else(|| {
         dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from(".wisp"))
-            .join("wisp-science")
+            .unwrap_or_else(|| PathBuf::from(".superscience"))
+            .join("SuperScience")
     });
     let project_root = project_root.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     let resource_root = resource_root.or_else(|| {
@@ -1492,9 +1501,9 @@ pub fn run_mcp_bridge_cli() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("create Wisp MCP bridge runtime");
+        .expect("create SuperScience MCP bridge runtime");
     if let Err(e) = rt.block_on(run_stdio(cfg)) {
-        eprintln!("Wisp MCP bridge error: {e:?}");
+        eprintln!("SuperScience MCP bridge error: {e:?}");
         std::process::exit(1);
     }
 }
@@ -1531,7 +1540,7 @@ mod tests {
     #[test]
     fn ask_user_bridge_schema_matches_the_built_in_tool() {
         let schema = ask_user_tool_schema();
-        assert_eq!(schema["name"], wisp_tools::ask_user::ASK_USER);
+        assert_eq!(schema["name"], superscience_tools::ask_user::ASK_USER);
         let properties = &schema["inputSchema"]["properties"];
         assert_eq!(properties["question"]["type"], "string");
         assert_eq!(properties["options"]["items"]["required"][0], "label");
@@ -1546,22 +1555,31 @@ mod tests {
     fn run_control_plane_schemas_match_current_contract() {
         assert_eq!(
             get_capabilities_tool_schema()["name"],
-            "wisp_get_capabilities"
+            "superscience_get_capabilities"
         );
-        assert_eq!(search_memory_tool_schema()["name"], "wisp_search_memory");
-        assert_eq!(search_tools_tool_schema()["name"], "wisp_search_tools");
-        assert_eq!(use_tool_tool_schema()["name"], "wisp_use_tool");
-        assert_eq!(list_artifacts_tool_schema()["name"], "wisp_list_artifacts");
+        assert_eq!(
+            search_memory_tool_schema()["name"],
+            "superscience_search_memory"
+        );
+        assert_eq!(
+            search_tools_tool_schema()["name"],
+            "superscience_search_tools"
+        );
+        assert_eq!(use_tool_tool_schema()["name"], "superscience_use_tool");
+        assert_eq!(
+            list_artifacts_tool_schema()["name"],
+            "superscience_list_artifacts"
+        );
         assert_eq!(
             get_research_graph_tool_schema()["name"],
-            "wisp_get_research_graph"
+            "superscience_get_research_graph"
         );
         assert_eq!(
             list_execution_contexts_tool_schema()["name"],
-            "wisp_list_execution_contexts"
+            "superscience_list_execution_contexts"
         );
         let run = run_in_context_tool_schema();
-        assert_eq!(run["name"], "wisp_run_in_context");
+        assert_eq!(run["name"], "superscience_run_in_context");
         assert!(run["description"]
             .as_str()
             .unwrap()
@@ -1578,11 +1596,17 @@ mod tests {
             .unwrap()
             .contains("ssh://"));
 
-        assert_eq!(get_run_tool_schema()["name"], "wisp_get_run");
-        assert_eq!(monitor_run_tool_schema()["name"], "wisp_monitor_run");
-        assert_eq!(cancel_run_tool_schema()["name"], "wisp_cancel_run");
+        assert_eq!(get_run_tool_schema()["name"], "superscience_get_run");
+        assert_eq!(
+            monitor_run_tool_schema()["name"],
+            "superscience_monitor_run"
+        );
+        assert_eq!(cancel_run_tool_schema()["name"], "superscience_cancel_run");
         let delegated_result = get_delegated_result_tool_schema();
-        assert_eq!(delegated_result["name"], "wisp_get_delegated_result");
+        assert_eq!(
+            delegated_result["name"],
+            "superscience_get_delegated_result"
+        );
         assert_eq!(
             delegated_result["inputSchema"]["required"],
             json!(["workflow_id", "task_id"])
@@ -1592,21 +1616,21 @@ mod tests {
     #[test]
     fn run_control_plane_names_are_reserved() {
         for name in [
-            "wisp_get_capabilities",
-            "wisp_list_skills",
-            "wisp_use_skill",
-            "wisp_search_tools",
-            "wisp_use_tool",
-            "wisp_search_memory",
-            "wisp_list_artifacts",
-            "wisp_get_research_graph",
-            "wisp_list_execution_contexts",
-            "wisp_run_in_context",
-            "wisp_get_run",
-            "wisp_monitor_run",
-            "wisp_cancel_run",
-            "wisp_delegate_tasks",
-            "wisp_get_delegated_result",
+            "superscience_get_capabilities",
+            "superscience_list_skills",
+            "superscience_use_skill",
+            "superscience_search_tools",
+            "superscience_use_tool",
+            "superscience_search_memory",
+            "superscience_list_artifacts",
+            "superscience_get_research_graph",
+            "superscience_list_execution_contexts",
+            "superscience_run_in_context",
+            "superscience_get_run",
+            "superscience_monitor_run",
+            "superscience_cancel_run",
+            "superscience_delegate_tasks",
+            "superscience_get_delegated_result",
         ] {
             assert!(is_builtin_tool(name), "{name} must be reserved");
         }
@@ -1644,7 +1668,10 @@ mod tests {
 
     #[tokio::test]
     async fn delegated_bridge_lists_and_calls_only_granted_tools() {
-        let base = std::env::temp_dir().join(format!("wisp_mcp_filtered_{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!(
+            "superscience_mcp_filtered_{}",
+            uuid::Uuid::new_v4()
+        ));
         let project_root = base.join("project");
         std::fs::create_dir_all(&project_root).unwrap();
         let mut server = BridgeServer::new(BridgeConfig {
@@ -1654,8 +1681,8 @@ mod tests {
             project_id: "project-a".into(),
             frame_id: None,
             allowed_tools: Some(HashSet::from([
-                "wisp_list_execution_contexts".into(),
-                "wisp_get_run".into(),
+                "superscience_list_execution_contexts".into(),
+                "superscience_get_run".into(),
             ])),
         })
         .await
@@ -1663,7 +1690,8 @@ mod tests {
         server
             .store
             .upsert_execution_context(
-                &wisp_store::ExecutionContext::new("ssh:not-selected", "Private host").unwrap(),
+                &superscience_store::ExecutionContext::new("ssh:not-selected", "Private host")
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -1677,13 +1705,16 @@ mod tests {
             .collect::<HashSet<_>>();
         assert_eq!(
             names,
-            HashSet::from(["wisp_list_execution_contexts", "wisp_get_run"])
+            HashSet::from([
+                "superscience_list_execution_contexts",
+                "superscience_get_run"
+            ])
         );
         let contexts = server.execution_contexts_text().await.unwrap();
         assert!(contexts.contains("local"));
         assert!(!contexts.contains("ssh:not-selected"));
         assert!(server
-            .tools_call(json!({"name":"wisp_search_memory","arguments":{}}))
+            .tools_call(json!({"name":"superscience_search_memory","arguments":{}}))
             .await
             .unwrap_err()
             .to_string()
@@ -1695,14 +1726,16 @@ mod tests {
 
     #[tokio::test]
     async fn delegated_bridge_exposes_only_explicitly_granted_skills() {
-        let base =
-            std::env::temp_dir().join(format!("wisp_mcp_skill_filter_{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!(
+            "superscience_mcp_skill_filter_{}",
+            uuid::Uuid::new_v4()
+        ));
         let project_root = base.join("project");
         for (name, body) in [
             ("papers", "paper guidance"),
             ("private", "private guidance"),
         ] {
-            let dir = project_root.join(".wisp/skills").join(name);
+            let dir = project_root.join(".superscience/skills").join(name);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(
                 dir.join("SKILL.md"),
@@ -1730,9 +1763,12 @@ mod tests {
             .iter()
             .filter_map(|tool| tool["name"].as_str())
             .collect::<HashSet<_>>();
-        assert_eq!(names, HashSet::from(["wisp_list_skills", "wisp_use_skill"]));
+        assert_eq!(
+            names,
+            HashSet::from(["superscience_list_skills", "superscience_use_skill"])
+        );
         let skills = server
-            .tools_call(json!({"name":"wisp_list_skills","arguments":{}}))
+            .tools_call(json!({"name":"superscience_list_skills","arguments":{}}))
             .await
             .unwrap()
             .to_string();
@@ -1740,7 +1776,7 @@ mod tests {
         assert!(!skills.contains("private"));
         let denied = server
             .tools_call(json!({
-                "name":"wisp_use_skill",
+                "name":"superscience_use_skill",
                 "arguments":{"name":"private"}
             }))
             .await
@@ -1753,8 +1789,10 @@ mod tests {
 
     #[tokio::test]
     async fn dynamic_delegation_tools_are_listed_only_when_the_session_opted_in() {
-        let base =
-            std::env::temp_dir().join(format!("wisp_mcp_delegation_{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!(
+            "superscience_mcp_delegation_{}",
+            uuid::Uuid::new_v4()
+        ));
         let project_root = base.join("project");
         let app_data = base.join("app-data");
         std::fs::create_dir_all(&project_root).unwrap();
@@ -1781,8 +1819,10 @@ mod tests {
             .unwrap();
 
         let disabled = server.tools_list().await.unwrap();
-        assert!(!disabled.to_string().contains("wisp_delegate_tasks"));
-        assert!(!disabled.to_string().contains("wisp_get_delegated_result"));
+        assert!(!disabled.to_string().contains("superscience_delegate_tasks"));
+        assert!(!disabled
+            .to_string()
+            .contains("superscience_get_delegated_result"));
         crate::delegation_runtime::save_session_delegation_enabled(
             &server.store,
             "project-a",
@@ -1792,13 +1832,15 @@ mod tests {
         .await
         .unwrap();
         let enabled = server.tools_list().await.unwrap();
-        assert!(enabled.to_string().contains("wisp_delegate_tasks"));
-        assert!(enabled.to_string().contains("wisp_get_delegated_result"));
+        assert!(enabled.to_string().contains("superscience_delegate_tasks"));
+        assert!(enabled
+            .to_string()
+            .contains("superscience_get_delegated_result"));
         let inline_schema = enabled["tools"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|tool| tool["name"] == "wisp_delegate_tasks")
+            .find(|tool| tool["name"] == "superscience_delegate_tasks")
             .unwrap();
         assert_eq!(
             inline_schema["inputSchema"]["required"],
@@ -1816,11 +1858,11 @@ mod tests {
         assert!(inline["tools"]
             .as_array()
             .unwrap()
-            .contains(&json!("wisp_delegate_tasks")));
+            .contains(&json!("superscience_delegate_tasks")));
 
         let malformed_inline = server
             .tools_call(json!({
-                "name": "wisp_delegate_tasks",
+                "name": "superscience_delegate_tasks",
                 "arguments": {}
             }))
             .await
@@ -1840,7 +1882,8 @@ mod tests {
 
     #[tokio::test]
     async fn delegated_bridge_exposes_bounded_nested_tools_without_session_toggle() {
-        let base = std::env::temp_dir().join(format!("wisp_mcp_nested_{}", uuid::Uuid::new_v4()));
+        let base =
+            std::env::temp_dir().join(format!("superscience_mcp_nested_{}", uuid::Uuid::new_v4()));
         let project_root = base.join("project");
         let app_data = base.join("app-data");
         std::fs::create_dir_all(&project_root).unwrap();
@@ -1851,8 +1894,8 @@ mod tests {
             project_id: "project-a".into(),
             frame_id: Some("child-frame".into()),
             allowed_tools: Some(HashSet::from([
-                "wisp_delegate_tasks".into(),
-                "wisp_get_delegated_result".into(),
+                "superscience_delegate_tasks".into(),
+                "superscience_get_delegated_result".into(),
             ])),
         })
         .await
@@ -1896,11 +1939,11 @@ mod tests {
         assert!(policy.host.executors.iter().any(|executor| {
             executor.enabled
                 && executor.executor
-                    == wisp_core::AgentExecutorRef::Acp {
+                    == superscience_core::AgentExecutorRef::Acp {
                         profile_id: "nested-test".into(),
                     }
         }));
-        let parent_spec: wisp_core::AgentSpec = serde_json::from_value(json!({
+        let parent_spec: superscience_core::AgentSpec = serde_json::from_value(json!({
             "agent_id": "parent",
             "name": "Parent",
             "goal": "Delegate one bounded batch",
@@ -1921,7 +1964,7 @@ mod tests {
             "executor": {"kind": "acp", "profile_id": "nested-test"}
         }))
         .unwrap();
-        let limits = wisp_store::AgentDelegationRootLimits {
+        let limits = superscience_store::AgentDelegationRootLimits {
             max_depth: 2,
             max_tasks: 2,
             max_parallel: 2,
@@ -1930,7 +1973,7 @@ mod tests {
             max_cost_microunits: 1_000_000,
             wall_time_secs: 300,
         };
-        let mut root = wisp_store::AgentWorkflow::new(
+        let mut root = superscience_store::AgentWorkflow::new(
             "root-workflow",
             "project-a",
             project_root.to_string_lossy().into_owned(),
@@ -1939,7 +1982,7 @@ mod tests {
         .unwrap();
         root.frame_id = Some("root-frame".into());
         root.root_limits_json = serde_json::to_string(&limits).unwrap();
-        let mut root_step = wisp_store::AgentWorkflowStep::new(
+        let mut root_step = superscience_store::AgentWorkflowStep::new(
             "root-step",
             &root.id,
             0,
@@ -1965,12 +2008,12 @@ mod tests {
             .store
             .transition_agent_workflow_status(
                 &root.id,
-                wisp_store::AgentWorkflowStatus::Approved,
-                wisp_store::AgentWorkflowStatus::Running,
+                superscience_store::AgentWorkflowStatus::Approved,
+                superscience_store::AgentWorkflowStatus::Running,
             )
             .await
             .unwrap());
-        let mut parent_attempt = wisp_store::AgentWorkflowAttempt::queued(
+        let mut parent_attempt = superscience_store::AgentWorkflowAttempt::queued(
             "parent-attempt",
             &root.id,
             "root-step",
@@ -1981,7 +2024,7 @@ mod tests {
         )
         .unwrap();
         parent_attempt.allow_delegation = true;
-        let wisp_store::AgentWorkflowAttemptStart::Started(parent_attempt) = server
+        let superscience_store::AgentWorkflowAttemptStart::Started(parent_attempt) = server
             .store
             .try_create_started_agent_workflow_attempt(parent_attempt)
             .await
@@ -1996,10 +2039,10 @@ mod tests {
             .unwrap());
 
         let listed = server.tools_list().await.unwrap().to_string();
-        assert!(listed.contains("wisp_delegate_tasks"));
-        assert!(listed.contains("wisp_get_delegated_result"));
+        assert!(listed.contains("superscience_delegate_tasks"));
+        assert!(listed.contains("superscience_get_delegated_result"));
 
-        let mut nested = wisp_store::AgentWorkflow::new(
+        let mut nested = superscience_store::AgentWorkflow::new(
             "nested-workflow",
             "project-a",
             project_root.to_string_lossy().into_owned(),
@@ -2012,7 +2055,7 @@ mod tests {
         nested.depth = 1;
         nested.root_limits_json = serde_json::to_string(&limits).unwrap();
         nested.max_parallel = 1;
-        let mut leaf = wisp_store::AgentWorkflowStep::new(
+        let mut leaf = superscience_store::AgentWorkflowStep::new(
             "leaf-step",
             &nested.id,
             0,
@@ -2035,8 +2078,8 @@ mod tests {
             .await
             .unwrap();
         let exhausted = server.tools_list().await.unwrap().to_string();
-        assert!(!exhausted.contains("wisp_delegate_tasks"));
-        assert!(exhausted.contains("wisp_get_delegated_result"));
+        assert!(!exhausted.contains("superscience_delegate_tasks"));
+        assert!(exhausted.contains("superscience_get_delegated_result"));
 
         drop(server);
         let _ = std::fs::remove_dir_all(base);
@@ -2044,8 +2087,10 @@ mod tests {
 
     #[tokio::test]
     async fn read_gateway_is_project_scoped_and_redacts_context_config() {
-        let base =
-            std::env::temp_dir().join(format!("wisp_mcp_read_gateway_{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!(
+            "superscience_mcp_read_gateway_{}",
+            uuid::Uuid::new_v4()
+        ));
         let project_root = base.join("project");
         let app_data = base.join("app-data");
         std::fs::create_dir_all(&project_root).unwrap();
@@ -2103,7 +2148,7 @@ mod tests {
             .await
             .unwrap();
 
-        let memory_dir = project_root.join(".wisp").join("memory");
+        let memory_dir = project_root.join(".superscience").join("memory");
         std::fs::write(
             memory_dir.join("2026-07-15.md"),
             "The validated cohort contains forty-two samples.",
@@ -2135,7 +2180,7 @@ mod tests {
         assert_eq!(graph["projectId"], "project-a");
         assert_eq!(graph["graph"]["nodes"].as_array().unwrap().len(), 1);
 
-        let mut ssh = wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
+        let mut ssh = superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
         ssh.config_json = r#"{"token":"must-not-leak"}"#.into();
         server.store.upsert_execution_context(&ssh).await.unwrap();
         let contexts = server.execution_contexts_text().await.unwrap();
@@ -2154,7 +2199,7 @@ mod tests {
         assert_eq!(harness_write["allowed"], false);
         let routed = server
             .tools_call(json!({
-                "name": "wisp_get_capabilities",
+                "name": "superscience_get_capabilities",
                 "arguments": {}
             }))
             .await

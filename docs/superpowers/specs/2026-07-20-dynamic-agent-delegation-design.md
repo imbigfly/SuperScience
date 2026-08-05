@@ -18,7 +18,7 @@ Dynamic, temporary Agents are the primary delegation primitive.
   is not required to create a sub-Agent.
 - Capabilities, model selection, and execution backend are separate concerns.
   A code-capable Agent does not imply Codex, ACP, or any particular model.
-- Wisp's native Agent runtime is the default executor. ACP is an optional
+- SuperScience's native Agent runtime is the default executor. ACP is an optional
   executor selected from configured ACP profiles.
 - Results are schema-validated and returned to the parent tool call so the main
   Agent can continue the same turn and synthesize the user-facing answer.
@@ -39,7 +39,7 @@ abstraction for this goal.
    conversation followed by a manually operated workflow panel.
 3. Support both generic temporary workers and reusable Specialist personas.
 4. Run useful read, edit, code, analysis, literature, visualization, and review
-   work through Wisp's native runtime without requiring ACP.
+   work through SuperScience's native runtime without requiring ACP.
 5. Keep ACP vendor-neutral and optional. Any configured ACP Agent may be used
    when its profile and permission boundary satisfy the task.
 6. Return compact structured results to the parent automatically while keeping
@@ -77,13 +77,13 @@ The useful ideas are documented in its
 and
 [`executor`](https://github.com/can1357/oh-my-pi/blob/39c95e5e29b1c8b082059f57421ce445c3dffdd4/packages/coding-agent/src/task/executor.ts).
 
-| Borrow | Wisp adaptation |
+| Borrow | SuperScience adaptation |
 | --- | --- |
 | One thin batch tool creates temporary sub-Agents | `delegate_tasks` accepts shared context and a list of self-contained tasks |
 | Children start with blank conversation history | Pass a bounded shared context, project rules, explicit inputs, and direct dependency results |
-| Session-scoped concurrency semaphore | Reuse Wisp's DAG scheduler and add capability-specific lanes |
-| Optional reusable Agent definitions | Reuse Wisp Specialists as optional personas, not mandatory templates |
-| Structured terminal yield and schema validation | Keep a standard Wisp result envelope and allow a bounded per-task output schema |
+| Session-scoped concurrency semaphore | Reuse SuperScience's DAG scheduler and add capability-specific lanes |
+| Optional reusable Agent definitions | Reuse SuperScience Specialists as optional personas, not mandatory templates |
+| Structured terminal yield and schema validation | Keep a standard SuperScience result envelope and allow a bounded per-task output schema |
 | Background jobs auto-deliver completion | Inline is the default; persisted background completion can inject a result and resume later |
 | Durable output IDs and child transcripts | Reuse workflow attempts, child frames, Artifact IDs, and a read-only result lookup |
 | Optional isolated workspaces | Add cross-platform git-worktree/patch isolation only after the native mutation path works |
@@ -91,7 +91,7 @@ and
 
 We should not copy oh-my-pi's coding-only assumptions, unrestricted general
 worker, process-global registry, IRC coordination layer, Linux-specific
-isolation backends, or separate YAML swarm subsystem. Wisp already has SQLite
+isolation backends, or separate YAML swarm subsystem. SuperScience already has SQLite
 workflow state, a dependency-aware executor, approval policies, and scientific
 project resources.
 
@@ -106,7 +106,7 @@ hard-coded Agent classes.
 | Origin/persona | temporary generic worker, built-in Reviewer, custom Specialist | Main Agent proposes; runtime resolves and snapshots |
 | Capabilities | project read, project write, code/run, literature, network research, visualization, review | Main Agent requests IDs; runtime grants from a controlled registry |
 | Model | inherit current model, Specialist-bound profile, user override | Runtime/user policy; never inferred from executor brand |
-| Executor | native Wisp, configured ACP profile, future registered executor | Runtime resolver and user override |
+| Executor | native SuperScience, configured ACP profile, future registered executor | Runtime resolver and user override |
 | Topology | one task, parallel batch, sequence, arbitrary DAG | Main Agent supplies dependency IDs; runtime validates |
 | Completion | inline wait, persisted background | Conversation policy/user action |
 | Workspace | shared read-only, serialized mutation, isolated checkout | Runtime safety policy |
@@ -267,10 +267,10 @@ the task's capability grant.
 `AgentDelegator` remains the execution interface. A small executor registry
 adds discovery and capability matching around it.
 
-### Native Wisp executor
+### Native SuperScience executor
 
 - Built in and selected by default.
-- Uses the ordinary configured Wisp model path, including local models and
+- Uses the ordinary configured SuperScience model path, including local models and
   direct HTTP providers.
 - Constructs a child tool registry from the resolved capability grant.
 - Uses a project-scoped delegated `ToolEnv` for approval, cancellation, path
@@ -283,9 +283,9 @@ adds discovery and capability matching around it.
 
 - Selected by a configured ACP profile ID, never by command-string matching.
 - Code and visualization work can use Native or any eligible executor.
-- Uses ACP initialization/session capabilities, Wisp's permission response
+- Uses ACP initialization/session capabilities, SuperScience's permission response
   boundary, and the resolved capability grant.
-- Receives only the Wisp MCP bridge tools allowed by the task. A task with no
+- Receives only the SuperScience MCP bridge tools allowed by the task. A task with no
   bridge capability gets no bridge.
 - Preserves ACP session provenance and optional reuse behavior.
 

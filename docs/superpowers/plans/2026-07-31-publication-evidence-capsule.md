@@ -55,7 +55,7 @@ Unrelated `.codex/` and `.playwright-mcp/` workspace files are never staged.
 
 ### Gate
 
-- [x] Focused wisp-store migration/lineage tests.
+- [x] Focused superscience-store migration/lineage tests.
 - [x] Harvest and Run-context tests with temporary files and fake runners.
 - [x] Message-resource snapshot regression tests, including a streamed file.
 - [x] `cargo fmt --all -- --check`

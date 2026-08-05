@@ -1,5 +1,5 @@
 """
-Literature-review helpers loaded into Wisp's persistent Python kernel when the
+Literature-review helpers loaded into SuperScience's persistent Python kernel when the
 skill is used:
 
     verify_dois, crossref_lookup, search_openalex, expand_citations,
@@ -24,19 +24,19 @@ DOI_PATTERN = r"10\.\d{4,9}/[^\s\"'`\]\}—–&|]+"
 def litrev_contact() -> str | None:
     """Return an explicitly supplied polite-pool contact email, if any.
 
-    Wisp does not expose credentials or profile data inside Python. A user who
-    wants to identify these requests may set ``WISP_LITERATURE_CONTACT_EMAIL``
+    SuperScience does not expose credentials or profile data inside Python. A user who
+    wants to identify these requests may set ``SUPERSCIENCE_LITERATURE_CONTACT_EMAIL``
     in the selected Python environment before starting the kernel.
     """
     import os
 
-    value = os.environ.get("WISP_LITERATURE_CONTACT_EMAIL", "").strip()
+    value = os.environ.get("SUPERSCIENCE_LITERATURE_CONTACT_EMAIL", "").strip()
     return value or None
 
 
 def litrev_openalex_auth() -> str:
     """`&api_key=...` query fragment for api.openalex.org requests, or ""
-    when no key is configured. Wisp does not inject credentials into Python;
+    when no key is configured. SuperScience does not inject credentials into Python;
     this only honors an ``OPENALEX_API_KEY`` explicitly present in the selected
     environment. OpenAlex-only — never append it to other services' URLs."""
     import os
@@ -47,7 +47,7 @@ def litrev_openalex_auth() -> str:
 def litrev_get(url: str, timeout: float = 15) -> dict | None:
     """GET `url` and JSON-decode. One 2s retry on HTTP 429; None on any error."""
     c = litrev_contact()
-    ua = "WispScience-literature-review/1.0" + (f" (mailto:{c})" if c else "")
+    ua = "SuperScience-literature-review/1.0" + (f" (mailto:{c})" if c else "")
     ua = ua.encode("ascii", "ignore").decode("ascii")
     for attempt in (0, 1):
         req = urllib.request.Request(url, headers={"User-Agent": ua})
@@ -84,7 +84,7 @@ def litrev_head(url: str, timeout: float = 10) -> int | None:
     unregistered one — not the publisher's status). One 2s retry on 429.
     Returns None only when no status could be obtained (connection/timeout)."""
     c = litrev_contact()
-    ua = ("WispScience-literature-review/1.0" + (f" (mailto:{c})" if c else "")).encode(
+    ua = ("SuperScience-literature-review/1.0" + (f" (mailto:{c})" if c else "")).encode(
         "ascii", "ignore"
     ).decode("ascii")
 

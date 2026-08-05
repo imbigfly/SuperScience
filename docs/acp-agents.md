@@ -1,8 +1,8 @@
 # ACP Agents
 
-Wisp can run an external coding agent through the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP v1) over local stdio.
+SuperScience can run an external coding agent through the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP v1) over local stdio.
 
-ACP Agents are **not** HTTP model profiles. Settings → Models configures API providers for the built-in Wisp agent. ACP configures a separate local process that owns its own session, tools, and auth.
+ACP Agents are **not** HTTP model profiles. Settings → Models configures API providers for the built-in SuperScience agent. ACP configures a separate local process that owns its own session, tools, and auth.
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ Under **Settings → Models** there are two categories with the same list → ad
 
 Click a row to edit. HTTP and ACP both use Cancel / Save on the subpage.
 
-## Add an ACP Agent in Wisp
+## Add an ACP Agent in SuperScience
 
 1. Open a project. You may start from an empty session or an existing
    conversation; selecting ACP from a populated conversation automatically
@@ -41,8 +41,8 @@ Click a row to edit. HTTP and ACP both use Cancel / Save on the subpage.
 | Arguments | One argument per line |
 
 4. Click **Save Agent**.
-5. Click **Test Connection**. A success message means Wisp could launch the process and complete ACP `initialize`.
-6. If auth methods appear after the test, click the advertised button (for example browser login). Credentials stay with the agent; Wisp does not store them in SQLite.
+5. Click **Test Connection**. A success message means SuperScience could launch the process and complete ACP `initialize`.
+6. If auth methods appear after the test, click the advertised button (for example browser login). Credentials stay with the agent; SuperScience does not store them in SQLite.
 7. Close the dialog, open the model picker again, and select the ACP Agent under **ACP Agents**.
 8. Send a prompt. The first prompt locks that session to the selected agent.
 
@@ -50,7 +50,7 @@ To switch back to a normal HTTP model profile, start another empty session and p
 
 ## Example profiles
 
-Wisp launches `Command` plus each Arguments line as a process argv. Put every shell token on its own line.
+SuperScience launches `Command` plus each Arguments line as a process argv. Put every shell token on its own line.
 
 ### Codex ACP via `npx`
 
@@ -60,7 +60,7 @@ Install/check once:
 npx -y @agentclientprotocol/codex-acp --version
 ```
 
-In Wisp:
+In SuperScience:
 
 | Field | Value |
 | --- | --- |
@@ -80,7 +80,7 @@ npm install -g @agentclientprotocol/codex-acp
 | Command | `codex-acp` (or the absolute path returned by `where codex-acp` / `which codex-acp`) |
 | Arguments | _(empty)_ |
 
-Optional env for the agent process (set in your OS / shell before launching Wisp):
+Optional env for the agent process (set in your OS / shell before launching SuperScience):
 
 - `CODEX_API_KEY` or `OPENAI_API_KEY`
 - `CODEX_PATH` if you want a specific Codex binary
@@ -118,29 +118,29 @@ npm install -g @agentclientprotocol/claude-agent-acp
 - Permission cards show the exact options the agent returns; choose one to continue.
 - If the agent advertises session config options (model, mode, …), open the compact ACP model menu beside Send to adjust them.
 - Stop cancels the active ACP turn for the bound session.
-- After restart, Wisp reconnects only when the same profile fingerprint and project path still match and the agent supports resume/load. Editing Command/Arguments creates a new fingerprint; start a fresh session.
+- After restart, SuperScience reconnects only when the same profile fingerprint and project path still match and the agent supports resume/load. Editing Command/Arguments creates a new fingerprint; start a fresh session.
 
-Wisp injects its scientific MCP bridge into the ACP session, so the external
-agent can call bundled Wisp tools while it works in the project directory. The
-bridge exposes the following project-scoped Wisp Harness gateway:
+SuperScience injects its scientific MCP bridge into the ACP session, so the external
+agent can call bundled SuperScience tools while it works in the project directory. The
+bridge exposes the following project-scoped SuperScience Harness gateway:
 
 This full bridge description applies to a user-owned ACP chat session. A
 temporary delegated ACP task is narrower: it receives no bridge by default and
 only the individual gateway tools granted by that task's resolved capabilities.
 
-- `wisp_get_capabilities` — inspect the exact grant and current limitations
-- `wisp_list_skills` / `wisp_use_skill` — discover and load enabled skills
-- `wisp_search_tools` / `wisp_use_tool` — discover and call scientific or custom MCP tools without loading the full schema catalog
-- `wisp_search_memory` — read durable project memory
-- `wisp_list_artifacts` — list artifacts owned by the active project
-- `wisp_get_research_graph` — read project research nodes and edges
-- `wisp_list_execution_contexts` — read context capabilities and probe status
-- `wisp_run_in_context`, `wisp_get_run`, `wisp_monitor_run`, and `wisp_cancel_run` — persisted Run controls; `wisp_monitor_run` waits without repeated model polling
+- `superscience_get_capabilities` — inspect the exact grant and current limitations
+- `superscience_list_skills` / `superscience_use_skill` — discover and load enabled skills
+- `superscience_search_tools` / `superscience_use_tool` — discover and call scientific or custom MCP tools without loading the full schema catalog
+- `superscience_search_memory` — read durable project memory
+- `superscience_list_artifacts` — list artifacts owned by the active project
+- `superscience_get_research_graph` — read project research nodes and edges
+- `superscience_list_execution_contexts` — read context capabilities and probe status
+- `superscience_run_in_context`, `superscience_get_run`, `superscience_monitor_run`, and `superscience_cancel_run` — persisted Run controls; `superscience_monitor_run` waits without repeated model polling
 - enabled scientific tools and custom MCP connections, available through the search/use pair above
 
 This is deliberately a capability gateway, not an unrestricted export of every
 internal Rust object or UI command. Memory/artifact/graph writes and persistent
-runtime mutation are not exposed until Wisp has an ACP approval broker. Context
+runtime mutation are not exposed until SuperScience has an ACP approval broker. Context
 connection configuration is redacted, and all artifact/graph reads remain
 scoped to the active project. The ACP process can still use its own filesystem
 tools with the OS permissions described under **Current limits**.
@@ -150,7 +150,7 @@ Composer references work in ACP sessions too:
 - `/` adds the selected enabled skill's rendered `SKILL.md` guidance to that
   ACP prompt as text.
 - `#` adds the selected session transcript as reference-only text, with the
-  same size limits and prompt-injection guard as Wisp's built-in agent.
+  same size limits and prompt-injection guard as SuperScience's built-in agent.
 - `@` sends the selected artifact as a standard ACP file link. Cross-project
   artifacts remain at their original validated local path.
 
@@ -163,7 +163,7 @@ findings are present. Manual **Review** uses the same backend selection.
 
 Reviewer backend choices are:
 
-- **Default HTTP model** — the active/default Wisp HTTP model profile
+- **Default HTTP model** — the active/default SuperScience HTTP model profile
 - **Follow session** — an HTTP session uses its HTTP default; an ACP session
   launches a separate one-shot reviewer with the same ACP profile
 - a specific **HTTP model** profile
@@ -174,7 +174,7 @@ The reviewer never shares the original ACP session state. It reviews the
 persisted transcript and cannot request tool permissions. ACP tool snapshots
 also persist standard `rawInput` and `rawOutput` evidence when the adapter
 provides them. If an adapter records only a terminal handle/status and no
-inspectable output, Wisp reports the result as **Unreviewable** with an evidence
+inspectable output, SuperScience reports the result as **Unreviewable** with an evidence
 coverage warning instead of incorrectly showing a green pass. Reviewer launch,
 API, timeout, or JSON parsing failures are shown in the chat rather than
 silently disappearing. One-shot ACP reviewer calls time out after 90 seconds
@@ -185,7 +185,7 @@ message even when token-usage or reviewer-status rows appear between turns.
 
 ## Importing Codex CLI and Claude Code conversations
 
-Conversations run in the standalone Codex CLI or Claude Code (outside Wisp)
+Conversations run in the standalone Codex CLI or Claude Code (outside SuperScience)
 can be imported into the current project without copy/paste (#464).
 
 - Open **Edit → Import Codex conversations** or **Edit → Import Claude Code
@@ -196,13 +196,13 @@ can be imported into the current project without copy/paste (#464).
   come from `~/.claude/projects`. The newest 500 sessions are listed 25 at a
   time with the working directory, message count, and last activity. Click a
   row to load a bounded preview of its first conversation turns.
-- **Import** copies the user/assistant turns into a regular Wisp session; the
-  original chronology is preserved in the sidebar ordering. Wisp creates or
+- **Import** copies the user/assistant turns into a regular SuperScience session; the
+  original chronology is preserved in the sidebar ordering. SuperScience creates or
   reuses a `codex` or `claude` group for newly imported sessions. The dialog
   keeps an item counter and progress bar visible until the import completes.
 - Re-importing is idempotent. If the source gained new turns since the last
   import, the row shows **Update** and importing fast-forwards the session; a
-  session that was continued inside Wisp is left untouched.
+  session that was continued inside SuperScience is left untouched.
 - Discovery metadata is cached per app/source combination. Reopening the
   dialog or switching back to a source uses that cache; **Refresh** compares
   file size and modification time and only rereads metadata for changed files.
@@ -219,10 +219,10 @@ can be imported into the current project without copy/paste (#464).
 | Symptom | Likely fix |
 | --- | --- |
 | Test Connection fails immediately | Command not on PATH, wrong Windows wrapper (`npx` vs `npx.cmd`), or Arguments still glued into Command |
-| Auth button fails | Finish login/API key setup for the underlying agent outside Wisp, then retest |
+| Auth button fails | Finish login/API key setup for the underlying agent outside SuperScience, then retest |
 | “selection is locked after the first prompt” | Expected; create a new empty session to change backend |
 | “profile or project path changed” | Profile Command/Arguments or project cwd changed; start a new ACP session |
-| Agent runs but has no science tools | Confirm the session started through Wisp (MCP bridge is injected automatically) |
+| Agent runs but has no science tools | Confirm the session started through SuperScience (MCP bridge is injected automatically) |
 | Agent does not call a bridge tool | Verify the selected ACP adapter supports MCP servers; the bridge tools are available to the agent, but its model decides when to invoke them |
 | Review says Unreviewable | The ACP adapter did not persist inspectable tool output. Upgrade/configure the adapter to emit `rawOutput`, then run the task and review again |
 | ACP reviewer fails to start | Test that ACP profile under Settings first and complete the adapter's authentication flow |
@@ -236,7 +236,7 @@ can be imported into the current project without copy/paste (#464).
 - No in-app ACP registry installer — configure an already-installed agent command
 - No ACP rewind/fork, image/audio prompt blocks, or client-provided terminal/filesystem in this release
 - Harness writes (memory, artifacts, research graph, persistent runtime) are not yet exposed through ACP
-- The local agent process has the OS permissions of the Wisp user
+- The local agent process has the OS permissions of the SuperScience user
 
 ## Related docs
 

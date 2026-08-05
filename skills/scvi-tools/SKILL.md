@@ -104,7 +104,7 @@ mode).
 A100-class GPU is recommended for more than 50,000 cells. Use a selected and
 probed `ssh:<alias>` execution context, then load `remote-compute-ssh` for the
 Run lifecycle. Confirm that the remote Python environment imports `scvi`,
-`scanpy`, and `anndata`; do not assume Wisp provisioned an image.
+`scanpy`, and `anndata`; do not assume SuperScience provisioned an image.
 
 Write a self-contained project script such as `runs/scvi_pipeline.py`. The
 sidecar helper `h5ad_safe_obs` exists only in the interactive `python` kernel,
@@ -115,12 +115,12 @@ Submit one persisted Run with `run_in_context`:
 {
   "context_id": "ssh:gpu-box",
   "title": "scVI and scANVI on 80k cells",
-  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate singlecell && python scvi_pipeline.py --input dataset.h5ad --output /home/me/wisp-results/scvi/annotated.h5ad",
+  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate singlecell && python scvi_pipeline.py --input dataset.h5ad --output /home/me/superscience-results/scvi/annotated.h5ad",
   "timeout_secs": 3600,
   "input_paths": ["runs/scvi_pipeline.py", "data/dataset.h5ad"],
   "output_specs": [
     {
-      "glob": "ssh://gpu-box/home/me/wisp-results/scvi/annotated.h5ad",
+      "glob": "ssh://gpu-box/home/me/superscience-results/scvi/annotated.h5ad",
       "kind": "h5ad",
       "residency": "remote"
     }

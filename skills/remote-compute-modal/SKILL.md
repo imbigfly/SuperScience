@@ -1,12 +1,12 @@
 ---
 name: remote-compute-modal
-description: Explain Wisp's current Modal boundary and migrate a requested Modal workload to a supported direct SSH Run when possible. Use when an existing workflow mentions Modal, BYOC cloud compute, provider images, or cloud GPU dispatch.
+description: Explain SuperScience's current Modal boundary and migrate a requested Modal workload to a supported direct SSH Run when possible. Use when an existing workflow mentions Modal, BYOC cloud compute, provider images, or cloud GPU dispatch.
 license: Apache-2.0
 ---
 
 # Modal compute boundary
 
-Wisp does not currently implement a Modal `ExecutionContext` or Run backend.
+SuperScience does not currently implement a Modal `ExecutionContext` or Run backend.
 Only `local`, `wsl:<distro>`, and direct `ssh:<alias>` contexts can be passed to
 `run_in_context`. Python receives no provider SDK, cloud credentials, image
 builder, or cloud-job handle.
@@ -20,7 +20,7 @@ builder, or cloud-job handle.
 3. Keep large inputs and model weights remote. Stage only small project scripts
    and configuration with `input_paths`.
 4. If no suitable SSH context exists, explain that the workload cannot be
-   dispatched by this Wisp build. Do not offer an untracked local SDK call as a
+   dispatched by this SuperScience build. Do not offer an untracked local SDK call as a
    substitute.
 
 A future Modal integration must add a typed execution context and a mockable

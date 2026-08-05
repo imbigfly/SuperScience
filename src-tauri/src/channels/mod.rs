@@ -23,10 +23,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use superscience_store::secrets::Secret;
+use superscience_store::Store;
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::watch;
-use wisp_store::secrets::Secret;
-use wisp_store::Store;
 
 const FEISHU_SECRET: &str = "feishu_app_secret";
 const WEIXIN_TOKEN_SECRET: &str = "weixin_bot_token";
@@ -657,8 +657,8 @@ async fn last_assistant_text(store: &Store, frame_id: &str) -> Option<String> {
     msgs.iter()
         .rev()
         .filter(|m| {
-            m.role == wisp_llm::Role::Assistant
-                || (m.role == wisp_llm::Role::Tool
+            m.role == superscience_llm::Role::Assistant
+                || (m.role == superscience_llm::Role::Tool
                     && m.tool_name.as_deref() == Some("attempt_completion"))
         })
         .map(|m| m.content.as_text())
@@ -1302,7 +1302,7 @@ mod tests {
     #[tokio::test]
     async fn shared_route_follows_the_last_sent_session_and_recovers_after_delete() {
         let path = std::env::temp_dir().join(format!(
-            "wisp_channels_last_route_{}.sqlite",
+            "superscience_channels_last_route_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&path).await.unwrap();
@@ -1311,19 +1311,19 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_frame("session-1", "project-1", "OPERON", "wisp")
+            .create_frame("session-1", "project-1", "SUPERSCIENCE", "superscience")
             .await
             .unwrap();
         store
-            .create_frame("session-2", "project-1", "OPERON", "wisp")
+            .create_frame("session-2", "project-1", "SUPERSCIENCE", "superscience")
             .await
             .unwrap();
         store
-            .append_message("session-1", 1, &wisp_llm::Message::user("first"))
+            .append_message("session-1", 1, &superscience_llm::Message::user("first"))
             .await
             .unwrap();
         store
-            .append_message("session-2", 1, &wisp_llm::Message::user("second"))
+            .append_message("session-2", 1, &superscience_llm::Message::user("second"))
             .await
             .unwrap();
 
@@ -1353,7 +1353,7 @@ mod tests {
     #[tokio::test]
     async fn explicit_new_route_is_not_replaced_by_transcript_fallback() {
         let path = std::env::temp_dir().join(format!(
-            "wisp_channels_pending_route_{}.sqlite",
+            "superscience_channels_pending_route_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&path).await.unwrap();
@@ -1362,11 +1362,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_frame("old-session", "project-1", "OPERON", "wisp")
+            .create_frame("old-session", "project-1", "SUPERSCIENCE", "superscience")
             .await
             .unwrap();
         store
-            .append_message("old-session", 1, &wisp_llm::Message::user("old"))
+            .append_message("old-session", 1, &superscience_llm::Message::user("old"))
             .await
             .unwrap();
         set_route(
@@ -1389,7 +1389,7 @@ mod tests {
     #[tokio::test]
     async fn simultaneous_feishu_and_wechat_first_messages_share_one_session() {
         let path = std::env::temp_dir().join(format!(
-            "wisp_channels_concurrent_first_{}.sqlite",
+            "superscience_channels_concurrent_first_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&path).await.unwrap();
@@ -1416,7 +1416,7 @@ mod tests {
     #[tokio::test]
     async fn reply_promotes_attempt_completion_result_like_the_desktop() {
         let path = std::env::temp_dir().join(format!(
-            "wisp_channels_reply_promotion_{}.sqlite",
+            "superscience_channels_reply_promotion_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&path).await.unwrap();
@@ -1425,11 +1425,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_frame("session-1", "project-1", "OPERON", "wisp")
+            .create_frame("session-1", "project-1", "SUPERSCIENCE", "superscience")
             .await
             .unwrap();
         store
-            .append_message("session-1", 1, &wisp_llm::Message::user("分析一下"))
+            .append_message("session-1", 1, &superscience_llm::Message::user("分析一下"))
             .await
             .unwrap();
         // Tool-driven turn: the assistant stub next to the tool call is tiny,
@@ -1438,7 +1438,7 @@ mod tests {
             .append_message(
                 "session-1",
                 2,
-                &wisp_llm::Message::assistant("我来分析一下"),
+                &superscience_llm::Message::assistant("我来分析一下"),
             )
             .await
             .unwrap();
@@ -1446,7 +1446,7 @@ mod tests {
             .append_message(
                 "session-1",
                 3,
-                &wisp_llm::Message::tool("tc-1", "attempt_completion", "完整的分析结论"),
+                &superscience_llm::Message::tool("tc-1", "attempt_completion", "完整的分析结论"),
             )
             .await
             .unwrap();
@@ -1459,7 +1459,7 @@ mod tests {
             .append_message(
                 "session-1",
                 4,
-                &wisp_llm::Message::tool("tc-2", "shell", "raw tool output"),
+                &superscience_llm::Message::tool("tc-2", "shell", "raw tool output"),
             )
             .await
             .unwrap();
@@ -1472,7 +1472,7 @@ mod tests {
             .append_message(
                 "session-1",
                 5,
-                &wisp_llm::Message::assistant("后续普通回复"),
+                &superscience_llm::Message::assistant("后续普通回复"),
             )
             .await
             .unwrap();

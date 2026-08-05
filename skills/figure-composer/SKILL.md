@@ -77,7 +77,7 @@ yourself; pixels cannot reveal the source data path.
 
 ## Boundaries
 
-- Use `delegate_tasks` only as an explicit Wisp tool; never call delegation from
+- Use `delegate_tasks` only as an explicit SuperScience tool; never call delegation from
   `python`.
 - Use `view_image` only on a concrete local image file.
 - Keep data preparation in normal project files. Use `run_in_context` only when

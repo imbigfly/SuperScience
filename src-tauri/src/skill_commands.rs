@@ -6,8 +6,8 @@ use super::{
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use superscience_skills::{SkillIndex, SkillSource};
 use tauri::{AppHandle, State};
-use wisp_skills::{SkillIndex, SkillSource};
 
 async fn list_skill_infos_for_project(state: &AppState, label: &str) -> Vec<SkillInfo> {
     let ap = state.active(label);
@@ -197,7 +197,7 @@ pub(super) async fn pick_skill_source(app: AppHandle) -> Result<Option<String>, 
 
 fn user_skills_dir() -> Result<PathBuf, String> {
     dirs::home_dir()
-        .map(|h| h.join(".wisp").join("skills"))
+        .map(|h| h.join(".superscience").join("skills"))
         .ok_or_else(|| "no home directory".to_string())
 }
 
@@ -245,7 +245,7 @@ pub(super) async fn install_skill(
         return Err("select a skill folder or a SKILL.md file".into());
     };
     // Parse name from frontmatter (fall back to dir name), validate description.
-    let skill = wisp_skills::parse_skill_file(&skill_md)?;
+    let skill = superscience_skills::parse_skill_file(&skill_md)?;
     if skill.description.trim().is_empty() {
         return Err("SKILL.md is missing a description".into());
     }
@@ -398,8 +398,8 @@ mod tests {
 
     impl TestDir {
         fn new() -> Self {
-            let path =
-                std::env::temp_dir().join(format!("wisp-skill-test-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir()
+                .join(format!("superscience-skill-test-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&path).expect("create test directory");
             Self(path)
         }

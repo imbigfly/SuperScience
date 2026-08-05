@@ -25,7 +25,7 @@ const DEFAULT_COUNTS = {
 class PetRuntime {
   constructor(element) {
     this.element = element;
-    this.sprite = element.querySelector(".wisp-pet-sprite");
+    this.sprite = element.querySelector(".superscience-pet-sprite");
     this.frame = 0;
     this.state = "idle";
     this.sequence = -1;
@@ -180,8 +180,8 @@ export function sync_pet(elementId, configJson) {
   const sync = () => {
     const element = document.getElementById(elementId);
     if (!element) return;
-    if (!element.__wispPetRuntime) element.__wispPetRuntime = new PetRuntime(element);
-    element.__wispPetRuntime.configure(config);
+    if (!element.__supersciencePetRuntime) element.__supersciencePetRuntime = new PetRuntime(element);
+    element.__supersciencePetRuntime.configure(config);
   };
   requestAnimationFrame(sync);
 }

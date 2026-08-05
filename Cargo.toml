@@ -1,27 +1,27 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/wisp-llm",
-    "crates/wisp-core",
-    "crates/wisp-tools",
-    "crates/wisp-store",
-    "crates/wisp-skills",
-    "crates/wisp-runtime",
-    "crates/wisp-mcp",
-    "crates/wisp-acp",
-    "crates/wisp-cli",
-    "crates/wisp-paths",
-    "crates/wisp-sync",
+    "crates/superscience-llm",
+    "crates/superscience-core",
+    "crates/superscience-tools",
+    "crates/superscience-store",
+    "crates/superscience-skills",
+    "crates/superscience-runtime",
+    "crates/superscience-mcp",
+    "crates/superscience-acp",
+    "crates/superscience-cli",
+    "crates/superscience-paths",
+    "crates/superscience-sync",
     "src-tauri",
 ]
-default-members = ["crates/wisp-cli"]
+default-members = ["crates/superscience-cli"]
 
 [workspace.package]
 version = "0.30.0"
 edition = "2021"
 rust-version = "1.88"
 license = "AGPL-3.0-only"
-authors = ["wisp-science contributors"]
+authors = ["SuperScience contributors"]
 repository = "https://github.com/xuzhougeng/wisp-science"
 
 [workspace.dependencies]
@@ -57,16 +57,16 @@ sha2 = "0.10"
 tar = "0.4"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
 keyring = "3"
-wisp-llm = { path = "crates/wisp-llm" }
-wisp-core = { path = "crates/wisp-core" }
-wisp-tools = { path = "crates/wisp-tools" }
-wisp-store = { path = "crates/wisp-store" }
-wisp-skills = { path = "crates/wisp-skills" }
-wisp-runtime = { path = "crates/wisp-runtime" }
-wisp-mcp = { path = "crates/wisp-mcp" }
-wisp-acp = { path = "crates/wisp-acp" }
-wisp-paths = { path = "crates/wisp-paths" }
-wisp-sync = { path = "crates/wisp-sync" }
+superscience-llm = { path = "crates/superscience-llm" }
+superscience-core = { path = "crates/superscience-core" }
+superscience-tools = { path = "crates/superscience-tools" }
+superscience-store = { path = "crates/superscience-store" }
+superscience-skills = { path = "crates/superscience-skills" }
+superscience-runtime = { path = "crates/superscience-runtime" }
+superscience-mcp = { path = "crates/superscience-mcp" }
+superscience-acp = { path = "crates/superscience-acp" }
+superscience-paths = { path = "crates/superscience-paths" }
+superscience-sync = { path = "crates/superscience-sync" }
 
 [profile.release]
 codegen-units = 1

@@ -14,10 +14,10 @@
 
 ## File Structure
 
-- Modify: `crates/wisp-tools/src/env.rs` - define `ConfirmDecision` and a default `confirm_decision` method that preserves current `confirm` behavior.
-- Modify: `crates/wisp-tools/src/lib.rs` - re-export `ConfirmDecision`.
-- Modify: `crates/wisp-core/src/output.rs` - expose the richer decision through the `Output` adapter without breaking existing CLI/test outputs.
-- Modify: `crates/wisp-tools/src/plan.rs` - use `confirm_decision` for fresh plan proposals and include user feedback in the rejected-plan tool result.
+- Modify: `crates/superscience-tools/src/env.rs` - define `ConfirmDecision` and a default `confirm_decision` method that preserves current `confirm` behavior.
+- Modify: `crates/superscience-tools/src/lib.rs` - re-export `ConfirmDecision`.
+- Modify: `crates/superscience-core/src/output.rs` - expose the richer decision through the `Output` adapter without breaking existing CLI/test outputs.
+- Modify: `crates/superscience-tools/src/plan.rs` - use `confirm_decision` for fresh plan proposals and include user feedback in the rejected-plan tool result.
 - Modify: `src-tauri/src/lib.rs` - change confirm channels from `bool` to `ConfirmDecision`, and accept optional `feedback` in `confirm_response`.
 - Modify: `ui/src/main.rs` - send optional feedback from the plan card and keep ordinary tool approvals unchanged.
 - Modify: `ui/src/i18n.rs` - add English and Chinese labels for `Other`, feedback placeholder, submit, and cancel.
@@ -29,14 +29,14 @@
 ### Task 1: Confirmation Decision Primitive And `update_plan` Feedback
 
 **Files:**
-- Modify: `crates/wisp-tools/src/env.rs`
-- Modify: `crates/wisp-tools/src/lib.rs`
-- Modify: `crates/wisp-core/src/output.rs`
-- Modify: `crates/wisp-tools/src/plan.rs`
+- Modify: `crates/superscience-tools/src/env.rs`
+- Modify: `crates/superscience-tools/src/lib.rs`
+- Modify: `crates/superscience-core/src/output.rs`
+- Modify: `crates/superscience-tools/src/plan.rs`
 
 - [x] **Step 1: Write the failing `update_plan` feedback test**
 
-In `crates/wisp-tools/src/plan.rs`, replace the test module imports with these imports:
+In `crates/superscience-tools/src/plan.rs`, replace the test module imports with these imports:
 
 ```rust
 use super::{is_fresh_proposal, render_plan, UpdatePlanTool};
@@ -107,14 +107,14 @@ async fn rejected_plan_feedback_is_returned_to_model() {
 Run:
 
 ```bash
-cargo test -p wisp-tools rejected_plan_feedback_is_returned_to_model
+cargo test -p superscience-tools rejected_plan_feedback_is_returned_to_model
 ```
 
 Result: PASS after the `ConfirmDecision` implementation landed.
 
 - [x] **Step 3: Add `ConfirmDecision` to the tool environment**
 
-In `crates/wisp-tools/src/env.rs`, add this enum after `pub enum Approval`:
+In `crates/superscience-tools/src/env.rs`, add this enum after `pub enum Approval`:
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,37 +152,37 @@ async fn confirm_decision(&self, message: &str) -> ConfirmDecision {
 }
 ```
 
-In `crates/wisp-tools/src/lib.rs`, change the re-export line to:
+In `crates/superscience-tools/src/lib.rs`, change the re-export line to:
 
 ```rust
 pub use env::{Approval, ConfirmDecision, ImageData, ToolEnv, ToolEvent, ToolResult};
 ```
 
-- [x] **Step 4: Expose the richer decision through `wisp-core` output**
+- [x] **Step 4: Expose the richer decision through `superscience-core` output**
 
-In `crates/wisp-core/src/output.rs`, add this default method to the `Output` trait immediately after `fn confirm`:
+In `crates/superscience-core/src/output.rs`, add this default method to the `Output` trait immediately after `fn confirm`:
 
 ```rust
-fn confirm_decision(&self, message: &str) -> wisp_tools::ConfirmDecision {
+fn confirm_decision(&self, message: &str) -> superscience_tools::ConfirmDecision {
     if self.confirm(message) {
-        wisp_tools::ConfirmDecision::Approved
+        superscience_tools::ConfirmDecision::Approved
     } else {
-        wisp_tools::ConfirmDecision::Denied { feedback: None }
+        superscience_tools::ConfirmDecision::Denied { feedback: None }
     }
 }
 ```
 
-In the `impl<'a> wisp_tools::ToolEnv for ToolEnvAdapter<'a>` block, add:
+In the `impl<'a> superscience_tools::ToolEnv for ToolEnvAdapter<'a>` block, add:
 
 ```rust
-async fn confirm_decision(&self, message: &str) -> wisp_tools::ConfirmDecision {
+async fn confirm_decision(&self, message: &str) -> superscience_tools::ConfirmDecision {
     self.out.confirm_decision(message)
 }
 ```
 
 - [x] **Step 5: Make `update_plan` consume rejection feedback**
 
-In `crates/wisp-tools/src/plan.rs`, change the import to:
+In `crates/superscience-tools/src/plan.rs`, change the import to:
 
 ```rust
 use crate::env::{ConfirmDecision, ToolEnv, ToolResult};
@@ -224,8 +224,8 @@ if is_fresh_proposal(args) {
 Run:
 
 ```bash
-cargo test -p wisp-tools
-cargo test -p wisp-core
+cargo test -p superscience-tools
+cargo test -p superscience-core
 ```
 
 Expected: PASS. Existing tool approvals keep using `confirm` as a boolean.
@@ -240,7 +240,7 @@ Expected: PASS. Existing tool approvals keep using `confirm` as a boolean.
 In `src-tauri/src/lib.rs`, add this alias near `ConfirmRequest`:
 
 ```rust
-type ConfirmSender = std::sync::mpsc::Sender<wisp_tools::ConfirmDecision>;
+type ConfirmSender = std::sync::mpsc::Sender<superscience_tools::ConfirmDecision>;
 type ConfirmMap = Arc<StdMutex<HashMap<String, ConfirmSender>>>;
 ```
 
@@ -265,9 +265,9 @@ fn confirm(&self, message: &str) -> bool {
     self.confirm_decision(message).approved()
 }
 
-fn confirm_decision(&self, message: &str) -> wisp_tools::ConfirmDecision {
+fn confirm_decision(&self, message: &str) -> superscience_tools::ConfirmDecision {
     let (tool, preview) = parse_confirm_payload(message);
-    let (tx, rx) = std::sync::mpsc::channel::<wisp_tools::ConfirmDecision>();
+    let (tx, rx) = std::sync::mpsc::channel::<superscience_tools::ConfirmDecision>();
     self.confirms
         .lock()
         .unwrap()
@@ -287,7 +287,7 @@ fn confirm_decision(&self, message: &str) -> wisp_tools::ConfirmDecision {
     );
     let decision = rx
         .recv_timeout(std::time::Duration::from_secs(180))
-        .unwrap_or(wisp_tools::ConfirmDecision::Denied { feedback: None });
+        .unwrap_or(superscience_tools::ConfirmDecision::Denied { feedback: None });
     self.confirms.lock().unwrap().remove(&self.frame_id);
     self.awaiting_confirm.lock().unwrap().remove(&self.frame_id);
     decision
@@ -307,9 +307,9 @@ fn confirm_response(
     feedback: Option<String>,
 ) -> Result<(), String> {
     let decision = if approved {
-        wisp_tools::ConfirmDecision::Approved
+        superscience_tools::ConfirmDecision::Approved
     } else {
-        wisp_tools::ConfirmDecision::Denied {
+        superscience_tools::ConfirmDecision::Denied {
             feedback: feedback
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
@@ -329,7 +329,7 @@ fn confirm_response(
 Run:
 
 ```bash
-cargo check -p wisp-tauri
+cargo check -p superscience-tauri
 ```
 
 Expected: PASS. The command remains backward-compatible because omitted `feedback` binds to `None`.
@@ -482,7 +482,7 @@ In `ui/src/i18n.rs`, add English strings near the existing `approval.plan_*` ent
 
 ```rust
 (Locale::En, "approval.plan_other") => Some("Other"),
-(Locale::En, "approval.plan_feedback_placeholder") => Some("Tell wisp what to change in this plan."),
+(Locale::En, "approval.plan_feedback_placeholder") => Some("Tell SuperScience what to change in this plan."),
 (Locale::En, "approval.plan_feedback_submit") => Some("Send feedback"),
 (Locale::En, "approval.plan_feedback_cancel") => Some("Cancel"),
 ```
@@ -570,13 +570,13 @@ In `ui-tests/tests/ui.spec.ts`, add this test after the long approval card test:
 ```ts
 test("plan approval Other sends feedback (#121)", async ({ page }) => {
   await enterApp(page);
-  await page.getByPlaceholder(/Ask wisp-science/i).fill("PLANOTHER");
+  await page.getByPlaceholder(/Ask superscience/i).fill("PLANOTHER");
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByText("Review plan before starting?")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Other" }).click();
   await page
-    .getByPlaceholder("Tell wisp what to change in this plan.")
+    .getByPlaceholder("Tell SuperScience what to change in this plan.")
     .fill("Split protocol work from UI work.");
   await page.getByRole("button", { name: "Send feedback" }).click();
 

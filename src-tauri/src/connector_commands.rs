@@ -267,7 +267,7 @@ pub(super) async fn set_connector_skip_approvals(
 pub(super) async fn test_mcp_connection(
     _state: State<'_, AppState>,
     conn: McpConnection,
-) -> Result<Vec<wisp_mcp::RemoteTool>, String> {
+) -> Result<Vec<superscience_mcp::RemoteTool>, String> {
     let client = connect_mcp(&conn).await.map_err(|e| format!("{e}"))?;
     let tools = client.tools_list().await.map_err(|e| format!("{e}"))?;
     Ok(tools)
@@ -340,7 +340,7 @@ pub(super) async fn test_oauth_mcp_connection(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     conn: McpConnection,
-) -> Result<Vec<wisp_mcp::RemoteTool>, String> {
+) -> Result<Vec<superscience_mcp::RemoteTool>, String> {
     let (resource_url, headers) = oauth_http_config(&conn)?;
     let connections = load_mcp_connections(&state.store).await;
     if can_reuse_credential(&connections, &conn, &resource_url) {

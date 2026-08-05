@@ -1,12 +1,12 @@
 ---
 name: compute-env-setup
-description: Set up and validate a reproducible Python or R environment on a Wisp execution context. Use for a selected local, WSL, or direct SSH context when installing scientific packages, configuring caches, recording interpreter activation, or producing an environment smoke test. Do not use for scheduler clusters or managed cloud providers that Wisp cannot track yet.
+description: Set up and validate a reproducible Python or R environment on a SuperScience execution context. Use for a selected local, WSL, or direct SSH context when installing scientific packages, configuring caches, recording interpreter activation, or producing an environment smoke test. Do not use for scheduler clusters or managed cloud providers that SuperScience cannot track yet.
 license: Apache-2.0
 ---
 
 # Set up a compute environment
 
-Treat the selected and probed `ExecutionContext` as authoritative. Wisp
+Treat the selected and probed `ExecutionContext` as authoritative. SuperScience
 currently supports `local`, `wsl:<distro>`, and direct `ssh:<alias>` contexts;
 it does not expose an authenticated provider SDK inside Python.
 
@@ -30,7 +30,7 @@ replace container-specific paths with paths valid on the selected context.
    recorded GPU, privilege, interpreter, conda/mamba, module, and scheduler
    capabilities.
 2. If a scheduler is detected, stop. Do not install or run long work on a
-   shared login node; Wisp needs a scheduler-aware Run backend first.
+   shared login node; SuperScience needs a scheduler-aware Run backend first.
 3. Use at most a few bounded read-only `shell` commands to confirm free space,
    existing environments, and cache paths.
 4. Write an idempotent project script such as
@@ -43,12 +43,12 @@ replace container-specific paths with paths valid on the selected context.
 {
   "context_id": "ssh:gpu-box",
   "title": "Set up singlecell environment",
-  "command": "bash setup-singlecell.sh /home/me/envs/singlecell /home/me/wisp-env-manifests/singlecell.json",
+  "command": "bash setup-singlecell.sh /home/me/envs/singlecell /home/me/superscience-env-manifests/singlecell.json",
   "timeout_secs": 14400,
   "input_paths": ["runs/setup-singlecell.sh"],
   "output_specs": [
     {
-      "glob": "ssh://gpu-box/home/me/wisp-env-manifests/singlecell.json",
+      "glob": "ssh://gpu-box/home/me/superscience-env-manifests/singlecell.json",
       "kind": "environment-manifest",
       "residency": "remote"
     }
@@ -87,7 +87,7 @@ writes outputs to host-visible project paths.
 
 ## Unsupported backends
 
-Wisp has no scheduler, Modal, RunPod, cloud Batch, container-service, or managed
+SuperScience has no scheduler, Modal, RunPod, cloud Batch, container-service, or managed
 endpoint execution context today. Do not invent a provider id or hide those
 lifecycles inside an SSH submission command. Explain the boundary or use a
 dedicated direct SSH host until a backend implementing submit, poll, cancel,

@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use base64::Engine;
 use serde_json::{json, Value};
 use std::time::Duration;
-use wisp_llm::ToolSchema;
-use wisp_tools::{Tool, ToolEnv, ToolEvent, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_tools::{Tool, ToolEnv, ToolEvent, ToolResult};
 
 const MAX_PROMPT_BYTES: usize = 32 * 1024;
 const MAX_BASE64_BYTES: usize = 70 * 1024 * 1024;
@@ -63,7 +63,7 @@ impl GenerateImageTool {
 
     fn client(&self) -> Result<reqwest::Client, String> {
         let mut builder = reqwest::Client::builder()
-            .user_agent("wisp-science")
+            .user_agent("superscience")
             .timeout(Duration::from_secs(300));
         match self.proxy.as_deref().map(str::trim) {
             None | Some("") => {}
@@ -327,7 +327,7 @@ impl Tool for GenerateImageTool {
         {
             return ToolResult::fail("generate_image error: path must end in .png");
         }
-        if let Err(error) = wisp_tools::safety::validate_relative_pattern(path) {
+        if let Err(error) = superscience_tools::safety::validate_relative_pattern(path) {
             return ToolResult::fail(format!("generate_image {path} error: {error}"));
         }
         if std::path::Path::new(path).parent() != Some(std::path::Path::new("figures")) {
@@ -340,7 +340,7 @@ impl Tool for GenerateImageTool {
                 "generate_image {path} error: cannot create figures directory: {error}"
             ));
         }
-        let real = match wisp_tools::safety::validate_file_path(env.project_root(), path) {
+        let real = match superscience_tools::safety::validate_file_path(env.project_root(), path) {
             Ok(path) => path,
             Err(error) => {
                 return ToolResult::fail(format!("generate_image {path} error: {error}"));
@@ -493,8 +493,10 @@ mod tests {
         let encoded = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
         let response = json!({"data": [{"b64_json": encoded}]}).to_string();
         let (api_url, request) = serve_once(response).await;
-        let root =
-            std::env::temp_dir().join(format!("wisp_generate_image_{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_generate_image_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let env = RecordingEnv {
             root: root.clone(),
@@ -587,8 +589,10 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_non_png_paths_before_calling_the_api() {
-        let root =
-            std::env::temp_dir().join(format!("wisp_generate_image_{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_generate_image_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let env = RecordingEnv {
             root: root.clone(),
@@ -612,8 +616,10 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_paths_outside_the_figures_directory() {
-        let root =
-            std::env::temp_dir().join(format!("wisp_generate_image_path_{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_generate_image_path_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let env = RecordingEnv {
             root: root.clone(),

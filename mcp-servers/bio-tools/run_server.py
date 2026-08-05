@@ -5,7 +5,7 @@ Usage: python run_server.py <package>   e.g. python run_server.py mcp_pubmed
 
 Registered in core/src/mcp/bundledRegistry.ts as
   command: "python", args: ["${MCP_SERVERS_DIR}/bio-tools/run_server.py", "<pkg>"]
-MCPPool resolves `python` to the shared operon-mcp conda env and substitutes
+MCPPool resolves `python` to the shared superscience-mcp conda env and substitutes
 the staged-assets path; deps come from the registry entry's installPip pins.
 
 All packages (servers + the fleet retrieval packages they import) live flat

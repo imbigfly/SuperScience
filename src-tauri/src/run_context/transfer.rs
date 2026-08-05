@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use wisp_llm::ToolSchema;
-use wisp_tools::{Approval, Tool, ToolEnv, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_tools::{Approval, Tool, ToolEnv, ToolResult};
 
 const TRUST_EDGES_SETTING: &str = "ssh_trust_edges_v1";
-const PUBLIC_KEY_MARKER: &str = "__WISP_PUBLIC_KEY__:";
+const PUBLIC_KEY_MARKER: &str = "__SUPERSCIENCE_PUBLIC_KEY__:";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SshTrustEdge {
@@ -54,13 +54,17 @@ fn default_auto() -> String {
 }
 
 pub struct ConfigureSshTrustTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     manager: RunManager,
     frame_id: Option<String>,
 }
 
 impl ConfigureSshTrustTool {
-    pub fn new(store: wisp_store::Store, manager: RunManager, frame_id: Option<String>) -> Self {
+    pub fn new(
+        store: superscience_store::Store,
+        manager: RunManager,
+        frame_id: Option<String>,
+    ) -> Self {
         Self {
             store,
             manager,
@@ -78,7 +82,7 @@ impl Tool for ConfigureSshTrustTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             self.name(),
-            "With explicit user approval, establish or verify passwordless SSH from one selected SSH context to another. `install` creates a dedicated key on the source, carries only its public key through Wisp, installs it idempotently on the destination, and verifies the directed edge. `verify` records trust the user configured themselves without copying a key.",
+            "With explicit user approval, establish or verify passwordless SSH from one selected SSH context to another. `install` creates a dedicated key on the source, carries only its public key through SuperScience, installs it idempotently on the destination, and verifies the directed edge. `verify` records trust the user configured themselves without copying a key.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -142,7 +146,7 @@ impl Tool for ConfigureSshTrustTool {
 }
 
 pub struct TransferBetweenContextsTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     manager: RunManager,
     project_id: String,
     frame_id: Option<String>,
@@ -150,7 +154,7 @@ pub struct TransferBetweenContextsTool {
 
 impl TransferBetweenContextsTool {
     pub fn new(
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         manager: RunManager,
         project_id: String,
         frame_id: Option<String>,
@@ -238,16 +242,16 @@ impl Tool for TransferBetweenContextsTool {
 }
 
 async fn selected_ssh_context(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     frame_id: Option<&str>,
     context_id: &str,
-) -> Result<wisp_store::ExecutionContext, String> {
+) -> Result<superscience_store::ExecutionContext, String> {
     let context = store
         .get_execution_context(context_id)
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
-    if context.kind != wisp_store::ExecutionContextKind::Ssh {
+    if context.kind != superscience_store::ExecutionContextKind::Ssh {
         return Err(format!("Execution context is not SSH: {context_id}"));
     }
     let frame_id = frame_id.ok_or_else(|| {
@@ -268,7 +272,7 @@ async fn selected_ssh_context(
 }
 
 async fn configure_trust(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     runner: &dyn super::RunCommandRunner,
     frame_id: Option<&str>,
     request: &ConfigureTrustRequest,
@@ -287,11 +291,11 @@ async fn configure_trust(
         crate::ssh_hosts::SshConnection::from_execution_context(&destination)?;
     let target = destination_connection.target()?;
     let marker = format!(
-        "wisp:{}:{}",
+        "superscience:{}:{}",
         source_connection.alias, destination_connection.alias
     );
     let key_path = (request.action == "install")
-        .then(|| format!(".ssh/wisp-{}-ed25519", destination_connection.alias));
+        .then(|| format!(".ssh/superscience-{}-ed25519", destination_connection.alias));
 
     if let Some(key_path) = key_path.as_deref() {
         let output = checked_output(
@@ -352,11 +356,11 @@ async fn configure_trust(
             error
         }
     })?;
-    if !verify.stdout.contains("__WISP_TRUST_VERIFIED__") {
+    if !verify.stdout.contains("__SUPERSCIENCE_TRUST_VERIFIED__") {
         let detail = verify
             .stderr
             .lines()
-            .find_map(|line| line.strip_prefix("__WISP_TRUST_FAILED__:"))
+            .find_map(|line| line.strip_prefix("__SUPERSCIENCE_TRUST_FAILED__:"))
             .unwrap_or("source could not authenticate to the destination");
         return Err(format!(
             "Server-to-server SSH verification failed: {detail}"
@@ -428,12 +432,12 @@ chmod 700 "$HOME/.ssh"
 auth="$HOME/.ssh/authorized_keys"
 touch "$auth"
 chmod 600 "$auth"
-tmp="$auth.wisp.$$"
+tmp="$auth.superscience.$$"
 grep -Fv -- {marker} "$auth" > "$tmp" || true
 printf '%s\n' {public_key} >> "$tmp"
 chmod 600 "$tmp"
 mv "$tmp" "$auth"
-printf '__WISP_TRUST_INSTALLED__\n'
+printf '__SUPERSCIENCE_TRUST_INSTALLED__\n'
 "#
     )
 }
@@ -483,12 +487,12 @@ fn verify_trust_payload(
         .collect::<Vec<_>>()
         .join(" ");
     format!(
-        "set -eu\ncommand -v ssh >/dev/null 2>&1 || {{ echo 'ssh is not installed on the source' >&2; exit 69; }}\nset +e\nssh {args} {} true\nrc=$?\nset -e\nif [ \"$rc\" = 0 ]; then printf '__WISP_TRUST_VERIFIED__\\n'; else printf '__WISP_TRUST_FAILED__:ssh exit %s\\n' \"$rc\" >&2; fi\n",
+        "set -eu\ncommand -v ssh >/dev/null 2>&1 || {{ echo 'ssh is not installed on the source' >&2; exit 69; }}\nset +e\nssh {args} {} true\nrc=$?\nset -e\nif [ \"$rc\" = 0 ]; then printf '__SUPERSCIENCE_TRUST_VERIFIED__\\n'; else printf '__SUPERSCIENCE_TRUST_FAILED__:ssh exit %s\\n' \"$rc\" >&2; fi\n",
         shell_single_quote(target)
     )
 }
 
-pub(crate) async fn load_trust_edges(store: &wisp_store::Store) -> Vec<SshTrustEdge> {
+pub(crate) async fn load_trust_edges(store: &superscience_store::Store) -> Vec<SshTrustEdge> {
     store
         .get_setting(TRUST_EDGES_SETTING)
         .await
@@ -498,7 +502,10 @@ pub(crate) async fn load_trust_edges(store: &wisp_store::Store) -> Vec<SshTrustE
         .unwrap_or_default()
 }
 
-async fn save_trust_edge(store: &wisp_store::Store, edge: SshTrustEdge) -> Result<(), String> {
+async fn save_trust_edge(
+    store: &superscience_store::Store,
+    edge: SshTrustEdge,
+) -> Result<(), String> {
     let mut edges = load_trust_edges(store).await;
     edges.retain(|current| {
         current.source_context_id != edge.source_context_id
@@ -521,7 +528,7 @@ pub(crate) struct RevokeTrustResponse {
 }
 
 pub(crate) async fn revoke_trust_edge(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     manager: &RunManager,
     source_context_id: &str,
     destination_context_id: &str,
@@ -566,7 +573,7 @@ fn context_alias(context_id: &str) -> &str {
 }
 
 async fn ssh_connection_for(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     context_id: &str,
 ) -> Result<crate::ssh_hosts::SshConnection, String> {
     let context = store
@@ -596,7 +603,7 @@ async fn best_effort_ssh(
 }
 
 async fn remove_managed_key(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     runner: &dyn super::RunCommandRunner,
     edge: &SshTrustEdge,
 ) -> Result<(), String> {
@@ -608,7 +615,7 @@ async fn remove_managed_key(
         .unwrap_or_else(|_| context_alias(&edge.source_context_id).to_string());
     match ssh_connection_for(store, &edge.destination_context_id).await {
         Ok(connection) => {
-            let marker = format!("wisp:{source_alias}:{}", connection.alias);
+            let marker = format!("superscience:{source_alias}:{}", connection.alias);
             best_effort_ssh(
                 runner,
                 &connection,
@@ -650,7 +657,7 @@ fn remove_public_key_payload(marker: &str) -> String {
         r#"set -eu
 auth="$HOME/.ssh/authorized_keys"
 if [ -f "$auth" ]; then
-  tmp="$auth.wisp.$$"
+  tmp="$auth.superscience.$$"
   grep -Fv -- {marker} "$auth" > "$tmp" || true
   chmod 600 "$tmp"
   mv "$tmp" "$auth"
@@ -739,7 +746,7 @@ fn remote_item_name(path: &str) -> Result<&str, String> {
 }
 
 async fn submit_transfer(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     manager: &RunManager,
     project_id: &str,
     frame_id: Option<&str>,
@@ -862,7 +869,7 @@ async fn submit_transfer(
                     )
                     .await,
             )?;
-            if !output.stdout.contains("__WISP_TRUST_VERIFIED__") {
+            if !output.stdout.contains("__SUPERSCIENCE_TRUST_VERIFIED__") {
                 edge = None;
             }
         }
@@ -983,12 +990,12 @@ if [ "$selected" = rsync ]; then
   rsh='ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes'
   if [ -n "$key" ]; then printf -v quoted_key '%q' "$key"; rsh="$rsh -o IdentitiesOnly=yes -i $quoted_key"; fi
   {rsh_port}
-  printf '__WISP_TRANSFER_TRANSPORT__:rsync\n'
+  printf '__SUPERSCIENCE_TRANSFER_TRANSPORT__:rsync\n'
   rsync -a -s --partial -e "$rsh" "$src" "$target:$dst"
 else
   command -v scp >/dev/null 2>&1 || {{ echo 'scp is not installed on the source' >&2; exit 69; }}
   if [ -d "$src" ]; then scp_options+=( -r ); fi
-  printf '__WISP_TRANSFER_TRANSPORT__:scp\n'
+  printf '__SUPERSCIENCE_TRANSFER_TRANSPORT__:scp\n'
   scp "${{scp_options[@]}}" "$src" "$target:$dst"
 fi
 "#,
@@ -1004,11 +1011,11 @@ impl RunManager {
     #[allow(clippy::too_many_arguments)]
     async fn submit_local_upload_to_ssh(
         &self,
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         project_id: &str,
         frame_id: Option<&str>,
         source_path: &Path,
-        destination: &wisp_store::ExecutionContext,
+        destination: &superscience_store::ExecutionContext,
         destination_path: &str,
         timeout: Duration,
     ) -> Result<SubmitRunResponse, String> {
@@ -1021,7 +1028,7 @@ impl RunManager {
             .to_string();
         let run_id = uuid::Uuid::new_v4().to_string();
         let started = Instant::now();
-        let mut run = wisp_store::RunRecord::new(
+        let mut run = superscience_store::RunRecord::new(
             &run_id,
             project_id,
             &destination.id,
@@ -1063,7 +1070,7 @@ impl RunManager {
         if !store
             .activate_run_lifecycle(
                 &run_id,
-                wisp_store::RunStatus::Submitted,
+                superscience_store::RunStatus::Submitted,
                 &self.owner_id,
                 ACTIVE_LEASE_SECS,
             )
@@ -1109,7 +1116,7 @@ impl RunManager {
         });
         Ok(SubmitRunResponse {
             run_id,
-            status: wisp_store::RunStatus::Submitted,
+            status: superscience_store::RunStatus::Submitted,
             exit_code: None,
             stdout_tail: None,
             stderr_tail: None,
@@ -1120,10 +1127,10 @@ impl RunManager {
     #[allow(clippy::too_many_arguments)]
     async fn submit_ssh_download_to_local(
         &self,
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         project_id: &str,
         frame_id: Option<&str>,
-        source: &wisp_store::ExecutionContext,
+        source: &superscience_store::ExecutionContext,
         source_path: &str,
         destination_path: &Path,
         timeout: Duration,
@@ -1146,7 +1153,7 @@ impl RunManager {
         let run_id = uuid::Uuid::new_v4().to_string();
         let staging_dir = RelayTempDir::new_in(destination_parent, &run_id)?;
         let started = Instant::now();
-        let mut run = wisp_store::RunRecord::new(
+        let mut run = superscience_store::RunRecord::new(
             &run_id,
             project_id,
             &source.id,
@@ -1187,7 +1194,7 @@ impl RunManager {
         if !store
             .activate_run_lifecycle(
                 &run_id,
-                wisp_store::RunStatus::Submitted,
+                superscience_store::RunStatus::Submitted,
                 &self.owner_id,
                 ACTIVE_LEASE_SECS,
             )
@@ -1234,7 +1241,7 @@ impl RunManager {
         });
         Ok(SubmitRunResponse {
             run_id,
-            status: wisp_store::RunStatus::Submitted,
+            status: superscience_store::RunStatus::Submitted,
             exit_code: None,
             stdout_tail: None,
             stderr_tail: None,
@@ -1245,12 +1252,12 @@ impl RunManager {
     #[allow(clippy::too_many_arguments)]
     async fn submit_ssh_relay(
         &self,
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         project_id: &str,
         frame_id: Option<&str>,
-        source: &wisp_store::ExecutionContext,
+        source: &superscience_store::ExecutionContext,
         source_path: &str,
-        destination: &wisp_store::ExecutionContext,
+        destination: &superscience_store::ExecutionContext,
         destination_path: &str,
         timeout: Duration,
     ) -> Result<SubmitRunResponse, String> {
@@ -1259,7 +1266,7 @@ impl RunManager {
             crate::ssh_hosts::SshConnection::from_execution_context(destination)?;
         let run_id = uuid::Uuid::new_v4().to_string();
         let started = Instant::now();
-        let mut run = wisp_store::RunRecord::new(
+        let mut run = superscience_store::RunRecord::new(
             &run_id,
             project_id,
             &source.id,
@@ -1298,7 +1305,7 @@ impl RunManager {
         if !store
             .activate_run_lifecycle(
                 &run_id,
-                wisp_store::RunStatus::Submitted,
+                superscience_store::RunStatus::Submitted,
                 &self.owner_id,
                 ACTIVE_LEASE_SECS,
             )
@@ -1346,7 +1353,7 @@ impl RunManager {
         });
         Ok(SubmitRunResponse {
             run_id,
-            status: wisp_store::RunStatus::Submitted,
+            status: superscience_store::RunStatus::Submitted,
             exit_code: None,
             stdout_tail: None,
             stderr_tail: None,
@@ -1359,12 +1366,12 @@ struct RelayTempDir(PathBuf);
 
 impl RelayTempDir {
     fn new(run_id: &str) -> Result<Self, String> {
-        let path = std::env::temp_dir().join(format!("wisp-relay-{run_id}"));
+        let path = std::env::temp_dir().join(format!("superscience-relay-{run_id}"));
         Self::create(path)
     }
 
     fn new_in(parent: &Path, run_id: &str) -> Result<Self, String> {
-        Self::create(parent.join(format!(".wisp-transfer-{run_id}")))
+        Self::create(parent.join(format!(".superscience-transfer-{run_id}")))
     }
 
     fn create(path: PathBuf) -> Result<Self, String> {
@@ -1387,7 +1394,7 @@ impl Drop for RelayTempDir {
 
 #[allow(clippy::too_many_arguments)]
 async fn download_remote_item(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     owner_id: &str,
     run_id: &str,
     runner: &dyn super::RunCommandRunner,
@@ -1428,7 +1435,7 @@ async fn download_remote_item(
 
 #[allow(clippy::too_many_arguments)]
 async fn local_upload_lifecycle(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     owner_id: &str,
     run_id: &str,
     runner: Arc<dyn super::RunCommandRunner>,
@@ -1502,7 +1509,7 @@ async fn local_upload_lifecycle(
 
     let (status, exit_code, stdout, stderr, progress) = match result {
         Ok((upload, total_bytes, files_total)) => (
-            wisp_store::RunStatus::Succeeded,
+            superscience_store::RunStatus::Succeeded,
             Some(0),
             upload.stdout,
             upload.stderr,
@@ -1521,21 +1528,21 @@ async fn local_upload_lifecycle(
             ),
         ),
         Err(error) if error == "run_in_context cancelled" => (
-            wisp_store::RunStatus::Cancelled,
+            superscience_store::RunStatus::Cancelled,
             None,
             String::new(),
             error,
             transfer_progress("upload", "cancelled", 0, 0, 0, 0, None, started),
         ),
         Err(error) if error.starts_with("run_in_context timed out after ") => (
-            wisp_store::RunStatus::TimedOut,
+            superscience_store::RunStatus::TimedOut,
             Some(124),
             String::new(),
             error,
             transfer_progress("upload", "failed", 0, 0, 0, 0, None, started),
         ),
         Err(error) => (
-            wisp_store::RunStatus::Failed,
+            superscience_store::RunStatus::Failed,
             Some(-1),
             String::new(),
             error,
@@ -1557,7 +1564,7 @@ async fn local_upload_lifecycle(
 
 #[allow(clippy::too_many_arguments)]
 async fn local_download_lifecycle(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     owner_id: &str,
     run_id: &str,
     runner: Arc<dyn super::RunCommandRunner>,
@@ -1602,7 +1609,7 @@ async fn local_download_lifecycle(
 
     let (status, exit_code, stdout, stderr, progress) = match result {
         Ok((download, total_bytes, files_total)) => (
-            wisp_store::RunStatus::Succeeded,
+            superscience_store::RunStatus::Succeeded,
             Some(0),
             download.stdout,
             download.stderr,
@@ -1621,21 +1628,21 @@ async fn local_download_lifecycle(
             ),
         ),
         Err(error) if error == "run_in_context cancelled" => (
-            wisp_store::RunStatus::Cancelled,
+            superscience_store::RunStatus::Cancelled,
             None,
             String::new(),
             error,
             transfer_progress("download", "cancelled", 0, 0, 0, 0, None, started),
         ),
         Err(error) if error.starts_with("run_in_context timed out after ") => (
-            wisp_store::RunStatus::TimedOut,
+            superscience_store::RunStatus::TimedOut,
             Some(124),
             String::new(),
             error,
             transfer_progress("download", "failed", 0, 0, 0, 0, None, started),
         ),
         Err(error) => (
-            wisp_store::RunStatus::Failed,
+            superscience_store::RunStatus::Failed,
             Some(-1),
             String::new(),
             error,
@@ -1657,7 +1664,7 @@ async fn local_download_lifecycle(
 
 #[allow(clippy::too_many_arguments)]
 async fn relay_lifecycle(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     owner_id: &str,
     run_id: &str,
     runner: Arc<dyn super::RunCommandRunner>,
@@ -1744,7 +1751,7 @@ async fn relay_lifecycle(
 
     let (status, exit_code, stdout, stderr, progress) = match result {
         Ok((download, upload, total_bytes, files_total)) => (
-            wisp_store::RunStatus::Succeeded,
+            superscience_store::RunStatus::Succeeded,
             Some(0),
             format!("{}\n{}", download.stdout, upload.stdout),
             format!("{}\n{}", download.stderr, upload.stderr),
@@ -1760,21 +1767,21 @@ async fn relay_lifecycle(
             ),
         ),
         Err(error) if error == "run_in_context cancelled" => (
-            wisp_store::RunStatus::Cancelled,
+            superscience_store::RunStatus::Cancelled,
             None,
             String::new(),
             error,
             transfer_progress("relay", "cancelled", 0, 0, 0, 0, None, started),
         ),
         Err(error) if error.starts_with("run_in_context timed out after ") => (
-            wisp_store::RunStatus::TimedOut,
+            superscience_store::RunStatus::TimedOut,
             Some(124),
             String::new(),
             error,
             transfer_progress("relay", "failed", 0, 0, 0, 0, None, started),
         ),
         Err(error) => (
-            wisp_store::RunStatus::Failed,
+            superscience_store::RunStatus::Failed,
             Some(-1),
             String::new(),
             error,
@@ -1855,13 +1862,13 @@ mod tests {
         let encoded = "A".repeat(48);
         let key = parse_public_key(
             &format!("noise\n{PUBLIC_KEY_MARKER}ssh-ed25519 {encoded}\n"),
-            "wisp:a:b",
+            "superscience:a:b",
         )
         .unwrap();
-        assert_eq!(key, format!("ssh-ed25519 {encoded} wisp:a:b"));
+        assert_eq!(key, format!("ssh-ed25519 {encoded} superscience:a:b"));
         assert!(parse_public_key(
             &format!("{PUBLIC_KEY_MARKER}ssh-rsa {encoded}\n"),
-            "wisp:a:b"
+            "superscience:a:b"
         )
         .is_err());
     }
@@ -1873,7 +1880,7 @@ mod tests {
             destination_context_id: "ssh:b".into(),
             destination_target: "bob@b.example".into(),
             destination_port: Some(2222),
-            key_path: Some(".ssh/wisp-b-ed25519".into()),
+            key_path: Some(".ssh/superscience-b-ed25519".into()),
             managed: true,
             verified_at: 1,
         };
@@ -1898,7 +1905,8 @@ mod tests {
             assert!(validate_remote_path("source", path).is_err(), "{path:?}");
         }
 
-        let root = std::env::temp_dir().join(format!("wisp_local_path_{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("superscience_local_path_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         assert!(validate_local_destination(&root.join("new.bam").to_string_lossy()).is_ok());
         assert!(validate_local_destination("relative.bam").is_err());
@@ -1960,23 +1968,28 @@ mod tests {
         }
     }
 
-    async fn test_store() -> (PathBuf, wisp_store::Store) {
-        let root =
-            std::env::temp_dir().join(format!("wisp_context_transfer_{}", uuid::Uuid::new_v4()));
+    async fn test_store() -> (PathBuf, superscience_store::Store) {
+        let root = std::env::temp_dir().join(format!(
+            "superscience_context_transfer_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
-        let store = wisp_store::Store::open(&root.join("wisp.sqlite"))
+        let store = superscience_store::Store::open(&root.join("superscience.sqlite"))
             .await
             .unwrap();
         store
             .create_project("p", "project", &root.to_string_lossy())
             .await
             .unwrap();
-        store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+        store
+            .create_frame("f", "p", "SUPERSCIENCE", "m")
+            .await
+            .unwrap();
         for (id, alias, host, user) in [
             ("ssh:a", "a", "a.example", "alice"),
             ("ssh:b", "b", "b.example", "bob"),
         ] {
-            let mut context = wisp_store::ExecutionContext::new(id, alias).unwrap();
+            let mut context = superscience_store::ExecutionContext::new(id, alias).unwrap();
             context.config_json = serde_json::json!({
                 "alias": alias,
                 "host_name": host,
@@ -2007,12 +2020,12 @@ mod tests {
                     }),
                     Ok(RunCommandOutput {
                         exit_code: 0,
-                        stdout: "__WISP_TRUST_INSTALLED__\n".into(),
+                        stdout: "__SUPERSCIENCE_TRUST_INSTALLED__\n".into(),
                         stderr: String::new(),
                     }),
                     Ok(RunCommandOutput {
                         exit_code: 0,
-                        stdout: "__WISP_TRUST_VERIFIED__\n".into(),
+                        stdout: "__SUPERSCIENCE_TRUST_VERIFIED__\n".into(),
                         stderr: String::new(),
                     }),
                 ]
@@ -2034,7 +2047,10 @@ mod tests {
         .unwrap();
 
         assert!(edge.managed);
-        assert_eq!(edge.key_path.as_deref(), Some(".ssh/wisp-b-ed25519"));
+        assert_eq!(
+            edge.key_path.as_deref(),
+            Some(".ssh/superscience-b-ed25519")
+        );
         let commands = runner.commands.lock().unwrap();
         assert_eq!(
             commands
@@ -2048,11 +2064,11 @@ mod tests {
             ]
         );
         let install = commands[1].stdin.as_deref().unwrap();
-        assert!(install.contains(&format!("ssh-ed25519 {encoded} wisp:a:b")));
+        assert!(install.contains(&format!("ssh-ed25519 {encoded} superscience:a:b")));
         assert!(install.contains("authorized_keys"));
         assert!(!install.contains("PRIVATE KEY"));
         let verify = commands[2].stdin.as_deref().unwrap();
-        assert!(verify.contains("$HOME/.ssh/wisp-b-ed25519"));
+        assert!(verify.contains("$HOME/.ssh/superscience-b-ed25519"));
         drop(commands);
         assert_eq!(load_trust_edges(&store).await, vec![edge]);
         let _ = std::fs::remove_dir_all(root);
@@ -2066,7 +2082,7 @@ mod tests {
             destination_context_id: "ssh:b".into(),
             destination_target: "bob@b.example".into(),
             destination_port: None,
-            key_path: Some(".ssh/wisp-b-ed25519".into()),
+            key_path: Some(".ssh/superscience-b-ed25519".into()),
             managed: true,
             verified_at: 1,
         };
@@ -2114,10 +2130,10 @@ mod tests {
                 ]
             );
             let destination = commands[0].stdin.as_deref().unwrap();
-            assert!(destination.contains("grep -Fv -- ' wisp:a:b'"));
+            assert!(destination.contains("grep -Fv -- ' superscience:a:b'"));
             assert!(destination.contains("authorized_keys"));
             let source = commands[1].stdin.as_deref().unwrap();
-            assert!(source.contains("rm -f \"$HOME/.ssh/wisp-b-ed25519\""));
+            assert!(source.contains("rm -f \"$HOME/.ssh/superscience-b-ed25519\""));
         }
 
         // Unmanaged edge: record-only removal, no SSH round-trips.
@@ -2145,7 +2161,7 @@ mod tests {
             destination_context_id: "ssh:gone".into(),
             destination_target: "bob@gone.example".into(),
             destination_port: None,
-            key_path: Some(".ssh/wisp-gone-ed25519".into()),
+            key_path: Some(".ssh/superscience-gone-ed25519".into()),
             managed: true,
             verified_at: 1,
         };
@@ -2211,9 +2227,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+        assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
         assert_eq!(run.kind, "file_transfer");
-        let progress: wisp_store::RunProgress = serde_json::from_str(&run.progress_json).unwrap();
+        let progress: superscience_store::RunProgress =
+            serde_json::from_str(&run.progress_json).unwrap();
         assert_eq!(progress.phase, "uploaded");
         assert_eq!(progress.completed_bytes, 11);
         let commands = runner.commands.lock().unwrap();
@@ -2270,9 +2287,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+        assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
         assert_eq!(run.kind, "file_transfer");
-        let progress: wisp_store::RunProgress = serde_json::from_str(&run.progress_json).unwrap();
+        let progress: superscience_store::RunProgress =
+            serde_json::from_str(&run.progress_json).unwrap();
         assert_eq!(progress.phase, "uploaded");
         assert_eq!(progress.completed_bytes, 9);
         let commands = runner.commands.lock().unwrap();
@@ -2329,10 +2347,11 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+        assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
         assert_eq!(run.kind, "file_transfer");
         assert_eq!(std::fs::read(&destination).unwrap(), b"relay bytes");
-        let progress: wisp_store::RunProgress = serde_json::from_str(&run.progress_json).unwrap();
+        let progress: superscience_store::RunProgress =
+            serde_json::from_str(&run.progress_json).unwrap();
         assert_eq!(progress.phase, "downloaded");
         assert_eq!(progress.completed_bytes, 11);
         assert_eq!(progress.files_completed, 1);
@@ -2392,7 +2411,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert_eq!(run.status, wisp_store::RunStatus::Failed);
+        assert_eq!(run.status, superscience_store::RunStatus::Failed);
         assert!(!destination.exists());
         for _ in 0..20 {
             let staging_exists = std::fs::read_dir(destination.parent().unwrap())
@@ -2402,7 +2421,7 @@ mod tests {
                     entry
                         .file_name()
                         .to_string_lossy()
-                        .starts_with(".wisp-transfer-")
+                        .starts_with(".superscience-transfer-")
                 });
             if !staging_exists {
                 break;
@@ -2416,7 +2435,7 @@ mod tests {
                 .all(|entry| !entry
                     .file_name()
                     .to_string_lossy()
-                    .starts_with(".wisp-transfer-")),
+                    .starts_with(".superscience-transfer-")),
             "failed transfer staging directory was not cleaned"
         );
         assert_eq!(runner.commands.lock().unwrap().len(), 1);

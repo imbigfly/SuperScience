@@ -34,7 +34,7 @@ core correction.
 - Model output may request only controlled capability/Specialist IDs. It never
   supplies raw tools, permissions, credentials, executable commands, model
   secrets, or backend configuration.
-- Native Wisp is the default executor. ACP is optional and vendor-neutral.
+- Native SuperScience is the default executor. ACP is optional and vendor-neutral.
 - PR 13 removes all prior-plan deserialization and behavior; those records stay
   untouched in SQLite but receive no UI, command, retry, or execution path.
 - Initially serialize writable tasks in one mutation lane. Do not claim safe
@@ -56,19 +56,19 @@ cd ui && cargo check --target wasm32-unknown-unknown
 cd ../ui-tests && npm ci && npx playwright test
 ```
 
-Run the MCP smoke example too when the delegation tool exposed by the Wisp MCP
+Run the MCP smoke example too when the delegation tool exposed by the SuperScience MCP
 bridge changes:
 
 ```bash
-cargo run -p wisp-mcp --example smoke
+cargo run -p superscience-mcp --example smoke
 ```
 
 ## Existing code to retain or change
 
 | Current area | Decision |
 | --- | --- |
-| `crates/wisp-core/src/execution.rs` | Retain the DAG scheduler; extend result semantics and policy validation only. |
-| `crates/wisp-store` Agent workflow tables | Retain; use versioned `plan_json`/`spec_json` before adding columns. |
+| `crates/superscience-core/src/execution.rs` | Retain the DAG scheduler; extend result semantics and policy validation only. |
+| `crates/superscience-store` Agent workflow tables | Retain; use versioned `plan_json`/`spec_json` before adding columns. |
 | `StoreDelegationObserver` | Retain as the attempt/provenance persistence boundary. |
 | Child conversation creation and Take over | Retain for inspection and follow-up. |
 | `AgentTemplateRegistry::builtins()` | Legacy v1 only, then retire. It is not the v2 extensibility mechanism. |
@@ -80,7 +80,7 @@ cargo run -p wisp-mcp --example smoke
 | Agents panel | Convert from fixed-team builder to activity, dynamic draft, and approval surface. |
 
 New modules are justified only at real dependency/test boundaries. In
-particular, extracting a pure capability resolver into `wisp-core` and
+particular, extracting a pure capability resolver into `superscience-core` and
 separating native/ACP executor code are valid boundaries; splitting a file only
 because it is long is not.
 
@@ -99,7 +99,7 @@ because it is long is not.
 - Record the product decisions, v1 compatibility policy, protocol shape,
   security invariants, and PR sequence.
 - Reference the specific oh-my-pi implementation studied, while documenting
-  the Wisp-specific adaptations and deliberate omissions.
+  the SuperScience-specific adaptations and deliberate omissions.
 
 **Acceptance**
 
@@ -115,9 +115,9 @@ because it is long is not.
 
 **Primary files**
 
-- Modify: `crates/wisp-core/src/orchestration.rs`
-- Modify: `crates/wisp-core/src/delegation.rs`
-- Modify: `crates/wisp-core/src/lib.rs`
+- Modify: `crates/superscience-core/src/orchestration.rs`
+- Modify: `crates/superscience-core/src/delegation.rs`
+- Modify: `crates/superscience-core/src/lib.rs`
 - Add fixtures/tests beside the affected core modules.
 
 **Contract changes**
@@ -161,10 +161,10 @@ Only contract and pure validation changes. No Tauri/UI behavior.
 
 **Primary files**
 
-- Add: `crates/wisp-core/src/delegation_policy.rs`
-- Modify: `crates/wisp-core/src/lib.rs`
-- Modify: `crates/wisp-core/src/delegation.rs`
-- Modify: `crates/wisp-core/src/orchestration.rs`
+- Add: `crates/superscience-core/src/delegation_policy.rs`
+- Modify: `crates/superscience-core/src/lib.rs`
+- Modify: `crates/superscience-core/src/delegation.rs`
+- Modify: `crates/superscience-core/src/orchestration.rs`
 
 **Core types**
 
@@ -224,12 +224,12 @@ Pure policy logic and tests; legacy runtime remains the only caller.
 
 ## PR 3 — Make native delegated Agents genuinely capable
 
-**User-visible change:** A v2 Agent can use Wisp's configured model and scoped
+**User-visible change:** A v2 Agent can use SuperScience's configured model and scoped
 native project tools without any ACP profile.
 
 **Primary files**
 
-- Modify: `crates/wisp-tools/src/lib.rs`
+- Modify: `crates/superscience-tools/src/lib.rs`
 - Modify: `src-tauri/src/delegation_runtime.rs`
 - Modify: `src-tauri/src/models.rs` only if profile resolution needs a reusable
   helper.
@@ -241,9 +241,9 @@ native project tools without any ACP profile.
 1. Add a minimal `Registry` constructor/filter that creates only an approved
    set of existing tools. Do not build a second tool registry abstraction.
 2. Replace `run_local_agent`'s second hand-written completion/tool loop with the
-   existing `wisp_core::agent_loop`, an independent child `ContextManager`, the
-   normal Wisp tool registry, and a delegated `ToolEnv`. Do not use the main
-   session's `.wisp/session.json`; SQLite child-frame messages remain the
+   existing `superscience_core::agent_loop`, an independent child `ContextManager`, the
+   normal SuperScience tool registry, and a delegated `ToolEnv`. Do not use the main
+   session's `.superscience/session.json`; SQLite child-frame messages remain the
    durable child transcript. The delegated environment enforces:
    - project path scope;
    - exact resolved tool allowlist;
@@ -281,7 +281,7 @@ native project tools without any ACP profile.
 
 **Manual smoke**
 
-- With only an ordinary Wisp model configured, run one read-only and one
+- With only an ordinary SuperScience model configured, run one read-only and one
   approved edit task; inspect child frames and persisted attempt details.
 
 ---
@@ -297,7 +297,7 @@ their results in the same turn.
 - Modify: `src-tauri/src/delegation_runtime.rs`
 - Modify: `src-tauri/src/lib.rs`
 - Modify: `src-tauri/src/mcp_bridge.rs`
-- Modify: `crates/wisp-core/src/execution.rs` only for result semantics needed
+- Modify: `crates/superscience-core/src/execution.rs` only for result semantics needed
   by the tool.
 - Update: `docs/agent-delegation.md`
 
@@ -325,7 +325,7 @@ their results in the same turn.
    or command for one workflow/task result when the parent needs more detail.
 7. Keep `propose_delegation` registered for the legacy UI during migration, but
    stop recommending it in the main Agent prompt.
-8. Expose the equivalent Wisp MCP bridge tool and capability metadata with the
+8. Expose the equivalent SuperScience MCP bridge tool and capability metadata with the
    same conversation opt-in check.
 
 **Tests**
@@ -365,7 +365,7 @@ retried, and cancelled through stable backend commands.
 **Primary files**
 
 - Modify: `src-tauri/src/delegation_runtime.rs`
-- Modify: `crates/wisp-store/src/agent_workflows.rs` only if an atomic behavior
+- Modify: `crates/superscience-store/src/agent_workflows.rs` only if an atomic behavior
   is missing; prefer existing `plan_json`/`spec_json`.
 - Modify: `src-tauri/src/lib.rs` command registration.
 - Modify DTOs in `ui/src/dto.rs` only after backend payloads are stable.
@@ -471,7 +471,7 @@ native remains the default and fully functional.
    profile through the normal ACP client.
 4. Enforce resolved task permissions on ACP permission requests regardless of
    vendor.
-5. Pass a filtered Wisp MCP bridge only when the resolved task grants matching
+5. Pass a filtered SuperScience MCP bridge only when the resolved task grants matching
    capabilities. Do not expose the whole bridge by default.
 6. Never fall back from requested isolation or permission guarantees to a less
    capable executor.
@@ -541,7 +541,7 @@ task; generic temporary tasks still require no Specialist.
 
 ## PR 9 — Complete native scientific capability adapters
 
-**User-visible change:** Dynamic native tasks can use Wisp's scientific
+**User-visible change:** Dynamic native tasks can use SuperScience's scientific
 workbench surfaces under explicit capability grants.
 
 **Primary files**

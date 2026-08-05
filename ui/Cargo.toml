@@ -1,12 +1,12 @@
 [package]
-name = "wisp-ui"
-description = "wisp-science desktop UI (Leptos CSR, built by Trunk, loaded in the Tauri WebView2)."
+name = "superscience-ui"
+description = "superscience desktop UI (Leptos CSR, built by Trunk, loaded in the Tauri WebView2)."
 version = "0.30.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 
 [[bin]]
-name = "wisp-ui"
+name = "superscience-ui"
 path = "src/main.rs"
 
 [dependencies]

@@ -6,7 +6,7 @@ fold_cue: "instead_of=guessing-selectors use=web_scan first — it returns a uni
 
 # Browser Use — act inside the user's real Chrome
 
-Wisp does **not** launch an automation browser. It talks to a small
+SuperScience does **not** launch an automation browser. It talks to a small
 extension inside the user's own Chrome/Chromium, so every action runs in
 their real profile — existing cookies, logins, extensions, and normal
 fingerprint all apply. That is the whole point: you can operate pages the
@@ -19,7 +19,7 @@ design. Do not treat that as a bug to route around.
 
 Call `browser_setup`. If `status` is not `connected`, relay its `steps`
 (load the unpacked extension from `extension_path`, verbatim) and stop
-until the popup shows *Connected to Wisp*. Never invent the path.
+until the popup shows *Connected to SuperScience*. Never invent the path.
 
 ## The loop
 

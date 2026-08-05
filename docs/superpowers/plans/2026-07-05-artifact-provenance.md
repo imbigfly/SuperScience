@@ -4,9 +4,9 @@
 
 **Goal:** Record, for every file a producing tool writes, the code/output/inputs/environment that made it, and surface it in a click-to-open artifact modal with Code / Execution Log / Inputs / Environment panels.
 
-**Architecture:** A snapshot-diff wrapper at wisp-core's single tool-dispatch point (`agent.rs`) computes `files_written`/`files_read` around `python`/`shell` calls and reports a `ProvenanceRecord` through a new `Output::provenance` hook. src-tauri's `TauriOutput` forwards it to an mpsc channel drained by a background task that captures a per-session env snapshot and inserts an `execution_log` row. Provenance is keyed by `(frame_id, workspace-relative path)` — the identifier the UI already uses — and read back by a `get_artifact_provenance` command feeding a new `ArtifactModal`.
+**Architecture:** A snapshot-diff wrapper at superscience-core's single tool-dispatch point (`agent.rs`) computes `files_written`/`files_read` around `python`/`shell` calls and reports a `ProvenanceRecord` through a new `Output::provenance` hook. src-tauri's `TauriOutput` forwards it to an mpsc channel drained by a background task that captures a per-session env snapshot and inserts an `execution_log` row. Provenance is keyed by `(frame_id, workspace-relative path)` — the identifier the UI already uses — and read back by a `get_artifact_provenance` command feeding a new `ArtifactModal`.
 
-**Tech Stack:** Rust (wisp-core, wisp-store, wisp-runtime, Tauri v2), Leptos/WASM UI, sqlx/SQLite, Playwright (mocked bridge) for UI e2e.
+**Tech Stack:** Rust (superscience-core, superscience-store, superscience-runtime, Tauri v2), Leptos/WASM UI, sqlx/SQLite, Playwright (mocked bridge) for UI e2e.
 
 ## Global Constraints
 
@@ -15,18 +15,18 @@
 - Producing tools are **`python`** (arg `code`) and **`shell`** (arg `cmd`) only. `language` is tool-derived: `python`→`"python"`, `shell`→`"bash"`.
 - `ToolResult` exposes only `success: bool` + `content: String`; store `stdout=content`, `stderr=""`, `exit_status=ok|error`, `wall_s=NULL`.
 - No new crate dependencies: hash env snapshots with std `DefaultHasher`, not sha2.
-- New-table migrations use `CREATE TABLE IF NOT EXISTS` (idempotent for old + fresh DBs), matching the additive-migration style in `crates/wisp-store/src/lib.rs`.
+- New-table migrations use `CREATE TABLE IF NOT EXISTS` (idempotent for old + fresh DBs), matching the additive-migration style in `crates/superscience-store/src/lib.rs`.
 - Cut (YAGNI): version chains, Messages/Review panels, conda per-cell env detection.
 
 ---
 
-### Task 1: wisp-store — provenance schema + query methods
+### Task 1: superscience-store — provenance schema + query methods
 
 **Files:**
-- Modify: `crates/wisp-store/src/lib.rs` (migrations block ~line 60; new `ExecLog` struct + methods; tests in the existing `#[cfg(test)] mod tests`)
+- Modify: `crates/superscience-store/src/lib.rs` (migrations block ~line 60; new `ExecLog` struct + methods; tests in the existing `#[cfg(test)] mod tests`)
 
 **Interfaces:**
-- Produces: `wisp_store::ExecLog { id, frame_id, cell_index:i64, tool, language, source, stdout, stderr, exit_status, wall_s:Option<f64>, files_written:Vec<String>, files_read:Vec<String>, env_hash:Option<String> }`
+- Produces: `superscience_store::ExecLog { id, frame_id, cell_index:i64, tool, language, source, stdout, stderr, exit_status, wall_s:Option<f64>, files_written:Vec<String>, files_read:Vec<String>, env_hash:Option<String> }`
 - Produces: `Store::next_cell_index(&self, frame_id) -> Result<i64>`, `Store::insert_execution_log(&self, &ExecLog) -> Result<()>`, `Store::record_env_snapshot(&self, hash, env_name:Option<&str>, packages_json) -> Result<()>`, `Store::get_env_snapshot(&self, hash) -> Result<Option<(Option<String>,String)>>`, `Store::find_provenance_by_path(&self, frame_id, path) -> Result<Option<ExecLog>>`, `Store::frame_written_paths(&self, frame_id) -> Result<HashSet<String>>`
 
 - [ ] **Step 1: Add the migrations.** In `Store::open`'s migration section (right after the existing `pragma_table_info` column guards), add:
@@ -172,10 +172,10 @@ impl Store {
 ```rust
     #[tokio::test]
     async fn provenance_roundtrip() {
-        let tmp = std::env::temp_dir().join(format!("wisp_prov_{}.sqlite", uuid::Uuid::new_v4()));
+        let tmp = std::env::temp_dir().join(format!("superscience_prov_{}.sqlite", uuid::Uuid::new_v4()));
         let store = Store::open(&tmp).await.unwrap();
         store.create_project("p1", "proj", "").await.unwrap();
-        store.create_frame("f1", "p1", "OPERON", "m").await.unwrap();
+        store.create_frame("f1", "p1", "SUPERSCIENCE", "m").await.unwrap();
         store.record_env_snapshot("h1", Some("kernel"), r#"[{"name":"numpy","version":"1.0"}]"#).await.unwrap();
         let e = ExecLog {
             id: "e1".into(), frame_id: "f1".into(), cell_index: 0,
@@ -199,31 +199,31 @@ impl Store {
 
 - [ ] **Step 4: Run the test.**
 
-Run: `cargo test -p wisp-store provenance_roundtrip`
+Run: `cargo test -p superscience-store provenance_roundtrip`
 Expected: PASS. (First confirm it compiles + the store migrations run.)
 
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add crates/wisp-store/src/lib.rs
+git add crates/superscience-store/src/lib.rs
 git commit -m "feat(store): execution_log + env_snapshots tables and provenance queries"
 ```
 
 ---
 
-### Task 2: wisp-core — snapshot/diff module + `Output::provenance` + agent wiring
+### Task 2: superscience-core — snapshot/diff module + `Output::provenance` + agent wiring
 
 **Files:**
-- Create: `crates/wisp-core/src/provenance.rs`
-- Modify: `crates/wisp-core/src/lib.rs` (declare `pub mod provenance;` + `pub use provenance::ProvenanceRecord;`)
-- Modify: `crates/wisp-core/src/output.rs` (add `fn provenance` to the `Output` trait)
-- Modify: `crates/wisp-core/src/agent.rs` (wrap the `tools.run` dispatch)
+- Create: `crates/superscience-core/src/provenance.rs`
+- Modify: `crates/superscience-core/src/lib.rs` (declare `pub mod provenance;` + `pub use provenance::ProvenanceRecord;`)
+- Modify: `crates/superscience-core/src/output.rs` (add `fn provenance` to the `Output` trait)
+- Modify: `crates/superscience-core/src/agent.rs` (wrap the `tools.run` dispatch)
 
 **Interfaces:**
-- Consumes: nothing from Task 1 (pure wisp-core).
-- Produces: `wisp_core::ProvenanceRecord { tool, language, source, output, success:bool, files_written:Vec<String>, files_read:Vec<String> }`; `Output::provenance(&self, &ProvenanceRecord)`; `provenance::{is_producing, language_of, source_of, snapshot, diff}`.
+- Consumes: nothing from Task 1 (pure superscience-core).
+- Produces: `superscience_core::ProvenanceRecord { tool, language, source, output, success:bool, files_written:Vec<String>, files_read:Vec<String> }`; `Output::provenance(&self, &ProvenanceRecord)`; `provenance::{is_producing, language_of, source_of, snapshot, diff}`.
 
-- [ ] **Step 1: Write the failing test** (create `crates/wisp-core/src/provenance.rs` with the module + its test):
+- [ ] **Step 1: Write the failing test** (create `crates/superscience-core/src/provenance.rs` with the module + its test):
 
 ```rust
 //! Best-effort artifact provenance: snapshot the workspace around a producing
@@ -245,7 +245,7 @@ pub struct ProvenanceRecord {
     pub files_read: Vec<String>,
 }
 
-const SKIP_DIRS: &[&str] = &[".git", ".venv", "node_modules", ".wisp", "uploads", "__pycache__"];
+const SKIP_DIRS: &[&str] = &[".git", ".venv", "node_modules", ".superscience", "uploads", "__pycache__"];
 // ponytail: recursive mtime scan, capped + heavy dirs skipped. Swap for an fs-notify
 // watcher only if this shows up in a profile.
 const MAX_FILES: usize = 20_000;
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn detects_written_and_read_and_skips_git() {
-        let tmp = std::env::temp_dir().join("wisp_prov_snap_test");
+        let tmp = std::env::temp_dir().join("superscience_prov_snap_test");
         std::fs::remove_dir_all(&tmp).ok();
         std::fs::create_dir_all(tmp.join(".git")).unwrap();
         std::fs::write(tmp.join("data.csv"), b"x").unwrap();
@@ -353,7 +353,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Declare the module + export.** In `crates/wisp-core/src/lib.rs`, add alongside the other `mod` declarations:
+- [ ] **Step 2: Declare the module + export.** In `crates/superscience-core/src/lib.rs`, add alongside the other `mod` declarations:
 
 ```rust
 pub mod provenance;
@@ -362,10 +362,10 @@ pub use provenance::ProvenanceRecord;
 
 - [ ] **Step 3: Run the test to verify it passes.**
 
-Run: `cargo test -p wisp-core detects_written_and_read_and_skips_git`
+Run: `cargo test -p superscience-core detects_written_and_read_and_skips_git`
 Expected: PASS.
 
-- [ ] **Step 4: Add the `Output::provenance` hook.** In `crates/wisp-core/src/output.rs`, add to the `Output` trait (after `on_message`, before the closing `}`):
+- [ ] **Step 4: Add the `Output::provenance` hook.** In `crates/superscience-core/src/output.rs`, add to the `Output` trait (after `on_message`, before the closing `}`):
 
 ```rust
     /// Fired once per producing tool call that wrote ≥1 file, with the code,
@@ -373,7 +373,7 @@ Expected: PASS.
     fn provenance(&self, _rec: &crate::provenance::ProvenanceRecord) {}
 ```
 
-- [ ] **Step 5: Wire the dispatch wrapper.** In `crates/wisp-core/src/agent.rs`, add `use crate::provenance;` to the imports, then replace the single line `let result = tools.run(&name, &args, &env).await;` with:
+- [ ] **Step 5: Wire the dispatch wrapper.** In `crates/superscience-core/src/agent.rs`, add `use crate::provenance;` to the imports, then replace the single line `let result = tools.run(&name, &args, &env).await;` with:
 
 ```rust
             let producing = provenance::is_producing(&name);
@@ -403,13 +403,13 @@ Expected: PASS.
 
 - [ ] **Step 6: Verify it compiles.**
 
-Run: `cargo check -p wisp-core`
+Run: `cargo check -p superscience-core`
 Expected: no errors (CLI's `Output` impl inherits the default `provenance` no-op).
 
 - [ ] **Step 7: Commit.**
 
 ```bash
-git add crates/wisp-core/src/provenance.rs crates/wisp-core/src/lib.rs crates/wisp-core/src/output.rs crates/wisp-core/src/agent.rs
+git add crates/superscience-core/src/provenance.rs crates/superscience-core/src/lib.rs crates/superscience-core/src/output.rs crates/superscience-core/src/agent.rs
 git commit -m "feat(core): snapshot-diff provenance capture + Output::provenance hook"
 ```
 
@@ -421,7 +421,7 @@ git commit -m "feat(core): snapshot-diff provenance capture + Output::provenance
 - Modify: `src-tauri/src/lib.rs` (`TauriOutput` struct + `impl Output`; `run_turn`'s channel/drain setup near line 1556-1594; new `parse_pip_list`/`capture_env` helpers; a `#[cfg(test)]` test)
 
 **Interfaces:**
-- Consumes: `wisp_store::ExecLog`, `Store::{next_cell_index, insert_execution_log, record_env_snapshot}` (Task 1); `wisp_core::ProvenanceRecord`, `Output::provenance` (Task 2); `wisp_runtime::PythonEnv::{find_uv, python}`.
+- Consumes: `superscience_store::ExecLog`, `Store::{next_cell_index, insert_execution_log, record_env_snapshot}` (Task 1); `superscience_core::ProvenanceRecord`, `Output::provenance` (Task 2); `superscience_runtime::PythonEnv::{find_uv, python}`.
 - Produces: persisted `execution_log` + `env_snapshots` rows during a turn. `parse_pip_list(&str) -> Vec<PipPkg>`.
 
 - [ ] **Step 1: Write the failing test** for the pure env-parse helper. Add near the bottom of `src-tauri/src/lib.rs`:
@@ -459,10 +459,10 @@ fn parse_pip_list(json: &str) -> Vec<PipPkg> {
 
 /// Capture the kernel venv's package list once; store it hashed; return the hash.
 /// Non-fatal: any failure returns `None` and the Environment panel shows "unavailable".
-async fn capture_env(store: &wisp_store::Store, app_data: &std::path::Path) -> Option<String> {
+async fn capture_env(store: &superscience_store::Store, app_data: &std::path::Path) -> Option<String> {
     let venv = app_data.join("python").join(".venv");
-    let python = wisp_runtime::PythonEnv { venv }.python();
-    let uv = wisp_runtime::PythonEnv::find_uv()?;
+    let python = superscience_runtime::PythonEnv { venv }.python();
+    let uv = superscience_runtime::PythonEnv::find_uv()?;
     let out = tokio::process::Command::new(&uv)
         .args(["pip", "list", "--format=json", "--python"])
         .arg(&python)
@@ -489,13 +489,13 @@ async fn capture_env(store: &wisp_store::Store, app_data: &std::path::Path) -> O
 - [ ] **Step 3: Add the `prov` field to `TauriOutput` + implement `provenance`.** In the `TauriOutput` struct (near line 586+ / the struct with `persist`), add a field:
 
 ```rust
-    prov: Option<tokio::sync::mpsc::UnboundedSender<wisp_core::ProvenanceRecord>>,
+    prov: Option<tokio::sync::mpsc::UnboundedSender<superscience_core::ProvenanceRecord>>,
 ```
 
 In `impl Output for TauriOutput`, add the method:
 
 ```rust
-    fn provenance(&self, rec: &wisp_core::ProvenanceRecord) {
+    fn provenance(&self, rec: &superscience_core::ProvenanceRecord) {
         if let Some(tx) = &self.prov {
             let _ = tx.send(rec.clone());
         }
@@ -506,7 +506,7 @@ In `impl Output for TauriOutput`, add the method:
 
 ```rust
     let (prov_handle, prov_tx) = {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<wisp_core::ProvenanceRecord>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<superscience_core::ProvenanceRecord>();
         let store = state.store.clone();
         let app_data = state.app_data.clone();
         let fid = frame_id.clone();
@@ -517,7 +517,7 @@ In `impl Output for TauriOutput`, add the method:
                     env_hash = capture_env(&store, &app_data).await;
                 }
                 let cell_index = store.next_cell_index(&fid).await.unwrap_or(0);
-                let e = wisp_store::ExecLog {
+                let e = superscience_store::ExecLog {
                     id: Uuid::new_v4().to_string(),
                     frame_id: fid.clone(),
                     cell_index,
@@ -553,7 +553,7 @@ Then add `prov: Some(prov_tx),` to the `TauriOutput { ... }` literal.
 
 - [ ] **Step 6: Run the test + compile.**
 
-Run: `cargo test -p wisp-tauri parse_pip_list_reads_name_version && cargo check -p wisp-tauri`
+Run: `cargo test -p superscience-tauri parse_pip_list_reads_name_version && cargo check -p superscience-tauri`
 Expected: test PASS, check clean.
 
 - [ ] **Step 7: Commit.**
@@ -662,7 +662,7 @@ async fn get_artifact_provenance(
 
 - [ ] **Step 4: Compile.**
 
-Run: `cargo check -p wisp-tauri`
+Run: `cargo check -p superscience-tauri`
 Expected: clean.
 
 - [ ] **Step 5: Commit.**
@@ -946,7 +946,7 @@ test("clicking a figure opens the artifact modal with provenance", async ({ page
   await page.goto("/");
   await page.locator(".proj-card:not(.proj-example)").first().click();
   // Produce a figure into the artifacts panel (mirror the existing artifacts test setup).
-  await page.getByPlaceholder(/Ask wisp-science/i).fill("make a volcano plot volcano.png");
+  await page.getByPlaceholder(/Ask superscience/i).fill("make a volcano plot volcano.png");
   await page.getByRole("button", { name: "Send" }).click();
   await page.locator(".rp-tab", { hasText: "Artifacts" }).click();
   await page.locator(".rp-tile").first().click();

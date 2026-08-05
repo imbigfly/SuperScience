@@ -7,7 +7,7 @@ const officeFixtures = {
   xlsxBase64: readFileSync(resolve(__dirname, "../fixtures/office-preview.xlsx")).toString("base64"),
   pptxBase64: readFileSync(resolve(__dirname, "../fixtures/office-preview.pptx")).toString("base64"),
 };
-const motifAppHtmlPath = process.env.WISP_MOTIF_APP_HTML;
+const motifAppHtmlPath = process.env.SUPERSCIENCE_MOTIF_APP_HTML;
 
 function providerSelect(page: Page) {
   return page.getByTestId("settings-provider");
@@ -243,8 +243,8 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await enterApp(page);
   await composer(page).fill("hello there");
   await page.getByRole("button", { name: "Send" }).click();
-  // Deltas "Hello " + "from mock wisp-science." accumulate into one assistant bubble.
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  // Deltas "Hello " + "from mock superscience." accumulate into one assistant bubble.
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
   await page.locator(".msg.assistant").getByRole("button", { name: "Copy" }).click();
   await expect(page.locator(".copy-toast")).toHaveText("Copied");
 });
@@ -253,7 +253,7 @@ test("undo returns the latest prompt and keeps unsupported Word files", async ({
   await enterApp(page);
   await composer(page).fill("revise my notes");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
 
   const undo = page.locator(".msg.assistant").getByRole("button", { name: "Undo" });
   await expect(undo).toHaveCount(1);
@@ -277,7 +277,7 @@ test("undo returns the latest prompt and keeps unsupported Word files", async ({
   });
   await expect(modal).toHaveCount(0);
   await expect(page.locator(".msg.user", { hasText: "revise my notes" })).toHaveCount(0);
-  await expect(page.getByText("Hello from mock wisp-science.")).toHaveCount(0);
+  await expect(page.getByText("Hello from mock superscience.")).toHaveCount(0);
   await expect(composer(page)).toHaveValue("revise my notes");
 });
 
@@ -285,7 +285,7 @@ test("general settings can use Ctrl+Enter to send and Enter for newline", async 
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "userAgent", {
       configurable: true,
-      value: "wisp-science/Tauri",
+      value: "superscience/Tauri",
     });
     Object.defineProperty(navigator, "platform", {
       configurable: true,
@@ -340,11 +340,11 @@ test("problem reports stay local until a reviewed Markdown draft is explicitly o
 
   const preview = modal.getByTestId("issue-report-preview");
   await expect(preview).toHaveValue(/The analysis stops before producing a result\./);
-  await expect(preview).toHaveValue(/Wisp version: 0\.29\.0/);
+  await expect(preview).toHaveValue(/SuperScience version: 0\.29\.0/);
   await expect(preview).toHaveValue(/OS \/ architecture: windows \/ x86_64/);
   await expect(preview).toHaveValue(/Model profile: deepseek-v4-pro/);
   await expect(preview).toHaveValue(/Execution context type: ssh/);
-  await expect(preview).toHaveValue(/Wisp did not collect or upload an image/);
+  await expect(preview).toHaveValue(/SuperScience did not collect or upload an image/);
   await expect(preview).not.toHaveValue(/\/mock\/root/);
 
   const github = modal.getByTestId("issue-report-github");
@@ -382,7 +382,7 @@ test("background Agent completion appears in its owning conversation", async ({ 
   await enterApp(page);
   await composer(page).fill("start background analysis");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
   const sent = await lastInvokeArgs(page, "send_message");
   await page.evaluate((frameId) => {
     (window as any).__tauriEmit("agent", {
@@ -407,7 +407,7 @@ test("switching HTTP models confirms cache invalidation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("bind this conversation model");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
 
   await page.locator(".model-picker-btn").click();
   const opusOption = page.getByRole("button", { name: /opus-4\.8/ });
@@ -445,7 +445,7 @@ test("switching to a text-only model confirms historical images will be ignored"
     buffer: Buffer.from([137, 80, 78, 71]),
   });
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
 
   await page.locator(".model-picker-btn").click();
   await page.getByRole("button", { name: /deepseek-v4-pro/ }).click();
@@ -463,14 +463,14 @@ test("model switch warning can be permanently dismissed", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("bind this conversation model");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
 
   await page.locator(".model-picker-btn").click();
   await page.getByRole("button", { name: /opus-4\.8/ }).click();
   await page.getByTestId("model-switch-confirm")
     .getByRole("button", { name: "Switch and don't ask again" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-model-switch-warning-disabled")))
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-model-switch-warning-disabled")))
     .toBe("1");
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 
@@ -554,7 +554,7 @@ test("selecting an ACP Agent from a populated HTTP session starts a fresh sessio
   await enterApp(page);
   await composer(page).fill("existing HTTP turn");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
   const firstSend = await lastInvokeArgs(page, "send_message");
   await composer(page).fill("preserved draft");
 
@@ -627,7 +627,7 @@ test("ACP turn maps config, overlapping tools, plan, usage, and exact permission
   await expect(page.getByRole("button", { name: /deepseek-v4-pro/ })).toBeDisabled();
 });
 
-test("persisted wisp:plan reload rebuilds all entry states and priority", async ({ page }) => {
+test("persisted superscience:plan reload rebuilds all entry states and priority", async ({ page }) => {
   await openMockPlanSession(page, "acp");
 
   const assertPlan = async () => {
@@ -908,7 +908,7 @@ test("Full Permission requires a warning and stays scoped to the conversation", 
   await expect(page.getByRole("heading", { name: "Enable Full Permission?" })).toHaveCount(0);
 });
 
-test("ACP turns retain explicitly selected Wisp skills", async ({ page }) => {
+test("ACP turns retain explicitly selected SuperScience skills", async ({ page }) => {
   await enterApp(page);
   await newSessionButton(page).click();
   await page.locator(".model-picker-btn").click();
@@ -971,9 +971,9 @@ test("automatic reviewer resolves its finding and jumps past UI-only rows (#550)
 
   const handoffs = page.locator(".review-transition");
   await expect(handoffs).toHaveCount(2);
-  await expect(handoffs.nth(0)).toContainText("wisp-science nudged Reviewer");
+  await expect(handoffs.nth(0)).toContainText("SuperScience nudged Reviewer");
   await expect(handoffs.nth(0)).toHaveAttribute("data-phase", "reviewing");
-  await expect(handoffs.nth(1)).toContainText("Reviewer nudged wisp-science");
+  await expect(handoffs.nth(1)).toContainText("Reviewer nudged SuperScience");
   await expect(handoffs.nth(1)).toContainText("deepseek-v4-pro");
   await expect(handoffs.nth(1)).toHaveAttribute("data-phase", "correcting");
 
@@ -1163,7 +1163,7 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(composerInput).toBeFocused();
 
   await composerInput.pressSequentially("#project");
-  await expect(page.locator(".mention-menu")).toContainText("Search every session in wisp-science");
+  await expect(page.locator(".mention-menu")).toContainText("Search every session in superscience");
   await page.locator(".mention-menu .mention-item").first().click();
   await expect(composerInput).toHaveValue("");
   await expect(composerInput).toBeFocused();
@@ -1193,7 +1193,7 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(sentContext).toHaveCount(5);
   await expect(page.locator('.msg.user [data-reference-kind="artifact"]')).toContainText("nif3.treefile");
   await expect(page.locator('.msg.user [data-reference-kind="session"]')).toContainText("Current analysis");
-  await expect(page.locator('.msg.user [data-reference-kind="project"]')).toContainText("wisp-science");
+  await expect(page.locator('.msg.user [data-reference-kind="project"]')).toContainText("superscience");
   await expect(page.locator('.msg.user [data-reference-kind="skill"]')).toContainText("alphafold2");
   await expect(page.locator('.msg.user [data-reference-kind="workflow"]')).toContainText("Roundtable");
   await expect(page.locator(".msg.user .body")).not.toContainText("Selected skills:");
@@ -1274,7 +1274,7 @@ test("Ctrl+K opens in place and Ctrl+Enter opens a project window", async ({ pag
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "userAgent", {
       configurable: true,
-      value: "wisp-science/Tauri",
+      value: "superscience/Tauri",
     });
     Object.defineProperty(navigator, "platform", {
       configurable: true,
@@ -1340,7 +1340,7 @@ test("artifact type badges stay neutral instead of rainbow pills", async ({ page
     .locator("#composer-input")
     .fill("show `figures/panel_I_heatmap_4genes_median.png/.pdf`");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Toggle panel" }).click();
 
   const badge = page.locator('.rp-tile[data-artifact-name="panel_I_heatmap_4genes_median.png"] .rp-badge');
@@ -1355,7 +1355,7 @@ test("Cmd+K opens search and the composer shows the macOS shortcut", async ({ pa
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "userAgent", {
       configurable: true,
-      value: "wisp-science/Tauri",
+      value: "superscience/Tauri",
     });
     Object.defineProperty(navigator, "platform", {
       configurable: true,
@@ -1372,13 +1372,13 @@ test("Cmd+Enter sends when the modifier shortcut is selected on macOS", async ({
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "userAgent", {
       configurable: true,
-      value: "wisp-science/Tauri",
+      value: "superscience/Tauri",
     });
     Object.defineProperty(navigator, "platform", {
       configurable: true,
       value: "MacIntel",
     });
-    localStorage.setItem("wisp-send-with-modifier", "1");
+    localStorage.setItem("superscience-send-with-modifier", "1");
   });
   await enterApp(page);
   await expect(page.locator(".composer-hint")).toContainText("Cmd+Enter to send · Enter for newline");
@@ -1443,7 +1443,7 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await input.fill("dark theme");
   await input.press("Enter");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-theme"))).toBe("dark");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-theme"))).toBe("dark");
 
   await page.keyboard.press("Control+p");
   await input.fill("open files");
@@ -2088,7 +2088,7 @@ test("branch in new session starts a new frame from the current session", async 
   await enterApp(page);
   await composer(page).fill("seed context");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("try another route");
   await page.getByRole("button", { name: "Message options" }).click();
@@ -2107,7 +2107,7 @@ test("branch on an earlier user message opens a new session from that point", as
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("second idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -2136,9 +2136,9 @@ test("generic content menus do not expose session export", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("hello there");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
 
-  await page.getByText("Hello from mock wisp-science.").click({ button: "right" });
+  await page.getByText("Hello from mock superscience.").click({ button: "right" });
   await expect(page.getByRole("button", { name: "Export session" })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Toggle panel" }).click();
@@ -2155,7 +2155,7 @@ test("uploaded file shows up in the artifacts panel after send", async ({ page }
   });
   await expect(page.locator(".composer-attachment.ready")).toHaveText("counts.csv");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
   await expect.poll(async () => page.evaluate(() => {
     const calls = ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "send_message");
     const args = calls.at(-1)?.args;
@@ -2188,7 +2188,7 @@ test("artifact category headers collapse and expand their tiles", async ({ page 
   await enterApp(page);
   await composer(page).fill("make a volcano plot volcano.png");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Toggle panel" }).click();
 
   const tile = page.locator('.rp-tile[data-artifact-name="volcano.png"]');
@@ -2734,7 +2734,7 @@ test("pasted image attaches to the composer", async ({ page }) => {
   await expect(page.locator(".composer-attachment.ready")).toHaveText(/pasted_image_\d+_1\.png/);
   await expect(page.locator(".composer-attachment-row.image img")).toBeVisible();
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
   await expect.poll(async () => page.evaluate(() => {
     const calls = ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "send_message");
     const args = calls.at(-1)?.args;
@@ -2901,7 +2901,7 @@ test("Escape closes the SSH connectivity dialog", async ({ page }) => {
     );
     context.last_probe_status = "error";
     context.last_probe_error =
-      "SSH authentication succeeded, but the remote account did not execute Wisp's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early.";
+      "SSH authentication succeeded, but the remote account did not execute SuperScience's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early.";
   });
 
   const menu = await openComputeMenu(page);
@@ -3304,7 +3304,7 @@ test("right panel shows execution contexts and runs", async ({ page }) => {
   await expect(page.locator(".run-card", { hasText: "Kinase screen QC" })).toContainText("ssh:gpu-server");
   await expect(page.locator(".run-card", { hasText: "Local normalization" })).toHaveCount(0);
   const remoteRun = page.locator(".run-card", { hasText: "Kinase screen QC" });
-  await expect(remoteRun).toContainText("~/.wisp-science/runs/run-kinase-001");
+  await expect(remoteRun).toContainText("~/.superscience/runs/run-kinase-001");
   await remoteRun.getByText("Latest output").click();
   await expect(remoteRun).toContainText("wrote qc table");
 
@@ -4147,7 +4147,7 @@ test("PPTX files render lazily inside the app", async ({ page }) => {
   const presentation = page.locator(".artifact-modal .rp-pptx");
   await expect(presentation).toBeVisible();
   await expect(presentation.locator('[data-slide-index="0"]')).toBeVisible();
-  await expect(presentation).toContainText("Wisp PPTX preview");
+  await expect(presentation).toContainText("SuperScience PPTX preview");
   await expect.poll(() => lastInvokeArgs(page, "read_file_bytes"))
     .toMatchObject({ path: "office-preview.pptx", maxBytes: 32 * 1024 * 1024 });
 });
@@ -4410,7 +4410,7 @@ test("artifact panel normalizes png/pdf shorthand to the previewable image", asy
     .locator("#composer-input")
     .fill("show `figures/panel_I_heatmap_4genes_median.png/.pdf`");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Toggle panel" }).click();
 
   const tile = page.locator('.rp-tile[data-artifact-name="panel_I_heatmap_4genes_median.png"]');
@@ -4468,11 +4468,11 @@ test("appearance settings persist separate light and dark palettes and font size
   await page.getByRole("slider", { name: "UI font size" }).fill("16");
   await page.getByRole("slider", { name: "Code font size" }).fill("15");
   await expect.poll(() => page.evaluate(() => ({
-    theme: localStorage.getItem("wisp-theme"),
-    light: localStorage.getItem("wisp-light-palette"),
-    dark: localStorage.getItem("wisp-dark-palette"),
-    ui: localStorage.getItem("wisp-ui-font-size"),
-    code: localStorage.getItem("wisp-code-font-size"),
+    theme: localStorage.getItem("superscience-theme"),
+    light: localStorage.getItem("superscience-light-palette"),
+    dark: localStorage.getItem("superscience-dark-palette"),
+    ui: localStorage.getItem("superscience-ui-font-size"),
+    code: localStorage.getItem("superscience-code-font-size"),
   }))).toEqual({ theme: "dark", light: "catppuccin", dark: "gruvbox", ui: "16", code: "15" });
 
   await page.reload();
@@ -4623,7 +4623,7 @@ test("model API URL explains that endpoint paths are added automatically", async
   await openModelsSettings(page);
 
   await expect(page.getByTestId("model-api-url-hint")).toHaveText(
-    "Enter the provider's API base URL. You do not need to append /chat/completions, /responses, or /v1/messages; Wisp adds the matching request path automatically.",
+    "Enter the provider's API base URL. You do not need to append /chat/completions, /responses, or /v1/messages; SuperScience adds the matching request path automatically.",
   );
   await expect(page.getByLabel("API URL")).toHaveAttribute(
     "aria-describedby",
@@ -4678,7 +4678,7 @@ test("check for updates shows an up-to-date modal", async ({ page }) => {
   const modal = page.getByTestId("update-check-modal");
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("You're up to date");
-  await expect(modal).toContainText("Wisp 0.9.0 is already the latest version.");
+  await expect(modal).toContainText("SuperScience 0.9.0 is already the latest version.");
   await modal.getByRole("button", { name: "OK" }).click();
   await expect(modal).toHaveCount(0);
 });
@@ -4697,7 +4697,7 @@ test("check for updates shows an available-update modal before opening releases"
   const modal = page.getByTestId("update-check-modal");
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("Update available");
-  await expect(modal).toContainText("Wisp 1.2.3 is available.");
+  await expect(modal).toContainText("SuperScience 1.2.3 is available.");
   await expect(await lastInvokeArgs(page, "open_external_url")).toBeNull();
   await page.getByTestId("update-check-open-releases").click();
   await expect(modal).toHaveCount(0);
@@ -4725,7 +4725,7 @@ test("macOS update download is verified before a separate install confirmation",
   await expect(await lastInvokeArgs(page, "install_update")).toBeNull();
 
   await modal.getByRole("button", { name: "Download update" }).click();
-  await expect(modal).toContainText("Downloading Wisp 0.28.0");
+  await expect(modal).toContainText("Downloading SuperScience 0.28.0");
   await expect(modal).toContainText("25 B / 100 B");
 
   // An in-flight update owns the top of the Escape stack and keeps Settings open.
@@ -4739,7 +4739,7 @@ test("macOS update download is verified before a separate install confirmation",
   await expect(await lastInvokeArgs(page, "install_update")).toBeNull();
 
   await modal.getByRole("button", { name: "Install and restart" }).click();
-  await expect(modal).toContainText("Installing Wisp 0.28.0");
+  await expect(modal).toContainText("Installing SuperScience 0.28.0");
   await expect.poll(() => page.evaluate(() => (window as any).__mockUpdateInstalled)).toBe(true);
 });
 
@@ -4841,7 +4841,7 @@ test("stale update card refreshes to the latest release before opening it (#521)
   await input.fill("check for updates");
   await input.press("Enter");
   let modal = page.getByTestId("update-check-modal");
-  await expect(modal).toContainText("Wisp 0.24.0 is available.");
+  await expect(modal).toContainText("SuperScience 0.24.0 is available.");
   await modal.getByRole("button", { name: "Later" }).click();
   await expect(page.getByTestId("update-card")).toContainText("v0.24.0");
 
@@ -4852,7 +4852,7 @@ test("stale update card refreshes to the latest release before opening it (#521)
   await page.getByTestId("update-card").click();
 
   modal = page.getByTestId("update-check-modal");
-  await expect(modal).toContainText("Wisp 0.25.0 is available.");
+  await expect(modal).toContainText("SuperScience 0.25.0 is available.");
   await expect(page.getByTestId("update-card")).toContainText("v0.25.0");
   await modal.getByTestId("update-check-open-releases").click();
   await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
@@ -4964,7 +4964,7 @@ test("capability counts open skills, connections, and current-project memory", a
 
   const memory = page.getByRole("dialog", { name: "Memory files" });
   await expect(memory).toBeVisible();
-  await expect(memory).toContainText("Current project: wisp-science");
+  await expect(memory).toContainText("Current project: superscience");
   await expect(memory).toContainText("2026-07-01.md");
   await expect(memory).toContainText("User prefers DeepSeek.");
 
@@ -5302,7 +5302,7 @@ test("Escape closes plan feedback before rejecting the plan", async ({ page }) =
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Review plan before starting?")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Other" }).click();
-  const feedback = page.getByPlaceholder("Tell wisp what to change in this plan.");
+  const feedback = page.getByPlaceholder("Tell SuperScience what to change in this plan.");
   await expect(feedback).toBeVisible();
 
   await page.keyboard.press("Escape");
@@ -5333,6 +5333,76 @@ test("inline approval scope is sent with confirmation", async ({ page }) => {
       approved: true,
       scope: "project",
     },
+  });
+});
+
+test("approval allow stays clickable when command preview text is selected", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("NEEDCONFIRM");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const allow = page.getByRole("button", { name: "Allow once" });
+  await expect(allow).toBeVisible({ timeout: 10_000 });
+
+  // Selecting the preview (common while inspecting a dangerous command) used to
+  // raise the chat selection popup on the Allow button's mouseup and eat the click.
+  await page.evaluate(() => {
+    const code = document.querySelector(".approval-code code");
+    if (!code) throw new Error("missing approval code preview");
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    code.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, button: 0 }));
+  });
+  await expect(page.locator(".selection-popup")).toHaveCount(0);
+
+  await page.getByLabel("Approval scope").selectOption("global");
+  await expect(page.getByRole("button", { name: "Allow globally" })).toBeVisible();
+  await page.getByRole("button", { name: "Allow globally" }).click();
+
+  await expect(page.locator(".selection-popup")).toHaveCount(0);
+  await expect.poll(async () => page.evaluate(() => {
+    const calls = ((window as any).__skillInvokeLog ?? []).map((c: any) => ({
+      cmd: c.cmd,
+      args: c.args instanceof Map ? Object.fromEntries(c.args) : (c.args ?? {}),
+    }));
+    return calls.find((c: any) => c.cmd === "confirm_response") ?? null;
+  })).toMatchObject({
+    cmd: "confirm_response",
+    args: { approved: true, scope: "global" },
+  });
+});
+
+test("approval deny stays clickable when command preview text is selected", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("NEEDCONFIRM");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const deny = page.getByRole("button", { name: "Deny" });
+  await expect(deny).toBeVisible({ timeout: 10_000 });
+  await page.evaluate(() => {
+    const code = document.querySelector(".approval-code code");
+    if (!code) throw new Error("missing approval code preview");
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    code.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, button: 0 }));
+  });
+
+  await deny.click();
+  await expect.poll(async () => page.evaluate(() => {
+    const calls = ((window as any).__skillInvokeLog ?? []).map((c: any) => ({
+      cmd: c.cmd,
+      args: c.args instanceof Map ? Object.fromEntries(c.args) : (c.args ?? {}),
+    }));
+    return calls.find((c: any) => c.cmd === "confirm_response") ?? null;
+  })).toMatchObject({
+    cmd: "confirm_response",
+    args: { approved: false },
   });
 });
 
@@ -5397,6 +5467,46 @@ test("chat stays pinned to the bottom while streaming a long reply (#61)", async
       { timeout: 5000 },
     )
     .toBeLessThan(8);
+});
+
+test("scrolling up mid-stream then back down keeps the pin at the bottom", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("SCROLLTEST");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const scroller = page.locator("#chat-scroller");
+  const bottomGap = () =>
+    scroller.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+  const scrollRoom = () =>
+    scroller.evaluate((el) => el.scrollHeight - el.clientHeight);
+
+  // Wait until the thread is tall enough that leaving the bottom is observable.
+  await expect.poll(scrollRoom, { timeout: 15_000 }).toBeGreaterThan(500);
+
+  // Wheel-up releases the pin. A bare scrollTop write looks like a reflow
+  // clamp and would be snapped back while follow is still true.
+  await scroller.evaluate((el) => {
+    el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+    el.scrollTop = Math.max(0, el.scrollTop - 400);
+  });
+  await expect.poll(bottomGap, { timeout: 2_000 }).toBeGreaterThan(40);
+
+  // Stay parked while more tokens stream in — pin must not yank us down.
+  const parkedGap = await bottomGap();
+  await page.waitForTimeout(200);
+  expect(await bottomGap()).toBeGreaterThan(40);
+  expect(await bottomGap()).toBeGreaterThanOrEqual(parkedGap - 20);
+
+  // Return to the live tail. A reflow right after this used to treat the
+  // downward scroll's gesture window as another unfollow and bounce away.
+  await scroller.evaluate((el) => {
+    el.dispatchEvent(new WheelEvent("wheel", { deltaY: 120, bubbles: true }));
+    el.scrollTop = el.scrollHeight;
+  });
+  await expect.poll(bottomGap, { timeout: 2_000 }).toBeLessThan(8);
+
+  await expect(page.getByText("line 79")).toBeVisible({ timeout: 15_000 });
+  await expect.poll(bottomGap, { timeout: 5_000 }).toBeLessThan(8);
 });
 
 test("recent sessions show only title and status badge", async ({ page }) => {
@@ -5686,7 +5796,7 @@ test("MCP App opens as a persistent center tab and delivers tool data", async ({
     };
     addEventListener("message", (event) => {
       const message = event.data || {};
-      if (message.id === 1 && message.result?.hostInfo?.name === "wisp-science") {
+      if (message.id === 1 && message.result?.hostInfo?.name === "superscience") {
         initialized = true;
         contextCapability = !!message.result?.hostCapabilities?.updateModelContext?.text;
         parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} }, "*");
@@ -5776,8 +5886,8 @@ test("reopening a saved session restores its MCP App workbench", async ({ page }
   await openSavedSession();
 });
 
-test("real Motif MCP App reaches ready state through the Wisp host", async ({ page }) => {
-  test.skip(!motifAppHtmlPath, "set WISP_MOTIF_APP_HTML for release acceptance");
+test("real Motif MCP App reaches ready state through the SuperScience host", async ({ page }) => {
+  test.skip(!motifAppHtmlPath, "set SUPERSCIENCE_MOTIF_APP_HTML for release acceptance");
   const html = readFileSync(motifAppHtmlPath!, "utf8");
   await enterApp(page);
   await composer(page).fill("open Motif acceptance");
@@ -5796,7 +5906,7 @@ test("real Motif MCP App reaches ready state through the Wisp host", async ({ pa
           description: "Open the Motif workbench",
           inputSchema: { type: "object", properties: {} },
         },
-        arguments: { content: ">wisp-acceptance\nACGTACGT", filename: "wisp-acceptance.fasta" },
+        arguments: { content: ">superscience-acceptance\nACGTACGT", filename: "superscience-acceptance.fasta" },
         result: {
           content: [{ type: "text", text: "Motif acceptance payload" }],
           structuredContent: {
@@ -5806,8 +5916,8 @@ test("real Motif MCP App reaches ready state through the Wisp host", async ({ pa
             residueCount: 8,
             payload: {
               schema: "motif.claude-science.inventory.v2",
-              inventory: { title: "Wisp acceptance" },
-              records: [{ id: "wisp-acceptance", name: "Wisp acceptance", sequence: "ACGTACGT", molecule: "dna" }],
+              inventory: { title: "SuperScience acceptance" },
+              records: [{ id: "superscience-acceptance", name: "SuperScience acceptance", sequence: "ACGTACGT", molecule: "dna" }],
             },
           },
           isError: false,
@@ -5900,7 +6010,7 @@ test("bound BibTeX resources open their immutable text preview", async ({ page }
   await expect(page.locator('.center-tab[data-center-path="artifact-version:resource-version-bib"]'))
     .toContainText("references.bib");
   await expect(page.locator(".center-file-preview"))
-    .toContainText("@article{wisp");
+    .toContainText("@article{superscience");
   await expect.poll(() => lastInvokeArgs(page, "read_artifact_version"))
     .toMatchObject({ versionId: "resource-version-bib" });
 });
@@ -5977,7 +6087,7 @@ test("projects landing stays centered on wide windows", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".projects-head")).toBeVisible();
   await expect(page.locator(".projects-brand-mark")).toBeVisible();
-  await expect(page.locator(".projects-title")).toContainText("Wisp Science");
+  await expect(page.locator(".projects-title")).toContainText("SuperScience");
   await expect.poll(async () => page.locator(".projects-head").evaluate((el) => {
     const rect = el.getBoundingClientRect();
     return Math.round(rect.width);
@@ -6148,7 +6258,7 @@ test("project switcher does not show a stale fallback name while opening", async
   await page.locator(".proj-card-main").first().click();
 
   await expect(page.locator(".proj-name")).toHaveText("Opening project…");
-  await expect(page.locator(".proj-name")).toHaveText("wisp-science");
+  await expect(page.locator(".proj-name")).toHaveText("superscience");
 });
 
 test("default workspace keeps history labels and compact navigation keeps hover labels", async ({ page }) => {
@@ -6271,7 +6381,7 @@ test("projects sync manually, copy a device code, and join on another device", a
     url: expect.stringContaining("docs/project-sync.md"),
   });
 
-  await deviceCode.fill("wisp-sync:mock-secret-code");
+  await deviceCode.fill("superscience-sync:mock-secret-code");
   await page.getByRole("button", { name: "Choose destination and join" }).click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "join_synced_project"),
@@ -6318,7 +6428,7 @@ test("pet stays off until the user explicitly configures its directory", async (
   });
 
   await page.goto("/?pet=desktop&mockPet=1");
-  const pet = page.getByTestId("wisp-pet");
+  const pet = page.getByTestId("superscience-pet");
   await expect(pet).toBeVisible();
   await expect.poll(() => pet.getAttribute("data-state")).toMatch(/^(idle|looking)$/);
   await pet.click();
@@ -6328,7 +6438,7 @@ test("pet stays off until the user explicitly configures its directory", async (
 test("desktop pet remains independent and reflects global agent state", async ({ page }) => {
   await page.goto("/?pet=desktop&mockPet=1");
 
-  const pet = page.getByTestId("wisp-pet");
+  const pet = page.getByTestId("superscience-pet");
   await expect(page.getByTestId("pet-window-root")).toBeVisible();
   await expect(pet).toBeVisible();
   await expect(pet).toHaveAttribute("data-tauri-drag-region", "deep");
@@ -6872,7 +6982,7 @@ test("an SVG star saves a Notebook cell in the global library", async ({ page })
   await page.getByRole("button", { name: "Library", exact: true }).click();
   await expect(page.getByTestId("library-screen")).toBeVisible();
   await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("zcat counts.txt.gz");
-  await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("wisp-science / Current analysis");
+  await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("superscience / Current analysis");
 });
 
 test("the command palette opens the global library", async ({ page }) => {
@@ -7043,7 +7153,7 @@ test("the selection popup saves a highlight into the right pane and library", as
   // The Highlights tab opens with the excerpt, and the transcript is underlined.
   await expect(page.getByRole("button", { name: "Highlights (1)", exact: true })).toBeVisible();
   await expect(page.locator(".highlight-card .highlight-text")).toContainText(selected.trim().slice(0, 30));
-  await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("wisp-saved") ?? false)).toBe(true);
+  await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("superscience-saved") ?? false)).toBe(true);
 
   // The global library lists it under the Highlights filter.
   await page.getByRole("button", { name: "Library", exact: true }).click();
@@ -7220,7 +7330,7 @@ test("new session can pick a specialist and it locks after the first message", a
 
   await composer(page).fill("hello there");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
 
   agentMenu = await openAgentMenu(page);
   await expect(agentMenu.getByRole("button", { name: /^Specialist/ })).toBeDisabled();

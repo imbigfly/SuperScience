@@ -35,8 +35,8 @@
 
   const project = {
     id: "default",
-    name: "wisp-science",
-    root: "C:\\mock\\wisp-science",
+    name: "superscience",
+    root: "C:\\mock\\superscience",
     skill_count: 58,
     mcp_server_count: 24,
     memory_file_count: 0,
@@ -54,7 +54,7 @@
   // default ("About you") category.
   let memoryFiles = [
     { name: "2026-07-01.md", preview: "User prefers DeepSeek.", bytes: 128 },
-    { name: "Projects--2026-07-02.md", preview: "Wisp: two-column memory pane in settings.", bytes: 96 },
+    { name: "Projects--2026-07-02.md", preview: "SuperScience: two-column memory pane in settings.", bytes: 96 },
     { name: "Projects--2026-06-28.md", preview: "Library rerun tracking shipped in #474.", bytes: 88 },
     { name: "Preferences--2026-07-03.md", preview: "Reply in Chinese; keep diffs minimal.", bytes: 72 },
   ];
@@ -149,7 +149,7 @@
   // Agent-created SSH trust edges (ssh_trust_edges_v1). One edge whose
   // destination context no longer exists, to exercise the orphan rendering.
   const mockTrustEdges = [
-    { source_context_id: "ssh:cpu1", destination_context_id: "ssh:gpu2", destination_target: "researcher@gpu2.lab", destination_port: 22, key_path: ".ssh/wisp-gpu2-ed25519", managed: true, verified_at: 1719900000 },
+    { source_context_id: "ssh:cpu1", destination_context_id: "ssh:gpu2", destination_target: "researcher@gpu2.lab", destination_port: 22, key_path: ".ssh/superscience-gpu2-ed25519", managed: true, verified_at: 1719900000 },
     { source_context_id: "ssh:gpu2", destination_context_id: "ssh:cpu1", destination_target: "researcher@cpu1.lab", destination_port: null, key_path: null, managed: false, verified_at: 1719800000 },
   ];
   const mockChannels = {
@@ -331,8 +331,8 @@
             return mockModels;
           case "get_storage_usage":
             return {
-              data_dir: "C:\\mock\\AppData\\wisp-science",
-              workspace_dirs: ["C:\\mock\\wisp-science"],
+              data_dir: "C:\\mock\\AppData\\superscience",
+              workspace_dirs: ["C:\\mock\\superscience"],
               entries: [
                 { key: "database", bytes: 23 * 1024 * 1024 },
                 { key: "python", bytes: 428 * 1024 * 1024 },
@@ -487,7 +487,7 @@
                 started_at: Math.floor(Date.now() / 1000) - 90,
                 ended_at: null, exit_code: null,
                 stdout_tail: "..... started mapping\nMar 12 loading genome",
-                stderr_tail: null, remote_workdir: "/scratch/wisp/r2",
+                stderr_tail: null, remote_workdir: "/scratch/superscience/r2",
                 timeout_secs: 14400, last_poll_error: null,
                 progress_json: "",
                 env_snapshot_json: JSON.stringify({

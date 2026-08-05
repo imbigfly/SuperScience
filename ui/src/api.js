@@ -167,7 +167,7 @@ export async function crop_region_to_upload(hostId, left, top, width, height) {
 
 /** Attach an uploaded crop, optionally returning from its preview to chat. */
 export function attach_cropped_region(path, jumpToChat) {
-  window.dispatchEvent(new CustomEvent("wisp:region-attach", {
+  window.dispatchEvent(new CustomEvent("superscience:region-attach", {
     detail: { path: String(path), jumpToChat: Boolean(jumpToChat) },
   }));
 }
@@ -417,7 +417,7 @@ async function previewBytes(payload) {
 async function renderDocx(el, payload) {
   cleanupPreview(el);
   const renderToken = Symbol("docx-preview");
-  el.__wispPreviewToken = renderToken;
+  el.__supersciencePreviewToken = renderToken;
   const loading = document.createElement("div");
   loading.className = "rp-pdf-loading";
   loading.textContent = payload.loading || "Loading…";
@@ -425,7 +425,7 @@ async function renderDocx(el, payload) {
   try {
     const bytes = await previewBytes(payload);
     const lib = await docxPreview();
-    if (!el.isConnected || el.__wispPreviewToken !== renderToken) return;
+    if (!el.isConnected || el.__supersciencePreviewToken !== renderToken) return;
     const container = document.createElement("div");
     container.className = "rp-docx";
     el.replaceChildren(container);
@@ -442,11 +442,11 @@ async function renderDocx(el, payload) {
       breakPages: true,
       experimental: true,
     });
-    if (el.__wispPreviewToken !== renderToken) return;
-    el.__wispPreviewCleanup = () => { container.replaceChildren(); };
+    if (el.__supersciencePreviewToken !== renderToken) return;
+    el.__supersciencePreviewCleanup = () => { container.replaceChildren(); };
   } catch (error) {
     console.error("Failed to render DOCX preview", error);
-    if (el.isConnected && el.__wispPreviewToken === renderToken) {
+    if (el.isConnected && el.__supersciencePreviewToken === renderToken) {
       const message = document.createElement("div");
       message.className = "rp-error rp-pdf-error";
       message.textContent = payload.error || "Unable to preview this document.";
@@ -611,8 +611,8 @@ async function renderXlsx(el, payload) {
   cleanupPreview(el);
   const renderToken = Symbol("xlsx-preview");
   const abortController = new AbortController();
-  el.__wispPreviewToken = renderToken;
-  el.__wispPreviewCleanup = () => abortController.abort();
+  el.__supersciencePreviewToken = renderToken;
+  el.__supersciencePreviewCleanup = () => abortController.abort();
   const loading = document.createElement("div");
   loading.className = "rp-pdf-loading";
   loading.textContent = payload.loading || "Loading…";
@@ -620,7 +620,7 @@ async function renderXlsx(el, payload) {
   try {
     const bytes = await previewBytes(payload);
     const workbook = await parseWorkbookInWorker(bytes, abortController.signal);
-    if (!el.isConnected || el.__wispPreviewToken !== renderToken) return;
+    if (!el.isConnected || el.__supersciencePreviewToken !== renderToken) return;
     if (!workbook.sheets.length) throw new Error("Workbook contains no worksheets");
 
     const root = document.createElement("div");
@@ -662,7 +662,7 @@ async function renderXlsx(el, payload) {
       tabs.appendChild(button);
     });
     showSheet(0);
-    el.__wispPreviewCleanup = () => {
+    el.__supersciencePreviewCleanup = () => {
       abortController.abort();
       cleanupSheet();
       root.replaceChildren();
@@ -670,7 +670,7 @@ async function renderXlsx(el, payload) {
   } catch (error) {
     if (abortController.signal.aborted) return;
     console.error("Failed to render XLSX preview", error);
-    if (el.isConnected && el.__wispPreviewToken === renderToken) {
+    if (el.isConnected && el.__supersciencePreviewToken === renderToken) {
       const message = document.createElement("div");
       message.className = "rp-error rp-pdf-error";
       message.textContent = payload.error || "Unable to preview this workbook.";
@@ -689,8 +689,8 @@ async function renderPptx(el, payload) {
   cleanupPreview(el);
   const renderToken = Symbol("pptx-preview");
   const abortController = new AbortController();
-  el.__wispPreviewToken = renderToken;
-  el.__wispPreviewCleanup = () => abortController.abort();
+  el.__supersciencePreviewToken = renderToken;
+  el.__supersciencePreviewCleanup = () => abortController.abort();
   const loading = document.createElement("div");
   loading.className = "rp-pdf-loading";
   loading.textContent = payload.loading || "Loading…";
@@ -698,7 +698,7 @@ async function renderPptx(el, payload) {
   let viewer;
   try {
     const [bytes, lib] = await Promise.all([previewBytes(payload), pptxPreview()]);
-    if (!el.isConnected || el.__wispPreviewToken !== renderToken) return;
+    if (!el.isConnected || el.__supersciencePreviewToken !== renderToken) return;
     const container = document.createElement("div");
     container.className = "rp-pptx";
     el.replaceChildren(container);
@@ -720,11 +720,11 @@ async function renderPptx(el, payload) {
         workerUrl: "/vendor-runtime/pdf.worker.min.mjs",
       },
     });
-    if (!el.isConnected || el.__wispPreviewToken !== renderToken) {
+    if (!el.isConnected || el.__supersciencePreviewToken !== renderToken) {
       viewer.destroy();
       return;
     }
-    el.__wispPreviewCleanup = () => {
+    el.__supersciencePreviewCleanup = () => {
       abortController.abort();
       viewer?.destroy();
     };
@@ -732,7 +732,7 @@ async function renderPptx(el, payload) {
     if (abortController.signal.aborted) return;
     console.error("Failed to render PPTX preview", error);
     viewer?.destroy();
-    if (el.isConnected && el.__wispPreviewToken === renderToken) {
+    if (el.isConnected && el.__supersciencePreviewToken === renderToken) {
       const message = document.createElement("div");
       message.className = "rp-error rp-pdf-error";
       message.textContent = payload.error || "Unable to preview this presentation.";
@@ -757,15 +757,15 @@ function pdfPageLabel(template, page, total) {
 }
 
 function cleanupPreview(el) {
-  if (typeof el?.__wispPreviewCleanup === "function") {
+  if (typeof el?.__supersciencePreviewCleanup === "function") {
     try {
-      el.__wispPreviewCleanup();
+      el.__supersciencePreviewCleanup();
     } catch (error) {
       console.warn("Failed to clean up preview", error);
     }
   }
-  delete el.__wispPreviewCleanup;
-  delete el.__wispPreviewToken;
+  delete el.__supersciencePreviewCleanup;
+  delete el.__supersciencePreviewToken;
 }
 
 function pdfNavIcon(direction) {
@@ -822,7 +822,7 @@ function eventTargetsEditable(target) {
 async function renderPdf(el, payload) {
   cleanupPreview(el);
   const renderToken = Symbol("pdf-preview");
-  el.__wispPreviewToken = renderToken;
+  el.__supersciencePreviewToken = renderToken;
 
   const loading = document.createElement("div");
   loading.className = "rp-pdf-loading";
@@ -855,7 +855,7 @@ async function renderPdf(el, payload) {
 
     task = lib.getDocument(source);
     pdf = await task.promise;
-    if (!el.isConnected || el.__wispPreviewToken !== renderToken) {
+    if (!el.isConnected || el.__supersciencePreviewToken !== renderToken) {
       return;
     }
 
@@ -934,7 +934,7 @@ async function renderPdf(el, payload) {
       message.className = "rp-error rp-pdf-error";
       message.textContent = payload.error || "Unable to preview this PDF.";
       el.replaceChildren(message);
-      el.__wispPreviewCleanup?.();
+      el.__supersciencePreviewCleanup?.();
     };
 
     // Fit-to-width base for the page, independent of --preview-zoom: the zoom is
@@ -981,7 +981,7 @@ async function renderPdf(el, payload) {
 
         renderTask = page.render({ canvasContext: context, viewport });
         await renderTask.promise;
-        if (!el.isConnected || el.__wispPreviewToken !== renderToken || disposed) {
+        if (!el.isConnected || el.__supersciencePreviewToken !== renderToken || disposed) {
           return;
         }
 
@@ -1005,7 +1005,7 @@ async function renderPdf(el, payload) {
             viewport: cssViewport,
           });
           await textLayer.render();
-          if (!el.isConnected || el.__wispPreviewToken !== renderToken || disposed) {
+          if (!el.isConnected || el.__supersciencePreviewToken !== renderToken || disposed) {
             return;
           }
           wrapper.appendChild(textLayerDiv);
@@ -1099,7 +1099,7 @@ async function renderPdf(el, payload) {
         });
       }
     };
-    el.__wispPreviewCleanup = cleanup;
+    el.__supersciencePreviewCleanup = cleanup;
 
     const observerTarget = document.body || document.documentElement;
     if (observerTarget) {
@@ -1136,8 +1136,8 @@ async function renderPdf(el, payload) {
       return;
     }
     console.error("Failed to render PDF preview", error);
-    el.__wispPreviewCleanup?.();
-    if (el.isConnected && el.__wispPreviewToken === renderToken) {
+    el.__supersciencePreviewCleanup?.();
+    if (el.isConnected && el.__supersciencePreviewToken === renderToken) {
       const message = document.createElement("div");
       message.className = "rp-error rp-pdf-error";
       message.textContent = payload.error || "Unable to preview this PDF.";
@@ -1235,8 +1235,8 @@ table { max-width: 100%; }
 
 const mcpAppInstances = new Map();
 let mcpAppParkingRoot = null;
-let wispAppVersion = "0.0.0";
-window.__TAURI__?.app?.getVersion?.().then((version) => { wispAppVersion = version; });
+let superscienceAppVersion = "0.0.0";
+window.__TAURI__?.app?.getVersion?.().then((version) => { superscienceAppVersion = version; });
 
 function injectMcpAppCsp(html, resourceMeta) {
   const csp = resourceMeta?.ui?.csp || resourceMeta?.csp || {};
@@ -1270,7 +1270,7 @@ function injectMcpAppCsp(html, resourceMeta) {
 function ensureMcpAppParkingRoot() {
   if (mcpAppParkingRoot?.isConnected) return mcpAppParkingRoot;
   const root = document.createElement("div");
-  root.id = "wisp-mcp-app-parking";
+  root.id = "superscience-mcp-app-parking";
   root.setAttribute("aria-hidden", "true");
   Object.assign(root.style, {
     position: "fixed", left: "-10000px", top: "-10000px",
@@ -1335,7 +1335,7 @@ function createMcpAppInstance(instanceId, payloadJson) {
     locale: document.documentElement.lang || navigator.language || "en",
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     platform: "desktop",
-    userAgent: `wisp-science/${wispAppVersion}`,
+    userAgent: `superscience/${superscienceAppVersion}`,
     toolInfo: { tool: payload.tool || {} },
   });
   const sendHostContext = () => {
@@ -1388,7 +1388,7 @@ function createMcpAppInstance(instanceId, payloadJson) {
             sandbox: { csp: payload?.resource?._meta?.ui?.csp || payload?.resource?._meta?.csp || {} },
             updateModelContext: { text: {} },
           },
-          hostInfo: { name: "wisp-science", version: wispAppVersion },
+          hostInfo: { name: "superscience", version: superscienceAppVersion },
           hostContext: hostContext(),
         },
       });
@@ -1430,7 +1430,7 @@ function createMcpAppInstance(instanceId, payloadJson) {
       post({
         jsonrpc: "2.0",
         id: message.id,
-        error: { code: -32601, message: "Capability is not granted by Wisp" },
+        error: { code: -32601, message: "Capability is not granted by SuperScience" },
       });
     }
   };
@@ -1642,7 +1642,7 @@ export async function mount_preview(kind, elId, payloadJson) {
     case "html": {
       const frame = document.createElement("iframe");
       frame.className = "rp-html";
-      const pluginArtifact = /(^|[\\/])\.wisp[\\/]plugin-artifacts[\\/]/.test(p.path || "");
+      const pluginArtifact = /(^|[\\/])\.superscience[\\/]plugin-artifacts[\\/]/.test(p.path || "");
       frame.setAttribute("sandbox", pluginArtifact ? "allow-scripts" : "allow-same-origin allow-scripts");
       if (pluginArtifact) frame.setAttribute("referrerpolicy", "no-referrer");
       frame.setAttribute("scrolling", "no");
@@ -1660,7 +1660,7 @@ export async function mount_preview(kind, elId, payloadJson) {
       frame.setAttribute("title", p.title || "Notebook HTML output");
       frame.srcdoc = staticNotebookHtml(p.text || "");
       el.appendChild(frame);
-      el.__wispPreviewCleanup = () => frame.remove();
+      el.__supersciencePreviewCleanup = () => frame.remove();
       break;
     }
     case "notebook-svg": {
@@ -1675,7 +1675,7 @@ export async function mount_preview(kind, elId, payloadJson) {
         img.referrerPolicy = "no-referrer";
         img.src = url;
         el.appendChild(img);
-        el.__wispPreviewCleanup = () => {
+        el.__supersciencePreviewCleanup = () => {
           img.remove();
           URL.revokeObjectURL(url);
         };

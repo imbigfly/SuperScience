@@ -11,7 +11,7 @@
 ## Review
 
 - Hierarchy and spacing: while a turn runs, commentary, reasoning, and adjacent tool batches remain separate and visible in wire order. On completion, all three process layers fold into one compact Processed disclosure before the still-expanded final answer.
-- Typography and color: intentionally uses Wisp's existing system font, muted text, border, and surface tokens rather than copying Codex App branding.
+- Typography and color: intentionally uses SuperScience's existing system font, muted text, border, and surface tokens rather than copying Codex App branding.
 - Controls: group and tool disclosures are native buttons with keyboard activation, visible focus treatment, and synchronized `aria-expanded` state.
 - Content and assets: no new raster or placeholder assets are used. The mock copy differs from the reference so the test exercises a realistic scientific workflow.
 - Runtime quality: the focused Playwright flow verifies event order, collapsed defaults, Enter/Space interaction, and an empty page-error/console-error log.

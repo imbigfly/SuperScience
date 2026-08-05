@@ -1,5 +1,5 @@
 """
-Kernel sidecar for the pdf-explore skill (wisp edition).
+Kernel sidecar for the pdf-explore skill (SuperScience edition).
 
 NOT auto-injected: `use_skill` appends a "Python Kernel Sidecar" section
 with a one-time ``exec(compile(open(...).read(), "kernel.py", "exec"))``
@@ -16,7 +16,7 @@ Surface:
 
 The upstream skill also shipped LLM fan-out helpers (pdf_scan /
 pdf_extract / pdf_map and an LLM outline fallback). They need an
-in-kernel model-call bridge the wisp host does not provide; they are
+in-kernel model-call bridge the SuperScience host does not provide; they are
 removed rather than left to fail at call time.
 """
 

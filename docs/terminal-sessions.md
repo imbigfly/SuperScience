@@ -1,6 +1,6 @@
 # Execution-context terminals
 
-Wisp can open an interactive terminal for a registered execution context from
+SuperScience can open an interactive terminal for a registered execution context from
 the **Contexts** panel. The terminal opens as a resizable dock below the
 conversation and right panel, keeping the active research context visible.
 
@@ -36,7 +36,7 @@ harvesting, or provenance.
 
 ## Current limitations
 
-- SSH sessions do not survive a network disconnect or Wisp restart. A future
+- SSH sessions do not survive a network disconnect or SuperScience restart. A future
   optional tmux integration may provide remote reattachment without making
   tmux a requirement.
 - The initial SSH terminal starts in the remote user's home directory because

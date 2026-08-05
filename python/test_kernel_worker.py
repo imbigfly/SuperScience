@@ -23,7 +23,7 @@ class KernelWorkerTests(unittest.TestCase):
                     "id": str(index),
                     "code": (
                         "print(len([key for key in __import__('linecache').cache "
-                        "if str(key).startswith('<wisp-kernel:')]))"
+                        "if str(key).startswith('<superscience-kernel:')]))"
                         + "\n#"
                         + ("x" * (256 * 1024))
                     ),

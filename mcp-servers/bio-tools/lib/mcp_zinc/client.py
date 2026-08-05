@@ -117,7 +117,7 @@ class ZincClient:
         if session is None:
             session = requests.Session()
             session.headers.setdefault(
-                "User-Agent", "operon-mcp-zinc/0.1 (bundled MCP connector)")
+                "User-Agent", "superscience-mcp-zinc/0.1 (bundled MCP connector)")
         self.session = session
         self._sleep = sleep
         self._clock = clock

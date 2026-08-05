@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use wisp_store::{
+use superscience_store::{
     ArtifactCaptureTiming, ArtifactMaterialization, ArtifactVersionDraft, MessageResourceLink,
     Store,
 };
@@ -298,7 +298,7 @@ fn resolve_reference(
             root.join(&candidate)
         };
         let candidate_text = candidate.to_string_lossy();
-        match wisp_tools::safety::validate_file_path(root, &candidate_text) {
+        match superscience_tools::safety::validate_file_path(root, &candidate_text) {
             Ok(real) => {
                 let metadata = std::fs::metadata(&real).map_err(|error| error.to_string())?;
                 if metadata.len() > MAX_SNAPSHOT_BYTES {
@@ -366,7 +366,8 @@ async fn bind_resolved(
     }
     let checksum = captured.checksum;
     let source_identity = source_artifact_identity(root, &resolved.real);
-    let artifact_key = wisp_sync::sha256_hex(format!("{project_id}\0{source_identity}").as_bytes());
+    let artifact_key =
+        superscience_sync::sha256_hex(format!("{project_id}\0{source_identity}").as_bytes());
     let artifact_id = format!("resource-{}", &artifact_key[..32]);
     let current = store
         .latest_artifact_version(&artifact_id)
@@ -639,8 +640,10 @@ mod tests {
 
     #[tokio::test]
     async fn new_message_bindings_snapshot_and_reuse_immutable_versions() {
-        let root =
-            std::env::temp_dir().join(format!("wisp_resource_refs_{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_resource_refs_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(root.join("figures")).unwrap();
         std::fs::write(root.join("figures/plot.png"), b"png-v1").unwrap();
         let store = Store::open(&root.join("store.sqlite")).await.unwrap();
@@ -649,7 +652,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_frame("frame", "project", "OPERON", "model")
+            .create_frame("frame", "project", "SUPERSCIENCE", "model")
             .await
             .unwrap();
 
@@ -665,7 +668,7 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].status, "ready");
         let artifact_id = first[0].artifact_id.clone().unwrap();
-        let expected_key = wisp_sync::sha256_hex(b"project\0figures/plot.png");
+        let expected_key = superscience_sync::sha256_hex(b"project\0figures/plot.png");
         assert_eq!(artifact_id, format!("resource-{}", &expected_key[..32]));
         let first_version = first[0].artifact_version_id.clone().unwrap();
         let version = store
@@ -720,7 +723,7 @@ mod tests {
         std::fs::write(root.join("manuscript.docx"), b"PK\x03\x04docx-fixture").unwrap();
         std::fs::write(
             root.join("references.bib"),
-            b"@article{wisp, title={Wisp Science}}\n",
+            b"@article{superscience, title={SuperScience}}\n",
         )
         .unwrap();
         let documents = bind_new_message_resources(
@@ -752,8 +755,10 @@ mod tests {
     async fn message_resources_reject_symlinks() {
         use std::os::unix::fs::symlink;
 
-        let root =
-            std::env::temp_dir().join(format!("wisp_resource_link_{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_resource_link_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(root.join("figures")).unwrap();
         std::fs::write(root.join("figures/private.png"), b"private").unwrap();
         symlink(
@@ -767,7 +772,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_frame("frame", "project", "OPERON", "model")
+            .create_frame("frame", "project", "SUPERSCIENCE", "model")
             .await
             .unwrap();
 

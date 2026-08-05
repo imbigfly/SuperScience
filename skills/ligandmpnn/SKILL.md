@@ -108,7 +108,7 @@ not the ligand's. If `ligand_confidence` in the FASTA header is missing or
 zero across every design, the model never saw the ligand — fix the input, do
 not trust the sequences.
 
-## Wisp execution
+## SuperScience execution
 
 Use `python` only for bounded interactive checks. For a long or GPU-backed
 workload, require a selected and probed `ssh:<alias>` context and load

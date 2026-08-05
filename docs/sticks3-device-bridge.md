@@ -1,7 +1,7 @@
 # StickS3 Device Bridge
 
 StickS3 Device Bridge is an experimental, opt-in Remote Access integration for
-using a StickS3 as a physical Wisp Science status pet. Open **Settings → Remote
+using a StickS3 as a physical SuperScience status pet. Open **Settings → Remote
 Access → StickS3 Device Bridge** to configure it.
 
 The transport is designed as two explicit modes from the start:
@@ -66,20 +66,20 @@ from the StickS3 Wi-Fi network.
 6. Confirm that the state is **Listening** and copy the displayed listening URL
    into the StickS3 network-test configuration.
 7. Generate a device token and copy it into the StickS3 configuration as the
-   `X-Wisp-Device-Token` request header.
+   `X-SuperScience-Device-Token` request header.
 
 Device Bridge is disabled by default, including after upgrading an existing
 installation. It never binds `0.0.0.0`; a specific IPv4 address is mandatory.
 Its default port is `18766`. The separate Browser Bridge remains loopback-only
 on `127.0.0.1:18765`.
 
-If binding fails, Settings reports an error while the rest of Wisp Science
+If binding fails, Settings reports an error while the rest of SuperScience
 continues to work. Common causes are an address that is no longer assigned to
 the computer or a port already used by another process.
 
 ## Firewall
 
-The operating-system firewall may ask whether Wisp Science may accept incoming
+The operating-system firewall may ask whether SuperScience may accept incoming
 connections. Permit TCP traffic only for the selected Device Bridge port and
 the intended private network profile or source subnet. Do not create a broad
 all-networks rule, and do not open Browser Bridge port `18765` to the LAN.
@@ -101,20 +101,20 @@ This network-test endpoint is public and returns only:
 ```json
 {
   "ok": true,
-  "service": "wisp-device-bridge",
+  "service": "superscience-device-bridge",
   "protocol": 1
 }
 ```
 
 ### `GET /state`
 
-Requires `X-Wisp-Device-Token` and returns the backend-owned physical-pet state:
+Requires `X-SuperScience-Device-Token` and returns the backend-owned physical-pet state:
 
 ```json
 {
   "type": "pet_state",
   "state": "working",
-  "project": "Wisp Science",
+  "project": "SuperScience",
   "label": "Agent is working",
   "sessionId": "frame-id-or-null",
   "seq": 42,
@@ -132,7 +132,7 @@ State values are `idle`, `working`, `review`, `needs_user`, `done`, and
 
 ### `GET /pet/manifest`
 
-Requires `X-Wisp-Device-Token`. When the desktop Pet setting points to a valid
+Requires `X-SuperScience-Device-Token`. When the desktop Pet setting points to a valid
 Codex-compatible v2 Pet package, this endpoint describes the frames available
 to StickS3:
 
@@ -178,9 +178,9 @@ includes the configured Pet directory or another local path:
 
 ### `GET /pet/frame?revision=<revision>&state=<state>&frame=<index>`
 
-Requires `X-Wisp-Device-Token`. A successful response is an immutable,
+Requires `X-SuperScience-Device-Token`. A successful response is an immutable,
 transparent `image/png` frame with exact dimensions `120×130` and an accurate
-`Content-Length`. Wisp Science crops one `192×208` atlas cell and scales it at
+`Content-Length`. SuperScience crops one `192×208` atlas cell and scales it at
 the same aspect ratio. PNG and WebP v2 source atlases are supported.
 
 The accepted states form a closed list:
@@ -206,7 +206,7 @@ revision, state, and frame; changing revision invalidates the previous cache.
 
 ### `POST /action`
 
-Requires `X-Wisp-Device-Token`. Only three actions are accepted:
+Requires `X-SuperScience-Device-Token`. Only three actions are accepted:
 
 ```json
 {
@@ -218,7 +218,7 @@ Requires `X-Wisp-Device-Token`. Only three actions are accepted:
 
 - `ping` records a bounded debug event and returns an acknowledgement.
 - `focus_session` validates that the session and its project still exist,
-  restores Wisp Science, and opens only that session's window.
+  restores SuperScience, and opens only that session's window.
 - `acknowledge` clears a completed or failed physical-pet notification. It does
   not affect the Agent.
 
@@ -227,14 +227,14 @@ shell command, approve a request, or access SQLite directly.
 
 ### `GET /actions`
 
-Requires `X-Wisp-Device-Token`. It returns at most the 50 most recent Device
+Requires `X-SuperScience-Device-Token`. It returns at most the 50 most recent Device
 Bridge action records for experimental diagnostics. The history is held in
 bounded memory and is not a conversation transcript.
 
 ## Token handling
 
 The first enable generates a random 256-bit pre-shared token when none exists.
-Wisp Science stores it through the existing secret-storage path (the operating
+SuperScience stores it through the existing secret-storage path (the operating
 system keyring in release builds), never in SQLite or normal logs. Authenticated
 routes compare a token-derived fixed-size MAC rather than directly comparing
 the supplied secret.

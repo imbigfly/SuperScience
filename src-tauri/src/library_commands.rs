@@ -3,8 +3,8 @@ use super::AppState;
 use base64::Engine;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use superscience_store::{LibraryItem, LibraryItemVersion, NewLibraryItem};
 use tauri::State;
-use wisp_store::{LibraryItem, LibraryItemVersion, NewLibraryItem};
 
 const MAX_FIGURE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_CODE_BYTES: usize = 2 * 1024 * 1024;
@@ -103,7 +103,7 @@ pub(super) async fn star_library_figure(
         .map_err(|e| format!("{e}"))?
         .ok_or_else(|| "Source project no longer exists".to_string())?;
     let root = PathBuf::from(project_root);
-    let real = wisp_tools::safety::validate_file_path(&root, &path)?;
+    let real = superscience_tools::safety::validate_file_path(&root, &path)?;
     let content_type = image_content_type(&real)
         .ok_or_else(|| "Only image artifacts can be added to the library".to_string())?;
     let metadata = tokio::fs::metadata(&real)

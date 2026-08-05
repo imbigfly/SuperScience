@@ -143,7 +143,7 @@ def narrative_review_task(brief, deck_paths, rules_path=None):
     return f"""Act as the handling editor deciding whether this submission should
 be sent for review. Judge the story rather than polishing figure craft.
 
-Inspect every concrete image path with Wisp's `view_image` tool. The paths may
+Inspect every concrete image path with SuperScience's `view_image` tool. The paths may
 be page images rendered from a PDF. Do not invent a file resolver.
 
 ## Paper brief

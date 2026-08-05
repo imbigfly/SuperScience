@@ -1,6 +1,6 @@
 # Project transfer
 
-The Projects screen exports a project as `wisp-project-<name>.zip`. The archive
+The Projects screen exports a project as `superscience-project-<name>.zip`. The archive
 contains the workspace's regular files plus project-owned conversations, artifacts,
 runs, plans, provenance, and research-graph records.
 
@@ -10,7 +10,7 @@ To move a project from Windows to macOS:
 2. Open the project, then choose **File → Export current project**. The project
    card's export action is also available as a shortcut.
 3. Copy the ZIP to the Mac and choose **Import project**.
-4. Pick a parent folder. Wisp creates a new folder named after the project and
+4. Pick a parent folder. SuperScience creates a new folder named after the project and
    opens the imported project.
 
 ## Path rules

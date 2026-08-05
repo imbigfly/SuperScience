@@ -243,7 +243,7 @@ pub fn preflight_shell(cmd: &str) -> Result<(), String> {
     }
     Err(
         "Free-form shell SSH/SCP is disabled. Use `run_in_context`, `python`, or `r` with the \
-         registered `context_id` (for example `ssh:my-host`) so Wisp connects with the configured \
+         registered `context_id` (for example `ssh:my-host`) so SuperScience connects with the configured \
          host settings only. If connectivity is unknown or failed, ask the user to Probe the \
          environment first — do not invent `ssh -i` / port / StrictHostKeyChecking options."
             .into(),

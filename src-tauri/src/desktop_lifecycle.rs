@@ -81,7 +81,7 @@ fn ensure_pet_window(app: &AppHandle) -> Result<(), String> {
     }
     let url = WebviewUrl::App("index.html?pet=desktop".into());
     let mut builder = WebviewWindowBuilder::new(app, PET_WINDOW_LABEL, url)
-        .title("Wisp pet")
+        .title("SuperScience pet")
         .inner_size(128.0, 140.0)
         .resizable(false)
         .maximizable(false)
@@ -141,12 +141,12 @@ pub(crate) fn set_pet_window_visible(app: tauri::AppHandle, visible: bool) -> Re
 
 #[cfg(target_os = "windows")]
 pub(crate) fn install_windows_shell(app: &mut App) -> tauri::Result<()> {
-    let show = MenuItemBuilder::with_id("tray-show", "Open Wisp Science").build(app)?;
+    let show = MenuItemBuilder::with_id("tray-show", "Open SuperScience").build(app)?;
     let quit = MenuItemBuilder::with_id("tray-quit", "Quit").build(app)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
-    let mut tray = TrayIconBuilder::with_id("wisp-tray")
+    let mut tray = TrayIconBuilder::with_id("superscience-tray")
         .menu(&menu)
-        .tooltip("Wisp Science")
+        .tooltip("SuperScience")
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "tray-show" => activate_workspace(app),

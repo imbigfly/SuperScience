@@ -12,11 +12,11 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tauri::State;
-use wisp_runtime::{
+use superscience_runtime::{
     find_rscript, KernelClient, LaunchedRuntime, PythonEnv, RuntimeKey, RuntimeLanguage,
     RuntimeLauncher, RuntimeMetadata, PROTOCOL_VERSION,
 };
+use tauri::State;
 
 const DEPLOY_TIMEOUT: Duration = Duration::from_secs(30);
 const PRESERVED_CONFIG_KEYS: [&str; 4] = [
@@ -41,11 +41,11 @@ pub(crate) fn preserve_interpreter_config(existing: &str, replacement: &str) -> 
 }
 
 pub async fn save_interpreter_config(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     context_id: &str,
     python_executable: &str,
     rscript_executable: &str,
-) -> Result<wisp_store::ExecutionContext> {
+) -> Result<superscience_store::ExecutionContext> {
     update_interpreter_config(store, context_id, move |object| {
         set_interpreter(
             object,
@@ -64,11 +64,11 @@ pub async fn save_interpreter_config(
 }
 
 pub(crate) async fn save_runtime_interpreter(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     context_id: &str,
     language: RuntimeLanguage,
     executable: &str,
-) -> Result<wisp_store::ExecutionContext> {
+) -> Result<superscience_store::ExecutionContext> {
     update_interpreter_config(store, context_id, move |object| match language {
         RuntimeLanguage::Python => {
             set_interpreter(object, "python_executable", "python_path", executable)
@@ -81,10 +81,10 @@ pub(crate) async fn save_runtime_interpreter(
 }
 
 async fn update_interpreter_config(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     context_id: &str,
     update: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<()> + Send,
-) -> Result<wisp_store::ExecutionContext> {
+) -> Result<superscience_store::ExecutionContext> {
     let mut context = store
         .get_execution_context(context_id)
         .await?
@@ -123,7 +123,7 @@ pub async fn update_execution_context_interpreters(
     context_id: String,
     python_executable: String,
     rscript_executable: String,
-) -> Result<wisp_store::ExecutionContext, String> {
+) -> Result<superscience_store::ExecutionContext, String> {
     save_interpreter_config(
         &state.store,
         &context_id,
@@ -135,7 +135,7 @@ pub async fn update_execution_context_interpreters(
 }
 
 pub struct TauriRuntimeLauncher {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     app_data: PathBuf,
     python_worker: PathBuf,
     r_worker: PathBuf,
@@ -145,7 +145,7 @@ pub struct TauriRuntimeLauncher {
 
 impl TauriRuntimeLauncher {
     pub fn new(
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         app_data: PathBuf,
         python_worker: PathBuf,
         r_worker: PathBuf,
@@ -176,7 +176,7 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
             .get_execution_context(&key.context_id)
             .await?
             .ok_or_else(|| anyhow!("Execution context not found: {}", key.context_id))?;
-        if context.kind == wisp_store::ExecutionContextKind::Ssh {
+        if context.kind == superscience_store::ExecutionContextKind::Ssh {
             crate::ssh_hosts::require_managed_ssh_ready(&context).map_err(anyhow::Error::msg)?;
         }
         let (interpreter, worker, language) = match key.language {
@@ -194,7 +194,7 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
                 worker.display()
             ));
         }
-        let remote_worker = if context.kind == wisp_store::ExecutionContextKind::Local {
+        let remote_worker = if context.kind == superscience_store::ExecutionContextKind::Local {
             None
         } else {
             let source = tokio::fs::read_to_string(worker).await.map_err(|error| {
@@ -207,7 +207,7 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
                 ensure_remote_worker(&context, key.language, &source, self.runner.as_ref())
                     .await
                     .map_err(|error| {
-                        if context.kind == wisp_store::ExecutionContextKind::Ssh
+                        if context.kind == superscience_store::ExecutionContextKind::Ssh
                             && crate::ssh_guard::is_authentication_failure(&error)
                         {
                             crate::ssh_guard::record_failure(&context.id, &error);
@@ -225,14 +225,14 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
             project_root,
         )
         .map_err(anyhow::Error::msg)?;
-        let mut envs = if context.kind == wisp_store::ExecutionContextKind::Local
+        let mut envs = if context.kind == superscience_store::ExecutionContextKind::Local
             && key.language == RuntimeLanguage::Python
         {
             self.envs.clone()
         } else {
             Vec::new()
         };
-        if context.kind == wisp_store::ExecutionContextKind::Local
+        if context.kind == superscience_store::ExecutionContextKind::Local
             && key.language == RuntimeLanguage::Python
         {
             for (name, value) in crate::models::service_env() {
@@ -243,7 +243,7 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
                 }
             }
         }
-        let ssh_auth_envs = if context.kind == wisp_store::ExecutionContextKind::Ssh {
+        let ssh_auth_envs = if context.kind == superscience_store::ExecutionContextKind::Ssh {
             let connection = SshConnection::from_execution_context(&context)
                 .map_err(|e| anyhow::Error::msg(e))?;
             crate::ssh_hosts::auth_envs_for_connection(&connection).map_err(anyhow::Error::msg)?
@@ -262,14 +262,14 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
         {
             Ok(client) => {
                 crate::ssh_hosts::cleanup_password_auth_env(&ssh_auth_envs);
-                if context.kind == wisp_store::ExecutionContextKind::Ssh {
+                if context.kind == superscience_store::ExecutionContextKind::Ssh {
                     crate::ssh_guard::record_success(&context.id);
                 }
                 client
             }
             Err(error) => {
                 crate::ssh_hosts::cleanup_password_auth_env(&ssh_auth_envs);
-                if context.kind == wisp_store::ExecutionContextKind::Ssh {
+                if context.kind == superscience_store::ExecutionContextKind::Ssh {
                     let detail = error.to_string();
                     if crate::ssh_guard::is_authentication_failure(&detail) {
                         crate::ssh_guard::record_failure(&context.id, &detail);
@@ -298,7 +298,7 @@ struct AttachedCommand {
 }
 
 fn resolve_python_interpreter(
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     app_data: &Path,
 ) -> Result<String> {
     let config = json_object(&context.config_json, "execution context config")?;
@@ -309,7 +309,7 @@ fn resolve_python_interpreter(
     if let Some(interpreter) = first_string(&capabilities, &["python_executable"])? {
         return Ok(interpreter);
     }
-    if context.kind == wisp_store::ExecutionContextKind::Local {
+    if context.kind == superscience_store::ExecutionContextKind::Local {
         return Ok(PythonEnv::managed(app_data)
             .python()
             .to_string_lossy()
@@ -321,7 +321,7 @@ fn resolve_python_interpreter(
     ))
 }
 
-fn resolve_r_interpreter(context: &wisp_store::ExecutionContext) -> Result<String> {
+fn resolve_r_interpreter(context: &superscience_store::ExecutionContext) -> Result<String> {
     let config = json_object(&context.config_json, "execution context config")?;
     let capabilities = json_object(&context.capabilities_json, "execution context capabilities")?;
     if let Some(interpreter) = first_string(&config, &["rscript_executable", "rscript_path"])? {
@@ -332,7 +332,7 @@ fn resolve_r_interpreter(context: &wisp_store::ExecutionContext) -> Result<Strin
         ensure_jsonlite_available(context, &capabilities, &interpreter)?;
         return Ok(interpreter);
     }
-    if context.kind == wisp_store::ExecutionContextKind::Local {
+    if context.kind == superscience_store::ExecutionContextKind::Local {
         return find_rscript()
             .map(|path| path.to_string_lossy().into_owned())
             .ok_or_else(|| {
@@ -349,7 +349,7 @@ fn resolve_r_interpreter(context: &wisp_store::ExecutionContext) -> Result<Strin
 }
 
 fn ensure_jsonlite_available(
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     capabilities: &serde_json::Value,
     interpreter: &str,
 ) -> Result<()> {
@@ -371,7 +371,7 @@ fn ensure_jsonlite_available(
 }
 
 fn build_attached_command(
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     language: RuntimeLanguage,
     interpreter: &str,
     local_worker: &Path,
@@ -380,7 +380,7 @@ fn build_attached_command(
 ) -> Result<AttachedCommand, String> {
     validate_context_value("runtime interpreter", interpreter)?;
     match context.kind {
-        wisp_store::ExecutionContextKind::Local => Ok(AttachedCommand {
+        superscience_store::ExecutionContextKind::Local => Ok(AttachedCommand {
             program: PathBuf::from(interpreter),
             args: match language {
                 RuntimeLanguage::Python => vec![local_worker.as_os_str().to_os_string()],
@@ -391,7 +391,8 @@ fn build_attached_command(
             },
             cwd: Some(project_root.to_path_buf()),
         }),
-        wisp_store::ExecutionContextKind::Wsl | wisp_store::ExecutionContextKind::Ssh => {
+        superscience_store::ExecutionContextKind::Wsl
+        | superscience_store::ExecutionContextKind::Ssh => {
             let worker =
                 remote_worker.ok_or_else(|| "remote worker path is required".to_string())?;
             let workdir = runtime_workdir(context)?;
@@ -408,7 +409,7 @@ fn build_attached_command(
                 ),
             };
             match context.kind {
-                wisp_store::ExecutionContextKind::Wsl => {
+                superscience_store::ExecutionContextKind::Wsl => {
                     let distro = wsl_distro(context)?;
                     Ok(AttachedCommand {
                         program: PathBuf::from("wsl.exe"),
@@ -419,7 +420,7 @@ fn build_attached_command(
                         cwd: None,
                     })
                 }
-                wisp_store::ExecutionContextKind::Ssh => {
+                superscience_store::ExecutionContextKind::Ssh => {
                     let mut args = SshConnection::from_execution_context(context)?.ssh_args()?;
                     args.push(script);
                     Ok(AttachedCommand {
@@ -428,25 +429,25 @@ fn build_attached_command(
                         cwd: None,
                     })
                 }
-                wisp_store::ExecutionContextKind::Local => unreachable!(),
+                superscience_store::ExecutionContextKind::Local => unreachable!(),
             }
         }
     }
 }
 
 async fn ensure_remote_worker(
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     language: RuntimeLanguage,
     source: &str,
     runner: &dyn RunCommandRunner,
 ) -> Result<String, String> {
-    let checksum = wisp_sync::sha256_hex(source.as_bytes());
+    let checksum = superscience_sync::sha256_hex(source.as_bytes());
     let (name, extension) = match language {
         RuntimeLanguage::Python => ("python", "py"),
         RuntimeLanguage::R => ("r", "R"),
     };
     let remote_path = format!(
-        "~/.wisp-science/runtime/{name}-v{}-{checksum}.{extension}",
+        "~/.superscience/runtime/{name}-v{}-{checksum}.{extension}",
         PROTOCOL_VERSION
     );
     let check = runner
@@ -479,13 +480,13 @@ async fn ensure_remote_worker(
 }
 
 fn remote_command(
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     label: &str,
     script: String,
     stdin: Option<String>,
 ) -> Result<RunCommand, String> {
     match context.kind {
-        wisp_store::ExecutionContextKind::Wsl => Ok(RunCommand {
+        superscience_store::ExecutionContextKind::Wsl => Ok(RunCommand {
             context_id: context.id.clone(),
             program: "wsl.exe".into(),
             args: vec![
@@ -501,7 +502,7 @@ fn remote_command(
             stdin,
             envs: Vec::new(),
         }),
-        wisp_store::ExecutionContextKind::Ssh => {
+        superscience_store::ExecutionContextKind::Ssh => {
             let connection = SshConnection::from_execution_context(context)?;
             let mut args = connection.ssh_args()?;
             args.push(format!("sh -lc {}", shell_single_quote(&script)));
@@ -515,7 +516,7 @@ fn remote_command(
                 envs: crate::ssh_hosts::auth_envs_for_connection(&connection)?,
             })
         }
-        wisp_store::ExecutionContextKind::Local => {
+        superscience_store::ExecutionContextKind::Local => {
             Err("remote deployment requires WSL or SSH".into())
         }
     }
@@ -532,7 +533,7 @@ fn checksum_script(remote_path: &str, checksum: &str) -> String {
 fn deploy_script(remote_path: &str, checksum: &str) -> String {
     let path = remote_path_expression(remote_path).expect("generated runtime path is valid");
     format!(
-        "set -eu; dir=\"$HOME/.wisp-science/runtime\"; mkdir -p \"$dir\"; tmp={path}.tmp.$$; cat > \"$tmp\"; if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum \"$tmp\" | cut -d' ' -f1); else actual=$(shasum -a 256 \"$tmp\" | cut -d' ' -f1); fi; if test \"$actual\" != {}; then rm -f \"$tmp\"; exit 1; fi; chmod 600 \"$tmp\"; mv -f \"$tmp\" {path}",
+        "set -eu; dir=\"$HOME/.superscience/runtime\"; mkdir -p \"$dir\"; tmp={path}.tmp.$$; cat > \"$tmp\"; if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum \"$tmp\" | cut -d' ' -f1); else actual=$(shasum -a 256 \"$tmp\" | cut -d' ' -f1); fi; if test \"$actual\" != {}; then rm -f \"$tmp\"; exit 1; fi; chmod 600 \"$tmp\"; mv -f \"$tmp\" {path}",
         shell_single_quote(checksum)
     )
 }
@@ -552,7 +553,7 @@ fn checked_command(label: &str, output: RunCommandOutput) -> Result<(), String> 
     ))
 }
 
-fn runtime_workdir(context: &wisp_store::ExecutionContext) -> Result<String, String> {
+fn runtime_workdir(context: &superscience_store::ExecutionContext) -> Result<String, String> {
     let config = json_object(&context.config_json, "execution context config")
         .map_err(|error| error.to_string())?;
     let capabilities = json_object(&context.capabilities_json, "execution context capabilities")
@@ -569,7 +570,7 @@ fn runtime_workdir(context: &wisp_store::ExecutionContext) -> Result<String, Str
         )
 }
 
-fn wsl_distro(context: &wisp_store::ExecutionContext) -> Result<String, String> {
+fn wsl_distro(context: &superscience_store::ExecutionContext) -> Result<String, String> {
     let config = json_object(&context.config_json, "WSL context config")
         .map_err(|error| error.to_string())?;
     let distro = first_string(&config, &["distro"])
@@ -681,7 +682,7 @@ mod tests {
 
     #[test]
     fn local_launch_keeps_windows_paths_with_spaces_as_single_arguments() {
-        let mut context = wisp_store::ExecutionContext::new("local", "Local").unwrap();
+        let mut context = superscience_store::ExecutionContext::new("local", "Local").unwrap();
         context.config_json = serde_json::json!({
             "python_executable": r"C:\Program Files\Python\python.exe"
         })
@@ -691,7 +692,7 @@ mod tests {
             &context,
             RuntimeLanguage::Python,
             &interpreter,
-            Path::new(r"C:\Program Files\Wisp\kernel_worker.py"),
+            Path::new(r"C:\Program Files\SuperScience\kernel_worker.py"),
             None,
             Path::new(r"C:\Research Project"),
         )
@@ -703,7 +704,7 @@ mod tests {
         assert_eq!(command.args.len(), 1);
         assert_eq!(
             command.args[0],
-            OsString::from(r"C:\Program Files\Wisp\kernel_worker.py")
+            OsString::from(r"C:\Program Files\SuperScience\kernel_worker.py")
         );
 
         context.config_json = serde_json::json!({
@@ -715,7 +716,7 @@ mod tests {
             &context,
             RuntimeLanguage::R,
             &rscript,
-            Path::new(r"C:\Program Files\Wisp\kernel_worker.R"),
+            Path::new(r"C:\Program Files\SuperScience\kernel_worker.R"),
             None,
             Path::new(r"C:\Research Project"),
         )
@@ -723,13 +724,13 @@ mod tests {
         assert_eq!(command.args[0], OsString::from("--vanilla"));
         assert_eq!(
             command.args[1],
-            OsString::from(r"C:\Program Files\Wisp\kernel_worker.R")
+            OsString::from(r"C:\Program Files\SuperScience\kernel_worker.R")
         );
     }
 
     #[test]
     fn wsl_and_ssh_launches_preserve_context_configuration() {
-        let mut wsl = wisp_store::ExecutionContext::new("wsl:Ubuntu-24.04", "WSL").unwrap();
+        let mut wsl = superscience_store::ExecutionContext::new("wsl:Ubuntu-24.04", "WSL").unwrap();
         wsl.config_json = serde_json::json!({
             "distro": "Ubuntu 24.04",
             "workdir": "/scratch/project one"
@@ -745,7 +746,7 @@ mod tests {
             RuntimeLanguage::Python,
             &wsl_python,
             Path::new("unused"),
-            Some("~/.wisp-science/runtime/python.py"),
+            Some("~/.superscience/runtime/python.py"),
             Path::new("unused"),
         )
         .unwrap();
@@ -758,7 +759,7 @@ mod tests {
         assert_eq!(&wsl_args[..2], ["-d", "Ubuntu 24.04"]);
         assert!(wsl_args.last().unwrap().contains("/scratch/project one"));
 
-        let mut ssh = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
+        let mut ssh = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
         ssh.config_json = serde_json::json!({
             "user": "alice",
             "port": 2222,
@@ -771,7 +772,7 @@ mod tests {
             RuntimeLanguage::Python,
             "/opt/python/bin/python",
             Path::new("unused"),
-            Some("~/.wisp-science/runtime/python.py"),
+            Some("~/.superscience/runtime/python.py"),
             Path::new("unused"),
         )
         .unwrap();
@@ -798,7 +799,7 @@ mod tests {
             RuntimeLanguage::R,
             &rscript,
             Path::new("unused"),
-            Some("~/.wisp-science/runtime/r.R"),
+            Some("~/.superscience/runtime/r.R"),
             Path::new("unused"),
         )
         .unwrap();
@@ -812,7 +813,7 @@ mod tests {
 
     #[test]
     fn known_missing_jsonlite_is_an_actionable_r_capability_error() {
-        let mut context = wisp_store::ExecutionContext::new("ssh:r-box", "R").unwrap();
+        let mut context = superscience_store::ExecutionContext::new("ssh:r-box", "R").unwrap();
         context.capabilities_json = serde_json::json!({
             "rscript_executable": "/usr/bin/Rscript",
             "r_jsonlite": false
@@ -835,11 +836,11 @@ mod tests {
     #[tokio::test]
     async fn interpreter_config_is_persisted_per_context_and_preserves_transport_fields() {
         let db = std::env::temp_dir().join(format!(
-            "wisp_runtime_config_{}.sqlite",
+            "superscience_runtime_config_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&db).await.unwrap();
-        let mut context = wisp_store::ExecutionContext::new("ssh:cpu2", "CPU2").unwrap();
+        let store = superscience_store::Store::open(&db).await.unwrap();
+        let mut context = superscience_store::ExecutionContext::new("ssh:cpu2", "CPU2").unwrap();
         context.config_json = serde_json::json!({
             "alias": "cpu2",
             "workdir": "/data/project",
@@ -893,7 +894,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_deployment_skips_checksum_hits_and_uploads_misses() {
-        let context = wisp_store::ExecutionContext::new("wsl:Ubuntu", "WSL").unwrap();
+        let context = superscience_store::ExecutionContext::new("wsl:Ubuntu", "WSL").unwrap();
         let hit = FakeRunner::new([0]);
         let path = ensure_remote_worker(&context, RuntimeLanguage::Python, "print('worker')", &hit)
             .await
@@ -915,10 +916,10 @@ mod tests {
     #[tokio::test]
     async fn launcher_uses_the_persisted_context_registry() {
         let db = std::env::temp_dir().join(format!(
-            "wisp_runtime_launcher_{}.sqlite",
+            "superscience_runtime_launcher_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&db).await.unwrap();
+        let store = superscience_store::Store::open(&db).await.unwrap();
         let launcher = TauriRuntimeLauncher::new(
             store,
             PathBuf::from("app-data"),

@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use superscience_llm::{Message, Role};
 use uuid::Uuid;
-use wisp_llm::{Message, Role};
 
 /// Backend used for the independent, one-shot reviewer.  `None` on the
 /// builtin Reviewer specialist is the legacy representation for an HTTP model

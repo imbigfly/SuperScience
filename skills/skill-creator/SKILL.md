@@ -1,13 +1,13 @@
 ---
 name: skill-creator
-description: Create, update, validate, and evaluate Wisp skills. Use when authoring a project-local or installable skill, refining its trigger description, adding deterministic scripts or Python sidecars, or testing whether another Agent can follow the workflow.
+description: Create, update, validate, and evaluate SuperScience skills. Use when authoring a project-local or installable skill, refining its trigger description, adding deterministic scripts or Python sidecars, or testing whether another Agent can follow the workflow.
 ---
 
-# Create Wisp skills
+# Create SuperScience skills
 
-Author project-local skills under `.wisp/skills/<name>/`. Wisp also discovers
+Author project-local skills under `.superscience/skills/<name>/`. SuperScience also discovers
 bundled skills, user-installed skills, and paths configured by
-`WISP_SKILLS_PATH`, but only normal project paths are directly writable through
+`SUPERSCIENCE_SKILLS_PATH`, but only normal project paths are directly writable through
 Agent file tools.
 
 ## Structure
@@ -31,18 +31,18 @@ one-level-deep references. Add only resources the workflow actually uses.
    outputs.
 2. Search existing skills before creating a duplicate.
 3. Choose a lowercase hyphenated name and create
-   `.wisp/skills/<name>/SKILL.md` with `write`.
+   `.superscience/skills/<name>/SKILL.md` with `write`.
 4. Add reusable scripts before writing long inline code examples. Execute every
    new script on representative local data.
 5. Add `kernel.py` only for small reusable Python helpers. Loading a skill does
-   not inject Wisp tools into Python. The rendered skill supplies a one-time
+   not inject SuperScience tools into Python. The rendered skill supplies a one-time
    `exec(compile(open(...)))` instruction that defines the sidecar names in the
    persistent `python` kernel.
 6. Validate structure with this skill's
    `scripts/quick_validate.py <skill-directory>`.
 7. Refresh or reopen the project if the new skill does not yet appear, then find
    it with `search_skills` and load it with `use_skill`.
-8. Exercise the skill on realistic tasks. When explicit Wisp delegation is
+8. Exercise the skill on realistic tasks. When explicit SuperScience delegation is
    available, use a fresh bounded task with only the skill path and user-style
    request; do not leak the expected answer into the evaluation prompt.
 
@@ -90,7 +90,7 @@ Use the bundled scripts only when their extra rigor is useful:
 Inspect each script's CLI help before running it. Keep evaluation artifacts out
 of the skill folder unless they are intentional reusable resources.
 
-## Wisp boundaries
+## SuperScience boundaries
 
 - `search_skills` and `use_skill` do not edit the catalog.
 - Project file tools cannot manage user-wide installed skills outside granted

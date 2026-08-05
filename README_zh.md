@@ -1,4 +1,4 @@
-# Wisp Science — 本地优先的 AI 科研工作台
+# SuperScience — 本地优先的 AI 科研工作台
 
 [English](README.md) | [简体中文](README_zh.md)
 
@@ -13,16 +13,16 @@
 <a href="https://github.com/xuzhougeng/wisp-science/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/wisp-science?style=social" alt="Stars"></a>
 </p>
 
-**Wisp Science** 是一个开源、本地优先的桌面 AI 科研助手和科学计算工作台。
+**SuperScience** 是一个开源、本地优先的桌面 AI 科研助手和科学计算工作台。
 它可连接兼容 OpenAI 或 Anthropic 的模型，在本地、SSH、WSL 和 GPU 计算环境
 中运行持久化 Python 与 R，加载可复用的 Agent Skills（`SKILL.md`），并通过
 内置 Model Context Protocol（MCP）服务访问约 80 个生物信息学与计算生物学
 数据库。
 
-Wisp Science 使用 Rust、Tauri v2 和 Leptos 构建，可作为跨平台桌面应用或
+SuperScience 使用 Rust、Tauri v2 和 Leptos 构建，可作为跨平台桌面应用或
 无界面 CLI 运行。
 
-> **我们的宣言：** Wisp Science 开源、无国界。我们希望打造一个任何地方的
+> **我们的宣言：** SuperScience 开源、无国界。我们希望打造一个任何地方的
 > 任何人都能使用、研究、改进和分享的科学工作台。
 
 > 当前状态：MVP 垂直切片。Agent 循环、流式模型提供商、工具、Python/R
@@ -32,18 +32,18 @@ Wisp Science 使用 Rust、Tauri v2 和 Leptos 构建，可作为跨平台桌面
 ## 目录结构
 
 ```text
-wisp-science/
+superscience/
 ├─ crates/
-│  ├─ wisp-llm/     Provider trait + OpenAI-compatible + Anthropic + SSE + RoutedProvider
-│  ├─ wisp-core/    ContextManager（三层压缩）、SystemPrompt、agent_loop、memory
-│  ├─ wisp-tools/   read/write/edit/search/grep/shell/attempt_completion + Windows 安全机制
-│  ├─ wisp-store/   sqlx SQLite（projects/frames/messages/artifacts/settings）+ OS keyring
-│  ├─ wisp-skills/  SKILL.md 发现 + use_skill 工具（内置目录位于 skills/）
-│  ├─ wisp-runtime/ 项目级 Python/R 运行时管理器 + REPL 工具
-│  ├─ wisp-mcp/     stdio JSON-RPC MCP 客户端 + McpTool 适配器（内置 bio-tools）
-│  ├─ wisp-acp/     外部编码智能体的 ACP v1 stdio 客户端
-│  ├─ wisp-sync/    加密快照协议 + 可自行托管的中继服务
-│  └─ wisp-cli/     `wisp-science` 无界面可执行程序
+│  ├─ superscience-llm/     Provider trait + OpenAI-compatible + Anthropic + SSE + RoutedProvider
+│  ├─ superscience-core/    ContextManager（三层压缩）、SystemPrompt、agent_loop、memory
+│  ├─ superscience-tools/   read/write/edit/search/grep/shell/attempt_completion + Windows 安全机制
+│  ├─ superscience-store/   sqlx SQLite（projects/frames/messages/artifacts/settings）+ OS keyring
+│  ├─ superscience-skills/  SKILL.md 发现 + use_skill 工具（内置目录位于 skills/）
+│  ├─ superscience-runtime/ 项目级 Python/R 运行时管理器 + REPL 工具
+│  ├─ superscience-mcp/     stdio JSON-RPC MCP 客户端 + McpTool 适配器（内置 bio-tools）
+│  ├─ superscience-acp/     外部编码智能体的 ACP v1 stdio 客户端
+│  ├─ superscience-sync/    加密快照协议 + 可自行托管的中继服务
+│  └─ superscience-cli/     `superscience` 无界面可执行程序
 ├─ src-tauri/       Tauri v2 桌面壳（命令 + Agent 事件流）
 ├─ ui/              Leptos CSR 前端（由 Trunk 构建，在 WebView2 中加载）
 ├─ python/          kernel_worker.py + 模拟 MCP 服务
@@ -59,7 +59,7 @@ wisp-science/
   `rustup target add wasm32-unknown-unknown`
 - **uv**（Python 环境管理器）：<https://docs.astral.sh/uv/>
 - 可选：PATH 中存在 **R** 的 `Rscript`，并安装 `jsonlite` 包，以使用持久化
-  `r` 工具。Wisp 不会自动安装 R 包。
+  `r` 工具。SuperScience 不会自动安装 R 包。
 - **Trunk**（WASM 前端打包器）：`cargo install --locked trunk`
 - **Tauri CLI v2**：`cargo install tauri-cli --version "^2"`
 - **WebView2 Runtime**（仅 Windows）：Windows 10/11 通常已安装 Evergreen
@@ -73,18 +73,18 @@ wisp-science/
 ### 无界面 CLI
 
 ```powershell
-$env:WISP_API_KEY = "<your provider key>"
-$env:WISP_PROVIDER = "openai"           # openai、openai_responses 或 anthropic
-$env:WISP_MODEL     = "deepseek-v4-pro" # openai_responses: gpt-5.5；anthropic: claude-sonnet-5
-cargo run -p wisp-cli
+$env:SUPERSCIENCE_API_KEY = "<your provider key>"
+$env:SUPERSCIENCE_PROVIDER = "openai"           # openai、openai_responses 或 anthropic
+$env:SUPERSCIENCE_MODEL     = "deepseek-v4-pro" # openai_responses: gpt-5.5；anthropic: claude-sonnet-5
+cargo run -p superscience-cli
 ```
 
 也可以只运行一次提示词而不进入交互循环，或把事件按 JSONL 输出到标准输出
 （每行一个 JSON 对象）：
 
 ```powershell
-cargo run -p wisp-cli -- run "总结这个项目中的文件"
-cargo run -p wisp-cli -- run --output jsonl "总结这个项目中的文件"
+cargo run -p superscience-cli -- run "总结这个项目中的文件"
+cargo run -p superscience-cli -- run --output jsonl "总结这个项目中的文件"
 ```
 
 JSONL 包含 `start`、流式 `text`/`reasoning`、工具、用量，以及最终的 `done`
@@ -94,8 +94,8 @@ JSONL 包含 `start`、流式 `text`/`reasoning`、工具、用量，以及最�
 CLI 还提供一个小型、可重复的 Agent 回归套件：
 
 ```powershell
-cargo run -p wisp-cli -- eval --save baseline.json
-cargo run -p wisp-cli -- eval --compare baseline.json --save current.json
+cargo run -p superscience-cli -- eval --save baseline.json
+cargo run -p superscience-cli -- eval --compare baseline.json --save current.json
 ```
 
 Agent Eval v0 会在相互隔离的临时工作区中执行 6 个固定文件任务，并限定固定工具集。
@@ -105,12 +105,12 @@ Token 用量、场景提示词与工具 Schema 哈希。`--compare` 会增加汇
 和报告逻辑，不会调用模型服务。
 
 CLI 会自动加载内置的 `skills/` 目录，并接入内置 Python 和可选的系统 R REPL。
-Python 首次运行时会在 `.wisp/python/.venv` 中创建 uv 虚拟环境；R 使用 PATH
+Python 首次运行时会在 `.superscience/python/.venv` 中创建 uv 虚拟环境；R 使用 PATH
 中的 `Rscript`，并要求该 R 环境已安装 `jsonlite`。在桌面应用中，可以通过
 Contexts 面板或 Agent 的 `set_runtime_interpreter` 工具，按执行上下文保存
 Python 与 R 解释器路径。因此 `local`、WSL 和每台 SSH 服务器都可使用不同
 环境，而无需依赖宿主环境变量。必要时该工具会重启当前项目对应的 REPL，
-从而在不重启 Wisp 的情况下恢复失败的运行时；重启会清空该 REPL 的内存状态。
+从而在不重启 SuperScience 的情况下恢复失败的运行时；重启会清空该 REPL 的内存状态。
 输入框底部的计算主机按钮会先打开固定的主机列表，其中 `Local` 位于已配置的
 SSH 主机之前；只有选择某一台主机后，才会在右上角显示该上下文独立的环境信息
 卡，包括探测摘要、Runtime/Run 数量及详情、探测和终端快捷操作。
@@ -133,12 +133,12 @@ cargo tauri build    # 在 target/release/bundle 下生成 MSI/NSIS 安装程序
   安装包来自本仓库的 [GitHub Releases](https://github.com/xuzhougeng/wisp-science/releases)，
   然后选择 **更多信息 → 仍要运行**。
 - 如果安装完成后主窗口一闪而过、不可见或只剩系统托盘图标，请先从托盘菜单
-  **Quit** 彻底退出 Wisp Science，再从 Microsoft 官方
+  **Quit** 彻底退出 SuperScience，再从 Microsoft 官方
   [WebView2 下载页面](https://developer.microsoft.com/microsoft-edge/webview2/#download-section)
   下载与系统架构匹配的最新 **Evergreen Standalone Installer**，并以管理员身份运行，
   以更新或修复 Microsoft Edge WebView2 Runtime。这里要求使用受支持的最新
-  Evergreen Runtime，不表示 Wisp Science 依赖某个固定的大版本。
-- WebView2 安装完成后重新打开 Wisp Science；如果窗口仍未恢复，请重启 Windows
+  Evergreen Runtime，不表示 SuperScience 依赖某个固定的大版本。
+- WebView2 安装完成后重新打开 SuperScience；如果窗口仍未恢复，请重启 Windows
   后再试。问题仍存在时，请在 issue 中附上 `winver` 结果、WebView2 Runtime
   版本、安装包文件名和复现步骤；不要上传 API Key、Token、密码或私钥。
 - 桌面应用启动时会规范化 `PATH` 条目末尾的反斜杠，并从 Windows User PATH
@@ -165,11 +165,11 @@ cargo tauri build --target universal-apple-darwin
 隐私与安全性”中允许运行。
 
 桌面应用把 API 密钥存入操作系统密钥环，并把模型配置保存在
-`.wisp/wisp.sqlite`（Settings → Models）。配置可指向远程 API 提供商，字段
+`.superscience/superscience.sqlite`（Settings → Models）。配置可指向远程 API 提供商，字段
 说明见[模型配置](docs/model-configuration.md)。每轮模型/工具循环上限可在
 **设置 → 常规 → 每轮最大 Agent 迭代次数**中调整（默认 100；0 表示不限制）。对话也会持久化到该 SQLite
 数据库：每轮消息都会追加到当前会话 frame，重启后可恢复完整历史。无界面
-CLI 继续使用 `.wisp/session.json`，便于迁移。
+CLI 继续使用 `.superscience/session.json`，便于迁移。
 
 项目可在 Windows 与 macOS 之间迁移。在 Projects 页面使用项目卡片上的下载
 操作导出版本化 ZIP，再在另一台电脑上选择 **Import project**。导入器会要求
@@ -186,7 +186,7 @@ CLI 继续使用 `.wisp/session.json`，便于迁移。
 
 ### 本地 ACP Agents
 
-Wisp 可以启动任何已安装、通过 stdio 使用稳定版 ACP v1 的本地 Agent。
+SuperScience 可以启动任何已安装、通过 stdio 使用稳定版 ACP v1 的本地 Agent。
 这与 **Settings → Models** 中的 HTTP API 模型配置相互独立。
 
 快速开始：
@@ -199,7 +199,7 @@ Wisp 可以启动任何已安装、通过 stdio 使用稳定版 ACP v1 的本地
    **Arguments**（每行一个；使用 `npx` 时依次填写 `-y` 和
    `@agentclientprotocol/codex-acp`）。
 4. 依次执行 **Save Agent** → **Test Connection**，如有提示则完成认证。
-5. 选择该 Agent 后发送消息。如果当前会话已有消息，Wisp 会自动新建空会话，
+5. 选择该 Agent 后发送消息。如果当前会话已有消息，SuperScience 会自动新建空会话，
    因为 ACP 无法重新绑定现有的对话历史。首条消息发出后，所选 Agent 会锁定。
 
 不要在此处直接使用 `codex` 或 `claude`，它们并不提供 ACP。请使用
@@ -209,6 +209,16 @@ Wisp 可以启动任何已安装、通过 stdio 使用稳定版 ACP v1 的本地
 
 完整设置步骤、Claude 示例、Windows 注意事项和故障排除见
 [docs/acp-agents.md](docs/acp-agents.md)。
+
+
+### 受控 Agent 工作流
+
+在编辑器 Agent 菜单中为当前对话开启 **Delegation**，然后打开右侧面板的
+**Agents** 标签——或直接让主 Agent 提出计划——即可创建可持久化的多 Agent
+工作流。手动模式使用显式有序团队；辅助模式请当前模型生成可审阅草稿；自动模式
+仅在低风险的本地只读计划上无需二次确认即可启动。可审查能力边界，然后运行、
+取消、重试或接管子对话。生命周期、安全边界与当前限制见
+[受控 Agent 委派](docs/agent-delegation.md)。
 
 ### 编辑器引用与搜索
 
@@ -222,7 +232,7 @@ Wisp 可以启动任何已安装、通过 stdio 使用稳定版 ACP v1 的本地
 你上传的文件本身也是产物，因此一直都能通过 `@` 引用；它们带有 **Upload**
 标记，以便与 agent 产出的文件区分。
 
-图片预览提供区域框选工具。拖出区域后，Wisp 会持续高亮所选范围，并让你选择
+图片预览提供区域框选工具。拖出区域后，SuperScience 会持续高亮所选范围，并让你选择
 “添加到对话”（留在预览）或“添加到对话并返回对话”；确认前不会把截图直接
 附加到编辑器。
 
@@ -250,10 +260,10 @@ macOS 按 Cmd+Enter 发送，此时按 Enter 直接换行。
 跨项目转移只会复制已保存的对话文本；项目文件与运行仍留在源项目中，关联的
 产物记录不会转移，底层工作区文件也不会被删除。
 
-原生 Wisp 会话的一轮完成后，最新助手回复的“复制”旁会显示“撤销”。确认框会先
+原生 SuperScience 会话的一轮完成后，最新助手回复的“复制”旁会显示“撤销”。确认框会先
 列出将恢复或移除的 Markdown、源码、CSV、JSON 等有大小限制的纯文本文件；确认
 后，原提问会回到编辑器，本轮独占的产物记录也会移除。如果文本文件在本轮之后
-又被修改，Wisp 会拒绝覆盖它。Word、Excel、PDF、图片等二进制文件会列出但保留；
+又被修改，SuperScience 会拒绝覆盖它。Word、Excel、PDF、图片等二进制文件会列出但保留；
 当前版本暂不支持二进制文件和 ACP 会话撤销。
 
 在 macOS 上，原生应用菜单包含全局桌面命令，包括项目导航、新会话、编辑
@@ -268,20 +278,20 @@ Settings 页面以及 Windows 的窗口内 Help 菜单同样提供更新检查�
 
 | 变量 | 用途 |
 |---|---|
-| `WISP_API_KEY` | 模型提供商 API 密钥（CLI）；桌面端改用密钥环 |
-| `WISP_PROVIDER` | CLI API 提供商：`openai`（默认）、`openai_responses` 或 `anthropic` |
-| `WISP_API_URL` | API 根地址；默认使用 DeepSeek / OpenAI / Anthropic |
-| `WISP_MODEL` | 模型名称 |
-| `WISP_MAX_CONTEXT` | 上下文预算（默认 1,000,000） |
-| `WISP_MAX_ITER` | 每轮 Agent 最大迭代次数（默认 100；0 表示不限制） |
-| `WISP_SKILLS_PATH` | 额外的 SKILL.md 目录，以 `;` 或 `:` 分隔 |
-| `WISP_KERNEL_WORKER` | 覆盖内置 `kernel_worker.py` 路径 |
-| `WISP_MCP_COMMAND` | 启动任意 stdio MCP 服务（完整命令行） |
-| `WISP_MCP_PKG` | 启动内置 bio-tools 服务，例如 `mcp_pubmed` |
+| `SUPERSCIENCE_API_KEY` | 模型提供商 API 密钥（CLI）；桌面端改用密钥环 |
+| `SUPERSCIENCE_PROVIDER` | CLI API 提供商：`openai`（默认）、`openai_responses` 或 `anthropic` |
+| `SUPERSCIENCE_API_URL` | API 根地址；默认使用 DeepSeek / OpenAI / Anthropic |
+| `SUPERSCIENCE_MODEL` | 模型名称 |
+| `SUPERSCIENCE_MAX_CONTEXT` | 上下文预算（默认 1,000,000） |
+| `SUPERSCIENCE_MAX_ITER` | 每轮 Agent 最大迭代次数（默认 100；0 表示不限制） |
+| `SUPERSCIENCE_SKILLS_PATH` | 额外的 SKILL.md 目录，以 `;` 或 `:` 分隔 |
+| `SUPERSCIENCE_KERNEL_WORKER` | 覆盖内置 `kernel_worker.py` 路径 |
+| `SUPERSCIENCE_MCP_COMMAND` | 启动任意 stdio MCP 服务（完整命令行） |
+| `SUPERSCIENCE_MCP_PKG` | 启动内置 bio-tools 服务，例如 `mcp_pubmed` |
 
 ### 内置 bio-tools MCP
 
-`WISP_MCP_PKG=mcp_pubmed` 会在 uv 虚拟环境中启动
+`SUPERSCIENCE_MCP_PKG=mcp_pubmed` 会在 uv 虚拟环境中启动
 `mcp-servers/bio-tools/run_server.py mcp_pubmed`。需要先在该环境中安装服务
 依赖：
 
@@ -307,6 +317,21 @@ OAuth 访问令牌和刷新令牌保存在系统密钥环中，不会写入项�
 该连接会用于之后新建的 Agent 会话。Agent 可访问的内容由 Notion 工作区权限决定，
 请在批准写入操作前仔细确认。
 
+
+### 文件预览
+
+Files 面板可预览 Jupyter `.ipynb` 笔记本（不执行）。Markdown 与源码单元格，
+以及笔记本中已保存的输出（文本/traceback、栅格图、SVG、静态 HTML、LaTeX）
+会一并渲染。HTML 输出在禁用脚本、剥离外部引用的沙箱中运行；SVG 通过隔离的
+图片上下文加载；过大的单项或合计输出会被省略，以保持桌面 WebView 响应。
+
+PDF 与现代 Office 文件同样完全离线预览。DOCX 保留文档版式；XLSX 以只读、
+虚拟化工作簿打开（含工作表标签与公式显示）；PPTX 采用惰性窗口化幻灯片渲染。
+PDF 与 OOXML 字节以原始 ArrayBuffer 而非 Base64 跨越 Tauri IPC。Office 预览
+限制压缩输入不超过 32 MiB，并拒绝不安全或过度膨胀的 ZIP；不执行宏、ActiveX、
+OLE、公式或外部关系。复杂的 Excel 样式与 PowerPoint 动画可能与 Microsoft Office
+不完全一致。
+
 ### 内置演示
 
 `seed/` 提供四个预先录制的示例会话：CRISPR 筛选、酶工程、极端微生物和
@@ -316,9 +341,9 @@ Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压
 
 ## 测试
 
-- **Rust 单元测试**：`cargo test --workspace`，覆盖 `wisp-store` SQLite
+- **Rust 单元测试**：`cargo test --workspace`，覆盖 `superscience-store` SQLite
   往返读写、seed 演示加载器等。
-- **MCP 客户端冒烟测试**：`cargo run -p wisp-mcp --example smoke`，通过
+- **MCP 客户端冒烟测试**：`cargo run -p superscience-mcp --example smoke`，通过
   `uv` 启动内置模拟 MCP 服务，并完成 `tools/list` 与 `tools/call` 往返调用。
 - **UI E2E（Playwright + Tauri mock）**：`ui-tests/` 在无头浏览器中运行
   Leptos UI，并使用模拟的 `window.__TAURI__`，因此不需要 Rust 后端或 API
@@ -337,40 +362,51 @@ Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压
 
 ## 架构
 
-- **Agent 循环**（`wisp-core::agent`）：读取 → 思考 → 工具调用 → 验证；token
+- **Agent 循环**（`superscience-core::agent`）：读取 → 思考 → 工具调用 → 验证；token
   会流式发送到 `Output`。调用 `attempt_completion` 或模型不再返回工具调用时
   停止。
-- **上下文压缩**（`wisp-core::context`）：每次模型调用前，当上下文达到预算的
+- **上下文压缩**（`superscience-core::context`）：每次模型调用前，当上下文达到预算的
   80% 时触发三层处理——微压缩过大的工具输出、丢弃较旧轮次，最后才使用
   LLM 生成完整摘要。
-- **模型提供商**（`wisp-llm`）：一个 trait、两种 wire format（OpenAI
+- **模型提供商**（`superscience-llm`）：一个 trait、两种 wire format（OpenAI
   `/chat/completions` 与 Anthropic `/v1/messages`），均支持 SSE 流式输出。
   `RoutedProvider` 根据最后一条用户消息选择 low/medium/high 层级。
-- **工具**（`wisp-tools`）：文件系统与 shell 工具，提供 Windows 感知的危险
+- **工具**（`superscience-tools`）：文件系统与 shell 工具，提供 Windows 感知的危险
   命令门控，并使用 `dunce` 规范化路径，将沙箱限制在项目目录内。
-- **Python/R REPL**（`wisp-runtime`）：每个项目、执行上下文和语言各有一个由
+- **Python/R REPL**（`superscience-runtime`）：每个项目、执行上下文和语言各有一个由
   manager 管理的进程，可跨 cell 和会话保持命名空间。local、WSL 和 SSH 上下文
   使用同一个版本化协议。R 是可选功能，使用现有 `Rscript` 和 `jsonlite`。
   Contexts 面板可探测解释器能力，并显示运行时状态、内存、最后活动时间、具有
   破坏性的 Stop/Restart 控件，以及按需只读展示的内存对象名、类型、形状/大小
   和有限元数据。
-- **MCP**（`wisp-mcp`）：最小化的 newline-JSON-RPC 客户端，可启动任意 stdio
+- **MCP**（`superscience-mcp`）：最小化的 newline-JSON-RPC 客户端，可启动任意 stdio
   MCP 服务，并把每个远程工具作为一等 Agent 工具公开。
 
 ## 致谢
+
+特别感谢以下社区成员的实测反馈与建议：
+
+<p>
+  <a href="https://github.com/Yu-Qiao-sjtu"><img src="https://avatars.githubusercontent.com/u/88706761?v=4&amp;s=96" width="64" height="64" alt="@Yu-Qiao-sjtu" title="@Yu-Qiao-sjtu"></a>
+  <a href="https://github.com/lfz0924"><img src="https://avatars.githubusercontent.com/u/82395287?v=4&amp;s=96" width="64" height="64" alt="@lfz0924" title="@lfz0924"></a>
+  <a href="https://github.com/LeeJyee"><img src="https://avatars.githubusercontent.com/u/166231040?v=4&amp;s=96" width="64" height="64" alt="@LeeJyee" title="@LeeJyee"></a>
+  <a href="https://github.com/OrigamiSheep"><img src="https://avatars.githubusercontent.com/u/48906039?v=4&amp;s=96" width="64" height="64" alt="@OrigamiSheep" title="@OrigamiSheep"></a>
+  <a href="https://github.com/Charlesyu153"><img src="https://avatars.githubusercontent.com/u/232734740?v=4&amp;s=96" width="64" height="64" alt="@Charlesyu153" title="@Charlesyu153"></a>
+  <a href="https://github.com/Doctorluka"><img src="https://avatars.githubusercontent.com/u/101385826?v=4&amp;s=96" width="64" height="64" alt="@Doctorluka" title="@Doctorluka"></a>
+  <a href="https://github.com/xiaowen621"><img src="https://avatars.githubusercontent.com/u/241900839?v=4&amp;s=96" width="64" height="64" alt="@xiaowen621" title="@xiaowen621"></a>
+</p>
 
 - 我们最初关注过 Claude Science 一类封闭产品，但发现其对部分地区用户不友好、
   且生态封闭，因此选择独立开源实现。早期学习并借鉴了其 Skills 与 MCP 工具
   选型思路；Agent 架构、工作台功能与路线图均由开源社区自主设计与推进。
 - 真实浏览器自动化受
   [GenericAgent 的 GA Web / TMWebDriver](https://github.com/lsdefine/GenericAgent)
-  架构启发（MIT，Copyright 2025 lsdefine）。Wisp 的 Rust 桥接器与 Manifest V3
+  架构启发（MIT，Copyright 2025 lsdefine）。SuperScience 的 Rust 桥接器与 Manifest V3
   扩展为独立实现；详细出处见
   [`browser-extension/NOTICE.md`](browser-extension/NOTICE.md)。
 - Agent 核心基于
   [`w4n9H/mangopi-cli`](https://github.com/w4n9H/mangopi-cli)（Apache-2.0）。
-- `skills/` 与 `mcp-servers/bio-tools/` 来自上游 `wisp-science` 资源包
-  （Apache-2.0）。
+- `skills/` 与 `mcp-servers/bio-tools/` 随本仓库打包提供（Apache-2.0）。
 - `skills/bear-*` 来自
   [bear-research-skills](https://github.com/fei0810/bear-research-skills)
   （CC BY-NC-SA 4.0）；在线检索需要 `scimaster-cli`。
@@ -379,7 +415,7 @@ Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压
 
 ## 许可证
 
-除另有说明外，Wisp Science 采用
+除另有说明外，SuperScience 采用
 [GNU Affero 通用公共许可证 v3.0（仅此版本）](LICENSE)。第三方及 vendored
 组件继续适用各自的许可证；上游声明保留在对应目录中，Apache License 2.0
 全文保留于 [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt)。更早发布的
@@ -387,15 +423,15 @@ Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压
 
 ## 引用
 
-如果你在研究中使用 wisp-science，请引用：
+如果你在研究中使用 SuperScience，请引用：
 
 [![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.21193742)
 
 ```bibtex
-@software{xu2026wisp,
+@software{xu2026superscience,
   author    = {Xu, Zhougeng and hoptop},
-  title     = {wisp-science: A local-first scientific computing agent},
-  version   = {v0.4.1},
+  title     = {SuperScience: A local-first scientific computing agent},
+  version   = {v0.30.0},
   year      = {2026},
   publisher = {Zenodo},
   doi       = {10.5281/zenodo.21193742},
@@ -408,7 +444,6 @@ Assistant 对话形式打开。打开时会把内置的 `assets_*.tar.gz` 解压
 - `FlashThinking`：按阶段注入结构化思考框架。
 - `loop_engine`：在当前有界自动 Reviewer 流程之外，提供更深入的
   Implementer / Verifier / Updater 工作流。
-- 产物管理，以及 UI 中的内嵌 Mol* 三维结构查看器。
 - `RoutedProvider` 基于 LLM 评分选择层级（基于关键词的选择已接入）。
 
 ## Star History

@@ -4,8 +4,8 @@ use tauri::State;
 
 const PROBE_SKILL_NAME: &str = "probe-compute-environment";
 const PROBE_SKILL: &str = include_str!("../../skills/probe-compute-environment/SKILL.md");
-const PROBE_VALUE_BEGIN: &str = "__WISP_PROBE_VALUE_BEGIN__";
-const PROBE_VALUE_END: &str = "__WISP_PROBE_VALUE_END__";
+const PROBE_VALUE_BEGIN: &str = "__SUPERSCIENCE_PROBE_VALUE_BEGIN__";
+const PROBE_VALUE_END: &str = "__SUPERSCIENCE_PROBE_VALUE_END__";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeResult {
@@ -81,7 +81,7 @@ impl ProbeRunner for ProcessProbeRunner {
         if !command.envs.is_empty() {
             process.envs(command.envs.iter().cloned());
         }
-        wisp_tools::process::hide_console(&mut process);
+        superscience_tools::process::hide_console(&mut process);
         let output = process
             .output()
             .map_err(|e| format!("failed to run {}: {e}", command.program))?;
@@ -95,13 +95,13 @@ impl ProbeRunner for ProcessProbeRunner {
 }
 
 pub fn build_probe_command(
-    ctx: &wisp_store::ExecutionContext,
+    ctx: &superscience_store::ExecutionContext,
     script: &str,
 ) -> Result<ProbeCommand, String> {
     let cfg: serde_json::Value = serde_json::from_str(&ctx.config_json).unwrap_or_default();
     match ctx.kind {
-        wisp_store::ExecutionContextKind::Local => Ok(local_command(&ctx.id, script)),
-        wisp_store::ExecutionContextKind::Ssh => {
+        superscience_store::ExecutionContextKind::Local => Ok(local_command(&ctx.id, script)),
+        superscience_store::ExecutionContextKind::Ssh => {
             let connection = crate::ssh_hosts::SshConnection::from_execution_context(ctx)?;
             let mut args = connection.ssh_args()?;
             args.push(script.into());
@@ -113,7 +113,7 @@ pub fn build_probe_command(
                 envs: crate::ssh_hosts::auth_envs_for_connection(&connection)?,
             })
         }
-        wisp_store::ExecutionContextKind::Wsl => {
+        superscience_store::ExecutionContextKind::Wsl => {
             let distro = cfg
                 .get("distro")
                 .and_then(|v| v.as_str())
@@ -159,11 +159,11 @@ fn local_command(context_id: &str, script: &str) -> ProbeCommand {
 }
 
 pub fn probe_context_with_runner(
-    ctx: &wisp_store::ExecutionContext,
+    ctx: &superscience_store::ExecutionContext,
     runner: &mut dyn ProbeRunner,
 ) -> Result<ProbeResult, String> {
     let (specs, mut values) = probe_specs(ctx)?;
-    let discovered = if ctx.kind == wisp_store::ExecutionContextKind::Ssh {
+    let discovered = if ctx.kind == superscience_store::ExecutionContextKind::Ssh {
         run_bundled_ssh_probe(ctx, runner, &specs)?
     } else {
         run_sequential_probe(ctx, runner, &specs)?
@@ -179,7 +179,7 @@ struct ProbeSpec {
 }
 
 fn probe_specs(
-    ctx: &wisp_store::ExecutionContext,
+    ctx: &superscience_store::ExecutionContext,
 ) -> Result<(Vec<ProbeSpec>, HashMap<&'static str, String>), String> {
     let configured_python = configured_interpreter(ctx, "python_executable", "python_path")?;
     let configured_rscript = configured_interpreter(ctx, "rscript_executable", "rscript_path")?;
@@ -374,7 +374,7 @@ fn probe_specs(
 }
 
 fn run_sequential_probe(
-    ctx: &wisp_store::ExecutionContext,
+    ctx: &superscience_store::ExecutionContext,
     runner: &mut dyn ProbeRunner,
     specs: &[ProbeSpec],
 ) -> Result<HashMap<&'static str, String>, String> {
@@ -437,7 +437,7 @@ fn bundled_probe_protocol_observed(stdout: &str, specs: &[ProbeSpec]) -> bool {
 }
 
 fn run_bundled_ssh_probe(
-    ctx: &wisp_store::ExecutionContext,
+    ctx: &superscience_store::ExecutionContext,
     runner: &mut dyn ProbeRunner,
     specs: &[ProbeSpec],
 ) -> Result<HashMap<&'static str, String>, String> {
@@ -457,7 +457,7 @@ fn run_bundled_ssh_probe(
     }
     if !bundled_probe_protocol_observed(&stdout, specs) {
         return Err(
-            "SSH authentication succeeded, but the remote account did not execute Wisp's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early."
+            "SSH authentication succeeded, but the remote account did not execute SuperScience's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early."
                 .into(),
         );
     }
@@ -544,11 +544,11 @@ fn probe_result(values: HashMap<&'static str, String>) -> Result<ProbeResult, St
 }
 
 fn platform_script<'a>(
-    ctx: &wisp_store::ExecutionContext,
+    ctx: &superscience_store::ExecutionContext,
     posix: &'a str,
     windows: &'a str,
 ) -> &'a str {
-    if cfg!(target_os = "windows") && ctx.kind == wisp_store::ExecutionContextKind::Local {
+    if cfg!(target_os = "windows") && ctx.kind == superscience_store::ExecutionContextKind::Local {
         windows
     } else {
         posix
@@ -556,7 +556,7 @@ fn platform_script<'a>(
 }
 
 fn configured_interpreter(
-    ctx: &wisp_store::ExecutionContext,
+    ctx: &superscience_store::ExecutionContext,
     key: &str,
     legacy_key: &str,
 ) -> Result<Option<String>, String> {
@@ -586,11 +586,11 @@ fn configured_interpreter(
 }
 
 fn interpreter_command(
-    ctx: &wisp_store::ExecutionContext,
+    ctx: &superscience_store::ExecutionContext,
     executable: &str,
     arguments: &str,
 ) -> String {
-    if cfg!(target_os = "windows") && ctx.kind == wisp_store::ExecutionContextKind::Local {
+    if cfg!(target_os = "windows") && ctx.kind == superscience_store::ExecutionContextKind::Local {
         format!("& '{}' {arguments}", executable.replace('\'', "''"))
     } else {
         format!("'{}' {arguments}", executable.replace('\'', "'\"'\"'"))
@@ -598,7 +598,7 @@ fn interpreter_command(
 }
 
 fn run_probe_command(
-    ctx: &wisp_store::ExecutionContext,
+    ctx: &superscience_store::ExecutionContext,
     runner: &mut dyn ProbeRunner,
     script: &str,
 ) -> Result<Option<String>, String> {
@@ -629,17 +629,17 @@ fn scheduler_from_command(path: &str) -> Option<String> {
 }
 
 pub async fn probe_and_store_with_runner(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     context_id: &str,
     runner: &mut dyn ProbeRunner,
-) -> Result<wisp_store::ExecutionContext, String> {
+) -> Result<superscience_store::ExecutionContext, String> {
     let mut ctx = store
         .get_execution_context(context_id)
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
     // User-driven probe is an intentional reconnect: clear any AI-loop cooldown.
-    if ctx.kind == wisp_store::ExecutionContextKind::Ssh {
+    if ctx.kind == superscience_store::ExecutionContextKind::Ssh {
         crate::ssh_guard::clear(context_id);
     }
     let now = chrono::Utc::now().timestamp();
@@ -648,12 +648,12 @@ pub async fn probe_and_store_with_runner(
             ctx.capabilities_json = serde_json::to_string(&probe).map_err(|e| e.to_string())?;
             ctx.last_probe_status = Some("ok".into());
             ctx.last_probe_error = None;
-            if ctx.kind == wisp_store::ExecutionContextKind::Ssh {
+            if ctx.kind == superscience_store::ExecutionContextKind::Ssh {
                 crate::ssh_guard::record_success(context_id);
             }
         }
         Err(e) => {
-            if ctx.kind == wisp_store::ExecutionContextKind::Ssh {
+            if ctx.kind == superscience_store::ExecutionContextKind::Ssh {
                 crate::ssh_guard::record_failure(context_id, &e);
             }
             ctx.last_probe_status = Some("error".into());
@@ -673,7 +673,7 @@ pub async fn probe_and_store_with_runner(
 pub async fn probe_execution_context(
     state: State<'_, crate::AppState>,
     context_id: String,
-) -> Result<wisp_store::ExecutionContext, String> {
+) -> Result<superscience_store::ExecutionContext, String> {
     debug_assert!(PROBE_SKILL.contains("name: probe-compute-environment"));
     tracing::info!(
         skill = PROBE_SKILL_NAME,
@@ -690,9 +690,9 @@ mod tests {
 
     #[test]
     fn wraps_probe_commands_for_local_ssh_and_wsl() {
-        let local = wisp_store::ExecutionContext::new("local", "Local").unwrap();
-        let ssh = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
-        let wsl = wisp_store::ExecutionContext::new("wsl:Ubuntu-22.04", "Ubuntu").unwrap();
+        let local = superscience_store::ExecutionContext::new("local", "Local").unwrap();
+        let ssh = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
+        let wsl = superscience_store::ExecutionContext::new("wsl:Ubuntu-22.04", "Ubuntu").unwrap();
 
         let local_cmd = build_probe_command(&local, "uname -s").unwrap();
         assert_eq!(local_cmd.script, "uname -s");
@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn ssh_probe_uses_user_port_and_identity_file() {
-        let mut ssh = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
+        let mut ssh = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
         ssh.config_json = serde_json::json!({
             "alias": "gpu-box",
             "user": "alice",
@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn fake_runner_collects_probe_capabilities() {
-        let ctx = wisp_store::ExecutionContext::new("wsl:Ubuntu", "GPU").unwrap();
+        let ctx = superscience_store::ExecutionContext::new("wsl:Ubuntu", "GPU").unwrap();
         let mut runner = FakeRunner::new([
             ("uname -s", "Linux"),
             ("uname -m", "x86_64"),
@@ -833,7 +833,7 @@ mod tests {
 
     #[test]
     fn probe_uses_persisted_interpreters_instead_of_path_discovery() {
-        let mut ctx = wisp_store::ExecutionContext::new("wsl:Ubuntu", "CPU2").unwrap();
+        let mut ctx = superscience_store::ExecutionContext::new("wsl:Ubuntu", "CPU2").unwrap();
         ctx.config_json = serde_json::json!({
             "python_executable": "/opt/conda env/bin/python",
             "rscript_executable": "/opt/R 4.5/bin/Rscript"
@@ -872,7 +872,7 @@ mod tests {
 
     #[test]
     fn ssh_probe_collects_every_field_through_one_connection() {
-        let ctx = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
+        let ctx = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
         let mut runner = OneShotRunner {
             output: ProbeCommandOutput {
                 status: 0,
@@ -910,7 +910,7 @@ mod tests {
 
     #[test]
     fn ssh_probe_allows_missing_uname_output_after_command_execution() {
-        let ctx = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
+        let ctx = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
         let mut runner = OneShotRunner {
             output: ProbeCommandOutput {
                 status: 0,
@@ -930,7 +930,7 @@ mod tests {
 
     #[test]
     fn ssh_probe_rejects_accounts_that_do_not_execute_remote_commands() {
-        let ctx = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
+        let ctx = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
         let mut runner = OneShotRunner {
             output: ProbeCommandOutput {
                 status: 0,
@@ -943,12 +943,12 @@ mod tests {
         let error = probe_context_with_runner(&ctx, &mut runner).unwrap_err();
 
         assert!(error.contains("SSH authentication succeeded"));
-        assert!(error.contains("did not execute Wisp's non-interactive probe commands"));
+        assert!(error.contains("did not execute SuperScience's non-interactive probe commands"));
     }
 
     #[test]
     fn ssh_probe_surfaces_authentication_failure_from_its_only_connection() {
-        let ctx = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
+        let ctx = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
         let mut runner = OneShotRunner {
             output: ProbeCommandOutput {
                 status: 255,
@@ -989,11 +989,11 @@ mod tests {
     #[tokio::test]
     async fn failed_probe_keeps_previous_capabilities() {
         let tmp = std::env::temp_dir().join(format!(
-            "wisp_probe_context_{}.sqlite",
+            "superscience_probe_context_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
-        let mut ctx = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let mut ctx = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
         ctx.capabilities_json = r#"{"os":"Linux","gpu_summary":"A100"}"#.into();
         store.upsert_execution_context(&ctx).await.unwrap();
 

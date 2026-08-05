@@ -41,7 +41,7 @@ Add one column to the existing `projects` table:
 ALTER TABLE projects ADD COLUMN workspace_dir TEXT NOT NULL DEFAULT '';
 ```
 
-The migration runner (`crates/wisp-store/src/lib.rs::migrate`) splits statements
+The migration runner (`crates/superscience-store/src/lib.rs::migrate`) splits statements
 on `;` and is idempotent (`IF NOT EXISTS`), but `ALTER TABLE ADD COLUMN` is not
 idempotent, so the new column goes in a separate migration file
 (`migrations/0001_project_workspace.sql`) guarded by a `schema_version` check, or
@@ -49,7 +49,7 @@ by catching the "duplicate column name" error. Chosen approach: a tiny
 `schema_version` setting (`settings` table) gates whether 0001 runs — simplest,
 no new migration framework.
 
-The shared SQLite DB (`app_data/wisp.sqlite`) stays global. All projects live in
+The shared SQLite DB (`app_data/superscience.sqlite`) stays global. All projects live in
 one DB, isolated by `project_id`; `frames`/`messages`/`artifacts` are already
 keyed by `project_id`. API keys stay in the OS keyring, global.
 
@@ -149,7 +149,7 @@ and one resolved workspace, it resolves the **initial active project**:
   placeholder pointing at the default workspace, and the UI lands on an empty
   Projects page prompting "New project".
 
-`WISP_WORKSPACE` env override still works: it wins for the initial active
+`SUPERSCIENCE_WORKSPACE` env override still works: it wins for the initial active
 project's root (dev/testing escape hatch).
 
 ### Folder picker
@@ -167,7 +167,7 @@ Add a top-level `screen` signal: `Projects` vs `Chat`. The app boots to
 `Projects`.
 
 - **Projects screen** — mirrors the Claude Science reference: header
-  "Wisp Science / Beta" + "New project"; a Projects column (cards: name, session
+  "SuperScience / Beta" + "New project"; a Projects column (cards: name, session
   count, last-active relative time) and a Recent sessions column (cross-project).
   Clicking a card → `open_project(id)` → set `screen = Chat`, refresh
   project_info/sessions.

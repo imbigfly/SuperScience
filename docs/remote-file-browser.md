@@ -21,7 +21,7 @@ snapshot and the system OpenSSH client. It honors the configured SSH alias,
 user, port, identity-file path, SSH config, and agent. No private-key contents
 are stored in SQLite or copied by the browser. Batch SSH/SCP always enables
 OpenSSH `IdentitiesOnly` so unrelated agent keys are not offered to the server;
-agent-only users with a non-default key must name its `IdentityFile` in Wisp or
+agent-only users with a non-default key must name its `IdentityFile` in SuperScience or
 SSH config.
 
 Remote mutation remains intentionally out of scope: SSH files can be previewed

@@ -327,7 +327,7 @@ const MODEL_PRESETS: [(&str, &str, &str); 5] = [
 fn appearance_palette_options(dark: bool) -> [(&'static str, &'static str); 5] {
     if dark {
         [
-            ("charcoal", "Wisp Charcoal"),
+            ("charcoal", "SuperScience Charcoal"),
             ("codex", "Codex"),
             ("github", "GitHub Dark"),
             ("catppuccin", "Catppuccin Mocha"),
@@ -335,7 +335,7 @@ fn appearance_palette_options(dark: bool) -> [(&'static str, &'static str); 5] {
         ]
     } else {
         [
-            ("paper", "Wisp Paper"),
+            ("paper", "SuperScience Paper"),
             ("codex", "Codex"),
             ("github", "GitHub"),
             ("catppuccin", "Catppuccin Latte"),
@@ -392,18 +392,18 @@ fn build_issue_report_markdown(
     };
     let screenshot = if locale == Locale::Zh {
         if attach_screenshot {
-            "_用户选择稍后在 GitHub 手动附加截图；Wisp 未采集或上传图片。_"
+            "_用户选择稍后在 GitHub 手动附加截图；SuperScience 未采集或上传图片。_"
         } else {
-            "_未附加。Wisp 默认不采集截图。_"
+            "_未附加。SuperScience 默认不采集截图。_"
         }
     } else if attach_screenshot {
-        "_The user opted to attach screenshots manually on GitHub; Wisp did not collect or upload an image._"
+        "_The user opted to attach screenshots manually on GitHub; SuperScience did not collect or upload an image._"
     } else {
-        "_Not attached. Wisp does not collect screenshots by default._"
+        "_Not attached. SuperScience does not collect screenshots by default._"
     };
     if locale == Locale::Zh {
         format!(
-            "## 问题描述\n\n{}\n\n## 复现步骤\n\n{}\n\n## 预期行为\n\n{}\n\n## 实际行为\n\n{}\n\n## 相关错误或 Run ID\n\n{}\n\n## 截图\n\n{screenshot}\n\n## 环境\n\n- Wisp 版本：{}\n- OS / 架构：{} / {}\n- 模型配置：{}\n- Execution context 类型：{}\n\n<!-- 此草稿仅自动包含以上非敏感元数据；未读取 transcript、项目数据、API key、环境变量、用户名或绝对路径。 -->",
+            "## 问题描述\n\n{}\n\n## 复现步骤\n\n{}\n\n## 预期行为\n\n{}\n\n## 实际行为\n\n{}\n\n## 相关错误或 Run ID\n\n{}\n\n## 截图\n\n{screenshot}\n\n## 环境\n\n- SuperScience 版本：{}\n- OS / 架构：{} / {}\n- 模型配置：{}\n- Execution context 类型：{}\n\n<!-- 此草稿仅自动包含以上非敏感元数据；未读取 transcript、项目数据、API key、环境变量、用户名或绝对路径。 -->",
             value(problem),
             value(reproduction),
             value(expected),
@@ -417,7 +417,7 @@ fn build_issue_report_markdown(
         )
     } else {
         format!(
-            "## Problem\n\n{}\n\n## Steps to reproduce\n\n{}\n\n## Expected behavior\n\n{}\n\n## Actual behavior\n\n{}\n\n## Related error or Run ID\n\n{}\n\n## Screenshots\n\n{screenshot}\n\n## Environment\n\n- Wisp version: {}\n- OS / architecture: {} / {}\n- Model profile: {}\n- Execution context type: {}\n\n<!-- This draft automatically includes only the non-sensitive metadata above. It did not read transcripts, project data, API keys, environment variables, usernames, or absolute paths. -->",
+            "## Problem\n\n{}\n\n## Steps to reproduce\n\n{}\n\n## Expected behavior\n\n{}\n\n## Actual behavior\n\n{}\n\n## Related error or Run ID\n\n{}\n\n## Screenshots\n\n{screenshot}\n\n## Environment\n\n- SuperScience version: {}\n- OS / architecture: {} / {}\n- Model profile: {}\n- Execution context type: {}\n\n<!-- This draft automatically includes only the non-sensitive metadata above. It did not read transcripts, project data, API keys, environment variables, usernames, or absolute paths. -->",
             value(problem),
             value(reproduction),
             value(expected),
@@ -1178,7 +1178,7 @@ pub(super) fn SettingsView(
                                 class:fail=move || !ok>{text}</div>
                         })}
                         <div class="row settings-footer">
-                                <span class="settings-version">{concat!("wisp-science v", env!("CARGO_PKG_VERSION"))}</span>
+                                <span class="settings-version">{concat!("SuperScience v", env!("CARGO_PKG_VERSION"))}</span>
                                 <button type="button" disabled=move || settings_busy.get() on:click=move |ev| check_updates.call(ev)>{move || t(locale.get(), "settings.check_updates")}</button>
                             <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
                                 <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>

@@ -204,7 +204,7 @@ impl TerminalManager {
         &self,
         project_id: &str,
         project_root: &Path,
-        context: &wisp_store::ExecutionContext,
+        context: &superscience_store::ExecutionContext,
     ) -> Result<TerminalSessionSummary, String> {
         let spec = build_terminal_launch_spec(context, project_root)?;
         let (session, reader, child) = spawn_session(project_id, context, spec)?;
@@ -246,7 +246,7 @@ impl TerminalManager {
 
 fn spawn_session(
     project_id: &str,
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     spec: TerminalLaunchSpec,
 ) -> Result<
     (
@@ -346,13 +346,13 @@ fn start_terminal_workers(
 }
 
 pub fn build_terminal_launch_spec(
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     project_root: &Path,
 ) -> Result<TerminalLaunchSpec, String> {
     let config: serde_json::Value = serde_json::from_str(&context.config_json).unwrap_or_default();
     match context.kind {
-        wisp_store::ExecutionContextKind::Local => Ok(local_launch_spec(project_root)),
-        wisp_store::ExecutionContextKind::Wsl => {
+        superscience_store::ExecutionContextKind::Local => Ok(local_launch_spec(project_root)),
+        superscience_store::ExecutionContextKind::Wsl => {
             let distro = config
                 .get("distro")
                 .and_then(|value| value.as_str())
@@ -366,7 +366,7 @@ pub fn build_terminal_launch_spec(
                 envs: Vec::new(),
             })
         }
-        wisp_store::ExecutionContextKind::Ssh => {
+        superscience_store::ExecutionContextKind::Ssh => {
             let connection = crate::ssh_hosts::SshConnection::from_execution_context(context)?;
             Ok(TerminalLaunchSpec {
                 program: "ssh".into(),
@@ -494,7 +494,8 @@ mod tests {
 
     #[test]
     fn builds_wsl_terminal_for_selected_distro_and_project() {
-        let mut context = wisp_store::ExecutionContext::new("wsl:Ubuntu-24.04", "Ubuntu").unwrap();
+        let mut context =
+            superscience_store::ExecutionContext::new("wsl:Ubuntu-24.04", "Ubuntu").unwrap();
         context.config_json = serde_json::json!({"distro": "Ubuntu-24.04"}).to_string();
         let root = Path::new(r"C:\Users\scientist\project");
 
@@ -510,7 +511,7 @@ mod tests {
 
     #[test]
     fn builds_interactive_ssh_terminal_without_batch_mode() {
-        let mut context = wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
+        let mut context = superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
         context.config_json = serde_json::json!({
             "alias": "gpu",
             "user": "alice",

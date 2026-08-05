@@ -7,9 +7,9 @@
 use crate::{delegation_runtime, dynamic_workflow, ActiveProject, AppState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use superscience_llm::Message;
+use superscience_store::Store;
 use tauri::State;
-use wisp_llm::Message;
-use wisp_store::Store;
 
 const QUICK_ACTIONS_KEY: &str = "quick_actions";
 const WORKFLOW_TEMPLATES_KEY: &str = "workflow_templates";
@@ -823,7 +823,7 @@ mod tests {
 
     async fn store() -> (Store, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!(
-            "wisp_quick_actions_{}.sqlite",
+            "superscience_quick_actions_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         (Store::open(&path).await.unwrap(), path)

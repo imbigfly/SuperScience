@@ -6,8 +6,7 @@ use crate::publication_reproduction::{
 };
 use crate::AppState;
 use serde::{Deserialize, Serialize};
-use tauri::State;
-use wisp_store::{
+use superscience_store::{
     canonical_json_sha256, ArtifactCaptureTiming, CapsuleBuild, EvidenceBinding,
     EvidenceBindingDraft, EvidenceReview, EvidenceSelectionState, EvidenceSourceKind,
     EvidenceSupersession, EvidenceVisibility, LineageBasis, LineageConfidence, Publication,
@@ -15,6 +14,7 @@ use wisp_store::{
     PublicationReadiness, PublicationReadinessFinding, PublicationRevision, PublicationWaiver,
     ReproductionResult, ReproductionRun, Store,
 };
+use tauri::State;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PublicationLineageSummary {
@@ -141,7 +141,7 @@ async fn revision_project(store: &Store, revision_id: &str) -> anyhow::Result<St
 }
 
 fn readiness_from_report(
-    report: wisp_store::PublicationReadinessReport,
+    report: superscience_store::PublicationReadinessReport,
 ) -> anyhow::Result<PublicationReadiness> {
     let blockers = serde_json::from_str::<Vec<PublicationReadinessFinding>>(&report.blockers_json)?;
     let warnings = serde_json::from_str::<Vec<PublicationReadinessFinding>>(&report.warnings_json)?;
@@ -726,11 +726,11 @@ pub(super) async fn verify_publication_revision(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wisp_store::{ArtifactMaterialization, ArtifactVersionDraft, RunRecord, RunStatus};
+    use superscience_store::{ArtifactMaterialization, ArtifactVersionDraft, RunRecord, RunStatus};
 
     async fn fixture(name: &str) -> (std::path::PathBuf, Store) {
         let root = std::env::temp_dir().join(format!(
-            "wisp_publication_commands_{name}_{}",
+            "superscience_publication_commands_{name}_{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
@@ -740,7 +740,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_frame("frame", "project", "OPERON", "model")
+            .create_frame("frame", "project", "SUPERSCIENCE", "model")
             .await
             .unwrap();
         (root, store)

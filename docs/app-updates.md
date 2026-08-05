@@ -1,16 +1,16 @@
 # App updates
 
-Wisp supports optional, signed in-app updates on macOS. Windows and Linux keep
+SuperScience supports optional, signed in-app updates on macOS. Windows and Linux keep
 the update check and **Open Releases** path until their installers are enabled
 in a later change.
 
 ## User flow
 
-1. Wisp checks the signed `latest.json` manifest. The Tauri updater chooses
+1. SuperScience checks the signed `latest.json` manifest. The Tauri updater chooses
    `darwin-aarch64` or `darwin-x86_64` from the running binary's target.
 2. The update dialog shows the release notes. Nothing downloads until the user
    selects **Download update**.
-3. Wisp reports download progress and verifies the package signature. An
+3. SuperScience reports download progress and verifies the package signature. An
    invalid signature never reaches the install step.
 4. A second dialog asks the user to select **Install and restart**.
 5. Installation is refused while an agent turn, approval, review, or persisted
@@ -29,13 +29,13 @@ architectures.
   verification failure happen before installation and leave the current app
   untouched. The verified package is kept only in memory, so quitting or losing
   power during download simply requires downloading again.
-- If installation reports an error, Wisp keeps the verified package available
+- If installation reports an error, SuperScience keeps the verified package available
   for a later retry and offers the GitHub Releases fallback.
 - The Tauri macOS installer extracts the new app into a temporary directory
   before replacing the installed bundle. A power loss during the final bundle
   replacement cannot be recovered by an app that is no longer launchable. The
   recovery path is to download the matching `.dmg` from GitHub Releases and
-  replace `wisp-science.app` in `/Applications`. Project data and settings live
+  replace `superscience.app` in `/Applications`. Project data and settings live
   outside the application bundle and are not removed by this repair.
 
 There is no background install or automatic downgrade. A rollback uses the same

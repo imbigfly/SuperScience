@@ -3,10 +3,10 @@
 use super::*;
 use crate::project_commands::{cancel_project_sessions, load_active_project, set_active_project};
 use std::path::{Path, PathBuf};
-use wisp_store::SCRATCH_PROJECT_PREFIX;
+use superscience_store::SCRATCH_PROJECT_PREFIX;
 
 pub(super) fn is_scratch_project_id(id: &str) -> bool {
-    wisp_store::is_scratch_project_id(id)
+    superscience_store::is_scratch_project_id(id)
 }
 
 #[derive(Clone)]
@@ -87,7 +87,7 @@ pub(super) async fn start_scratch_chat(
     let sandbox_path = scratch_sandbox_root(&state.app_data).join(&uuid);
     std::fs::create_dir_all(&sandbox_path)
         .map_err(|e| format!("Failed to create scratch sandbox: {e}"))?;
-    let marker = sandbox_path.join(".wisp-write-test");
+    let marker = sandbox_path.join(".superscience-write-test");
     std::fs::write(&marker, b"").map_err(|e| format!("Scratch sandbox is not writable: {e}"))?;
     let _ = std::fs::remove_file(&marker);
 
@@ -131,13 +131,14 @@ pub(super) async fn close_scratch_chat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wisp_store::Store;
+    use superscience_store::Store;
 
     #[tokio::test]
     async fn purge_orphan_scratch_projects_cleans_db_and_dirs() {
-        let app_data = std::env::temp_dir().join(format!("wisp_scratch_purge_{}", Uuid::new_v4()));
+        let app_data =
+            std::env::temp_dir().join(format!("superscience_scratch_purge_{}", Uuid::new_v4()));
         std::fs::create_dir_all(&app_data).unwrap();
-        let db = app_data.join("wisp.sqlite");
+        let db = app_data.join("superscience.sqlite");
         let store = Store::open(&db).await.unwrap();
         let orphan_dir = scratch_sandbox_root(&app_data).join("orphan");
         std::fs::create_dir_all(&orphan_dir).unwrap();

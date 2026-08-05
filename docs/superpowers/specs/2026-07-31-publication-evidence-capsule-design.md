@@ -91,8 +91,8 @@ For a regular file it:
 2. streams bytes through SHA-256 without loading the whole file;
 3. records size;
 4. optionally writes the stream to a temporary file under
-   `.wisp/artifacts/`, then atomically moves it to
-   `.wisp/artifacts/sha256/<prefix>/<sha256>.<ext>`;
+   `.superscience/artifacts/`, then atomically moves it to
+   `.superscience/artifacts/sha256/<prefix>/<sha256>.<ext>`;
 5. returns a project-relative storage path for a copied blob, or the original
    reference for reference-only capture.
 

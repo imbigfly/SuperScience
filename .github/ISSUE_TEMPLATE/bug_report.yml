@@ -7,7 +7,7 @@ body:
       value: |
         感谢反馈。请尽量完整填写以下信息；缺少版本、环境或复现步骤时，我们通常无法定位问题。
 
-        Wisp 版本号可在窗口标题栏或“设置”页面底部找到。提交截图或日志前，请务必遮盖 API Key、Token、密码、SSH 私钥等敏感信息。
+        SuperScience 版本号可在窗口标题栏或“设置”页面底部找到。提交截图或日志前，请务必遮盖 API Key、Token、密码、SSH 私钥等敏感信息。
 
   - type: checkboxes
     attributes:
@@ -21,7 +21,7 @@ body:
   - type: input
     id: app-version
     attributes:
-      label: Wisp 版本
+      label: SuperScience 版本
       description: "请填写完整版本号，可在窗口标题栏或“设置”页面底部查看。不要只写“最新版”。"
       placeholder: "例如：0.20.0"
     validations:
@@ -152,7 +152,7 @@ body:
     id: last-known-good-version
     attributes:
       label: 最后正常工作的版本
-      description: "如果这是升级后才出现的问题，请填写此前正常工作的 Wisp 版本；否则可留空。"
+      description: "如果这是升级后才出现的问题，请填写此前正常工作的 SuperScience 版本；否则可留空。"
       placeholder: "例如：0.19.0"
 
   - type: textarea

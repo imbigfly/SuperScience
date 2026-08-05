@@ -5,7 +5,7 @@ use super::*;
 #[tauri::command]
 pub(super) async fn list_execution_contexts(
     state: State<'_, AppState>,
-) -> Result<Vec<wisp_store::ExecutionContext>, String> {
+) -> Result<Vec<superscience_store::ExecutionContext>, String> {
     state
         .store
         .list_execution_contexts()
@@ -14,7 +14,7 @@ pub(super) async fn list_execution_contexts(
 }
 
 #[tauri::command]
-pub(super) fn list_runtimes(state: State<'_, AppState>) -> Vec<wisp_runtime::RuntimeInfo> {
+pub(super) fn list_runtimes(state: State<'_, AppState>) -> Vec<superscience_runtime::RuntimeInfo> {
     state.runtime_manager.list()
 }
 
@@ -23,11 +23,11 @@ pub(super) async fn inspect_runtime(
     state: State<'_, AppState>,
     project_id: String,
     context_id: String,
-    language: wisp_runtime::RuntimeLanguage,
-) -> Result<wisp_runtime::RuntimeObjectList, String> {
+    language: superscience_runtime::RuntimeLanguage,
+) -> Result<superscience_runtime::RuntimeObjectList, String> {
     state
         .runtime_manager
-        .inspect(&wisp_runtime::RuntimeKey {
+        .inspect(&superscience_runtime::RuntimeKey {
             project_id,
             context_id,
             language,
@@ -49,17 +49,17 @@ pub(super) async fn execute_runtime(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
     context_id: String,
-    language: wisp_runtime::RuntimeLanguage,
+    language: superscience_runtime::RuntimeLanguage,
     code: String,
 ) -> Result<String, String> {
-    if code.len() > wisp_runtime::MAX_CODE_BYTES {
+    if code.len() > superscience_runtime::MAX_CODE_BYTES {
         return Err(format!(
             "Selection exceeds the {} byte runtime limit.",
-            wisp_runtime::MAX_CODE_BYTES
+            superscience_runtime::MAX_CODE_BYTES
         ));
     }
     let project = state.active(window.label());
-    let key = wisp_runtime::RuntimeKey {
+    let key = superscience_runtime::RuntimeKey {
         project_id: project.id,
         context_id,
         language,
@@ -73,11 +73,11 @@ pub(super) async fn execute_runtime(
         match execution.recv().await {
             // ponytail: buffered, not streamed — the final frame repeats every
             // chunk. Stream to the console when a cell runs long enough to care.
-            Some(wisp_runtime::RuntimeEvent::Stdout(_)) => {}
-            Some(wisp_runtime::RuntimeEvent::Finished(Ok(response))) => {
-                return Ok(wisp_runtime::format_response(&response))
+            Some(superscience_runtime::RuntimeEvent::Stdout(_)) => {}
+            Some(superscience_runtime::RuntimeEvent::Finished(Ok(response))) => {
+                return Ok(superscience_runtime::format_response(&response))
             }
-            Some(wisp_runtime::RuntimeEvent::Finished(Err(error))) => return Err(error),
+            Some(superscience_runtime::RuntimeEvent::Finished(Err(error))) => return Err(error),
             None => return Err("Runtime ended before returning a result.".into()),
         }
     }
@@ -88,13 +88,13 @@ pub(super) async fn start_runtime(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
     context_id: String,
-    language: wisp_runtime::RuntimeLanguage,
-) -> Result<wisp_runtime::RuntimeInfo, String> {
+    language: superscience_runtime::RuntimeLanguage,
+) -> Result<superscience_runtime::RuntimeInfo, String> {
     let project = state.active(window.label());
     state
         .runtime_manager
         .start(
-            wisp_runtime::RuntimeKey {
+            superscience_runtime::RuntimeKey {
                 project_id: project.id,
                 context_id,
                 language,
@@ -110,11 +110,11 @@ pub(super) async fn stop_runtime(
     state: State<'_, AppState>,
     project_id: String,
     context_id: String,
-    language: wisp_runtime::RuntimeLanguage,
-) -> Result<Option<wisp_runtime::RuntimeInfo>, String> {
+    language: superscience_runtime::RuntimeLanguage,
+) -> Result<Option<superscience_runtime::RuntimeInfo>, String> {
     Ok(state
         .runtime_manager
-        .stop(&wisp_runtime::RuntimeKey {
+        .stop(&superscience_runtime::RuntimeKey {
             project_id,
             context_id,
             language,
@@ -127,8 +127,8 @@ pub(super) async fn restart_runtime(
     state: State<'_, AppState>,
     project_id: String,
     context_id: String,
-    language: wisp_runtime::RuntimeLanguage,
-) -> Result<wisp_runtime::RuntimeInfo, String> {
+    language: superscience_runtime::RuntimeLanguage,
+) -> Result<superscience_runtime::RuntimeInfo, String> {
     let (_, workspace) = state
         .store
         .get_project(&project_id)
@@ -139,7 +139,7 @@ pub(super) async fn restart_runtime(
     state
         .runtime_manager
         .restart(
-            wisp_runtime::RuntimeKey {
+            superscience_runtime::RuntimeKey {
                 project_id,
                 context_id,
                 language,
@@ -154,7 +154,7 @@ pub(super) async fn restart_runtime(
 pub(super) async fn list_runs(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
-) -> Result<Vec<wisp_store::RunRecord>, String> {
+) -> Result<Vec<superscience_store::RunRecord>, String> {
     let ap = state.active(window.label());
     state
         .store
@@ -168,7 +168,7 @@ pub(super) async fn cancel_run(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
     run_id: String,
-) -> Result<wisp_store::RunRecord, String> {
+) -> Result<superscience_store::RunRecord, String> {
     let ap = state.active(window.label());
     let run = state
         .store

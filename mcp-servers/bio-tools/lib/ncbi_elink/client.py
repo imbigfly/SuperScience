@@ -14,7 +14,7 @@ EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 TOOL = "ncbi-elink"
 # NCBI asks clients to identify themselves (tool + email) so an operator can
 # be warned before an IP block. Precedence (legal Y12): NCBI_EMAIL >
-# user-consented OPERON_CONTACT_EMAIL > omit (E-utilities accept omitting
+# user-consented SUPERSCIENCE_CONTACT_EMAIL > omit (E-utilities accept omitting
 # email=; never send an empty string).
 EMAIL = os.environ.get("NCBI_EMAIL") or contact_email()
 USER_AGENT = product_ua(TOOL)

@@ -6,7 +6,7 @@ use super::*;
 pub(super) async fn get_research_graph(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
-) -> Result<wisp_store::ResearchGraph, String> {
+) -> Result<superscience_store::ResearchGraph, String> {
     let ap = state.active(window.label());
     state
         .store
@@ -71,13 +71,13 @@ pub(super) async fn create_project(
     std::fs::create_dir_all(&path)
         .map_err(|e| format!("Failed to create working directory: {e}"))?;
     // Writability probe: create + remove a temp marker.
-    let marker = path.join(".wisp-write-test");
+    let marker = path.join(".superscience-write-test");
     std::fs::write(&marker, b"").map_err(|e| format!("Working directory is not writable: {e}"))?;
     let _ = std::fs::remove_file(&marker);
 
     let id = Uuid::new_v4().to_string();
     // #405: opt-in. Unchecked means the user keeps their own structure, so we
-    // create nothing — the convention lives in .wisp/WISP.md instead (below).
+    // create nothing — the convention lives in .superscience/SUPERSCIENCE.md instead (below).
     if standard_layout {
         workspace_manifest::init_workspace_layout(&path, &id, name.trim())?;
     }
@@ -86,7 +86,7 @@ pub(super) async fn create_project(
         .create_project(&id, name.trim(), dir)
         .await
         .map_err(|e| format!("{e}"))?;
-    // Description (DB) + Agent Context (.wisp/WISP.md) — same storage as update_project.
+    // Description (DB) + Agent Context (.superscience/SUPERSCIENCE.md) — same storage as update_project.
     let desc = description.trim();
     if !desc.is_empty() {
         state
@@ -97,10 +97,10 @@ pub(super) async fn create_project(
     }
     let ctx = agent_context.trim();
     if !ctx.is_empty() {
-        let wisp_dir = path.join(".wisp");
-        std::fs::create_dir_all(&wisp_dir)
+        let superscience_dir = path.join(".superscience");
+        std::fs::create_dir_all(&superscience_dir)
             .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
-        std::fs::write(wisp_dir.join("WISP.md"), ctx)
+        std::fs::write(superscience_dir.join("SUPERSCIENCE.md"), ctx)
             .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
     }
     Ok(build_project_summary(&state, &id).await)
@@ -283,7 +283,7 @@ pub(super) async fn spawn_project_window(
     set_active_project(state, &label, id).await?;
     let url = tauri::WebviewUrl::App(project_window_url(id, session).into());
     let builder = tauri::WebviewWindowBuilder::new(app, &label, url)
-        .title("wisp-science")
+        .title("SuperScience")
         .inner_size(1100.0, 760.0)
         .resizable(true);
     #[cfg(target_os = "windows")]
@@ -363,7 +363,7 @@ pub(super) struct ProjectSettings {
 }
 
 /// Read the active project's editable settings for the Project Settings modal.
-/// Agent Context is `.wisp/WISP.md`, injected into every seeded system prompt.
+/// Agent Context is `.superscience/SUPERSCIENCE.md`, injected into every seeded system prompt.
 #[tauri::command]
 pub(super) async fn get_project_settings(
     state: State<'_, AppState>,
@@ -378,7 +378,8 @@ pub(super) async fn get_project_settings(
         .map_err(|e| format!("{e}"))?
         .unwrap_or_default();
     let agent_context =
-        std::fs::read_to_string(ap.root.join(".wisp").join("WISP.md")).unwrap_or_default();
+        std::fs::read_to_string(ap.root.join(".superscience").join("SUPERSCIENCE.md"))
+            .unwrap_or_default();
     Ok(ProjectSettings {
         id: ap.id.clone(),
         name,
@@ -387,8 +388,8 @@ pub(super) async fn get_project_settings(
     })
 }
 
-/// Save the active project's name/description (DB) and Agent Context (.wisp/WISP.md).
-/// An empty Agent Context removes WISP.md so the prompt falls back to "no rules".
+/// Save the active project's name/description (DB) and Agent Context (.superscience/SUPERSCIENCE.md).
+/// An empty Agent Context removes SUPERSCIENCE.md so the prompt falls back to "no rules".
 /// Takes effect on the next seeded session; already-running agents keep their prompt.
 #[tauri::command]
 pub(super) async fn update_project(
@@ -407,15 +408,16 @@ pub(super) async fn update_project(
         .update_project(&ap.id, name.trim(), description.trim())
         .await
         .map_err(|e| format!("{e}"))?;
-    let wisp_dir = ap.root.join(".wisp");
-    let wisp_md = wisp_dir.join("WISP.md");
+    let superscience_dir = ap.root.join(".superscience");
+    let superscience_md = superscience_dir.join("SUPERSCIENCE.md");
     let ctx = agent_context.trim();
     if ctx.is_empty() {
-        let _ = std::fs::remove_file(&wisp_md);
+        let _ = std::fs::remove_file(&superscience_md);
     } else {
-        std::fs::create_dir_all(&wisp_dir)
+        std::fs::create_dir_all(&superscience_dir)
             .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
-        std::fs::write(&wisp_md, ctx).map_err(|e| format!("Failed to write Agent Context: {e}"))?;
+        std::fs::write(&superscience_md, ctx)
+            .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
     }
     Ok(build_project_summary(&state, &ap.id).await)
 }

@@ -1,12 +1,12 @@
 ---
 name: using-model-endpoint
-description: Invoke an already configured model endpoint from a supported Wisp execution context and capture the bounded inference as a Run. Use only when the endpoint URL and authentication are already available inside that context; this skill does not register or manage services.
+description: Invoke an already configured model endpoint from a supported SuperScience execution context and capture the bounded inference as a Run. Use only when the endpoint URL and authentication are already available inside that context; this skill does not register or manage services.
 license: Apache-2.0
 ---
 
 # Use an existing model endpoint
 
-Wisp can record a bounded client invocation as a Run, but it does not register
+SuperScience can record a bounded client invocation as a Run, but it does not register
 or manage the endpoint. Require all of the following:
 
 - a selected `local`, `wsl:<distro>`, or `ssh:<alias>` context;
@@ -17,7 +17,7 @@ or manage the endpoint. Require all of the following:
 - a finite request timeout and a concrete output path.
 
 Do not ask the user to paste secrets into the command, project files, or chat.
-Wisp exposes no credential accessor to the Agent and does not inject keyring
+SuperScience exposes no credential accessor to the Agent and does not inject keyring
 values into `run_in_context` commands.
 
 ## Invocation workflow
@@ -34,12 +34,12 @@ values into `run_in_context` commands.
 {
   "context_id": "ssh:gpu-box",
   "title": "Existing endpoint inference",
-  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate endpoint-client && python call_endpoint.py --input request.json --output /home/me/wisp-results/endpoint/response.json",
+  "command": "source ~/miniforge3/etc/profile.d/conda.sh && conda activate endpoint-client && python call_endpoint.py --input request.json --output /home/me/superscience-results/endpoint/response.json",
   "timeout_secs": 300,
   "input_paths": ["runs/call_endpoint.py", "data/request.json"],
   "output_specs": [
     {
-      "glob": "ssh://gpu-box/home/me/wisp-results/endpoint/response.json",
+      "glob": "ssh://gpu-box/home/me/superscience-results/endpoint/response.json",
       "kind": "json",
       "residency": "remote"
     }

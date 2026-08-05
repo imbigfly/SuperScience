@@ -1,11 +1,11 @@
 ---
 name: compute-envs-reference
-description: Historical scientific environment recipes translated into package-order, cache, and validation examples for Wisp direct execution contexts. Read alongside compute-env-setup when building a matching user-space environment on SSH.
+description: Historical scientific environment recipes translated into package-order, cache, and validation examples for SuperScience direct execution contexts. Read alongside compute-env-setup when building a matching user-space environment on SSH.
 ---
 
 # Compute environment reference — worked examples
 
-These are recipe examples, not environments Wisp automatically provides. Translate
+These are recipe examples, not environments SuperScience automatically provides. Translate
 the relevant package phases, cache variables, and validation witness into an
 idempotent setup script for the selected direct SSH context. Container paths and
 resource tiers are historical reference values; replace them with probed,

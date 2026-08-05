@@ -7,8 +7,8 @@ use std::{
 };
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 
-const GIT_AUTHOR_NAME: &str = "Wisp Science Agent";
-const GIT_AUTHOR_EMAIL: &str = "wisp-agent@localhost";
+const GIT_AUTHOR_NAME: &str = "SuperScience Agent";
+const GIT_AUTHOR_EMAIL: &str = "superscience-agent@localhost";
 // Git for Windows can fail during DLL initialization when several project
 // windows probe it at once. One app-wide lock keeps capability probes from
 // launching overlapping git.exe processes.
@@ -146,7 +146,7 @@ impl GitWorktreeIsolation {
         let project = self.probe(project_root).await?;
         tokio::fs::create_dir_all(&self.temp_root).await?;
         let token = uuid::Uuid::new_v4().to_string();
-        let branch = format!("wisp-agent/{token}");
+        let branch = format!("superscience-agent/{token}");
         let worktree_root = self.temp_root.join(&token);
         let args = worktree_add_args(&branch, &worktree_root, &project.head);
         let added = self.runner.run(&project.repo_root, args, None).await?;
@@ -358,7 +358,7 @@ impl GitWorktreeIsolation {
                         OsString::from(&workspace.base_commit),
                     ],
                 ),
-                Some(b"wisp(agent): apply isolated task\n".to_vec()),
+                Some(b"superscience(agent): apply isolated task\n".to_vec()),
             )
             .await?;
         if !commit.success {
@@ -441,13 +441,15 @@ impl GitWorktreeIsolation {
                     )
                     .await
                 {
-                    Ok(output) if output.success => "; Wisp aborted its partial cherry-pick".into(),
+                    Ok(output) if output.success => {
+                        "; SuperScience aborted its partial cherry-pick".into()
+                    }
                     Ok(output) => format!(
-                        "; Wisp could not abort its partial cherry-pick ({})",
+                        "; SuperScience could not abort its partial cherry-pick ({})",
                         stderr_text(&output)
                     ),
                     Err(error) => {
-                        format!("; Wisp could not abort its partial cherry-pick ({error})")
+                        format!("; SuperScience could not abort its partial cherry-pick ({error})")
                     }
                 }
             }
@@ -555,7 +557,7 @@ impl GitWorktreeIsolation {
 }
 
 pub(crate) async fn git_worktree_available(project_root: &Path) -> bool {
-    GitWorktreeIsolation::new(std::env::temp_dir().join("wisp-agent-worktrees-probe"))
+    GitWorktreeIsolation::new(std::env::temp_dir().join("superscience-agent-worktrees-probe"))
         .available(project_root)
         .await
 }
@@ -645,8 +647,10 @@ mod tests {
     }
 
     fn test_repo(label: &str) -> (PathBuf, PathBuf) {
-        let base =
-            std::env::temp_dir().join(format!("wisp isolation {label} {}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!(
+            "superscience isolation {label} {}",
+            uuid::Uuid::new_v4()
+        ));
         let repo = base.join("Project With Spaces");
         fs::create_dir_all(&repo).unwrap();
         assert!(git(&repo, &["init"]).status.success());
@@ -663,9 +667,9 @@ mod tests {
             &repo,
             &[
                 "-c",
-                "user.name=Wisp Test",
+                "user.name=SuperScience Test",
                 "-c",
-                "user.email=wisp-test@localhost",
+                "user.email=superscience-test@localhost",
                 "commit",
                 "-m",
                 "base",
@@ -727,9 +731,9 @@ mod tests {
         assert!(!first_root.exists());
         assert!(!second_root.exists());
         assert!(!String::from_utf8_lossy(
-            &git(&repo, &["branch", "--list", "wisp-agent/*"]).stdout
+            &git(&repo, &["branch", "--list", "superscience-agent/*"]).stdout
         )
-        .contains("wisp-agent/"));
+        .contains("superscience-agent/"));
         let _ = fs::remove_dir_all(repo.parent().unwrap());
     }
 
@@ -782,9 +786,9 @@ mod tests {
             &repo,
             &[
                 "-c",
-                "user.name=Wisp Test",
+                "user.name=SuperScience Test",
                 "-c",
-                "user.email=wisp-test@localhost",
+                "user.email=superscience-test@localhost",
                 "commit",
                 "-am",
                 "user operation",
@@ -798,9 +802,9 @@ mod tests {
             &repo,
             &[
                 "-c",
-                "user.name=Wisp Test",
+                "user.name=SuperScience Test",
                 "-c",
-                "user.email=wisp-test@localhost",
+                "user.email=superscience-test@localhost",
                 "commit",
                 "-am",
                 "main change",
@@ -812,9 +816,9 @@ mod tests {
             &repo,
             &[
                 "-c",
-                "user.name=Wisp Test",
+                "user.name=SuperScience Test",
                 "-c",
-                "user.email=wisp-test@localhost",
+                "user.email=superscience-test@localhost",
                 "cherry-pick",
                 "user-operation",
             ],
@@ -926,7 +930,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_capability_probes_do_not_overlap_git_processes() {
         let root = std::env::temp_dir().join(format!(
-            "wisp-concurrent-git-probes-{}",
+            "superscience-concurrent-git-probes-{}",
             uuid::Uuid::new_v4()
         ));
         let first_root = root.join("first");
@@ -948,7 +952,8 @@ mod tests {
 
     #[tokio::test]
     async fn missing_git_fails_closed_through_the_injected_runner() {
-        let root = std::env::temp_dir().join(format!("wisp-missing-git-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("superscience-missing-git-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let fake = Arc::new(FakeRunner::default());
         fake.outputs
@@ -965,7 +970,8 @@ mod tests {
 
     #[tokio::test]
     async fn non_git_and_dirty_projects_do_not_advertise_isolation() {
-        let plain = std::env::temp_dir().join(format!("wisp-non-git-{}", uuid::Uuid::new_v4()));
+        let plain =
+            std::env::temp_dir().join(format!("superscience-non-git-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&plain).unwrap();
         let isolation = GitWorktreeIsolation::new(plain.join("worktrees"));
         assert!(!isolation.available(&plain).await);
@@ -987,10 +993,10 @@ mod tests {
     #[test]
     fn worktree_paths_are_single_arguments_on_windows_and_macos() {
         for path in [
-            Path::new(r"C:\Users\Researcher Name\Wisp Worktree"),
-            Path::new("/Users/Researcher Name/Wisp Worktree"),
+            Path::new(r"C:\Users\Researcher Name\SuperScience Worktree"),
+            Path::new("/Users/Researcher Name/SuperScience Worktree"),
         ] {
-            let args = worktree_add_args("wisp-agent/id", path, "abc123");
+            let args = worktree_add_args("superscience-agent/id", path, "abc123");
             assert_eq!(args.len(), 6);
             assert_eq!(args[4], path.as_os_str());
         }

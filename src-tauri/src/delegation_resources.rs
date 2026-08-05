@@ -12,14 +12,14 @@ use crate::{
 };
 use serde::Serialize;
 use std::{collections::HashSet, path::Path};
-use wisp_core::{AgentSpec, CapabilityRegistry, SpecialistSnapshot};
-use wisp_store::{ExecutionContext, ExecutionContextKind, Store};
+use superscience_core::{AgentSpec, CapabilityRegistry, SpecialistSnapshot};
+use superscience_store::{ExecutionContext, ExecutionContextKind, Store};
 
 pub(crate) const LITERATURE_TOOL_GRANT: &str = "literature_search";
 pub(crate) const EXTERNAL_TOOL_GRANT: &str = "web_search";
 const LITERATURE_CONNECTORS: &[&str] = &["literature", "pubmed", "biorxiv"];
-const SKILL_TOKEN_PREFIX: &str = "wisp_skill:";
-const CONNECTOR_TOKEN_PREFIX: &str = "wisp_connector:";
+const SKILL_TOKEN_PREFIX: &str = "superscience_skill:";
+const CONNECTOR_TOKEN_PREFIX: &str = "superscience_connector:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 enum ConnectorClass {
@@ -86,11 +86,11 @@ impl ScientificResourceCatalog {
             .map(skill_fingerprint)
             .collect::<Vec<_>>();
 
-        let managed_python = wisp_runtime::PythonEnv::managed(app_data)
+        let managed_python = superscience_runtime::PythonEnv::managed(app_data)
             .python()
             .is_file();
         let disabled = load_disabled_connectors(store).await;
-        let dev_command = std::env::var("WISP_MCP_COMMAND")
+        let dev_command = std::env::var("SUPERSCIENCE_MCP_COMMAND")
             .ok()
             .filter(|command| command.split_whitespace().next().is_some());
         let mut connectors = if dev_command.is_some() {
@@ -485,12 +485,12 @@ pub(crate) fn connector_from_token(token: &str) -> Option<&str> {
 
 fn specialist(spec: &AgentSpec) -> Option<&SpecialistSnapshot> {
     match &spec.origin {
-        wisp_core::AgentOrigin::Specialist(specialist) => Some(specialist),
+        superscience_core::AgentOrigin::Specialist(specialist) => Some(specialist),
         _ => None,
     }
 }
 
-fn is_literature_skill(skill: &wisp_skills::Skill) -> bool {
+fn is_literature_skill(skill: &superscience_skills::Skill) -> bool {
     skill.name == "literature-review"
         || skill.name.starts_with("bear-")
         || skill.tags.iter().any(|tag| {
@@ -501,7 +501,7 @@ fn is_literature_skill(skill: &wisp_skills::Skill) -> bool {
         })
 }
 
-fn is_visualization_skill(skill: &wisp_skills::Skill) -> bool {
+fn is_visualization_skill(skill: &superscience_skills::Skill) -> bool {
     is_visualization_skill_name(&skill.name)
         || skill.tags.iter().any(|tag| {
             matches!(
@@ -515,7 +515,7 @@ fn is_visualization_skill_name(name: &str) -> bool {
     name.starts_with("figure-") || name == "paper-narrative"
 }
 
-fn skill_fingerprint(skill: &wisp_skills::Skill) -> String {
+fn skill_fingerprint(skill: &superscience_skills::Skill) -> String {
     let bytes = serde_json::to_vec(&(&skill.name, &skill.description, &skill.tags, &skill.body))
         .unwrap_or_default();
     let hash = bytes.into_iter().fold(0xcbf29ce484222325u64, |hash, byte| {
@@ -560,7 +560,8 @@ fn context_supports_python(context: &ExecutionContext, managed_python: bool) -> 
 }
 
 fn context_supports_r(context: &ExecutionContext) -> bool {
-    if context.kind == ExecutionContextKind::Local && wisp_runtime::find_rscript().is_some() {
+    if context.kind == ExecutionContextKind::Local && superscience_runtime::find_rscript().is_some()
+    {
         return true;
     }
     let interpreter = json_string(

@@ -92,11 +92,22 @@ pub fn remote_file_download_uri(context_id: &str, path: &str) -> Option<String> 
 }
 
 fn event_target(ev: &web_sys::MouseEvent) -> Option<web_sys::Element> {
-    ev.target()?.dyn_into::<web_sys::Element>().ok()
+    let target = ev.target()?;
+    // Clicks on button labels often target a Text node; walk to the element.
+    match target.dyn_into::<web_sys::Element>() {
+        Ok(el) => Some(el),
+        Err(target) => target.dyn_into::<web_sys::Node>().ok()?.parent_element(),
+    }
 }
 
 fn closest(el: &web_sys::Element, selector: &str) -> Option<web_sys::Element> {
     el.closest(selector).ok().flatten()
+}
+
+fn node_element(node: &web_sys::Node) -> Option<web_sys::Element> {
+    node.dyn_ref::<web_sys::Element>()
+        .cloned()
+        .or_else(|| node.parent_element())
 }
 
 fn editable_text_entry(el: &web_sys::Element) -> Option<web_sys::Element> {
@@ -137,6 +148,44 @@ pub(crate) fn selection_text() -> Option<String> {
     } else {
         Some(text)
     }
+}
+
+/// True when a chat `mouseup` landed on a control that owns the click.
+///
+/// The transcript raises a selection popup from bubbling `mouseup`. If that
+/// runs while the pointer is on Allow/Deny (or any other control) and text is
+/// still selected — common after inspecting an approval command — the popup is
+/// positioned on the button and eats the subsequent `click`.
+pub(crate) fn selection_mouseup_on_control(ev: &web_sys::MouseEvent) -> bool {
+    event_target(ev).is_some_and(|el| {
+        closest(
+            &el,
+            concat!(
+                "button, a, input, select, textarea, label, option, summary, ",
+                ".approval-wrap, .approval-actions, .plan-card-actions, ",
+                ".plan-question-options, .plan-question-freeform, .queue-actions",
+            ),
+        )
+        .is_some()
+    })
+}
+
+/// True when the live selection is anchored inside an approval card.
+/// Quote-bar popups over that card cover Allow/Deny and make them look dead.
+pub(crate) fn selection_in_approval_card() -> bool {
+    let Some(win) = web_sys::window() else {
+        return false;
+    };
+    let Some(sel) = win.get_selection().ok().flatten() else {
+        return false;
+    };
+    if sel.is_collapsed() {
+        return false;
+    }
+    sel.anchor_node()
+        .and_then(|node| node_element(&node))
+        .and_then(|el| closest(&el, ".approval-wrap, .approval-card"))
+        .is_some()
 }
 
 fn text_from_code_block(el: &web_sys::Element) -> Option<String> {

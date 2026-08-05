@@ -37,13 +37,13 @@ clicking the artifact.
   core thing this feature adds.
 
 Enabling facts that make capture cheap:
-- Single tool-dispatch chokepoint: `crates/wisp-core/src/agent.rs:76`
+- Single tool-dispatch chokepoint: `crates/superscience-core/src/agent.rs:76`
   `let result = tools.run(&name, &args, &env).await;`. Wrapping here covers **every**
   producer uniformly — the Python kernel (`savefig`), `shell` (e.g. `Rscript` running
   a ggplot2 volcano), and `write`.
-- `ToolEnv` (`crates/wisp-tools/src/env.rs`) already exposes `project_root()`,
+- `ToolEnv` (`crates/superscience-tools/src/env.rs`) already exposes `project_root()`,
   `emit(ToolEvent)`, `is_cancelled()`.
-- The `Output` trait (`crates/wisp-core/src/output.rs`) is the agent-loop's sink;
+- The `Output` trait (`crates/superscience-core/src/output.rs`) is the agent-loop's sink;
   `ToolEnvAdapter` bridges it to `ToolEnv`. src-tauri's `TauriOutput` implements
   `Output`, holds the `AppHandle` + a persist channel, and already persists messages
   via `on_message` → an mpsc channel drained by a background task. Adding a
@@ -51,8 +51,8 @@ Enabling facts that make capture cheap:
 
 ## 3. Architecture
 
-Four pieces: **capture** (wisp-core), **environment snapshot** (src-tauri, lazy),
-**storage** (wisp-store), **query + UI** (src-tauri command + ui modal).
+Four pieces: **capture** (superscience-core), **environment snapshot** (src-tauri, lazy),
+**storage** (superscience-store), **query + UI** (src-tauri command + ui modal).
 
 ### 3.1 Capture — snapshot diff at the dispatch boundary
 
@@ -69,7 +69,7 @@ files_read    = { p in before : path-string of p appears literally in source }
 ```
 
 - `snapshot` walks `project_root` recursively, **skipping** `.git`, `.venv`,
-  `node_modules`, `.wisp`, `uploads`, and any dir over a file-count cap.
+  `node_modules`, `.superscience`, `uploads`, and any dir over a file-count cap.
   `// ponytail: recursive mtime scan, cap+skip heavy dirs; switch to fs-notify if this
   shows up in profiles.`
 - `source` = the tool's code: `args["code"]` for `python`, `args["cmd"]` for
@@ -82,26 +82,26 @@ files_read    = { p in before : path-string of p appears literally in source }
   `ToolResult`; paths workspace-relative) and call `output.provenance(&rec)`.
 
 `snapshot` + the diff + `ProvenanceRecord` live in a small new module
-`crates/wisp-core/src/provenance.rs`; `agent.rs` gains a thin wrapper and the `Output`
+`crates/superscience-core/src/provenance.rs`; `agent.rs` gains a thin wrapper and the `Output`
 trait gains a `fn provenance(&self, _rec: &ProvenanceRecord) {}` default no-op. No
 `ToolEvent` change — the record flows through `Output`, not the UI event enum.
 
 ### 3.2 Environment snapshot — lazy, per session
 
-Environment capture stays **out of the hot wisp-core path**. `TauriOutput::provenance`
+Environment capture stays **out of the hot superscience-core path**. `TauriOutput::provenance`
 just sends the record to an mpsc channel; a background drain task (mirroring the
 message-persist task) does the DB work. On the **first** provenance record of a
 session, the drain task shells out once:
 `uv pip list --format=json` using the session's kernel Python
-(`crates/wisp-runtime/src/env.rs::python()`); if a conda env is active, also
+(`crates/superscience-runtime/src/env.rs::python()`); if a conda env is active, also
 `conda list --json`. The JSON is content-hashed; the hash + package list are stored in
 `env_snapshots` and reused for every later record in that session. Failure to capture
 is non-fatal — `env_hash` is left NULL and the Environment panel shows "unavailable".
 
-### 3.3 Storage — wisp-store, additive migrations
+### 3.3 Storage — superscience-store, additive migrations
 
 Follow the existing additive-migration pattern (cf. the `workspace_dir`
-`ALTER TABLE … ADD COLUMN` guard in `crates/wisp-store/src/lib.rs`).
+`ALTER TABLE … ADD COLUMN` guard in `crates/superscience-store/src/lib.rs`).
 
 ```sql
 CREATE TABLE execution_log (
@@ -158,7 +158,7 @@ ArtifactProvenance {
   env: Option<{ name: Option<String>, packages: Vec<{ name, version }> }>,
 }
 ```
-`ToolResult` (`crates/wisp-tools/src/env.rs`) exposes only `success: bool` +
+`ToolResult` (`crates/superscience-tools/src/env.rs`) exposes only `success: bool` +
 `content: String`, so the record stores `output = content`, `exit_status =
 ok|error`; the `stdout`/`stderr`/`wall_s` columns are kept for forward-compat and
 populated as `content`/`""`/`NULL` today.
@@ -211,10 +211,10 @@ agent turn
 
 ## 6. Testing
 
-- **wisp-core unit:** `provenance::snapshot` + diff — create temp dir, write a file
+- **superscience-core unit:** `provenance::snapshot` + diff — create temp dir, write a file
   mid-"run", assert it appears in `files_written`; assert a skipped dir (`.git`) never
   appears; assert a literal path in source is detected as `files_read`.
-- **wisp-store unit:** insert an `execution_log` row + `env_snapshots` row, read back
+- **superscience-store unit:** insert an `execution_log` row + `env_snapshots` row, read back
   via the by-path provenance query; assert `files_written` JSON round-trips and the
   query matches the right row by path.
 - **ui e2e (Playwright, mocked bridge):** mock `get_artifact_provenance`; click a

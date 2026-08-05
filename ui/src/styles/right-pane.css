@@ -41,8 +41,7 @@
 .rp-empty-action { font-size: var(--text-sm); font-weight: 600; color: var(--clay-strong); text-decoration: underline; text-underline-offset: 2px; }
 .rp-empty-icon { width: 40px; height: 40px; border-radius: var(--radius-xs); border: 1.5px dashed var(--border-strong); background: var(--bg-sunken); }
 .rp-empty-icon.brand {
-  border: none; background: center / contain no-repeat url("logo.svg");
-  box-shadow: 0 8px 22px color-mix(in srgb, var(--clay) 18%, transparent);
+  border: none; background: center / contain no-repeat url("logo.png");
 }
 .rp-empty-icon.host { display: flex; align-items: center; justify-content: center; border: 1px solid color-mix(in srgb, var(--clay-strong) 22%, transparent); background: var(--clay-soft); color: var(--clay-strong); }
 .rp-empty-icon.host .gi { width: 22px; height: 22px; opacity: 1; }

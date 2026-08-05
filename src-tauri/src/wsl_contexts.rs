@@ -71,9 +71,9 @@ fn looks_like_utf16le(output: &[u8]) -> bool {
 }
 
 pub async fn persist_wsl_contexts(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     distros: &[WslDistro],
-) -> Result<Vec<wisp_store::ExecutionContext>, String> {
+) -> Result<Vec<superscience_store::ExecutionContext>, String> {
     let mut contexts = Vec::new();
     for distro in distros {
         let name = distro.name.trim();
@@ -85,9 +85,11 @@ pub async fn persist_wsl_contexts(
             .map_err(|e| e.to_string())?
         {
             Some(ctx) => ctx,
-            None => wisp_store::ExecutionContext::new(&id, name).map_err(|e| e.to_string())?,
+            None => {
+                superscience_store::ExecutionContext::new(&id, name).map_err(|e| e.to_string())?
+            }
         };
-        ctx.kind = wisp_store::ExecutionContextKind::Wsl;
+        ctx.kind = superscience_store::ExecutionContextKind::Wsl;
         ctx.label = name.into();
         ctx.config_json = crate::runtime_launcher::preserve_interpreter_config(
             &ctx.config_json,
@@ -132,7 +134,7 @@ pub async fn list_wsl_distros() -> Result<Vec<WslDistro>, String> {
         }
         let mut command = std::process::Command::new("wsl.exe");
         command.args(["-l", "-q"]);
-        wisp_tools::process::hide_console(&mut command);
+        superscience_tools::process::hide_console(&mut command);
         let output = command
             .output()
             .map_err(|e| format!("failed to run wsl.exe: {e}"))?;
@@ -151,7 +153,7 @@ pub async fn list_wsl_distros() -> Result<Vec<WslDistro>, String> {
 #[tauri::command]
 pub async fn import_wsl_contexts(
     state: State<'_, crate::AppState>,
-) -> Result<Vec<wisp_store::ExecutionContext>, String> {
+) -> Result<Vec<superscience_store::ExecutionContext>, String> {
     let distros = list_wsl_distros().await?;
     persist_wsl_contexts(&state.store, &distros).await
 }
@@ -202,11 +204,13 @@ mod tests {
 
     #[tokio::test]
     async fn persisting_wsl_distros_creates_execution_contexts() {
-        let tmp =
-            std::env::temp_dir().join(format!("wisp_wsl_contexts_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_wsl_contexts_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         let mut existing =
-            wisp_store::ExecutionContext::new("wsl:Ubuntu-22.04", "Ubuntu-22.04").unwrap();
+            superscience_store::ExecutionContext::new("wsl:Ubuntu-22.04", "Ubuntu-22.04").unwrap();
         existing.config_json = serde_json::json!({
             "distro": "Ubuntu-22.04",
             "python_executable": "/opt/python/bin/python",
@@ -226,7 +230,10 @@ mod tests {
 
         assert_eq!(contexts.len(), 1);
         assert_eq!(contexts[0].id, "wsl:Ubuntu-22.04");
-        assert_eq!(contexts[0].kind, wisp_store::ExecutionContextKind::Wsl);
+        assert_eq!(
+            contexts[0].kind,
+            superscience_store::ExecutionContextKind::Wsl
+        );
         let cfg: serde_json::Value = serde_json::from_str(&contexts[0].config_json).unwrap();
         assert_eq!(cfg["distro"], "Ubuntu-22.04");
         assert_eq!(cfg["is_default"], true);

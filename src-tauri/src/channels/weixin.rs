@@ -165,7 +165,7 @@ impl IlinkClient {
         Ok(Self {
             // getupdates long-polls ~35s server-side; leave headroom.
             http: reqwest::Client::builder()
-                .user_agent("wisp-science")
+                .user_agent("superscience")
                 .timeout(Duration::from_secs(75))
                 .build()?,
             base_url: if base_url.is_empty() {
@@ -240,7 +240,7 @@ impl IlinkClient {
     }
 
     pub async fn send_text(&self, to_user_id: &str, text: &str, context_token: &str) -> Result<()> {
-        let client_id = format!("wisp-weixin-{}", uuid::Uuid::new_v4().simple());
+        let client_id = format!("superscience-weixin-{}", uuid::Uuid::new_v4().simple());
         let resp: serde_json::Value = self
             .request(reqwest::Method::POST, "/ilink/bot/sendmessage")
             .json(&json!({
@@ -309,7 +309,7 @@ pub async fn run(
             // Token is scan-only; it cannot be refreshed programmatically.
             let _ = state.store.set_setting("weixin_enabled", "false").await;
             set_status(&status, "error", "微信登录已过期,请重新扫码绑定");
-            tracing::warn!(target: "wisp", channel = "weixin", "session expired (-14); channel disabled");
+            tracing::warn!(target: "superscience", channel = "weixin", "session expired (-14); channel disabled");
             return;
         }
         if updates.ret != 0 {
@@ -349,7 +349,7 @@ pub async fn run(
                 .send_text(&msg.from_user_id, &reply, &msg.context_token)
                 .await
             {
-                tracing::warn!(target: "wisp", channel = "weixin", error = %e, "send reply failed");
+                tracing::warn!(target: "superscience", channel = "weixin", error = %e, "send reply failed");
             }
         }
         if !updates.get_updates_buf.is_empty() && updates.get_updates_buf != cursor {

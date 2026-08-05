@@ -31,13 +31,23 @@ export function attach_chat_scroll(scrollerId, contentId) {
 
   let follow = true;
   let lastHeight = content.scrollHeight;
-  // Timestamp of the last real user scroll gesture. The thread is re-rendered
-  // on every streaming delta, which briefly collapses its height, clamps
-  // scrollTop toward the top, and fires a spurious "scroll" event. Without this
-  // guard that event unfollows and strands the view at the top mid-stream (#61).
-  let lastUserScroll = -Infinity;
-  const markUser = () => {
-    lastUserScroll = performance.now();
+  let lastScrollTop = scroller.scrollTop;
+  // Only scroll-UP gestures unfollow. The older "any recent user scroll"
+  // window treated reflow clamps right after scrolling back to the bottom as
+  // another unfollow, so the view bounced away from the tail mid-stream and
+  // could not stay pinned there.
+  let lastUserScrollUp = -Infinity;
+  // True while the user is actively dragging the scrollbar / touching the
+  // scroller. Reflow clamps must NOT use a lingering "recent gesture" window —
+  // after rolling back to the bottom, streaming rebuilds shrink scrollTop and
+  // that looked identical to another scroll-up, bouncing the pin off again.
+  let dragActive = false;
+  const markScrollUp = () => {
+    lastUserScrollUp = performance.now();
+    follow = false;
+  };
+  const setDrag = (active) => {
+    dragActive = active;
   };
 
   // Floating "Your last message" jump pill: visible only when the last user
@@ -59,12 +69,16 @@ export function attach_chat_scroll(scrollerId, contentId) {
   const syncFollow = () => {
     syncPill();
     if (atBottom(scroller)) {
+      // Reaching the live edge restores the pin and clears any scroll-up
+      // window so a streaming reflow immediately afterward cannot bounce us
+      // away again.
       follow = true;
+      lastUserScrollUp = -Infinity;
       return;
     }
-    // Not at bottom: only treat it as an intentional scroll-up if a real gesture
-    // happened just now. Reflow-driven scrolls leave `follow` untouched.
-    if (performance.now() - lastUserScroll < 500) {
+    // Intentional scroll-up: release the pin so the user can read history
+    // while the turn keeps streaming below.
+    if (performance.now() - lastUserScrollUp < 500) {
       follow = false;
       return;
     }
@@ -80,23 +94,58 @@ export function attach_chat_scroll(scrollerId, contentId) {
     const grew = h > lastHeight;
     lastHeight = h;
     if (follow && grew) snapBottom(scroller);
+    lastScrollTop = scroller.scrollTop;
     syncFollow();
   };
 
   scroller.style.overflowAnchor = "none";
-  scroller.addEventListener("scroll", syncFollow, { passive: true });
   scroller.addEventListener(
-    "wheel",
-    (e) => {
-      markUser();
-      if (e.deltaY < 0) follow = false;
-      else if (atBottom(scroller)) follow = true;
+    "scroll",
+    () => {
+      const top = scroller.scrollTop;
+      // Only count scrollTop decreases while a drag/touch is held. Wheel-up is
+      // handled on the wheel listener; reflow clamps never hold dragActive.
+      if (dragActive && top + 1 < lastScrollTop) {
+        markScrollUp();
+      } else if (dragActive && top > lastScrollTop + 1) {
+        lastUserScrollUp = -Infinity;
+      }
+      lastScrollTop = top;
+      syncFollow();
     },
     { passive: true },
   );
-  scroller.addEventListener("touchmove", markUser, { passive: true });
-  scroller.addEventListener("pointerdown", markUser, { passive: true });
-  scroller.addEventListener("keydown", markUser, { passive: true });
+  scroller.addEventListener(
+    "wheel",
+    (e) => {
+      if (e.deltaY < 0) {
+        markScrollUp();
+      } else {
+        lastUserScrollUp = -Infinity;
+        if (atBottom(scroller)) follow = true;
+      }
+    },
+    { passive: true },
+  );
+  scroller.addEventListener("pointerdown", () => setDrag(true), { passive: true });
+  scroller.addEventListener("touchstart", () => setDrag(true), { passive: true });
+  // pointer/touch may release outside the scroller
+  window.addEventListener("pointerup", () => setDrag(false), { passive: true });
+  window.addEventListener("pointercancel", () => setDrag(false), { passive: true });
+  window.addEventListener("touchend", () => setDrag(false), { passive: true });
+  window.addEventListener("touchcancel", () => setDrag(false), { passive: true });
+  scroller.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") {
+        markScrollUp();
+      } else if (e.key === "PageDown" || e.key === "ArrowDown" || e.key === "End") {
+        lastUserScrollUp = -Infinity;
+        if (atBottom(scroller)) follow = true;
+      }
+    },
+    { passive: true },
+  );
 
   const ro = new ResizeObserver(() => onGrowth());
   ro.observe(content);
@@ -107,16 +156,24 @@ export function attach_chat_scroll(scrollerId, contentId) {
     unfollow: () => {
       follow = false;
       lastHeight = content.scrollHeight;
+      lastScrollTop = scroller.scrollTop;
     },
     snap: () => {
       follow = true;
       snapBottom(scroller);
       lastHeight = content.scrollHeight;
+      lastScrollTop = scroller.scrollTop;
     },
+    /** @returns {{ follow: boolean, gap: number }} */
+    debugState: () => ({
+      follow,
+      gap: bottomGap(scroller),
+    }),
   });
 
   follow = true;
   snapBottom(scroller);
+  lastScrollTop = scroller.scrollTop;
 }
 
 /** @param {string} scrollerId */

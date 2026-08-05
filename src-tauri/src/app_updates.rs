@@ -166,7 +166,7 @@ pub(super) async fn check_for_updates(
         .build()
         .map_err(|error| format!("Failed to create update client: {error}"))?
         .get(LATEST_RELEASE_API)
-        .header(reqwest::header::USER_AGENT, "wisp-science-update-check")
+        .header(reqwest::header::USER_AGENT, "superscience-update-check")
         .send()
         .await
         .map_err(|error| format!("Failed to check GitHub Releases: {error}"))?

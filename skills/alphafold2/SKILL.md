@@ -84,7 +84,7 @@ For campaigns, run the MSA stage once with `--msa-only`, keep the resulting
 `.a3m` files, and feed the directory back as the input on subsequent runs — the
 GPU stage then starts immediately and the server is not hit again.
 
-## Wisp execution
+## SuperScience execution
 
 Use `python` only for bounded interactive checks. For a long or GPU-backed
 workload, require a selected and probed `ssh:<alias>` context and load

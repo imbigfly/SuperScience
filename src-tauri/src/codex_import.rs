@@ -1,4 +1,4 @@
-//! Import Codex CLI and Claude Code JSONL conversations into Wisp sessions.
+//! Import Codex CLI and Claude Code JSONL conversations into SuperScience sessions.
 //! Re-imports are idempotent via the existing `codex_imports` table; Claude
 //! session ids are namespaced so they cannot collide with Codex thread ids.
 
@@ -6,16 +6,18 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use superscience_llm::{Content, FunctionCall, Message, Role, ToolCall};
+use superscience_store::{
+    ExecutionContext, ExecutionContextKind, ExternalSessionCacheRecord, Store,
+};
 use tauri::State;
-use wisp_llm::{Content, FunctionCall, Message, Role, ToolCall};
-use wisp_store::{ExecutionContext, ExecutionContextKind, ExternalSessionCacheRecord, Store};
 
 use super::AppState;
 
-const CONTEXT_SCAN_PROTOCOL: &str = "WISP_SESSION_SCAN_V2\0";
-const CONTEXT_METADATA_PROTOCOL: &str = "WISP_SESSION_META_V1\0";
-const CONTEXT_FILE_PROTOCOL: &str = "WISP_CODEX_FILE_V1\0";
-const CONTEXT_PREVIEW_PROTOCOL: &str = "WISP_SESSION_PREVIEW_V1\0";
+const CONTEXT_SCAN_PROTOCOL: &str = "SUPERSCIENCE_SESSION_SCAN_V2\0";
+const CONTEXT_METADATA_PROTOCOL: &str = "SUPERSCIENCE_SESSION_META_V1\0";
+const CONTEXT_FILE_PROTOCOL: &str = "SUPERSCIENCE_CODEX_FILE_V1\0";
+const CONTEXT_PREVIEW_PROTOCOL: &str = "SUPERSCIENCE_SESSION_PREVIEW_V1\0";
 const CONTEXT_ROLLOUT_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const CONTEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const PREVIEW_MESSAGE_LIMIT: usize = 4;
@@ -653,7 +655,7 @@ fn context_scan_script(provider: ImportProvider) -> String {
     format!(
         r#"LC_ALL=C
 root=$HOME/{root}
-printf 'WISP_SESSION_SCAN_V2\000'
+printf 'SUPERSCIENCE_SESSION_SCAN_V2\000'
 if [ ! -d "$root" ]; then
   exit 0
 fi
@@ -723,7 +725,7 @@ head -c "$prefix" "$file" || exit 68"#
     format!(
         r#"LC_ALL=C
 root=$HOME/{root}
-printf 'WISP_SESSION_META_V1\000'
+printf 'SUPERSCIENCE_SESSION_META_V1\000'
 if [ ! -d "$root" ]; then
   printf '\000'
   exit 0
@@ -790,7 +792,7 @@ if [ "$size" -gt {CONTEXT_ROLLOUT_MAX_BYTES} ]; then
   printf '{label} session exceeds {CONTEXT_ROLLOUT_MAX_BYTES} byte limit\n' >&2
   exit 67
 fi
-printf 'WISP_CODEX_FILE_V1\000'
+printf 'SUPERSCIENCE_CODEX_FILE_V1\000'
 head -c "$size" "$file""#
     ))
 }
@@ -814,7 +816,7 @@ if [ ! -f "$file" ] || [ -L "$file" ]; then
 fi
 size=$(wc -c < "$file" 2>/dev/null) || exit 66
 if [ "$size" -gt {CONTEXT_PREVIEW_MAX_BYTES} ]; then size={CONTEXT_PREVIEW_MAX_BYTES}; fi
-printf 'WISP_SESSION_PREVIEW_V1\000'
+printf 'SUPERSCIENCE_SESSION_PREVIEW_V1\000'
 head -c "$size" "$file""#
     ))
 }
@@ -1167,7 +1169,7 @@ async fn list_sessions_in(
     list_candidates(provider, store, local_candidates(provider, root, &[])).await
 }
 
-fn to_wisp_messages(provider: ImportProvider, parsed: &ParsedSession) -> Vec<Message> {
+fn to_superscience_messages(provider: ImportProvider, parsed: &ParsedSession) -> Vec<Message> {
     parsed
         .messages
         .iter()
@@ -1251,14 +1253,14 @@ async fn import_session_jsonl(
             .message_count(&frame_id)
             .await
             .map_err(|e| e.to_string())?;
-        // ponytail: only fast-forward. If the frame was continued inside Wisp
+        // ponytail: only fast-forward. If the frame was continued inside SuperScience
         // it can hold more turns than the rollout; merging diverged histories
         // is out of scope, so leave it untouched.
         if (parsed.messages.len() as i64) <= stored {
             return Ok(result("skipped"));
         }
         store
-            .replace_messages(&frame_id, &to_wisp_messages(provider, &parsed))
+            .replace_messages(&frame_id, &to_superscience_messages(provider, &parsed))
             .await
             .map_err(|e| e.to_string())?;
         store
@@ -1278,7 +1280,10 @@ async fn import_session_jsonl(
         .move_session_to_folder(&frame_id, project_id, Some(&folder_id))
         .await
         .map_err(|e| e.to_string())?;
-    for (i, msg) in to_wisp_messages(provider, &parsed).iter().enumerate() {
+    for (i, msg) in to_superscience_messages(provider, &parsed)
+        .iter()
+        .enumerate()
+    {
         store
             .append_message(&frame_id, (i + 1) as i64, msg)
             .await
@@ -2016,7 +2021,7 @@ mod tests {
 
     async fn temp_store() -> (Store, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!(
-            "wisp_store_codex_import_{}.sqlite",
+            "superscience_store_codex_import_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&path).await.unwrap();
@@ -2071,10 +2076,14 @@ mod tests {
         );
         assert_eq!(store.message_count(&frame_id).await.unwrap(), 3);
 
-        // Frame continued inside Wisp beyond the rollout → left untouched.
+        // Frame continued inside SuperScience beyond the rollout → left untouched.
         for seq in 4..=6 {
             store
-                .append_message(&frame_id, seq, &wisp_llm::Message::user("wisp-side"))
+                .append_message(
+                    &frame_id,
+                    seq,
+                    &superscience_llm::Message::user("superscience-side"),
+                )
                 .await
                 .unwrap();
         }

@@ -153,7 +153,7 @@ button.side-item.ses { cursor: pointer; user-select: none; padding-right: 34px; 
 /* Keep the research canvas usable only when the window is genuinely narrow.
    The Tauri window opens at 1100 CSS px; using that same value here made the
    default workspace look like an icon rail and hid every saved-session title.
-   Preserve the full Wisp history sidebar at the normal window size, and use
+   Preserve the full SuperScience history sidebar at the normal window size, and use
    the compact rail only below 900 px. */
 @media (max-width: 900px) {
   .sidebar-resizer { display: none; }
@@ -199,7 +199,7 @@ button.side-item.ses { cursor: pointer; user-select: none; padding-right: 34px; 
     content: "";
     width: 18px;
     height: 18px;
-    background: center / contain no-repeat url("logo.svg");
+    background: center / contain no-repeat url("logo.png");
   }
   .sidebar .proj-menu {
     position: fixed;

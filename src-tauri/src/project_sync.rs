@@ -14,20 +14,35 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use tauri::{AppHandle, State};
-use wisp_store::{secrets::Secret, ProjectSyncState, Store};
-use wisp_sync::{
+use superscience_store::{secrets::Secret, ProjectSyncState, Store};
+use superscience_sync::{
     decrypt_blob, encrypt_blob, random_project_key, sha256_hex, sign_revision, verify_revision,
     CommitOutcome, CommitRequest, FileRelay, HttpRelay, SyncRevision, SyncTransport, WorkspaceFile,
     WorkspaceManifest, PROJECT_KEY_BYTES, SYNC_PROTOCOL_VERSION,
 };
+use tauri::{AppHandle, State};
 
 const MAX_SYNC_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SYNC_CHANGED_BLOBS_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_SYNC_METADATA_BYTES: u64 = 192 * 1024 * 1024;
 const MAX_SYNC_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
-const JOIN_CODE_PREFIX: &str = "wisp-sync:";
+const JOIN_CODE_PREFIX: &str = "superscience-sync:";
+const LEGACY_JOIN_CODE_PREFIX: &str = "wisp-sync:";
 const RELAY_TOKEN_SECRET: &str = "sync_relay_token";
+const SYNC_FOLDER_NAME: &str = "SuperScience Sync";
+const LEGACY_SYNC_FOLDER_NAME: &str = "Wisp Sync";
+
+fn sync_folder_relay_root(parent: &Path) -> PathBuf {
+    let preferred = parent.join(SYNC_FOLDER_NAME);
+    if preferred.exists() {
+        return preferred;
+    }
+    let legacy = parent.join(LEGACY_SYNC_FOLDER_NAME);
+    if legacy.exists() {
+        return legacy;
+    }
+    preferred
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -392,7 +407,7 @@ async fn transport_for(kind: &str, location: &str) -> Result<Arc<dyn SyncTranspo
                 )
             })?;
             Ok(Arc::new(
-                FileRelay::open(folder.join("Wisp Sync"))
+                FileRelay::open(sync_folder_relay_root(&folder))
                     .await
                     .map_err(|error| error.to_string())?,
             ))
@@ -804,8 +819,8 @@ async fn prepare_workspace_apply(
         .parent()
         .ok_or_else(|| "Project workspace has no parent directory.".to_string())?;
     let token = uuid::Uuid::new_v4();
-    let staging = parent.join(format!(".wisp-sync-stage-{token}"));
-    let backup = parent.join(format!(".wisp-sync-backup-{token}"));
+    let staging = parent.join(format!(".superscience-sync-stage-{token}"));
+    let backup = parent.join(format!(".superscience-sync-backup-{token}"));
     std::fs::create_dir(&staging).map_err(|error| error.to_string())?;
     std::fs::create_dir(&backup).map_err(|error| error.to_string())?;
     let base_files = base
@@ -1075,7 +1090,7 @@ fn validate_transport_workspace(state: &ProjectSyncState, workspace: &Path) -> R
     if state.transport_kind != "folder" {
         return Ok(());
     }
-    let relay_root = PathBuf::from(&state.transport_location).join("Wisp Sync");
+    let relay_root = sync_folder_relay_root(Path::new(&state.transport_location));
     let workspace = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     let relay_root = std::fs::canonicalize(&relay_root).unwrap_or(relay_root);
     if relay_root == workspace
@@ -1309,7 +1324,7 @@ async fn clear_project_runtime_cache(state: &AppState, project_id: &str, frame_i
         .filter(|project| project.id == project_id)
     {
         project.skills = Arc::new(super::load_skill_index(&project.root));
-        project.memory = Arc::new(wisp_core::MemoryManager::new(&project.root));
+        project.memory = Arc::new(superscience_core::MemoryManager::new(&project.root));
     }
 }
 
@@ -1511,21 +1526,22 @@ pub(super) async fn project_sync_code(
 }
 
 fn decode_join_code(raw: &str) -> Result<JoinCode, String> {
-    let encoded = raw
-        .trim()
+    let trimmed = raw.trim();
+    let encoded = trimmed
         .strip_prefix(JOIN_CODE_PREFIX)
-        .ok_or_else(|| "This is not a Wisp project device code.".to_string())?;
+        .or_else(|| trimmed.strip_prefix(LEGACY_JOIN_CODE_PREFIX))
+        .ok_or_else(|| "This is not a SuperScience project device code.".to_string())?;
     let bytes = URL_SAFE_NO_PAD
         .decode(encoded)
-        .map_err(|_| "Invalid Wisp project device code.".to_string())?;
+        .map_err(|_| "Invalid SuperScience project device code.".to_string())?;
     let code: JoinCode = serde_json::from_slice(&bytes)
-        .map_err(|_| "Invalid Wisp project device code.".to_string())?;
+        .map_err(|_| "Invalid SuperScience project device code.".to_string())?;
     if code.version != SYNC_PROTOCOL_VERSION
         || code.project_id.is_empty()
         || !valid_relay_component(&code.project_id)
         || !matches!(code.transport_kind.as_str(), "relay" | "folder")
     {
-        return Err("Unsupported or invalid Wisp project device code.".into());
+        return Err("Unsupported or invalid SuperScience project device code.".into());
     }
     decode_key(&code.project_key)?;
     Ok(code)
@@ -1595,7 +1611,7 @@ pub(super) async fn join_synced_project(
         return Ok(None);
     };
     let destination = unique_destination(&parent, &code.project_name)?;
-    let staging = parent.join(format!(".wisp-sync-join-{}", uuid::Uuid::new_v4()));
+    let staging = parent.join(format!(".superscience-sync-join-{}", uuid::Uuid::new_v4()));
     let destination_state =
         ProjectSyncState::uninitialized(&code.project_id, &code.transport_kind, &location);
     validate_transport_workspace(&destination_state, &destination)?;
@@ -1693,8 +1709,10 @@ mod tests {
 
     impl TestProject {
         async fn new(label: &str, project_id: &str) -> Self {
-            let root =
-                std::env::temp_dir().join(format!("wisp-sync-{label}-{}", uuid::Uuid::new_v4()));
+            let root = std::env::temp_dir().join(format!(
+                "superscience-sync-{label}-{}",
+                uuid::Uuid::new_v4()
+            ));
             let workspace = root.join("workspace");
             let app_data = root.join("app-data");
             let database = root.join("store.sqlite");
@@ -1760,7 +1778,8 @@ mod tests {
 
     #[test]
     fn large_scientific_files_stay_local() {
-        let root = std::env::temp_dir().join(format!("wisp-sync-large-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("superscience-sync-large-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let large = root.join("reads.fastq");
         std::fs::File::create(&large)
@@ -1818,8 +1837,8 @@ mod tests {
     async fn two_devices_push_pull_and_refuse_divergent_changes() {
         let project_id = "project-sync-e2e";
         let relay_parent =
-            std::env::temp_dir().join(format!("wisp-sync-relay-{}", uuid::Uuid::new_v4()));
-        let relay = FileRelay::open(relay_parent.join("Wisp Sync"))
+            std::env::temp_dir().join(format!("superscience-sync-relay-{}", uuid::Uuid::new_v4()));
+        let relay = FileRelay::open(sync_folder_relay_root(&relay_parent))
             .await
             .unwrap();
         let key = [11_u8; PROJECT_KEY_BYTES];

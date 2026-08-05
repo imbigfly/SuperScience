@@ -13,13 +13,13 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use wisp_core::{
+use superscience_core::{
     AgentDelegator, AgentSpec, CapabilityRegistry, DelegationExecutionResult, DelegationHostPolicy,
     DelegationPlan, MAX_DELEGATION_TASKS,
 };
-use wisp_llm::ToolSchema;
-use wisp_store::{AgentDelegationRootLimits, AgentWorkflowAttempt, Store};
-use wisp_tools::{ConfirmDecision, Tool, ToolEnv, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_store::{AgentDelegationRootLimits, AgentWorkflowAttempt, Store};
+use superscience_tools::{ConfirmDecision, Tool, ToolEnv, ToolResult};
 
 const INLINE_DATA_BYTES: usize = 4_000;
 const INLINE_TEXT_CHARS: usize = 1_000;
@@ -235,8 +235,8 @@ fn build_delegate_tasks_schema(
         .collect::<Vec<_>>()
         .join("; ");
     let description = match completion.policy {
-        crate::delegation_completion::AgentCompletionPolicy::Inline => "Run a bounded batch of temporary Wisp sub-Agents and return their results to this turn. Decompose the work yourself; independent tasks run in parallel, dependencies run after their prerequisites, and you must synthesize the returned evidence into your final answer. Use the smallest useful batch. Do not delegate trivial work. Nested delegation is available only when the advertised capability list explicitly includes delegation.",
-        crate::delegation_completion::AgentCompletionPolicy::Background => "Start a bounded batch of temporary Wisp sub-Agents in the background and return its durable handle immediately. Independent tasks run in parallel and dependencies wait for prerequisites. Do not wait or poll: completion will be appended to this conversation, and the parent may auto-resume when enabled. Use the smallest useful batch. Do not delegate trivial work. Nested delegation is available only when the advertised capability list explicitly includes delegation.",
+        crate::delegation_completion::AgentCompletionPolicy::Inline => "Run a bounded batch of temporary SuperScience sub-Agents and return their results to this turn. Decompose the work yourself; independent tasks run in parallel, dependencies run after their prerequisites, and you must synthesize the returned evidence into your final answer. Use the smallest useful batch. Do not delegate trivial work. Nested delegation is available only when the advertised capability list explicitly includes delegation.",
+        crate::delegation_completion::AgentCompletionPolicy::Background => "Start a bounded batch of temporary SuperScience sub-Agents in the background and return its durable handle immediately. Independent tasks run in parallel and dependencies wait for prerequisites. Do not wait or poll: completion will be appended to this conversation, and the parent may auto-resume when enabled. Use the smallest useful batch. Do not delegate trivial work. Nested delegation is available only when the advertised capability list explicitly includes delegation.",
     };
     ToolSchema::new(
         "delegate_tasks",
@@ -319,7 +319,7 @@ pub(crate) struct DelegateTasksTool {
     project: ActiveProject,
     frame_id: String,
     run_manager: RunManager,
-    runtime_manager: wisp_runtime::RuntimeManager,
+    runtime_manager: superscience_runtime::RuntimeManager,
     app_data: PathBuf,
     schema: ToolSchema,
     nested: Option<NestedDelegationContext>,
@@ -333,7 +333,7 @@ impl DelegateTasksTool {
         project: ActiveProject,
         frame_id: impl Into<String>,
         run_manager: RunManager,
-        runtime_manager: wisp_runtime::RuntimeManager,
+        runtime_manager: superscience_runtime::RuntimeManager,
         app_data: PathBuf,
     ) -> Result<Self, String> {
         let frame_id = frame_id.into();
@@ -376,7 +376,7 @@ impl DelegateTasksTool {
             crate::delegation_completion::AgentCompletionSettings::default(),
         );
         let app_data = project.root.clone();
-        let runtime_manager = wisp_runtime::RuntimeManager::local(
+        let runtime_manager = superscience_runtime::RuntimeManager::local(
             app_data.clone(),
             app_data.join("missing-python-worker.py"),
             None,
@@ -578,8 +578,8 @@ impl DelegateTasksTool {
             self.store
                 .transition_agent_workflow_status(
                     &workflow_id,
-                    wisp_store::AgentWorkflowStatus::Approved,
-                    wisp_store::AgentWorkflowStatus::Cancelled,
+                    superscience_store::AgentWorkflowStatus::Approved,
+                    superscience_store::AgentWorkflowStatus::Cancelled,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -641,7 +641,7 @@ impl DelegateTasksTool {
                         )
                         .await
                         {
-                            tracing::error!(target: "wisp", workflow_id = %workflow_id_for_task, %error, "failed to persist background Agent result");
+                            tracing::error!(target: "superscience", workflow_id = %workflow_id_for_task, %error, "failed to persist background Agent result");
                         }
                     }
                     Err(error) => {
@@ -651,7 +651,7 @@ impl DelegateTasksTool {
                             )
                             .await
                         {
-                            tracing::error!(target: "wisp", workflow_id = %workflow_id_for_task, %persist_error, "failed to persist background Agent failure");
+                            tracing::error!(target: "superscience", workflow_id = %workflow_id_for_task, %persist_error, "failed to persist background Agent failure");
                         }
                     }
                 }
@@ -674,8 +674,8 @@ impl DelegateTasksTool {
                     .store
                     .transition_agent_workflow_status(
                         &workflow_id,
-                        wisp_store::AgentWorkflowStatus::Approved,
-                        wisp_store::AgentWorkflowStatus::Cancelled,
+                        superscience_store::AgentWorkflowStatus::Approved,
+                        superscience_store::AgentWorkflowStatus::Cancelled,
                     )
                     .await;
                 return Err("Parent Agent could not yield its root concurrency slot.".into());
@@ -740,7 +740,7 @@ async fn reacquire_parent_slot(store: &Store, attempt_id: &str) -> Result<(), St
             .await
             .map_err(|error| error.to_string())?
             .is_some_and(|attempt| {
-                attempt.status == wisp_store::AgentWorkflowAttemptStatus::Running
+                attempt.status == superscience_store::AgentWorkflowAttemptStatus::Running
             });
         if !running {
             return Err("Parent Agent attempt ended before it could reacquire capacity.".into());
@@ -751,7 +751,7 @@ async fn reacquire_parent_slot(store: &Store, attempt_id: &str) -> Result<(), St
 
 fn background_execution_handle(
     workflow_id: &str,
-    plan: &wisp_core::DelegationPlan,
+    plan: &superscience_core::DelegationPlan,
     display_ids: &HashMap<String, String>,
     auto_resume: bool,
 ) -> Value {
@@ -773,7 +773,7 @@ fn background_execution_handle(
         "tasks": tasks,
         "lookup": {
             "tool": "get_delegated_result",
-            "mcp_tool": "wisp_get_delegated_result",
+            "mcp_tool": "superscience_get_delegated_result",
             "workflow_id": workflow_id
         },
         "message": "The delegated batch is running in the background. Do not poll or claim completion; one durable result will be delivered to this conversation."
@@ -781,7 +781,7 @@ fn background_execution_handle(
 }
 
 fn approval_prompt(
-    plan: &wisp_core::DelegationPlan,
+    plan: &superscience_core::DelegationPlan,
     display_ids: &HashMap<String, String>,
 ) -> String {
     let tasks = plan
@@ -813,13 +813,15 @@ fn approval_prompt(
         .join("\n");
     format!(
         "{}Delegated Agent batch: {}\n{}",
-        wisp_tools::plan::PLAN_APPROVAL_PREFIX,
+        superscience_tools::plan::PLAN_APPROVAL_PREFIX,
         plan.goal,
         tasks
     )
 }
 
-pub(crate) fn display_task_ids(plan: &wisp_core::DelegationPlan) -> HashMap<String, String> {
+pub(crate) fn display_task_ids(
+    plan: &superscience_core::DelegationPlan,
+) -> HashMap<String, String> {
     plan.steps
         .iter()
         .filter_map(|step| {
@@ -875,7 +877,7 @@ pub(crate) fn compact_execution_result(
                 "error": response.error.as_deref().map(|value| bounded_chars(value, INLINE_TEXT_CHARS)),
                 "lookup": {
                     "tool": "get_delegated_result",
-                    "mcp_tool": "wisp_get_delegated_result",
+                    "mcp_tool": "superscience_get_delegated_result",
                     "workflow_id": execution.workflow_id,
                     "task_id": id,
                 }
@@ -900,7 +902,7 @@ fn compact_value(value: &Value, limit: usize, workflow_id: &str, task_id: &str) 
         "preview": bounded_bytes(&raw, limit),
         "lookup": {
             "tool": "get_delegated_result",
-            "mcp_tool": "wisp_get_delegated_result",
+            "mcp_tool": "superscience_get_delegated_result",
             "workflow_id": workflow_id,
             "task_id": task_id,
         }
@@ -1078,12 +1080,12 @@ mod tests {
             Mutex,
         },
     };
-    use wisp_core::{
+    use superscience_core::{
         AgentBudget, AgentDelegationResponse, AgentExecutorRef, AgentOutputSchemaSource,
         AgentUsage, ContextPolicy, DelegationStatus, ExecutorFeature, ExecutorProfilePolicy,
         ModelProfilePolicy, NullOutput, PermissionSet, ValidatedAgentDelegationRequest,
     };
-    use wisp_llm::{
+    use superscience_llm::{
         Completion, FunctionCall, LlmError, Message, Provider, Role, StreamSink, ToolCall, Usage,
     };
 
@@ -1099,7 +1101,7 @@ mod tests {
             true
         }
 
-        async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+        async fn emit(&self, _event: superscience_tools::ToolEvent) {}
     }
 
     struct CancelledEnv(PathBuf);
@@ -1118,7 +1120,7 @@ mod tests {
             true
         }
 
-        async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+        async fn emit(&self, _event: superscience_tools::ToolEvent) {}
     }
 
     struct DecisionEnv {
@@ -1142,7 +1144,7 @@ mod tests {
             self.decision.clone()
         }
 
-        async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+        async fn emit(&self, _event: superscience_tools::ToolEvent) {}
     }
 
     #[derive(Debug, Clone)]
@@ -1240,7 +1242,7 @@ mod tests {
                 })
             };
             let artifacts = if task_id == "resources" {
-                vec![wisp_core::AgentArtifact {
+                vec![superscience_core::AgentArtifact {
                     id: "artifact-1".into(),
                     name: "table.tsv".into(),
                     kind: "table".into(),
@@ -1322,7 +1324,11 @@ mod tests {
             }
         }
 
-        fn pop(&self, messages: &[Message], tools: &[ToolSchema]) -> wisp_llm::Result<Completion> {
+        fn pop(
+            &self,
+            messages: &[Message],
+            tools: &[ToolSchema],
+        ) -> superscience_llm::Result<Completion> {
             self.messages.lock().unwrap().push(messages.to_vec());
             self.schemas.lock().unwrap().push(
                 tools
@@ -1352,7 +1358,7 @@ mod tests {
             &self,
             messages: &[Message],
             tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             self.pop(messages, tools)
         }
 
@@ -1361,7 +1367,7 @@ mod tests {
             messages: &[Message],
             tools: &[ToolSchema],
             _sink: &mut dyn StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             self.pop(messages, tools)
         }
     }
@@ -1456,8 +1462,10 @@ mod tests {
     }
 
     async fn fixture() -> (Store, ActiveProject, std::path::PathBuf) {
-        let root =
-            std::env::temp_dir().join(format!("wisp_delegation_tool_{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience_delegation_tool_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let database = root.join("store.sqlite");
         let store = Store::open(&database).await.unwrap();
@@ -1466,14 +1474,14 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_frame("f", "p", "OPERON", "wisp")
+            .create_frame("f", "p", "SUPERSCIENCE", "superscience")
             .await
             .unwrap();
         let project = ActiveProject {
             id: "p".into(),
             root: root.clone(),
-            skills: std::sync::Arc::new(wisp_skills::SkillIndex::load(&[])),
-            memory: std::sync::Arc::new(wisp_core::MemoryManager::new(&root)),
+            skills: std::sync::Arc::new(superscience_skills::SkillIndex::load(&[])),
+            memory: std::sync::Arc::new(superscience_core::MemoryManager::new(&root)),
         };
         (store, project, root)
     }
@@ -1494,7 +1502,10 @@ mod tests {
         let compact = compact_value(&json!({"text": "界界界界界界"}), 10, "workflow", "task");
         let preview = compact["preview"].as_str().unwrap();
         assert!(preview.len() <= 13, "preview was {} bytes", preview.len());
-        assert_eq!(compact["lookup"]["mcp_tool"], "wisp_get_delegated_result");
+        assert_eq!(
+            compact["lookup"]["mcp_tool"],
+            "superscience_get_delegated_result"
+        );
     }
 
     #[test]
@@ -1557,11 +1568,11 @@ mod tests {
             test_policy(),
             delegator.clone(),
         );
-        let mut tools = wisp_tools::Registry::builtins().filtered(&[]);
+        let mut tools = superscience_tools::Registry::builtins().filtered(&[]);
         tools.add(Box::new(tool));
-        let mut context = wisp_core::ContextManager::new(32_000);
+        let mut context = superscience_core::ContextManager::new(32_000);
 
-        wisp_core::agent_loop(
+        superscience_core::agent_loop(
             &mut context,
             &provider,
             None,
@@ -1677,7 +1688,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(
             messages[0].tool_name.as_deref(),
-            Some(wisp_store::AGENT_WORKFLOW_COMPLETION_TOOL)
+            Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL)
         );
         let envelope: Value = serde_json::from_str(&messages[0].content.as_text()).unwrap();
         assert_eq!(envelope["result"]["status"], "succeeded");
@@ -1726,7 +1737,10 @@ mod tests {
         assert_eq!(result["status"], "cancelled");
         assert!(delegator.calls().is_empty());
         let workflow = store.list_agent_workflows("p").await.unwrap().remove(0);
-        assert_eq!(workflow.status, wisp_store::AgentWorkflowStatus::Cancelled);
+        assert_eq!(
+            workflow.status,
+            superscience_store::AgentWorkflowStatus::Cancelled
+        );
         assert!(store
             .list_agent_workflow_attempts(&workflow.id)
             .await
@@ -1786,7 +1800,7 @@ mod tests {
                     .unwrap()
                     .iter()
                     .any(|attempt| {
-                        attempt.status == wisp_store::AgentWorkflowAttemptStatus::Running
+                        attempt.status == superscience_store::AgentWorkflowAttemptStatus::Running
                     })
                 {
                     break;
@@ -1824,7 +1838,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .status,
-            wisp_store::AgentWorkflowStatus::Cancelled
+            superscience_store::AgentWorkflowStatus::Cancelled
         );
         let delivery = store
             .list_agent_workflow_deliveries(&workflow_id)
@@ -1890,7 +1904,10 @@ mod tests {
             .all(|output| output["summary"].as_str().is_some()));
         let workflow = store.list_agent_workflows("p").await.unwrap().remove(0);
         assert_eq!(workflow.max_parallel, 2);
-        assert_eq!(workflow.status, wisp_store::AgentWorkflowStatus::Succeeded);
+        assert_eq!(
+            workflow.status,
+            superscience_store::AgentWorkflowStatus::Succeeded
+        );
 
         drop(store);
         let _ = std::fs::remove_dir_all(root);
@@ -1984,12 +2001,15 @@ mod tests {
         {
             let prompts = env.prompts.lock().unwrap();
             assert_eq!(prompts.len(), 1);
-            assert!(prompts[0].contains(wisp_tools::plan::PLAN_APPROVAL_PREFIX));
+            assert!(prompts[0].contains(superscience_tools::plan::PLAN_APPROVAL_PREFIX));
             assert!(prompts[0].contains("project_write"));
             assert!(prompts[0].contains("native"));
         }
         let workflow = store.list_agent_workflows("p").await.unwrap().remove(0);
-        assert_eq!(workflow.status, wisp_store::AgentWorkflowStatus::Draft);
+        assert_eq!(
+            workflow.status,
+            superscience_store::AgentWorkflowStatus::Draft
+        );
 
         drop(store);
         let _ = std::fs::remove_dir_all(root);

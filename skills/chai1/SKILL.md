@@ -98,7 +98,7 @@ round-trip, not the VRAM cost. If you OOM, drop `num_diffn_timesteps` or fold
 fewer chains per call rather than expecting the no-MSA mode to fit a smaller
 card.
 
-## Wisp execution
+## SuperScience execution
 
 Use `python` only for bounded interactive checks. For a long or GPU-backed
 workload, require a selected and probed `ssh:<alias>` context and load

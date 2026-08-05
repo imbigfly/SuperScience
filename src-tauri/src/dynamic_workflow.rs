@@ -8,13 +8,13 @@ use crate::specialists;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use wisp_core::{
+use superscience_core::{
     AgentBudget, AgentExecutorRef, AgentOrigin, AgentOutputSchemaSource, AgentWorkspacePolicy,
     CapabilityRegistry, CapabilityRisk, DelegatedTaskProposal, DelegationHostPolicy,
     DelegationMode, DelegationPlan, ExecutorFeature, SpecialistSnapshot,
     MAX_AGENT_OUTPUT_SCHEMA_BYTES, MAX_DELEGATION_TASKS,
 };
-use wisp_store::{AgentWorkflowAttempt, Store};
+use superscience_store::{AgentWorkflowAttempt, Store};
 
 pub(crate) const DEFAULT_DYNAMIC_PARALLELISM: usize = 2;
 const MAX_TASK_ID_BYTES: usize = 31;
@@ -117,7 +117,7 @@ pub(crate) struct ExecutorProfileSummary {
 }
 
 impl ExecutorProfileSummary {
-    fn from_policy(policy: &wisp_core::ExecutorProfilePolicy) -> Self {
+    fn from_policy(policy: &superscience_core::ExecutorProfilePolicy) -> Self {
         let selection = AgentExecutorSelection::from_ref(&policy.executor);
         let id = selection
             .profile_id
@@ -418,7 +418,7 @@ pub(crate) fn summarize(
     plan: &DelegationPlan,
     attempts: &[AgentWorkflowAttempt],
 ) -> Result<DynamicAgentWorkflowSummary, String> {
-    if plan.schema_version != wisp_core::DYNAMIC_DELEGATION_SCHEMA_VERSION {
+    if plan.schema_version != superscience_core::DYNAMIC_DELEGATION_SCHEMA_VERSION {
         return Err("dynamic workflow summary requires a v2 plan".into());
     }
     let ids = plan
@@ -573,7 +573,7 @@ fn result_summary(attempt: &AgentWorkflowAttempt) -> AgentResultSummary {
     }
 }
 
-fn display_task_id(plan: &DelegationPlan, step: &wisp_core::DelegationPlanStep) -> String {
+fn display_task_id(plan: &DelegationPlan, step: &superscience_core::DelegationPlanStep) -> String {
     step.input
         .get("task_id")
         .and_then(Value::as_str)
@@ -813,13 +813,13 @@ mod tests {
             revision: "editor-options-test".into(),
             enabled_capabilities: vec!["reasoning".into()],
             models: vec![
-                wisp_core::ModelProfilePolicy {
+                superscience_core::ModelProfilePolicy {
                     id: "enabled".into(),
                     features: vec![],
                     external: false,
                     enabled: true,
                 },
-                wisp_core::ModelProfilePolicy {
+                superscience_core::ModelProfilePolicy {
                     id: "disabled".into(),
                     features: vec![],
                     external: true,
@@ -827,13 +827,13 @@ mod tests {
                 },
             ],
             executors: vec![
-                wisp_core::ExecutorProfilePolicy {
+                superscience_core::ExecutorProfilePolicy {
                     executor: AgentExecutorRef::Native,
                     features: vec![],
                     model_ids: vec!["enabled".into()],
                     enabled: true,
                 },
-                wisp_core::ExecutorProfilePolicy {
+                superscience_core::ExecutorProfilePolicy {
                     executor: AgentExecutorRef::Acp {
                         profile_id: "disabled-acp".into(),
                     },
@@ -843,8 +843,8 @@ mod tests {
                 },
             ],
             default_model_id: Some("enabled".into()),
-            permission_ceiling: wisp_core::PermissionSet::default(),
-            context_ceiling: wisp_core::ContextPolicy::default(),
+            permission_ceiling: superscience_core::PermissionSet::default(),
+            context_ceiling: superscience_core::ContextPolicy::default(),
             budget_ceiling: AgentBudget::default(),
             auto_safe: true,
             ..DelegationHostPolicy::default()

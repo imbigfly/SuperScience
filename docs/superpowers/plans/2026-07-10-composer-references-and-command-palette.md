@@ -1,8 +1,8 @@
 # Composer References And Command Palette Implementation Plan
 
-**Goal:** Bring the Claude Science-style `@`, `#`, `/`, and Ctrl/Cmd+K interactions to the Wisp chat composer: attach artifacts, attach sessions from any project, explicitly select skills for one turn, and search/open the same catalog from one command palette.
+**Goal:** Bring the Claude Science-style `@`, `#`, `/`, and Ctrl/Cmd+K interactions to the SuperScience chat composer: attach artifacts, attach sessions from any project, explicitly select skills for one turn, and search/open the same catalog from one command palette.
 
-**Reference:** The supplied Claude Science screenshots and the local `/home/xzg/claude-science` binary. The binary is a packaged executable rather than a source checkout, so the screenshots define the user-visible contract; Wisp's existing data model and safety rules define the implementation.
+**Reference:** The supplied Claude Science screenshots and the local `/home/xzg/claude-science` binary. The binary is a packaged executable rather than a source checkout, so the screenshots define the user-visible contract; SuperScience's existing data model and safety rules define the implementation.
 
 **Architecture:** Reuse the current composer attachment chips, SQLite artifact/session records, `list_skills`, Projects search styling, and `ContextManager::runtime_injections`. Add typed composer references to `send_message`; resolve them in the Tauri host at send time. Do not copy cross-project artifacts, add a search dependency, or add a persistence table in v1.
 
@@ -82,7 +82,7 @@ Keep the existing `attachments` argument during the migration for compatibility.
 
 **Files:**
 
-- Modify `crates/wisp-store/src/lib.rs`
+- Modify `crates/superscience-store/src/lib.rs`
 - Modify `src-tauri/src/lib.rs`
 - Modify `ui/src/dto.rs`
 
@@ -107,8 +107,8 @@ Tests:
 
 - Modify `src-tauri/src/lib.rs`
 - Modify `src-tauri/src/review.rs`
-- Modify `crates/wisp-skills/src/tool.rs`
-- Modify `crates/wisp-skills/src/lib.rs`
+- Modify `crates/superscience-skills/src/tool.rs`
+- Modify `crates/superscience-skills/src/lib.rs`
 - Modify `ui/src/dto.rs`
 
 - [ ] Add `references: Vec<ComposerReferenceArg>` to `SendMessageArgs` and the Tauri `send_message` command, defaulting to an empty list.
@@ -255,8 +255,8 @@ Unit tests:
 Run the narrow tests first, then the repository-required sweep:
 
 ```bash
-cargo test -p wisp-store
-cargo test -p wisp-tauri
+cargo test -p superscience-store
+cargo test -p superscience-tauri
 cd ui && cargo test
 cd .. && cargo fmt --all -- --check
 cargo test --workspace
@@ -278,5 +278,5 @@ Manual smoke on Windows and macOS:
 - Search is case-insensitive lexical matching over names/titles/descriptions, not semantic or fuzzy search. Add FTS only after catalog size/latency data justifies it.
 - Session attachment uses the latest persisted, capped transcript snapshot; it does not stream live unsaved deltas.
 - Cross-project artifacts remain references to their original local files. Missing files fail clearly; large files are never copied by default.
-- Ctrl/Cmd+Enter "open alongside" from the reference UI is not included because Wisp has no side-by-side session surface yet. Add it with that surface, not as a dead shortcut.
+- Ctrl/Cmd+Enter "open alongside" from the reference UI is not included because SuperScience has no side-by-side session surface yet. Add it with that surface, not as a dead shortcut.
 - Structured message-to-reference provenance is not persisted in a new table in v1. If research-graph queries need “which turn consumed which artifact/session/skill,” add a backward-compatible `message_context_refs` table as a separate PR.

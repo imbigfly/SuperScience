@@ -2,7 +2,7 @@
 
 [中文说明](project-sync.zh-CN.md)
 
-Wisp synchronizes projects only when you press **Sync now**. There is no
+SuperScience synchronizes projects only when you press **Sync now**. There is no
 background timer, file watcher, WebSocket, or automatic merge. A sync takes an
 exclusive project gate and is rejected while any conversation, ACP turn,
 approval, review, persistence flush, or structured run is active. New project
@@ -36,26 +36,28 @@ for `localhost`, for local development.
 Run the bundled relay with:
 
 ```bash
-export WISP_RELAY_TOKEN="replace-with-a-long-random-token"
-export WISP_RELAY_ROOT="/var/lib/wisp-relay"
-export WISP_RELAY_BIND="127.0.0.1:8787"
-cargo run -p wisp-sync --bin wisp-relay --release
+export SUPERSCIENCE_RELAY_TOKEN="replace-with-a-long-random-token"
+export SUPERSCIENCE_RELAY_ROOT="/var/lib/superscience-relay"
+export SUPERSCIENCE_RELAY_BIND="127.0.0.1:8787"
+cargo run -p superscience-sync --bin superscience-relay --release
 ```
 
 Put an HTTPS reverse proxy in front of the relay for access from other devices.
-The relay stores files under `WISP_RELAY_ROOT`, uses atomic file replacement,
+The relay stores files under `SUPERSCIENCE_RELAY_ROOT`, uses atomic file replacement,
 and compares the submitted base revision with the current project head before
 committing. Back up this directory like any other application data.
 
 ### Baidu Netdisk, Nutstore, or another shared folder
 
 Set **Storage backend** to **Shared cloud-drive folder** and choose a directory
-managed by the provider's desktop sync client. Wisp creates a `Wisp Sync`
+managed by the provider's desktop sync client. SuperScience creates a `SuperScience Sync`
 subdirectory containing the same encrypted revision/blob layout as the relay.
-No provider API or account credential is given to Wisp.
+Existing installs that already have a legacy `Wisp Sync` folder continue to use that
+directory until a new sync root is chosen.
+No provider API or account credential is given to SuperScience.
 
 The absolute folder is device-local. For example, Windows may use
-`D:\BaiduNetdisk\Wisp` while macOS uses `/Users/me/Nutstore/Wisp`. Those paths
+`D:\BaiduNetdisk\SuperScience` while macOS uses `/Users/me/Nutstore/SuperScience`. Those paths
 are never placed in the project or device code. Before pressing **Sync now**,
 wait for the provider client to finish downloading; after a push, wait for it
 to finish uploading before switching devices. Do not synchronize the same
@@ -75,7 +77,7 @@ compare-and-swap behavior than a cloud-synchronized folder.
 1. Configure the relay token, or select that device's local cloud-drive folder.
 2. Open **Settings → General → Manual project sync**, press
    **Join synced project**, and paste the device code.
-3. Choose a new local parent directory. Wisp downloads into staging, verifies
+3. Choose a new local parent directory. SuperScience downloads into staging, verifies
    every encrypted blob and plaintext checksum, then imports the project under
    a device-local workspace path.
 
@@ -85,7 +87,7 @@ pushes if its base revision is still current.
 
 ## Conflicts and recovery
 
-If both devices changed after the same revision, Wisp reports a conflict and
+If both devices changed after the same revision, SuperScience reports a conflict and
 does not overwrite either side. The dialog offers two explicit choices:
 
 - **Use remote version** replaces the synchronized metadata and eligible local
@@ -120,7 +122,7 @@ the previous files when it did not.
   128 MiB of changed workspace blobs. The filtered SQLite metadata snapshot is
   limited to 192 MiB. Split or reference larger datasets instead of syncing them.
 - Empty directories are not materialized unless a synchronized file needs them.
-- Both devices should run the same Wisp version for protocol v1 snapshots.
+- Both devices should run the same SuperScience version for protocol v1 snapshots.
 - Protocol v1 does not garbage-collect old remote revisions or blobs. Deleting
   a local project removes its local sync key/cursor but does not erase relay or
   cloud-folder history; remove that backend data separately when appropriate.

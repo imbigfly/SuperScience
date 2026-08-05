@@ -750,7 +750,7 @@ pub(crate) fn extract_href_from_tag(tag: &str) -> Option<String> {
 }
 
 /// Badge + display title for a tool card. MCP-backed tools arrive with an
-/// "mcp:" event-name prefix (see wisp-tools `Registry::event_name`); skills
+/// "mcp:" event-name prefix (see superscience-tools `Registry::event_name`); skills
 /// load through the built-in "use_skill" tool whose input is the skill name.
 /// The badge is an i18n key; `None` means a plain built-in tool.
 pub(crate) fn tool_card_label(name: &str, input: &str) -> (Option<&'static str>, String) {

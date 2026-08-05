@@ -74,7 +74,7 @@ fn show_clickable_notification(
             }
             Ok(_) => {}
             Err(error) => {
-                tracing::warn!(target: "wisp", %error, "desktop notification failed");
+                tracing::warn!(target: "superscience", %error, "desktop notification failed");
             }
         }
     });
@@ -240,7 +240,7 @@ pub(super) async fn download_file(
     let ap = state.active(window.label());
     let remote = parse_ssh_artifact_uri(&path);
     let local = if remote.is_none() {
-        let real = wisp_tools::safety::validate_file_path(&ap.root, &path)?;
+        let real = superscience_tools::safety::validate_file_path(&ap.root, &path)?;
         if !real.is_file() {
             return Err(format!("file not found: {path}"));
         }
@@ -338,11 +338,11 @@ pub(super) fn initial_bootstrap(workspace: &std::path::Path, skills: usize) -> B
         python_ok: false,
         python_initializing: true,
         mcp_catalog: list_mcp_servers(workspace).len(),
-        uv_ok: wisp_runtime::PythonEnv::find_uv().is_some(),
-        node_ok: wisp_runtime::PythonEnv::find_node().is_some(),
-        npm_ok: wisp_runtime::PythonEnv::find_npm().is_some(),
-        sci_ok: wisp_runtime::PythonEnv::find_sci().is_some(),
-        pixi_ok: wisp_runtime::PythonEnv::find_pixi().is_some(),
+        uv_ok: superscience_runtime::PythonEnv::find_uv().is_some(),
+        node_ok: superscience_runtime::PythonEnv::find_node().is_some(),
+        npm_ok: superscience_runtime::PythonEnv::find_npm().is_some(),
+        sci_ok: superscience_runtime::PythonEnv::find_sci().is_some(),
+        pixi_ok: superscience_runtime::PythonEnv::find_pixi().is_some(),
         app_version: env!("CARGO_PKG_VERSION").into(),
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
@@ -378,7 +378,7 @@ pub(super) fn initial_bootstrap(workspace: &std::path::Path, skills: usize) -> B
             "pixi not found on PATH; optional for local bioinformatics multi-env workflows.".into(),
         );
     }
-    if wisp_paths::bio_tools_dir().is_none() {
+    if superscience_paths::bio_tools_dir().is_none() {
         status
             .errors
             .push("Bundled bio-tools MCP catalog not found.".into());
@@ -402,7 +402,7 @@ pub(super) fn start_python_bootstrap(app: &tauri::AppHandle) {
         // Keep all of it off Tauri's event-loop thread so the first window stays
         // responsive while the one-time bootstrap runs.
         let result = tokio::task::spawn_blocking(move || {
-            wisp_runtime::PythonEnv::ensure(&app_data)
+            superscience_runtime::PythonEnv::ensure(&app_data)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         })
@@ -441,7 +441,7 @@ pub(super) fn reveal_in_file_manager(
 ) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let ap = state.active(window.label());
-    let real = wisp_tools::safety::validate_file_path(&ap.root, &path)?;
+    let real = superscience_tools::safety::validate_file_path(&ap.root, &path)?;
     if !real.exists() {
         return Err(format!("file not found: {path}"));
     }

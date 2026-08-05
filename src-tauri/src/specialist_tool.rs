@@ -4,9 +4,9 @@
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use wisp_llm::ToolSchema;
-use wisp_store::Store;
-use wisp_tools::{Tool, ToolEnv, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_store::Store;
+use superscience_tools::{Tool, ToolEnv, ToolResult};
 
 pub struct SaveSpecialistTool {
     pub store: Store,
@@ -103,24 +103,27 @@ impl Tool for SaveSpecialistTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wisp_tools::Tool;
+    use superscience_tools::Tool;
 
     struct NoEnv(std::path::PathBuf);
     #[async_trait::async_trait]
-    impl wisp_tools::ToolEnv for NoEnv {
+    impl superscience_tools::ToolEnv for NoEnv {
         fn project_root(&self) -> &std::path::Path {
             &self.0
         }
         async fn confirm(&self, _m: &str) -> bool {
             true
         }
-        async fn emit(&self, _e: wisp_tools::ToolEvent) {}
+        async fn emit(&self, _e: superscience_tools::ToolEvent) {}
     }
 
     #[tokio::test]
     async fn creates_a_specialist_and_never_touches_builtin() {
-        let tmp = std::env::temp_dir().join(format!("wisp_sptool_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_sptool_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         let tool = SaveSpecialistTool {
             store: store.clone(),
         };
@@ -141,8 +144,11 @@ mod tests {
 
     #[tokio::test]
     async fn requires_instructions() {
-        let tmp = std::env::temp_dir().join(format!("wisp_sptool_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_sptool_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         let tool = SaveSpecialistTool {
             store: store.clone(),
         };
@@ -165,8 +171,11 @@ mod tests {
         // last-non-builtin one — upsert appends in-process, so both coincide
         // here; the snapshot lookup is defensive hardening against future
         // ordering changes, not a behavior this test can force apart.
-        let tmp = std::env::temp_dir().join(format!("wisp_sptool_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_sptool_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         let tool = SaveSpecialistTool {
             store: store.clone(),
         };

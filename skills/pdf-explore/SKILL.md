@@ -88,7 +88,7 @@ ages them — view the few crops that matter, not every page.
 
 The upstream skill's LLM fan-out helpers (`pdf_scan` semantic page
 ranking, `pdf_extract` structured sweeps, `pdf_map` per-page summaries)
-need an in-kernel model-call bridge wisp doesn't provide; they were
+need an in-kernel model-call bridge SuperScience doesn't provide; they were
 removed rather than left to NameError. For an exhaustive sweep, dump all
 pages to files (recipe above, chunked) and work through them — or
 delegate the reading to the `explore` subagent once the text is on disk.

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make wisp-science a project-level research workbench rather than a local chat shell with occasional SSH commands. The user should see one research project even when compute happens across local Python, WSL, SSH Linux servers, GPU hosts, SLURM clusters, literature tools, and local figure polishing.
+Make superscience a project-level research workbench rather than a local chat shell with occasional SSH commands. The user should see one research project even when compute happens across local Python, WSL, SSH Linux servers, GPU hosts, SLURM clusters, literature tools, and local figure polishing.
 
 ## Core Model
 

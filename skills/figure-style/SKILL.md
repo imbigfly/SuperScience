@@ -314,7 +314,7 @@ spine is not a finding. Fix (move, shorten, stagger) and re-save until clean.
 **9.2 Perceptual check.** The bbox check is geometric, not perceptual — it will
 not catch a low-contrast label, a leader that crosses three others, or a series
 colour mistakable for another. Save every panel crop as a concrete file with
-Pillow, then inspect each crop with Wisp's `view_image` tool:
+Pillow, then inspect each crop with SuperScience's `view_image` tool:
 ```python
 from PIL import Image
 

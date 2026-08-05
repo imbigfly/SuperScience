@@ -35,13 +35,13 @@ use std::{
     path::Path,
     sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock},
 };
+use superscience_store::{secrets::Secret, Store};
 use tauri::{AppHandle, Manager, State as TauriState};
 use tokio::{
     net::TcpListener,
     sync::{oneshot, Mutex},
     task::JoinHandle,
 };
-use wisp_store::{secrets::Secret, Store};
 
 pub const DEFAULT_DEVICE_BRIDGE_PORT: u16 = 18_766;
 const DEVICE_TOKEN_SECRET: &str = "sticks3_device_bridge_token";
@@ -49,7 +49,7 @@ const SETTING_ENABLED: &str = "device_bridge_enabled";
 const SETTING_MODE: &str = "device_bridge_mode";
 const SETTING_BIND_IPV4: &str = "device_bridge_bind_ipv4";
 const SETTING_PORT: &str = "device_bridge_port";
-const DEVICE_TOKEN_HEADER: &str = "x-wisp-device-token";
+const DEVICE_TOKEN_HEADER: &str = "x-superscience-device-token";
 const ACTION_HISTORY_LIMIT: usize = 50;
 const MAX_ACTION_ID_BYTES: usize = 160;
 const PET_FRAME_WIDTH: u32 = 120;
@@ -473,7 +473,7 @@ impl DeviceBridge {
                 current.port = failed_config.port;
                 current.url = None;
                 current.detail = format!("Device Bridge stopped unexpectedly: {error}");
-                tracing::warn!(target: "wisp", error = %error, "device bridge server failed");
+                tracing::warn!(target: "superscience", error = %error, "device bridge server failed");
             }
         });
         *runtime = Some(RunningBridge {
@@ -538,7 +538,7 @@ impl DeviceBridge {
                 .await
                 .is_err()
             {
-                tracing::warn!(target: "wisp", "device bridge did not stop within three seconds");
+                tracing::warn!(target: "superscience", "device bridge did not stop within three seconds");
                 task.abort();
                 let _ = task.await;
             }
@@ -561,7 +561,7 @@ fn router(state: HttpState) -> Router {
 async fn health() -> Json<Value> {
     Json(json!({
         "ok": true,
-        "service": "wisp-device-bridge",
+        "service": "superscience-device-bridge",
         "protocol": 1,
     }))
 }
@@ -606,7 +606,7 @@ fn pet_frame_count(source: &ValidatedPetSource, spec: PetStateSpec) -> u8 {
 
 fn pet_revision(source: &ValidatedPetSource) -> String {
     let mut revision = Sha256::new();
-    revision.update(b"wisp-sticks3-pet-protocol-1\0");
+    revision.update(b"superscience-sticks3-pet-protocol-1\0");
     revision.update(source.package_revision.as_bytes());
     revision.update(b"\0png\0");
     revision.update(PET_FRAME_WIDTH.to_le_bytes());
@@ -813,7 +813,7 @@ async fn post_action(
 
     let result = match request.action.as_str() {
         "ping" => {
-            tracing::debug!(target: "wisp", action_id = %request.id, "StickS3 ping");
+            tracing::debug!(target: "superscience", action_id = %request.id, "StickS3 ping");
             Ok(json!({
                 "ok": true,
                 "id": request.id,
@@ -872,7 +872,7 @@ fn authorized(state: &HttpState, headers: &HeaderMap) -> bool {
     expected.as_deref().is_some_and(|expected| {
         // Compare fixed-size MACs rather than the tokens themselves. ring's
         // verifier performs the tag comparison in constant time.
-        const CHALLENGE: &[u8] = b"wisp-device-bridge-token-check-v1";
+        const CHALLENGE: &[u8] = b"superscience-device-bridge-token-check-v1";
         let expected_key = hmac::Key::new(hmac::HMAC_SHA256, expected);
         let supplied_key = hmac::Key::new(hmac::HMAC_SHA256, supplied);
         let expected_tag = hmac::sign(&expected_key, CHALLENGE);
@@ -975,21 +975,21 @@ pub async fn autostart(app: AppHandle) {
         Ok(mode) => mode,
         Err(error) => {
             state.device_bridge.set_startup_error(&error);
-            tracing::warn!(target: "wisp", %error, "device bridge transport mode is invalid");
+            tracing::warn!(target: "superscience", %error, "device bridge transport mode is invalid");
             return;
         }
     };
     if mode == DeviceBridgeMode::Relay {
         let error = "Device Bridge relay transport is not available in this release.";
         state.device_bridge.set_startup_error(error);
-        tracing::warn!(target: "wisp", "{error}");
+        tracing::warn!(target: "superscience", "{error}");
         return;
     }
     let config = match load_config(&state.store).await {
         Ok(config) => config,
         Err(error) => {
             state.device_bridge.set_startup_error(&error);
-            tracing::warn!(target: "wisp", %error, "device bridge configuration is invalid");
+            tracing::warn!(target: "superscience", %error, "device bridge configuration is invalid");
             return;
         }
     };
@@ -999,14 +999,14 @@ pub async fn autostart(app: AppHandle) {
             Ok(token) => {
                 if let Err(error) = store_token(token.clone()).await {
                     state.device_bridge.set_startup_error(&error);
-                    tracing::warn!(target: "wisp", %error, "could not store device bridge token");
+                    tracing::warn!(target: "superscience", %error, "could not store device bridge token");
                     return;
                 }
                 token
             }
             Err(error) => {
                 state.device_bridge.set_startup_error(&error);
-                tracing::warn!(target: "wisp", %error, "could not generate device bridge token");
+                tracing::warn!(target: "superscience", %error, "could not generate device bridge token");
                 return;
             }
         },
@@ -1015,7 +1015,7 @@ pub async fn autostart(app: AppHandle) {
     if let Err(error) = state.device_bridge.start(config, token, focus).await {
         // Opt-in network failures are visible in Settings but never fail app
         // startup or affect the loopback-only Browser Bridge.
-        tracing::warn!(target: "wisp", %error, "device bridge did not start");
+        tracing::warn!(target: "superscience", %error, "device bridge did not start");
     }
 }
 
@@ -1162,10 +1162,17 @@ mod tests {
     }
 
     async fn test_store() -> (Store, PathBuf) {
-        let root =
-            std::env::temp_dir().join(format!("wisp-device-bridge-store-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience-device-bridge-store-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(&root).unwrap();
-        (Store::open(&root.join("wisp.sqlite")).await.unwrap(), root)
+        (
+            Store::open(&root.join("superscience.sqlite"))
+                .await
+                .unwrap(),
+            root,
+        )
     }
 
     async fn start_test_bridge_with_store(
@@ -1204,8 +1211,10 @@ mod tests {
     }
 
     fn pet_directory(name: &str) -> PathBuf {
-        let directory =
-            std::env::temp_dir().join(format!("wisp-device-pet-{name}-{}", uuid::Uuid::new_v4()));
+        let directory = std::env::temp_dir().join(format!(
+            "superscience-device-pet-{name}-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(&directory).unwrap();
         directory
     }
@@ -1297,7 +1306,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             health,
-            json!({"ok": true, "service": "wisp-device-bridge", "protocol": 1})
+            json!({"ok": true, "service": "superscience-device-bridge", "protocol": 1})
         );
         for path in [
             "/state",
@@ -1316,7 +1325,7 @@ mod tests {
             assert_eq!(
                 client
                     .get(format!("{url}{path}"))
-                    .header("X-Wisp-Device-Token", "wrong")
+                    .header("X-SuperScience-Device-Token", "wrong")
                     .send()
                     .await
                     .unwrap()
@@ -1326,7 +1335,7 @@ mod tests {
         }
         let state: Value = client
             .get(format!("{url}/state"))
-            .header("X-Wisp-Device-Token", &token)
+            .header("X-SuperScience-Device-Token", &token)
             .send()
             .await
             .unwrap()
@@ -1340,7 +1349,7 @@ mod tests {
 
         let manifest: Value = client
             .get(format!("{url}/pet/manifest"))
-            .header("X-Wisp-Device-Token", token)
+            .header("X-SuperScience-Device-Token", token)
             .send()
             .await
             .unwrap()
@@ -1367,7 +1376,7 @@ mod tests {
         let client = reqwest::Client::new();
         let unknown = client
             .post(format!("{url}/action"))
-            .header("X-Wisp-Device-Token", &token)
+            .header("X-SuperScience-Device-Token", &token)
             .json(&json!({"id": "bad", "action": "run_shell"}))
             .send()
             .await
@@ -1377,7 +1386,7 @@ mod tests {
         for index in 0..55 {
             let response = client
                 .post(format!("{url}/action"))
-                .header("X-Wisp-Device-Token", &token)
+                .header("X-SuperScience-Device-Token", &token)
                 .json(&json!({"id": format!("ping-{index}"), "action": "ping"}))
                 .send()
                 .await
@@ -1387,7 +1396,7 @@ mod tests {
         assert_eq!(focus.calls.load(Ordering::SeqCst), 0);
         let history: Value = client
             .get(format!("{url}/actions"))
-            .header("X-Wisp-Device-Token", &token)
+            .header("X-SuperScience-Device-Token", &token)
             .send()
             .await
             .unwrap()
@@ -1410,7 +1419,7 @@ mod tests {
         for session_id in ["missing", "orphan"] {
             let response = client
                 .post(format!("{url}/action"))
-                .header("X-Wisp-Device-Token", &token)
+                .header("X-SuperScience-Device-Token", &token)
                 .json(&json!({
                     "id": format!("focus-{session_id}"),
                     "action": "focus_session",
@@ -1423,7 +1432,7 @@ mod tests {
         }
         let valid = client
             .post(format!("{url}/action"))
-            .header("X-Wisp-Device-Token", &token)
+            .header("X-SuperScience-Device-Token", &token)
             .json(&json!({
                 "id": "focus-valid",
                 "action": "focus_session",
@@ -1467,7 +1476,7 @@ mod tests {
 
         let manifest: Value = client
             .get(format!("{url}/pet/manifest"))
-            .header("X-Wisp-Device-Token", &token)
+            .header("X-SuperScience-Device-Token", &token)
             .send()
             .await
             .unwrap()
@@ -1506,7 +1515,7 @@ mod tests {
                     "{url}/pet/frame?revision={revision}&state={}&frame=0",
                     spec.bridge_state
                 ))
-                .header("X-Wisp-Device-Token", &token)
+                .header("X-SuperScience-Device-Token", &token)
                 .send()
                 .await
                 .unwrap();
@@ -1541,7 +1550,7 @@ mod tests {
             .get(format!(
                 "{url}/pet/frame?revision={revision}&state=working&frame=2"
             ))
-            .header("X-Wisp-Device-Token", &token)
+            .header("X-SuperScience-Device-Token", &token)
             .send()
             .await
             .unwrap();
@@ -1553,7 +1562,7 @@ mod tests {
         ] {
             let response = client
                 .get(format!("{url}/pet/frame?{query}"))
-                .header("X-Wisp-Device-Token", &token)
+                .header("X-SuperScience-Device-Token", &token)
                 .send()
                 .await
                 .unwrap();
@@ -1568,14 +1577,14 @@ mod tests {
             .get(format!(
                 "{url}/pet/frame?revision={revision}&state=idle&frame=0"
             ))
-            .header("X-Wisp-Device-Token", &token)
+            .header("X-SuperScience-Device-Token", &token)
             .send()
             .await
             .unwrap();
         assert_eq!(stale.status(), StatusCode::CONFLICT);
         let revised: Value = client
             .get(format!("{url}/pet/manifest"))
-            .header("X-Wisp-Device-Token", &token)
+            .header("X-SuperScience-Device-Token", &token)
             .send()
             .await
             .unwrap()
@@ -1600,7 +1609,7 @@ mod tests {
         let client = reqwest::Client::new();
         let manifest: Value = client
             .get(format!("{url}/pet/manifest"))
-            .header("X-Wisp-Device-Token", &token)
+            .header("X-SuperScience-Device-Token", &token)
             .send()
             .await
             .unwrap()
@@ -1614,7 +1623,7 @@ mod tests {
             .get(format!(
                 "{url}/pet/frame?revision={revision}&state=idle&frame=0"
             ))
-            .header("X-Wisp-Device-Token", &token)
+            .header("X-SuperScience-Device-Token", &token)
             .send()
             .await
             .unwrap();
@@ -1644,7 +1653,7 @@ mod tests {
             .unwrap();
         let response = reqwest::Client::new()
             .get(format!("{url}/state"))
-            .header("X-Wisp-Device-Token", token)
+            .header("X-SuperScience-Device-Token", token)
             .send()
             .await
             .unwrap();

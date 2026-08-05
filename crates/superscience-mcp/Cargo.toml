@@ -1,0 +1,18 @@
+[package]
+name = "superscience-mcp"
+description = "Minimal stdio JSON-RPC MCP client; launches vendored bio-tools servers via uv."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = "0.1"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+superscience-llm = { workspace = true }
+superscience-tools = { workspace = true }
+superscience-paths = { workspace = true }
+reqwest = { workspace = true }

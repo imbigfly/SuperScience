@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "wisp-science",
+  "productName": "SuperScience",
   "version": "0.30.0",
-  "identifier": "science.wisp-science",
+  "identifier": "science.superscience",
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:1421",
@@ -12,7 +12,7 @@
   "app": {
     "withGlobalTauri": true,
     "windows": [
-      { "title": "wisp-science", "width": 1100, "height": 760, "resizable": true, "dragDropEnabled": false }
+      { "title": "SuperScience", "width": 1100, "height": 760, "resizable": true, "dragDropEnabled": false }
     ],
     "security": { "csp": null }
   },

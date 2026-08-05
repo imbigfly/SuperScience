@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wisp kernel worker — persistent Python execution over a JSON-per-line
+"""SuperScience kernel worker — persistent Python execution over a JSON-per-line
 stdin/stdout protocol.
 
 Ready:    {"type": "ready", "protocol": 1, "language": "python", ...}
@@ -11,7 +11,7 @@ Response: {"type": "result", "id": "<uuid>", "stdout": "...", "stderr": "...",
            "trace": {"error_lineno": null, "error_call": null},
            "usage": {"wall_s": 0.0, "cpu_s": 0.0, "rss_kb": 0}}
 
-This is a Windows-friendly port of the upstream wisp-science
+This is a Windows-friendly port of the upstream superscience
 `kernels/kernel_worker.py`: the POSIX-only `resource`, `/proc`, and
 delivered-SIGINT discipline are dropped. RSS comes from `psutil` when
 installed (else 0). Per-cell interrupt is not supported in this MVP —
@@ -51,13 +51,13 @@ def _neutralize_pyplot_show() -> None:
     forces a GUI backend (matplotlib.use("MacOSX")) still can't block the kernel."""
     plt = sys.modules.get("matplotlib.pyplot")
     show = getattr(plt, "show", None) if plt is not None else None
-    if show is None or getattr(show, "_wisp_noop", False):
+    if show is None or getattr(show, "_superscience_noop", False):
         return
 
     def _noop_show(*_a, **_k):  # ponytail: figures go to savefig, not a GUI
         return None
 
-    _noop_show._wisp_noop = True
+    _noop_show._superscience_noop = True
     plt.show = _noop_show
 
 
@@ -249,7 +249,7 @@ def _kernel_init(namespace: dict) -> None:
     """Pre-import common stdlib and optional deps into the persistent namespace."""
     exec(compile(
         "import json, math, os, re, sys, urllib.parse, urllib.request",
-        "<wisp-kernel:init>",
+        "<superscience-kernel:init>",
         "exec",
     ), namespace)
     for mod in ("requests", "numpy", "pandas"):
@@ -371,7 +371,7 @@ def main():
             protocol_out.flush()
             continue
         cell_counter += 1
-        cell_tag = f"<wisp-kernel:{cell_counter}>"
+        cell_tag = f"<superscience-kernel:{cell_counter}>"
 
         import linecache as _lc
         while linecache_cells and (

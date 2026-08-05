@@ -80,7 +80,7 @@ CLI-only: as a CSV column header or YAML key, `ligand` matches nothing and the
 row is silently treated as having no ligand. Spell the flag and the column
 header out in full.
 
-## Wisp execution
+## SuperScience execution
 
 Use `python` only for bounded interactive checks. For a long or GPU-backed
 workload, require a selected and probed `ssh:<alias>` context and load

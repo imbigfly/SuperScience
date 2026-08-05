@@ -1,13 +1,13 @@
 ---
 name: local-env-setup
-description: Configure the local wisp-science runtime — uv/Python bootstrap, Node+scimaster-cli for bear-* literature skills, pixi for bioinformatics multi-env analysis. Detect mainland-China network and apply mirrors. Use when Capabilities shows missing Python/uv/Node/sci/pixi, bootstrap errors, or the user asks to 配置环境 / install Python / uv / Node / pixi / set up the local environment. Not for remote GPU/SSH compute (use compute-env-setup).
+description: Configure the local superscience runtime — uv/Python bootstrap, Node+scimaster-cli for bear-* literature skills, pixi for bioinformatics multi-env analysis. Detect mainland-China network and apply mirrors. Use when Capabilities shows missing Python/uv/Node/sci/pixi, bootstrap errors, or the user asks to 配置环境 / install Python / uv / Node / pixi / set up the local environment. Not for remote GPU/SSH compute (use compute-env-setup).
 license: Apache-2.0
 tags: bootstrap, uv, python, node, npm, pixi, scimaster, mirror, china, install, macos, windows, linux
 ---
 
 # Local runtime setup
 
-wisp-science needs three **independent** local toolchains:
+superscience needs three **independent** local toolchains:
 
 | Layer | Tools | Purpose |
 |---|---|---|
@@ -17,7 +17,7 @@ wisp-science needs three **independent** local toolchains:
 
 Core is **required** for the app. Literature and bioinformatics layers are optional until the user runs those skills — but Capabilities shows all of them; install what's missing for the user's goal.
 
-Restart wisp-science after changing PATH or global config so bootstrap re-runs.
+Restart superscience after changing PATH or global config so bootstrap re-runs.
 
 ## Step 0 — Detect platform, region, and current state
 
@@ -99,21 +99,21 @@ for c in uv node npm sci pixi; do command -v $c && $c --version 2>/dev/null; don
 
 ## Layer 1 — Core: uv + Python
 
-wisp-science does **not** ship Python. It needs **`uv`** on PATH (or `UV_PATH`) to create the managed venv.
+superscience does **not** ship Python. It needs **`uv`** on PATH (or `UV_PATH`) to create the managed venv.
 
 ### What gets created automatically
 
 1. `uv venv` → virtualenv under app data
 2. `uv pip install -r …/python/requirements-mcp.txt`
-3. Marker `.wisp_deps_ok` when deps succeed
+3. Marker `.superscience_deps_ok` when deps succeed
 
 | OS | Desktop venv path |
 |---|---|
-| Windows | `%APPDATA%\science.wisp-science\wisp-science\python\.venv` |
-| macOS | `~/Library/Application Support/science.wisp-science/wisp-science/python/.venv` |
-| Linux | `~/.local/share/science.wisp-science/wisp-science/python/.venv` |
+| Windows | `%APPDATA%\science.superscience\superscience\python\.venv` |
+| macOS | `~/Library/Application Support/science.superscience/superscience/python/.venv` |
+| Linux | `~/.local/share/science.superscience/superscience/python/.venv` |
 
-Dev checkout: `<workspace>/.wisp/python/.venv`
+Dev checkout: `<workspace>/.superscience/python/.venv`
 
 ### Install uv
 
@@ -208,13 +208,13 @@ sci usage
 
 API Key: SciMaster settings → API Key. Do **not** proceed with bear-* skills if `sci --version` fails.
 
-In the wisp-science desktop app, you can also save the SciMaster key in
-Settings -> Credentials -> SCIMaster. Wisp will sync that key into
+In the superscience desktop app, you can also save the SciMaster key in
+Settings -> Credentials -> SCIMaster. SuperScience will sync that key into
 `~/.scimaster/config.json` for `scimaster-cli`.
 
 ## Layer 3 — Bioinformatics: pixi
 
-**pixi** manages isolated per-project environments (conda + pip) — use for scanpy/single-cell, variant calling stacks, etc. The wisp **`python` tool** uses the core uv venv; run bioinfo code via **`shell`**: `pixi run python …` or `pixi run …` in the project directory.
+**pixi** manages isolated per-project environments (conda + pip) — use for scanpy/single-cell, variant calling stacks, etc. The SuperScience **`python` tool** uses the core uv venv; run bioinfo code via **`shell`**: `pixi run python …` or `pixi run …` in the project directory.
 
 ### Install pixi
 
@@ -255,8 +255,8 @@ pixi info    # shows config paths and channels
 
 | Issue | Fix |
 |---|---|
-| uv/node installed but app still says missing | Restart wisp-science; confirm tools on PATH for the **GUI user** (macOS: relaunch from Dock after shell profile update). |
-| Cannot modify PATH | Set `UV_PATH` / `PIXI_PATH` to full binary paths before launching wisp-science. |
+| uv/node installed but app still says missing | Restart superscience; confirm tools on PATH for the **GUI user** (macOS: relaunch from Dock after shell profile update). |
+| Cannot modify PATH | Set `UV_PATH` / `PIXI_PATH` to full binary paths before launching superscience. |
 | Mainland: timeouts on pypi.org / registry.npmjs.org | Apply Step 0a mirrors; retry. |
 | Corporate proxy / TLS | `HTTPS_PROXY`, trust store; still use mirrors if direct egress to US is blocked. |
 | Corrupt core venv | Delete `python/.venv` under app data; restart (bootstrap recreates). |
@@ -268,12 +268,12 @@ pixi info    # shows config paths and channels
 2. **Step 0a first** — detect mainland vs international; configure mirrors before any download.
 3. Detect OS — PowerShell on Windows, `sh` elsewhere.
 4. Install missing layers in order: **core (uv)** → **literature (Node+sci)** → **bioinfo (pixi)** as needed.
-5. Verify each layer; tell user to **restart wisp-science** after PATH/config changes.
+5. Verify each layer; tell user to **restart superscience** after PATH/config changes.
 6. Finish with **attempt_completion**: region/mirror choice, what was installed, paths checked, Capabilities expectations.
 
 ## Not in scope
 
 - Remote GPU or direct SSH → `compute-env-setup`; managed cloud backends are
-  unavailable until Wisp implements a matching execution-context backend
+  unavailable until SuperScience implements a matching execution-context backend
 - Replacing pixi with conda/micromamba when pixi suffices locally
 - SciMaster API billing / key provisioning beyond pointing to `sci init`
