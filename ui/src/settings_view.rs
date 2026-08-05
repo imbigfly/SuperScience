@@ -1105,7 +1105,8 @@ pub(super) fn SettingsView(
                                 <strong>{move || t(locale.get(), "issue_report.entry_title")}</strong>
                                 <span>{move || t(locale.get(), "issue_report.entry_hint")}</span>
                             </div>
-                            <button type="button" on:click={
+                            <button type="button" class="settings-add-btn" data-testid="report-problem-open"
+                                on:click={
                                 let generate = generate_issue_report_open.clone();
                                 move |_| {
                                     issue_report_title.set(String::new());
@@ -1142,7 +1143,10 @@ pub(super) fn SettingsView(
                                             <input class="settings-path-input" data-testid="sync-folder"
                                                 prop:value=move || settings.get().sync_folder
                                                 on:input=move |ev| settings.update(|current| current.sync_folder = event_target_input(&ev).value()) />
-                                            <button type="button" on:click=choose_sync_folder>{move || t(locale.get(), "projects.choose_dir")}</button>
+                                            <button type="button" class="settings-add-btn" data-testid="sync-choose-folder"
+                                                on:click=choose_sync_folder>
+                                                {move || t(locale.get(), "projects.choose_dir")}
+                                            </button>
                                         </div>
                                         <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.folder_hint")}</span>
                                     </label>
@@ -2285,7 +2289,8 @@ pub(super) fn SettingsView(
                                             prop:value=move || settings.get().pet_directory
                                             placeholder=move || t(locale.get(), "pet.directory_placeholder")
                                             on:input=move |ev| settings.update(|current| current.pet_directory = event_target_input(&ev).value()) />
-                                        <button type="button" data-testid="pet-choose" on:click=choose_pet_directory>
+                                        <button type="button" class="settings-add-btn" data-testid="pet-choose"
+                                            on:click=choose_pet_directory>
                                             {move || t(locale.get(), "projects.choose_dir")}
                                         </button>
                                     </div>

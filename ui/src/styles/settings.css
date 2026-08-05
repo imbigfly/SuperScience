@@ -1597,7 +1597,7 @@ button.workflow-graph-port.output.active {
 .settings-field-hint { margin: 0; color: var(--text-faint); font-size: 12px; line-height: 1.45; }
 .settings-path-row { display: flex; align-items: center; gap: 8px; }
 .settings-path-row input { min-width: 0; flex: 1; }
-.settings-path-row button { flex: 0 0 auto; }
+.settings-path-row > button { flex: 0 0 auto; }
 .settings-pane label.settings-check {
   display: inline-flex;
   flex-direction: row;
@@ -1922,7 +1922,10 @@ button.workflow-graph-port.output.active {
 .settings-add-menu > button + button { top: calc(100% + 44px); }
 .settings-add-menu > button + button + button { top: calc(100% + 84px); }
 .settings-add-menu > button:hover { border-color: var(--border-strong); background: var(--bg-sunken); }
-.settings-add-btn {
+/* Secondary settings actions: add CTAs, path pickers, and row actions outside `.row`. */
+.settings-add-btn,
+.settings-path-row > button,
+.appearance-config-row > button {
   font: inherit;
   font-size: 13.5px;
   font-weight: 550;
@@ -1933,9 +1936,19 @@ button.workflow-graph-port.output.active {
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
+  transition: border-color .12s ease, background .12s ease, color .12s ease;
 }
-.settings-add-btn:hover:not(:disabled) { border-color: var(--text-faint); }
-.settings-add-btn:disabled { opacity: .5; cursor: default; }
+.settings-add-btn:hover:not(:disabled),
+.settings-path-row > button:hover:not(:disabled),
+.appearance-config-row > button:hover:not(:disabled) {
+  border-color: var(--text-faint);
+}
+.settings-add-btn:disabled,
+.settings-path-row > button:disabled,
+.appearance-config-row > button:disabled {
+  opacity: .5;
+  cursor: default;
+}
 .model-preset-row {
   display: flex;
   align-items: center;
