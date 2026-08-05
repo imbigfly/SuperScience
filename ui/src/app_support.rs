@@ -6982,7 +6982,17 @@ pub(super) fn latest_context_usage(items: &[ChatItem]) -> Option<ContextUsageSna
         (*ctx_tokens > 0 || *max_context > 0).then_some(ContextUsageSnapshot {
             used: *ctx_tokens,
             max: *max_context,
-            breakdown: (context_usage.total() > 0).then_some(*context_usage),
+            // Pre-feature usage rows only persisted totals. Attribute the whole
+            // window to Conversation so the panel never pretends the native
+            // agent only has an opaque "Agent-managed" bucket.
+            breakdown: Some(if context_usage.total() > 0 {
+                *context_usage
+            } else {
+                ContextUsage {
+                    conversation: *ctx_tokens,
+                    ..ContextUsage::default()
+                }
+            }),
             estimated: true,
         })
     })
@@ -7052,6 +7062,14 @@ mod usage_row_tests {
         );
         let context = latest_context_usage(&items).expect("latest context snapshot");
         assert_eq!((context.used, context.max), (1_500, 8_000));
+        assert_eq!(
+            context.breakdown,
+            Some(ContextUsage {
+                conversation: 1_500,
+                ..ContextUsage::default()
+            })
+        );
+        assert!(context.estimated);
         // A new user turn starts a fresh row.
         items.push(ChatItem::User("q2".into()));
         upsert_turn_usage(

@@ -13346,6 +13346,7 @@ struct ContextUsageRow {
 
 fn context_usage_rows(snapshot: &ContextUsageSnapshot, locale: Locale) -> Vec<ContextUsageRow> {
     let Some(usage) = snapshot.breakdown else {
+        // ACP only reports used/max; do not invent native category splits.
         return vec![ContextUsageRow {
             label: t(locale, "context_usage.remote_context").into(),
             tokens: snapshot.used,
@@ -13388,7 +13389,11 @@ fn context_usage_rows(snapshot: &ContextUsageSnapshot, locale: Locale) -> Vec<Co
 
 #[cfg(test)]
 mod token_format_tests {
-    use super::{context_percent, fmt_context_limit, fmt_context_tokens, fmt_tokens};
+    use super::{
+        context_percent, context_usage_rows, fmt_context_limit, fmt_context_tokens, fmt_tokens,
+    };
+    use crate::dto::{ContextUsage, ContextUsageSnapshot};
+    use crate::i18n::Locale;
 
     #[test]
     fn small_counts_are_not_rounded_to_zero() {
@@ -13402,6 +13407,46 @@ mod token_format_tests {
         assert_eq!(fmt_context_tokens(6_000), "6.0K");
         assert_eq!(fmt_context_tokens(79_900), "79.9K");
         assert_eq!(fmt_context_limit(300_000), "300K");
+    }
+
+    #[test]
+    fn acp_totals_keep_a_single_remote_row() {
+        let rows = context_usage_rows(
+            &ContextUsageSnapshot {
+                used: 1_200,
+                max: 8_000,
+                breakdown: None,
+                estimated: false,
+            },
+            Locale::En,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "Agent-reported total");
+        assert_eq!(rows[0].tokens, 1_200);
+    }
+
+    #[test]
+    fn categorized_native_usage_keeps_seven_rows() {
+        let rows = context_usage_rows(
+            &ContextUsageSnapshot {
+                used: 79_900,
+                max: 300_000,
+                breakdown: Some(ContextUsage {
+                    system_prompt: 6_000,
+                    tool_definitions: 22_700,
+                    rules: 2_200,
+                    skills: 6_100,
+                    mcp_dynamic_tools: 4_200,
+                    subagent_definitions: 2_400,
+                    conversation: 36_300,
+                }),
+                estimated: true,
+            },
+            Locale::En,
+        );
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows[6].label, "Conversation");
+        assert_eq!(rows[6].tokens, 36_300);
     }
 }
 

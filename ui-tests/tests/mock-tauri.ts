@@ -3556,6 +3556,25 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               }, 30);
               return fid;
             }
+            if (String(arg("message") ?? "").includes("CONTEXTUSAGELEGACY")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Legacy usage totals only." });
+                emit("agent", {
+                  kind: "Usage",
+                  frame_id: fid,
+                  round: 1,
+                  input: 25_000,
+                  output: 400,
+                  reasoning: 0,
+                  cached: 0,
+                  ctx_tokens: 25_400,
+                  max_context: 1_000_000,
+                });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
             if (String(arg("message") ?? "").includes("CONTEXTUSAGE")) {
               setTimeout(() => {
                 emit("agent", { kind: "User", frame_id: fid, text: msg });

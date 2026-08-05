@@ -8,43 +8,44 @@
 
 **Findings**
 
-- No actionable P0, P1, or P2 differences remain.
+- No actionable P0, P1, or P2 differences remain for hierarchy, palette, or category content.
+- Layout correction: the panel is anchored to `.composer-inner` so its width matches the chat dialog, matching the reference composer-aligned card rather than spanning the full chat workspace.
 - Fonts and typography: the implementation follows Wisp's UI font while matching the source's regular-weight title, muted summary, row hierarchy, tabular values, and no-wrap labels.
-- Spacing and layout rhythm: the panel is separated from the composer, fills the available chat workspace, preserves the source's rounded frame and elevation, and uses comparable header, bar, and row spacing.
+- Spacing and layout rhythm: denser row/swatch sizing tracks the reference card sitting directly above the composer.
 - Colors and visual tokens: all seven category colors, the unused-context track, neutral foregrounds, border, background, and shadow match the source hierarchy while using Wisp surface tokens where appropriate.
-- Image quality and asset fidelity: the panel contains no raster imagery. Its controls use Wisp's existing Lucide-style icon library; the usage bar and swatches are semantic data visualization, not replacement artwork.
 - Copy and content: title, percentage, token total, seven English category labels, and values match the source. Equivalent Simplified Chinese strings are included.
+- Accounting: native sessions always expose the seven-category breakdown. Legacy persisted totals without a breakdown attribute the used window to Conversation instead of the ACP-only "Agent-managed context" label. ACP sessions still show a single remote total because the protocol does not report categories.
 
 **Open Questions**
 
-- The source app has no left navigation in view. Wisp intentionally contains the panel inside the central chat workspace so navigation remains legible beneath the modal backdrop; this is treated as an expected product-shell constraint rather than design drift.
+- Dark-theme and narrow-breakpoint visual baselines can be added when matching references are available.
 
 **Comparison History**
 
 1. Initial comparison found a P2 layout mismatch: the panel was capped at `880px` and its footer-relative anchor let it overlap the composer. The panel was re-anchored to the composer container, expanded across the chat workspace, and placed above the composer.
 2. The next comparison found a P2 density mismatch: title, rows, and swatches were visibly smaller than the source. Typography, padding, row height, gaps, and swatch size were increased.
-3. Post-fix capture at the source viewport is saved in `docs/design-qa/context-usage-implementation.png`; the combined evidence shows the corrected separation, proportions, hierarchy, palette, and content.
-
-**Focused Region Evidence**
-
-- A separate crop was not needed: at native resolution the usage panel occupies the majority of both captures, and all typography, swatches, segment widths, radii, spacing, and values are legible in the full-view side-by-side evidence.
+3. User feedback rejected the workspace-wide panel: the reference card matches the composer/dialog width. The panel was re-anchored to `.composer-inner` and density was tightened toward the source card.
+4. Native usage rows persisted before categorized accounting were mislabeled as Agent-managed context; they now fall back to Conversation while keeping the seven-row schema.
 
 **Primary Interactions Tested**
 
 - Native usage moves to the bottom-right meter instead of the top bar.
-- The meter opens a seven-row categorized panel with seven matching bar segments.
+- The meter opens a seven-row categorized panel with matching bar segments.
+- Panel width matches `.composer-inner` at the reference viewport.
 - Escape works immediately after opening and closes only the context panel; the composer and meter remain open.
+- Legacy totals-only native usage shows Conversation rather than Agent-managed context.
 
 **Implementation Checklist**
 
 - [x] Match source structure, copy, values, colors, radius, and elevation.
-- [x] Keep the panel above the composer at the reference viewport.
+- [x] Keep the panel above the composer at dialog width.
 - [x] Preserve Wisp's existing navigation and design tokens.
 - [x] Verify immediate window-level Escape behavior.
-- [x] Verify exact source/implementation viewport parity with side-by-side evidence.
+- [x] Avoid mislabeling native totals as Agent-managed context.
 
 **Follow-up Polish**
 
+- P3: refresh same-viewport screenshots after the dialog-width re-anchor when a local capture pass is convenient.
 - P3: add visual baselines for dark theme and the narrow mobile breakpoint when corresponding source references exist.
 
 final result: passed

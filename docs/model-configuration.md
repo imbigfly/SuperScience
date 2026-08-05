@@ -110,13 +110,15 @@ manual `/compact`, and overflow recovery dialog available. ACP agents are not
 modified because their remote transcripts are owned by the ACP process.
 
 After a native-agent reply, the composer footer shows the estimated percentage
-of the active model's context window. Open it to see the same calibrated request
-estimate split into system prompt, built-in tool definitions, rules, selected
-Skills, MCP and other dynamic tools, subagent definitions, and conversation
-content. These buckets are mutually exclusive and sum to the value used by
-automatic compaction. ACP sessions expose only the total reported by the remote
-agent, so Wisp labels that value as agent-managed context instead of inventing a
-breakdown it cannot observe.
+of the active model's context window. Open it for a detail card aligned to the
+composer width that splits the same calibrated request estimate into system
+prompt, built-in tool definitions, rules, selected Skills, MCP and other
+dynamic tools, subagent definitions, and conversation content. These buckets
+are mutually exclusive and sum to the value used by automatic compaction.
+Older native usage rows that only stored a total attribute that window to
+Conversation until the next reply refreshes the full breakdown. ACP sessions
+expose only the total reported by the remote agent, so Wisp labels that value
+as an agent-reported total instead of inventing a breakdown it cannot observe.
 
 When the provider explicitly rejects a built-in Wisp-agent request for
 exceeding its context window, the conversation opens a recovery dialog instead

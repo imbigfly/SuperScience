@@ -661,7 +661,7 @@ test("ACP turn maps config, overlapping tools, plan, usage, and exact permission
   await contextTrigger.click();
   const contextPanel = page.getByTestId("context-usage-panel");
   await expect(contextPanel).toContainText("1.2K / 8K Tokens");
-  await expect(contextPanel).toContainText("Agent-managed context");
+  await expect(contextPanel).toContainText("Agent-reported total");
   await page.keyboard.press("Escape");
   await expect(contextPanel).toHaveCount(0);
 
@@ -1415,11 +1415,42 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
   await expect(panel.getByText("36.3K", { exact: true })).toBeVisible();
 
+  // offsetWidth ignores the enter animation's scale transform; clientWidth is
+  // the absolute containing block (composer padding box).
+  const widths = await page.evaluate(() => {
+    const panelEl = document.querySelector(
+      "[data-testid='context-usage-panel']",
+    ) as HTMLElement | null;
+    const composerEl = document.querySelector(".composer-inner") as HTMLElement | null;
+    return {
+      panel: panelEl?.offsetWidth ?? 0,
+      composerClient: composerEl?.clientWidth ?? 0,
+    };
+  });
+  expect(Math.abs(widths.panel - widths.composerClient)).toBeLessThan(4);
+
   // Window-level Escape must work immediately; focus never moves into the panel.
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
   await expect(page.locator(".composer-inner")).toBeVisible();
   await expect(trigger).toBeVisible();
+});
+
+test("legacy native usage totals fall back to Conversation, not Agent-managed", async ({ page }) => {
+  await enterApp(page);
+  await page.locator("#composer-input").fill("CONTEXTUSAGELEGACY");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect(trigger).toContainText("3%");
+  await trigger.click();
+  const panel = page.getByTestId("context-usage-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText("~25.4K / 1M Tokens");
+  await expect(panel.locator(".context-usage-row")).toHaveCount(7);
+  await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
+  await expect(panel.getByText("25.4K", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Agent-managed context")).toHaveCount(0);
 });
 
 test("artifact type badges stay neutral instead of rainbow pills", async ({ page }) => {
