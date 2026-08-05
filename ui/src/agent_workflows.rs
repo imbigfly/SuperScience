@@ -2948,9 +2948,7 @@ pub(super) fn workflow_studio(
         }
         let selected = profiles
             .iter()
-            .find(|profile| {
-                profile.active && available.iter().any(|model| model.id == profile.id)
-            })
+            .find(|profile| profile.active && available.iter().any(|model| model.id == profile.id))
             .map(|profile| profile.id.clone())
             .or_else(|| available.first().map(|model| model.id.clone()))
             .unwrap_or_default();
