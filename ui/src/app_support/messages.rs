@@ -1,0 +1,1046 @@
+use super::*;
+
+#[component]
+pub(crate) fn SessionStatusBadge(
+    status: SessionStatusKind,
+    locale: RwSignal<Locale>,
+) -> impl IntoView {
+    let key = status.i18n_key();
+    let class = status.css();
+    view! {
+        <span class=format!("sess-status sess-status-{class}")>
+            {move || t(locale.get(), key)}
+        </span>
+    }
+}
+
+/// Shared Lucide-style UI icons. Interactive controls must use these SVGs,
+/// never font glyphs whose shape varies by platform and fallback font.
+pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
+    let body = match kind {
+        "attach" => view! { <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/> }.into_view(),
+        "folder" => view! { <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/> }.into_view(),
+        "plan" => view! { <path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6l1 1 2-2"/><path d="M3 12l1 1 2-2"/><path d="M3 18l1 1 2-2"/> }.into_view(),
+        "chat" => view! { <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 10h8"/><path d="M8 14h5"/> }.into_view(),
+        "branch" => view! { <path d="M6 3v6a4 4 0 0 0 4 4h8"/><path d="M18 7v12"/><path d="M14 15l4 4 4-4"/><circle cx="6" cy="3" r="2"/> }.into_view(),
+        "chevron-down" => view! { <path d="m6 9 6 6 6-6"/> }.into_view(),
+        "chevron-left" => view! { <path d="m15 18-6-6 6-6"/> }.into_view(),
+        "chevron-right" => view! { <path d="m9 18 6-6-6-6"/> }.into_view(),
+        "expand" => view! { <path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="M9 21H3v-6"/><path d="m3 21 7-7"/> }.into_view(),
+        "download" => view! { <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/> }.into_view(),
+        "upload" => view! { <path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/> }.into_view(),
+        "sync" => view! { <path d="M20 7h-9"/><path d="m16 3 4 4-4 4"/><path d="M4 17h9"/><path d="m8 21-4-4 4-4"/> }.into_view(),
+        "pin" => view! { <path d="M12 17v5"/><path d="M5 17h14"/><path d="m6 3 1 7-3 4h16l-3-4 1-7Z"/> }.into_view(),
+        "link" => view! { <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/> }.into_view(),
+        "bell" => view! { <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/> }.into_view(),
+        "close" => view! { <path d="M18 6 6 18"/><path d="m6 6 12 12"/> }.into_view(),
+        "more" => view! { <circle cx="12" cy="5" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/> }.into_view(),
+        "minus" => view! { <path d="M5 12h14"/> }.into_view(),
+        "plus" => view! { <path d="M12 5v14"/><path d="M5 12h14"/> }.into_view(),
+        "crop" => view! { <path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M2 6h14a2 2 0 0 1 2 2v14"/> }.into_view(),
+        "split" => view! { <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/> }.into_view(),
+        "runtime-panel" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M14 3v18"/><path d="M3 15h11"/><circle cx="17.5" cy="7" r="1" fill="currentColor" stroke="none"/><circle cx="17.5" cy="11" r="1" fill="currentColor" stroke="none"/> }.into_view(),
+        "play" => view! { <path d="M6 4.5v15l13-7.5Z"/> }.into_view(),
+        "up" => view! { <path d="m18 15-6-6-6 6"/> }.into_view(),
+        "copy" => view! { <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/> }.into_view(),
+        "star" => view! { <path d="m12 2.7 2.85 5.77 6.37.93-4.61 4.49 1.09 6.34L12 17.23l-5.7 3 1.09-6.34L2.78 9.4l6.37-.93Z"/> }.into_view(),
+        "star-filled" => view! { <path d="m12 2.7 2.85 5.77 6.37.93-4.61 4.49 1.09 6.34L12 17.23l-5.7 3 1.09-6.34L2.78 9.4l6.37-.93Z" fill="currentColor"/> }.into_view(),
+        "edit" => view! { <path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/> }.into_view(),
+        "doc" => view! { <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/> }.into_view(),
+        "image" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/> }.into_view(),
+        "review" => view! { <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/> }.into_view(),
+        "gauge" => view! { <path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/> }.into_view(),
+        "controls" => view! { <path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/> }.into_view(),
+        "adjustments" => view! { <path d="M4 7h9"/><path d="M17 7h3"/><circle cx="15" cy="7" r="2"/><path d="M4 17h3"/><path d="M11 17h9"/><circle cx="9" cy="17" r="2"/> }.into_view(),
+        "check" => view! { <path d="m20 6-11 11-5-5"/> }.into_view(),
+        "skill" => view! { <path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/> }.into_view(),
+        "computer" => view! { <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/> }.into_view(),
+        "server" => view! { <rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/><circle cx="7" cy="7.5" r="0.5" fill="currentColor"/><circle cx="7" cy="16.5" r="0.5" fill="currentColor"/> }.into_view(),
+        "terminal" => view! { <path d="m4 17 6-5-6-5"/><path d="M12 19h8"/> }.into_view(),
+        "grid" => view! { <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/> }.into_view(),
+        "list" => view! { <path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/> }.into_view(),
+        _ => view! { <path d="M9 18l6-6-6-6"/> }.into_view(), // chevron
+    };
+    let size = if matches!(
+        kind,
+        "chevron" | "chevron-down" | "chevron-left" | "chevron-right"
+    ) {
+        "16"
+    } else {
+        "18"
+    };
+    view! {
+        <svg width=size height=size viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{body}</svg>
+    }
+}
+
+/// A `generate_image` call owns a stable media slot in the transcript. The
+/// ToolCall event paints the placeholder immediately; ToolResult remounts the
+/// same card and loads the PNG into that slot.
+#[component]
+pub(crate) fn ImageGenerationCard(
+    path: String,
+    ok: Option<bool>,
+    output: String,
+    on_file: Callback<ModalArtifact>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let source = create_rw_signal(None::<String>);
+    let preview_failed = create_rw_signal(false);
+    if ok == Some(true) {
+        let load_path = path.clone();
+        let loc = locale.get_untracked();
+        spawn_local(async move {
+            match load_file_content(&load_path, loc, Some(32 * 1024 * 1024)).await {
+                Ok(file) => match file.base64 {
+                    Some(base64) => source.set(Some(format!("data:{};base64,{base64}", file.mime))),
+                    None => preview_failed.set(true),
+                },
+                Err(_) => preview_failed.set(true),
+            }
+        });
+    }
+
+    let status = match ok {
+        None => "running",
+        Some(true) => "completed",
+        Some(false) => "failed",
+    };
+    let title_key = match ok {
+        None => "chat.image_generating",
+        Some(true) => "chat.image_generated",
+        Some(false) => "chat.image_failed",
+    };
+    let display_path = path.clone();
+    let open_path = path.clone();
+    let filename = attachment_name(&path);
+    let open_name = filename.clone();
+    let failure_detail = output.trim().to_string();
+
+    view! {
+        <article
+            class="image-generation-card"
+            data-testid="image-generation-card"
+            data-status=status
+            data-path=path
+        >
+            <div class="image-generation-media">
+                {move || match ok {
+                    None => view! {
+                        <div class="image-generation-state" role="status" aria-live="polite">
+                            <span class="image-generation-spinner" aria-hidden="true"></span>
+                            <span>{move || t(locale.get(), "chat.image_generating")}</span>
+                        </div>
+                    }.into_view(),
+                    Some(false) => view! {
+                        <div class="image-generation-state failed">
+                            <span class="image-generation-failed-mark" aria-hidden="true">"!"</span>
+                            <span>{move || t(locale.get(), "chat.image_failed")}</span>
+                            {(!failure_detail.is_empty()).then(|| view! {
+                                <small title=failure_detail.clone()>{failure_detail.clone()}</small>
+                            })}
+                        </div>
+                    }.into_view(),
+                    Some(true) => match source.get() {
+                        Some(src) => {
+                            let click_path = open_path.clone();
+                            let click_name = open_name.clone();
+                            let open = on_file;
+                            view! {
+                                <button
+                                    type="button"
+                                    class="image-generation-open"
+                                    aria-label=move || t(locale.get(), "chat.image_generated")
+                                    on:click=move |_| open.call((
+                                        click_path.clone(),
+                                        click_name.clone(),
+                                        "image".into(),
+                                    ))
+                                >
+                                    <img
+                                        src=src
+                                        alt=filename.clone()
+                                        on:error=move |_| {
+                                            source.set(None);
+                                            preview_failed.set(true);
+                                        }
+                                    />
+                                </button>
+                            }.into_view()
+                        }
+                        None if preview_failed.get() => view! {
+                            <div class="image-generation-state failed">
+                                <span class="image-generation-failed-mark" aria-hidden="true">"!"</span>
+                                <span>{move || t(locale.get(), "chat.image_preview_unavailable")}</span>
+                            </div>
+                        }.into_view(),
+                        None => view! {
+                            <div class="image-generation-state" role="status" aria-live="polite">
+                                <span class="image-generation-spinner" aria-hidden="true"></span>
+                                <span>{move || t(locale.get(), "chat.image_loading")}</span>
+                            </div>
+                        }.into_view(),
+                    },
+                }}
+            </div>
+            <footer class="image-generation-meta">
+                <strong>{move || t(locale.get(), title_key)}</strong>
+                <code>{display_path}</code>
+            </footer>
+        </article>
+    }
+}
+
+/// Small, lazy image preview shared by composer cards and sent messages. The
+/// source stays inside the WebView as a data URL and gracefully falls back to
+/// an image icon when a native path cannot be read from the active project.
+#[component]
+pub(crate) fn AttachmentThumbnail(path: String, alt: String) -> impl IntoView {
+    let source = create_rw_signal(None::<String>);
+    let path_for_effect = path;
+    create_effect(move |_| {
+        let path = path_for_effect.clone();
+        spawn_local(async move {
+            let args = to_value(&tauri_args::read_file(&path, Some(16 * 1024 * 1024))).unwrap();
+            let Ok(value) = invoke_checked("read_file", args).await else {
+                return;
+            };
+            let Ok(file) = serde_wasm_bindgen::from_value::<FileContent>(value) else {
+                return;
+            };
+            if let Some(base64) = file.base64 {
+                source.set(Some(format!("data:{};base64,{base64}", file.mime)));
+            }
+        });
+    });
+    view! {
+        <span class="attachment-thumbnail">
+            {move || source.get().map_or_else(
+                || view! { <span class="attachment-thumbnail-placeholder">{compose_icon("image")}</span> }.into_view(),
+                |src| view! { <img src=src alt=alt.clone() /> }.into_view(),
+            )}
+        </span>
+    }
+}
+
+/// Tile face for an in-thread artifact card: a real thumbnail for image
+/// artifacts, the kind badge for everything else. The badge is the base layer
+/// rather than an alternative branch, so an image whose bytes never arrive (or
+/// fail to decode) falls back to exactly the badge card these tiles replaced.
+#[component]
+fn ArtifactThumb(path: Option<String>, kind: &'static str) -> impl IntoView {
+    let locale = use_locale();
+    let source = create_rw_signal(None::<String>);
+    if let Some(path) = path.filter(|_| kind == "image") {
+        // `load_file_content`, not `read_file`: artifact paths also come in the
+        // artifact:/version:/ssh:// spellings the previews accept.
+        let loc = locale.get_untracked();
+        spawn_local(async move {
+            if let Ok(file) = load_file_content(&path, loc, Some(32 * 1024 * 1024)).await {
+                if let Some(base64) = file.base64 {
+                    source.set(Some(format!("data:{};base64,{base64}", file.mime)));
+                }
+            }
+        });
+    }
+    view! {
+        <span class="message-artifact-thumb">
+            <span class=format!("rp-badge {kind}")>{kind}</span>
+            {move || source.get().map(|src| view! {
+                <img src=src alt="" on:error=move |_| source.set(None) />
+            })}
+        </span>
+    }
+}
+
+/// Queue (#433): an operation on a parked follow-up, raised from its bubble and
+/// handled by the parent (which owns the transcript signals + invoke).
+#[derive(Clone)]
+pub(crate) enum QueueOp {
+    /// Drop it from the queue.
+    Cancel(u64),
+    /// Fold it into the running turn now (native sessions only).
+    CutIn(u64),
+    /// Replace its text (runs with the latest when it drains).
+    Save(u64, String),
+    /// Swap one place earlier / later in the FIFO order (clamped at the ends).
+    MoveUp(u64),
+    MoveDown(u64),
+}
+
+/// Queue (#433): a queued user turn bubble with inline edit + cancel + cut-in.
+/// `id == 0` marks a transient cut-in bubble (no controls). `can_cut_in` is
+/// false for ACP sessions, which cannot fold a message into a running turn.
+#[component]
+pub(crate) fn QueuedMessage(
+    id: u64,
+    text: String,
+    can_cut_in: bool,
+    on_queue: Callback<QueueOp>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let editing = create_rw_signal(false);
+    let draft = create_rw_signal(text.clone());
+    let show_controls = id != 0;
+    let body = text.clone();
+    view! {
+        <div class="role">{move || t(locale.get(), "composer.queued")}</div>
+        <div class="user-bubble queued-bubble">
+            {move || if editing.get() {
+                view! {
+                    <textarea class="queue-edit" prop:value=move || draft.get()
+                        on:input=move |ev| draft.set(event_target_value(&ev))></textarea>
+                    <div class="queue-actions">
+                        <button type="button" class="tool-btn"
+                            on:click=move |_| editing.set(false)>
+                            {move || t(locale.get(), "settings.cancel")}
+                        </button>
+                        <button type="button" class="tool-btn"
+                            on:click=move |_| {
+                                let v = draft.get();
+                                if !v.trim().is_empty() {
+                                    editing.set(false);
+                                    on_queue.call(QueueOp::Save(id, v));
+                                }
+                            }>
+                            {move || t(locale.get(), "settings.save")}
+                        </button>
+                    </div>
+                }.into_view()
+            } else {
+                let body = body.clone();
+                let edit_from = body.clone();
+                view! {
+                    <div class="body">{body}</div>
+                    {show_controls.then(|| view! {
+                        <div class="queue-actions">
+                            <button type="button" class="tool-btn queue-move"
+                                title=move || t(locale.get(), "queue.move_up")
+                                on:click=move |_| on_queue.call(QueueOp::MoveUp(id))>
+                                {compose_icon("up")}
+                            </button>
+                            <button type="button" class="tool-btn queue-move"
+                                title=move || t(locale.get(), "queue.move_down")
+                                on:click=move |_| on_queue.call(QueueOp::MoveDown(id))>
+                                {compose_icon("chevron-down")}
+                            </button>
+                            {can_cut_in.then(|| view! {
+                                <button type="button" class="tool-btn"
+                                    on:click=move |_| on_queue.call(QueueOp::CutIn(id))>
+                                    {move || t(locale.get(), "queue.cut_in")}
+                                </button>
+                            })}
+                            <button type="button" class="tool-btn"
+                                on:click={
+                                    let edit_from = edit_from.clone();
+                                    move |_| { draft.set(edit_from.clone()); editing.set(true); }
+                                }>
+                                {move || t(locale.get(), "msg.edit")}
+                            </button>
+                            <button type="button" class="tool-btn"
+                                on:click=move |_| on_queue.call(QueueOp::Cancel(id))>
+                                {move || t(locale.get(), "settings.cancel")}
+                            </button>
+                        </div>
+                    })}
+                }.into_view()
+            }}
+        </div>
+    }
+}
+
+#[component]
+pub(crate) fn UserMessage(
+    text: String,
+    timestamp: Option<i64>,
+    ui_index: usize,
+    busy: ReadSignal<bool>,
+    can_modify: bool,
+    on_copy: Callback<String>,
+    on_edit: Callback<usize>,
+    on_branch: Callback<usize>,
+    on_file: Callback<ModalArtifact>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let presentation = user_message_presentation(&text);
+    let body = presentation.body;
+    let (images, files): (Vec<_>, Vec<_>) = presentation
+        .attachments
+        .into_iter()
+        .partition(|path| file_kind(path) == Some("image"));
+    let has_images = !images.is_empty();
+    let has_files = !files.is_empty();
+    let has_context = !presentation.artifacts.is_empty()
+        || !presentation.sessions.is_empty()
+        || !presentation.projects.is_empty()
+        || !presentation.skills.is_empty()
+        || !presentation.workflows.is_empty()
+        || !presentation.contexts.is_empty()
+        || !presentation.runtimes.is_empty();
+    let has_body = !body.is_empty();
+    // 长消息先折叠，"展开全部"再看全文
+    let is_long = body.lines().count() > 12 || body.chars().count() > 600;
+    let (expanded, set_expanded) = create_signal(false);
+    let body_short = is_long.then(|| {
+        let head = body.lines().take(12).collect::<Vec<_>>().join("\n");
+        let head = match head.char_indices().nth(600) {
+            Some((cut, _)) => head[..cut].to_string(),
+            None => head,
+        };
+        format!("{}…", head.trim_end())
+    });
+    let image_cards = images
+        .into_iter()
+        .map(|path| {
+            let name = attachment_name(&path);
+            let name_for_click = name.clone();
+            let path_for_click = path.clone();
+            let on_file = on_file.clone();
+            view! {
+                <button type="button" class="user-attachment-image"
+                    title=name.clone()
+                    on:click=move |_| on_file.call((path_for_click.clone(), name_for_click.clone(), "image".into()))>
+                    <AttachmentThumbnail path=path alt=name.clone() />
+                    <span class="user-attachment-image-name">{name}</span>
+                </button>
+            }
+        })
+        .collect_view();
+    let file_cards = files
+        .into_iter()
+        .map(|path| {
+            let name = attachment_name(&path);
+            let name_for_click = name.clone();
+            let kind = file_kind(&path).unwrap_or("text").to_string();
+            let path_for_click = path.clone();
+            let kind_for_click = kind.clone();
+            let on_file = on_file.clone();
+            view! {
+                <button type="button" class="user-attachment-file"
+                    title=path.clone()
+                    on:click=move |_| on_file.call((path_for_click.clone(), name_for_click.clone(), kind_for_click.clone()))>
+                    <span class="user-attachment-file-icon">{compose_icon("doc")}</span>
+                    <span class="user-attachment-file-copy">
+                        <span class="user-attachment-file-name">{name}</span>
+                        <span class="user-attachment-file-meta">{move || t(locale.get(), "attachment.file")}</span>
+                    </span>
+                    <span class="user-attachment-open">{compose_icon("chevron-right")}</span>
+                </button>
+            }
+        })
+        .collect_view();
+    let context_cards = [
+        ("artifact", "attachment.artifact", presentation.artifacts),
+        ("session", "attachment.session", presentation.sessions),
+        ("project", "attachment.project", presentation.projects),
+        ("skill", "attachment.skill", presentation.skills),
+        (
+            "workflow",
+            "attachment.workflow",
+            presentation.workflows,
+        ),
+        ("context", "attachment.context", presentation.contexts),
+        ("runtime", "attachment.runtime", presentation.runtimes),
+    ]
+    .into_iter()
+    .flat_map(|(kind, label_key, items)| {
+        items.into_iter().map(move |label| {
+            view! {
+                <span class=format!("user-context-card {kind}") data-reference-kind=kind>
+                    <span class="user-context-icon">{compose_icon(if kind == "skill" { "skill" } else if kind == "workflow" { "branch" } else if kind == "session" { "chat" } else if kind == "project" { "folder" } else if kind == "context" { "server" } else if kind == "runtime" { "terminal" } else { "doc" })}</span>
+                    <span class="user-context-copy">
+                        <span class="user-context-label">{label}</span>
+                        <span class="user-context-meta">{move || t(locale.get(), label_key)}</span>
+                    </span>
+                </span>
+            }
+        })
+    })
+    .collect_view();
+    view! {
+        <div class="user-bubble">
+            {has_images.then(|| view! { <div class="user-attachment-images">{image_cards}</div> })}
+            {has_files.then(|| view! { <div class="user-attachment-files">{file_cards}</div> })}
+            {has_context.then(|| view! { <div class="user-context-cards">{context_cards}</div> })}
+            {has_body.then(|| view! {
+                <div class="body">{move || match (&body_short, expanded.get()) {
+                    (Some(short), false) => short.clone(),
+                    _ => body.clone(),
+                }}</div>
+            })}
+            {(has_body && is_long).then(|| view! {
+                <button
+                    type="button"
+                    class="msg-btn body-toggle"
+                    on:click=move |_| set_expanded.update(|v| *v = !*v)
+                >{move || t(locale.get(), if expanded.get() { "msg.show_less" } else { "msg.show_all" })}</button>
+            })}
+            {timestamp.map(|timestamp| {
+                let compact = format_message_time(timestamp);
+                view! {
+                    <time
+                        class="message-time user-message-time"
+                        data-timestamp=timestamp.to_string()
+                        title=move || tf(
+                            locale.get(),
+                            "msg.sent_at",
+                            &[("time", &format_message_datetime(timestamp, locale.get()))],
+                        )
+                    >
+                        {compact}
+                    </time>
+                }
+            })}
+            <div class="msg-actions">
+                <button
+                    type="button"
+                    class="msg-btn"
+                    disabled=move || busy.get()
+                    title=move || t(locale.get(), "msg.copy")
+                    on:click=move |_| on_copy.call(text.clone())
+                >{move || t(locale.get(), "msg.copy")}</button>
+                {can_modify.then(|| view! {
+                    <button
+                        type="button"
+                        class="msg-btn"
+                        disabled=move || busy.get()
+                        title=move || t(locale.get(), "msg.edit")
+                        on:click=move |_| on_edit.call(ui_index)
+                    >{move || t(locale.get(), "msg.edit")}</button>
+                    <button
+                        type="button"
+                        class="msg-btn"
+                        title=move || t(locale.get(), "msg.branch")
+                        on:click=move |_| on_branch.call(ui_index)
+                    >{move || t(locale.get(), "msg.branch")}</button>
+                })}
+            </div>
+        </div>
+    }
+}
+
+#[component]
+pub(crate) fn AssistantMessage(
+    text: String,
+    model: Option<String>,
+    timestamp: Option<i64>,
+    resources: Vec<MessageResource>,
+    artifacts: Vec<Artifact>,
+    source_item: usize,
+    on_artifact: Callback<usize>,
+    on_file: Callback<ModalArtifact>,
+    on_copy: Callback<String>,
+    can_undo: bool,
+    on_undo: Callback<usize>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let arts_for_html = artifacts.clone();
+    let resources_for_html = resources.clone();
+    let text_for_html = text.clone();
+    let html = create_memo(move |_| {
+        enrich_md_html(
+            md_to_html(&text_for_html),
+            &arts_for_html,
+            &resources_for_html,
+            locale.get(),
+        )
+    });
+    let hid = unique_dom_id("md");
+    let hid_for_effect = hid.clone();
+    create_effect(move |_| {
+        let _ = html.get();
+        schedule_highlight(hid_for_effect.clone());
+    });
+    let hid_for_resources = hid.clone();
+    let resources_for_effect = resources.clone();
+    create_effect(move |_| {
+        let _ = html.get();
+        let dom_id = hid_for_resources.clone();
+        let resources = resources_for_effect.clone();
+        spawn_local(async move {
+            for resource in resources
+                .into_iter()
+                .filter(|resource| resource.status == "ready" && resource.kind == "image")
+            {
+                let Some(version_id) = resource.artifact_version_id else {
+                    continue;
+                };
+                let Ok(value) = invoke_checked(
+                    "read_artifact_version",
+                    to_value(&serde_json::json!({ "versionId": version_id })).unwrap(),
+                )
+                .await
+                else {
+                    continue;
+                };
+                let Ok(file) = serde_wasm_bindgen::from_value::<FileContent>(value) else {
+                    continue;
+                };
+                let Some(base64) = file.base64 else {
+                    continue;
+                };
+                let selector = format!(r#"#{dom_id} [data-resource-id="{}"]"#, resource.id);
+                if let Some(element) = web_sys::window()
+                    .and_then(|window| window.document())
+                    .and_then(|document| document.query_selector(&selector).ok().flatten())
+                {
+                    let _ = element
+                        .set_attribute("src", &format!("data:{};base64,{base64}", file.mime));
+                    let _ = element.set_attribute("class", "resource-inline-image");
+                }
+            }
+        });
+    });
+    let on_artifact = on_artifact.clone();
+    let on_file = on_file.clone();
+    let arts_for_click = artifacts.clone();
+    let resources_for_click = resources.clone();
+    let generated = artifacts
+        .iter()
+        .enumerate()
+        .filter(|(_, artifact)| artifact.source_item == source_item)
+        .map(|(index, artifact)| {
+            let path = match &artifact.data {
+                PreviewData::File { path, .. } => Some(path.clone()),
+                _ => None,
+            };
+            (
+                index,
+                artifact.name.clone(),
+                artifact.kind,
+                artifact.superseded,
+                path,
+            )
+        })
+        .collect::<Vec<_>>();
+    let generated_count = generated.len();
+    // Anything past this is folded behind "+N more". Kept in step with the
+    // `nth-child(n+9)` rule in chat.css that does the hiding.
+    let generated_overflow = generated_count.saturating_sub(8);
+    let generated_expanded = create_rw_signal(false);
+    let generated_collapsed = move || generated_overflow > 0 && !generated_expanded.get();
+    let generated_cards = generated.into_iter().map(|(index, name, kind, superseded, path)| {
+        let on_artifact = on_artifact.clone();
+        view! {
+            <button type="button" class="message-artifact-card" class:superseded=superseded
+                disabled=superseded
+                data-artifact-name=name.clone()
+                title=name.clone()
+                on:click=move |_| on_artifact.call(index)>
+                <ArtifactThumb path=path kind=kind />
+                <span class="message-artifact-name">{name}</span>
+                {superseded.then(|| view! { <span class="message-artifact-status">{move || t(locale.get(), "artifact.updated")}</span> })}
+            </button>
+        }
+    }).collect_view();
+    let text_for_disabled = text.clone();
+    let text_for_click_copy = text;
+    view! {
+        <div class="role">
+            <span class="role-brand">{move || t(locale.get(), "chat.assistant")}</span>
+            {move || model.clone().filter(|m| !m.is_empty()).map(|m| view! {
+                <span class="role-model">{m}</span>
+            })}
+            {timestamp.map(|timestamp| {
+                let compact = format_message_time(timestamp);
+                view! {
+                    <time
+                        class="message-time assistant-message-time"
+                        data-timestamp=timestamp.to_string()
+                        title=move || tf(
+                            locale.get(),
+                            "msg.replied_at",
+                            &[("time", &format_message_datetime(timestamp, locale.get()))],
+                        )
+                    >
+                        {compact}
+                    </time>
+                }
+            })}
+        </div>
+        <div class="assistant-wrap">
+            <div class="body md" id=hid.clone()
+                inner_html=move || html.get()
+                on:click=move |ev: web_sys::MouseEvent| {
+                    handle_md_click(
+                        &ev,
+                        &arts_for_click,
+                        &resources_for_click,
+                        &on_artifact,
+                        &on_file,
+                    )
+                }></div>
+            {(generated_count > 0).then(|| view! {
+                <div class="message-artifacts">
+                    <div class="message-artifacts-label">{format!("Generated · {generated_count}")}</div>
+                    <div class="message-artifact-cards"
+                        class:collapsed=generated_collapsed>
+                        {generated_cards}
+                        {move || generated_collapsed().then(|| view! {
+                            <button type="button" class="message-artifact-more"
+                                on:click=move |_| generated_expanded.set(true)>
+                                {tf(locale.get(), "artifact.more_count", &[("n", &generated_overflow.to_string())])}
+                            </button>
+                        })}
+                    </div>
+                </div>
+            })}
+            <div class="msg-actions">
+                <button
+                    type="button"
+                    class="msg-icon-btn"
+                    title=move || t(locale.get(), "ctx.copy_message")
+                    aria-label=move || t(locale.get(), "ctx.copy_message")
+                    disabled=move || text_for_disabled.trim().is_empty()
+                    on:click=move |_| on_copy.call(text_for_click_copy.clone())
+                >
+                    <span class="gi copy" aria-hidden="true"></span>
+                </button>
+                {can_undo.then(|| view! {
+                    <button
+                        type="button"
+                        class="msg-icon-btn"
+                        title=move || t(locale.get(), "msg.undo")
+                        aria-label=move || t(locale.get(), "msg.undo")
+                        on:click=move |_| on_undo.call(source_item)
+                    >
+                        <span class="gi undo" aria-hidden="true"></span>
+                    </button>
+                })}
+            </div>
+        </div>
+    }
+}
+
+#[component]
+pub(crate) fn ToolBlock(
+    name: String,
+    ok: Option<bool>,
+    input: String,
+    output: String,
+) -> impl IntoView {
+    let locale = use_locale();
+    let open = ok != Some(true);
+    let lang = tool_lang(&name).to_string();
+    let hid = unique_dom_id("tool");
+    let hid_for_effect = hid.clone();
+    let has_input = !input.is_empty();
+    let has_output = !output.is_empty();
+    let input_track = input.clone();
+    let output_track = output.clone();
+    let lang_track = lang.clone();
+    create_effect(move |_| {
+        let _ = (&input_track, &output_track, &lang_track);
+        schedule_highlight(hid_for_effect.clone());
+    });
+    let name_for_label = name.clone();
+    let input_label = move || {
+        if matches!(name_for_label.as_str(), "python" | "r") {
+            t(locale.get(), "tool.copy_code")
+        } else {
+            t(locale.get(), "tool.copy_input")
+        }
+    };
+
+    let (badge_key, title) = tool_card_label(&name, &input);
+    view! {
+        <details class="tool" class:ext=badge_key.is_some() open=open>
+            <summary class="head">
+                {badge_key.map(|key| view! {
+                    <span class="tool-badge">{move || t(locale.get(), key)}</span>
+                })}
+                <span>{title}</span>
+                {match ok {
+                    Some(true) => view!{ <span class="ok">"✓"</span> }.into_view(),
+                    Some(false) => view!{ <span class="fail">"✗"</span> }.into_view(),
+                    None => view!{ <span class="run"><span class="run-dot"></span>{move || t(locale.get(), "tool.running")}</span> }.into_view(),
+                }}
+            </summary>
+            <div class="tool-panel" id=hid.clone()>
+                <div class="tool-actions">
+                    {has_input.then(|| {
+                        let text = input.clone();
+                        view! {
+                            <button type="button" class="tool-btn" on:click=move |_| copy_text(text.clone())>
+                                {input_label}
+                            </button>
+                        }
+                    })}
+                    {has_output.then(|| {
+                        let text = output.clone();
+                        view! {
+                            <button type="button" class="tool-btn" on:click=move |_| copy_text(text.clone())>{move || t(locale.get(), "tool.copy_output")}</button>
+                        }
+                    })}
+                </div>
+                {has_input.then(|| view! {
+                    <pre class="tool-input md-code"><code class=format!("language-{lang}")>{input.clone()}</code></pre>
+                })}
+                {has_output.then(|| view! {
+                    <pre class="tool-output md-code"><code class="language-plaintext">{output.clone()}</code></pre>
+                })}
+            </div>
+        </details>
+    }
+}
+
+/// Parse a rendered plan checklist line
+/// (`[x] text` / `[~] text` / `[ ] text` / `[-] text`)
+/// into (status_class, text). Mirrors `update_plan`'s render in wisp-tools.
+pub(crate) fn plan_step_line(line: &str) -> Option<(&'static str, &str)> {
+    for (prefix, cls) in [
+        ("[x] ", "done"),
+        ("[~] ", "running"),
+        ("[ ] ", "pending"),
+        ("[-] ", "cancelled"),
+    ] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return Some((cls, rest));
+        }
+    }
+    None
+}
+
+pub(crate) fn approval_allow_label_key(scope: &str) -> &'static str {
+    match scope {
+        "session" => "approval.allow_session",
+        "project" => "approval.allow_project",
+        "global" => "approval.allow_global",
+        _ => "approval.allow_once",
+    }
+}
+
+#[component]
+pub(crate) fn ApprovalCard(
+    tool: String,
+    preview: String,
+    session_id: String,
+    on_decide: Callback<(String, bool, Option<String>, String)>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let is_plan = tool == "update_plan";
+    let is_resource_conflict = tool == "resource_conflict";
+    let show_feedback = create_rw_signal(false);
+    let feedback = create_rw_signal(String::new());
+    let approval_scope = create_rw_signal(String::from("once"));
+    let feedback_ready = move || !feedback.get().trim().is_empty();
+    if is_plan {
+        window_capture_escape(move || {
+            if !show_feedback.get_untracked() {
+                return false;
+            }
+            feedback.set(String::new());
+            show_feedback.set(false);
+            true
+        });
+    }
+    create_effect(move |_| {
+        if show_feedback.get() {
+            focus_element_soon("plan-feedback-input");
+        }
+    });
+    let lang = tool_lang(&tool).to_string();
+    // For the plan card, `preview` is the rendered checklist; parse it into rows.
+    let plan_steps: Vec<(&'static str, String)> = if is_plan {
+        preview
+            .lines()
+            .filter_map(|l| plan_step_line(l).map(|(c, t)| (c, t.to_string())))
+            .collect()
+    } else {
+        vec![]
+    };
+    let tool_for_title = tool.clone();
+    let title = move || {
+        let loc = locale.get();
+        match tool_for_title.as_str() {
+            _ if is_plan => t(loc, "approval.review_plan"),
+            "resource_conflict" => t(loc, "approval.resource_conflict_title"),
+            "python" => t(loc, "approval.run_python"),
+            "r" => t(loc, "approval.run_r"),
+            "shell" => t(loc, "approval.run_shell"),
+            _ => tf(loc, "approval.run_tool", &[("tool", &tool_for_title)]),
+        }
+    };
+    let sid_allow = session_id.clone();
+    let sid_deny = session_id.clone();
+    let sid_feedback = create_rw_signal(session_id);
+    view! {
+        <div class="approval-wrap">
+            <div class="approval-wait-line">{move || t(locale.get(), "approval.waiting_line")}</div>
+            <div class="approval-card" class:plan=is_plan>
+                <div class="approval-head">
+                    <span class="approval-title">{title}</span>
+                    <span class="approval-status">
+                        <span class="approval-dot"></span>
+                        {move || t(locale.get(), "approval.waiting")}
+                    </span>
+                </div>
+                {if is_plan {
+                    view! {
+                        <div class="plan-steps">
+                            {plan_steps.into_iter().map(|(cls, text)| view! {
+                                <div class=format!("plan-step {cls}")>
+                                    <span class="plan-step-mark"></span>
+                                    <span class="plan-step-text">{text}</span>
+                                </div>
+                            }).collect_view()}
+                        </div>
+                    }.into_view()
+                } else {
+                    let show_tag = !tool.is_empty() && !is_resource_conflict;
+                    let tag = tool.clone();
+                    let show_code = !preview.is_empty() && !is_resource_conflict;
+                    let p = preview.clone();
+                    let lang = lang.clone();
+                    view! {
+                        {is_resource_conflict.then(|| view! {
+                            <p class="approval-conflict-message">{p.clone()}</p>
+                        })}
+                        {show_tag.then(|| view! {
+                            <div class="approval-tags"><span class="approval-tag">{tag}</span></div>
+                        })}
+                        {show_code.then(|| view! {
+                            <details class="approval-code" open=true>
+                                <summary>{move || t(locale.get(), "approval.code")}</summary>
+                                <pre><code class=format!("language-{lang}")>{p}</code></pre>
+                            </details>
+                        })}
+                    }.into_view()
+                }}
+                <p class="approval-hint">{move || t(locale.get(), if is_plan {
+                    "approval.plan_hint"
+                } else if is_resource_conflict {
+                    "approval.resource_conflict_hint"
+                } else {
+                    "approval.hint"
+                })}</p>
+                <div class="approval-actions">
+                    {(!is_plan && !is_resource_conflict).then(|| view! {
+                        <label class="approval-scope">
+                            <span>{move || t(locale.get(), "approval.scope")}</span>
+                            <select
+                                aria-label=move || t(locale.get(), "approval.scope")
+                                prop:value=move || approval_scope.get()
+                                on:change=move |ev| approval_scope.set(dom_value(&ev))>
+                                <option value="once">{move || t(locale.get(), "approval.scope.once")}</option>
+                                <option value="session">{move || t(locale.get(), "approval.scope.session")}</option>
+                                <option value="project">{move || t(locale.get(), "approval.scope.project")}</option>
+                                <option value="global">{move || t(locale.get(), "approval.scope.global")}</option>
+                            </select>
+                        </label>
+                    })}
+                    <button type="button" class="primary"
+                        on:click=move |_| {
+                            let scope = if is_plan { "once".into() } else { approval_scope.get() };
+                            on_decide.call((sid_allow.clone(), true, None, scope));
+                        }>
+                        {move || {
+                            if is_plan {
+                                t(locale.get(), "approval.plan_approve").to_string()
+                            } else if is_resource_conflict {
+                                t(locale.get(), "approval.resource_conflict_wait").to_string()
+                            } else {
+                                t(locale.get(), approval_allow_label_key(&approval_scope.get())).to_string()
+                            }
+                        }}
+                    </button>
+                    <button type="button"
+                        on:click=move |_| on_decide.call((sid_deny.clone(), false, None, "once".into()))>
+                        {move || t(locale.get(), if is_plan {
+                            "approval.plan_reject"
+                        } else if is_resource_conflict {
+                            "approval.resource_conflict_cancel"
+                        } else {
+                            "confirm.deny"
+                        })}
+                    </button>
+                    {is_plan.then(|| view! {
+                        <button type="button" on:click=move |_| show_feedback.update(|open| *open = !*open)>
+                            {move || t(locale.get(), "approval.plan_other")}
+                        </button>
+                    })}
+                </div>
+                {is_plan.then(move || {
+                    view! {
+                        <Show when=move || show_feedback.get()>
+                            <div class="plan-feedback">
+                                <textarea
+                                    id="plan-feedback-input"
+                                    class="plan-feedback-input"
+                                    rows="3"
+                                    prop:value=move || feedback.get()
+                                    placeholder=move || t(locale.get(), "approval.plan_feedback_placeholder")
+                                    on:input=move |ev| feedback.set(event_target_value(&ev))
+                                ></textarea>
+                                <div class="plan-feedback-actions">
+                                    <button
+                                        type="button"
+                                        class="primary"
+                                        disabled=move || !feedback_ready()
+                                        on:click=move |_| {
+                                            let text = feedback.get().trim().to_string();
+                                            if !text.is_empty() {
+                                                on_decide.call((sid_feedback.get_untracked(), false, Some(text), "once".into()));
+                                            }
+                                        }
+                                    >
+                                        {move || t(locale.get(), "approval.plan_feedback_submit")}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        on:click=move |_| {
+                                            feedback.set(String::new());
+                                            show_feedback.set(false);
+                                        }
+                                    >
+                                        {move || t(locale.get(), "approval.plan_feedback_cancel")}
+                                    </button>
+                                </div>
+                            </div>
+                        </Show>
+                    }
+                })}
+            </div>
+        </div>
+    }
+}
+
+#[cfg(test)]
+mod layout_block_tests {
+    use super::apply_layout_block;
+
+    const BLOCK: &str = "Write outputs to figures/, results/tables/.";
+
+    #[test]
+    fn toggling_is_idempotent_and_preserves_user_text() {
+        // Checking twice must not duplicate the block, and unchecking must
+        // leave the user's own notes untouched.
+        let on = apply_layout_block("", BLOCK, true);
+        assert_eq!(on, BLOCK);
+        assert_eq!(apply_layout_block(&on, BLOCK, true), BLOCK);
+
+        let mixed = apply_layout_block("Counts are in GEO.", BLOCK, true);
+        assert_eq!(mixed, format!("Counts are in GEO.\n\n{BLOCK}"));
+        assert_eq!(apply_layout_block(&mixed, BLOCK, true), mixed);
+        assert_eq!(
+            apply_layout_block(&mixed, BLOCK, false),
+            "Counts are in GEO."
+        );
+        assert_eq!(apply_layout_block("", BLOCK, false), "");
+    }
+}
+
+/// Add or remove the standard-layout convention block in the new-project Agent
+/// Context field (#405). The block is plain editable text, not hidden state:
+/// whatever ends up in the textarea is what gets written to `.wisp/WISP.md`.
+/// Strip-then-append keeps repeated toggles idempotent.
+pub(crate) fn apply_layout_block(ctx: &str, block: &str, on: bool) -> String {
+    let rest = ctx.replace(block, "");
+    let rest = rest.trim();
+    match (on, rest.is_empty()) {
+        (false, _) => rest.to_string(),
+        (true, true) => block.to_string(),
+        (true, false) => format!("{rest}\n\n{block}"),
+    }
+}
