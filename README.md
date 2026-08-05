@@ -196,6 +196,11 @@ hosts.
 **Settings → Storage** lists workspace paths per project. Select a project to
 view that workspace's local footprint separately from shared app data.
 
+For project-specific Agent instructions, Wisp reads `AGENTS.md` from the
+project root when a new session starts. Instructions entered in **Project
+Settings → Agent Context** are stored in `.wisp/WISP.md` and applied after
+`AGENTS.md`, so the explicit Wisp setting takes precedence when both exist.
+
 | Variable             | Purpose                                                       |
 |----------------------|---------------------------------------------------------------|
 | `WISP_API_KEY`       | Provider API key (CLI). Desktop uses the keyring instead.     |

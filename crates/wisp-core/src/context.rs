@@ -128,7 +128,13 @@ fn system_text_weights(text: &str) -> [usize; 5] {
         bucket = if trimmed == "<delegation_capability>" || trimmed.starts_with("## Specialist") {
             SUBAGENT_BUCKET
         } else if trimmed == "<plan_mode>"
-            || matches!(trimmed, "## Safety" | "## Built-in Rules" | "## User Rules")
+            || matches!(
+                trimmed,
+                "## Safety"
+                    | "## Built-in Rules"
+                    | "## Project Instructions (AGENTS.md)"
+                    | "## User Rules"
+            )
         {
             RULES_BUCKET
         } else if matches!(

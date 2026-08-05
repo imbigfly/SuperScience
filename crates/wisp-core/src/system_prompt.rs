@@ -9,6 +9,7 @@ use wisp_skills::SkillIndex;
 pub struct SystemPrompt<'a> {
     project_root: &'a Path,
     skills: &'a SkillIndex,
+    project_instructions: Option<String>,
     user_rules: Option<String>,
     compute_hosts: Option<String>,
 }
@@ -19,12 +20,16 @@ impl<'a> SystemPrompt<'a> {
         skills: &'a SkillIndex,
         compute_hosts: Option<String>,
     ) -> Self {
+        let project_instructions = std::fs::read_to_string(project_root.join("AGENTS.md"))
+            .ok()
+            .filter(|s| !s.trim().is_empty());
         let user_rules = std::fs::read_to_string(project_root.join(".wisp").join("WISP.md"))
             .ok()
             .filter(|s| !s.trim().is_empty());
         Self {
             project_root,
             skills,
+            project_instructions,
             user_rules,
             compute_hosts,
         }
@@ -138,10 +143,17 @@ If a named workflow is disabled or unavailable, follow the same principles direc
     }
 
     fn memory(&self) -> String {
-        match &self.user_rules {
-            Some(rules) => format!("## User Rules\n\n{rules}\n"),
-            None => "## User Rules\n\nNo user-defined rules.\n".into(),
+        let mut sections = Vec::new();
+        if let Some(instructions) = &self.project_instructions {
+            sections.push(format!(
+                "## Project Instructions (AGENTS.md)\n\n{instructions}"
+            ));
         }
+        sections.push(match &self.user_rules {
+            Some(rules) => format!("## User Rules\n\n{rules}"),
+            None => "## User Rules\n\nNo user-defined rules.".into(),
+        });
+        sections.join("\n\n") + "\n"
     }
 
     fn environment(&self) -> String {
@@ -180,6 +192,28 @@ If a named workflow is disabled or unavailable, follow the same principles direc
 mod tests {
     use super::*;
     use wisp_skills::SkillIndex;
+
+    #[test]
+    fn project_agents_md_is_loaded_before_wisp_rules() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp-agents-md-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".wisp")).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "Use the repository checks.").unwrap();
+        std::fs::write(root.join(".wisp/WISP.md"), "Prefer the project UI setting.").unwrap();
+
+        let out = SystemPrompt::new(&root, &SkillIndex::default(), None).assemble();
+        let agents = out.find("Use the repository checks.").unwrap();
+        let wisp = out.find("Prefer the project UI setting.").unwrap();
+        assert!(
+            agents < wisp,
+            "WISP.md must remain the later override:\n{out}"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
 
     #[test]
     fn assemble_includes_compute_hosts_when_present() {
