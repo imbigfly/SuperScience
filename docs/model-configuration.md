@@ -115,6 +115,10 @@ composer width that splits the same calibrated request estimate into system
 prompt, built-in tool definitions, rules, selected Skills, MCP and other
 dynamic tools, subagent definitions, and conversation content. These buckets
 are mutually exclusive and sum to the value used by automatic compaction.
+Select any bucket except Conversation to inspect the exact prompt/rule text or
+the tool, Skill, MCP, and subagent definitions included in the latest native
+request. Conversation remains a size-only category so the usage card does not
+duplicate the chat transcript.
 Older native usage rows that only stored a total attribute that window to
 Conversation until the next reply refreshes the full breakdown. ACP sessions
 expose only the total reported by the remote agent, so Wisp labels that value

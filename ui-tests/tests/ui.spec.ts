@@ -1586,6 +1586,14 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await expect(panel.locator(".context-usage-segment")).toHaveCount(7);
   await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
   await expect(panel.getByText("36.3K", { exact: true })).toBeVisible();
+  await expect(panel.locator(".context-usage-row.expandable")).toHaveCount(6);
+
+  await panel.getByText("System prompt", { exact: true }).click();
+  await expect(panel.locator(".context-usage-detail")).toContainText("You are wisp-science");
+  await panel.getByText("Tool definitions", { exact: true }).click();
+  await expect(panel.locator(".context-usage-detail")).toContainText("read");
+  await expect(panel.locator(".context-usage-detail")).toContainText("Read a file from disk");
+  await expect(panel.getByText("Conversation", { exact: true }).locator("xpath=..")).toBeDisabled();
 
   // offsetWidth ignores the enter animation's scale transform; clientWidth is
   // the absolute containing block (composer padding box).

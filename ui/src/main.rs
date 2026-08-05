@@ -43,7 +43,7 @@ use pet::{PetDesktop, PetOverlay};
 use project_landing::{ProjectLanding, ProjectLandingState};
 use publication::{PublicationEvidenceSource, PublicationWorkspaceModal};
 use research::{refresh_research_graph, ResearchGraphModal};
-use serde_wasm_bindgen::to_value;
+use serde_wasm_bindgen::{from_value, to_value};
 use settings_view::{DeleteConfirm, SettingsView, SettingsViewState};
 use sidebar::{Sidebar, SidebarState};
 use std::cell::{Cell, RefCell};
@@ -875,6 +875,8 @@ fn App() -> impl IntoView {
     let acp_context_usage =
         create_rw_signal::<HashMap<String, ContextUsageSnapshot>>(HashMap::new());
     let context_usage_open = create_rw_signal(false);
+    let context_usage_details = create_rw_signal::<Option<ContextUsageDetails>>(None);
+    let context_usage_detail_open = create_rw_signal::<Option<String>>(None);
     let active_context_usage = create_memo(move |_| {
         let session_id = active_session.get()?;
         if active_acp_agent_id.get().is_some() {
@@ -886,6 +888,8 @@ fn App() -> impl IntoView {
     create_effect(move |_| {
         let _ = active_session.get();
         context_usage_open.set(false);
+        context_usage_details.set(None);
+        context_usage_detail_open.set(None);
     });
     // An ACP Agent can only bind an empty frame. When the picker creates that
     // frame on demand, retain the intended selection while the async binding
@@ -10953,7 +10957,24 @@ fn App() -> impl IntoView {
                                         aria-controls="context-usage-panel"
                                         on:click=move |event| {
                                             event.stop_propagation();
-                                            context_usage_open.update(|open| *open = !*open);
+                                            let opening = !context_usage_open.get_untracked();
+                                            context_usage_open.set(opening);
+                                            if opening && active_acp_agent_id.get_untracked().is_none()
+                                                && context_usage_details.get_untracked().is_none()
+                                            {
+                                                if let Some(session_id) = active_session.get_untracked() {
+                                                    spawn_local(async move {
+                                                        let arg = to_value(&serde_json::json!({
+                                                            "sessionId": session_id,
+                                                        })).unwrap();
+                                                        if let Ok(value) = invoke_checked("get_context_usage_details", arg).await {
+                                                            if let Ok(details) = from_value::<ContextUsageDetails>(value) {
+                                                                context_usage_details.set(Some(details));
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                            }
                                         }>
                                         {compose_icon("gauge")}
                                         <span>{format!("{pct}%")}</span>
@@ -11013,13 +11034,38 @@ fn App() -> impl IntoView {
                                                     }).collect_view()}
                                                 </div>
                                                 <div class="context-usage-list">
-                                                    {rows.into_iter().map(|row| view! {
-                                                        <div class="context-usage-row">
-                                                            <span class=format!("context-usage-swatch {}", row.color)
-                                                                aria-hidden="true"></span>
-                                                            <span class="context-usage-label">{row.label}</span>
-                                                            <span class="context-usage-value">{fmt_context_tokens(row.tokens)}</span>
-                                                        </div>
+                                                    {rows.into_iter().map(|row| {
+                                                        let expandable = row.color != "conversation";
+                                                        let color = row.color.to_string();
+                                                        let detail_color = color.clone();
+                                                        let open_color = color.clone();
+                                                        view! {
+                                                            <div class="context-usage-item">
+                                                                <button type="button" class="context-usage-row"
+                                                                    class:expandable=expandable
+                                                                    disabled=!expandable
+                                                                    aria-expanded=move || (expandable && context_usage_detail_open.get().as_deref() == Some(open_color.as_str())).to_string()
+                                                                    on:click=move |_| {
+                                                                        if expandable {
+                                                                            context_usage_detail_open.update(|active| {
+                                                                                *active = (active.as_deref() != Some(color.as_str())).then(|| color.clone());
+                                                                            });
+                                                                        }
+                                                                    }>
+                                                                    <span class=format!("context-usage-swatch {}", row.color)
+                                                                        aria-hidden="true"></span>
+                                                                    <span class="context-usage-label">{row.label}</span>
+                                                                    <span class="context-usage-value">{fmt_context_tokens(row.tokens)}</span>
+                                                                    {expandable.then(|| view! { <span class="context-usage-chevron">{"⌄"}</span> })}
+                                                                </button>
+                                                                {move || (context_usage_detail_open.get().as_deref() == Some(detail_color.as_str())).then(|| {
+                                                                    let content = context_usage_details.get()
+                                                                        .map(|details| context_usage_detail_text(&details, &detail_color))
+                                                                        .unwrap_or_else(|| t(locale.get(), "context_usage.loading").into());
+                                                                    view! { <pre class="context-usage-detail">{content}</pre> }
+                                                                })}
+                                                            </div>
+                                                        }
                                                     }).collect_view()}
                                                 </div>
                                             </section>
@@ -13391,6 +13437,25 @@ fn context_usage_rows(snapshot: &ContextUsageSnapshot, locale: Locale) -> Vec<Co
         color,
     })
     .collect()
+}
+
+fn context_usage_detail_text(details: &ContextUsageDetails, color: &str) -> String {
+    let tools = |items: &[ContextToolDetail]| {
+        items
+            .iter()
+            .map(|item| format!("{}\n{}", item.name, item.description))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
+    match color {
+        "system" => details.system_prompt.clone(),
+        "tools" => tools(&details.tool_definitions),
+        "rules" => details.rules.clone(),
+        "skills" => details.skills.clone(),
+        "dynamic" => tools(&details.mcp_dynamic_tools),
+        "subagents" => tools(&details.subagent_definitions),
+        _ => String::new(),
+    }
 }
 
 #[cfg(test)]

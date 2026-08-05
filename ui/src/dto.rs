@@ -49,6 +49,28 @@ pub(crate) struct ContextUsageSnapshot {
     pub(crate) estimated: bool,
 }
 
+#[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ContextToolDetail {
+    pub(crate) name: String,
+    pub(crate) description: String,
+}
+
+#[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ContextUsageDetails {
+    #[serde(default)]
+    pub(crate) system_prompt: String,
+    #[serde(default)]
+    pub(crate) tool_definitions: Vec<ContextToolDetail>,
+    #[serde(default)]
+    pub(crate) rules: String,
+    #[serde(default)]
+    pub(crate) skills: String,
+    #[serde(default)]
+    pub(crate) mcp_dynamic_tools: Vec<ContextToolDetail>,
+    #[serde(default)]
+    pub(crate) subagent_definitions: Vec<ContextToolDetail>,
+}
+
 /// Progress emitted by the native project archive importer/exporter. Mirrors
 /// `ProjectTransferProgress` in `src-tauri/src/project_transfer.rs`.
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]

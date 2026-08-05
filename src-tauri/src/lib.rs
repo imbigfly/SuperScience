@@ -6866,6 +6866,7 @@ pub fn run() {
             app_commands::import_json_file,
             export_session,
             debug_request::export_debug_request,
+            debug_request::get_context_usage_details,
             project_transfer::export_project,
             project_transfer::import_project,
             codex_import::list_codex_sessions,
