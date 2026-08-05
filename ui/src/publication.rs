@@ -1,3 +1,4 @@
+use crate::app_support::compose_icon;
 use crate::bindings::invoke_checked;
 use crate::dto::{
     PublicationEvidenceBinding, PublicationFreezeOutcome, PublicationItemInfo,
@@ -456,11 +457,15 @@ pub(super) fn PublicationWorkspaceModal(
                         <button type="button" class="icon-btn"
                             title=move || t(locale.get(), "publication.refresh")
                             aria-label=move || t(locale.get(), "publication.refresh")
-                            on:click=move |event| refresh.call(event)>"↻"</button>
+                            on:click=move |event| refresh.call(event)>
+                            {compose_icon("sync")}
+                        </button>
                         <button type="button" class="ps-close"
                             title=move || t(locale.get(), "publication.close")
                             aria-label=move || t(locale.get(), "publication.close")
-                            on:click=move |_| on_close.call(())>"×"</button>
+                            on:click=move |_| on_close.call(())>
+                            {compose_icon("close")}
+                        </button>
                     </div>
                 </header>
 
@@ -1194,7 +1199,9 @@ pub(super) fn PublicationWorkspaceModal(
                             </div>
                             <button type="button" class="ps-close"
                                 aria-label=t(locale.get(), "publication.close")
-                                on:click=move |_| anchor_open.set(false)>"×"</button>
+                                on:click=move |_| anchor_open.set(false)>
+                                {compose_icon("close")}
+                            </button>
                         </header>
                         <label>
                             <span>{t(locale.get(), "publication.anchor_kind")}</span>
@@ -1337,7 +1344,9 @@ pub(super) fn PublicationWorkspaceModal(
                                     on:click=move |_| {
                                         binding_source.set(None);
                                         binding_seen.set(String::new());
-                                    }>"×"</button>
+                                    }>
+                                    {compose_icon("close")}
+                                </button>
                             </header>
                             {if !has_draft {
                                 view! {
@@ -1485,7 +1494,9 @@ pub(super) fn PublicationWorkspaceModal(
                                 </h3>
                                 <button type="button" class="ps-close"
                                     aria-label=t(locale.get(), "publication.close")
-                                    on:click=move |_| freeze_open.set(false)>"×"</button>
+                                    on:click=move |_| freeze_open.set(false)>
+                                    {compose_icon("close")}
+                                </button>
                             </header>
                             <label>
                                 <span>{t(locale.get(), "publication.target_visibility")}</span>
@@ -1586,7 +1597,9 @@ pub(super) fn PublicationWorkspaceModal(
                                 </div>
                                 <button type="button" class="ps-close"
                                     aria-label=t(locale.get(), "publication.close")
-                                    on:click=move |_| waiver_code.set(None)>"×"</button>
+                                    on:click=move |_| waiver_code.set(None)>
+                                    {compose_icon("close")}
+                                </button>
                             </header>
                             <label>
                                 <span>{t(locale.get(), "publication.waiver_author")}</span>

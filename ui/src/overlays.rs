@@ -65,12 +65,25 @@ pub(super) fn AddHostOverlay(
     move || {
         show_add_host.get().then(|| view! {
     <div class="overlay">
-        <div class="modal host-modal" role="dialog" aria-modal="true">
-            <h2>{move || if editing_host_alias.get().is_some() {
-                t(locale.get(), "hosts.edit")
-            } else {
-                t(locale.get(), "hosts.add")
-            }}</h2>
+        <div class="modal host-modal" role="dialog" aria-modal="true"
+            aria-labelledby="host-modal-title">
+            <div class="ps-head">
+                <h2 id="host-modal-title">{move || if editing_host_alias.get().is_some() {
+                    t(locale.get(), "hosts.edit")
+                } else {
+                    t(locale.get(), "hosts.add")
+                }}</h2>
+                <button type="button" class="ps-close"
+                    title=move || t(locale.get(), "hosts.cancel")
+                    aria-label=move || t(locale.get(), "hosts.cancel")
+                    on:click=move |_| {
+                        editing_host_alias.set(None);
+                        test_result.set(None);
+                        show_add_host.set(false);
+                    }>
+                    {compose_icon("close")}
+                </button>
+            </div>
             <label class="host-label" for="add-host-alias">{move || t(locale.get(), "hosts.name")}</label>
             <input id="add-host-alias" class="host-input" autofocus=true
                 disabled=move || editing_host_alias.get().is_some()
@@ -343,10 +356,14 @@ pub(super) fn CapabilitiesOverlay(
     <div class="overlay">
         <div class="modal modal-wide" role="dialog" aria-modal="true"
             aria-labelledby="capabilities-title">
-            <div class="fb-head">
+            <div class="ps-head">
                 <h2 id="capabilities-title">{move || t(locale.get(), "caps.title")}</h2>
-                <button class="icon-btn" aria-label=move || t(locale.get(), "caps.close")
-                    on:click=move |_| show_capabilities.set(false)>{compose_icon("close")}</button>
+                <button type="button" class="ps-close"
+                    title=move || t(locale.get(), "caps.close")
+                    aria-label=move || t(locale.get(), "caps.close")
+                    on:click=move |_| show_capabilities.set(false)>
+                    {compose_icon("close")}
+                </button>
             </div>
             {move || bootstrap.get().map(|b| {
                 let loc = locale.get();

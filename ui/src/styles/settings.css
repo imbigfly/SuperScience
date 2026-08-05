@@ -1488,7 +1488,7 @@ button.workflow-graph-port.output.active {
 .plugin-install-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .plugin-install-dialog-head h3 { margin: 0 0 4px; font-size: 17px; }
 .plugin-install-dialog-head p { margin: 0; line-height: 1.45; }
-.plugin-install-dialog-head .icon-btn { flex: 0 0 auto; }
+.plugin-install-dialog-head .ps-close { flex: 0 0 auto; }
 .plugin-install-modes { display: inline-flex; align-self: flex-start; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-sunken); }
 .plugin-install-modes button { padding: 7px 13px; border: none; border-radius: var(--radius-xs); background: transparent; color: var(--text-muted); font: inherit; font-size: 12.5px; cursor: pointer; }
 .plugin-install-modes button.active { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-sm); }

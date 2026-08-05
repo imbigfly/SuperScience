@@ -3036,7 +3036,8 @@ pub(super) fn SettingsView(
                                             <h3 id="plugin-install-title">{move || t(locale.get(), "plugins.install_title")}</h3>
                                             <p class="hint">{move || t(locale.get(), "plugins.install_safety")}</p>
                                         </div>
-                                        <button type="button" class="icon-btn"
+                                        <button type="button" class="ps-close"
+                                            title=move || t(locale.get(), "plugins.install_close")
                                             aria-label=move || t(locale.get(), "plugins.install_close")
                                             on:click=move |_| plugin_install_open.set(false)>
                                             {compose_icon("close")}
@@ -4230,7 +4231,15 @@ pub(super) fn SettingsView(
                     <div class="overlay" data-testid="issue-report-modal">
                         <div class="modal issue-report-modal" role="dialog" aria-modal="true"
                             aria-labelledby="issue-report-title">
-                            <h2 id="issue-report-title">{move || t(locale.get(), "issue_report.title")}</h2>
+                            <div class="ps-head">
+                                <h2 id="issue-report-title">{move || t(locale.get(), "issue_report.title")}</h2>
+                                <button type="button" class="ps-close"
+                                    title=move || t(locale.get(), "settings.cancel")
+                                    aria-label=move || t(locale.get(), "settings.cancel")
+                                    on:click=move |_| issue_report_open.set(false)>
+                                    {compose_icon("close")}
+                                </button>
+                            </div>
                             <p class="hint issue-report-privacy">{move || t(locale.get(), "issue_report.privacy")}</p>
                             <div class="issue-report-fields">
                                 <label>{move || t(locale.get(), "issue_report.issue_title")}

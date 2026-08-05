@@ -11985,7 +11985,7 @@ fn App() -> impl IntoView {
                                                                                 }
                                                                             }
                                                                         });
-                                                                    }>"↻"</button>
+                                                                    }>{compose_icon("sync")}</button>
                                                                 <button type="button" class="context-terminal"
                                                                     title=t(loc, "contexts.open_terminal")
                                                                     aria-label=t(loc, "contexts.open_terminal")

@@ -242,10 +242,12 @@ pub(super) fn LibraryScreen(
                                         on:click=move |_| delete_item.call(delete_id.clone())>
                                         {compose_icon("star-filled")}
                                     </button>
-                                    <button type="button" class="icon-btn"
+                                    <button type="button" class="ps-close"
                                         title=move || t(locale.get(), "library.close")
                                         aria-label=move || t(locale.get(), "library.close")
-                                        on:click=move |_| selected.set(None)>{compose_icon("close")}</button>
+                                        on:click=move |_| selected.set(None)>
+                                        {compose_icon("close")}
+                                    </button>
                                 </div>
                             </header>
                             {if is_figure {

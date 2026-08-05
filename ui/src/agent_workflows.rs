@@ -2943,8 +2943,7 @@ pub(super) fn workflow_studio(
         // total still has to leave room for the synthesis reserve.
         if request_text.is_empty() || (total > 0 && (reserve == 0 || reserve >= total)) {
             state.error.set(Some(
-                "Research request is required; a bounded total budget must exceed the synthesis reserve (0 = unlimited)."
-                    .into(),
+                t(locale.get_untracked(), "workflow_studio.portfolio.validation").into(),
             ));
             return;
         }
@@ -3390,75 +3389,156 @@ pub(super) fn workflow_studio(
             {move || portfolio_open.get().then(|| view! {
                 <div class="overlay" role="presentation" data-testid="portfolio-planner-overlay"
                     on:click=move |_| portfolio_open.set(false)>
-                    <div class="modal agents-create" role="dialog" aria-modal="true"
-                        aria-label="Skill Portfolio Planner"
+                    <div class="modal portfolio-planner-modal" role="dialog" aria-modal="true"
+                        aria-labelledby="portfolio-planner-title"
                         on:click=move |event| event.stop_propagation()>
-                        <div class="modal-header">
-                            <div>
-                                <strong>{"Skill Portfolio Planner"}</strong>
-                                <span>{"Build an explainable, budgeted workflow from the effective catalog."}</span>
-                            </div>
-                            <button type="button" aria-label="Close" on:click=move |_| portfolio_open.set(false)>{"×"}</button>
+                        <div class="ps-head">
+                            <h2 id="portfolio-planner-title">
+                                {move || t(locale.get(), "workflow_studio.portfolio.title")}
+                            </h2>
+                            <button type="button" class="ps-close"
+                                title=move || t(locale.get(), "workflow_studio.portfolio.close")
+                                aria-label=move || t(locale.get(), "workflow_studio.portfolio.close")
+                                on:click=move |_| portfolio_open.set(false)>
+                                {compose_icon("close")}
+                            </button>
                         </div>
+                        <p class="hint">
+                            {move || t(locale.get(), "workflow_studio.portfolio.subtitle")}
+                        </p>
                         <label>
-                            <span>{"Research request"}</span>
+                            {move || t(locale.get(), "workflow_studio.portfolio.request")}
                             <textarea data-testid="portfolio-request"
                                 prop:value=move || portfolio_request.get()
                                 on:input=move |event| portfolio_request.set(event_target_value(&event))></textarea>
                         </label>
-                        <div class="dynamic-agent-policy-row">
-                            <label><span>{"Plan depth"}</span>
-                                <select data-testid="portfolio-tier" on:change=move |event| portfolio_tier.set(dom_value(&event))>
-                                    <option value="compact">{"Compact"}</option>
-                                    <option value="standard" selected>{"Standard"}</option>
-                                    <option value="deep">{"Deep"}</option>
+                        <div class="portfolio-planner-fields">
+                            <label>
+                                {move || t(locale.get(), "workflow_studio.portfolio.tier")}
+                                <select data-testid="portfolio-tier"
+                                    on:change=move |event| portfolio_tier.set(dom_value(&event))>
+                                    <option value="compact">
+                                        {move || t(locale.get(), "workflow_studio.portfolio.tier.compact")}
+                                    </option>
+                                    <option value="standard" selected>
+                                        {move || t(locale.get(), "workflow_studio.portfolio.tier.standard")}
+                                    </option>
+                                    <option value="deep">
+                                        {move || t(locale.get(), "workflow_studio.portfolio.tier.deep")}
+                                    </option>
                                 </select>
                             </label>
-                            <label><span>{"Total tokens (0 = unlimited)"}</span><input data-testid="portfolio-total" type="number" min="0"
-                                prop:value=move || portfolio_total.get()
-                                on:input=move |event| portfolio_total.set(event_target_value(&event)) /></label>
-                            <label><span>{"Synthesis reserve"}</span><input data-testid="portfolio-reserve" type="number" min="0"
-                                prop:value=move || portfolio_reserve.get()
-                                on:input=move |event| portfolio_reserve.set(event_target_value(&event)) /></label>
+                            <label>
+                                {move || t(locale.get(), "workflow_studio.portfolio.total")}
+                                <input data-testid="portfolio-total" type="number" min="0"
+                                    prop:value=move || portfolio_total.get()
+                                    on:input=move |event| portfolio_total.set(event_target_value(&event)) />
+                            </label>
+                            <label>
+                                {move || t(locale.get(), "workflow_studio.portfolio.reserve")}
+                                <input data-testid="portfolio-reserve" type="number" min="0"
+                                    prop:value=move || portfolio_reserve.get()
+                                    on:input=move |event| portfolio_reserve.set(event_target_value(&event)) />
+                            </label>
                         </div>
-                        <button type="button" class="agents-primary" data-testid="portfolio-generate"
-                            disabled=move || portfolio_loading.get() on:click=generate_portfolio>
-                            {move || if portfolio_loading.get() { "Planning…" } else { "Generate plan" }}
-                        </button>
                         {move || portfolio_draft.get().map(|draft| {
                             let plan = draft.plan.clone();
                             let proposal = draft.proposal.clone();
+                            let loc = locale.get();
+                            let summary = tf(
+                                loc,
+                                "workflow_studio.portfolio.summary",
+                                &[
+                                    ("skills", &plan.selected.len().to_string()),
+                                    ("batches", &plan.estimated_batches.to_string()),
+                                    ("parallel", &plan.max_parallel.to_string()),
+                                ],
+                            );
+                            let budget = if plan.total_token_budget == 0 {
+                                tf(
+                                    loc,
+                                    "workflow_studio.portfolio.budget_unlimited",
+                                    &[("nodes", &plan.selected_node_budget.to_string())],
+                                )
+                            } else {
+                                tf(
+                                    loc,
+                                    "workflow_studio.portfolio.budget_bounded",
+                                    &[
+                                        ("total", &plan.total_token_budget.to_string()),
+                                        ("nodes", &plan.selected_node_budget.to_string()),
+                                        ("reserve", &plan.synthesis_reserve.to_string()),
+                                    ],
+                                )
+                            };
+                            let confirmation = if plan.requires_confirmation {
+                                t(loc, "workflow_studio.portfolio.review_required")
+                            } else {
+                                t(loc, "workflow_studio.portfolio.auto_ok")
+                            };
+                            let deferred = (!plan.deferred.is_empty()).then(|| {
+                                let items = plan
+                                    .deferred
+                                    .iter()
+                                    .map(|item| format!("{} ({})", item.name, item.reason))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                tf(loc, "workflow_studio.portfolio.deferred", &[("items", &items)])
+                            });
                             view! {
-                                <section data-testid="portfolio-plan-card">
-                                    <strong>{format!("{} Skills · {} batches · max {} parallel", plan.selected.len(), plan.estimated_batches, plan.max_parallel)}</strong>
-                                    <p>{if plan.total_token_budget == 0 {
-                                        format!("unlimited budget · est. {} node tokens", plan.selected_node_budget)
-                                    } else {
-                                        format!("{} total · {} node tokens · {} synthesis reserve", plan.total_token_budget, plan.selected_node_budget, plan.synthesis_reserve)
-                                    }}</p>
+                                <section class="portfolio-plan-card" data-testid="portfolio-plan-card">
+                                    <strong>{summary}</strong>
+                                    <p>{budget}</p>
                                     <ul>{plan.selected.into_iter().map(|item| view! {
                                         <li><code>{format!("{}:{}", item.scope, item.skill_id)}</code>
                                             {format!(" · {} tokens · {}", item.node_budget, item.reasons.join("; "))}</li>
                                     }).collect_view()}</ul>
-                                    {(!plan.deferred.is_empty()).then(|| view! {
-                                        <p data-testid="portfolio-deferred">{format!("Deferred: {}", plan.deferred.into_iter().map(|item| format!("{} ({})", item.name, item.reason)).collect::<Vec<_>>().join(", "))}</p>
+                                    {deferred.map(|text| view! {
+                                        <p data-testid="portfolio-deferred">{text}</p>
                                     })}
-                                    <p>{if plan.requires_confirmation { "Review required before execution." } else { "Eligible for safe automatic execution." }}</p>
-                                    <button type="button" class="agents-primary" data-testid="portfolio-edit-studio"
-                                        on:click=move |_| {
-                                            let form = DynamicWorkflowForm::from_proposal(proposal.clone());
-                                            selected_task_key.set(form.tasks.first().map(|task| task.key));
-                                            state.dynamic_form.set(form);
-                                            template_name.set("Skill Portfolio".into());
-                                            template_description.set("Generated from the effective Skill Catalog".into());
-                                            creating.set(true);
-                                            loaded_id.set(None);
-                                            selected_template_id.set(None);
-                                            portfolio_open.set(false);
-                                        }>{"Edit in Workflow Studio"}</button>
+                                    <p>{confirmation}</p>
+                                    <div class="row">
+                                        <button type="button" class="primary" data-testid="portfolio-edit-studio"
+                                            on:click=move |_| {
+                                                let form = DynamicWorkflowForm::from_proposal(proposal.clone());
+                                                selected_task_key.set(form.tasks.first().map(|task| task.key));
+                                                state.dynamic_form.set(form);
+                                                template_name.set(
+                                                    t(locale.get_untracked(), "workflow_studio.portfolio.template_name").into(),
+                                                );
+                                                template_description.set(
+                                                    t(
+                                                        locale.get_untracked(),
+                                                        "workflow_studio.portfolio.template_description",
+                                                    )
+                                                    .into(),
+                                                );
+                                                creating.set(true);
+                                                loaded_id.set(None);
+                                                selected_template_id.set(None);
+                                                portfolio_open.set(false);
+                                            }>
+                                            {move || t(locale.get(), "workflow_studio.portfolio.edit_studio")}
+                                        </button>
+                                    </div>
                                 </section>
                             }
                         })}
+                        <div class="row">
+                            <button type="button"
+                                on:click=move |_| portfolio_open.set(false)>
+                                {move || t(locale.get(), "settings.cancel")}
+                            </button>
+                            <button type="button" class="primary" data-testid="portfolio-generate"
+                                disabled=move || portfolio_loading.get()
+                                on:click=generate_portfolio>
+                                {move || if portfolio_loading.get() {
+                                    t(locale.get(), "workflow_studio.portfolio.planning")
+                                } else {
+                                    t(locale.get(), "workflow_studio.portfolio.generate")
+                                }}
+                            </button>
+                        </div>
                     </div>
                 </div>
             })}
@@ -4117,10 +4197,13 @@ fn workflow_result_dialog(state: AgentPanelState, locale: RwSignal<Locale>) -> V
                                 <h2 id="agent-result-title">{t(locale.get(), "agents.result.title")}</h2>
                                 <span>{title}</span>
                             </div>
-                            <button type="button" class="agents-secondary"
+                            <button type="button" class="ps-close"
                                 id="agent-result-close"
+                                title=t(locale.get(), "agents.result.close")
                                 aria-label=t(locale.get(), "agents.result.close")
-                                on:click=move |_| state.result.set(None)>{"×"}</button>
+                                on:click=move |_| state.result.set(None)>
+                                {compose_icon("close")}
+                            </button>
                         </div>
                         <div class="agent-result-body" data-testid="agent-result-content">
                             {presentation.error.map(|error| view! {
