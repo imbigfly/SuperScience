@@ -2000,28 +2000,23 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "plan_skill_portfolio":
             return {
               plan: {
-                selected: [
-                  { skill_id: "analysis-workflow", name: "Analysis workflow", scope: "bundled", reasons: ["stage: analysis"], node_budget: 3200 },
-                  { skill_id: "literature-review", name: "Literature review", scope: "bundled", reasons: ["evidence: literature"], node_budget: 3200 },
-                  { skill_id: "hypothesis-generation", name: "Hypothesis generation", scope: "bundled", reasons: ["stage: hypothesis"], node_budget: 3200 },
+                planner_model_id: String(plain(arg("request") ?? {}).model_id ?? "default"),
+                planner_model_label: String(plain(arg("request") ?? {}).model_id) === "opus" ? "opus-4.8" : "deepseek-v4-pro",
+                rationale: "Literature and analysis should run before evidence-grounded synthesis.",
+                tasks: [
+                  { id: "literature", rationale: "Find and verify published evidence.", skill_ids: ["literature-review"], depends_on: [] },
+                  { id: "analysis", rationale: "Analyze the research question using the reproducible workflow.", skill_ids: ["analysis-workflow"], depends_on: [] },
+                  { id: "synthesis", rationale: "Identify gaps only after both evidence streams finish.", skill_ids: [], depends_on: ["literature", "analysis"] },
                 ],
-                deferred: [{ name: "Optional validator", reason: "insufficient_token_budget" }],
-                total_token_budget: 16000,
-                selected_node_budget: 9600,
-                synthesis_reserve: 4000,
-                max_parallel: 2,
-                estimated_batches: 3,
-                requires_confirmation: true,
               },
               proposal: {
-                goal: "Skill portfolio: design an oncology study",
-                context: "Research intent",
+                goal: "Design an evidence-grounded oncology study",
+                context: "Design an oncology omics study",
                 approval_policy: "review_all",
                 tasks: [
-                  { id: "skill-1", instruction: "Analyze", depends_on: [], capabilities: ["reasoning"], skill_ids: ["analysis-workflow"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 3200, max_tool_calls: 12, max_cost_microunits: null } },
-                  { id: "skill-2", instruction: "Review", depends_on: [], capabilities: ["reasoning"], skill_ids: ["literature-review"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 3200, max_tool_calls: 12, max_cost_microunits: null } },
-                  { id: "skill-3", instruction: "Hypothesize", depends_on: [], capabilities: ["reasoning"], skill_ids: ["hypothesis-generation"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 3200, max_tool_calls: 12, max_cost_microunits: null } },
-                  { id: "synthesis", instruction: "Synthesize", depends_on: ["skill-1", "skill-2", "skill-3"], capabilities: ["reasoning"], skill_ids: [], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: { max_tokens: 4000, max_tool_calls: 4, max_cost_microunits: null } },
+                  { id: "literature", instruction: "Review the published evidence", depends_on: [], capabilities: ["literature_search"], skill_ids: ["literature-review"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: null },
+                  { id: "analysis", instruction: "Plan a reproducible analysis", depends_on: [], capabilities: ["code_run"], skill_ids: ["analysis-workflow"], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: null },
+                  { id: "synthesis", instruction: "Synthesize the evidence and identify gaps", depends_on: ["literature", "analysis"], capabilities: ["reasoning"], skill_ids: [], specialist_id: null, output_schema: null, isolated: false, model_id: null, executor: null, budget: null },
                 ],
               },
             };
