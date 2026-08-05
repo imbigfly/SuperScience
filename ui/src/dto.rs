@@ -2129,6 +2129,10 @@ pub(crate) struct MemoryFile {
 #[derive(Deserialize, Clone)]
 pub(crate) struct MemoryView {
     pub(crate) enabled: bool,
+    #[serde(default)]
+    pub(crate) project_id: String,
+    #[serde(default)]
+    pub(crate) project_name: String,
     pub(crate) today_file: String,
     pub(crate) files: Vec<MemoryFile>,
 }

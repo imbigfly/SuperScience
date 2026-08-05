@@ -621,6 +621,59 @@ pub(super) fn SettingsView(
     let memory_new_cats = create_rw_signal(Vec::<String>::new());
     let memory_new_cat_open = create_rw_signal(false);
     let memory_new_cat_name = create_rw_signal(String::new());
+    let memory_projects = create_rw_signal(Vec::<ProjectSummary>::new());
+    let memory_project_menu_open = create_rw_signal(false);
+    create_effect(move |_| {
+        if settings_section.get() != "memory" {
+            memory_project_menu_open.set(false);
+            return;
+        }
+        spawn_local(async move {
+            let v = invoke("list_projects", JsValue::UNDEFINED).await;
+            if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(v) {
+                memory_projects.set(list);
+            }
+        });
+    });
+    let reset_memory_browse = move || {
+        memory_selected.set(None);
+        memory_editor.set(String::new());
+        memory_msg.set(None);
+        memory_cat.set(None);
+        memory_new_cats.set(vec![]);
+        memory_new_cat_open.set(false);
+        memory_new_cat_name.set(String::new());
+        memory_project_menu_open.set(false);
+    };
+    let load_memory_project = Callback::new(move |id: String| {
+        let current = memory_view
+            .get_untracked()
+            .map(|view| view.project_id)
+            .unwrap_or_default();
+        if id == current {
+            memory_project_menu_open.set(false);
+            return;
+        }
+        reset_memory_browse();
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "project_id": id })).unwrap();
+            match invoke_checked("get_memory_view", arg).await {
+                Ok(v) => {
+                    if let Ok(view) = serde_wasm_bindgen::from_value::<MemoryView>(v) {
+                        memory_view.set(Some(view));
+                    } else {
+                        memory_msg.set(Some((
+                            false,
+                            t(locale.get_untracked(), "memory.load_failed").into(),
+                        )));
+                    }
+                }
+                Err(err) => {
+                    memory_msg.set(Some((false, js_error_text(err))));
+                }
+            }
+        });
+    });
     let joining = create_rw_signal(false);
     let join_code = create_rw_signal(String::new());
     let join_busy = create_rw_signal(false);
@@ -702,6 +755,10 @@ pub(super) fn SettingsView(
         }
         if joining.get_untracked() {
             joining.set(false);
+            return true;
+        }
+        if memory_project_menu_open.get_untracked() {
+            memory_project_menu_open.set(false);
             return true;
         }
         if memory_new_cat_open.get_untracked() {
@@ -2859,8 +2916,16 @@ pub(super) fn SettingsView(
                                                 <button type="button" class="memory-delete-btn"
                                                     on:click=move |_| {
                                                         let n = name_del.clone();
+                                                        let project_id = memory_view
+                                                            .get_untracked()
+                                                            .map(|view| view.project_id)
+                                                            .unwrap_or_default();
                                                         spawn_local(async move {
-                                                            let arg = to_value(&serde_json::json!({ "name": n })).unwrap();
+                                                            let arg = to_value(&serde_json::json!({
+                                                                "name": n,
+                                                                "project_id": project_id,
+                                                            }))
+                                                            .unwrap();
                                                             if let Ok(files) = invoke_checked("delete_memory_file", arg).await {
                                                                 if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<MemoryFile>>(files) {
                                                                     memory_view.update(|o| if let Some(o)=o { o.files = list; });
@@ -2872,8 +2937,17 @@ pub(super) fn SettingsView(
                                                 <button type="button" class="primary" on:click=move |_| {
                                                     let n = name_save.clone();
                                                     let content = memory_editor.get();
+                                                    let project_id = memory_view
+                                                        .get_untracked()
+                                                        .map(|view| view.project_id)
+                                                        .unwrap_or_default();
                                                     spawn_local(async move {
-                                                        let arg = to_value(&serde_json::json!({ "name": n, "content": content })).unwrap();
+                                                        let arg = to_value(&serde_json::json!({
+                                                            "name": n,
+                                                            "content": content,
+                                                            "project_id": project_id,
+                                                        }))
+                                                        .unwrap();
                                                         match invoke_checked("write_memory_file", arg).await {
                                                             Ok(v) => {
                                                                 if let Ok(files) = serde_wasm_bindgen::from_value::<Vec<MemoryFile>>(v) {
@@ -2895,17 +2969,152 @@ pub(super) fn SettingsView(
                         view! {
                         <div class="settings-pane settings-pane-memory">
                             <div class="settings-toolbar settings-toolbar-end memory-toolbar">
-                                <span class="settings-filter">{move || {
-                                    let n = memory_view.get().map(|v| v.files.len()).unwrap_or(0);
-                                    format!("{} ({n})", t(locale.get(), "memory.notes"))
-                                }}</span>
+                                <div class="memory-project" data-testid="memory-project">
+                                    <div class="memory-project-picker">
+                                        <button
+                                            type="button"
+                                            class="memory-project-trigger"
+                                            data-testid="memory-project-select"
+                                            aria-haspopup="listbox"
+                                            aria-expanded=move || memory_project_menu_open.get().to_string()
+                                            aria-label=move || t(locale.get(), "memory.choose_project")
+                                            attr:data-project-id=move || {
+                                                memory_view
+                                                    .get()
+                                                    .map(|view| view.project_id)
+                                                    .unwrap_or_default()
+                                            }
+                                            class:active=move || memory_project_menu_open.get()
+                                            on:click=move |_| {
+                                                memory_project_menu_open.update(|open| *open = !*open);
+                                            }>
+                                            <span class="memory-project-name">{move || {
+                                                let view = memory_view.get();
+                                                let id = view.as_ref().map(|v| v.project_id.as_str()).unwrap_or("");
+                                                memory_projects
+                                                    .get()
+                                                    .into_iter()
+                                                    .find(|p| p.id == id)
+                                                    .map(|p| {
+                                                        if p.name.trim().is_empty() {
+                                                            p.id
+                                                        } else {
+                                                            p.name
+                                                        }
+                                                    })
+                                                    .or_else(|| {
+                                                        view.map(|v| v.project_name)
+                                                            .filter(|name| !name.trim().is_empty())
+                                                    })
+                                                    .unwrap_or_else(|| {
+                                                        t(locale.get(), "settings.nav.memory")
+                                                    })
+                                            }}</span>
+                                            <span class="caret" aria-hidden="true">"▾"</span>
+                                        </button>
+                                        {move || memory_project_menu_open.get().then(|| view! {
+                                            <div class="memory-project-backdrop"
+                                                data-testid="memory-project-backdrop"
+                                                on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                    ev.prevent_default();
+                                                    memory_project_menu_open.set(false);
+                                                }></div>
+                                            <div class="memory-project-menu" role="listbox"
+                                                data-testid="memory-project-menu"
+                                                aria-label=move || t(locale.get(), "memory.choose_project")
+                                                on:mousedown=|ev: web_sys::MouseEvent| ev.stop_propagation()
+                                                on:click=|ev: web_sys::MouseEvent| ev.stop_propagation()>
+                                                <div class="memory-project-menu-list">
+                                                    <For
+                                                        each=move || memory_projects.get()
+                                                        key=|p| p.id.clone()
+                                                        let:project>
+                                                        {
+                                                            let id = project.id.clone();
+                                                            let id_aria = id.clone();
+                                                            let id_active = id.clone();
+                                                            let id_check = id.clone();
+                                                            let id_pick = id.clone();
+                                                            let name = if project.name.trim().is_empty() {
+                                                                project.id.clone()
+                                                            } else {
+                                                                project.name.clone()
+                                                            };
+                                                            let desc = project.description.clone();
+                                                            view! {
+                                                                <button type="button"
+                                                                    class="memory-project-option"
+                                                                    role="option"
+                                                                    data-testid=format!("memory-project-option-{id}")
+                                                                    aria-selected=move || {
+                                                                        memory_view
+                                                                            .get()
+                                                                            .map(|view| view.project_id == id_aria)
+                                                                            .unwrap_or(false)
+                                                                            .to_string()
+                                                                    }
+                                                                    class:active=move || {
+                                                                        memory_view
+                                                                            .get()
+                                                                            .map(|view| view.project_id == id_active)
+                                                                            .unwrap_or(false)
+                                                                    }
+                                                                    on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                                        ev.prevent_default();
+                                                                        ev.stop_propagation();
+                                                                        load_memory_project.call(id_pick.clone());
+                                                                    }>
+                                                                    <span class="memory-project-option-text">
+                                                                        <span class="memory-project-option-name">{name}</span>
+                                                                        {(!desc.trim().is_empty()).then(|| view! {
+                                                                            <span class="memory-project-option-desc">{desc.clone()}</span>
+                                                                        })}
+                                                                    </span>
+                                                                    {move || {
+                                                                        let selected = memory_view
+                                                                            .get()
+                                                                            .map(|view| view.project_id == id_check)
+                                                                            .unwrap_or(false);
+                                                                        selected.then(|| view! {
+                                                                            <span class="memory-project-option-check" aria-hidden="true">"✓"</span>
+                                                                        })
+                                                                    }}
+                                                                </button>
+                                                            }
+                                                        }
+                                                    </For>
+                                                </div>
+                                            </div>
+                                        })}
+                                    </div>
+                                    <span>{move || {
+                                        let n = memory_view.get().map(|v| v.files.len()).unwrap_or(0);
+                                        format!(
+                                            "{} · {}",
+                                            tf(
+                                                locale.get(),
+                                                "memory.project_notes",
+                                                &[("count", &n.to_string())],
+                                            ),
+                                            t(locale.get(), "memory.scope_hint"),
+                                        )
+                                    }}</span>
+                                </div>
                                 <div class="memory-toolbar-actions">
                                     <label class="toggle" title=move || t(locale.get(), "settings.nav.memory")>
                                         <input type="checkbox" prop:checked=move || memory_view.get().map(|v| v.enabled).unwrap_or(true)
                                             on:change=move |ev| {
                                                 let on = event_target_checked(&ev);
+                                                let project_id = memory_view
+                                                    .get_untracked()
+                                                    .map(|view| view.project_id)
+                                                    .unwrap_or_default();
                                                 spawn_local(async move {
-                                                    let arg = to_value(&serde_json::json!({ "enabled": on })).unwrap();
+                                                    let arg = to_value(&serde_json::json!({
+                                                        "enabled": on,
+                                                        "project_id": project_id,
+                                                    }))
+                                                    .unwrap();
                                                     if let Ok(v) = invoke_checked("set_memory_enabled", arg).await {
                                                         if let Ok(view) = serde_wasm_bindgen::from_value::<MemoryView>(v) {
                                                             memory_view.set(Some(view));
@@ -2916,27 +3125,43 @@ pub(super) fn SettingsView(
                                         <span class="toggle-track" aria-hidden="true"></span>
                                     </label>
                                     <button type="button" class="memory-clear-btn" on:click=move |_| {
+                                        let project_id = memory_view
+                                            .get_untracked()
+                                            .map(|view| view.project_id)
+                                            .unwrap_or_default();
                                         spawn_local(async move {
-                                            let v = invoke("clear_memory", JsValue::UNDEFINED).await;
+                                            let arg = to_value(&serde_json::json!({
+                                                "project_id": project_id,
+                                            }))
+                                            .unwrap();
+                                            let v = invoke("clear_memory", arg).await;
                                             if let Ok(files) = serde_wasm_bindgen::from_value::<Vec<MemoryFile>>(v) {
                                                 memory_view.update(|o| if let Some(o)=o { o.files = files; });
-                                                memory_selected.set(None);
-                                                memory_editor.set(String::new());
-                                                memory_cat.set(None);
-                                                memory_new_cats.set(vec![]);
+                                                reset_memory_browse();
                                             }
                                         });
                                     }>{move || t(locale.get(), "memory.clear_all")}</button>
                                 </div>
                             </div>
+                            {move || memory_msg.get().map(|(ok, text)| view! {
+                                <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
+                            })}
                             {move || {
                                 let off = memory_view.get().map(|v| !v.enabled).unwrap_or(false);
                                 off.then(|| view! {
                                 <div class="memory-off-banner">
                                     <span>{move || t(locale.get(), "memory.off_banner")}</span>
                                     <button type="button" class="settings-add-btn" on:click=move |_| {
+                                        let project_id = memory_view
+                                            .get_untracked()
+                                            .map(|view| view.project_id)
+                                            .unwrap_or_default();
                                         spawn_local(async move {
-                                            let arg = to_value(&serde_json::json!({ "enabled": true })).unwrap();
+                                            let arg = to_value(&serde_json::json!({
+                                                "enabled": true,
+                                                "project_id": project_id,
+                                            }))
+                                            .unwrap();
                                             if let Ok(v) = invoke_checked("set_memory_enabled", arg).await {
                                                 if let Ok(view) = serde_wasm_bindgen::from_value::<MemoryView>(v) {
                                                     memory_view.set(Some(view));
@@ -3017,7 +3242,6 @@ pub(super) fn SettingsView(
                                                             <span class="settings-list-title">{memory_note_label(&f.name).to_string()}</span>
                                                             <span class="settings-list-sub">{format_bytes(f.bytes)}</span>
                                                         </div>
-                                                        <span class="settings-list-chevron" aria-hidden="true">"›"</span>
                                                     </div>
                                                 }
                                             }

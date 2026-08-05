@@ -14,9 +14,17 @@ pub struct MemoryManager {
 
 impl MemoryManager {
     pub fn new(root: &Path) -> Self {
-        let dir = root.join(".wisp").join("memory");
-        let _ = std::fs::create_dir_all(&dir);
-        Self { dir }
+        let manager = Self::at(root);
+        let _ = std::fs::create_dir_all(manager.dir());
+        manager
+    }
+
+    /// Point at `<root>/.wisp/memory` without creating it. Use for read-only
+    /// browsing of another project's notes; writers still create the directory.
+    pub fn at(root: &Path) -> Self {
+        Self {
+            dir: root.join(".wisp").join("memory"),
+        }
     }
 
     pub fn dir(&self) -> &Path {
@@ -112,5 +120,37 @@ impl MemoryManager {
             .map(|(s, f, c)| format!("# {f} (score={s})\n{c}"))
             .collect::<Vec<_>>()
             .join("\n\n---\n\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "wisp-memory-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn at_does_not_create_memory_dir() {
+        let root = temp_root("at");
+        let memory = MemoryManager::at(&root);
+        assert_eq!(memory.dir(), root.join(".wisp").join("memory"));
+        assert!(!memory.dir().exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn new_creates_memory_dir() {
+        let root = temp_root("new");
+        let memory = MemoryManager::new(&root);
+        assert!(memory.dir().is_dir());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

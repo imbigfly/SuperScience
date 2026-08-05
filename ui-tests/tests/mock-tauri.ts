@@ -297,7 +297,33 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { path: "office-preview.xlsx", is_dir: false, size: 3600 },
     { path: "office-preview.pptx", is_dir: false, size: 8600 },
   ];
-  let memoryFiles = [{ name: "2026-07-01.md", preview: "User prefers DeepSeek.", bytes: 128 }];
+  type MemoryFile = { name: string; preview: string; bytes: number };
+  const memoryByProject: Record<string, MemoryFile[]> = {
+    default: [{ name: "2026-07-01.md", preview: "User prefers DeepSeek.", bytes: 128 }],
+    other: [{ name: "other-2026-07-02.md", preview: "Notes for other workspace.", bytes: 64 }],
+  };
+  const memoryFilesFor = (projectId: string) => {
+    const id = projectId || "default";
+    if (!memoryByProject[id]) memoryByProject[id] = [];
+    return memoryByProject[id];
+  };
+  const memoryProjectName = (projectId: string) =>
+    projectId === "other" ? "Other project" : project.name;
+  const memoryViewFor = (projectId: string) => {
+    const id = projectId || activeProjectId || "default";
+    return {
+      enabled: memoryEnabled,
+      project_id: id,
+      project_name: memoryProjectName(id),
+      today_file: "2026-07-04.md",
+      files: memoryFilesFor(id),
+    };
+  };
+  const resolveMemoryProjectId = (args: any, arg: (key: string) => any) => {
+    const raw = arg("project_id") ?? arg("projectId");
+    if (raw == null || String(raw) === "") return activeProjectId || "default";
+    return String(raw);
+  };
   let mockSpecialists: any[] = [
     { id: "reviewer", name: "Reviewer", icon: "review", color: "clay", description: "", instructions: "rubric", model_id: "", skills: [], connectors: [], builtin: true },
     { id: "reader", name: "Reader", icon: "search", color: "clay", description: "Searches project sessions", instructions: "reader rubric", model_id: "", skills: [], connectors: [], builtin: true },
@@ -2667,7 +2693,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return {
               skills,
               mcp_servers: ["mcp_bio", "mcp_chem"],
-              memory_files: memoryFiles,
+              memory_files: memoryFilesFor(activeProjectId),
               project,
               skill_counts: { bundled: 2, project: 1 },
               mcp_counts: { bundled: 2, project: 1 },
@@ -3193,10 +3219,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               : "Validated openai with deepseek-v4-pro";
           }
           case "get_memory_view":
-            return { enabled: memoryEnabled, today_file: "2026-07-04.md", files: memoryFiles };
+            return memoryViewFor(resolveMemoryProjectId(args, arg));
           case "set_memory_enabled":
-            memoryEnabled = !!args?.enabled;
-            return { enabled: memoryEnabled, today_file: "2026-07-04.md", files: memoryFiles };
+            memoryEnabled = !!(arg("enabled") ?? args?.enabled);
+            return memoryViewFor(resolveMemoryProjectId(args, arg));
           case "get_auto_review_enabled":
             return autoReviewEnabled;
           case "set_auto_review_enabled":
@@ -3253,23 +3279,31 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "write_memory_file": {
             const name = String(arg("name") ?? "");
             const content = String(arg("content") ?? "");
-            const existing = memoryFiles.find((file) => file.name === name);
+            const files = memoryFilesFor(resolveMemoryProjectId(args, arg));
+            const existing = files.find((file) => file.name === name);
             if (existing) {
               existing.preview = content.slice(0, 240);
               existing.bytes = content.length;
             } else if (name) {
-              memoryFiles.push({ name, preview: content.slice(0, 240), bytes: content.length });
+              files.push({ name, preview: content.slice(0, 240), bytes: content.length });
             }
-            return memoryFiles;
+            return files;
           }
-          case "delete_memory_file":
-            memoryFiles = memoryFiles.filter((file) => file.name !== arg("name"));
-            return memoryFiles;
-          case "clear_memory":
-            memoryFiles = [];
-            return memoryFiles;
+          case "delete_memory_file": {
+            const projectId = resolveMemoryProjectId(args, arg);
+            memoryByProject[projectId] = memoryFilesFor(projectId).filter(
+              (file) => file.name !== arg("name"),
+            );
+            return memoryFilesFor(projectId);
+          }
+          case "clear_memory": {
+            const projectId = resolveMemoryProjectId(args, arg);
+            memoryByProject[projectId] = [];
+            return memoryFilesFor(projectId);
+          }
           case "read_memory_file":
-            return memoryFiles.find((file) => file.name === arg("name"))?.preview ?? "";
+            return memoryFilesFor(resolveMemoryProjectId(args, arg))
+              .find((file) => file.name === arg("name"))?.preview ?? "";
           case "new_session": {
             const id = `s-${Math.random().toString(36).slice(2)}`;
             sessionModels[id] = activeHttpModelId();

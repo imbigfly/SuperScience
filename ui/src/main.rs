@@ -4156,6 +4156,8 @@ fn App() -> impl IntoView {
 
     let refresh_memory = move || {
         spawn_local(async move {
+            // Always load the window's active project when entering Memory;
+            // the picker can then browse another workspace without switching chat.
             let v = invoke("get_memory_view", JsValue::UNDEFINED).await;
             if let Ok(view) = serde_wasm_bindgen::from_value::<MemoryView>(v) {
                 memory_view.set(Some(view));
@@ -4181,8 +4183,16 @@ fn App() -> impl IntoView {
     let load_memory_file = move |name: String| {
         memory_selected.set(Some(name.clone()));
         memory_msg.set(None);
+        let project_id = memory_view
+            .get_untracked()
+            .map(|view| view.project_id)
+            .unwrap_or_default();
         spawn_local(async move {
-            let arg = to_value(&serde_json::json!({ "name": name })).unwrap();
+            let arg = to_value(&serde_json::json!({
+                "name": name,
+                "project_id": project_id,
+            }))
+            .unwrap();
             let v = invoke("read_memory_file", arg).await;
             memory_editor.set(v.as_string().unwrap_or_default());
         });

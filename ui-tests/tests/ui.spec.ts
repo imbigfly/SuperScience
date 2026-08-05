@@ -412,6 +412,48 @@ test("problem report consumes Escape before Settings (#596)", async ({ page }) =
   await expect(page.locator(".settings-page")).toBeVisible();
 });
 
+test("Memory settings show the active project name", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+  const project = page.getByTestId("memory-project");
+  await expect(page.getByTestId("memory-project-select")).toHaveAttribute("data-project-id", "default");
+  await expect(page.getByTestId("memory-project-select")).toContainText("wisp-science");
+  await expect(project).toContainText("1 notes");
+  await expect(project).toContainText("Project memory");
+});
+
+test("Memory settings can browse another project's notes without switching workspace", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+  await expect(page.getByText("2026-07-01.md", { exact: true })).toBeVisible();
+  const openProjectCalls = await invokeArgsList(page, "open_project");
+
+  await page.getByTestId("memory-project-select").click();
+  await expect(page.getByTestId("memory-project-menu")).toBeVisible();
+  await page.getByTestId("memory-project-option-other").click();
+  await expect(page.getByTestId("memory-project-menu")).toHaveCount(0);
+  await expect(page.getByTestId("memory-project-select")).toHaveAttribute("data-project-id", "other");
+  await expect(page.getByTestId("memory-project-select")).toContainText("Other project");
+  await expect(page.getByText("other-2026-07-02.md", { exact: true })).toBeVisible();
+  await expect(page.getByText("2026-07-01.md", { exact: true })).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "get_memory_view")).toMatchObject({
+    project_id: "other",
+  });
+  // Browsing memory must not switch the active chat project.
+  await expect.poll(() => invokeArgsList(page, "open_project")).toHaveLength(openProjectCalls.length);
+});
+
+test("Memory project picker consumes Escape before leaving Settings", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+  await page.getByTestId("memory-project-select").click();
+  await expect(page.getByTestId("memory-project-menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("memory-project-menu")).toHaveCount(0);
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect(page.locator(".settings-nav button.active")).toHaveText("Memory");
+});
+
 test("settings subpages consume Escape before leaving Settings", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Memory");
