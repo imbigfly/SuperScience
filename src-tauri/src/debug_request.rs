@@ -233,6 +233,32 @@ pub(super) async fn export_debug_request(
     Ok(Some(dest_path.to_string_lossy().into_owned()))
 }
 
+#[tauri::command]
+pub(super) async fn get_context_usage_details(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<wisp_core::ContextUsageDetails, String> {
+    let rt = { state.sessions.lock().await.get(&session_id).cloned() };
+    if let Some(details) = rt.as_ref().and_then(|rt| {
+        rt.agent.try_lock().ok().and_then(|guard| {
+            guard.as_ref().map(|agent| {
+                let (schemas, origins) = agent.tools.schemas_with_origins();
+                agent.ctx.context_usage_details(&schemas, &origins)
+            })
+        })
+    }) {
+        return Ok(details);
+    }
+    let messages = state
+        .store
+        .load_messages(&session_id)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let mut context = ContextManager::new(0);
+    context.messages = messages;
+    Ok(context.context_usage_details(&[], &[]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

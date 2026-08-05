@@ -1970,6 +1970,22 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               pet_enabled: mockPetEnabled,
               pet_directory: mockPetDirectory,
             };
+          case "get_context_usage_details":
+            return {
+              system_prompt: "You are wisp-science.\n\n## Environment\nWindows x86_64",
+              tool_definitions: [
+                { name: "read", description: "Read a file from disk." },
+                { name: "write", description: "Write a file to disk." },
+              ],
+              rules: "## Built-in Rules\n\nVerify before completion.",
+              skills: "## Skills Selection Guidelines\n\nUse use_skill before proceeding.",
+              mcp_dynamic_tools: [
+                { name: "search_mcp_tools", description: "Search configured MCP tools." },
+              ],
+              subagent_definitions: [
+                { name: "explore", description: "Explore the project independently." },
+              ],
+            };
           case "get_token_usage":
             return {
               workspaces: [

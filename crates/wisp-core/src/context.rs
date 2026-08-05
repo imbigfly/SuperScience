@@ -78,6 +78,22 @@ pub struct ContextUsage {
     pub conversation: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextToolDetail {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextUsageDetails {
+    pub system_prompt: String,
+    pub tool_definitions: Vec<ContextToolDetail>,
+    pub rules: String,
+    pub skills: String,
+    pub mcp_dynamic_tools: Vec<ContextToolDetail>,
+    pub subagent_definitions: Vec<ContextToolDetail>,
+}
+
 impl ContextUsage {
     pub fn total(self) -> usize {
         self.system_prompt
@@ -120,33 +136,37 @@ fn apportioned(raw: [usize; 5], target: usize) -> [usize; 5] {
     out
 }
 
+fn system_line_bucket(trimmed: &str, current: usize) -> usize {
+    if trimmed == "<delegation_capability>" || trimmed.starts_with("## Specialist") {
+        SUBAGENT_BUCKET
+    } else if trimmed == "<plan_mode>"
+        || matches!(
+            trimmed,
+            "## Safety"
+                | "## Built-in Rules"
+                | "## Project Instructions (AGENTS.md)"
+                | "## User Rules"
+        )
+    {
+        RULES_BUCKET
+    } else if matches!(
+        trimmed,
+        "## Skills Selection Guidelines" | "## Scientific Deliverables"
+    ) {
+        SKILLS_BUCKET
+    } else if trimmed.starts_with("## ") {
+        SYSTEM_BUCKET
+    } else {
+        current
+    }
+}
+
 fn system_text_weights(text: &str) -> [usize; 5] {
     let mut weights = [0; 5];
     let mut bucket = SYSTEM_BUCKET;
     for line in text.split_inclusive('\n') {
         let trimmed = line.trim();
-        bucket = if trimmed == "<delegation_capability>" || trimmed.starts_with("## Specialist") {
-            SUBAGENT_BUCKET
-        } else if trimmed == "<plan_mode>"
-            || matches!(
-                trimmed,
-                "## Safety"
-                    | "## Built-in Rules"
-                    | "## Project Instructions (AGENTS.md)"
-                    | "## User Rules"
-            )
-        {
-            RULES_BUCKET
-        } else if matches!(
-            trimmed,
-            "## Skills Selection Guidelines" | "## Scientific Deliverables"
-        ) {
-            SKILLS_BUCKET
-        } else if trimmed.starts_with("## ") {
-            SYSTEM_BUCKET
-        } else {
-            bucket
-        };
+        bucket = system_line_bucket(trimmed, bucket);
         weights[bucket] += line.len();
         if matches!(trimmed, "</delegation_capability>" | "</plan_mode>") {
             bucket = SYSTEM_BUCKET;
@@ -571,6 +591,58 @@ impl ContextManager {
             }
         }
         usage
+    }
+
+    pub fn context_usage_details(
+        &self,
+        schemas: &[ToolSchema],
+        origins: &[ToolSchemaOrigin],
+    ) -> ContextUsageDetails {
+        let mut details = ContextUsageDetails::default();
+        let mut subagent_prompt = String::new();
+        for message in self.messages.iter().chain(&self.runtime_injections) {
+            if message.role == Role::System {
+                let mut bucket = SYSTEM_BUCKET;
+                for line in message.content.as_text().split_inclusive('\n') {
+                    let trimmed = line.trim();
+                    bucket = system_line_bucket(trimmed, bucket);
+                    match bucket {
+                        RULES_BUCKET => details.rules.push_str(line),
+                        SKILLS_BUCKET => details.skills.push_str(line),
+                        SUBAGENT_BUCKET => subagent_prompt.push_str(line),
+                        _ => details.system_prompt.push_str(line),
+                    }
+                    if matches!(trimmed, "</delegation_capability>" | "</plan_mode>") {
+                        bucket = SYSTEM_BUCKET;
+                    }
+                }
+            } else if is_skill_context(message) {
+                details.skills.push_str(&message.content.as_text());
+                details.skills.push('\n');
+            }
+        }
+        if !subagent_prompt.is_empty() {
+            details.subagent_definitions.push(ContextToolDetail {
+                name: "Instructions".into(),
+                description: subagent_prompt,
+            });
+        }
+        for (index, schema) in schemas.iter().enumerate() {
+            let item = ContextToolDetail {
+                name: schema.function.name.clone(),
+                description: schema.function.description.clone(),
+            };
+            match origins
+                .get(index)
+                .copied()
+                .unwrap_or(ToolSchemaOrigin::Dynamic)
+            {
+                ToolSchemaOrigin::BuiltIn => details.tool_definitions.push(item),
+                ToolSchemaOrigin::Dynamic => details.mcp_dynamic_tools.push(item),
+                ToolSchemaOrigin::Subagent => details.subagent_definitions.push(item),
+            }
+        }
+        details
     }
 
     /// Use one estimator everywhere Wisp reports or budgets tool definitions,
@@ -1459,6 +1531,30 @@ mod tests {
             usage.total(),
             context.request_tokens_with_reserve(ContextManager::estimated_tool_tokens(&schemas))
         );
+    }
+
+    #[test]
+    fn context_usage_details_match_categories_and_omit_conversation() {
+        let mut context = ContextManager::new(100_000);
+        context.append_system(
+            "Base prompt\n\n## Built-in Rules\n\nCheck the work.\n\n## Skills Selection Guidelines\n\nLoad matching skills.",
+        );
+        context.append_user("private conversation text");
+        let schemas = vec![
+            ToolSchema::new("read", "Read files", serde_json::json!({})),
+            ToolSchema::new("mcp_search", "Search MCP", serde_json::json!({})),
+        ];
+        let details = context.context_usage_details(
+            &schemas,
+            &[ToolSchemaOrigin::BuiltIn, ToolSchemaOrigin::Dynamic],
+        );
+
+        assert!(details.system_prompt.contains("Base prompt"));
+        assert!(details.rules.contains("Check the work"));
+        assert!(details.skills.contains("Load matching skills"));
+        assert_eq!(details.tool_definitions[0].name, "read");
+        assert_eq!(details.mcp_dynamic_tools[0].name, "mcp_search");
+        assert!(!format!("{details:?}").contains("private conversation text"));
     }
 
     // #45: with panic=abort, a mid-UTF-8 slice during compaction crashes the
