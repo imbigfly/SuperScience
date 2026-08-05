@@ -3472,13 +3472,13 @@ pub(super) fn SettingsView(
                         }.into_view()
                     } else {
                         view! {
-                        <div class="settings-pane settings-pane-memory">
-                            <div class="settings-toolbar settings-toolbar-end memory-toolbar">
+                        <div class="settings-pane settings-pane-list">
+                            <div class="settings-toolbar settings-toolbar-end">
                                 <div class="memory-project" data-testid="memory-project">
                                     <div class="memory-project-picker">
                                         <button
                                             type="button"
-                                            class="memory-project-trigger"
+                                            class="settings-filter memory-project-trigger"
                                             data-testid="memory-project-select"
                                             aria-haspopup="listbox"
                                             aria-expanded=move || memory_project_menu_open.get().to_string()
@@ -3496,7 +3496,7 @@ pub(super) fn SettingsView(
                                             <span class="memory-project-name">{move || {
                                                 let view = memory_view.get();
                                                 let id = view.as_ref().map(|v| v.project_id.as_str()).unwrap_or("");
-                                                memory_projects
+                                                let name = memory_projects
                                                     .get()
                                                     .into_iter()
                                                     .find(|p| p.id == id)
@@ -3508,12 +3508,14 @@ pub(super) fn SettingsView(
                                                         }
                                                     })
                                                     .or_else(|| {
-                                                        view.map(|v| v.project_name)
+                                                        view.as_ref().map(|v| v.project_name.clone())
                                                             .filter(|name| !name.trim().is_empty())
                                                     })
                                                     .unwrap_or_else(|| {
                                                         t(locale.get(), "settings.nav.memory")
-                                                    })
+                                                    });
+                                                let n = view.map(|v| v.files.len()).unwrap_or(0);
+                                                format!("{name} ({n})")
                                             }}</span>
                                             <span class="caret" aria-hidden="true">"▾"</span>
                                         </button>
@@ -3592,20 +3594,8 @@ pub(super) fn SettingsView(
                                             </div>
                                         })}
                                     </div>
-                                    <span>{move || {
-                                        let n = memory_view.get().map(|v| v.files.len()).unwrap_or(0);
-                                        format!(
-                                            "{} · {}",
-                                            tf(
-                                                locale.get(),
-                                                "memory.project_notes",
-                                                &[("count", &n.to_string())],
-                                            ),
-                                            t(locale.get(), "memory.scope_hint"),
-                                        )
-                                    }}</span>
                                 </div>
-                                <div class="memory-toolbar-actions">
+                                <div class="settings-toolbar-actions memory-toolbar-actions">
                                     <label class="toggle" title=move || t(locale.get(), "settings.nav.memory")>
                                         <input type="checkbox" prop:checked=move || memory_view.get().map(|v| v.enabled).unwrap_or(true)
                                             on:change=move |ev| {
@@ -3629,7 +3619,7 @@ pub(super) fn SettingsView(
                                             } />
                                         <span class="toggle-track" aria-hidden="true"></span>
                                     </label>
-                                    <button type="button" class="memory-clear-btn" on:click=move |_| {
+                                    <button type="button" on:click=move |_| {
                                         let project_id = memory_view
                                             .get_untracked()
                                             .map(|view| view.project_id)
@@ -3646,6 +3636,12 @@ pub(super) fn SettingsView(
                                             }
                                         });
                                     }>{move || t(locale.get(), "memory.clear_all")}</button>
+                                    <button type="button" class="settings-add-btn" data-testid="memory-add-note"
+                                        on:click=move |_| {
+                                            if let Some(today) = memory_view.get().map(|v| v.today_file) {
+                                                load_memory_file.call(today);
+                                            }
+                                        }>{move || t(locale.get(), "memory.add")}</button>
                                 </div>
                             </div>
                             {move || memory_msg.get().map(|(ok, text)| view! {
@@ -3677,37 +3673,32 @@ pub(super) fn SettingsView(
                                 </div>
                                 })
                             }}
-                            <div class="memory-notes" data-testid="memory-notes">
-                                <div class="settings-list memory-file-list">
-                                    <For each=move || memory_view.get().map(|v| v.files).unwrap_or_default()
-                                        key=|f| f.name.clone() let:f>
-                                        {
-                                            let pick = f.name.clone();
-                                            view! {
-                                                <div class="settings-list-row settings-list-row-link"
-                                                    on:click=move |_| load_memory_file.call(pick.clone())>
-                                                    <div class="settings-list-main">
-                                                        <span class="settings-list-title">{f.name.clone()}</span>
-                                                        <span class="settings-list-sub">{format_bytes(f.bytes)}</span>
-                                                    </div>
+                            <div class="conn-group-label">{move || t(locale.get(), "memory.scope_hint")}</div>
+                            <div class="settings-list" data-testid="memory-notes">
+                                <For each=move || memory_view.get().map(|v| v.files).unwrap_or_default()
+                                    key=|f| f.name.clone() let:f>
+                                    {
+                                        let pick = f.name.clone();
+                                        view! {
+                                            <div class="settings-list-row settings-list-row-link"
+                                                on:click=move |_| load_memory_file.call(pick.clone())>
+                                                <div class="settings-list-main">
+                                                    <span class="settings-list-title">{f.name.clone()}</span>
+                                                    <span class="settings-list-sub">{format_bytes(f.bytes)}</span>
+                                                </div>
+                                                <div class="settings-list-actions">
                                                     <span class="settings-list-chevron" aria-hidden="true">"›"</span>
                                                 </div>
-                                            }
+                                            </div>
                                         }
-                                    </For>
-                                </div>
+                                    }
+                                </For>
                                 {move || {
                                     let empty = memory_view.get().map(|v| v.files.is_empty()).unwrap_or(true);
                                     empty.then(|| view! {
-                                        <p class="memory-empty">{move || t(locale.get(), "memory.empty")}</p>
+                                        <p class="model-empty-hint">{move || t(locale.get(), "memory.empty")}</p>
                                     })
                                 }}
-                                <button type="button" class="memory-file-add" data-testid="memory-add-note"
-                                    on:click=move |_| {
-                                        if let Some(today) = memory_view.get().map(|v| v.today_file) {
-                                            load_memory_file.call(today);
-                                        }
-                                    }>{move || format!("+ {}", t(locale.get(), "memory.add"))}</button>
                             </div>
                         </div>
                         }.into_view()
