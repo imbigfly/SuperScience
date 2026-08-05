@@ -5428,7 +5428,7 @@ test("model API URL explains that endpoint paths are added automatically", async
   await openModelsSettings(page);
 
   await expect(page.getByTestId("model-api-url-hint")).toHaveText(
-    "Enter the provider's API base URL. You do not need to append /chat/completions, /responses, or /v1/messages; Wisp adds the matching request path automatically.",
+    "Enter the provider's API base URL. You do not need to append /v1, /chat/completions, /responses, or /v1/messages; Wisp completes the request path and probes common OpenAI-compatible paths automatically.",
   );
   await expect(page.getByLabel("API URL")).toHaveAttribute(
     "aria-describedby",
