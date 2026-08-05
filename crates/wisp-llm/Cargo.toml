@@ -13,3 +13,6 @@ futures-util = { workspace = true }
 async-trait = "0.1"
 thiserror = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
