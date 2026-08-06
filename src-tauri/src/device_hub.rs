@@ -147,6 +147,7 @@ impl DeviceHub {
             | AgentEvent::Reasoning { frame_id, .. }
             | AgentEvent::ToolCall { frame_id, .. }
             | AgentEvent::Stdout { frame_id, .. }
+            | AgentEvent::CompactionStarted { frame_id, .. }
             | AgentEvent::CorrectionStarted { frame_id, .. } => {
                 (frame_id.as_str(), PetState::Working)
             }

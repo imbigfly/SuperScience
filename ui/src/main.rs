@@ -404,6 +404,7 @@ fn App() -> impl IntoView {
     let model_menu_open = create_rw_signal(false);
     let model_switch_confirm = create_rw_signal::<Option<(String, String, bool)>>(None);
     let status = create_rw_signal(String::new());
+    let compaction_active = create_rw_signal(false);
     let switch_http_model = Callback::new(move |(id, dont_ask_again): (String, bool)| {
         provisional_acp_selection.set(None);
         active_acp_agent_id.set(None);
@@ -1455,6 +1456,7 @@ fn App() -> impl IntoView {
     };
     let pet_activity_cb = pet_activity;
     let status_cb = status;
+    let compaction_active_cb = compaction_active;
     let locale_cb = locale;
     let models_cb = models;
     let session_models_cb = session_model_ids;
@@ -1576,6 +1578,11 @@ fn App() -> impl IntoView {
                 });
             }
         };
+        let finish_compaction = |frame_id: &str| {
+            if active_cb.get_untracked().as_deref() == Some(frame_id) {
+                compaction_active_cb.set(false);
+            }
+        };
         let refresh_transcript_projections = |frame_id: &str| {
             if active_cb.get_untracked().as_deref() == Some(frame_id) {
                 transcript_projection_epoch_cb.update(|revision| {
@@ -1584,6 +1591,11 @@ fn App() -> impl IntoView {
             }
         };
         match ev {
+            AgentEvent::CompactionStarted { frame_id, .. } => {
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    compaction_active_cb.set(true);
+                }
+            }
             AgentEvent::User { frame_id, text } => {
                 follow_up_questions.update(|questions| {
                     questions.remove(&frame_id);
@@ -1637,6 +1649,7 @@ fn App() -> impl IntoView {
                 });
             }
             AgentEvent::Text { frame_id, delta } => {
+                finish_compaction(&frame_id);
                 set_pet_activity(&frame_id, "running");
                 let needs_response_time = conversation_outlines_cb.with_untracked(|outlines| {
                     outlines
@@ -1657,6 +1670,7 @@ fn App() -> impl IntoView {
                 queue(frame_id, PendingDelta::Text(delta));
             }
             AgentEvent::Reasoning { frame_id, delta } => {
+                finish_compaction(&frame_id);
                 set_pet_activity(&frame_id, "running");
                 queue(frame_id, PendingDelta::Reasoning(delta));
             }
@@ -1665,6 +1679,7 @@ fn App() -> impl IntoView {
                 name,
                 preview,
             } => {
+                finish_compaction(&frame_id);
                 set_pet_activity(&frame_id, "review");
                 flush_now();
                 route_items(active_cb, items_cb, transcripts_cb, &frame_id, |v| {
@@ -1804,6 +1819,7 @@ fn App() -> impl IntoView {
                 after,
                 strategy,
             } => {
+                finish_compaction(&frame_id);
                 route_items(active_cb, items_cb, transcripts_cb, &frame_id, |items| {
                     items.push(ChatItem::Compaction {
                         before,
@@ -1848,6 +1864,7 @@ fn App() -> impl IntoView {
                 frame_id,
                 stop_reason: _,
             } => {
+                finish_compaction(&frame_id);
                 flush_now();
                 conversation_outlines_cb.update(|outlines| {
                     if let Some(entry) = outlines
@@ -1904,6 +1921,7 @@ fn App() -> impl IntoView {
                 }
             }
             AgentEvent::Error { frame_id, message } => {
+                finish_compaction(&frame_id);
                 flush_now();
                 conversation_outlines_cb.update(|outlines| {
                     if let Some(entry) = outlines
@@ -7726,6 +7744,16 @@ fn App() -> impl IntoView {
                                     {move || t(locale.get(), "status.open_settings")}
                                 </button>
                             </span>
+                        }.into_view())
+                    } else if compaction_active.get() {
+                        Some(view! {
+                            <div class="context-compaction-live" role="status" data-testid="context-compaction-live">
+                                <span class="context-compaction-spectrum" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+                                <span class="context-compaction-live-copy">
+                                    <strong>{move || t(locale.get(), "chat.compacting_title")}</strong>
+                                    <span>{move || t(locale.get(), "chat.compacting_note")}</span>
+                                </span>
+                            </div>
                         }.into_view())
                     } else {
                         let s = status.get();

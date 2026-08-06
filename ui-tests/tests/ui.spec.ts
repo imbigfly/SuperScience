@@ -7456,6 +7456,13 @@ test("context compaction leaves a visible timeline flag", async ({ page }) => {
   const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
 
   await emitTauriEvent(page, "agent", {
+    kind: "CompactionStarted",
+    frame_id: frameId,
+    strategy: "auto",
+  });
+  await expect(page.getByTestId("context-compaction-live")).toContainText("Centrifuging context");
+
+  await emitTauriEvent(page, "agent", {
     kind: "Compaction",
     frame_id: frameId,
     before: 812_000,
@@ -7464,6 +7471,7 @@ test("context compaction leaves a visible timeline flag", async ({ page }) => {
   });
 
   const flag = page.getByTestId("context-compaction-flag");
+  await expect(page.getByTestId("context-compaction-live")).toBeHidden();
   await expect(flag).toContainText("Context automatically compacted");
   await expect(flag).toContainText("812.0k → 236.0k");
 });

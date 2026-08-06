@@ -209,6 +209,10 @@ pub(crate) enum AgentEvent {
         after: usize,
         strategy: String,
     },
+    CompactionStarted {
+        frame_id: String,
+        strategy: String,
+    },
     ContextWarning {
         frame_id: String,
         ctx_tokens: usize,
