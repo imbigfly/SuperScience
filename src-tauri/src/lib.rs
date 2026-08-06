@@ -1769,6 +1769,17 @@ fn log_dev_llm_dispatch(
     );
 }
 
+/// Push settings that must stay live on a reused session agent.
+///
+/// Session runtimes cache one `Agent` across turns. Construction-time knobs
+/// (especially `max_iter`) are re-read from Settings before every turn so a
+/// mid-session change — e.g. 100 → 0 for unlimited monitoring — takes effect
+/// without waiting for an unrelated agent rebuild.
+fn apply_live_agent_settings(agent: &mut wisp_core::Agent, max_iter: usize, auto_compact: bool) {
+    agent.max_iter = max_iter;
+    agent.set_auto_compact(auto_compact);
+}
+
 fn default_locale() -> String {
     "en".into()
 }
@@ -5247,6 +5258,11 @@ async fn send_message_inner(
         *guard = Some(agent);
     }
     let agent = guard.as_mut().unwrap();
+    apply_live_agent_settings(
+        agent,
+        max_iter,
+        load_auto_compact_enabled(&state.store).await,
+    );
     // InterruptReplace (#410): the user stopped the previous turn because it
     // went the wrong way — drop that turn (its user message included) from the
     // model context before running the replacement. Mirrors /compact: only the
