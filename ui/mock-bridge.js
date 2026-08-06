@@ -489,7 +489,7 @@
           case "get_onboarding_state":
             return { show: false, has_api_key: true };
           case "get_bootstrap_status":
-            return { skills_loaded: 66, python_ok: true, mcp_catalog: 24, uv_ok: true, node_ok: true, npm_ok: true, sci_ok: true, pixi_ok: true, app_version: "0.4.0-mock", workspace: project.root, errors: [] };
+            return { skills_loaded: 66, python_ok: true, mcp_catalog: 24, uv_ok: true, node_ok: true, npm_ok: true, sci_ok: true, pixi_ok: true, app_version: "0.4.0-mock", os: "windows", arch: "x86_64", startup: "total=120ms store=90ms window_ready=600000ms", workspace: project.root, errors: [] };
           case "get_capabilities":
             return {
               skills: [{ name: "bear-support", description: "Find papers supporting a claim." }],

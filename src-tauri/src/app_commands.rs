@@ -394,6 +394,8 @@ pub(super) fn initial_bootstrap(workspace: &std::path::Path, skills: usize) -> B
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
         workspace: workspace.to_string_lossy().into_owned(),
+        // Filled in on read: the launch is not over yet at this point.
+        startup: String::new(),
         errors: vec![],
     };
     if status.skills_loaded == 0 {
@@ -462,13 +464,21 @@ pub(super) fn start_python_bootstrap(app: &tauri::AppHandle) {
             finish_python_bootstrap(&mut status, result);
             status.clone()
         };
-        let _ = handle.emit("bootstrap-status", status);
+        let _ = handle.emit("bootstrap-status", with_startup_report(status));
     });
+}
+
+/// Stamp the current launch timings onto a status snapshot. They are collected
+/// while the app boots, so they are attached when the status is read rather
+/// than when it is built.
+fn with_startup_report(mut status: BootstrapStatus) -> BootstrapStatus {
+    status.startup = crate::startup_report_summary();
+    status
 }
 
 #[tauri::command]
 pub(super) fn get_bootstrap_status(state: State<'_, AppState>) -> BootstrapStatus {
-    state.bootstrap.lock().unwrap().clone()
+    with_startup_report(state.bootstrap.lock().unwrap().clone())
 }
 
 #[tauri::command]

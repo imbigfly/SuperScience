@@ -1401,25 +1401,23 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.notifications_hint") => Some("Notify when a background task finishes, fails, or waits for approval. Its conversation opens only in the window that started the task."),
         (Locale::En, "settings.update_check") => Some("Check for updates"),
         (Locale::En, "settings.update_check_hint") => Some("Check GitHub Releases on startup and show a prompt in the sidebar when a newer version is available."),
-        (Locale::En, "issue_report.entry_title") => Some("Report a problem"),
-        (Locale::En, "issue_report.entry_hint") => Some("Build a private-by-default diagnostic draft, review it, then copy it or open a prefilled GitHub form."),
-        (Locale::En, "issue_report.open") => Some("Create report"),
-        (Locale::En, "issue_report.title") => Some("Report a problem"),
-        (Locale::En, "issue_report.privacy") => Some("Wisp adds only version, OS/architecture, model profile label, context type, and the error/Run ID you enter. It does not read transcripts, project data, API keys, environment variables, usernames, absolute paths, or screenshots."),
-        (Locale::En, "issue_report.issue_title") => Some("Issue title"),
-        (Locale::En, "issue_report.problem") => Some("Problem description"),
-        (Locale::En, "issue_report.reproduction") => Some("Steps to reproduce"),
-        (Locale::En, "issue_report.expected") => Some("Expected behavior"),
-        (Locale::En, "issue_report.actual") => Some("Actual behavior"),
-        (Locale::En, "issue_report.reference") => Some("Error code or Run ID (optional)"),
-        (Locale::En, "issue_report.context") => Some("Execution context type"),
-        (Locale::En, "issue_report.not_applicable") => Some("Not applicable"),
-        (Locale::En, "issue_report.screenshot") => Some("I plan to attach screenshots manually on GitHub. Wisp will not collect or upload them."),
-        (Locale::En, "issue_report.preview") => Some("Editable Markdown draft"),
-        (Locale::En, "issue_report.confirm_external") => Some("I reviewed this draft and agree to send its title and body to GitHub when I continue."),
-        (Locale::En, "issue_report.github_hint") => Some("GitHub opens a prefilled draft only. Nothing is submitted until you press “Submit new issue” there."),
-        (Locale::En, "issue_report.copy") => Some("Copy Markdown"),
-        (Locale::En, "issue_report.github") => Some("Review on GitHub"),
+        (Locale::En, "issue_report.sidebar") => Some("Report a problem"),
+        (Locale::En, "issue_report.session_title") => Some("Bug report"),
+        (Locale::En, "issue_report.chat_prompt") => Some(
+            "Help me file a GitHub issue for {repo}.\n\n\
+             [Collected automatically — do not ask me for API keys, transcripts, project files, env vars, usernames, or absolute paths]\n\
+             - Wisp version: {version}\n\
+             - OS / architecture: {os} / {arch}\n\
+             - Model profile: {model}\n\
+             - Startup timings: {startup}\n\n\
+             Guide me in plain language: what happened, steps to reproduce, expected vs actual behavior, and any Run ID or error text I know.\n\
+             If startup was slow or the window stayed blank, remind me that on Windows release builds the log is at \
+             %APPDATA%\\science.wisp-science\\wisp-science\\logs\\wisp.log (previous launch: wisp.previous.log).\n\
+             When we have enough detail, propose a short issue title plus a Markdown body with sections \
+             (Problem, Steps to reproduce, Expected, Actual, Environment). \
+             Then give a prefilled GitHub link using this base URL: {issue_base}?title=...&body=... \
+             Remind me that screenshots must be attached manually on GitHub; Wisp does not upload them.",
+        ),
         (Locale::En, "notify.done") => Some("Task completed"),
         (Locale::En, "notify.error") => Some("Task failed"),
         (Locale::En, "notify.attention") => Some("Waiting for your approval"),
@@ -3300,25 +3298,22 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.notifications_hint") => Some("窗口不在前台时，任务完成、失败或等待确认会发送系统通知；对应会话只会在启动任务的窗口打开。"),
         (Locale::Zh, "settings.update_check") => Some("检查更新"),
         (Locale::Zh, "settings.update_check_hint") => Some("启动时检查 GitHub Releases，有新版本时在侧边栏显示提示。"),
-        (Locale::Zh, "issue_report.entry_title") => Some("报告问题"),
-        (Locale::Zh, "issue_report.entry_hint") => Some("在本地生成默认脱敏的诊断草稿，预览后再复制或打开预填的 GitHub 表单。"),
-        (Locale::Zh, "issue_report.open") => Some("创建报告"),
-        (Locale::Zh, "issue_report.title") => Some("报告问题"),
-        (Locale::Zh, "issue_report.privacy") => Some("Wisp 只自动加入版本、OS/架构、模型配置名称、context 类型，以及你主动填写的错误/Run ID；不会读取 transcript、项目数据、API key、环境变量、用户名、绝对路径或截图。"),
-        (Locale::Zh, "issue_report.issue_title") => Some("Issue 标题"),
-        (Locale::Zh, "issue_report.problem") => Some("问题描述"),
-        (Locale::Zh, "issue_report.reproduction") => Some("复现步骤"),
-        (Locale::Zh, "issue_report.expected") => Some("预期行为"),
-        (Locale::Zh, "issue_report.actual") => Some("实际行为"),
-        (Locale::Zh, "issue_report.reference") => Some("错误码或 Run ID（可选）"),
-        (Locale::Zh, "issue_report.context") => Some("Execution context 类型"),
-        (Locale::Zh, "issue_report.not_applicable") => Some("不适用"),
-        (Locale::Zh, "issue_report.screenshot") => Some("我计划稍后在 GitHub 手动附加截图；Wisp 不会采集或上传截图。"),
-        (Locale::Zh, "issue_report.preview") => Some("可编辑 Markdown 草稿"),
-        (Locale::Zh, "issue_report.confirm_external") => Some("我已审阅草稿，并同意在继续时将标题和正文发送到 GitHub。"),
-        (Locale::Zh, "issue_report.github_hint") => Some("GitHub 只会打开预填草稿；只有你在 GitHub 再点击“Submit new issue”才会提交。"),
-        (Locale::Zh, "issue_report.copy") => Some("复制 Markdown"),
-        (Locale::Zh, "issue_report.github") => Some("前往 GitHub 审阅"),
+        (Locale::Zh, "issue_report.sidebar") => Some("报告问题"),
+        (Locale::Zh, "issue_report.session_title") => Some("问题报告"),
+        (Locale::Zh, "issue_report.chat_prompt") => Some(
+            "请帮我向 {repo} 提交一个 GitHub issue。\n\n\
+             【已自动采集，请勿向我索要 API key、transcript、项目文件、环境变量、用户名或绝对路径】\n\
+             - Wisp 版本：{version}\n\
+             - OS / 架构：{os} / {arch}\n\
+             - 模型配置：{model}\n\
+             - 启动耗时：{startup}\n\n\
+             请用中文逐条引导我说明：发生了什么、复现步骤、预期与实际行为，以及我知道的 Run ID 或错误信息。\n\
+             若启动很慢或长时间白屏，提醒我在 Windows 正式版可把日志发给维护者：\
+             %APPDATA%\\science.wisp-science\\wisp-science\\logs\\wisp.log（上次启动：wisp.previous.log）。\n\
+             信息足够后，给出简短 issue 标题和 Markdown 正文（含问题描述、复现步骤、预期、实际、环境等小节），\
+             并提供预填链接：{issue_base}?title=...&body=...\n\
+             提醒截图需在 GitHub 页面手动附加，Wisp 不会上传截图。",
+        ),
         (Locale::Zh, "notify.done") => Some("任务已完成"),
         (Locale::Zh, "notify.error") => Some("任务失败"),
         (Locale::Zh, "notify.attention") => Some("等待你的确认"),

@@ -427,66 +427,21 @@ test("storage separates project paths and filters usage when a project is clicke
     .toContainText("120.0 MB");
 });
 
-test("problem reports stay local until a reviewed Markdown draft is explicitly opened (#596)", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+test("sidebar Report a problem starts an AI-guided issue chat (#596)", async ({ page }) => {
   await enterApp(page);
-  await openSettingsSection(page, "General");
-
-  const entry = page.getByTestId("report-problem-entry");
-  await entry.getByRole("button", { name: "Create report" }).click();
-  const modal = page.getByTestId("issue-report-modal");
-  await expect(modal).toBeVisible();
-  await modal.getByTestId("issue-report-issue-title").fill("Runtime preflight failed");
-  const problem = modal.getByTestId("issue-report-problem");
-  await problem.fill("The analysis stops before producing a result.");
-  await expect(problem).toHaveValue("The analysis stops before producing a result.");
-  await modal.getByTestId("issue-report-reproduction").fill("1. Start the analysis\n2. Wait for preflight");
-  await modal.getByTestId("issue-report-expected").fill("The missing package is named.");
-  await modal.getByTestId("issue-report-actual").fill("A generic failure is shown.");
-  await modal.getByTestId("issue-report-reference").fill("run-safe-123");
-  await modal.getByTestId("issue-report-context").selectOption("ssh");
-  await modal.getByTestId("issue-report-screenshot").check();
-  await expect(modal.getByTestId("issue-report-context")).toHaveValue("ssh");
-  await expect(modal.getByTestId("issue-report-screenshot")).toBeChecked();
-
-  const preview = modal.getByTestId("issue-report-preview");
-  await expect(preview).toHaveValue(/The analysis stops before producing a result\./);
-  await expect(preview).toHaveValue(/Wisp version: 0\.29\.0/);
-  await expect(preview).toHaveValue(/OS \/ architecture: windows \/ x86_64/);
-  await expect(preview).toHaveValue(/Model profile: deepseek-v4-pro/);
-  await expect(preview).toHaveValue(/Execution context type: ssh/);
-  await expect(preview).toHaveValue(/Wisp did not collect or upload an image/);
-  await expect(preview).not.toHaveValue(/\/mock\/root/);
-
-  const github = modal.getByTestId("issue-report-github");
-  await expect(github).toBeDisabled();
-  await preview.fill(`${await preview.inputValue()}\n\nAdditional reviewed detail.`);
-  await modal.getByTestId("issue-report-copy").click();
-  await expect(page.locator(".copy-toast")).toHaveText("Copied");
-  const copied = await page.evaluate(() => navigator.clipboard.readText());
-  expect(copied).toContain("# Runtime preflight failed");
-  expect(copied).toContain("Additional reviewed detail.");
-
-  await modal.getByTestId("issue-report-confirm").check();
-  await expect(github).toBeEnabled();
-  await github.click();
-  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: expect.stringContaining("github.com/xuzhougeng/wisp-science/issues/new"),
+  await page.getByTestId("report-problem-entry").click();
+  await expect.poll(() => lastInvokeArgs(page, "new_session")).not.toBeNull();
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: expect.stringContaining("GitHub issue"),
   });
-  const opened = String((await lastInvokeArgs(page, "open_external_url"))?.url ?? "");
-  expect(opened).toContain("github.com/xuzhougeng/wisp-science/issues/new");
-  expect(decodeURIComponent(opened)).toContain("title=Runtime preflight failed");
-  expect(decodeURIComponent(opened)).toContain("Additional reviewed detail.");
-});
-
-test("problem report consumes Escape before Settings (#596)", async ({ page }) => {
-  await enterApp(page);
-  await openSettingsSection(page, "General");
-  await page.getByTestId("report-problem-entry").getByRole("button", { name: "Create report" }).click();
-  await expect(page.getByTestId("issue-report-modal")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("issue-report-modal")).toHaveCount(0);
-  await expect(page.locator(".settings-page")).toBeVisible();
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(sent?.message).toMatch(/Wisp version: 0\.29\.0/);
+  expect(sent?.message).toMatch(/OS \/ architecture: windows \/ x86_64/);
+  expect(sent?.message).toMatch(/Model profile: deepseek-v4-pro/);
+  expect(sent?.message).not.toMatch(/\/mock\/root/);
+  await expect.poll(() => invokeArgsList(page, "rename_session")).toContainEqual(
+    expect.objectContaining({ title: "Bug report" }),
+  );
 });
 
 test("Memory settings show the active project name", async ({ page }) => {

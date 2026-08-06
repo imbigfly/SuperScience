@@ -789,6 +789,71 @@ pub(crate) fn append_reasoning_delta(items: &mut Vec<ChatItem>, delta: String) {
     items.insert(queue_start, ChatItem::Reasoning(delta));
 }
 
+/// Cap on streamed tool output kept in the transcript. Long tasks (package
+/// installs, training loops) can otherwise grow one string without bound and
+/// every re-render lays out megabytes of DOM.
+pub(crate) const MAX_STREAM_OUTPUT_BYTES: usize = 64 * 1024;
+
+/// Terminal-style append: `\r` rewinds to the start of the current line so
+/// progress bars (`====>`, tqdm, curl) overwrite in place instead of piling
+/// up thousands of stale frames, `\r\n` stays a plain newline, and the stored
+/// text is trimmed to a bounded tail. A chunk ending in a bare `\r` keeps it
+/// so the next chunk can distinguish CRLF from a rewind.
+pub(crate) fn push_terminal_chunk(output: &mut String, chunk: &str) {
+    let mut rest = chunk;
+    if output.ends_with('\r') && !rest.is_empty() {
+        output.pop();
+        if let Some(stripped) = rest.strip_prefix('\n') {
+            output.push('\n');
+            rest = stripped;
+        } else {
+            truncate_last_line(output);
+        }
+    }
+    while let Some(pos) = rest.find('\r') {
+        output.push_str(&rest[..pos]);
+        let after = &rest[pos + 1..];
+        if after.is_empty() {
+            output.push('\r');
+            rest = after;
+            break;
+        }
+        if let Some(stripped) = after.strip_prefix('\n') {
+            output.push('\n');
+            rest = stripped;
+        } else {
+            truncate_last_line(output);
+            rest = after;
+        }
+    }
+    output.push_str(rest);
+    if output.len() > MAX_STREAM_OUTPUT_BYTES {
+        let mut cut = output.len() - MAX_STREAM_OUTPUT_BYTES;
+        while !output.is_char_boundary(cut) {
+            cut += 1;
+        }
+        output.drain(..cut);
+    }
+}
+
+fn truncate_last_line(output: &mut String) {
+    let line_start = output.rfind('\n').map_or(0, |index| index + 1);
+    output.truncate(line_start);
+}
+
+/// Render-time variant for text persisted with raw `\r` (run stdout tails).
+pub(crate) fn fold_carriage_returns(text: &str) -> String {
+    if !text.contains('\r') {
+        return text.to_string();
+    }
+    let mut folded = String::with_capacity(text.len());
+    push_terminal_chunk(&mut folded, text);
+    if folded.ends_with('\r') {
+        folded.pop();
+    }
+    folded
+}
+
 pub(crate) fn append_stdout_chunk(items: &mut Vec<ChatItem>, chunk: String) {
     let queue_start = trailing_queue_start(items);
     if let Some(idx) = items[..queue_start]
@@ -796,17 +861,19 @@ pub(crate) fn append_stdout_chunk(items: &mut Vec<ChatItem>, chunk: String) {
         .rposition(|item| matches!(item, ChatItem::Tool { .. }))
     {
         if let ChatItem::Tool { output, .. } = &mut items[idx] {
-            output.push_str(&chunk);
+            push_terminal_chunk(output, &chunk);
             return;
         }
     }
+    let mut output = String::new();
+    push_terminal_chunk(&mut output, &chunk);
     items.insert(
         queue_start,
         ChatItem::Tool {
             name: "stdout".into(),
             ok: None,
             input: String::new(),
-            output: chunk,
+            output,
             started_at_ms: None,
             duration_ms: None,
         },
@@ -972,4 +1039,72 @@ pub(crate) fn format_message_datetime(ts: i64, locale: Locale) -> String {
         )
         .as_string()
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod terminal_chunk_tests {
+    use super::*;
+
+    #[test]
+    fn carriage_return_overwrites_the_current_line() {
+        let mut output = String::new();
+        push_terminal_chunk(&mut output, "step 1\n10%\r20%\r100%");
+        assert_eq!(output, "step 1\n100%");
+    }
+
+    #[test]
+    fn crlf_stays_a_plain_newline() {
+        let mut output = String::new();
+        push_terminal_chunk(&mut output, "line1\r\nline2");
+        assert_eq!(output, "line1\nline2");
+    }
+
+    #[test]
+    fn carriage_return_split_across_chunks_is_deferred() {
+        let mut output = String::new();
+        push_terminal_chunk(&mut output, "done\r");
+        push_terminal_chunk(&mut output, "\nnext");
+        assert_eq!(output, "done\nnext");
+
+        let mut output = String::new();
+        push_terminal_chunk(&mut output, "50%\r");
+        push_terminal_chunk(&mut output, "60%");
+        assert_eq!(output, "60%");
+    }
+
+    #[test]
+    fn output_is_capped_to_a_tail() {
+        let mut output = String::new();
+        for _ in 0..3 {
+            push_terminal_chunk(&mut output, &"x".repeat(MAX_STREAM_OUTPUT_BYTES / 2));
+        }
+        push_terminal_chunk(&mut output, "tail");
+        assert!(output.len() <= MAX_STREAM_OUTPUT_BYTES);
+        assert!(output.ends_with("tail"));
+    }
+
+    #[test]
+    fn fold_carriage_returns_keeps_only_final_progress_frames() {
+        let folded = fold_carriage_returns("fetch\n|== |\r|====|\r|=====| done\nok");
+        assert_eq!(folded, "fetch\n|=====| done\nok");
+        assert_eq!(fold_carriage_returns("no progress"), "no progress");
+    }
+
+    #[test]
+    fn stdout_chunks_fold_into_the_last_tool_output() {
+        let mut items = vec![ChatItem::Tool {
+            name: "shell".into(),
+            ok: None,
+            input: "make".into(),
+            output: String::new(),
+            started_at_ms: None,
+            duration_ms: None,
+        }];
+        append_stdout_chunk(&mut items, "building\n10%\r".into());
+        append_stdout_chunk(&mut items, "90%\r100%\n".into());
+        match &items[0] {
+            ChatItem::Tool { output, .. } => assert_eq!(output, "building\n100%\n"),
+            _ => panic!("expected tool item"),
+        }
+    }
 }

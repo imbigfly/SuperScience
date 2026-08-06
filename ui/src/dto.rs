@@ -2359,6 +2359,9 @@ pub(crate) struct BootstrapStatus {
     #[serde(default)]
     pub(crate) arch: String,
     pub(crate) workspace: String,
+    /// Launch timings (`total=…ms … window_ready=…ms`) for bug reports.
+    #[serde(default)]
+    pub(crate) startup: String,
     pub(crate) errors: Vec<String>,
 }
 
