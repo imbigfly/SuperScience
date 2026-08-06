@@ -1619,6 +1619,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "err.hint.server") => Some("The provider is temporarily overloaded or down. Retry in a bit."),
         (Locale::En, "err.hint.network") => Some("Could not reach the API server. Check your network, API URL, and proxy settings."),
         (Locale::En, "err.hint.bad_request") => Some("The provider rejected the request. Common causes: the conversation is too long, or a message contains content this model does not support (e.g. images). Try /compact or another model."),
+        (Locale::En, "err.hint.tool_pairing") => Some("A tool call is missing its result in the conversation history (often after an interrupted or timed-out tool). Click Resume again after updating, or send /compact to repair the history."),
         (Locale::En, "outline.title") => Some("Conversation outline"),
         (Locale::En, "outline.show") => Some("Show conversation outline"),
         (Locale::En, "outline.hide") => Some("Hide conversation outline"),
@@ -3522,6 +3523,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "err.hint.server") => Some("服务商暂时过载或故障。请稍后重试。"),
         (Locale::Zh, "err.hint.network") => Some("无法连接到 API 服务器。请检查网络、API 地址和代理设置。"),
         (Locale::Zh, "err.hint.bad_request") => Some("请求被服务商拒绝。常见原因：对话过长，或消息包含该模型不支持的内容（如图片）。可尝试 /compact 或更换模型。"),
+        (Locale::Zh, "err.hint.tool_pairing") => Some("对话历史里有一条工具调用缺少对应结果（常见于工具中断或超时后）。更新后请再点「继续执行」，或发送 /compact 修复历史。"),
         (Locale::Zh, "outline.title") => Some("对话目录"),
         (Locale::Zh, "outline.show") => Some("展开对话目录"),
         (Locale::Zh, "outline.hide") => Some("收起对话目录"),
@@ -4109,6 +4111,10 @@ fn api_error_hint_key(msg: &str) -> Option<&'static str> {
         && (m.contains("connect") || m.contains("timed out") || m.contains("dns"))
     {
         "err.hint.network"
+    } else if m.contains("no tool output found for tool call")
+        || m.contains("no tool call found for function call output")
+    {
+        "err.hint.tool_pairing"
     } else if m.contains("api: 400") {
         "err.hint.bad_request"
     } else {
@@ -4149,6 +4155,10 @@ mod api_error_hint_tests {
             (
                 r#"api: 400 {"error":{"message":"Request contains an invalid argument."}}"#,
                 "err.hint.bad_request",
+            ),
+            (
+                r#"api: 400 {"error":{"message":"No tool output found for tool call call_00_ET_YySmFH64ARi0Sf1W1K7Q6631.","type":"invalid_request_error"}}"#,
+                "err.hint.tool_pairing",
             ),
             (
                 r#"api: 401 {"error":{"message":"invalid x-api-key"}}"#,

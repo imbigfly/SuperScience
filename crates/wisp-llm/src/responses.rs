@@ -47,7 +47,13 @@ impl OpenAiResponsesProvider {
     }
 
     fn build_body(&self, messages: &[Message], tools: &[ToolSchema]) -> Value {
-        let input: Vec<Value> = messages.iter().flat_map(message_to_input).collect();
+        // DeepSeek/OpenAI Responses reject unpaired function_call items with
+        // "No tool output found for tool call …". Match chat-completions #74:
+        // drop unanswered calls (and orphan outputs) before building `input`.
+        let input: Vec<Value> = sanitize_messages(messages)
+            .iter()
+            .flat_map(message_to_input)
+            .collect();
         let mut body = json!({
             "model": self.cfg.model,
             "input": input,
@@ -78,6 +84,59 @@ impl OpenAiResponsesProvider {
         }
         Ok(serde_json::from_str(&text)?)
     }
+}
+
+/// Keep only tool-call pairings that Responses endpoints accept.
+///
+/// A turn interrupted after the assistant emitted `function_call` but before
+/// its `function_call_output` was persisted leaves a dangling call_id. Strict
+/// providers (DeepSeek) 400 with "No tool output found for tool call …"; the
+/// chat-completions path already strips these (#74). Symmetrically drop tool
+/// outputs with no preceding call.
+fn sanitize_messages(messages: &[Message]) -> Vec<Message> {
+    let mut answered = std::collections::HashSet::new();
+    let mut requested = std::collections::HashSet::new();
+    for m in messages {
+        match m.role {
+            Role::Tool => {
+                if let Some(id) = &m.tool_call_id {
+                    answered.insert(id.clone());
+                }
+            }
+            Role::Assistant => {
+                for tc in &m.tool_calls {
+                    requested.insert(tc.id.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    messages
+        .iter()
+        .filter_map(|m| match m.role {
+            Role::Assistant => {
+                let mut out = m.clone();
+                out.tool_calls.retain(|tc| answered.contains(&tc.id));
+                // Empty assistant with every call stripped contributes nothing
+                // useful on the wire; drop it so resume/`继续` is not preceded
+                // by a no-op assistant item.
+                if out.content.as_text().is_empty() && out.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(out)
+                }
+            }
+            Role::Tool => {
+                let id = m.tool_call_id.as_deref().unwrap_or("");
+                if requested.contains(id) {
+                    Some(m.clone())
+                } else {
+                    None
+                }
+            }
+            _ => Some(m.clone()),
+        })
+        .collect()
 }
 
 fn message_to_input(m: &Message) -> Vec<Value> {
@@ -276,6 +335,13 @@ mod tests {
         m
     }
 
+    fn wire_input(messages: &[Message]) -> Vec<Value> {
+        sanitize_messages(messages)
+            .iter()
+            .flat_map(message_to_input)
+            .collect()
+    }
+
     /// Regression: a tool-call turn must be replayed as a `function_call` item so
     /// the following `function_call_output` has a matching `call_id`. Without it
     /// the Responses API rejects with "No tool call found for function call output".
@@ -287,7 +353,7 @@ mod tests {
             Message::tool("call_abc", "openalex", "result body"),
         ];
 
-        let input: Vec<Value> = messages.iter().flat_map(message_to_input).collect();
+        let input = wire_input(&messages);
 
         let call = input
             .iter()
@@ -305,6 +371,77 @@ mod tests {
             output["call_id"], "call_abc",
             "output must match the emitted call_id"
         );
+    }
+
+    /// Interrupted turn: assistant emitted a call, then the user resumed before
+    /// a tool result was persisted. DeepSeek 400s with
+    /// "No tool output found for tool call …" unless we strip the dangling call.
+    #[test]
+    fn drops_unanswered_function_call_so_resume_can_retry() {
+        let messages = vec![
+            Message::user("poll training"),
+            assistant_with_call(
+                "",
+                "call_00_ET_YySmFH64ARi0Sf1W1K7Q6631",
+                "shell",
+                "{\"cmd\":\"Start-Sleep -Seconds 110\"}",
+            ),
+            Message::user("继续"),
+        ];
+        let input = wire_input(&messages);
+        assert!(
+            input
+                .iter()
+                .all(|v| v.get("type").and_then(|t| t.as_str()) != Some("function_call")),
+            "unanswered function_call must not be sent: {input:?}"
+        );
+        assert_eq!(input.last().unwrap()["role"], "user");
+        assert_eq!(input.last().unwrap()["content"], "继续");
+    }
+
+    #[test]
+    fn keeps_answered_call_when_sibling_is_unanswered() {
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![
+            ToolCall {
+                id: "a".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                },
+            },
+            ToolCall {
+                id: "b".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: "shell".into(),
+                    arguments: "{}".into(),
+                },
+            },
+        ];
+        let messages = vec![
+            Message::user("hi"),
+            asst,
+            Message::tool("a", "read", "ok"),
+            // no reply for "b"
+            Message::user("继续"),
+        ];
+        let input = wire_input(&messages);
+        let calls: Vec<_> = input
+            .iter()
+            .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("function_call"))
+            .collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["call_id"], "a");
+    }
+
+    #[test]
+    fn drops_orphan_function_call_output() {
+        let messages = vec![Message::user("hi"), Message::tool("ghost", "read", "stale")];
+        let input = wire_input(&messages);
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0]["role"], "user");
     }
 
     /// An empty-text tool-call turn must not emit a stray empty assistant message.
