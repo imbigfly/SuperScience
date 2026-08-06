@@ -412,6 +412,8 @@ and pull requests (ordered by the number of issues reported):
   <a href="https://github.com/XuuChen"><img src="https://avatars.githubusercontent.com/u/99383234?v=4&amp;s=96" width="64" height="64" alt="@XuuChen" title="@XuuChen"></a>
 </p>
 
+- Free code signing on Windows provided by [SignPath.io](https://signpath.io),
+  certificate by the [SignPath Foundation](https://signpath.org).
 - We first looked at closed scientific-agent products such as Claude Science,
   then chose to build openly after finding them closed and unfriendly to users
   in some regions. Early work learned from their Skills and MCP tool selection;
