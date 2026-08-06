@@ -7617,15 +7617,20 @@ test("desktop pet remains independent and reflects global agent state", async ({
 test("desktop pet shows active Run titles and celebrates completion (#693)", async ({ page }) => {
   await page.addInitScript(() => {
     (window as any).__mockPetActiveRuns = [
-      { id: "run-data", title: "data_analysis.py" },
+      { id: "run-data", title: "siibra atlas query example (with assignment)" },
     ];
   });
   await page.goto("/?pet=desktop&mockPet=1");
 
   const pet = page.getByTestId("wisp-pet");
+  const sprite = pet.locator(".wisp-pet-sprite");
+  const label = pet.locator(".wisp-pet-state-label");
   await expect(pet).toHaveAttribute("data-tauri-drag-region", "deep");
-  await expect(pet.getByText("Running: data_analysis.py")).toBeVisible();
+  await expect(label).toHaveText("Running: siibra atlas query example (with assignment)");
+  await expect(label).toBeVisible();
   await expect(pet).toHaveAttribute("data-state", "running");
+  const [spriteBox, labelBox] = await Promise.all([sprite.boundingBox(), label.boundingBox()]);
+  expect(labelBox!.y + labelBox!.height).toBeLessThanOrEqual(spriteBox!.y);
 
   await page.evaluate(() => {
     (window as any).__mockPetActiveRuns = [];
