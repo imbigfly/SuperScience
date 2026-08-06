@@ -8141,7 +8141,7 @@ fn App() -> impl IntoView {
                             // Keep process layers separate while the turn runs;
                             // once complete, fold commentary + reasoning + tools
                             // into one activity summary before the final answer.
-                            let mut rows: Vec<(String, usize, u64, ThreadRow)> = Vec::new();
+                            let mut rows: Vec<(String, usize, bool, u64, ThreadRow)> = Vec::new();
                             let (window, _, _) = transcript_render_window(
                                 list,
                                 requested_start,
@@ -8176,7 +8176,7 @@ fn App() -> impl IntoView {
                                         .and_then(|index| outline.iter().find(|entry| entry.user_index == index))
                                         .and_then(|entry| turn_duration_ms(entry.sent_at, entry.response_at));
                                     duration_ms.hash(&mut h);
-                                    rows.push((thread_session_id.clone(), start, h.finish(), ThreadRow::Activity {
+                                    rows.push((thread_session_id.clone(), start, false, h.finish(), ThreadRow::Activity {
                                         indices,
                                         ui_indices,
                                         duration_ms,
@@ -8204,7 +8204,7 @@ fn App() -> impl IntoView {
                                         .map(|index| index.to_string())
                                         .collect::<Vec<_>>()
                                         .join(" ");
-                                    rows.push((thread_session_id.clone(), start, h.finish(), ThreadRow::Steps {
+                                    rows.push((thread_session_id.clone(), start, false, h.finish(), ThreadRow::Steps {
                                         indices,
                                         live,
                                         ui_indices,
@@ -8212,11 +8212,17 @@ fn App() -> impl IntoView {
                                     i = j;
                                 } else {
                                     let commentary = is_commentary_at(list, i);
-                                    // A text row can become commentary when the
-                                    // next tool event arrives. Keep streaming
-                                    // assistant rows lightweight so replacing
-                                    // one cannot strand async markdown effects
-                                    // under a disposed Leptos owner.
+                                    // A live assistant row keeps one stable owner while
+                                    // its Markdown prefix advances on a separate budget.
+                                    // A following tool turns it into settled commentary
+                                    // and deliberately remounts the compact row.
+                                    let streaming_assistant = live_assistant_index == Some(i)
+                                        && !commentary
+                                        && matches!(
+                                            &list[i],
+                                            ChatItem::Assistant { text, .. }
+                                                if !text.starts_with("Error: ")
+                                        );
                                     let compact_assistant = commentary
                                         || live_assistant_index == Some(i);
                                     let timestamp = transcript_item_timestamp(
@@ -8225,17 +8231,26 @@ fn App() -> impl IntoView {
                                         user_offset,
                                         &outline,
                                     );
-                                    let mut fp = list[i].fingerprint();
+                                    let mut fp = if streaming_assistant {
+                                        0
+                                    } else {
+                                        list[i].fingerprint()
+                                    };
                                     // Assistant markdown embeds artifact chips (index + label).
-                                    if matches!(&list[i], ChatItem::Assistant { .. }) { fp ^= arts_fp; }
+                                    if !streaming_assistant
+                                        && matches!(&list[i], ChatItem::Assistant { .. })
+                                    {
+                                        fp ^= arts_fp;
+                                    }
                                     fp ^= (commentary as u64) << 63;
                                     fp ^= (compact_assistant as u64) << 62;
                                     fp ^= timestamp.unwrap_or_default() as u64;
-                                    rows.push((thread_session_id.clone(), i, fp, ThreadRow::Item {
+                                    rows.push((thread_session_id.clone(), i, streaming_assistant, fp, ThreadRow::Item {
                                         i,
                                         timestamp,
                                         commentary,
                                         compact_assistant,
+                                        streaming_assistant,
                                     }));
                                     i += 1;
                                 }
@@ -8243,14 +8258,17 @@ fn App() -> impl IntoView {
                             rows
                             }))
                         }
-                        key=|(session_id, start, fp, _)| (session_id.clone(), *start, *fp)
-                        children=move |(session_id, start, _, row)| {
+                        key=|(session_id, start, streaming, fp, _)| {
+                            (session_id.clone(), *start, *streaming, *fp)
+                        }
+                        children=move |(session_id, start, _, _, row)| {
                             match row {
                                 ThreadRow::Item {
                                     i,
                                     timestamp,
                                     commentary,
                                     compact_assistant,
+                                    streaming_assistant,
                                 } => {
                                     // Rebuilt only when the fingerprint key changed,
                                     // so this is the one clone that actually pays off.
@@ -8290,14 +8308,25 @@ fn App() -> impl IntoView {
                                             })
                                             data-ui-index=i.to_string()
                                             data-user-index=data_user_index>
-                                            {render_item(
-                                                i, &item, timestamp, &arts, on_artifact_select, on_file_link,
-                                                run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, session_id,
-                                                respond_confirm, on_resume, on_queue,
-                                                step_disclosure_state,
-                                                plan_mode_active, plan_compat, on_plan_decision,
-                                                on_question_answer, jump_to_review_message,
-                                            )}
+                                            {if streaming_assistant {
+                                                view! {
+                                                    <StreamingAssistantMessage
+                                                        items=items
+                                                        source_item=i
+                                                        on_artifact=on_artifact_select
+                                                        on_file=on_file_link
+                                                    />
+                                                }.into_view()
+                                            } else {
+                                                render_item(
+                                                    i, &item, timestamp, &arts, on_artifact_select, on_file_link,
+                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, session_id,
+                                                    respond_confirm, on_resume, on_queue,
+                                                    step_disclosure_state,
+                                                    plan_mode_active, plan_compat, on_plan_decision,
+                                                    on_question_answer, jump_to_review_message,
+                                                ).into_view()
+                                            }}
                                         </div>
                                     }.into_view()
                                 }

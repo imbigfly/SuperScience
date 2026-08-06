@@ -225,6 +225,7 @@ pub(crate) enum ThreadRow {
         timestamp: Option<i64>,
         commentary: bool,
         compact_assistant: bool,
+        streaming_assistant: bool,
     },
     Steps {
         indices: Vec<usize>,

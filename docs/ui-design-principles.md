@@ -36,7 +36,7 @@
 
 ## Transcript rendering
 
-- A live assistant message renders as plain, whitespace-preserving text while tokens arrive. Full Markdown is rendered once the turn settles, so completed answers keep tables, math, lists, and code formatting without reparsing the growing prefix for every token batch.
+- A live assistant message keeps a throttled Markdown prefix plus an immediate, whitespace-preserving plain-text tail. The Markdown budget adapts from 50 ms for short answers to 150 ms above 8,000 bytes and 300 ms above 32,000 bytes; once the turn settles, the remaining tail is rendered once as full Markdown.
 - Turn-boundary affordances such as Undo update inside the existing message row; they must not remount or reparse an unchanged historical answer.
 - Collapsed activity summaries, tool details, reasoning, and provenance rows do not keep hidden body DOM. Mount the body when its disclosure opens and remove it when the disclosure closes; headers and status remain available while collapsed.
 - Transcript-derived Inspector data (artifacts, notebook cells, saved highlights, and the conversation outline) refreshes on structural events and settled revisions rather than on every text delta. Live tool status and provenance headers may update independently through compact keyed projections.
