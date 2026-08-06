@@ -117,7 +117,7 @@ pub(crate) fn attach_chat_autoscroll() {
     attach_chat_scroll(CHAT_SCROLLER_ID, CHAT_THREAD_ID);
 }
 
-/// Nudge the chat view to follow new content (respects the user's scroll-up).
+/// Nudge the chat view after a non-transcript layout change (respects scroll-up).
 pub(crate) fn schedule_chat_follow() {
     notify_chat_scroll(CHAT_SCROLLER_ID);
 }

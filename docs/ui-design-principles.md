@@ -34,6 +34,13 @@
 - Long attachment names truncate inside the card; the full value remains available through the control's title.
 - Remove controls live inside the related card and retain an accessible label.
 
+## Transcript rendering
+
+- A live assistant message renders as plain, whitespace-preserving text while tokens arrive. Full Markdown is rendered once the turn settles, so completed answers keep tables, math, lists, and code formatting without reparsing the growing prefix for every token batch.
+- Turn-boundary affordances such as Undo update inside the existing message row; they must not remount or reparse an unchanged historical answer.
+- Collapsed activity summaries, tool details, reasoning, and provenance rows do not keep hidden body DOM. Mount the body when its disclosure opens and remove it when the disclosure closes; headers and status remain available while collapsed.
+- Transcript-derived Inspector data (artifacts, notebook cells, saved highlights, and the conversation outline) refreshes on structural events and settled revisions rather than on every text delta. Live tool status and provenance headers may update independently through compact keyed projections.
+
 ## Topbar and inspector chrome
 
 - The conversation topbar keeps session tabs as the primary signal. Inbox, terminal, and inspector toggles live in `.topbar-actions`.
