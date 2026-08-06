@@ -3649,7 +3649,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 let n = 0;
                 const tick = () => {
                   if (n < 24) {
-                    emit("agent", { kind: "Text", frame_id: fid, delta: `**stream line ${n}**\n` });
+                    // Cross both adaptive Markdown thresholds so the browser
+                    // test observes a formatted prefix and a cheap live tail.
+                    emit("agent", {
+                      kind: "Text",
+                      frame_id: fid,
+                      delta: `**stream line ${n}** ${"x".repeat(1_500)}\n`,
+                    });
                     n++;
                     setTimeout(tick, 50);
                   } else {

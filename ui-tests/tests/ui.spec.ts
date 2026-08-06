@@ -6349,14 +6349,21 @@ test("chat stays pinned to the bottom while streaming a long reply (#61)", async
     .toBeLessThan(8);
 });
 
-test("streaming assistant text defers Markdown until the turn settles", async ({ page }) => {
+test("streaming assistant keeps formatted Markdown with a lightweight live tail", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("MARKDOWNSTREAM");
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByText("stream line 4", { exact: false })).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator(".msg.assistant .body.streaming")).toBeVisible();
-  await expect(page.locator(".msg.assistant .body.md")).toHaveCount(0);
+  const live = page.locator(".msg.assistant .streaming-markdown");
+  await expect(live).toBeVisible();
+  await expect(live.locator(".streaming-markdown-prefix strong").first()).toBeVisible();
+  await live.evaluate((element) => ((element as any).__liveMarkdownProbe = true));
+
+  await expect(page.getByText("stream line 18", { exact: false })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(async () => Number(await live.getAttribute("data-pending-bytes") ?? 0))
+    .toBeGreaterThan(0);
+  expect(await live.evaluate((element) => (element as any).__liveMarkdownProbe === true)).toBe(true);
 
   await expect(page.getByText("stream line 23", { exact: false })).toBeVisible({ timeout: 10_000 });
   await expect(page.locator(".msg.assistant .body.md")).toBeVisible();

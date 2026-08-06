@@ -1,4 +1,137 @@
 use super::*;
+use leptos::leptos_dom::helpers::TimeoutHandle;
+use std::{cell::Cell, rc::Rc};
+
+const STREAMING_MARKDOWN_TAIL_THRESHOLD_BYTES: usize = 8_000;
+
+pub(crate) fn streaming_markdown_commit_interval_ms(text_len: usize) -> u64 {
+    if text_len >= 32_000 {
+        300
+    } else if text_len >= STREAMING_MARKDOWN_TAIL_THRESHOLD_BYTES {
+        150
+    } else {
+        50
+    }
+}
+
+fn assistant_text_at(items: RwSignal<Vec<ChatItem>>, source_item: usize) -> String {
+    items.with_untracked(|rows| match rows.get(source_item) {
+        Some(ChatItem::Assistant { text, .. }) => text.clone(),
+        _ => String::new(),
+    })
+}
+
+/// Keep completed Markdown readable while an append-only assistant stream grows.
+/// Parsing is throttled by answer size; once the answer is large, the unparsed
+/// suffix remains visible as a cheap whitespace-preserving text tail.
+#[component]
+pub(crate) fn StreamingAssistantMessage(
+    items: RwSignal<Vec<ChatItem>>,
+    source_item: usize,
+    on_artifact: Callback<usize>,
+    on_file: Callback<ModalArtifact>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let rendered_text = create_rw_signal(assistant_text_at(items, source_item));
+    let commit_handle = Rc::new(Cell::new(None::<TimeoutHandle>));
+    let active = Rc::new(Cell::new(true));
+
+    create_render_effect({
+        let commit_handle = Rc::clone(&commit_handle);
+        let active = Rc::clone(&active);
+        move |_| {
+            let (changed, text_len) = items.with(|rows| match rows.get(source_item) {
+                Some(ChatItem::Assistant { text, .. }) => (
+                    rendered_text.with_untracked(|rendered| rendered != text),
+                    text.len(),
+                ),
+                _ => (false, 0),
+            });
+            if !changed || commit_handle.get().is_some() {
+                return;
+            }
+
+            let delay =
+                std::time::Duration::from_millis(streaming_markdown_commit_interval_ms(text_len));
+            let callback_handle = Rc::clone(&commit_handle);
+            let callback_active = Rc::clone(&active);
+            match leptos::set_timeout_with_handle(
+                move || {
+                    callback_handle.set(None);
+                    if !callback_active.get() {
+                        return;
+                    }
+                    let latest = assistant_text_at(items, source_item);
+                    if rendered_text.get_untracked() != latest {
+                        rendered_text.set(latest);
+                    }
+                },
+                delay,
+            ) {
+                Ok(handle) => commit_handle.set(Some(handle)),
+                Err(_) => rendered_text.set(assistant_text_at(items, source_item)),
+            }
+        }
+    });
+
+    on_cleanup({
+        let commit_handle = Rc::clone(&commit_handle);
+        move || {
+            active.set(false);
+            if let Some(handle) = commit_handle.take() {
+                handle.clear();
+            }
+        }
+    });
+
+    let html = create_memo(move |_| {
+        enrich_md_html(md_to_html(&rendered_text.get()), &[], &[], locale.get())
+    });
+    let pending_text = create_memo(move |_| {
+        let rendered = rendered_text.get();
+        items.with(|rows| match rows.get(source_item) {
+            Some(ChatItem::Assistant { text, .. })
+                if text.len() >= STREAMING_MARKDOWN_TAIL_THRESHOLD_BYTES =>
+            {
+                text.strip_prefix(rendered.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            }
+            _ => String::new(),
+        })
+    });
+    let hid = unique_dom_id("stream-md");
+    let hid_for_effect = hid.clone();
+    create_render_effect(move |_| {
+        let _ = html.get();
+        schedule_highlight(hid_for_effect.clone());
+    });
+
+    view! {
+        <div class="assistant-wrap">
+            <div
+                class="body streaming streaming-markdown"
+                data-rendered-bytes=move || rendered_text.with(|text| text.len().to_string())
+                data-pending-bytes=move || pending_text.with(|text| text.len().to_string())
+            >
+                <div
+                    class="streaming-markdown-prefix md"
+                    id=hid
+                    inner_html=move || html.get()
+                    on:click=move |ev: web_sys::MouseEvent| {
+                        handle_md_click(&ev, &[], &[], &on_artifact, &on_file)
+                    }
+                ></div>
+                {move || {
+                    let tail = pending_text.get();
+                    (!tail.is_empty()).then(|| view! {
+                        <div class="streaming-markdown-tail">{tail}</div>
+                    })
+                }}
+            </div>
+        </div>
+    }
+}
 
 #[component]
 pub(crate) fn SessionStatusBadge(
@@ -1037,6 +1170,19 @@ mod layout_block_tests {
             "Counts are in GEO."
         );
         assert_eq!(apply_layout_block("", BLOCK, false), "");
+    }
+}
+
+#[cfg(test)]
+mod streaming_markdown_tests {
+    use super::streaming_markdown_commit_interval_ms;
+
+    #[test]
+    fn parsing_budget_slows_as_the_live_answer_grows() {
+        assert_eq!(streaming_markdown_commit_interval_ms(7_999), 50);
+        assert_eq!(streaming_markdown_commit_interval_ms(8_000), 150);
+        assert_eq!(streaming_markdown_commit_interval_ms(31_999), 150);
+        assert_eq!(streaming_markdown_commit_interval_ms(32_000), 300);
     }
 }
 

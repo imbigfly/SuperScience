@@ -450,6 +450,12 @@ button.msg-icon-btn .gi { width: 14px; height: 14px; }
 .msg.assistant .body { color: var(--text); font-family: var(--font-response); }
 .msg.assistant .body.md { display: block; font-size: 15px; line-height: 1.55; letter-spacing: -0.004em; white-space: normal; }
 .msg.assistant .body.md:empty { display: none; }
+.msg.assistant .streaming-markdown { white-space: normal; }
+.streaming-markdown-prefix:empty { display: none; }
+.streaming-markdown-tail {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
 .msg.reasoning .body { color: var(--text-faint); font-style: italic; font-size: 13.5px; border-left: 2px solid var(--border-strong); padding-left: 12px; font-family: var(--font-ui); }
 .msg.assistant.commentary { margin-bottom: -8px; }
 .msg.assistant.commentary .role,
