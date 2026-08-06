@@ -1715,13 +1715,21 @@ mod tests {
                 arguments: "{}".into(),
             },
         };
-        let provider = FixedProvider {
-            completion: Completion {
+        // Tools once, then a clean stop. max_iter=1 with a perpetual tool-call
+        // provider used to Ok(()) because the cap broke silently; it now
+        // surfaces an error, so end the turn intentionally.
+        let provider = SequenceProvider::new([
+            Completion {
                 tool_calls: vec![call("c1", "python"), call("c2", "noisy_other")],
                 finish_reason: Some("tool_calls".into()),
                 ..Completion::default()
             },
-        };
+            Completion {
+                content: "done".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
         let mut tools = Registry::builtins();
         tools.add(Box::new(NoisyTool { name: "python" }));
         tools.add(Box::new(NoisyTool {
@@ -1742,7 +1750,7 @@ mod tests {
             &root,
             &NullOutput,
             "run both",
-            1,
+            0,
             None,
         )
         .await
