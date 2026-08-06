@@ -7364,7 +7364,7 @@ test("projects sync manually, copy a device code, and join on another device", a
 
   await expect(page.getByRole("button", { name: "Join synced project" })).toHaveCount(0);
   await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("button", { name: "General", exact: true }).click();
+  await page.getByRole("button", { name: "Remote Access", exact: true }).click();
   await page.getByRole("button", { name: "Join synced project" }).click();
   const joinDialog = page.getByRole("dialog", { name: "Join a synced project" });
   const deviceCode = page.getByTestId("sync-device-code");
@@ -7400,7 +7400,7 @@ test("project sync actions appear only after a sync backend is configured", asyn
   await expect(projectCard.getByRole("button", { name: "Sync now" })).toHaveCount(0);
   await expect(projectCard.getByRole("button", { name: "Copy device code" })).toHaveCount(0);
 
-  await openSettingsSection(page, "General");
+  await openSettingsSection(page, "Remote Access");
   await page.getByTestId("sync-relay-url").fill("https://relay.example.test");
   await page.getByTestId("sync-relay-token").fill("secret-token");
   await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
@@ -7409,9 +7409,9 @@ test("project sync actions appear only after a sync backend is configured", asyn
   await expect(projectCard.getByRole("button", { name: "Copy device code" })).toBeVisible();
 });
 
-test("general settings configure a cloud-drive sync folder", async ({ page }) => {
+test("remote access settings configure a cloud-drive sync folder", async ({ page }) => {
   await page.goto("/");
-  await openSettingsSection(page, "General");
+  await openSettingsSection(page, "Remote Access");
   await page.getByTestId("sync-backend").selectOption("folder");
   await page.locator(".settings-path-row").getByRole("button", { name: "Choose folder" }).click();
   await expect(page.getByTestId("sync-folder")).toHaveValue("/mock/root/new-project");

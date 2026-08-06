@@ -1265,71 +1265,6 @@ pub(super) fn SettingsView(
                                 <span class="toggle-track" aria-hidden="true"></span>
                             </label>
                         </div>
-                        <div class="span-2 settings-sync-block">
-                            <h3>{move || t(locale.get(), "settings.sync.title")}</h3>
-                            <p class="settings-field-hint">{move || t(locale.get(), "settings.sync.hint")}</p>
-                            <label>{move || t(locale.get(), "settings.sync.backend")}
-                                <select data-testid="sync-backend"
-                                    prop:value=move || settings.get().sync_backend
-                                    on:change=move |ev| settings.update(|current| current.sync_backend = dom_value(&ev))>
-                                    <option value="relay">{move || t(locale.get(), "settings.sync.relay")}</option>
-                                    <option value="folder">{move || t(locale.get(), "settings.sync.folder")}</option>
-                                </select>
-                            </label>
-                            {move || if settings.get().sync_backend == "folder" {
-                                view! {
-                                    <label>{move || t(locale.get(), "settings.sync.folder_path")}
-                                        <div class="settings-path-row">
-                                            <input class="settings-path-input" data-testid="sync-folder"
-                                                prop:value=move || settings.get().sync_folder
-                                                on:input=move |ev| settings.update(|current| current.sync_folder = event_target_input(&ev).value()) />
-                                            <button type="button" class="settings-add-btn" data-testid="sync-choose-folder"
-                                                on:click=choose_sync_folder>
-                                                {move || t(locale.get(), "projects.choose_dir")}
-                                            </button>
-                                        </div>
-                                        <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.folder_hint")}</span>
-                                    </label>
-                                }.into_view()
-                            } else {
-                                view! {
-                                    <label>{move || t(locale.get(), "settings.sync.relay_url")}
-                                        <input data-testid="sync-relay-url" type="url"
-                                            prop:value=move || settings.get().sync_relay_url
-                                            placeholder="https://sync.example.com"
-                                            on:input=move |ev| settings.update(|current| current.sync_relay_url = event_target_input(&ev).value()) />
-                                    </label>
-                                    <label>{move || t(locale.get(), "settings.sync.relay_token")}
-                                        <input data-testid="sync-relay-token" type="password"
-                                            prop:value=move || settings.get().sync_relay_token
-                                            placeholder=move || if settings.get().has_sync_relay_token {
-                                                t(locale.get(), "settings.key_stored")
-                                            } else {
-                                                t(locale.get(), "settings.sync.token_placeholder")
-                                            }
-                                            on:input=move |ev| settings.update(|current| current.sync_relay_token = event_target_input(&ev).value()) />
-                                        <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.relay_hint")}</span>
-                                    </label>
-                                }.into_view()
-                            }}
-                            <p class="settings-field-hint">
-                                {move || t(locale.get(), "settings.sync.join_hint")}
-                            </p>
-                            <div class="row settings-sync-actions">
-                                <button type="button" on:click=open_sync_guide>
-                                    {compose_icon("doc")}
-                                    <span>{move || t(locale.get(), "projects.sync.guide")}</span>
-                                </button>
-                                <button type="button" class="primary"
-                                    on:click=move |_| {
-                                        join_error.set(None);
-                                        joining.set(true);
-                                    }>
-                                    {compose_icon("link")}
-                                    <span>{move || t(locale.get(), "projects.sync.join")}</span>
-                                </button>
-                            </div>
-                        </div>
                         </div>
                         {move || settings_message.get().map(|(ok, text)| view! {
                             <div class="settings-status"
@@ -4240,6 +4175,81 @@ pub(super) fn SettingsView(
                                     }
                                 });
                             }>{move || t(locale.get(), "settings.save")}</button>
+                        </div>
+                    </div>
+                }.into_view())}
+                {move || (settings_section.get() == "channels" && channels_open.get().is_none()).then(|| view! {
+                    <div class="settings-pane">
+                        <div class="settings-form-grid">
+                            <div class="span-2 settings-sync-block">
+                                <h3>{move || t(locale.get(), "settings.sync.title")}</h3>
+                                <p class="settings-field-hint">{move || t(locale.get(), "settings.sync.hint")}</p>
+                                <label>{move || t(locale.get(), "settings.sync.backend")}
+                                    <select data-testid="sync-backend"
+                                        prop:value=move || settings.get().sync_backend
+                                        on:change=move |ev| settings.update(|current| current.sync_backend = dom_value(&ev))>
+                                        <option value="relay">{move || t(locale.get(), "settings.sync.relay")}</option>
+                                        <option value="folder">{move || t(locale.get(), "settings.sync.folder")}</option>
+                                    </select>
+                                </label>
+                                {move || if settings.get().sync_backend == "folder" {
+                                    view! {
+                                        <label>{move || t(locale.get(), "settings.sync.folder_path")}
+                                            <div class="settings-path-row">
+                                                <input class="settings-path-input" data-testid="sync-folder"
+                                                    prop:value=move || settings.get().sync_folder
+                                                    on:input=move |ev| settings.update(|current| current.sync_folder = event_target_input(&ev).value()) />
+                                                <button type="button" class="settings-add-btn" data-testid="sync-choose-folder"
+                                                    on:click=choose_sync_folder>
+                                                    {move || t(locale.get(), "projects.choose_dir")}
+                                                </button>
+                                            </div>
+                                            <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.folder_hint")}</span>
+                                        </label>
+                                    }.into_view()
+                                } else {
+                                    view! {
+                                        <label>{move || t(locale.get(), "settings.sync.relay_url")}
+                                            <input data-testid="sync-relay-url" type="url"
+                                                prop:value=move || settings.get().sync_relay_url
+                                                placeholder="https://sync.example.com"
+                                                on:input=move |ev| settings.update(|current| current.sync_relay_url = event_target_input(&ev).value()) />
+                                        </label>
+                                        <label>{move || t(locale.get(), "settings.sync.relay_token")}
+                                            <input data-testid="sync-relay-token" type="password"
+                                                prop:value=move || settings.get().sync_relay_token
+                                                placeholder=move || if settings.get().has_sync_relay_token {
+                                                    t(locale.get(), "settings.key_stored")
+                                                } else {
+                                                    t(locale.get(), "settings.sync.token_placeholder")
+                                                }
+                                                on:input=move |ev| settings.update(|current| current.sync_relay_token = event_target_input(&ev).value()) />
+                                            <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.relay_hint")}</span>
+                                        </label>
+                                    }.into_view()
+                                }}
+                                <p class="settings-field-hint">
+                                    {move || t(locale.get(), "settings.sync.join_hint")}
+                                </p>
+                                <div class="row settings-sync-actions">
+                                    <button type="button" on:click=open_sync_guide>
+                                        {compose_icon("doc")}
+                                        <span>{move || t(locale.get(), "projects.sync.guide")}</span>
+                                    </button>
+                                    <button type="button" class="primary"
+                                        on:click=move |_| {
+                                            join_error.set(None);
+                                            joining.set(true);
+                                        }>
+                                        {compose_icon("link")}
+                                        <span>{move || t(locale.get(), "projects.sync.join")}</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row settings-footer">
+                            <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
+                            <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
                         </div>
                     </div>
                 }.into_view())}
