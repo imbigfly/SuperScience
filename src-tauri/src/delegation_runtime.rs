@@ -3112,13 +3112,20 @@ fn parse_agent_result(raw: &str, request: &AgentDelegationRequest) -> Result<Val
 }
 
 async fn reviewer_host_evidence(project_root: &std::path::Path) -> String {
-    let output = tokio::process::Command::new("git")
-        .args(["diff", "--no-ext-diff", "--", "."])
-        .current_dir(project_root)
-        .output()
-        .await;
+    let project_root = project_root.to_path_buf();
+    let output = tokio::task::spawn_blocking(move || {
+        let _git = wisp_tools::process::lock_git_command();
+        let mut command = std::process::Command::new("git");
+        command
+            .args(["diff", "--no-ext-diff", "--", "."])
+            .current_dir(&project_root);
+        wisp_tools::process::hide_console(&mut command);
+        command.output()
+    })
+    .await
+    .ok()
+    .and_then(|result| result.ok());
     let diff = output
-        .ok()
         .filter(|output| output.status.success())
         .map(|output| bounded_text(&String::from_utf8_lossy(&output.stdout), 60_000))
         .unwrap_or_else(|| "Git diff was unavailable; use read on declared outputs.".into());
