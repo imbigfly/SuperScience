@@ -1,6 +1,6 @@
 # Skills
 
-Wisp discovers `SKILL.md` packages from several scopes. The Skills settings
+SuperScience discovers `SKILL.md` packages from several scopes. The Skills settings
 page shows the scope and absolute source path for every discovered skill, and
 the Agent's `search_skills` result includes the same `scope` and `path` fields.
 For inventory questions, `list_skill_catalog` pages through the complete
@@ -12,24 +12,24 @@ current Agent snapshot. If a user-provided or remembered UI count differs, the
 Agent reports the discrepancy instead of inventing an installed/enabled
 distinction.
 
-Skills may declare an optional `wisp` YAML mapping with `schema_version: 1`
+Skills may declare an optional `superscience` YAML mapping with `schema_version: 1`
 and controlled `domains`, `research_stages`, `roles`, `evidence_types`,
-`outputs`, and `side_effects`. Legacy frontmatter remains valid. Invalid Wisp
+`outputs`, and `side_effects`. Legacy frontmatter remains valid. Invalid SuperScience
 semantics are retained as catalog parse-error records instead of silently
 entering the effective catalog.
 
 Discovery uses this precedence when two packages declare the same public name:
 
-1. `bundled` — the read-only catalog shipped with Wisp.
+1. `bundled` — the read-only catalog shipped with SuperScience.
 2. `project` — `<project>/.superscience/skills` for workflows owned by one project.
 3. `global` — `~/.superscience/skills` for workflows shared by all projects.
-4. `extra` — directories configured through `WISP_SKILLS_PATH`, in configured
+4. `extra` — directories configured through `SUPERSCIENCE_SKILLS_PATH`, in configured
    order.
 5. `plugin` — Skills from enabled feature plugins. A plugin never replaces a
    host Skill with the same name.
 
 **Settings → Skills → Reload skills** rescans all of these locations without
-restarting Wisp. Newly discovered Skills are enabled by default. Existing
+restarting SuperScience. Newly discovered Skills are enabled by default. Existing
 Skills that the user explicitly disabled remain disabled. Idle conversation
 Agents are rebuilt on their next turn, so the new index is used without losing
 conversation history or restarting the persistent Python/R runtime.

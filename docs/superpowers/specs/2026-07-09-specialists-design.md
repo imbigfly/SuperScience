@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-09
 **Status:** Approved
-**Reference:** Claude Science's Specialists (registry + per-session selector + built-in Reviewer); wisp adaptation decided in-session.
+**Reference:** Claude Science's Specialists (registry + per-session selector + built-in Reviewer); SuperScience adaptation decided in-session.
 
 ## Goal
 
@@ -53,7 +53,7 @@ pub struct Specialist {
   any other row; `builtin: true` gates deletion and instruction edits in both
   backend commands and UI.
 - **Prompt composition** follows the reference app's replace-identity /
-  inherit-working-style split: wisp's base system prompt stays intact;
+  inherit-working-style split: SuperScience's base system prompt stays intact;
   `instructions` is appended as an identity section
   (`\n\n## Specialist: {name}\n{instructions}`).
 - **Model resolution:** `specialist_config(store, &specialist)` — resolve

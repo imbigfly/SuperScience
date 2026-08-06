@@ -2,7 +2,7 @@
 
 ## Project Orientation
 
-superscience is a Rust/Tauri/Leptos local-first scientific computing agent. The long-term product direction is a research workbench: local, WSL, SSH servers, GPU hosts, schedulers, literature tools, runs, data assets, artifacts, papers, and decisions should be represented as one project-level control plane. The durable product nouns are `Project`, `ExecutionContext`, `DataAsset`, `Run`, `Artifact`, `Paper`, and `Decision`.
+SuperScience is a Rust/Tauri/Leptos local-first scientific computing agent. The long-term product direction is a research workbench: local, WSL, SSH servers, GPU hosts, schedulers, literature tools, runs, data assets, artifacts, papers, and decisions should be represented as one project-level control plane. The durable product nouns are `Project`, `ExecutionContext`, `DataAsset`, `Run`, `Artifact`, `Paper`, and `Decision`.
 
 Do not implement broad product vision in one change. Prefer small PRs that add one durable abstraction, persistence table, tool, UI surface, or testable behavior at a time.
 

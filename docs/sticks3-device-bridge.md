@@ -142,7 +142,7 @@ to StickS3:
   "protocol": 1,
   "enabled": true,
   "id": "wispy",
-  "displayName": "Wispy",
+  "displayName": "SuperScience",
   "revision": "64-character-lowercase-sha256",
   "format": "png",
   "frameWidth": 120,

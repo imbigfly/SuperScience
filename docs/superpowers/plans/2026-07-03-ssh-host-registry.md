@@ -588,7 +588,7 @@ In the main component body (near other `create_rw_signal` calls such as `ctx_men
 - [ ] **Step 3: Compile-check (wasm)**
 
 Run (from `ui/`): `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo check --target wasm32-unknown-unknown --message-format=short`
-Expected: `Finished`. (Unused `show_add_host`/`config_aliases` warnings are fine until Task 7/8 wire them; if the build denies warnings, prefix with `let _ = ...` temporarily — but check first, wisp does not deny warnings.)
+Expected: `Finished`. (Unused `show_add_host`/`config_aliases` warnings are fine until Task 7/8 wire them; if the build denies warnings, prefix with `let _ = ...` temporarily — but check first, SuperScience does not deny warnings.)
 
 - [ ] **Step 4: Commit**
 
@@ -816,7 +816,7 @@ git commit -m "feat(ssh): composer compute button + host popover"
         })}
 ```
 
-Note: check the exact `invoke` binding arity in `ui/src/api.js` / the `extern` block — pass args as a `JsValue` object with a `host` key matching the command's parameter name (`host`). If wisp's `invoke` wraps args differently (e.g. `{ "args": {...} }`), match the existing pattern used by `send_message`/`create_project`.
+Note: check the exact `invoke` binding arity in `ui/src/api.js` / the `extern` block — pass args as a `JsValue` object with a `host` key matching the command's parameter name (`host`). If SuperScience's `invoke` wraps args differently (e.g. `{ "args": {...} }`), match the existing pattern used by `send_message`/`create_project`.
 
 - [ ] **Step 3: Add modal CSS** (`ui/styles.css`)
 

@@ -2576,6 +2576,15 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Prefer `SUPERSCIENCE_*`, fall back to legacy `WISP_*` for older installs/scripts.
+fn env_brand(suffix: &str, default: &str) -> String {
+    let primary = format!("SUPERSCIENCE_{suffix}");
+    if let Ok(value) = std::env::var(&primary) {
+        return value;
+    }
+    env_or(&format!("WISP_{suffix}"), default)
+}
+
 fn normalized_provider(provider: &str) -> String {
     match provider.trim() {
         "anthropic" => "anthropic".into(),
@@ -3081,16 +3090,16 @@ fn resolve_model_settings(
     api_key: String,
 ) -> (String, String, String, String) {
     let provider = normalized_provider(&non_empty_setting(Some(provider), || {
-        env_or("WISP_PROVIDER", "openai")
+        env_brand("PROVIDER", "openai")
     }));
     let api_url = non_empty_setting(Some(api_url), || {
-        env_or("WISP_API_URL", default_api_url(&provider))
+        env_brand("API_URL", &default_api_url(&provider))
     });
     let model = non_empty_setting(Some(model), || {
-        env_or("WISP_MODEL", default_model(&provider))
+        env_brand("MODEL", &default_model(&provider))
     });
     let api_key = if api_key.trim().is_empty() {
-        env_or("WISP_API_KEY", "")
+        env_brand("API_KEY", "")
     } else {
         api_key
     };

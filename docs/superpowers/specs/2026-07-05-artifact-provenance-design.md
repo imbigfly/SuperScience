@@ -5,7 +5,7 @@
 **Scope:** Click a produced figure/file → open a modal that shows the artifact large
 plus its full stored lineage: the code that produced it, its execution log, its
 input files, and the environment it ran in. Mirrors Claude Science's artifact
-provenance, adapted to wisp's single-agent Rust architecture.
+provenance, adapted to SuperScience's single-agent Rust architecture.
 
 ## 1. Goal & non-goals
 
@@ -21,7 +21,7 @@ clicking the artifact.
   provenance record per current file path; re-running overwrites it.
 - A **Messages** panel (conversation lineage) — the conversation is already visible.
 - A **Review / annotations** panel — separate feature, not in this spec.
-- Reworking wisp's artifact-identity model. Provenance is keyed by
+- Reworking SuperScience's artifact-identity model. Provenance is keyed by
   `(frame_id, workspace-relative path)` — the identifier the UI already uses.
 
 ## 2. Current state (why this is new capture, not a column add)
@@ -134,7 +134,7 @@ CREATE TABLE env_snapshots (
 **path**, not by a DB id (it detects them from markdown, not from `list_artifacts`).
 So provenance is looked up purely from `execution_log.files_written` by path — we do
 **not** add a `producing_exec_id` column or upsert produced files into `artifacts`.
-This keeps the feature decoupled from wisp's (currently upload-only, UI-unused)
+This keeps the feature decoupled from SuperScience's (currently upload-only, UI-unused)
 artifact table.
 
 On persisting a `Provenance` record, the host:

@@ -35,7 +35,7 @@ cargo run -p superscience-sync --bin superscience-relay --release
 
 ### 百度网盘、坚果云或其他共享目录
 
-将**存储后端**设为**网盘共享目录**，再选择由网盘桌面客户端管理的本地目录。SuperScience 会在其中创建 `SuperScience Sync` 子目录，使用与中继服务器相同的加密修订与 blob 结构。若已有旧版 `Wisp Sync` 目录，会继续使用该目录，直到另行选择同步根路径。SuperScience 不会获得网盘服务商的 API 或账号凭据。
+将**存储后端**设为**网盘共享目录**，再选择由网盘桌面客户端管理的本地目录。SuperScience 会在其中创建 `SuperScience Sync` 子目录，使用与中继服务器相同的加密修订与 blob 结构。若已有旧版 `SuperScience Sync` 目录，会继续使用该目录，直到另行选择同步根路径。SuperScience 不会获得网盘服务商的 API 或账号凭据。
 
 共享目录的绝对路径只属于当前设备。例如，Windows 可以使用 `D:\BaiduNetdisk\SuperScience`，macOS 可以使用 `/Users/me/Nutstore/SuperScience`。这些路径不会写入项目或设备码。
 

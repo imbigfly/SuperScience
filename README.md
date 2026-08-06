@@ -1,28 +1,28 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="Wisp Science logo" width="128" />
+<img src="docs/assets/logo.png" alt="SuperScience logo" width="128" />
 
-# Wisp Science
+# SuperScience
 
 **The open-source, local-first AI research workbench.**
 
-<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/v/release/xuzhougeng/superscience" alt="Release"></a>
-<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/downloads/xuzhougeng/superscience/total" alt="Downloads"></a>
+<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/github/v/release/imbigfly/SuperScience" alt="Release"></a>
+<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/github/downloads/imbigfly/SuperScience/total" alt="Downloads"></a>
 <a href="https://doi.org/10.5281/zenodo.21193742"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
-<a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE"><img src="https://img.shields.io/github/license/xuzhougeng/superscience" alt="License"></a>
-<a href="https://github.com/xuzhougeng/wisp-science/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/superscience?style=social" alt="Stars"></a>
+<a href="https://github.com/imbigfly/SuperScience/blob/main/LICENSE"><img src="https://img.shields.io/github/license/imbigfly/SuperScience" alt="License"></a>
+<a href="https://github.com/imbigfly/SuperScience/stargazers"><img src="https://img.shields.io/github/stars/imbigfly/SuperScience?style=social" alt="Stars"></a>
 <br>
-<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="Windows supported"></a>
-<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="macOS supported"></a>
+<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="Windows supported"></a>
+<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="macOS supported"></a>
 <a href="#build-from-source"><img src="https://img.shields.io/badge/Linux-source%20build-FCC624" alt="Linux source build"></a>
 
-[English](README.md) · [简体中文](README_zh.md) · [Documentation](#documentation) · [Releases](https://github.com/xuzhougeng/wisp-science/releases)
+[English](README.md) · [简体中文](README_zh.md) · [Documentation](#documentation) · [Releases](https://github.com/imbigfly/SuperScience/releases)
 
-<img src="docs/assets/app-home.png" alt="Wisp Science desktop app running a bundled RNA-seq analysis demo" width="100%" />
+<img src="docs/assets/app-home.png" alt="SuperScience desktop app running a bundled RNA-seq analysis demo" width="100%" />
 
 </div>
 
-**Wisp Science** is a desktop AI research assistant and scientific computing
+**SuperScience** is a desktop AI research assistant and scientific computing
 workbench. It connects to OpenAI-compatible and Anthropic models, runs
 persistent Python and R environments on local, WSL, SSH, and GPU compute, loads
 reusable Agent Skills (`SKILL.md`), and reaches ~80 bioinformatics and
@@ -30,10 +30,10 @@ computational biology databases through bundled Model Context Protocol (MCP)
 servers — while your data, conversations, and credentials stay on your own
 machines.
 
-Built with Rust, Tauri v2, and Leptos, Wisp Science runs as a cross-platform
+Built with Rust, Tauri v2, and Leptos, SuperScience runs as a cross-platform
 desktop app or a headless CLI.
 
-> **Our manifesto:** Wisp Science is open source and borderless. We are building
+> **Our manifesto:** SuperScience is open source and borderless. We are building
 > a scientific workbench that anyone, anywhere can use, study, improve, and
 > share.
 
@@ -41,16 +41,11 @@ desktop app or a headless CLI.
 > Python/R REPLs, SQLite store, MCP client, and Leptos UI all build and run.
 > See [Roadmap](#roadmap-post-mvp) for what is deferred.
 
-## What does WISP stand for?
+## About the name
 
-**WISP = Workspace for Intelligent Scientific Practice**
-（中文：面向智能科研实践的工作空间）
-
-- **Workspace** — not a single analysis tool, but a complete research workspace.
-- **Intelligent** — AI agents, models, and automation are built in.
-- **Scientific** — explicitly built to serve scientific research.
-- **Practice** — covers real research practice: literature search, analysis,
-  computation, writing, and task management.
+**SuperScience** is a local-first scientific computing workbench: Super as in
+elevated AI-assisted workflows, Science as in real research practice on your
+own machines.
 
 ## Features
 
@@ -111,11 +106,11 @@ desktop app or a headless CLI.
 ### Download
 
 Grab the latest installer from
-[GitHub Releases](https://github.com/xuzhougeng/wisp-science/releases):
+[GitHub Releases](https://github.com/imbigfly/SuperScience/releases):
 
 | Platform | Package | Notes |
 |----------|---------|-------|
-| Windows  | MSI / NSIS | The installer is unsigned: choose **More info → Run anyway** on SmartScreen. If the window never appears after install, **Quit** from the tray icon and repair the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section) (Evergreen Standalone Installer, run as administrator), then reopen Wisp Science. |
+| Windows  | MSI / NSIS | The installer is unsigned: choose **More info → Run anyway** on SmartScreen. If the window never appears after install, **Quit** from the tray icon and repair the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section) (Evergreen Standalone Installer, run as administrator), then reopen SuperScience. |
 | macOS    | `.dmg` (Apple Silicon + Intel) | Unsigned: right-click → **Open** on first launch, or allow it in System Settings → Privacy & Security. |
 | Linux    | — | [Build from source](#build-from-source). |
 
@@ -129,10 +124,10 @@ Prerequisites:
 - **Trunk**: `cargo install --locked trunk` · **Tauri CLI v2**:
   `cargo install tauri-cli --version "^2"`
 - Optional: **R** with the `jsonlite` package for the persistent `r` tool.
-  Wisp locates `Rscript` via the interpreter configured in Settings, then
+  SuperScience locates `Rscript` via the interpreter configured in Settings, then
   PATH, then well-known install locations (for example
   `C:\Program Files\R\R-*\bin` on Windows or a conda base environment).
-  Wisp never installs R packages automatically.
+  SuperScience never installs R packages automatically.
 - Windows needs the **WebView2 Runtime** (present on most Windows 10/11
   systems; the installer acquires it when missing). macOS needs **Xcode
   Command Line Tools** (`xcode-select --install`) and uses the system WebKit.
@@ -152,9 +147,9 @@ cargo tauri build --target universal-apple-darwin
 ### Headless CLI
 
 ```bash
-export WISP_API_KEY=<your provider key>
-export WISP_PROVIDER=openai            # openai (default) | openai_responses | anthropic
-export WISP_MODEL=deepseek-v4-pro
+export SUPERSCIENCE_API_KEY=<your provider key>
+export SUPERSCIENCE_PROVIDER=openai            # openai (default) | openai_responses | anthropic
+export SUPERSCIENCE_MODEL=deepseek-v4-pro
 cargo run -p superscience-cli                  # interactive agent in your terminal
 ```
 
@@ -176,7 +171,7 @@ cargo run -p superscience-cli -- eval --compare baseline.json --save current.jso
 
 ### ACP agents (optional)
 
-Wisp can launch any installed local agent that speaks ACP v1 over stdio —
+SuperScience can launch any installed local agent that speaks ACP v1 over stdio —
 separate from HTTP model profiles:
 
 1. Install an adapter, e.g. `npm install -g @agentclientprotocol/codex-acp`.
@@ -199,27 +194,27 @@ hosts.
 **Settings → Storage** lists workspace paths per project. Select a project to
 view that workspace's local footprint separately from shared app data.
 
-For project-specific Agent instructions, Wisp reads `AGENTS.md` from the
+For project-specific Agent instructions, SuperScience reads `AGENTS.md` from the
 project root when a new session starts. Instructions entered in **Project
 Settings → Agent Context** are stored in `.superscience/SUPERSCIENCE.md` and applied after
-`AGENTS.md`, so the explicit Wisp setting takes precedence when both exist.
+`AGENTS.md`, so the explicit SuperScience setting takes precedence when both exist.
 
 | Variable             | Purpose                                                       |
 |----------------------|---------------------------------------------------------------|
-| `WISP_API_KEY`       | Provider API key (CLI). Desktop uses the keyring instead.     |
-| `WISP_PROVIDER`      | CLI API provider: `openai` (default), `openai_responses`, or `anthropic` |
-| `WISP_API_URL`       | API root; defaults to DeepSeek / OpenAI / Anthropic           |
-| `WISP_MODEL`         | Model name                                                    |
-| `WISP_MAX_CONTEXT`   | Context budget (default 1,000,000)                            |
-| `WISP_MAX_ITER`      | Max agent iterations per turn (default 100; 0 = unlimited)    |
-| `WISP_SKILLS_PATH`   | Extra `;`/`:`-separated SKILL.md catalog dirs                 |
-| `WISP_KERNEL_WORKER` | Override path to `kernel_worker.py` (bundled by default)      |
-| `WISP_MCP_COMMAND`   | Launch an arbitrary stdio MCP server (full command line)      |
-| `WISP_MCP_PKG`       | Launch a bundled bio-tools server, e.g. `mcp_pubmed`          |
+| `SUPERSCIENCE_API_KEY`       | Provider API key (CLI). Desktop uses the keyring instead.     |
+| `SUPERSCIENCE_PROVIDER`      | CLI API provider: `openai` (default), `openai_responses`, or `anthropic` |
+| `SUPERSCIENCE_API_URL`       | API root; defaults to DeepSeek / OpenAI / Anthropic           |
+| `SUPERSCIENCE_MODEL`         | Model name                                                    |
+| `SUPERSCIENCE_MAX_CONTEXT`   | Context budget (default 1,000,000)                            |
+| `SUPERSCIENCE_MAX_ITER`      | Max agent iterations per turn (default 100; 0 = unlimited)    |
+| `SUPERSCIENCE_SKILLS_PATH`   | Extra `;`/`:`-separated SKILL.md catalog dirs                 |
+| `SUPERSCIENCE_KERNEL_WORKER` | Override path to `kernel_worker.py` (bundled by default)      |
+| `SUPERSCIENCE_MCP_COMMAND`   | Launch an arbitrary stdio MCP server (full command line)      |
+| `SUPERSCIENCE_MCP_PKG`       | Launch a bundled bio-tools server, e.g. `mcp_pubmed`          |
 
 ### Bundled bio-tools MCP
 
-`WISP_MCP_PKG=mcp_pubmed` launches `mcp-servers/bio-tools/run_server.py
+`SUPERSCIENCE_MCP_PKG=mcp_pubmed` launches `mcp-servers/bio-tools/run_server.py
 mcp_pubmed` inside the uv venv. Install the server's dependencies first:
 
 ```bash
@@ -244,7 +239,7 @@ tokens stay in the OS keyring; deleting the connection removes its credential.
 data → inspect sample format → RNA-seq upstream (siESR1 vs siNT counts) →
 downstream DEG/ORA/GSEA → scientific hypothesis / research-project design. In
 the desktop app, **Open demo** lists them and opens each as a read-only
-transcript with full tool/run history — the fastest way to see what Wisp can
+transcript with full tool/run history — the fastest way to see what SuperScience can
 do without an API key.
 
 ## Documentation
@@ -406,7 +401,7 @@ and pull requests (ordered by the number of issues reported):
   independently by the open-source community.
 - Real-browser automation is inspired by
   [GenericAgent's GA Web / TMWebDriver](https://github.com/lsdefine/GenericAgent)
-  architecture (MIT, Copyright 2025 lsdefine). Wisp's Rust bridge and Manifest
+  architecture (MIT, Copyright 2025 lsdefine). SuperScience's Rust bridge and Manifest
   V3 extension are an independent implementation; see
   [`browser-extension/NOTICE.md`](browser-extension/NOTICE.md).
 - The agent core is based on
@@ -421,7 +416,7 @@ and pull requests (ordered by the number of issues reported):
 
 ## License
 
-Except where otherwise noted, Wisp Science is licensed under the
+Except where otherwise noted, SuperScience is licensed under the
 [GNU Affero General Public License v3.0 only](LICENSE). Third-party and vendored
 components remain under their respective licenses; upstream notices are
 preserved in their directories, and the Apache License 2.0 text is retained in
@@ -430,15 +425,15 @@ available under the license published with those releases.
 
 ## Citation
 
-If you use superscience in your research, please cite:
+If you use SuperScience in your research, please cite:
 
 [![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.21193742)
 
 ```bibtex
-@software{xu2026wisp,
+@software{superscience2026,
   author    = {Xu, Zhougeng and hoptop},
-  title     = {superscience: A local-first scientific computing agent},
-  version   = {v0.33.0},
+  title     = {SuperScience: A local-first scientific computing agent},
+  version   = {v0.34.0},
   year      = {2026},
   publisher = {Zenodo},
   doi       = {10.5281/zenodo.21193742},
@@ -448,6 +443,6 @@ If you use superscience in your research, please cite:
 
 ## Star History
 
-<a href="https://star-history.com/#xuzhougeng/superscience&Date">
-  <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=xuzhougeng/superscience&type=Date" />
+<a href="https://star-history.com/#imbigfly/SuperScience&Date">
+  <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=imbigfly/SuperScience&type=Date" />
 </a>

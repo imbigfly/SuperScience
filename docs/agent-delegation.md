@@ -60,7 +60,7 @@ shrinking the inspector.
 
 The composer `/` picker searches both enabled Skills and Workflow templates.
 Selecting a Workflow adds a typed Workflow chip instead of copying prose into
-the message. On send, Wisp resolves the template by stable ID, injects its
+the message. On send, SuperScience resolves the template by stable ID, injects its
 exact DAG contract, and enables delegation for that native conversation so
 the main Agent can execute the graph through `delegate_tasks`. Skill and
 Workflow chips can be combined in the same turn; transcript cards retain both
@@ -69,7 +69,7 @@ of silently falling back to an invented plan.
 
 The first built-in action is **Research literature**. Select text in a
 conversation or file preview, then choose the action from the floating
-selection toolbar or the right-click menu. Wisp creates a dedicated
+selection toolbar or the right-click menu. SuperScience creates a dedicated
 conversation and runs three temporary Agents:
 
 1. `supporting_evidence` searches for publications supporting the passage.
@@ -112,7 +112,7 @@ boundary.
    request, and optional per-task token/tool/cost budget. Budgets are an
    advanced tuning knob: tasks run unlimited by default, and an omitted or
    zero dimension stays unlimited.
-4. Wisp resolves every capability through host policy into an exact model,
+4. SuperScience resolves every capability through host policy into an exact model,
    executor, tool set, project scope, workspace policy, budget, and timeout.
    The model cannot grant raw tools or permissions to a child.
 5. Safe read-only tasks run immediately. A batch that can write, execute code,
@@ -130,7 +130,7 @@ boundary.
    result for the same conversation.
 
 Delivery parsing is tolerant. A child's final message may wrap the requested
-JSON in a Markdown fence or narrative text; Wisp extracts the embedded JSON
+JSON in a Markdown fence or narrative text; SuperScience extracts the embedded JSON
 payload. When a non-reviewer child finishes but its final message still cannot
 be parsed as the requested shape, or its parsed value does not satisfy the
 task's output schema, the completed work is preserved instead of discarded:
@@ -174,7 +174,7 @@ automatically.
 Workflow Studio can generate a structured Roundtable without introducing a
 second workflow or chat protocol. Expand **Roundtable template**, choose two or
 three discussion seats, and assign each seat an optional Specialist plus a
-Native or ACP executor. A Native seat may also select a Wisp model; an ACP
+Native or ACP executor. A Native seat may also select a SuperScience model; an ACP
 seat's model and reasoning settings remain owned by that ACP Agent profile.
 Configure the chair separately, then apply the template.
 
@@ -188,7 +188,7 @@ The generated proposal uses the ordinary dynamic workflow contract:
    conclusions, unresolved disagreements, evidence gaps, risks, and next steps.
 
 The same Specialist, executor, and model assignment is copied into both rounds
-for each seat. Enter the overall goal before applying the template; Wisp embeds
+for each seat. Enter the overall goal before applying the template; SuperScience embeds
 that goal into every generated task so detached children receive the actual
 discussion topic. Applying preserves the goal, shared context, and approval
 policy, and replaces only the task cards. Reapply after changing the goal.
@@ -214,7 +214,7 @@ durable background delivery path. The conversation's auto-resume setting still
 decides whether their parent is automatically synthesized.
 
 Each background execution reserves a persisted generation before any child
-starts. When the workflow reaches succeeded, failed, or cancelled, Wisp stores
+starts. When the workflow reaches succeeded, failed, or cancelled, SuperScience stores
 one compact result for that generation. Under the same conversation lock used
 by normal turns, it then atomically appends one internal result message and
 marks the generation delivered. A busy parent finishes its current or already
@@ -259,7 +259,7 @@ may consume only the required
 `method_search_spec_artifact_version_id` field declared by its direct
 dependency's output schema.
 
-After its attempt starts, Wisp atomically creates and links the Run and moves
+After its attempt starts, SuperScience atomically creates and links the Run and moves
 the attempt to `waiting_run`. That state is unfinished for DAG dependencies but
 does not occupy one of the root Agent concurrency slots. Descendants remain
 blocked until the linked Run succeeds. Run failure, timeout, loss, or
@@ -301,13 +301,13 @@ automatic application of the selected method.
 
 ## Native, ACP, and code execution
 
-Native execution runs the ordinary Wisp Agent loop in a separate child
+Native execution runs the ordinary SuperScience Agent loop in a separate child
 conversation with only the resolved tools. It supports project reading,
 project writing, and bounded Run Manager execution without starting an ACP
 client. This is the default eligible executor and is enough for a code task.
 
 Scientific resources are resolved for the owning project and conversation at
-draft time, then checked again before execution. Wisp considers the project's
+draft time, then checked again before execution. SuperScience considers the project's
 enabled Skills, enabled bundled/custom MCP connections, selected
 ExecutionContexts, configured Python/R interpreters, runtime workers, and
 vision-capable models. A disabled or missing resource is omitted from both the
@@ -331,7 +331,7 @@ For every task, its capability grant and its immutable Specialist whitelist
 must both allow a Skill or connector. `None` on a selected Specialist keeps
 the existing “inherit project settings” behavior; an explicit list narrows it.
 The resulting exact resource IDs are installed directly in a Native child or
-encoded as private allowlist tokens for that ACP child's filtered Wisp MCP
+encoded as private allowlist tokens for that ACP child's filtered SuperScience MCP
 bridge. They are not inferred from an ACP vendor, command name, or Agent label.
 Native children discover granted MCP tools through `search_mcp_tools` and call
 them through `use_mcp_tool`; the child approval boundary authorizes both those
@@ -347,7 +347,7 @@ ACP or Codex template. Automatic selection continues to prefer Native whenever
 Native satisfies the task; choosing ACP is an explicit, approval-visible
 override.
 
-Delegated ACP sessions start with no Wisp MCP bridge. Wisp adds only bridge
+Delegated ACP sessions start with no SuperScience MCP bridge. SuperScience adds only bridge
 tools implied by the resolved task permission set; for example, `code_run` can
 receive the project-scoped execution-context and Run Manager tools while a
 reasoning or file-read task receives no bridge. ACP permission requests are
@@ -362,16 +362,16 @@ Run by ID. Direct `shell` is never registered for a delegated Native child;
 ACP receives the same Run control plane through the filtered bridge.
 
 When a child links a project-local output in its structured summary or
-evidence, Wisp snapshots the file as a content-addressed Artifact and returns
+evidence, SuperScience snapshots the file as a content-addressed Artifact and returns
 its durable ID with the task result. Structured DataAsset and Paper references
 remain JSON references in the persisted response and parent delivery; large
 or binary payloads are not copied into the conversation. A configured custom
 MCP connection is treated as available from its saved configuration, but a
-connection failure at execution is still reported by the child because Wisp
+connection failure at execution is still reported by the child because SuperScience
 does not perform network health checks while drafting.
 
-The same inline delegation surface is exposed through the Wisp MCP bridge as
-`wisp_delegate_tasks` and `wisp_get_delegated_result` when the owning
+The same inline delegation surface is exposed through the SuperScience MCP bridge as
+`superscience_delegate_tasks` and `superscience_get_delegated_result` when the owning
 conversation opted in. Because that bridge is non-interactive, a batch that
 requires approval is denied instead of silently escalating.
 
@@ -405,7 +405,7 @@ the coordination paths.
 
 ## Persistence and safety
 
-- Wisp persists the resolved v2 plan before execution. Stored steps contain the
+- SuperScience persists the resolved v2 plan before execution. Stored steps contain the
   immutable Specialist, requested model/executor preferences, capability
   revisions, resolved permissions/model/executor, contracts, budgets, and
   policy integrity hash used for revalidation. ACP tasks do not store a
@@ -423,9 +423,9 @@ the coordination paths.
   tasks without isolation use one mutation lane and cannot edit the same
   checkout concurrently. When Git is installed and the project checkout is
   clean, a task may instead use a unique temporary Git worktree and run in
-  parallel with other isolated writers. The approval card shows that Wisp will
+  parallel with other isolated writers. The approval card shows that SuperScience will
   conflict-check and then cherry-pick the task's temporary commit.
-- Native and ACP children both receive the isolated project root. Wisp captures
+- Native and ACP children both receive the isolated project root. SuperScience captures
   a changed-file manifest and binary-capable patch, serializes merge decisions,
   and removes the temporary worktree and branch on success, failure, or
   cancellation. A failed child is never merged. A rejected/conflicting merge
@@ -542,7 +542,7 @@ adds one synthesized assistant update; start another parent turn and verify a
 completion waits behind it. Then create an equivalent graph in
 **Settings → Workflows**, attach it from the composer, and confirm the Agents
 panel shows the run without showing workflow editing fields. Repeat with a
-write capability: Wisp should show the exact resolved authority and start zero
+write capability: SuperScience should show the exact resolved authority and start zero
 children if approval is denied.
 Open a completed task result and confirm its sections and rendered Markdown are
 readable without raw JSON or a child-conversation action. Press Escape
@@ -555,7 +555,7 @@ the parent and both leaves for cancellation.
 For the isolation path, start from a clean Git project and create two independent
 write tasks with **Use an isolated workspace** enabled. Confirm that approval
 shows **Conflict-check, then cherry-pick**, both children overlap, both changes
-land as separate commits, and no `wisp-agent/*` worktree branch remains. Then
+land as separate commits, and no `superscience-agent/*` worktree branch remains. Then
 make both tasks edit the same line and confirm one merge is rejected, the main
 file keeps the accepted change, and the rejected patch is available as an
 Artifact. Cancel another isolated writer and confirm its partial patch is

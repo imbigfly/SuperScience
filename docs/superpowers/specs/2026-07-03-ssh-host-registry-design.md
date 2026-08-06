@@ -1,14 +1,14 @@
 # SSH host registry + agent awareness
 
-Resolves [#30](https://github.com/xuzhougeng/wisp-science/issues/30) (scope A).
+Resolves [#30](https://github.com/imbigfly/SuperScience/issues/30) (scope A).
 
 ## Problem
 
 The agent has no idea which remote machines the user can reach, so it can't
 choose to run heavy jobs on them and it looks for remote files on the local
-box ("file not found"). wisp ships `remote-compute-ssh` / `remote-compute-modal`
+box ("file not found"). SuperScience ships `remote-compute-ssh` / `remote-compute-modal`
 / `compute-env-setup` skills, but those call a `host.compute` control-plane that
-wisp does **not** have. What wisp *does* have is a `shell` tool that can already
+SuperScience does **not** have. What SuperScience *does* have is a `shell` tool that can already
 run `ssh <alias> "<cmd>"`. The gap is a **registry of hosts** plus **telling the
 agent they exist**.
 

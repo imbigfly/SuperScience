@@ -1,53 +1,47 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="Wisp Science logo" width="128" />
+<img src="docs/assets/logo.png" alt="SuperScience logo" width="128" />
 
-# Wisp Science
+# SuperScience
 
 **开源、本地优先的 AI 科研工作台。**
 
-<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/v/release/xuzhougeng/superscience" alt="Release"></a>
-<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/downloads/xuzhougeng/superscience/total" alt="下载量"></a>
+<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/github/v/release/imbigfly/SuperScience" alt="Release"></a>
+<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/github/downloads/imbigfly/SuperScience/total" alt="下载量"></a>
 <a href="https://doi.org/10.5281/zenodo.21193742"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
-<a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE"><img src="https://img.shields.io/github/license/xuzhougeng/superscience" alt="许可证"></a>
-<a href="https://github.com/xuzhougeng/wisp-science/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/superscience?style=social" alt="Stars"></a>
+<a href="https://github.com/imbigfly/SuperScience/blob/main/LICENSE"><img src="https://img.shields.io/github/license/imbigfly/SuperScience" alt="许可证"></a>
+<a href="https://github.com/imbigfly/SuperScience/stargazers"><img src="https://img.shields.io/github/stars/imbigfly/SuperScience?style=social" alt="Stars"></a>
 <br>
-<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="支持 Windows"></a>
-<a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="支持 macOS"></a>
+<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="支持 Windows"></a>
+<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="支持 macOS"></a>
 <a href="#从源码构建"><img src="https://img.shields.io/badge/Linux-source%20build-FCC624" alt="Linux 源码构建"></a>
 
-[English](README.md) · [简体中文](README_zh.md) · [文档](#文档) · [Releases](https://github.com/xuzhougeng/wisp-science/releases)
+[English](README.md) · [简体中文](README_zh.md) · [文档](#文档) · [Releases](https://github.com/imbigfly/SuperScience/releases)
 
-<img src="docs/assets/app-home.png" alt="Wisp Science 桌面应用正在运行内置的 RNA-seq 分析演示" width="100%" />
+<img src="docs/assets/app-home.png" alt="SuperScience 桌面应用正在运行内置的 RNA-seq 分析演示" width="100%" />
 
 </div>
 
-**Wisp Science** 是一个开源、本地优先的桌面 AI 科研助手和科学计算工作台。
+**SuperScience** 是一个开源、本地优先的桌面 AI 科研助手和科学计算工作台。
 它可连接兼容 OpenAI 或 Anthropic 的模型，在本地、WSL、SSH 和 GPU 计算环境
 中运行持久化的 Python 与 R，加载可复用的 Agent Skills（`SKILL.md`），并通过
 内置 Model Context Protocol（MCP）服务访问约 80 个生物信息学与计算生物学
 数据库——同时把你的数据、会话和凭据留在自己的机器上。
 
-Wisp Science 使用 Rust、Tauri v2 和 Leptos 构建，可作为跨平台桌面应用或
+SuperScience 使用 Rust、Tauri v2 和 Leptos 构建，可作为跨平台桌面应用或
 无界面 CLI 运行。
 
-> **我们的宣言：** Wisp Science 开源、无国界。我们希望打造一个任何地方的
+> **我们的宣言：** SuperScience 开源、无国界。我们希望打造一个任何地方的
 > 任何人都能使用、研究、改进和分享的科学工作台。
 
 > **当前状态：** MVP 垂直切片。Agent 循环、流式模型提供商、工具、Python/R
 > REPL、SQLite 存储、MCP 客户端和 Leptos UI 均可构建并运行。尚未完成的
 > 内容见[路线图](#路线图mvp-之后)。
 
-## WISP 是什么的缩写？
+## 关于名称
 
-**WISP = Workspace for Intelligent Scientific Practice**
-（面向智能科研实践的工作空间）
-
-- **Workspace（工作空间）** —— 不是单个分析工具，而是完整的科研工作空间。
-- **Intelligent（智能）** —— 内置 AI Agent、模型与自动化能力。
-- **Scientific（科学）** —— 明确服务于科学研究。
-- **Practice（实践）** —— 覆盖真实科研实践：文献检索、分析、计算、写作、
-  任务管理等。
+**SuperScience** 是本地优先的科学计算工作台：Super 强调 AI 增强的科研工作流，
+Science 强调真实科研实践发生在你自己的机器上。
 
 ## 功能特性
 
@@ -98,12 +92,12 @@ Wisp Science 使用 Rust、Tauri v2 和 Leptos 构建，可作为跨平台桌面
 
 ### 下载
 
-从 [GitHub Releases](https://github.com/xuzhougeng/wisp-science/releases)
+从 [GitHub Releases](https://github.com/imbigfly/SuperScience/releases)
 获取最新安装包：
 
 | 平台 | 安装包 | 说明 |
 |------|--------|------|
-| Windows | MSI / NSIS | 安装包未签名：SmartScreen 选择 **更多信息 → 仍要运行**。若安装后窗口不出现，请先从托盘菜单 **Quit** 彻底退出，再以管理员身份运行微软官方 [WebView2 Evergreen Standalone Installer](https://developer.microsoft.com/microsoft-edge/webview2/#download-section) 修复 Runtime，然后重新打开 Wisp Science。 |
+| Windows | MSI / NSIS | 安装包未签名：SmartScreen 选择 **更多信息 → 仍要运行**。若安装后窗口不出现，请先从托盘菜单 **Quit** 彻底退出，再以管理员身份运行微软官方 [WebView2 Evergreen Standalone Installer](https://developer.microsoft.com/microsoft-edge/webview2/#download-section) 修复 Runtime，然后重新打开 SuperScience。 |
 | macOS | `.dmg`（Apple Silicon + Intel） | 未签名：首次启动右键 → **打开**，或在“系统设置 → 隐私与安全性”中允许运行。 |
 | Linux | — | [从源码构建](#从源码构建)。 |
 
@@ -117,7 +111,7 @@ Wisp Science 使用 Rust、Tauri v2 和 Leptos 构建，可作为跨平台桌面
 - **Trunk**：`cargo install --locked trunk` · **Tauri CLI v2**：
   `cargo install tauri-cli --version "^2"`
 - 可选：PATH 中存在 **R** 的 `Rscript`，并安装 `jsonlite` 包，以使用持久化
-  `r` 工具。Wisp 不会自动安装 R 包。
+  `r` 工具。SuperScience 不会自动安装 R 包。
 - Windows 需要 **WebView2 Runtime**（Windows 10/11 通常已内置，安装程序会在
   缺失时获取）。macOS 需要 **Xcode Command Line Tools**
   （`xcode-select --install`），使用系统 WebKit。
@@ -137,9 +131,9 @@ cargo tauri build --target universal-apple-darwin
 ### 无界面 CLI
 
 ```powershell
-$env:WISP_API_KEY = "<your provider key>"
-$env:WISP_PROVIDER = "openai"           # openai（默认）、openai_responses 或 anthropic
-$env:WISP_MODEL     = "deepseek-v4-pro"
+$env:SUPERSCIENCE_API_KEY = "<your provider key>"
+$env:SUPERSCIENCE_PROVIDER = "openai"           # openai（默认）、openai_responses 或 anthropic
+$env:SUPERSCIENCE_MODEL     = "deepseek-v4-pro"
 cargo run -p superscience-cli                   # 终端里的交互式 Agent
 ```
 
@@ -161,7 +155,7 @@ cargo run -p superscience-cli -- eval --compare baseline.json --save current.jso
 
 ### ACP Agents（可选）
 
-Wisp 可以启动任何已安装、通过 stdio 使用 ACP v1 的本地 Agent——这与 HTTP
+SuperScience 可以启动任何已安装、通过 stdio 使用 ACP v1 的本地 Agent——这与 HTTP
 模型配置相互独立：
 
 1. 安装适配器，例如 `npm install -g @agentclientprotocol/codex-acp`。
@@ -184,20 +178,20 @@ Wisp 可以启动任何已安装、通过 stdio 使用 ACP v1 的本地 Agent—
 
 | 变量 | 用途 |
 |------|------|
-| `WISP_API_KEY` | 模型提供商 API 密钥（CLI）；桌面端改用密钥环 |
-| `WISP_PROVIDER` | CLI API 提供商：`openai`（默认）、`openai_responses` 或 `anthropic` |
-| `WISP_API_URL` | API 根地址；默认使用 DeepSeek / OpenAI / Anthropic |
-| `WISP_MODEL` | 模型名称 |
-| `WISP_MAX_CONTEXT` | 上下文预算（默认 1,000,000） |
-| `WISP_MAX_ITER` | 每轮 Agent 最大迭代次数（默认 100；0 表示不限制） |
-| `WISP_SKILLS_PATH` | 额外的 SKILL.md 目录，以 `;` 或 `:` 分隔 |
-| `WISP_KERNEL_WORKER` | 覆盖内置 `kernel_worker.py` 路径 |
-| `WISP_MCP_COMMAND` | 启动任意 stdio MCP 服务（完整命令行） |
-| `WISP_MCP_PKG` | 启动内置 bio-tools 服务，例如 `mcp_pubmed` |
+| `SUPERSCIENCE_API_KEY` | 模型提供商 API 密钥（CLI）；桌面端改用密钥环 |
+| `SUPERSCIENCE_PROVIDER` | CLI API 提供商：`openai`（默认）、`openai_responses` 或 `anthropic` |
+| `SUPERSCIENCE_API_URL` | API 根地址；默认使用 DeepSeek / OpenAI / Anthropic |
+| `SUPERSCIENCE_MODEL` | 模型名称 |
+| `SUPERSCIENCE_MAX_CONTEXT` | 上下文预算（默认 1,000,000） |
+| `SUPERSCIENCE_MAX_ITER` | 每轮 Agent 最大迭代次数（默认 100；0 表示不限制） |
+| `SUPERSCIENCE_SKILLS_PATH` | 额外的 SKILL.md 目录，以 `;` 或 `:` 分隔 |
+| `SUPERSCIENCE_KERNEL_WORKER` | 覆盖内置 `kernel_worker.py` 路径 |
+| `SUPERSCIENCE_MCP_COMMAND` | 启动任意 stdio MCP 服务（完整命令行） |
+| `SUPERSCIENCE_MCP_PKG` | 启动内置 bio-tools 服务，例如 `mcp_pubmed` |
 
 ### 内置 bio-tools MCP
 
-`WISP_MCP_PKG=mcp_pubmed` 会在 uv 虚拟环境中启动
+`SUPERSCIENCE_MCP_PKG=mcp_pubmed` 会在 uv 虚拟环境中启动
 `mcp-servers/bio-tools/run_server.py mcp_pubmed`。需要先在该环境中安装服务
 依赖：
 
@@ -221,7 +215,7 @@ Agent 先用 `search_mcp_tools` 发现匹配的工具，再通过 `use_mcp_tool`
 `seed/` 提供五个按研究叙事排序的 ESR1 / GSE153250 示例：查找数据 → 查看样本/
 数据格式 → RNA-seq 上游分析（siESR1 vs siNT counts）→ 下游 DEG/ORA/GSEA →
 科学假设与研究项目设计。在桌面应用中，**Open demo** 会列出这些示例，并以只读
-对话形式打开（含完整工具/run 操作记录）——不需要 API Key 就能看到 Wisp 的
+对话形式打开（含完整工具/run 操作记录）——不需要 API Key 就能看到 SuperScience 的
 完整工作过程。
 
 ## 文档
@@ -381,7 +375,7 @@ superscience/
   选型思路；Agent 架构、工作台功能与路线图均由开源社区自主设计与推进。
 - 真实浏览器自动化受
   [GenericAgent 的 GA Web / TMWebDriver](https://github.com/lsdefine/GenericAgent)
-  架构启发（MIT，Copyright 2025 lsdefine）。Wisp 的 Rust 桥接器与 Manifest V3
+  架构启发（MIT，Copyright 2025 lsdefine）。SuperScience 的 Rust 桥接器与 Manifest V3
   扩展为独立实现；详细出处见
   [`browser-extension/NOTICE.md`](browser-extension/NOTICE.md)。
 - Agent 核心基于
@@ -396,7 +390,7 @@ superscience/
 
 ## 许可证
 
-除另有说明外，Wisp Science 采用
+除另有说明外，SuperScience 采用
 [GNU Affero 通用公共许可证 v3.0（仅此版本）](LICENSE)。第三方及 vendored
 组件继续适用各自的许可证；上游声明保留在对应目录中，Apache License 2.0
 全文保留于 [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt)。更早发布的
@@ -409,10 +403,10 @@ superscience/
 [![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.21193742)
 
 ```bibtex
-@software{xu2026wisp,
+@software{superscience2026,
   author    = {Xu, Zhougeng and hoptop},
   title     = {superscience: A local-first scientific computing agent},
-  version   = {v0.33.0},
+  version   = {v0.34.0},
   year      = {2026},
   publisher = {Zenodo},
   doi       = {10.5281/zenodo.21193742},
@@ -422,6 +416,6 @@ superscience/
 
 ## Star History
 
-<a href="https://star-history.com/#xuzhougeng/superscience&Date">
-  <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=xuzhougeng/superscience&type=Date" />
+<a href="https://star-history.com/#imbigfly/SuperScience&Date">
+  <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=imbigfly/SuperScience&type=Date" />
 </a>

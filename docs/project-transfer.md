@@ -13,7 +13,7 @@ To move a project from Windows to macOS:
 4. Pick a parent folder. SuperScience creates a new folder named after the project and
    opens the imported project.
 
-During both operations, Wisp keeps a progress dialog open with the current
+During both operations, SuperScience keeps a progress dialog open with the current
 stage, files, bytes, and path being processed. An export is published as the
 selected ZIP only after its completed archive has been checked against its
 manifest; while it is running, do not use the temporary or still-empty archive
@@ -54,7 +54,7 @@ workspace files.
 
 The delete action on a project card offers two distinct choices:
 
-- **Remove from Wisp only** deletes the project's Wisp metadata while keeping
+- **Remove from SuperScience only** deletes the project's SuperScience metadata while keeping
   its project directory and files on disk.
 - **Delete project and local data** also permanently deletes the registered
   project directory. This choice opens a second warning that shows the exact

@@ -72,4 +72,4 @@ Add linkable nodes and edges for question, decision, data asset, run, artifact, 
 
 ## Acceptance Scenario
 
-A user creates one project, registers an omics SSH server and a GPU SSH server, registers data or asks wisp to download data remotely, runs an omics analysis on the omics host, harvests QC reports and result tables, runs a GPU structure analysis on the GPU host using results from the omics run, then creates final figures locally. The project timeline shows all steps as one coherent research history.
+A user creates one project, registers an omics SSH server and a GPU SSH server, registers data or asks SuperScience to download data remotely, runs an omics analysis on the omics host, harvests QC reports and result tables, runs a GPU structure analysis on the GPU host using results from the omics run, then creates final figures locally. The project timeline shows all steps as one coherent research history.

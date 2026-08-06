@@ -10,9 +10,9 @@
 
 - No actionable P0, P1, or P2 differences remain for hierarchy, palette, or category content.
 - Layout correction: the panel is anchored to `.composer-inner` so its width matches the chat dialog, matching the reference composer-aligned card rather than spanning the full chat workspace.
-- Fonts and typography: the implementation follows Wisp's UI font while matching the source's regular-weight title, muted summary, row hierarchy, tabular values, and no-wrap labels.
+- Fonts and typography: the implementation follows SuperScience's UI font while matching the source's regular-weight title, muted summary, row hierarchy, tabular values, and no-wrap labels.
 - Spacing and layout rhythm: denser row/swatch sizing tracks the reference card sitting directly above the composer.
-- Colors and visual tokens: all seven category colors, the unused-context track, neutral foregrounds, border, background, and shadow match the source hierarchy while using Wisp surface tokens where appropriate.
+- Colors and visual tokens: all seven category colors, the unused-context track, neutral foregrounds, border, background, and shadow match the source hierarchy while using SuperScience surface tokens where appropriate.
 - Copy and content: title, percentage, token total, seven English category labels, and values match the source. Equivalent Simplified Chinese strings are included.
 - Accounting: native sessions always expose the seven-category breakdown. Legacy persisted totals without a breakdown attribute the used window to Conversation instead of the ACP-only "Agent-managed context" label. ACP sessions still show a single remote total because the protocol does not report categories.
 
@@ -39,7 +39,7 @@
 
 - [x] Match source structure, copy, values, colors, radius, and elevation.
 - [x] Keep the panel above the composer at dialog width.
-- [x] Preserve Wisp's existing navigation and design tokens.
+- [x] Preserve SuperScience's existing navigation and design tokens.
 - [x] Verify immediate window-level Escape behavior.
 - [x] Avoid mislabeling native totals as Agent-managed context.
 

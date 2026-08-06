@@ -56,7 +56,7 @@ committing. Back up this directory like any other application data.
 Set **Storage backend** to **Shared cloud-drive folder** and choose a directory
 managed by the provider's desktop sync client. SuperScience creates a `SuperScience Sync`
 subdirectory containing the same encrypted revision/blob layout as the relay.
-Existing installs that already have a legacy `Wisp Sync` folder continue to use that
+Existing installs that already have a legacy `SuperScience Sync` folder continue to use that
 directory until a new sync root is chosen.
 No provider API or account credential is given to SuperScience.
 

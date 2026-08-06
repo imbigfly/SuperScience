@@ -4,7 +4,7 @@
 
 **Status:** Implemented in the working tree; verification complete
 
-**Scope:** Wisp-native autonomous computational-method development v0
+**Scope:** SuperScience-native autonomous computational-method development v0
 
 **External design reference studied (not a dependency or backend):**
 [`Alistair-Turcan/TusoAI` at `04a02f80`](https://github.com/Alistair-Turcan/TusoAI/tree/04a02f80bd3e84907e78654203642043de45e71f)
@@ -17,7 +17,7 @@
 
 ## Goal-mode objective
 
-Implement a Wisp-native, durable, auditable method-search workflow that can:
+Implement a SuperScience-native, durable, auditable method-search workflow that can:
 
 1. use the existing Workflow DAG to prepare and review a scientific method-development task;
 2. freeze an exact evaluator, baseline source, data references, editable target, constraints, and budget;
@@ -47,7 +47,7 @@ satisfy the goal.
   network, SSH host, WSL distro, GPU, or scheduler.
 - Keep Windows and macOS behavior explicit. Do not copy TusoAI's Unix-only
   `resource`, `preexec_fn`, `LD_LIBRARY_PATH`, process-fork, or colon-separated
-  path assumptions into Wisp.
+  path assumptions into SuperScience.
 - Store secrets only through the existing keyring path. Never persist provider
   keys or remote credentials in SQLite, specs, logs, candidates, Artifacts, or
   Workflow results.
@@ -58,17 +58,17 @@ satisfy the goal.
 
 ## Decision summary
 
-Wisp will implement the mechanism itself. TusoAI is a research and design
-reference only. It is not a Wisp backend, optional runtime, integration target,
+SuperScience will implement the mechanism itself. TusoAI is a research and design
+reference only. It is not a SuperScience backend, optional runtime, integration target,
 or planned adapter. The implementation must not introduce a `TusoAI` provider,
 backend selector, feature flag, configuration field, subprocess bridge, wire
 protocol, checkpoint importer, or compatibility layer. Product and code-level
-naming must remain Wisp-native (`Workflow`, `RunActivity`, `method_search`,
+naming must remain SuperScience-native (`Workflow`, `RunActivity`, `method_search`,
 `CandidateGenerator`, `Artifact`, and `Decision`).
 
 Ideas learned from TusoAI—iterative code mutation, evaluator-driven selection,
 strategy adaptation, diversity retention, and long-horizon search—are inputs to
-the design review only. Their Wisp implementation is owned by the existing
+the design review only. Their SuperScience implementation is owned by the existing
 Workflow, Run, provider, Artifact, and Research Graph abstractions described in
 this document.
 
@@ -98,7 +98,7 @@ The existing Workflow implementation is deliberately bounded:
 - dependencies form an immutable DAG;
 - tasks execute through Native or ACP Agent attempts;
 - `queued` and `running` attempts are failed during startup recovery because
-  Wisp does not guess whether an external Agent process survived.
+  SuperScience does not guess whether an external Agent process survived.
 
 Those semantics are correct for Agents but wrong for hundreds of method
 candidates. Expanding every candidate into a task would exhaust task limits,
@@ -270,7 +270,7 @@ second mutable copy.
 
 ```json
 {
-  "schema": "wisp.method-search.v1",
+  "schema": "superscience.method-search.v1",
   "objective": "Improve validation AUPRC without violating calibration or runtime limits.",
   "target": {
     "language": "python",
@@ -506,7 +506,7 @@ Keep `RunRecord.progress_json` small and replaceable:
 
 ```json
 {
-  "schema": "wisp.method-search-progress.v1",
+  "schema": "superscience.method-search-progress.v1",
   "phase": "search",
   "baseline_primary": 0.5372,
   "best_primary": 0.5717,
@@ -644,7 +644,7 @@ use the suggested commit and keep formatting-only drift separate as required by
 
 ### Domain and storage
 
-- [ ] Add versioned Rust types for `wisp.method-search.v1` and evaluator
+- [ ] Add versioned Rust types for `superscience.method-search.v1` and evaluator
   results.
 - [ ] Validate all IDs, limits, finite metrics, score direction, guardrails,
   project ownership, and JSON bounds.
@@ -886,7 +886,7 @@ After automated gates pass, use a local project and a configured low-cost model:
 4. Approve a 10–20 candidate local search and keep the application open.
 5. Observe waiting Workflow state and live Run progress without repeated model
    polling.
-6. Pause, restart Wisp, confirm the search remains paused, and resume it.
+6. Pause, restart SuperScience, confirm the search remains paused, and resume it.
 7. Inspect Top-K diffs and final-verification evidence.
 8. Confirm the project source is unchanged and selected code exists only as an
    Artifact until explicitly applied in a later workflow.
@@ -924,7 +924,7 @@ cd ui && cargo check --target wasm32-unknown-unknown
 cd ../ui-tests && npm ci && npx playwright test
 ```
 
-If MCP schemas or the Wisp MCP bridge are changed to expose Run activities or
+If MCP schemas or the SuperScience MCP bridge are changed to expose Run activities or
 method-search controls, also run:
 
 ```bash

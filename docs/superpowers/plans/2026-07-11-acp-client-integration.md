@@ -82,7 +82,7 @@ These are multiple implementations of the role ACP standardizes.
 - The stdio `BridgeServer` in `src-tauri/src/mcp_bridge.rs` remains useful. It
   exposes SuperScience skills, scientific MCP tools, custom MCP connections, and Run
   Manager tools to any ACP Agent.
-- `src-tauri/src/mcp_bridge.rs:442-537` (`WispToolRouter`) is Codex App Server
+- `src-tauri/src/mcp_bridge.rs:442-537` (`SuperscienceToolRouter`) is Codex App Server
   dynamic-tool glue and can be removed.
 - The normal `openai`, `openai_responses`, and `anthropic` HTTP providers are
   independent of the retired CLI backends and must remain.
@@ -377,7 +377,7 @@ Refactor `src-tauri/src/mcp_bridge.rs` only where the old providers leak in:
   ACP agents”;
 - keep `BridgeServer`, its CLI parsing, skill filtering, scientific tools,
   custom MCP proxying, and Run Manager tools;
-- delete `WispToolRouter`, which only served Codex App Server dynamic tools;
+- delete `SuperscienceToolRouter`, which only served Codex App Server dynamic tools;
 - delete Codex/Claude `plan_safe` assumptions. ACP config option IDs are opaque,
   so SuperScience cannot infer read-only policy from a mode name;
 - retain the existing hard failure for dangerous non-interactive Run commands.
@@ -534,7 +534,7 @@ Changes:
 - Map ACP events, persist user/final assistant text, and implement permission
   request/response.
 - Implement stop/cancel/graceful-kill behavior and capability-gated reconnect.
-- Remove `WispToolRouter` and vendor-specific `plan_safe` behavior from the MCP
+- Remove `SuperscienceToolRouter` and vendor-specific `plan_safe` behavior from the MCP
   bridge, but retain its stdio server.
 
 Acceptance:
