@@ -51,6 +51,10 @@ export function attach_chat_scroll(scrollerId, contentId) {
   const syncPill = () => {
     const pill = document.getElementById(JUMP_PILL_ID);
     if (!pill) return;
+    if (follow) {
+      pill.classList.remove("visible");
+      return;
+    }
     let show = false;
     const row = lastUserRow(content);
     if (row && bottomGap(scroller) > 48) {
@@ -62,9 +66,9 @@ export function attach_chat_scroll(scrollerId, contentId) {
   };
 
   const syncFollow = () => {
-    syncPill();
     if (atBottom(scroller)) {
       setFollow(true);
+      syncPill();
       return;
     }
     // Not at bottom: only treat it as an intentional scroll-up if a real gesture
@@ -72,6 +76,7 @@ export function attach_chat_scroll(scrollerId, contentId) {
     if (performance.now() - lastUserScroll < 500) {
       setFollow(false);
       readingTop = scroller.scrollTop;
+      syncPill();
       return;
     }
     // Reflow-driven clamp while following (streaming rebuilds shrink the
@@ -79,14 +84,22 @@ export function attach_chat_scroll(scrollerId, contentId) {
     // paint, so an instant snap here means the clamped position is never
     // painted — without it the view visibly bounces on every thinking delta.
     if (follow) snapBottom(scroller);
+    syncPill();
   };
 
-  const onGrowth = () => {
-    const h = content.scrollHeight;
+  const onGrowth = (observedHeight = content.scrollHeight) => {
+    const h = observedHeight;
     const grew = h > lastHeight;
     lastHeight = h;
-    if (follow && grew) snapBottom(scroller);
-    else if (!follow && grew) {
+    if (follow) {
+      // ResizeObserver already coalesces streaming DOM changes. Keep the hot
+      // path to one bottom snap and skip the row/viewport geometry used only
+      // by the scroll-away pill.
+      snapBottom(scroller);
+      syncPill();
+      return;
+    }
+    if (grew) {
       scroller.scrollTop = Math.min(readingTop, scroller.scrollHeight - scroller.clientHeight);
     }
     syncFollow();
@@ -107,7 +120,7 @@ export function attach_chat_scroll(scrollerId, contentId) {
   scroller.addEventListener("pointerdown", markUser, { passive: true });
   scroller.addEventListener("keydown", markUser, { passive: true });
 
-  const ro = new ResizeObserver(() => onGrowth());
+  const ro = new ResizeObserver((entries) => onGrowth(entries[0]?.contentRect.height));
   ro.observe(content);
 
   hooks.set(scrollerId, {
@@ -186,38 +199,43 @@ const runOutputFollow = new Map();
 const attachedRunOutputs = new WeakSet();
 
 export function follow_run_outputs() {
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      document.querySelectorAll("[data-run-output-for]").forEach((el) => {
-        const key = el.getAttribute("data-run-output-for");
-        let state = runOutputFollow.get(key);
-        if (!state) {
-          state = { follow: true, top: 0 };
-          runOutputFollow.set(key, state);
-        }
-        if (!attachedRunOutputs.has(el)) {
-          attachedRunOutputs.add(el);
-          // Scroll anchoring would fight the explicit snap on rebuild.
-          el.style.overflowAnchor = "none";
-          el.addEventListener(
-            "scroll",
-            () => {
-              state.top = el.scrollTop;
-              state.follow = atBottom(el);
-            },
-            { passive: true },
-          );
-        }
-        if (state.follow) {
-          snapBottom(el);
-        } else {
-          // A scrolled-up user keeps their place across the rebuild; the tail
-          // buffer may have dropped lines, so clamp instead of trusting `top`.
-          const max = Math.max(0, el.scrollHeight - el.clientHeight);
-          el.scrollTop = Math.min(state.top, max);
-        }
-      });
+  const apply = () => {
+    document.querySelectorAll("[data-run-output-for]").forEach((el) => {
+      const key = el.getAttribute("data-run-output-for");
+      let state = runOutputFollow.get(key);
+      if (!state) {
+        state = { follow: true, top: 0 };
+        runOutputFollow.set(key, state);
+      }
+      if (!attachedRunOutputs.has(el)) {
+        attachedRunOutputs.add(el);
+        // Scroll anchoring would fight the explicit snap on rebuild.
+        el.style.overflowAnchor = "none";
+        el.addEventListener(
+          "scroll",
+          () => {
+            state.top = el.scrollTop;
+            state.follow = atBottom(el);
+          },
+          { passive: true },
+        );
+      }
+      if (state.follow) {
+        snapBottom(el);
+      } else {
+        // A scrolled-up user keeps their place across the rebuild; the tail
+        // buffer may have dropped lines, so clamp instead of trusting `top`.
+        const max = Math.max(0, el.scrollHeight - el.clientHeight);
+        el.scrollTop = Math.min(state.top, max);
+      }
     });
+  };
+  // The first pass runs before the frame is painted, so a rebuilt panel never
+  // shows its top edge. The second is the safety net for a panel whose height
+  // only settles after layout (wrapped lines, late fonts).
+  requestAnimationFrame(() => {
+    apply();
+    requestAnimationFrame(apply);
   });
 }
 

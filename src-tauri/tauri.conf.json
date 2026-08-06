@@ -1,13 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SuperScience",
-  "version": "0.33.0",
+  "version": "0.34.0",
   "identifier": "science.superscience",
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:1421",
-    "beforeDevCommand": { "script": "powershell -ExecutionPolicy Bypass -File dev.ps1", "cwd": "../ui" },
-    "beforeBuildCommand": { "script": "powershell -ExecutionPolicy Bypass -File build.ps1", "cwd": "../ui" }
+    "beforeDevCommand": { "script": "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File dev.ps1", "cwd": "../ui" },
+    "beforeBuildCommand": { "script": "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File build.ps1", "cwd": "../ui" }
   },
   "app": {
     "withGlobalTauri": true,

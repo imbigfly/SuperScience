@@ -54,7 +54,11 @@ impl GitCommandRunner for ProcessGitCommandRunner {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command.spawn()?;
+        superscience_tools::process::hide_console_async(&mut command);
+        let mut child = {
+            let _git = superscience_tools::process::lock_git_command();
+            command.spawn()?
+        };
         if let Some(stdin) = stdin {
             let mut pipe = child
                 .stdin
@@ -205,7 +209,6 @@ impl GitWorktreeIsolation {
         if !project_root.is_dir() {
             anyhow::bail!("the project directory does not exist");
         }
-        let _probe = GIT_PROBE_LOCK.lock().await;
         let version = self
             .runner
             .run(project_root, os_args(["--version"]), None)
@@ -907,8 +910,8 @@ mod tests {
 
     #[derive(Default)]
     struct ConcurrentProbeRunner {
-        active: AtomicUsize,
-        max_active: AtomicUsize,
+        in_lock: AtomicUsize,
+        max_in_lock: AtomicUsize,
     }
 
     #[async_trait]
@@ -919,10 +922,13 @@ mod tests {
             _args: Vec<OsString>,
             _stdin: Option<Vec<u8>>,
         ) -> anyhow::Result<GitCommandOutput> {
-            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            self.max_active.fetch_max(active, Ordering::SeqCst);
+            {
+                let _git = superscience_tools::process::lock_git_command();
+                let active = self.in_lock.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max_in_lock.fetch_max(active, Ordering::SeqCst);
+                self.in_lock.fetch_sub(1, Ordering::SeqCst);
+            }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            self.active.fetch_sub(1, Ordering::SeqCst);
             anyhow::bail!("git executable was not found")
         }
     }
@@ -946,7 +952,7 @@ mod tests {
 
         assert!(!first_available);
         assert!(!second_available);
-        assert_eq!(runner.max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(runner.max_in_lock.load(Ordering::SeqCst), 1);
         let _ = fs::remove_dir_all(root);
     }
 

@@ -4,7 +4,7 @@ use crate::{
 };
 use leptos::*;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use wasm_bindgen::{closure::Closure, JsCast, JsValue};
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -13,6 +13,8 @@ struct DesktopPetActivity {
     waiting: HashSet<String>,
     waiting_target: Option<String>,
     reviewing: HashSet<String>,
+    active_runs: BTreeMap<String, String>,
+    runs_initialized: bool,
     transient: String,
     sequence: u64,
 }
@@ -26,15 +28,40 @@ struct PetRuntimeSnapshot {
     waiting: Vec<String>,
     #[serde(default)]
     reviewing: Vec<String>,
+    #[serde(default)]
+    active_runs: Vec<PetRunStatus>,
+}
+
+#[derive(Deserialize)]
+struct PetRunStatus {
+    id: String,
+    title: String,
 }
 
 impl DesktopPetActivity {
     fn replace_from_snapshot(&mut self, snapshot: PetRuntimeSnapshot) {
+        let next_runs = snapshot
+            .active_runs
+            .into_iter()
+            .map(|run| (run.id, run.title))
+            .collect::<BTreeMap<_, _>>();
+        let run_finished = self.runs_initialized
+            && self
+                .active_runs
+                .keys()
+                .any(|run_id| !next_runs.contains_key(run_id));
         self.running = snapshot.running.into_iter().collect();
         self.waiting = snapshot.waiting.into_iter().collect();
         self.retarget_waiting();
         self.reviewing = snapshot.reviewing.into_iter().collect();
-        self.transient.clear();
+        self.active_runs = next_runs;
+        self.runs_initialized = true;
+        if run_finished {
+            self.transient = "jumping".into();
+            self.sequence = self.sequence.wrapping_add(1);
+        } else if self.transient == "jumping" {
+            self.transient.clear();
+        }
     }
 
     fn retarget_waiting(&mut self) {
@@ -123,16 +150,26 @@ impl DesktopPetActivity {
             "waiting"
         } else if self.transient == "failed" {
             "failed"
-        } else if !self.reviewing.is_empty() {
-            "review"
-        } else if !self.running.is_empty() {
-            "running"
         } else if self.transient == "jumping" {
             "jumping"
+        } else if !self.reviewing.is_empty() {
+            "review"
+        } else if !self.running.is_empty() || !self.active_runs.is_empty() {
+            "running"
         } else {
             "idle"
         }
     }
+}
+
+fn install_runtime_poll(status: RwSignal<PetStatus>, activity: RwSignal<DesktopPetActivity>) {
+    let callback =
+        Closure::wrap(Box::new(move || refresh_desktop_pet(status, activity)) as Box<dyn FnMut()>);
+    let _ = window().set_interval_with_callback_and_timeout_and_arguments_0(
+        callback.as_ref().unchecked_ref(),
+        2_000,
+    );
+    callback.forget();
 }
 
 fn install_listener(event: &'static str, callback: Closure<dyn FnMut(JsValue)>) {
@@ -191,6 +228,7 @@ pub(crate) fn PetDesktop() -> impl IntoView {
     }
 
     refresh_desktop_pet(status, activity);
+    install_runtime_poll(status, activity);
     install_listener(
         "pet-config-changed",
         Closure::wrap(Box::new(move |_: JsValue| {
@@ -379,5 +417,40 @@ pub(crate) fn PetOverlay(
             <span class="superscience-pet-sprite" aria-hidden="true"></span>
             <span class="superscience-pet-status" aria-hidden="true"></span>
         </button>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DesktopPetActivity, PetRunStatus, PetRuntimeSnapshot};
+
+    fn snapshot(active_runs: Vec<PetRunStatus>) -> PetRuntimeSnapshot {
+        PetRuntimeSnapshot {
+            running: vec![],
+            waiting: vec![],
+            reviewing: vec![],
+            active_runs,
+        }
+    }
+
+    #[test]
+    fn active_run_title_drives_running_and_disappearance_drives_completion() {
+        let mut activity = DesktopPetActivity::default();
+        activity.replace_from_snapshot(snapshot(vec![PetRunStatus {
+            id: "run-1".into(),
+            title: "data_analysis.py".into(),
+        }]));
+        assert_eq!(activity.state(), "running");
+        assert_eq!(
+            activity.active_runs.values().next().map(String::as_str),
+            Some("data_analysis.py")
+        );
+
+        activity.replace_from_snapshot(snapshot(vec![]));
+        assert_eq!(activity.state(), "jumping");
+        assert_eq!(activity.sequence, 1);
+
+        activity.replace_from_snapshot(snapshot(vec![]));
+        assert_eq!(activity.state(), "idle");
     }
 }

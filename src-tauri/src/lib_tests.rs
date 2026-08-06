@@ -5,12 +5,13 @@ use super::session_commands::transcript_page_items;
 use super::{
     branch_title, copy_dir_recursive, enable_referenced_contexts, events_to_items,
     merge_pending_ui_event, message_uses_resource_bindings, messages_to_items,
-    parse_disabled_skills, parse_enabled_skill_names, parse_skill_tags, persist_ui_events,
-    receive_confirm_decision, resolve_acp_artifact_references, resolve_composer_references,
-    resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
-    should_hide_app_on_macos_close, should_persist_ui_event, side_chat_prompt, user_message_start,
-    AgentEvent, ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem,
-    SessionRuntime, SkillInfo, MAX_PENDING_UI_EVENT_BYTES,
+    parse_disabled_skills, parse_enabled_skill_names, parse_follow_up_questions, parse_skill_tags,
+    persist_ui_events, receive_confirm_decision, resolve_acp_artifact_references,
+    resolve_composer_references, resolve_reader_references, resolve_review_backend,
+    resolve_workspace, session_runtime_status, should_hide_app_on_macos_close,
+    should_persist_ui_event, side_chat_prompt, user_message_start, AgentEvent,
+    ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem, SessionRuntime,
+    SkillInfo, MAX_PENDING_UI_EVENT_BYTES,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -1648,4 +1649,13 @@ fn queue_reorder_swaps_and_clamps() {
     assert_eq!(ids(&q), [3, 1, 2]);
     swap_toward(&mut q, 2, false); // B already last → no-op
     assert_eq!(ids(&q), [3, 1, 2]);
+}
+
+#[test]
+fn follow_up_questions_parse_exactly_three_distinct_options() {
+    assert_eq!(
+        parse_follow_up_questions("```json\n[\"One?\", \"Two?\", \"Three?\"]\n```").unwrap(),
+        ["One?", "Two?", "Three?"]
+    );
+    assert!(parse_follow_up_questions("[\"Same?\", \"Same?\", \"Third?\"]").is_err());
 }

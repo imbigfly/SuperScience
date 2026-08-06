@@ -112,6 +112,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockPlanFlow = query.get("mockPlanFlow");
   const mockPublication = query.get("mockPublication");
   const mockLongPages = Number(query.get("mockLongPages") ?? 0);
+  const mockLongRows = Math.min(200, Math.max(20, Number(query.get("mockLongRows") ?? 20)));
+  const mockLongRowBytes = Math.min(
+    64 * 1024,
+    Math.max(256, Number(query.get("mockLongRowBytes") ?? 256)),
+  );
   const mockLongSession = query.get("mockLongSession") === "1" || mockLongPages > 0;
   const mockResourceSession = query.get("mockResourceSession") === "1";
   const mockMcpAppSession = query.get("mockMcpAppSession") === "1";
@@ -1721,9 +1726,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               if (mockLongPages > 0) {
                 const pageIndex = before == null ? 0 : Number(before);
                 return {
-                  items: Array.from({ length: 20 }, (_, index) => ({
+                  items: Array.from({ length: mockLongRows }, (_, index) => ({
                     role: index % 2 === 0 ? "user" : "assistant",
-                    text: `Window page ${pageIndex} row ${index} ${"x".repeat(256)}`,
+                    text: `Window page ${pageIndex} row ${index} ${"x".repeat(mockLongRowBytes)}`,
                     tool_name: null,
                     ok: null,
                   })),
@@ -1959,6 +1964,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               locale: mockLocale,
               max_iter: 100,
               auto_compact: true,
+              follow_up_questions: true,
+              resume_last_session: true,
               max_tokens: 4096,
               reasoning_effort: "",
               supports_vision: true,
@@ -2056,7 +2063,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               } : null,
             };
           case "get_pet_runtime_status":
-            return { running: [], waiting: [], reviewing: [] };
+            return {
+              running: [],
+              waiting: [],
+              reviewing: [],
+              activeRuns: (window as any).__mockPetActiveRuns ?? [],
+            };
           case "set_pet_window_visible":
             (window as any).__petWindowVisible = Boolean(arg("visible"));
             return null;
@@ -2769,6 +2781,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return activeProjectId === "other"
               ? { ...project, id: "other", name: "Other project", root: "/mock/other" }
               : project;
+          case "generate_follow_up_questions":
+            return [
+              "Review the records that need manual correction",
+              "Expand the search for underrepresented species",
+              "Generate a literature landscape visualization",
+            ];
           case "get_project_settings":
             return { name: project.name, description: "", agent_context: "" };
           case "get_onboarding_state":
@@ -3636,6 +3654,34 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               );
               return fid;
             }
+            // Slow stream keeps send_message pending until Done. This mirrors the
+            // native command lifecycle and leaves enough live time to assert that
+            // Markdown/projection work is deferred between token batches.
+            if (String(arg("message") ?? "").includes("MARKDOWNSTREAM")) {
+              return await new Promise<string>((resolve) => {
+                let n = 0;
+                const tick = () => {
+                  if (n < 24) {
+                    // Cross both adaptive Markdown thresholds so the browser
+                    // test observes a formatted prefix and a cheap live tail.
+                    emit("agent", {
+                      kind: "Text",
+                      frame_id: fid,
+                      delta: `**stream line ${n}** ${"x".repeat(1_500)}\n`,
+                    });
+                    n++;
+                    setTimeout(tick, 50);
+                  } else {
+                    emit("agent", { kind: "Done", frame_id: fid });
+                    resolve(fid);
+                  }
+                };
+                setTimeout(() => {
+                  emit("agent", { kind: "User", frame_id: fid, text: msg });
+                  tick();
+                }, 30);
+              });
+            }
             // Long-stream path (#61 regression test): drip many text deltas so the
             // thread re-renders repeatedly and grows well past the viewport.
             if (String(arg("message") ?? "").includes("SCROLLTEST")) {
@@ -3836,6 +3882,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (String(arg("message") ?? "").includes("RZSTREAM")) {
               // Staggered reasoning deltas keep rebuilding the fingerprint-keyed
               // chat row; the expanded thinking block must not snap shut.
+              // `Done` settles the turn and moves the reasoning into the steps
+              // group (details.rz disappears), so it stays far out: on slow CI
+              // runners the click+assert chain itself can take several seconds,
+              // and the test must finish it inside the live window.
               return await new Promise<string>((resolve) => {
                 setTimeout(() => {
                   emit("agent", { kind: "User", frame_id: fid, text: msg });
@@ -3843,12 +3893,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 }, 30);
                 setTimeout(() => {
                   emit("agent", { kind: "Reasoning", frame_id: fid, delta: " More reasoning arrives." });
-                }, 1_200);
+                }, 3_000);
                 setTimeout(() => {
                   emit("agent", { kind: "Text", frame_id: fid, delta: "Stream done." });
                   emit("agent", { kind: "Done", frame_id: fid });
                   resolve(fid);
-                }, 1_500);
+                }, 12_000);
               });
             }
             if (String(arg("message") ?? "").includes("RNOTEBOOK")) {
@@ -4121,6 +4171,8 @@ export function parallelMock(): void {
             has_api_key: true,
             locale: "en",
             auto_compact: true,
+            follow_up_questions: true,
+            resume_last_session: true,
             supports_vision: true,
             sync_backend: "relay",
             sync_relay_url: "https://relay.example.test",
@@ -4129,6 +4181,11 @@ export function parallelMock(): void {
             has_sync_relay_token: true,
           };
           case "get_project_info": return project;
+          case "generate_follow_up_questions": return [
+            "Review the records that need manual correction",
+            "Expand the search for underrepresented species",
+            "Generate a literature landscape visualization",
+          ];
           case "get_onboarding_state": return { show: false, has_api_key: true };
           case "get_capabilities": return { skills: [], mcp_servers: [], memory_files: [], project };
           case "list_approval_grants": return [];

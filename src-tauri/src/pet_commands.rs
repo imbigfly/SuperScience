@@ -58,6 +58,14 @@ pub(super) struct PetRuntimeStatus {
     running: Vec<String>,
     waiting: Vec<String>,
     reviewing: Vec<String>,
+    active_runs: Vec<PetRunStatus>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PetRunStatus {
+    id: String,
+    title: String,
 }
 
 #[derive(Deserialize)]
@@ -338,10 +346,22 @@ pub(super) async fn get_pet_runtime_status(
         .cloned()
         .collect();
     let reviewing = state.reviewing.lock().unwrap().iter().cloned().collect();
+    let active_runs = state
+        .store
+        .list_active_runs()
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|run| PetRunStatus {
+            id: run.id,
+            title: run.title,
+        })
+        .collect();
     Ok(PetRuntimeStatus {
         running,
         waiting,
         reviewing,
+        active_runs,
     })
 }
 

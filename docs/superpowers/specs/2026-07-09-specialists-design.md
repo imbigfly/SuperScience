@@ -90,7 +90,8 @@ session-runtime build around line 1653). No `agent_loop` changes.
 - Changing the review model = editing the builtin Reviewer's model binding in
   the Specialists page. Custom review rules = duplicate Reviewer into a custom
   specialist (v1 keeps builtin instructions read-only).
-- The existing "Request review" UI entry is unchanged.
+- Users can request the same one-shot review from the composer menu or from the
+  Review action beside Copy on any complete assistant reply.
 
 ## 4. Creation flows
 

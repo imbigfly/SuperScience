@@ -19,21 +19,45 @@ use serde_json::{json, Value};
 pub struct OpenAiProvider {
     cfg: crate::provider::ProviderConfig,
     client: reqwest::Client,
+    selected_endpoint: std::sync::OnceLock<String>,
 }
 
 impl OpenAiProvider {
     pub fn new(cfg: crate::provider::ProviderConfig) -> Self {
         let client = crate::provider::http_client(&cfg);
-        Self { cfg, client }
+        Self {
+            cfg,
+            client,
+            selected_endpoint: std::sync::OnceLock::new(),
+        }
     }
 
-    fn endpoint(&self) -> String {
+    fn endpoint_candidates(&self) -> Vec<String> {
+        if let Some(endpoint) = self.selected_endpoint.get() {
+            return vec![endpoint.clone()];
+        }
         let base = self.cfg.base_url.trim_end_matches('/');
         if base.ends_with("/chat/completions") {
-            base.to_string()
+            vec![base.to_string()]
+        } else if base.ends_with("/v1") {
+            vec![format!("{base}/chat/completions")]
         } else {
-            format!("{base}/chat/completions")
+            vec![
+                format!("{base}/chat/completions"),
+                format!("{base}/v1/chat/completions"),
+            ]
         }
+    }
+
+    fn can_try_next_endpoint(status: u16) -> bool {
+        matches!(status, 404 | 405)
+    }
+
+    fn response_is_html(resp: &reqwest::Response) -> bool {
+        resp.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/html"))
     }
 
     fn headers(&self) -> reqwest::header::HeaderMap {
@@ -161,20 +185,72 @@ impl OpenAiProvider {
     }
 
     async fn request(&self, body: Value) -> Result<Value> {
-        let resp = self
-            .client
-            .post(self.endpoint())
-            .headers(self.headers())
-            .json(&body)
-            .send()
-            .await?;
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        if status >= 400 {
-            return Err(LlmError::Api { status, body: text });
+        let endpoints = self.endpoint_candidates();
+        for (index, endpoint) in endpoints.iter().enumerate() {
+            let has_next = index + 1 < endpoints.len();
+            let resp = self
+                .client
+                .post(endpoint)
+                .headers(self.headers())
+                .json(&body)
+                .send()
+                .await?;
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            if status >= 400 {
+                if has_next && Self::can_try_next_endpoint(status) {
+                    continue;
+                }
+                return Err(LlmError::Api { status, body: text });
+            }
+            match serde_json::from_str::<Value>(&text) {
+                Ok(value)
+                    if value
+                        .get("choices")
+                        .and_then(Value::as_array)
+                        .is_some_and(|choices| !choices.is_empty()) =>
+                {
+                    let _ = self.selected_endpoint.set(endpoint.clone());
+                    return Ok(value);
+                }
+                Ok(_) if has_next => continue,
+                Ok(_) => {
+                    return Err(LlmError::Config(format!(
+                        "OpenAI-compatible endpoint returned an unexpected response from {endpoint}"
+                    )))
+                }
+                Err(_) if has_next => continue,
+                Err(error) => return Err(LlmError::Decode(error)),
+            }
         }
-        let val: Value = serde_json::from_str(&text)?;
-        Ok(val)
+        unreachable!("OpenAI-compatible endpoint candidates are never empty")
+    }
+
+    async fn streaming_response(&self, body: &Value) -> Result<(String, reqwest::Response)> {
+        let endpoints = self.endpoint_candidates();
+        for (index, endpoint) in endpoints.iter().enumerate() {
+            let has_next = index + 1 < endpoints.len();
+            let resp = self
+                .client
+                .post(endpoint)
+                .headers(self.headers())
+                .json(body)
+                .send()
+                .await?;
+            let status = resp.status().as_u16();
+            if status >= 400 {
+                let text = resp.text().await.unwrap_or_default();
+                if has_next && Self::can_try_next_endpoint(status) {
+                    continue;
+                }
+                return Err(LlmError::Api { status, body: text });
+            }
+            if has_next && Self::response_is_html(&resp) {
+                continue;
+            }
+            return Ok((endpoint.clone(), resp));
+        }
+        unreachable!("OpenAI-compatible endpoint candidates are never empty")
     }
 }
 
@@ -371,18 +447,7 @@ impl Provider for OpenAiProvider {
         sink: &mut dyn StreamSink,
     ) -> Result<Completion> {
         let body = self.build_body(messages, tools, true);
-        let resp = self
-            .client
-            .post(self.endpoint())
-            .headers(self.headers())
-            .json(&body)
-            .send()
-            .await?;
-        let status = resp.status().as_u16();
-        if status >= 400 {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError::Api { status, body: text });
-        }
+        let (endpoint, resp) = self.streaming_response(&body).await?;
         let mut stream = resp.bytes_stream();
         let mut buf = String::new();
         let mut utf8 = Utf8Stream::default();
@@ -474,6 +539,8 @@ impl Provider for OpenAiProvider {
             return Err(LlmError::Incomplete);
         }
 
+        let _ = self.selected_endpoint.set(endpoint);
+
         Ok(Completion {
             content,
             reasoning: if reasoning.is_empty() {
@@ -525,6 +592,8 @@ fn parse_usage_obj(u: &Value) -> Option<Usage> {
 mod tests {
     use super::*;
     use crate::message::Message;
+    use crate::provider::Provider;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[derive(Default)]
     struct RecordingSink {
@@ -544,6 +613,137 @@ mod tests {
         fn on_tool_call(&mut self, _: usize, _: &str, _: &str) {}
 
         fn on_usage(&mut self, _: Usage) {}
+    }
+
+    async fn serve_responses(
+        responses: Vec<(&'static str, &'static str, &'static str)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let mut paths = vec![];
+            for (status, content_type, body) in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 16 * 1024];
+                let read = socket.read(&mut request).await.unwrap();
+                let head = String::from_utf8_lossy(&request[..read]);
+                let path = head
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or_default()
+                    .to_string();
+                paths.push(path);
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+            paths
+        });
+        (format!("http://{address}"), task)
+    }
+
+    fn local_provider(base_url: &str) -> OpenAiProvider {
+        let mut cfg = crate::ProviderConfig::openai(base_url, "test-key", "test-model");
+        cfg.proxy = Some("none".into());
+        OpenAiProvider::new(cfg)
+    }
+
+    #[test]
+    fn builds_common_chat_completion_endpoint_candidates() {
+        let provider = local_provider("https://example.test/");
+        assert_eq!(
+            provider.endpoint_candidates(),
+            [
+                "https://example.test/chat/completions",
+                "https://example.test/v1/chat/completions",
+            ]
+        );
+
+        let provider = local_provider("https://example.test/v1");
+        assert_eq!(
+            provider.endpoint_candidates(),
+            ["https://example.test/v1/chat/completions"]
+        );
+
+        let provider = local_provider("https://example.test/custom/chat/completions");
+        assert_eq!(
+            provider.endpoint_candidates(),
+            ["https://example.test/custom/chat/completions"]
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_falls_back_from_html_site_to_v1_api() {
+        let (base_url, requests) = serve_responses(vec![
+            ("200 OK", "text/html", "<html>site shell</html>"),
+            (
+                "200 OK",
+                "application/json",
+                r#"{"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}"#,
+            ),
+        ])
+        .await;
+        let provider = local_provider(&base_url);
+
+        let completion = provider
+            .complete(&[Message::user("Reply with OK.")], &[])
+            .await
+            .unwrap();
+
+        assert_eq!(completion.content, "OK");
+        assert_eq!(
+            requests.await.unwrap(),
+            ["/chat/completions", "/v1/chat/completions"]
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_falls_back_from_html_site_to_v1_api() {
+        let (base_url, requests) = serve_responses(vec![
+            ("200 OK", "text/html", "<html>site shell</html>"),
+            (
+                "200 OK",
+                "text/event-stream",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            ),
+        ])
+        .await;
+        let provider = local_provider(&base_url);
+        let mut sink = RecordingSink::default();
+
+        let completion = provider
+            .stream(&[Message::user("Reply with OK.")], &[], &mut sink)
+            .await
+            .unwrap();
+
+        assert_eq!(completion.content, "OK");
+        assert_eq!(sink.text, ["OK"]);
+        assert_eq!(
+            requests.await.unwrap(),
+            ["/chat/completions", "/v1/chat/completions"]
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_authentication_failures() {
+        let (base_url, requests) = serve_responses(vec![(
+            "401 Unauthorized",
+            "application/json",
+            r#"{"error":{"message":"bad key"}}"#,
+        )])
+        .await;
+        let provider = local_provider(&base_url);
+
+        let error = provider
+            .complete(&[Message::user("Reply with OK.")], &[])
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, LlmError::Api { status: 401, .. }));
+        assert_eq!(requests.await.unwrap(), ["/chat/completions"]);
     }
 
     #[test]

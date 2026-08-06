@@ -1,16 +1,22 @@
+mod acp;
 mod agent_workflows;
+mod app_overlays;
 mod bindings;
 mod channels_view;
+mod chat_render;
 mod context_menu;
 mod dto;
 mod i18n;
 mod library;
+mod mcp_app;
 mod notebook;
 mod overlays;
 mod pet;
 mod project_landing;
 mod publication;
 mod research;
+mod runtime_views;
+mod session_modals;
 mod settings_view;
 mod sidebar;
 mod text;
@@ -19,21 +25,23 @@ mod window_titlebar;
 use agent_workflows::{
     agent_workflows_panel, refresh_agent_resources, refresh_agent_workflows, AgentPanelState,
 };
+use app_overlays::{
+    ContextRecoveryOverlay, ContextRecoveryOverlayState, ProjectTransferOverlay,
+    ProjectTransferOverlayState, SshConnectivityOverlay, SshConnectivityOverlayState,
+    UpdateCheckOverlay, UpdateCheckOverlayState,
+};
 use bindings::{
-    attach_chat_autoscroll, clear_selection, close_mcp_app, download_app_update, force_chat_bottom,
-    invoke, invoke_checked, invoke_timeout, is_mac, is_windows, jump_chat_to_item,
-    jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
-    listen_native_file_drop, mount_mcp_app, mount_terminal, native_drop_in_composer,
-    open_external_url, park_mcp_app, pasted_image_count, preserve_chat_prepend_position,
-    preview_selection, schedule_chat_follow, set_saved_marks, set_terminal_active,
-    unmount_terminal, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    attach_chat_autoscroll, clear_selection, close_mcp_app, force_chat_bottom, invoke,
+    invoke_checked, invoke_timeout, is_mac, is_windows, jump_chat_to_item, jump_chat_to_last_user,
+    jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
+    native_drop_in_composer, open_external_url, pasted_image_count, preserve_chat_prepend_position,
+    preview_selection, schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
-use futures_channel::oneshot;
 use i18n::{
-    empty_subtitle, empty_title, localize_backend, set_document_lang, t, tab_count, tf, use_locale,
-    Locale, EMPTY_SUBTITLE_COUNT, EMPTY_TITLE_COUNT,
+    empty_subtitle, empty_title, localize_backend, set_document_lang, t, tab_count, tf, Locale,
+    EMPTY_SUBTITLE_COUNT, EMPTY_TITLE_COUNT,
 };
 use leptos::{ev, window_event_listener, *};
 use library::{refresh_library, HighlightsPane, LibraryScreen};
@@ -44,18 +52,23 @@ use project_landing::{ProjectLanding, ProjectLandingState};
 use publication::{PublicationEvidenceSource, PublicationWorkspaceModal};
 use research::{refresh_research_graph, ResearchGraphModal};
 use serde_wasm_bindgen::{from_value, to_value};
+use session_modals::{
+    EditConfirmOverlay, EditConfirmOverlayState, FileEntryOverlay, FileEntryOverlayState,
+    FolderModalOverlay, FolderModalOverlayState, ModelSwitchConfirmOverlay,
+    ModelSwitchConfirmOverlayState, ProjSettingsOverlay, ProjSettingsOverlayState,
+    RenameSessionOverlay, RenameSessionOverlayState, SessionTransferOverlay,
+    SessionTransferOverlayState, TurnUndoOverlay, TurnUndoOverlayState,
+};
 use settings_view::{DeleteConfirm, SettingsView, SettingsViewState};
 use sidebar::{Sidebar, SidebarState};
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use text::{
     dom_value, event_target_checked, event_target_value, file_kind, format_bytes,
-    format_duration_ms, group_artifact_indices, ime_composing, join_path, md_to_html,
-    note_composition_end, opens_in_system_browser, parent_path, provider_defaults, provider_value,
-    runtime_language, tool_card_label, unique_dom_id, user_message_presentation,
-    DEEPSEEK_FLASH_MODEL,
+    group_artifact_indices, ime_composing, join_path, md_to_html, note_composition_end,
+    opens_in_system_browser, parent_path, provider_defaults, provider_value, runtime_language,
+    user_message_presentation, DEEPSEEK_FLASH_MODEL,
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -77,24 +90,6 @@ const SIDEBAR_RESIZER_WIDTH: f64 = 10.0;
 const THEME_STORAGE_KEY: &str = "superscience-theme";
 const SIDE_CHAT_SCROLLER_ID: &str = "side-chat-scroller";
 const SIDE_CHAT_INPUT_ID: &str = "side-chat-input";
-
-fn project_transfer_stage_label(locale: Locale, stage: &str) -> String {
-    let key = match stage {
-        "selecting_export_destination" => "projects.transfer.selecting_export_destination",
-        "selecting_import_destination" => "projects.transfer.selecting_import_destination",
-        "selecting_archive" => "projects.transfer.selecting_archive",
-        "preparing" => "projects.transfer.preparing",
-        "scanning" => "projects.transfer.scanning",
-        "writing" => "projects.transfer.writing",
-        "validating" => "projects.transfer.validating",
-        "publishing" => "projects.transfer.publishing",
-        "reading" => "projects.transfer.reading",
-        "extracting" => "projects.transfer.extracting",
-        "registering" => "projects.transfer.registering",
-        _ => "projects.transfer.preparing",
-    };
-    t(locale, key)
-}
 
 /// Let component-owned inner surfaces consume Escape before the app-level
 /// stack sees it. The listener is capture-phase and owner-scoped, so it does
@@ -132,54 +127,6 @@ pub(crate) fn window_capture_escape(mut close_topmost: impl FnMut() -> bool + 's
     });
 }
 
-fn mcp_app_title(payload: &serde_json::Value) -> String {
-    payload
-        .pointer("/tool/title")
-        .or_else(|| payload.pointer("/tool/annotations/title"))
-        .or_else(|| payload.pointer("/tool/name"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|title| !title.trim().is_empty())
-        .unwrap_or("MCP App")
-        .to_string()
-}
-
-fn mcp_app_instance_id(
-    frame_id: &str,
-    presentation_id: &str,
-    payload: &serde_json::Value,
-) -> String {
-    let identity = (!presentation_id.is_empty())
-        .then_some(presentation_id)
-        .or_else(|| {
-            payload
-                .pointer("/resource/uri")
-                .or_else(|| payload.pointer("/tool/name"))
-                .and_then(serde_json::Value::as_str)
-        })
-        .unwrap_or("app");
-    format!("mcp-app:{frame_id}:{identity}")
-}
-
-#[component]
-fn McpAppPreview(instance_id: String, payload_json: String) -> impl IntoView {
-    let dom_id = unique_dom_id("center-mcp-app");
-    {
-        let mount_id = instance_id.clone();
-        let mount_dom_id = dom_id.clone();
-        let mount_payload = payload_json.clone();
-        create_effect(move |_| {
-            let _ = mount_mcp_app(&mount_id, &mount_dom_id, &mount_payload);
-        });
-    }
-    {
-        let parked_id = instance_id.clone();
-        on_cleanup(move || park_mcp_app(&parked_id));
-    }
-    view! {
-        <div class="center-mcp-app" id=dom_id data-mcp-app-id=instance_id></div>
-    }
-}
-
 fn session_highlight_count(session: Option<String>, items: &[LibraryItem]) -> usize {
     let Some(session) = session else { return 0 };
     items
@@ -202,534 +149,12 @@ fn max_right_pane_width(sidebar_open: bool, sidebar_width: f64) -> f64 {
     available.clamp(RIGHT_PANE_MIN_WIDTH, RIGHT_PANE_MAX_WIDTH)
 }
 
-#[component]
-fn CenterRuntimeConsole(path: String, consoles: RwSignal<RuntimeConsoles>) -> impl IntoView {
-    let locale = use_locale();
-    let log_path = path.clone();
-    let clear_path = path;
-    let log = create_memo(move |_| consoles.get().get(&log_path).cloned().unwrap_or_default());
-    let output_ref = create_node_ref::<html::Pre>();
-
-    // Follow appended output with ordinary positive scrollTop. The old
-    // column-reverse trick made WebKit's scrollbar direction and selection
-    // behavior backwards, especially once a whole script filled the console.
-    create_effect(move |_| {
-        let _ = log.get();
-        if let Some(output) = output_ref.get() {
-            request_animation_frame(move || output.set_scroll_top(output.scroll_height()));
-        }
-    });
-
-    view! {
-        <div class="center-file-console">
-            <div class="center-file-console-head">
-                <span>{move || t(locale.get(), "runtime.console")}</span>
-                <div class="spacer"></div>
-                <button type="button" class="center-file-btn"
-                    title=move || t(locale.get(), "runtime.console_clear")
-                    aria-label=move || t(locale.get(), "runtime.console_clear")
-                    on:click=move |_| consoles.update(|logs| {
-                        logs.remove(&clear_path);
-                    })>{compose_icon("close")}</button>
-            </div>
-            <pre node_ref=output_ref class:empty=move || log.get().is_empty()>{move || {
-                let text = log.get();
-                if text.is_empty() {
-                    t(locale.get(), "runtime.console_empty").into()
-                } else {
-                    text
-                }
-            }}</pre>
-        </div>
-    }
-}
-
-#[component]
-fn CenterRuntimeEnvironment(
-    project_id: String,
-    context_id: String,
-    context_label: String,
-    language: String,
-    locale: RwSignal<Locale>,
-    states: RwSignal<HashMap<String, RuntimeObjectState>>,
-    runtimes: RwSignal<Vec<RuntimeInfo>>,
-    selection_popup: RwSignal<Option<(String, Option<String>, i32, i32)>>,
-) -> impl IntoView {
-    let state_key = runtime_binding_state_key(&project_id, &context_id, &language);
-    let status_project = project_id.clone();
-    let status_context = context_id.clone();
-    let status_language = language.clone();
-    let status = create_memo(move |_| {
-        runtimes
-            .get()
-            .into_iter()
-            .find(|runtime| {
-                runtime.key.project_id == status_project
-                    && runtime.key.context_id == status_context
-                    && runtime.key.language == status_language
-            })
-            .map(|runtime| runtime.status)
-            .unwrap_or_else(|| "missing".into())
-    });
-    let language_label = language_display(&language).to_string();
-    let aria_language_label = language_label.clone();
-    let title_language_label = language_label.clone();
-    let loading_key = state_key.clone();
-    let content_key = state_key.clone();
-    let refresh_key = state_key;
-    let refresh_project = project_id;
-    let refresh_context = context_id;
-    let refresh_language = language;
-
-    view! {
-        <aside class="center-runtime-environment" aria-label=move || {
-            tf(locale.get(), "runtime.environment_title", &[("language", &aria_language_label)])
-        }>
-            <div class="center-runtime-environment-head">
-                <div>
-                    <h3>{move || tf(locale.get(), "runtime.environment_title", &[("language", &title_language_label)])}</h3>
-                    <span>{context_label}</span>
-                </div>
-                <span class=move || format!("runtime-status {}", status.get())>
-                    {move || runtime_status_label(locale.get(), &status.get())}
-                </span>
-                <button type="button" class="runtime-environment-refresh"
-                    title=move || t(locale.get(), "runtime.inspect_objects")
-                    aria-label=move || t(locale.get(), "runtime.inspect_objects")
-                    disabled=move || status.get() != "ready" || states.with(|states| {
-                        states.get(&loading_key).is_some_and(|state| state.loading)
-                    })
-                    on:click=move |_| inspect_runtime_objects(
-                        refresh_key.clone(),
-                        refresh_project.clone(),
-                        refresh_context.clone(),
-                        refresh_language.clone(),
-                        locale,
-                        states,
-                        runtimes,
-                    )>{compose_icon("sync")}</button>
-            </div>
-            <div class="center-runtime-environment-table-head" aria-hidden="true">
-                <span>{move || t(locale.get(), "runtime.object_name")}</span>
-                <span>{move || t(locale.get(), "runtime.object_type")}</span>
-                <span>{move || t(locale.get(), "runtime.object_value")}</span>
-                <span>{move || t(locale.get(), "runtime.object_size")}</span>
-            </div>
-            <div class="center-runtime-environment-body">
-                {move || {
-                    let state = states.with(|states| {
-                        states.get(&content_key).cloned().unwrap_or_default()
-                    });
-                    if state.loading && state.snapshot.is_none() {
-                        return view! {
-                            <div class="runtime-environment-empty">{t(locale.get(), "runtime.objects_loading")}</div>
-                        }.into_view();
-                    }
-                    if let Some(error) = state.error {
-                        return view! { <div class="context-error">{error}</div> }.into_view();
-                    }
-                    let Some(snapshot) = state.snapshot else {
-                        let key = if status.get() == "ready" {
-                            "runtime.objects_hint"
-                        } else {
-                            "runtime.environment_unavailable"
-                        };
-                        return view! {
-                            <div class="runtime-environment-empty">{t(locale.get(), key)}</div>
-                        }.into_view();
-                    };
-                    if snapshot.objects.is_empty() {
-                        return view! {
-                            <div class="runtime-environment-empty">{t(locale.get(), "runtime.objects_empty")}</div>
-                        }.into_view();
-                    }
-                    let shown = snapshot.objects.len();
-                    let total = snapshot.total_count;
-                    view! {
-                        <div class="center-runtime-environment-rows">
-                            {snapshot.objects.into_iter().map(|object| {
-                                let size = object.size_bytes.map(format_bytes).unwrap_or_else(|| "—".into());
-                                let summary = if object.summary.is_empty() { "—".into() } else { object.summary };
-                                let quote = runtime_object_quote(
-                                    &language_label, &object.name, &object.type_name, &summary, &size,
-                                );
-                                view! {
-                                    <div class="center-runtime-environment-row" role="button" tabindex="0"
-                                        title=move || t(locale.get(), "runtime.quote_object")
-                                        on:click=move |event: web_sys::MouseEvent| selection_popup.set(Some((
-                                            quote.clone(), None, event.client_x(), event.client_y(),
-                                        )))>
-                                        <span class="runtime-object-name" title=object.name.clone()>{object.name}</span>
-                                        <span class="runtime-object-type" title=object.type_name.clone()>{object.type_name}</span>
-                                        <span class="runtime-object-value" title=summary.clone()>{summary}</span>
-                                        <span class="runtime-object-size">{size}</span>
-                                    </div>
-                                }
-                            }).collect_view()}
-                        </div>
-                        {(shown < total).then(|| view! {
-                            <div class="runtime-objects-limit">{
-                                tf(locale.get(), "runtime.objects_showing", &[
-                                    ("shown", &shown.to_string()),
-                                    ("total", &total.to_string()),
-                                ])
-                            }</div>
-                        })}
-                    }.into_view()
-                }}
-            </div>
-        </aside>
-    }
-}
-
-#[derive(Default)]
-struct ProjectOpenGate {
-    held: bool,
-    waiters: VecDeque<oneshot::Sender<()>>,
-}
-
-struct ProjectOpenPermit(Rc<RefCell<ProjectOpenGate>>);
-
-impl Drop for ProjectOpenPermit {
-    fn drop(&mut self) {
-        let next = self.0.borrow_mut().waiters.pop_front();
-        if let Some(next) = next {
-            let _ = next.send(());
-        } else {
-            self.0.borrow_mut().held = false;
-        }
-    }
-}
-
-async fn acquire_project_open_gate(gate: Rc<RefCell<ProjectOpenGate>>) -> ProjectOpenPermit {
-    let receiver = {
-        let mut state = gate.borrow_mut();
-        if state.held {
-            let (sender, receiver) = oneshot::channel();
-            state.waiters.push_back(sender);
-            Some(receiver)
-        } else {
-            state.held = true;
-            None
-        }
-    };
-    if let Some(receiver) = receiver {
-        let _ = receiver.await;
-    }
-    ProjectOpenPermit(gate)
-}
-
-fn project_transition_is_current(
-    epoch: &Rc<Cell<u64>>,
-    target: &Rc<RefCell<Option<String>>>,
-    request_epoch: u64,
-    project_id: &str,
-) -> bool {
-    epoch.get() == request_epoch && target.borrow().as_deref() == Some(project_id)
-}
-
-fn acp_value_text(value: Option<&serde_json::Value>) -> String {
-    let Some(value) = value else {
-        return String::new();
-    };
-    match value {
-        serde_json::Value::Null => String::new(),
-        serde_json::Value::String(text) => text.clone(),
-        value => serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()),
-    }
-}
-
-fn upsert_acp_tool(items: &mut Vec<ChatItem>, payload: &serde_json::Value) {
-    let Some(call_id) = payload
-        .get("toolCallId")
-        .and_then(serde_json::Value::as_str)
-    else {
-        return;
-    };
-    let index = items
-        .iter()
-        .position(|item| matches!(item, ChatItem::AcpTool { call_id: id, .. } if id == call_id));
-    if let Some(index) = index {
-        if let ChatItem::AcpTool {
-            title,
-            kind,
-            status,
-            content,
-            locations,
-            ..
-        } = &mut items[index]
-        {
-            if let Some(value) = payload.get("title").and_then(serde_json::Value::as_str) {
-                *title = value.into();
-            }
-            if let Some(value) = payload.get("kind").and_then(serde_json::Value::as_str) {
-                *kind = value.into();
-            }
-            if let Some(value) = payload.get("status").and_then(serde_json::Value::as_str) {
-                *status = value.into();
-            }
-            if payload.get("content").is_some() {
-                *content = acp_value_text(payload.get("content"));
-            }
-            if payload.get("locations").is_some() {
-                *locations = acp_value_text(payload.get("locations"));
-            }
-        }
-    } else {
-        let row = ChatItem::AcpTool {
-            call_id: call_id.into(),
-            title: payload
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("ACP tool")
-                .into(),
-            kind: payload
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .into(),
-            status: payload
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("pending")
-                .into(),
-            content: acp_value_text(payload.get("content")),
-            locations: acp_value_text(payload.get("locations")),
-        };
-        let index = process_item_insert_index(items);
-        items.insert(index, row);
-    }
-}
-
-/// ACP has no flag marking a mode as "plans without executing"; agents name it
-/// themselves (`plan`, `plan_mode`, …), so match the id.
-fn is_plan_mode_id(id: &str) -> bool {
-    id.to_ascii_lowercase().contains("plan")
-}
-
-/// `(plan mode, mode to return to)` from a session's `availableModes`, or `None`
-/// for agents that expose no plan mode — the plan toggle stays hidden for those.
-fn plan_mode_pair(state: Option<&serde_json::Value>) -> Option<(String, String)> {
-    let ids: Vec<&str> = state?
-        .get("availableModes")?
-        .as_array()?
-        .iter()
-        .filter_map(|mode| mode.get("id")?.as_str())
-        .collect();
-    let plan = ids.iter().find(|id| is_plan_mode_id(id))?;
-    let exit = ids
-        .iter()
-        .find(|id| **id == "default")
-        .or_else(|| ids.iter().find(|id| !is_plan_mode_id(id)))?;
-    Some((plan.to_string(), exit.to_string()))
-}
-
-/// What the plan card's action bar was asked to do. All three end plan mode
-/// except `Modify`, which keeps it so the agent re-plans from the composer.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PlanDecision {
-    Approve,
-    Modify,
-    SaveExit,
-}
-
-fn acp_current_mode_id(state: Option<&serde_json::Value>) -> Option<&str> {
-    state?.get("currentModeId")?.as_str()
-}
-
-#[cfg(test)]
-mod plan_mode_tests {
-    use super::plan_mode_pair;
-
-    fn state(ids: &[&str]) -> serde_json::Value {
-        serde_json::json!({
-            "availableModes": ids.iter().map(|id| serde_json::json!({ "id": id })).collect::<Vec<_>>()
-        })
-    }
-
-    #[test]
-    fn pairs_plan_mode_with_the_mode_to_return_to() {
-        let modes = state(&["default", "plan", "acceptEdits"]);
-        assert_eq!(
-            plan_mode_pair(Some(&modes)),
-            Some(("plan".into(), "default".into()))
-        );
-        // No `default`: fall back to the first mode that is not a plan mode.
-        let modes = state(&["plan_mode", "yolo"]);
-        assert_eq!(
-            plan_mode_pair(Some(&modes)),
-            Some(("plan_mode".into(), "yolo".into()))
-        );
-    }
-
-    #[test]
-    fn no_pair_means_no_plan_toggle() {
-        assert_eq!(plan_mode_pair(None), None);
-        assert_eq!(plan_mode_pair(Some(&state(&["default", "yolo"]))), None);
-        assert_eq!(plan_mode_pair(Some(&state(&["plan"]))), None);
-        assert_eq!(plan_mode_pair(Some(&serde_json::json!({}))), None);
-    }
-}
-
-/// `session/set_mode` returns no state, so the applied id is merged locally to
-/// preserve the `availableModes` captured from the initial SessionModeState.
-/// Returns whether the agent accepted the switch.
-async fn apply_acp_mode(
-    modes: RwSignal<HashMap<String, serde_json::Value>>,
-    frame_id: String,
-    mode_id: String,
-) -> bool {
-    let args = to_value(&serde_json::json!({
-        "frameId": frame_id.clone(),
-        "modeId": mode_id,
-    }))
-    .unwrap();
-    if let Ok(value) = invoke_checked("set_acp_session_mode", args).await {
-        if let Some(applied) = value.as_string() {
-            modes.update(|all| {
-                let entry = all.entry(frame_id).or_insert_with(|| serde_json::json!({}));
-                if let serde_json::Value::Object(map) = entry {
-                    map.insert("currentModeId".into(), serde_json::Value::String(applied));
-                }
-            });
-            return true;
-        }
-    }
-    // Notify anyway so a control that already moved optimistically (the plan
-    // checkbox, the mode select) snaps back to the mode the agent is really in.
-    modes.update(|_| {});
-    false
-}
-
-fn acp_select_options(option: &serde_json::Value) -> Vec<(String, String)> {
-    let mut result = Vec::new();
-    for row in option
-        .get("options")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(value) = row.get("value").and_then(serde_json::Value::as_str) {
-            result.push((
-                value.into(),
-                row.get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or(value)
-                    .into(),
-            ));
-        } else if let Some(options) = row.get("options").and_then(serde_json::Value::as_array) {
-            for choice in options {
-                if let Some(value) = choice.get("value").and_then(serde_json::Value::as_str) {
-                    result.push((
-                        value.into(),
-                        choice
-                            .get("name")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or(value)
-                            .into(),
-                    ));
-                }
-            }
-        }
-    }
-    result
-}
-
-fn remove_optimistic_send_rows(rows: &mut Vec<ChatItem>, display_message: &str) {
-    let Some(index) = rows.iter().rposition(|item| {
-        matches!(item, ChatItem::User(value) if value == display_message)
-            || matches!(item, ChatItem::QueuedUser { text, .. } if text == display_message)
-    }) else {
-        return;
-    };
-    if matches!(rows.get(index), Some(ChatItem::QueuedUser { .. })) {
-        rows.remove(index);
-        return;
-    }
-    if matches!(rows.get(index + 1), Some(ChatItem::Assistant { text, .. }) if text.is_empty()) {
-        rows.drain(index..=index + 1);
-    }
-}
-
-fn mark_optimistic_send_failed(rows: &mut Vec<ChatItem>, display_message: &str, error: &str) {
-    let Some(index) = rows.iter().rposition(|item| {
-        matches!(item, ChatItem::User(value) if value == display_message)
-            || matches!(item, ChatItem::QueuedUser { text, .. } if text == display_message)
-    }) else {
-        return;
-    };
-    if matches!(rows.get(index), Some(ChatItem::QueuedUser { .. })) {
-        rows[index] = ChatItem::User(display_message.to_string());
-        rows.insert(
-            index + 1,
-            ChatItem::Assistant {
-                text: format!("Error: {error}"),
-                model: None,
-                resources: Vec::new(),
-            },
-        );
-        return;
-    }
-    if let Some(ChatItem::Assistant { text, .. }) = rows.get_mut(index + 1) {
-        if text.is_empty() {
-            *text = format!("Error: {error}");
-        }
-    }
-}
-
-fn split_turn_started_error(error: &str) -> (bool, &str) {
-    error
-        .strip_prefix("[turn-started] ")
-        .map_or((false, error), |message| (true, message))
-}
-
 mod app_support;
+use acp::*;
 use app_support::*;
-
-fn terminal_element_id(session_id: &str) -> String {
-    format!("terminal-session-{session_id}")
-}
-
-fn terminal_tab_id(session_id: &str) -> String {
-    format!("terminal-tab-{session_id}")
-}
-
-#[component]
-fn TerminalHost(session_id: String, active_terminal_id: RwSignal<Option<String>>) -> impl IntoView {
-    let element_id = terminal_element_id(&session_id);
-    let labelled_by = terminal_tab_id(&session_id);
-    let host_ref = create_node_ref::<html::Div>();
-    let mount_element_id = element_id.clone();
-    let mount_session_id = session_id.clone();
-    let active_session_id = session_id.clone();
-    let class_session_id = session_id.clone();
-
-    create_effect(move |_| {
-        if host_ref.get().is_none() {
-            return;
-        }
-        mount_terminal(&mount_element_id, &mount_session_id);
-        set_terminal_active(
-            &mount_element_id,
-            active_terminal_id.get().as_deref() == Some(active_session_id.as_str()),
-        );
-    });
-
-    let cleanup_element_id = element_id.clone();
-    on_cleanup(move || unmount_terminal(&cleanup_element_id));
-
-    view! {
-        <div
-            id=element_id
-            node_ref=host_ref
-            class="terminal-dock-frame"
-            class:active=move || active_terminal_id.get().as_deref() == Some(class_session_id.as_str())
-            data-terminal-session=session_id
-            role="tabpanel"
-            aria-labelledby=labelled_by
-        ></div>
-    }
-}
+pub(crate) use chat_render::*;
+use mcp_app::*;
+use runtime_views::*;
 
 #[component]
 fn App() -> impl IntoView {
@@ -749,6 +174,10 @@ fn App() -> impl IntoView {
     create_effect(move |_| save_send_with_modifier(send_with_modifier.get()));
 
     let items = create_rw_signal::<Vec<ChatItem>>(vec![]);
+    // Expensive transcript projections do not need token-by-token freshness.
+    // This revision advances for ordinary settled edits and for the structural
+    // events explicitly marked in the streaming handlers below.
+    let transcript_projection_epoch = create_rw_signal(0_u64);
     // Disclosure choices belong to the session/step identity, not to a render
     // instance. Content fingerprints intentionally remount changed rows while
     // streaming, so keeping this state here preserves explicit user choices.
@@ -761,7 +190,7 @@ fn App() -> impl IntoView {
             % EMPTY_SUBTITLE_COUNT,
     );
     create_effect(move |_| {
-        if items.get().is_empty() {
+        if items.with(Vec::is_empty) {
             empty_title_idx.set(
                 (js_sys::Math::random() * EMPTY_TITLE_COUNT as f64).floor() as usize
                     % EMPTY_TITLE_COUNT,
@@ -844,6 +273,8 @@ fn App() -> impl IntoView {
     // on `kind`; track just `kind` so editing command/url doesn't rebuild them.
     let conn_form_kind = create_memo(move |_| conn_form.get().map(|f| f.kind).unwrap_or_default());
     let settings = create_rw_signal(Settings::default());
+    let follow_up_questions = create_rw_signal(HashMap::<String, Vec<String>>::new());
+    let follow_up_generation = create_rw_signal(HashMap::<String, u64>::new());
     // This mirrors the last persisted sync configuration. Keep it separate
     // from `settings`, which also holds unsaved edits while Settings is open.
     let sync_actions_available = create_rw_signal(false);
@@ -851,18 +282,69 @@ fn App() -> impl IntoView {
     // Configured model profiles + the composer's bottom-right picker state.
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
     let active_session = create_rw_signal::<Option<String>>(None);
+    let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
     let session_has_items = create_memo(move |_| items.with(|rows| !rows.is_empty()));
     let conversation_outline = create_memo(move |_| {
         let Some(id) = active_session.get() else {
             return Vec::new();
         };
+        let _ = transcript_projection_epoch.get();
         let persisted = conversation_outlines
             .with(|outlines| outlines.get(&id).cloned())
             .unwrap_or_default();
         let user_offset = transcript_pages
             .with(|pages| pages.get(&id).copied())
             .map_or(0, |page| page.user_offset);
-        items.with(|rows| merge_conversation_outline(&persisted, rows, user_offset))
+        items.with_untracked(|rows| merge_conversation_outline(&persisted, rows, user_offset))
+    });
+    let center_conversation_title = create_memo(move |_| {
+        let loc = locale.get();
+        let _ = transcript_projection_epoch.get();
+        if let Some(id) = active_session.get() {
+            if let Some(title) = sessions.with(|sessions| {
+                sessions
+                    .iter()
+                    .find(|session| session.id == id)
+                    .and_then(|session| {
+                        let clean = user_message_presentation(&session.title).body;
+                        (!clean.trim().is_empty()).then_some(clean)
+                    })
+            }) {
+                return title;
+            }
+        }
+        items.with_untracked(|items| {
+            items
+                .iter()
+                .find_map(|item| match item {
+                    ChatItem::User(message) => {
+                        let clean = user_message_presentation(message).body;
+                        let title = clean.trim();
+                        if title.is_empty() {
+                            None
+                        } else if title.chars().count() > 48 {
+                            Some(format!("{}…", title.chars().take(48).collect::<String>()))
+                        } else {
+                            Some(title.to_string())
+                        }
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| i18n::t(loc, "center.new_session").into())
+        })
+    });
+    let loaded_conversation_user_range = create_memo(move |_| {
+        let _ = transcript_projection_epoch.get();
+        let user_offset = active_session
+            .get()
+            .and_then(|id| transcript_pages.with(|pages| pages.get(&id).copied()))
+            .map_or(0, |page| page.user_offset);
+        let loaded = items.with_untracked(|rows| {
+            rows.iter()
+                .filter(|item| matches!(item, ChatItem::User(_) | ChatItem::QueuedUser { .. }))
+                .count()
+        });
+        user_offset..user_offset + loaded
     });
     create_effect(move |_| {
         let _ = active_session.get();
@@ -882,7 +364,8 @@ fn App() -> impl IntoView {
         if active_acp_agent_id.get().is_some() {
             acp_context_usage.with(|all| all.get(&session_id).cloned())
         } else {
-            items.with(|rows| latest_context_usage(rows))
+            let _ = transcript_projection_epoch.get();
+            items.with_untracked(|rows| latest_context_usage(rows))
         }
     });
     create_effect(move |_| {
@@ -1065,7 +548,6 @@ fn App() -> impl IntoView {
     let proj_settings_busy = create_rw_signal(false);
 
     // Session history (left sidebar).
-    let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
     let session_history_cursor = create_rw_signal::<Option<SessionCursor>>(None);
     let session_history_loading = create_rw_signal(false);
     let refresh_session_history =
@@ -1188,6 +670,19 @@ fn App() -> impl IntoView {
             .unwrap_or(false);
         busy.set(b);
     });
+    // Settled transcript edits refresh projections automatically. While a turn
+    // streams, stop subscribing to `items`; structural event handlers advance
+    // the revision explicitly, and the final busy -> idle transition refreshes
+    // once more with the completed assistant text.
+    create_effect(move |_| {
+        if busy.get() {
+            return;
+        }
+        items.with(|_| ());
+        transcript_projection_epoch.update(|revision| {
+            *revision = revision.wrapping_add(1);
+        });
+    });
 
     // Refresh the session's specialist whenever the active session changes
     // (including on load and on "no session").
@@ -1256,21 +751,29 @@ fn App() -> impl IntoView {
     // Artifacts and notebook cells are projections of the active transcript.
     let proto_cache = Rc::new(RefCell::new(ProtoCache::new()));
     let artifacts_all = create_memo(move |_| {
-        items.with(|list| collect_artifacts(list, locale.get(), &mut proto_cache.borrow_mut()))
+        let _ = active_session.get();
+        let _ = transcript_projection_epoch.get();
+        items.with_untracked(|list| {
+            collect_artifacts(list, locale.get(), &mut proto_cache.borrow_mut())
+        })
     });
     // File-backed artifacts are scraped from chat text, so a file that was
     // renamed or overwritten still lingers and 404s on click (#41). Ask the
     // backend which referenced files are gone and drop them from the list.
     let missing_paths = create_rw_signal(std::collections::HashSet::<String>::new());
+    let artifact_file_paths = create_memo(move |_| {
+        artifacts_all.with(|artifacts| {
+            artifacts
+                .iter()
+                .filter_map(|artifact| match &artifact.data {
+                    PreviewData::File { path, .. } => Some(path.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+    });
     create_effect(move |_| {
-        let paths: Vec<String> = artifacts_all
-            .get()
-            .iter()
-            .filter_map(|a| match &a.data {
-                PreviewData::File { path, .. } => Some(path.clone()),
-                _ => None,
-            })
-            .collect();
+        let paths = artifact_file_paths.get();
         if paths.is_empty() {
             missing_paths.set(std::collections::HashSet::new());
             return;
@@ -1313,7 +816,43 @@ fn App() -> impl IntoView {
     });
     let notebook_cache = Rc::new(RefCell::new(NotebookCache::new()));
     let notebook_cells = create_memo(move |_| {
-        items.with(|list| collect_notebook_cells(list, &mut notebook_cache.borrow_mut()))
+        let _ = active_session.get();
+        let _ = transcript_projection_epoch.get();
+        items.with_untracked(|list| collect_notebook_cells(list, &mut notebook_cache.borrow_mut()))
+    });
+    let provenance_rows = create_memo(move |_| {
+        let _ = active_session.get();
+        items.with(|rows| {
+            rows.iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    matches!(item, ChatItem::Tool { .. }).then(|| (index, item.fingerprint()))
+                })
+                .collect::<Vec<_>>()
+        })
+    });
+    let artifact_count = create_memo(move |_| artifacts.with(Vec::len));
+    let artifact_render_fingerprint =
+        create_memo(move |_| artifacts.with(|artifacts| artifacts_fingerprint(artifacts)));
+    let notebook_count = create_memo(move |_| notebook_cells.with(Vec::len));
+    let provenance_count = create_memo(move |_| provenance_rows.with(Vec::len));
+    let highlight_count = create_memo(move |_| {
+        let session = active_session.get();
+        library_items.with(|items| session_highlight_count(session, items))
+    });
+    let monitored_run_ids = create_memo(move |_| {
+        let _ = active_session.get();
+        let _ = transcript_projection_epoch.get();
+        items.with_untracked(|rows| {
+            rows.iter()
+                .filter_map(|item| match item {
+                    ChatItem::Tool { name, input, .. } if is_run_monitor_tool(name) => {
+                        Some(input.trim().to_string())
+                    }
+                    _ => None,
+                })
+                .collect::<HashSet<_>>()
+        })
     });
     let sel_artifact = create_rw_signal(0usize);
     let show_art_preview = create_rw_signal(false);
@@ -1870,10 +1409,6 @@ fn App() -> impl IntoView {
     create_effect(move |_| {
         attach_chat_autoscroll();
     });
-    create_effect(move |_| {
-        let _ = items.get();
-        schedule_chat_follow();
-    });
 
     // Wire the agent event stream once. Every event carries the session frame
     // id; route transcript mutations to `items` (active session) or the
@@ -1886,6 +1421,7 @@ fn App() -> impl IntoView {
     let pending_cb = pending_turns;
     let approval_cb = approval_pending;
     let conversation_outlines_cb = conversation_outlines;
+    let transcript_projection_epoch_cb = transcript_projection_epoch;
     // Desktop notification for task status (#327). The backend drops it while
     // any app window is focused or when disabled in settings, so callers just
     // fire on every done/error/approval event.
@@ -2036,8 +1572,21 @@ fn App() -> impl IntoView {
                 });
             }
         };
+        let refresh_transcript_projections = |frame_id: &str| {
+            if active_cb.get_untracked().as_deref() == Some(frame_id) {
+                transcript_projection_epoch_cb.update(|revision| {
+                    *revision = revision.wrapping_add(1);
+                });
+            }
+        };
         match ev {
             AgentEvent::User { frame_id, text } => {
+                follow_up_questions.update(|questions| {
+                    questions.remove(&frame_id);
+                });
+                follow_up_generation.update(|generations| {
+                    *generations.entry(frame_id.clone()).or_default() += 1;
+                });
                 set_pet_activity(&frame_id, "running");
                 flush_now();
                 let outline_text = text.clone();
@@ -2050,7 +1599,7 @@ fn App() -> impl IntoView {
                     start_user_turn(v, text, model.clone());
                 });
                 conversation_outlines_cb.update(|outlines| {
-                    let outline = outlines.entry(frame_id).or_default();
+                    let outline = outlines.entry(frame_id.clone()).or_default();
                     let user_index = outline
                         .last()
                         .map_or(0, |entry| entry.user_index.saturating_add(1));
@@ -2062,6 +1611,7 @@ fn App() -> impl IntoView {
                         response_at: None,
                     });
                 });
+                refresh_transcript_projections(&frame_id);
             }
             AgentEvent::MessageBoundary { .. } => {}
             AgentEvent::Resources {
@@ -2131,7 +1681,8 @@ fn App() -> impl IntoView {
                             duration_ms: None,
                         },
                     );
-                })
+                });
+                refresh_transcript_projections(&frame_id);
             }
             AgentEvent::ToolResult {
                 frame_id,
@@ -2199,7 +1750,8 @@ fn App() -> impl IntoView {
                     if name == "attempt_completion" && ok {
                         promote_assistant_text(v, &content);
                     }
-                })
+                });
+                refresh_transcript_projections(&frame_id);
             }
             AgentEvent::ToolPresentation {
                 frame_id,
@@ -2240,6 +1792,7 @@ fn App() -> impl IntoView {
                         context_usage,
                     );
                 });
+                refresh_transcript_projections(&frame_id);
             }
             AgentEvent::Compaction {
                 frame_id,
@@ -2305,6 +1858,7 @@ fn App() -> impl IntoView {
                     strip_approval_pending(items);
                     settle_plan_cards(items);
                 });
+                refresh_transcript_projections(&frame_id);
                 approval_cb.update(|s| {
                     s.remove(&frame_id);
                 });
@@ -2314,6 +1868,36 @@ fn App() -> impl IntoView {
                     stopping_session.set(None);
                 }
                 refresh_session_history();
+                if settings.get_untracked().follow_up_questions {
+                    let generation = follow_up_generation.try_update(|generations| {
+                        let generation = generations.entry(frame_id.clone()).or_default();
+                        *generation += 1;
+                        *generation
+                    });
+                    spawn_local(async move {
+                        let args = to_value(&serde_json::json!({
+                            "sessionId": frame_id.clone(),
+                        }))
+                        .unwrap();
+                        let Ok(value) = invoke_checked("generate_follow_up_questions", args).await
+                        else {
+                            return;
+                        };
+                        let Ok(questions) = serde_wasm_bindgen::from_value::<Vec<String>>(value)
+                        else {
+                            return;
+                        };
+                        if questions.len() == 3
+                            && follow_up_generation
+                                .with_untracked(|generations| generations.get(&frame_id).copied())
+                                == generation
+                        {
+                            follow_up_questions.update(|all| {
+                                all.insert(frame_id, questions);
+                            });
+                        }
+                    });
+                }
             }
             AgentEvent::Error { frame_id, message } => {
                 flush_now();
@@ -2368,6 +1952,7 @@ fn App() -> impl IntoView {
                         });
                     });
                 }
+                refresh_transcript_projections(&frame_id);
                 approval_cb.update(|s| {
                     s.remove(&frame_id);
                 });
@@ -2416,6 +2001,7 @@ fn App() -> impl IntoView {
                         },
                     );
                 });
+                refresh_transcript_projections(&frame_id);
                 if active_cb.get().as_deref() == Some(&frame_id) {
                     status_cb.set(label);
                 }
@@ -2999,6 +2585,9 @@ fn App() -> impl IntoView {
                     text: display_message.clone(),
                 });
             });
+            transcript_projection_epoch.update(|revision| {
+                *revision = revision.wrapping_add(1);
+            });
             force_chat_bottom();
             let enqueue_msg = display_message.clone();
             spawn_local(async move {
@@ -3013,6 +2602,9 @@ fn App() -> impl IntoView {
                 if invoke_checked("enqueue_turn", args).await.is_err() {
                     route_items(active_session, items, transcripts, &session, |rows| {
                         remove_optimistic_send_rows(rows, &enqueue_msg);
+                    });
+                    transcript_projection_epoch.update(|revision| {
+                        *revision = revision.wrapping_add(1);
                     });
                     status.set(t(locale.get(), "status.send_failed").into());
                 }
@@ -3071,9 +2663,13 @@ fn App() -> impl IntoView {
             };
             // Mark the turn pending before touching active_session so the
             // session→ACP lookup effect does not clear a just-selected agent
-            // while send_message is still binding the session.
-            begin_pending_turn(pending_turns, running, &id);
-            if active_session.get_untracked().as_deref() != Some(id.as_str()) {
+            // while send_message is still binding a newly activated session.
+            // For the already-active session, insert its optimistic assistant
+            // first so the busy transition cannot briefly mistake the prior
+            // answer for the new live row and remount its Markdown.
+            let activates_session = active_session.get_untracked().as_deref() != Some(id.as_str());
+            if activates_session {
+                begin_pending_turn(pending_turns, running, &id);
                 active_session.set(Some(id.clone()));
             }
             transcript_pages.update(|pages| {
@@ -3096,6 +2692,12 @@ fn App() -> impl IntoView {
                         resources: Vec::new(),
                     });
                 }
+            });
+            if !activates_session {
+                begin_pending_turn(pending_turns, running, &id);
+            }
+            transcript_projection_epoch.update(|revision| {
+                *revision = revision.wrapping_add(1);
             });
             force_chat_bottom();
             // Await the stop before send_message so the running turn is already
@@ -3144,6 +2746,9 @@ fn App() -> impl IntoView {
                         } else {
                             remove_optimistic_send_rows(rows, &display_message);
                         }
+                    });
+                    transcript_projection_epoch.update(|revision| {
+                        *revision = revision.wrapping_add(1);
                     });
                     if !started {
                         if input.get_untracked().is_empty() {
@@ -3556,6 +3161,11 @@ fn App() -> impl IntoView {
                 (id, if up { "move_up" } else { "move_down" }, None)
             }
         };
+        if action != "cutin" {
+            transcript_projection_epoch.update(|revision| {
+                *revision = revision.wrapping_add(1);
+            });
+        }
         spawn_local(async move {
             let args = to_value(&QueuedTurnActionArgs {
                 session_id: sid,
@@ -5066,6 +4676,21 @@ fn App() -> impl IntoView {
         }
     });
 
+    let request_session_review = Callback::new(move |session_id: String| {
+        let loc = locale.get_untracked();
+        status.set(t(loc, "status.reviewing"));
+        spawn_local(async move {
+            let arg = to_value(&tauri_args::review_session(&Some(session_id))).unwrap();
+            if let Err(err) = invoke_checked("review_session", arg).await {
+                status.set(tf(
+                    loc,
+                    "status.review_failed",
+                    &[("msg", &localize_backend(loc, &js_error_text(err)))],
+                ));
+            }
+        });
+    });
+
     let jump_to_conversation_outline =
         Callback::new(move |(target, before_seq): (usize, Option<i64>)| {
             let Some(id) = active_session.get_untracked() else {
@@ -6155,16 +5780,18 @@ fn App() -> impl IntoView {
             focus_and_select_soon("add-host-alias");
         }
     });
-    // Re-underline saved excerpts whenever the transcript or library changes.
+    // Re-underline saved excerpts when a structural/settled transcript revision
+    // or the library changes. Token batches deliberately do not rescan the DOM.
     create_effect(move |_| {
-        let _ = items.get();
+        let _ = transcript_projection_epoch.get();
         let texts = match active_session.get() {
-            Some(session) => library_items
-                .get()
-                .iter()
-                .filter(|item| item.kind == "text" && item.source_session_id == session)
-                .map(|item| item.code.clone())
-                .collect::<Vec<_>>(),
+            Some(session) => library_items.with(|items| {
+                items
+                    .iter()
+                    .filter(|item| item.kind == "text" && item.source_session_id == session)
+                    .map(|item| item.code.clone())
+                    .collect::<Vec<_>>()
+            }),
             None => Vec::new(),
         };
         set_saved_marks(&serde_json::to_string(&texts).unwrap_or_default());
@@ -6254,7 +5881,10 @@ fn App() -> impl IntoView {
                 });
                 return;
             }
-            if action == "attachWorkspaceFile" {
+            if matches!(
+                action.as_str(),
+                "attachWorkspaceFile" | "attachWorkspaceDirectory"
+            ) {
                 let _ = attach_ready_path(attachments, payload);
                 focus_composer();
                 return;
@@ -7092,8 +6722,20 @@ fn App() -> impl IntoView {
                     }
                 };
 
-                // No await occurs after this final guard, so a newer transition
-                // cannot interleave before these current-project actions run.
+                let session_id = match session_id {
+                    Some(session_id) => Some(session_id),
+                    None if settings.get_untracked().resume_last_session => {
+                        let args = to_value(&serde_json::json!({ "cursor": null })).unwrap();
+                        invoke_checked("list_sessions_page", args)
+                            .await
+                            .ok()
+                            .and_then(|value| {
+                                serde_wasm_bindgen::from_value::<SessionPage>(value).ok()
+                            })
+                            .and_then(|page| page.items.into_iter().next().map(|item| item.id))
+                    }
+                    None => None,
+                };
                 if !project_transition_is_current(
                     &transition_epoch,
                     &transition_target,
@@ -7757,6 +7399,30 @@ fn App() -> impl IntoView {
         }
     });
 
+    // Undo eligibility changes at turn boundaries, but the assistant Markdown
+    // does not. Publish the one eligible index separately so adding/removing
+    // its button never remounts and reparses the whole message row.
+    let undo_assistant_index = create_memo(move |_| {
+        if busy.get() || active_acp_agent_id.get().is_some() {
+            return None;
+        }
+        items.with(|list| {
+            let queue_start = trailing_queue_start(list);
+            (queue_start == list.len())
+                .then(|| {
+                    list.iter().enumerate().rev().find_map(|(index, item)| {
+                        matches!(
+                            item,
+                            ChatItem::Assistant { text, .. }
+                                if !text.trim().is_empty() && !text.starts_with("Error: ")
+                        )
+                        .then_some(index)
+                    })
+                })
+                .flatten()
+        })
+    });
+
     view! {
         {is_windows().then(|| view! {
             <WindowTitlebar locale=locale has_current_project=has_current_project
@@ -7769,83 +7435,7 @@ fn App() -> impl IntoView {
             on_new_session=palette_new_session on_open_scratch=open_scratch
             on_project_settings=palette_project_settings
             on_manage_skills=palette_manage_skills on_attach=palette_attach />
-        {move || project_transfer.get().map(|transfer| {
-            let complete = transfer.is_complete();
-            let title = if complete {
-                t(
-                    locale.get(),
-                    if transfer.direction == "export" {
-                        "projects.transfer.export_complete"
-                    } else {
-                        "projects.transfer.import_complete"
-                    },
-                )
-            } else if transfer.direction == "export" {
-                t(locale.get(), "projects.transfer.export_title")
-            } else {
-                t(locale.get(), "projects.transfer.import_title")
-            };
-            let stage = if complete {
-                String::new()
-            } else {
-                project_transfer_stage_label(locale.get(), &transfer.stage)
-            };
-            let byte_progress = transfer.total_bytes.map(|total| {
-                format!(
-                    "{} / {}",
-                    format_bytes(transfer.completed_bytes),
-                    format_bytes(total),
-                )
-            });
-            let file_progress = transfer.total_files.map(|total| {
-                tf(
-                    locale.get(),
-                    "projects.transfer.files",
-                    &[
-                        ("done", &transfer.completed_files.to_string()),
-                        ("total", &total.to_string()),
-                    ],
-                )
-            });
-            let detail = transfer.current_path.clone();
-            let import_hint = (!complete && transfer.direction == "import")
-                .then(|| t(locale.get(), "projects.transfer.import_destination_hint"));
-            let max = transfer.total_bytes.unwrap_or(1).to_string();
-            let value = transfer.total_bytes.map(|_| transfer.completed_bytes.to_string());
-            view! {
-                <div class="overlay project-transfer-overlay">
-                    <div class="modal confirm-modal project-transfer-modal"
-                        data-testid="project-transfer-modal"
-                        role="dialog" aria-modal="true" aria-live="polite">
-                        <h2>{title}</h2>
-                        {(!complete).then(|| view! {
-                            <div class="project-transfer-progress" role="status">
-                                <span class="project-transfer-stage">{stage}</span>
-                                <progress max=max value=value></progress>
-                                <div class="project-transfer-meta">
-                                    {byte_progress.map(|progress| view! { <span>{progress}</span> })}
-                                    {file_progress.map(|progress| view! { <span>{progress}</span> })}
-                                </div>
-                            </div>
-                        })}
-                        {import_hint.map(|hint| view! {
-                            <div class="project-transfer-hint">{hint}</div>
-                        })}
-                        {detail.map(|path| view! {
-                            <div class="project-transfer-path" title=path.clone()>{path}</div>
-                        })}
-                        {complete.then(|| view! {
-                            <div class="row">
-                                <button type="button" class="primary"
-                                    on:click=move |_| project_transfer.set(None)>
-                                    {move || t(locale.get(), "projects.transfer.done")}
-                                </button>
-                            </div>
-                        })}
-                    </div>
-                </div>
-            }
-        })}
+        <ProjectTransferOverlay state=ProjectTransferOverlayState { locale, project_transfer } />
         <ProjectLanding
             state=ProjectLandingState {
                 show_projects, demo_mode, items, active_session, project_open_error,
@@ -7903,533 +7493,17 @@ fn App() -> impl IntoView {
                 })
             />
         })}
-        {move || ssh_connectivity_modal.get().map(|modal| {
-            let host = modal.label.clone();
-            let raw_detail = modal.detail.clone();
-            let context_id = modal.context_id.clone();
-            let enable_after = modal.enable_after_probe;
-            let failed = modal.phase == SshCheckPhase::Failed;
-            let fail_kind = classify_ssh_failure(&raw_detail);
-            let loc = locale.get();
-            let detail = localize_backend(loc, &raw_detail);
-            let title = if failed {
-                match fail_kind {
-                    SshFailKind::ProbeOutput => t(loc, "ssh_check.probe_output_title"),
-                    SshFailKind::PasswordAuth => t(loc, "ssh_check.password_title"),
-                    SshFailKind::KeyAuth => t(loc, "ssh_check.key_title"),
-                    _ => t(loc, "ssh_check.fail_title"),
-                }
-            } else {
-                t(loc, "ssh_check.title")
-            };
-            let body = if failed {
-                let key = match fail_kind {
-                    SshFailKind::ProbeOutput => "ssh_check.probe_output_body",
-                    SshFailKind::PasswordAuth => "ssh_check.password_body",
-                    SshFailKind::KeyAuth => "ssh_check.key_body",
-                    _ => "ssh_check.fail_body",
-                };
-                tf(loc, key, &[("host", &host)])
-            } else {
-                tf(loc, "ssh_check.body", &[("host", &host)])
-            };
-            let detail_line = tf(loc, "ssh_check.detail", &[("detail", &detail)]);
-            let cause_keys = ssh_fail_cause_keys(fail_kind);
-            let host_for_probe = host.clone();
-            let run_probe = Rc::new({
-                let context_id = context_id.clone();
-                move || {
-                    let context_id = context_id.clone();
-                    let host_for_probe = host_for_probe.clone();
-                    ssh_connectivity_busy.set(true);
-                    spawn_local(async move {
-                        let arg =
-                            to_value(&serde_json::json!({ "contextId": context_id.clone() }))
-                                .unwrap();
-                        match invoke_checked("probe_execution_context", arg).await {
-                            Ok(value) => {
-                                show_probe_stopped_toast(&value, locale);
-                                refresh_execution_contexts(execution_contexts);
-                                let Ok(updated) =
-                                    serde_wasm_bindgen::from_value::<ExecutionContext>(value)
-                                else {
-                                    ssh_connectivity_busy.set(false);
-                                    return;
-                                };
-                                if ssh_context_known_good(&updated) {
-                                    if enable_after {
-                                        apply_session_compute_resource
-                                            .call((context_id.clone(), true));
-                                        show_toast(&t(
-                                            locale.get_untracked(),
-                                            "ssh_check.enabled",
-                                        ));
-                                    } else {
-                                        show_toast(&t(
-                                            locale.get_untracked(),
-                                            "ssh_check.probed_ok",
-                                        ));
-                                    }
-                                    if file_source.get_untracked() == context_id {
-                                        refresh_remote_dir(
-                                            context_id.clone(),
-                                            remote_file_cwd,
-                                            remote_file_entries,
-                                            remote_file_loading,
-                                            remote_file_error,
-                                            file_source,
-                                        );
-                                    }
-                                    ssh_connectivity_modal.set(None);
-                                } else {
-                                    // Stop probing loop: switch to diagnosis + fix.
-                                    let detail = ssh_connectivity_gap(&updated)
-                                        .unwrap_or_else(|| "probe failed".into());
-                                    let label = if updated.label.trim().is_empty() {
-                                        updated.id.clone()
-                                    } else {
-                                        updated.label.clone()
-                                    };
-                                    ssh_connectivity_modal.set(Some(SshConnectivityModal::failed(
-                                        context_id.clone(),
-                                        label,
-                                        detail,
-                                        enable_after,
-                                    )));
-                                    show_warning_toast(&t(
-                                        locale.get_untracked(),
-                                        "ssh_check.still_failed",
-                                    ));
-                                }
-                            }
-                            Err(error) => {
-                                let message = localize_backend(
-                                    locale.get_untracked(),
-                                    &js_error_text(error),
-                                );
-                                show_toast(&message);
-                                ssh_connectivity_modal.set(Some(SshConnectivityModal::failed(
-                                    context_id.clone(),
-                                    host_for_probe,
-                                    message,
-                                    enable_after,
-                                )));
-                            }
-                        }
-                        ssh_connectivity_busy.set(false);
-                    });
-                }
-            });
-            let open_edit_host = Rc::new({
-                let context_id = context_id.clone();
-                move || {
-                    let alias = context_id
-                        .strip_prefix("ssh:")
-                        .unwrap_or(context_id.as_str())
-                        .to_string();
-                    edit_ssh_host.call(alias);
-                }
-            });
-            view! {
-                <div class="overlay" data-testid="ssh-connectivity-modal">
-                    <div class="modal confirm-modal update-check-modal ssh-check-modal"
-                        class:ssh-check-failed=failed role="dialog" aria-modal="true">
-                        <h2>{title}</h2>
-                        <div class="hint ssh-check-scroll">
-                            <p>{body}</p>
-                            <p class="ssh-check-error">{detail_line}</p>
-                            {failed.then(|| view! {
-                                <div class="ssh-check-causes" data-testid="ssh-check-causes">
-                                    <div class="ssh-check-causes-title">
-                                        {t(loc, "ssh_check.causes_title")}
-                                    </div>
-                                    <ul>
-                                        {cause_keys.iter().map(|key| view! {
-                                            <li>{t(loc, key)}</li>
-                                        }).collect_view()}
-                                    </ul>
-                                </div>
-                            })}
-                            {(!failed).then(|| view! {
-                                <p>{t(loc, "ssh_check.hint")}</p>
-                            })}
-                        </div>
-                        <div class="row ssh-check-actions">
-                            <button
-                                type="button"
-                                prop:disabled=move || ssh_connectivity_busy.get()
-                                on:click=move |_| {
-                                    ssh_connectivity_modal.set(None);
-                                    ssh_connectivity_busy.set(false);
-                                }
-                            >
-                                {t(loc, "ssh_check.cancel")}
-                            </button>
-                            {if failed {
-                                let edit = open_edit_host.clone();
-                                let reprobe = run_probe.clone();
-                                view! {
-                                    <button
-                                        type="button"
-                                        data-testid="ssh-connectivity-settings"
-                                        prop:disabled=move || ssh_connectivity_busy.get()
-                                        on:click=move |_| {
-                                            ssh_connectivity_modal.set(None);
-                                            open_settings_fn(Some("environments".into()));
-                                        }
-                                    >
-                                        {t(loc, "ssh_check.jump")}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        class="primary"
-                                        data-testid="ssh-connectivity-fix-host"
-                                        prop:disabled=move || ssh_connectivity_busy.get()
-                                        on:click=move |_| edit()
-                                    >
-                                        {t(loc, "ssh_check.fix_host")}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        data-testid="ssh-connectivity-reprobe"
-                                        prop:disabled=move || ssh_connectivity_busy.get()
-                                        on:click=move |_| reprobe()
-                                    >
-                                        {move || if ssh_connectivity_busy.get() {
-                                            t(locale.get(), "ssh_check.probing")
-                                        } else {
-                                            t(locale.get(), "ssh_check.reprobe_after_fix")
-                                        }}
-                                    </button>
-                                }.into_view()
-                            } else {
-                                let probe = run_probe.clone();
-                                view! {
-                                    <button
-                                        type="button"
-                                        class="primary"
-                                        data-testid="ssh-connectivity-probe"
-                                        prop:disabled=move || ssh_connectivity_busy.get()
-                                        on:click=move |_| probe()
-                                    >
-                                        {move || if ssh_connectivity_busy.get() {
-                                            t(locale.get(), "ssh_check.probing")
-                                        } else {
-                                            t(locale.get(), "ssh_check.probe")
-                                        }}
-                                    </button>
-                                }.into_view()
-                            }}
-                        </div>
-                    </div>
-                </div>
+        <SshConnectivityOverlay
+            state=SshConnectivityOverlayState {
+                locale, ssh_connectivity_modal, ssh_connectivity_busy, execution_contexts,
+                remote_file_cwd, remote_file_entries, remote_file_loading, remote_file_error,
+                file_source,
             }
-            .into_view()
-        })}
-        {move || update_check_modal.get().map(|modal| match modal {
-            UpdateCheckModal::Checking => view! {
-                <div class="overlay">
-                    <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
-                        <h2>{move || t(locale.get(), "update_modal.checking_title")}</h2>
-                        <div class="hint">{move || t(locale.get(), "update_modal.checking_body")}</div>
-                    </div>
-                </div>
-            }
-            .into_view(),
-            UpdateCheckModal::Available {
-                version,
-                notes,
-                release_url,
-                install_supported,
-                downloading,
-            } => {
-                let body = tf(locale.get(), "update_modal.available_body", &[("version", &version)]);
-                let notes_html = (!notes.trim().is_empty()).then(|| md_to_html(&notes));
-                let release_for_open = release_url.clone();
-                let version_for_download = version.clone();
-                let release_for_download = release_url.clone();
-                view! {
-                    <div class="overlay">
-                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
-                            <h2>{move || t(locale.get(), "update_modal.available_title")}</h2>
-                            <div class="hint">{body}</div>
-                            {notes_html.map(|html| view! {
-                                <div class="update-notes md markdown" inner_html=html></div>
-                            })}
-                            <div class="row">
-                                <button
-                                    type="button"
-                                    class="update-modal-dismiss"
-                                    data-testid="update-check-dismiss"
-                                    on:click=move |_| {
-                                        update_check_enabled.set(false);
-                                        update_banner.set(None);
-                                        update_check_modal.set(None);
-                                        spawn_local(async {
-                                            let arg = to_value(&serde_json::json!({ "enabled": false })).unwrap_or(JsValue::NULL);
-                                            let _ = invoke("set_update_check_enabled", arg).await;
-                                        });
-                                    }
-                                >
-                                    {move || t(locale.get(), "update_modal.never")}
-                                </button>
-                                <button
-                                    type="button"
-                                    on:click=move |_| update_check_modal.set(None)
-                                >
-                                    {move || t(locale.get(), "update_modal.later")}
-                                </button>
-                                <button
-                                    type="button"
-                                    class:primary=move || !install_supported
-                                    data-testid="update-check-open-releases"
-                                    on:click=move |_| {
-                                        open_external_url(release_for_open.clone());
-                                        update_check_modal.set(None);
-                                    }
-                                >
-                                    {move || t(locale.get(), "update_modal.open_releases")}
-                                </button>
-                                {install_supported.then(|| view! {
-                                    <button
-                                        type="button"
-                                        class="primary"
-                                        data-testid="update-check-download"
-                                        prop:disabled=downloading
-                                        on:click=move |_| {
-                                            let version = version_for_download.clone();
-                                            let release_url = release_for_download.clone();
-                                            let downloaded_bytes = create_rw_signal(0_u64);
-                                            let total_bytes = create_rw_signal(None::<u64>);
-                                            update_check_modal.set(Some(UpdateCheckModal::Downloading {
-                                                version: version.clone(),
-                                                downloaded_bytes,
-                                                total_bytes,
-                                            }));
-                                            spawn_local(async move {
-                                                let callback = Closure::<dyn FnMut(JsValue)>::wrap(Box::new(
-                                                    move |value: JsValue| {
-                                                        let Ok(event) = serde_wasm_bindgen::from_value::<UpdateDownloadEvent>(value) else {
-                                                            return;
-                                                        };
-                                                        match event {
-                                                            UpdateDownloadEvent::Started { content_length } => {
-                                                                total_bytes.set(content_length);
-                                                            }
-                                                            UpdateDownloadEvent::Progress { chunk_length } => {
-                                                                downloaded_bytes.update(|bytes| {
-                                                                    *bytes = bytes.saturating_add(chunk_length);
-                                                                });
-                                                            }
-                                                            UpdateDownloadEvent::Verified => {}
-                                                        }
-                                                    },
-                                                ));
-                                                let result = download_app_update(
-                                                    callback.as_ref().unchecked_ref(),
-                                                ).await;
-                                                drop(callback);
-                                                match result {
-                                                    Ok(_) => update_check_modal.set(Some(
-                                                        UpdateCheckModal::ReadyToInstall {
-                                                            version,
-                                                            release_url,
-                                                        },
-                                                    )),
-                                                    Err(error) => update_check_modal.set(Some(
-                                                        UpdateCheckModal::Failed {
-                                                            message: localize_backend(
-                                                                locale.get_untracked(),
-                                                                &js_error_text(error),
-                                                            ),
-                                                            release_url: Some(release_url),
-                                                        },
-                                                    )),
-                                                }
-                                            });
-                                        }
-                                    >
-                                        {move || if downloading {
-                                            t(locale.get(), "transfer.downloading")
-                                        } else {
-                                            t(locale.get(), "update_modal.download")
-                                        }}
-                                    </button>
-                                })}
-                            </div>
-                        </div>
-                    </div>
-                }
-                .into_view()
-            }
-            UpdateCheckModal::Downloading {
-                version,
-                downloaded_bytes,
-                total_bytes,
-            } => {
-                let title = tf(
-                    locale.get(),
-                    "update_modal.downloading_title",
-                    &[("version", &version)],
-                );
-                view! {
-                    <div class="overlay">
-                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
-                            <h2>{title}</h2>
-                            <div class="hint">{move || t(locale.get(), "update_modal.downloading_body")}</div>
-                            <div class="update-download-progress" role="status" aria-live="polite">
-                                <progress
-                                    max=move || total_bytes.get().unwrap_or(1).to_string()
-                                    value=move || total_bytes.get().map(|_| downloaded_bytes.get().to_string())
-                                ></progress>
-                                <span>{move || if let Some(total) = total_bytes.get() {
-                                    format!("{} / {}", format_bytes(downloaded_bytes.get()), format_bytes(total))
-                                } else {
-                                    format_bytes(downloaded_bytes.get())
-                                }}</span>
-                            </div>
-                        </div>
-                    </div>
-                }
-                .into_view()
-            }
-            UpdateCheckModal::ReadyToInstall { version, release_url } => {
-                let body = tf(
-                    locale.get(),
-                    "update_modal.ready_body",
-                    &[("version", &version)],
-                );
-                let release_for_open = release_url.clone();
-                let version_for_install = version.clone();
-                let release_for_install = release_url.clone();
-                view! {
-                    <div class="overlay">
-                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
-                            <h2>{move || t(locale.get(), "update_modal.ready_title")}</h2>
-                            <div class="hint">{body}</div>
-                            <div class="row">
-                                <button
-                                    type="button"
-                                    on:click=move |_| update_check_modal.set(None)
-                                >
-                                    {move || t(locale.get(), "update_modal.later")}
-                                </button>
-                                <button
-                                    type="button"
-                                    data-testid="update-check-open-releases"
-                                    on:click=move |_| {
-                                        open_external_url(release_for_open.clone());
-                                        update_check_modal.set(None);
-                                    }
-                                >
-                                    {move || t(locale.get(), "update_modal.open_releases")}
-                                </button>
-                                <button
-                                    type="button"
-                                    class="primary"
-                                    data-testid="update-check-install"
-                                    on:click=move |_| {
-                                        let version = version_for_install.clone();
-                                        let release_url = release_for_install.clone();
-                                        update_check_modal.set(Some(UpdateCheckModal::Installing {
-                                            version: version.clone(),
-                                        }));
-                                        spawn_local(async move {
-                                            if let Err(error) = invoke_checked(
-                                                "install_update",
-                                                JsValue::UNDEFINED,
-                                            ).await {
-                                                update_check_modal.set(Some(UpdateCheckModal::Failed {
-                                                    message: localize_backend(
-                                                        locale.get_untracked(),
-                                                        &js_error_text(error),
-                                                    ),
-                                                    release_url: Some(release_url),
-                                                }));
-                                            }
-                                        });
-                                    }
-                                >
-                                    {move || t(locale.get(), "update_modal.install")}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                }
-                .into_view()
-            }
-            UpdateCheckModal::Installing { version } => {
-                let title = tf(
-                    locale.get(),
-                    "update_modal.installing_title",
-                    &[("version", &version)],
-                );
-                view! {
-                    <div class="overlay">
-                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
-                            <h2>{title}</h2>
-                            <div class="hint">{move || t(locale.get(), "update_modal.installing_body")}</div>
-                        </div>
-                    </div>
-                }
-                .into_view()
-            }
-            UpdateCheckModal::UpToDate { version } => {
-                let body = tf(locale.get(), "update_modal.up_to_date_body", &[("version", &version)]);
-                view! {
-                    <div class="overlay">
-                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
-                            <h2>{move || t(locale.get(), "update_modal.up_to_date_title")}</h2>
-                            <div class="hint">{body}</div>
-                            <div class="row">
-                                <button
-                                    type="button"
-                                    class="primary"
-                                    on:click=move |_| update_check_modal.set(None)
-                                >
-                                    {move || t(locale.get(), "update_modal.ok")}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                }
-                .into_view()
-            }
-            UpdateCheckModal::Failed { message, release_url } => {
-                let has_release = release_url.is_some();
-                view! {
-                    <div class="overlay">
-                        <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
-                            <h2>{move || t(locale.get(), "update_modal.failed_title")}</h2>
-                            <div class="hint" role="alert">{message}</div>
-                            <div class="row">
-                                <button
-                                    type="button"
-                                    class:primary=move || !has_release
-                                    on:click=move |_| update_check_modal.set(None)
-                                >
-                                    {move || t(locale.get(), "update_modal.ok")}
-                                </button>
-                                {release_url.map(|url| view! {
-                                    <button
-                                        type="button"
-                                        class="primary"
-                                        data-testid="update-check-open-releases"
-                                        on:click=move |_| {
-                                            open_external_url(url.clone());
-                                            update_check_modal.set(None);
-                                        }
-                                    >
-                                        {move || t(locale.get(), "update_modal.open_releases")}
-                                    </button>
-                                })}
-                            </div>
-                        </div>
-                    </div>
-                }
-                .into_view()
-            }
-        })}
+            apply_session_compute_resource=apply_session_compute_resource
+            edit_ssh_host=edit_ssh_host
+            open_settings=Callback::new(move |section: Option<String>| open_settings_fn(section))
+        />
+        <UpdateCheckOverlay state=UpdateCheckOverlayState { locale, update_check_modal, update_check_enabled, update_banner } />
         <div class="app"
             class:app-entering=move || app_shell_entering.get()
             class:scratch-mode=move || scratch_open.get()
@@ -8520,27 +7594,7 @@ fn App() -> impl IntoView {
                 <div class="center-tabs" role="tablist">
                     <button type="button" class="center-tab" class:active=move || center_file.get().is_none()
                         on:click=move |_| center_file.set(None)>
-                        <span class="center-tab-label">{move || {
-                            let loc = locale.get();
-                            if let Some(id) = active_session.get() {
-                                if let Some(s) = sessions.get().iter().find(|s| s.id == id) {
-                                    let clean = user_message_presentation(&s.title).body;
-                                    let title = clean.trim();
-                                    if !title.is_empty() { return clean; }
-                                }
-                            }
-                            items.get().iter().find_map(|i| match i {
-                                ChatItem::User(msg) => {
-                                    let clean = user_message_presentation(msg).body;
-                                    let t = clean.trim();
-                                    if t.is_empty() { None }
-                                    else if t.chars().count() > 48 {
-                                        Some(format!("{}…", t.chars().take(48).collect::<String>()))
-                                    } else { Some(t.to_string()) }
-                                }
-                                _ => None,
-                            }).unwrap_or_else(|| i18n::t(loc, "center.new_session").into())
-                        }}</span>
+                        <span class="center-tab-label">{move || center_conversation_title.get()}</span>
                     </button>
                     <For
                         each=move || center_files.get()
@@ -9162,55 +8216,43 @@ fn App() -> impl IntoView {
                     <For
                         each=move || {
                             use std::hash::{Hash, Hasher};
-                            let arts_fp = artifacts.with(|a| artifacts_fingerprint(a));
+                            let arts_fp = artifact_render_fingerprint.get();
                             let busy_now = busy.get();
-                            let native_session = active_acp_agent_id.get().is_none();
-                            let outline = conversation_outline.get();
                             // `load_session` deliberately swaps the visible rows before
                             // publishing their session id. Carry the id in every keyed row
                             // so that second update rebuilds callbacks which must target the
                             // newly active session (notably background approval cards).
                             let thread_session_id = active_session.get().unwrap_or_default();
                             let user_offset = transcript_pages
-                                .get()
-                                .get(&thread_session_id)
-                                .copied()
+                                .with(|pages| pages.get(&thread_session_id).copied())
                                 .map_or(0, |page| page.user_offset);
                             let requested_start = if busy_now {
                                 usize::MAX
                             } else {
-                                transcript_pages
-                                    .get()
-                                    .get(&thread_session_id)
-                                    .map(|page| page.window_user_start)
-                                    .unwrap_or(usize::MAX)
+                                transcript_pages.with(|pages| {
+                                    pages
+                                        .get(&thread_session_id)
+                                        .map(|page| page.window_user_start)
+                                        .unwrap_or(usize::MAX)
+                                })
                             };
-                            // `with` avoids deep-cloning every message per flush;
-                            // only rows being built clone their item below.
-                            items.with(|list| {
+                            // Rows carry message indices, never cloned messages;
+                            // `children` clones lazily, so a flush only pays for
+                            // rows whose fingerprint key actually changed.
+                            conversation_outline.with(|outline| items.with(|list| {
                             // Queued user turns live after the active turn and
                             // must not make its process group look historical.
                             let queue_start = trailing_queue_start(list);
                             let last = queue_start.saturating_sub(1);
-                            let undo_index = (!busy_now
-                                && native_session
-                                && queue_start == list.len())
-                                .then(|| {
-                                    list.iter().enumerate().rev().find_map(|(index, item)| {
-                                        matches!(
-                                            item,
-                                            ChatItem::Assistant { text, .. }
-                                                if !text.trim().is_empty()
-                                                    && !text.starts_with("Error: ")
-                                        )
-                                        .then_some(index)
-                                    })
-                                })
-                                .flatten();
+                            let live_assistant_index = busy_now.then(|| {
+                                list[..queue_start]
+                                    .iter()
+                                    .rposition(|item| matches!(item, ChatItem::Assistant { .. }))
+                            }).flatten();
                             // Keep process layers separate while the turn runs;
                             // once complete, fold commentary + reasoning + tools
                             // into one activity summary before the final answer.
-                            let mut rows: Vec<(String, usize, u64, ThreadRow)> = Vec::new();
+                            let mut rows: Vec<(String, usize, bool, u64, ThreadRow)> = Vec::new();
                             let (window, _, _) = transcript_render_window(
                                 list,
                                 requested_start,
@@ -9221,33 +8263,43 @@ fn App() -> impl IntoView {
                                 if renders_nothing(&list[i]) { i += 1; continue; }
                                 if let Some(end) = completed_activity_end(list, i, busy_now) {
                                     let start = i;
-                                    let mut run: Vec<(usize, ChatItem)> = Vec::new();
+                                    let mut indices: Vec<usize> = Vec::new();
                                     for j in i..end {
                                         if is_turn_activity_at(list, j) {
-                                            run.push((j, list[j].clone()));
+                                            indices.push(j);
                                         }
                                     }
                                     let mut h = std::collections::hash_map::DefaultHasher::new();
-                                    for (idx, it) in &run { (idx, it.fingerprint()).hash(&mut h); }
+                                    for idx in &indices { (idx, list[*idx].fingerprint()).hash(&mut h); }
                                     true.hash(&mut h);
-                                    let ui_indices = run
+                                    let ui_indices = indices
                                         .iter()
-                                        .map(|(index, _)| index.to_string())
+                                        .map(|index| index.to_string())
                                         .collect::<Vec<_>>()
                                         .join(" ");
-                                    let items_only = run.into_iter().map(|(_, item)| item).collect();
-                                    rows.push((thread_session_id.clone(), start, h.finish(), ThreadRow::Activity {
-                                        items: items_only,
+                                    let user_index = list[..start]
+                                        .iter()
+                                        .filter(|item| matches!(item, ChatItem::User(_)))
+                                        .count()
+                                        .checked_sub(1)
+                                        .map(|index| index + user_offset);
+                                    let duration_ms = user_index
+                                        .and_then(|index| outline.iter().find(|entry| entry.user_index == index))
+                                        .and_then(|entry| turn_duration_ms(entry.sent_at, entry.response_at));
+                                    duration_ms.hash(&mut h);
+                                    rows.push((thread_session_id.clone(), start, false, h.finish(), ThreadRow::Activity {
+                                        indices,
                                         ui_indices,
+                                        duration_ms,
                                     }));
                                     i = end;
                                 } else if is_tool_activity(&list[i]) {
                                     let start = i;
-                                    let mut run: Vec<(usize, ChatItem)> = Vec::new();
+                                    let mut indices: Vec<usize> = Vec::new();
                                     let mut j = i;
                                     while j < window.end {
                                         if renders_nothing(&list[j]) { j += 1; continue; }
-                                        if is_tool_activity(&list[j]) { run.push((j, list[j].clone())); j += 1; }
+                                        if is_tool_activity(&list[j]) { indices.push(j); j += 1; }
                                         else { break; }
                                     }
                                     // Usage is metadata for the whole reply, not
@@ -9256,78 +8308,98 @@ fn App() -> impl IntoView {
                                         renders_nothing(item) || matches!(item, ChatItem::Usage { .. })
                                     }));
                                     let mut h = std::collections::hash_map::DefaultHasher::new();
-                                    for (idx, it) in &run { (idx, it.fingerprint()).hash(&mut h); }
+                                    for idx in &indices { (idx, list[*idx].fingerprint()).hash(&mut h); }
                                     live.hash(&mut h);
-                                    let ui_indices = run
+                                    let ui_indices = indices
                                         .iter()
-                                        .map(|(index, _)| index.to_string())
+                                        .map(|index| index.to_string())
                                         .collect::<Vec<_>>()
                                         .join(" ");
-                                    let items_only: Vec<ChatItem> = run.into_iter().map(|(_, c)| c).collect();
-                                    rows.push((thread_session_id.clone(), start, h.finish(), ThreadRow::Steps {
-                                        items: items_only,
+                                    rows.push((thread_session_id.clone(), start, false, h.finish(), ThreadRow::Steps {
+                                        indices,
                                         live,
                                         ui_indices,
                                     }));
                                     i = j;
                                 } else {
                                     let commentary = is_commentary_at(list, i);
-                                    // A text row can become commentary when the
-                                    // next tool event arrives. Keep streaming
-                                    // assistant rows lightweight so replacing
-                                    // one cannot strand async markdown effects
-                                    // under a disposed Leptos owner.
+                                    // A live assistant row keeps one stable owner while
+                                    // its Markdown prefix advances on a separate budget.
+                                    // A following tool turns it into settled commentary
+                                    // and deliberately remounts the compact row.
+                                    let streaming_assistant = live_assistant_index == Some(i)
+                                        && !commentary
+                                        && matches!(
+                                            &list[i],
+                                            ChatItem::Assistant { text, .. }
+                                                if !text.starts_with("Error: ")
+                                        );
                                     let compact_assistant = commentary
-                                        || (busy_now
-                                            && matches!(&list[i], ChatItem::Assistant { .. }));
-                                    let can_undo = !compact_assistant && undo_index == Some(i);
+                                        || live_assistant_index == Some(i);
                                     let timestamp = transcript_item_timestamp(
                                         list,
                                         i,
                                         user_offset,
                                         &outline,
                                     );
-                                    let mut fp = list[i].fingerprint();
+                                    let mut fp = if streaming_assistant {
+                                        0
+                                    } else {
+                                        list[i].fingerprint()
+                                    };
                                     // Assistant markdown embeds artifact chips (index + label).
-                                    if matches!(&list[i], ChatItem::Assistant { .. }) { fp ^= arts_fp; }
+                                    if !streaming_assistant
+                                        && matches!(&list[i], ChatItem::Assistant { .. })
+                                    {
+                                        fp ^= arts_fp;
+                                    }
                                     fp ^= (commentary as u64) << 63;
                                     fp ^= (compact_assistant as u64) << 62;
-                                    fp ^= (can_undo as u64) << 61;
                                     fp ^= timestamp.unwrap_or_default() as u64;
-                                    rows.push((thread_session_id.clone(), i, fp, ThreadRow::Item {
+                                    rows.push((thread_session_id.clone(), i, streaming_assistant, fp, ThreadRow::Item {
                                         i,
-                                        item: list[i].clone(),
                                         timestamp,
                                         commentary,
                                         compact_assistant,
-                                        can_undo,
+                                        streaming_assistant,
                                     }));
                                     i += 1;
                                 }
                             }
                             rows
-                            })
+                            }))
                         }
-                        key=|(session_id, start, fp, _)| (session_id.clone(), *start, *fp)
-                        children=move |(session_id, start, _, row)| {
+                        key=|(session_id, start, streaming, fp, _)| {
+                            (session_id.clone(), *start, *streaming, *fp)
+                        }
+                        children=move |(session_id, start, _, _, row)| {
                             match row {
                                 ThreadRow::Item {
                                     i,
-                                    item,
                                     timestamp,
                                     commentary,
                                     compact_assistant,
-                                    can_undo,
+                                    streaming_assistant,
                                 } => {
-                                    let arts = artifacts.get_untracked();
+                                    // Rebuilt only when the fingerprint key changed,
+                                    // so this is the one clone that actually pays off.
+                                    let item = items.with_untracked(|list| list[i].clone());
+                                    let arts = if matches!(&item, ChatItem::Assistant { .. })
+                                        && !compact_assistant
+                                    {
+                                        artifacts.get_untracked()
+                                    } else {
+                                        Vec::new()
+                                    };
                                     let on_resume = Callback::new(resume_turn);
                                     let class = if commentary {
                                         "msg assistant commentary"
                                     } else {
                                         class_for(&item)
                                     };
-                                    let user_index =
-                                        user_turn_index(&items.get_untracked(), i).map(|index| {
+                                    let user_index = items
+                                        .with_untracked(|rows| user_turn_index(rows, i))
+                                        .map(|index| {
                                             index
                                                 + transcript_pages
                                                     .with_untracked(|pages| {
@@ -9337,6 +8409,9 @@ fn App() -> impl IntoView {
                                         });
                                     let data_user_index =
                                         user_index.map(|index| index.to_string());
+                                    let can_undo = Signal::derive(move || {
+                                        !compact_assistant && undo_assistant_index.get() == Some(i)
+                                    });
                                     view! {
                                         <div class=class
                                             class:outline-target=move || user_index.is_some_and(|index| {
@@ -9344,41 +8419,56 @@ fn App() -> impl IntoView {
                                             })
                                             data-ui-index=i.to_string()
                                             data-user-index=data_user_index>
-                                            {render_item(
-                                                i, &item, timestamp, &arts, on_artifact_select, on_file_link,
-                                                run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, session_id,
-                                                respond_confirm, on_resume, on_queue,
-                                                step_disclosure_state,
-                                                plan_mode_active, plan_compat, on_plan_decision,
-                                                on_question_answer, jump_to_review_message,
-                                            )}
+                                            {if streaming_assistant {
+                                                view! {
+                                                    <StreamingAssistantMessage
+                                                        items=items
+                                                        source_item=i
+                                                        on_artifact=on_artifact_select
+                                                        on_file=on_file_link
+                                                    />
+                                                }.into_view()
+                                            } else {
+                                                render_item(
+                                                    i, &item, timestamp, &arts, on_artifact_select, on_file_link,
+                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, session_id,
+                                                    request_session_review, respond_confirm, on_resume, on_queue,
+                                                    step_disclosure_state,
+                                                    plan_mode_active, plan_compat, on_plan_decision,
+                                                    on_question_answer, jump_to_review_message,
+                                                ).into_view()
+                                            }}
                                         </div>
                                     }.into_view()
                                 }
-                                ThreadRow::Steps { items, live, ui_indices } => {
+                                ThreadRow::Steps { indices, live, ui_indices } => {
                                     // ponytail: position-keyed; move to stable
                                     // row ids if mid-list edits ever shift groups.
                                     let group_id = format!("{session_id}:steps:{start}");
                                     view! {
                                         <div class="steps-wrap" data-ui-indices=ui_indices>{
                                             render_steps_group(
+                                                indices,
                                                 items,
                                                 live,
                                                 false,
+                                                None,
                                                 group_id,
                                                 step_disclosure_state,
                                             )
                                         }</div>
                                     }.into_view()
                                 },
-                                ThreadRow::Activity { items, ui_indices } => {
+                                ThreadRow::Activity { indices, ui_indices, duration_ms } => {
                                     let group_id = format!("{session_id}:activity:{start}");
                                     view! {
                                         <div class="steps-wrap" data-ui-indices=ui_indices>{
                                             render_steps_group(
+                                                indices,
                                                 items,
                                                 false,
                                                 true,
+                                                duration_ms,
                                                 group_id,
                                                 step_disclosure_state,
                                             )
@@ -9388,24 +8478,49 @@ fn App() -> impl IntoView {
                             }
                         }
                     />
+                    {move || active_session.get().and_then(|frame_id| {
+                        follow_up_questions.with(|all| all.get(&frame_id).cloned()).map(|questions| {
+                            let close_frame_id = frame_id.clone();
+                            view! {
+                                <section class="follow-up-questions" data-testid="follow-up-questions">
+                                    <div class="follow-up-questions-head">
+                                        <span>{move || compose_icon("review")}</span>
+                                        <strong>{move || t(locale.get(), "follow_up.title")}</strong>
+                                        <button type="button" class="follow-up-close"
+                                            title=move || t(locale.get(), "follow_up.close")
+                                            aria-label=move || t(locale.get(), "follow_up.close")
+                                            on:click=move |_| follow_up_questions.update(|all| {
+                                                all.remove(&close_frame_id);
+                                            })>
+                                            {compose_icon("chevron-down")}
+                                        </button>
+                                    </div>
+                                    <div class="follow-up-options">
+                                        {questions.into_iter().map(|question| {
+                                            let selected = question.clone();
+                                            view! {
+                                                <button type="button" on:click=move |_| {
+                                                    input.set(selected.clone());
+                                                    focus_composer();
+                                                }>
+                                                    <span aria-hidden="true">"↳"</span>
+                                                    <span>{question}</span>
+                                                </button>
+                                            }
+                                        }).collect_view()}
+                                    </div>
+                                </section>
+                            }
+                        })
+                    })}
                     {move || {
                         let Some(frame_id) = active_session.get() else {
                             return Vec::<View>::new().into_view();
                         };
-                        let monitored = items.with(|rows| {
-                            rows.iter()
-                                .filter_map(|item| match item {
-                                    ChatItem::Tool { name, input, .. } if is_run_monitor_tool(name) => {
-                                        Some(input.trim().to_string())
-                                    }
-                                    _ => None,
-                                })
-                                .collect::<HashSet<_>>()
-                        });
+                        let monitored = monitored_run_ids.get();
                         let now = js_sys::Date::now() as i64 / 1000;
-                        run_records
-                            .get()
-                            .into_iter()
+                        run_records.with(|runs| runs
+                            .iter()
                             .filter(|run| run.frame_id.as_deref() == Some(frame_id.as_str()))
                             .filter(|run| !monitored.contains(&run.id))
                             .filter(|run| {
@@ -9413,7 +8528,7 @@ fn App() -> impl IntoView {
                                     || run.ended_at.is_some_and(|ended| now.saturating_sub(ended) <= 60)
                             })
                             .map(|run| {
-                                let run_id = run.id;
+                                let run_id = run.id.clone();
                                 view! {
                                     <div class="tool-wrap run-monitor-wrap auto-run-monitor"
                                         data-testid="auto-run-monitor">
@@ -9428,7 +8543,7 @@ fn App() -> impl IntoView {
                                 }
                             })
                             .collect_view()
-                            .into_view()
+                            .into_view())
                     }}
                     {move || (!busy.get()).then(|| active_session.get()).flatten().and_then(|id| {
                         transcript_pages.get().get(&id).copied().and_then(|page| {
@@ -9491,18 +8606,9 @@ fn App() -> impl IntoView {
                                             if !busy.get() {
                                                 return false;
                                             }
-                                            let offset = active_session
+                                            !loaded_conversation_user_range
                                                 .get()
-                                                .and_then(|id| transcript_pages
-                                                    .get()
-                                                    .get(&id)
-                                                    .copied())
-                                                .map_or(0, |page| page.user_offset);
-                                            !conversation_outline_target_is_loaded(
-                                                &items.get(),
-                                                offset,
-                                                target,
-                                            )
+                                                .contains(&target)
                                         }
                                         on:click=move |_| {
                                             jump_to_conversation_outline.call((target, before_seq));
@@ -11139,10 +10245,10 @@ fn App() -> impl IntoView {
                         {move || {
                             let loc = locale.get();
                             let active = right_tab.get();
-                            let art_n = artifacts.get().len();
-                            let notebook_n = notebook_cells.get().len();
-                            let prov_n = items.get().iter().filter(|i| matches!(i, ChatItem::Tool { .. })).count();
-                            let highlight_n = session_highlight_count(active_session.get(), &library_items.get());
+                            let art_n = artifact_count.get();
+                            let notebook_n = notebook_count.get();
+                            let prov_n = provenance_count.get();
+                            let highlight_n = highlight_count.get();
                             open_right_tabs.get().into_iter().map(|tab| {
                                 let label = match tab {
                                     RightTab::Artifacts => tab_count(loc, "right.artifacts", art_n),
@@ -11249,10 +10355,10 @@ fn App() -> impl IntoView {
                                 {move || {
                                     let loc = locale.get();
                                     let open = open_right_tabs.get();
-                                    let art_n = artifacts.get().len();
-                                    let notebook_n = notebook_cells.get().len();
-                                    let prov_n = items.get().iter().filter(|i| matches!(i, ChatItem::Tool { .. })).count();
-                                    let highlight_n = session_highlight_count(active_session.get(), &library_items.get());
+                                    let art_n = artifact_count.get();
+                                    let notebook_n = notebook_count.get();
+                                    let prov_n = provenance_count.get();
+                                    let highlight_n = highlight_count.get();
                                     ALL_RIGHT_TABS.iter().copied().map(|tab| {
                                         let label = match tab {
                                             RightTab::Artifacts => tab_count(loc, "right.artifacts", art_n),
@@ -11942,45 +11048,10 @@ fn App() -> impl IntoView {
                             }.into_view()
                         }
                         RightTab::Provenance => {
-                            let loc = locale.get();
-                            let tools: Vec<_> = items.get().iter().filter_map(|it| match it {
-                                ChatItem::Tool { name, ok, input, output, .. } => Some((name.clone(), *ok, input.clone(), output.clone())),
-                                _ => None,
-                            }).collect();
-                            if tools.is_empty() {
-                                view! {
-                                    <div class="rp-empty">
-                                        <span class="rp-empty-icon"></span>
-                                        <div class="rp-empty-title">{t(loc, "right.no_tools.title")}</div>
-                                        <p>{t(loc, "right.no_tools.body")}</p>
-                                    </div>
-                                }.into_view()
-                            } else {
-                                view! {
-                                    <div class="prov-list">
-                                        {tools.into_iter().map(|(name, ok, input, output)| view! {
-                                            <details class="prov-item" open=ok != Some(true)>
-                                                <summary class="prov-head">
-                                                    <span class="prov-name">{name.clone()}</span>
-                                                    {match ok {
-                                                        Some(true) => view! { <span class="ok">"✓"</span> }.into_view(),
-                                                        Some(false) => view! { <span class="fail">"✗"</span> }.into_view(),
-                                                        None => view! { <span class="run">"…"</span> }.into_view(),
-                                                    }}
-                                                </summary>
-                                                {(!input.is_empty()).then(|| view! {
-                                                    <div class="prov-label">{move || t(locale.get(), "right.input")}</div>
-                                                    <pre class="prov-body">{input.clone()}</pre>
-                                                })}
-                                                {(!output.is_empty()).then(|| view! {
-                                                    <div class="prov-label">{move || t(locale.get(), "right.output")}</div>
-                                                    <pre class="prov-body">{output.clone()}</pre>
-                                                })}
-                                            </details>
-                                        }).collect_view()}
-                                    </div>
-                                }.into_view()
+                            view! {
+                                <ProvenancePane items=items rows=provenance_rows />
                             }
+                            .into_view()
                         }
                         RightTab::Hosts => {
                             let loc = locale.get();
@@ -12416,378 +11487,44 @@ fn App() -> impl IntoView {
                 on:mouseup=move |_| terminal_dragging.set(false)></div>
         })}
 
-        {move || session_transfer.get().map(|transfer| {
-            let active_project_id = project_info
-                .get()
-                .map(|project| project.id)
-                .unwrap_or_default();
-            let targets = proj_list
-                .get()
-                .into_iter()
-                .filter(|project| project.id != active_project_id)
-                .collect::<Vec<_>>();
-            let has_target = !targets.is_empty() && !transfer.target_project_id.is_empty();
-            let target_project_id = transfer.target_project_id.clone();
-            let title_key = if transfer.mode == SessionTransferMode::Copy {
-                "session.copy_title"
-            } else {
-                "session.move_title"
-            };
-            let action_key = if transfer.mode == SessionTransferMode::Copy {
-                "session.copy_action"
-            } else {
-                "session.move_action"
-            };
-            view! {
-            <div class="overlay">
-                <div class="modal session-transfer-modal">
-                    <h2>{move || t(locale.get(), title_key)}</h2>
-                    <div class="hint">{tf(locale.get(), "session.transfer_hint", &[("title", &transfer.title)])}</div>
-                    <label>
-                        {move || t(locale.get(), "session.target_project")}
-                        <select
-                            disabled=move || session_transfer_busy.get()
-                            on:change=move |ev| {
-                                let value = event_target_value(&ev);
-                                session_transfer.update(|transfer| {
-                                    if let Some(transfer) = transfer {
-                                        transfer.target_project_id = value;
-                                    }
-                                });
-                            }>
-                            {targets.into_iter().map(|project| {
-                                let selected = project.id == target_project_id;
-                                view! {
-                                    <option value=project.id prop:selected=selected>{project.name}</option>
-                                }
-                            }).collect_view()}
-                        </select>
-                    </label>
-                    {(!has_target).then(|| view! {
-                        <div class="hint session-transfer-error">{move || t(locale.get(), "session.no_target_project")}</div>
-                    })}
-                    {move || session_transfer_error.get().map(|error| view! {
-                        <div class="hint session-transfer-error">{error}</div>
-                    })}
-                    <div class="row">
-                        <button type="button"
-                            disabled=move || session_transfer_busy.get()
-                            on:click=move |_| {
-                                session_transfer.set(None);
-                                session_transfer_error.set(None);
-                            }>{move || t(locale.get(), "settings.cancel")}</button>
-                        <button type="button" class="primary"
-                            disabled=move || !has_target || session_transfer_busy.get()
-                            on:click=save_session_transfer>{move || t(locale.get(), action_key)}</button>
-                    </div>
-                </div>
-            </div>
-        }.into_view()
-        })}
-
-        {move || rename_session_target.get().map(|(id, _)| {
-            let id_key = id.clone();
-            let id_btn = id.clone();
-            view! {
-            <div class="overlay">
-                <div class="modal">
-                    <h2>{move || t(locale.get(), "session.rename_title")}</h2>
-                    <label>
-                        <input
-                            id="rename-session-input"
-                            type="text"
-                            autofocus=true
-                            prop:value=move || rename_session_input.get()
-                            on:input=move |ev| rename_session_input.set(dom_value(&ev))
-                            on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                if (ev.ctrl_key() || ev.meta_key())
-                                    && ev.key().eq_ignore_ascii_case("a")
-                                {
-                                    ev.prevent_default();
-                                    if let Some(target) = ev.target() {
-                                        if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
-                                            input.select();
-                                        }
-                                    }
-                                    return;
-                                }
-                                if ev.key() == "Enter" {
-                                    ev.prevent_default();
-                                    let title = rename_session_input.get().trim().to_string();
-                                    if title.is_empty() { return; }
-                                    let id = id_key.clone();
-                                    rename_session_target.set(None);
-                                    spawn_local(async move {
-                                        let arg = to_value(&serde_json::json!({ "id": id, "title": title })).unwrap();
-                                        if invoke_checked("rename_session", arg).await.is_ok() {
-                                            refresh_session_history();
-                                        }
-                                    });
-                                }
-                            }
-                        />
-                    </label>
-                    <div class="row">
-                        <button on:click=move |_| rename_session_target.set(None)>{move || t(locale.get(), "settings.cancel")}</button>
-                        <button class="primary" on:click=move |_| {
-                            let title = rename_session_input.get().trim().to_string();
-                            if title.is_empty() { return; }
-                            let id = id_btn.clone();
-                            rename_session_target.set(None);
-                            spawn_local(async move {
-                                let arg = to_value(&serde_json::json!({ "id": id, "title": title })).unwrap();
-                                if invoke_checked("rename_session", arg).await.is_ok() {
-                                    refresh_session_history();
-                                }
-                            });
-                        }>{move || t(locale.get(), "settings.save")}</button>
-                    </div>
-                </div>
-            </div>
-        }.into_view()
-        })}
-
-        {move || folder_modal.get().map(|mode| {
-            let mode_save = mode.clone();
-            let mode_enter = mode.clone();
-            let title_key = match &mode {
-                FolderModal::Create => "folder.new_title",
-                FolderModal::Rename(_) => "folder.rename_prompt",
-            };
-            let label_key = match &mode {
-                FolderModal::Create => "folder.new_prompt",
-                FolderModal::Rename(_) => "folder.new_prompt",
-            };
-            view! {
-            <div class="overlay">
-                <div class="modal">
-                    <h2>{move || t(locale.get(), title_key)}</h2>
-                    <label>
-                        {move || t(locale.get(), label_key)}
-                        <input
-                            id="folder-modal-input"
-                            type="text"
-                            autofocus=true
-                            prop:value=move || folder_modal_input.get()
-                            on:input=move |ev| folder_modal_input.set(dom_value(&ev))
-                            on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                if ev.key() == "Enter" {
-                                    ev.prevent_default();
-                                    save_folder_modal(mode_enter.clone());
-                                }
-                            }
-                        />
-                    </label>
-                    <div class="row">
-                        <button on:click=move |_| folder_modal.set(None)>{move || t(locale.get(), "settings.cancel")}</button>
-                        <button class="primary" on:click=move |_| save_folder_modal(mode_save.clone())>{move || t(locale.get(), "settings.save")}</button>
-                    </div>
-                </div>
-            </div>
-        }.into_view()
-        })}
-
-        {move || file_entry_modal.get().map(|mode| {
-            let mode_save = mode.clone();
-            let mode_enter = mode.clone();
-            let (title_key, action_key, location) = match &mode {
-                FileEntryModal::CreateFile => (
-                    "files.new_file",
-                    "files.create",
-                    file_cwd.get_untracked(),
-                ),
-                FileEntryModal::CreateDirectory => (
-                    "files.new_directory",
-                    "files.create",
-                    file_cwd.get_untracked(),
-                ),
-                FileEntryModal::Rename { path, is_dir } => (
-                    if *is_dir { "files.rename_directory" } else { "files.rename_file" },
-                    "files.rename",
-                    parent_path(path),
-                ),
-            };
-            view! {
-                <div class="overlay">
-                    <div class="modal file-entry-modal">
-                        <h2>{move || t(locale.get(), title_key)}</h2>
-                        <div class="hint file-entry-location">
-                            {move || tf(locale.get(), "files.location", &[("path", &location)])}
-                        </div>
-                        <label>
-                            {move || t(locale.get(), "files.name")}
-                            <input
-                                id="file-entry-modal-input"
-                                type="text"
-                                autofocus=true
-                                disabled=move || file_entry_busy.get()
-                                prop:value=move || file_entry_input.get()
-                                on:input=move |ev| {
-                                    file_entry_input.set(dom_value(&ev));
-                                    file_entry_error.set(None);
-                                }
-                                on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                    if ev.key() == "Enter" {
-                                        ev.prevent_default();
-                                        save_file_entry_modal.call(mode_enter.clone());
-                                    }
-                                }
-                            />
-                        </label>
-                        {move || file_entry_error.get().map(|error| view! {
-                            <div class="settings-error" role="alert">{error}</div>
-                        })}
-                        <div class="row">
-                            <button disabled=move || file_entry_busy.get() on:click=move |_| {
-                                file_entry_modal.set(None);
-                                file_entry_error.set(None);
-                            }>{move || t(locale.get(), "settings.cancel")}</button>
-                            <button class="primary" disabled=move || file_entry_busy.get()
-                                on:click=move |_| save_file_entry_modal.call(mode_save.clone())>
-                                {move || if file_entry_busy.get() {
-                                    t(locale.get(), "files.working")
-                                } else {
-                                    t(locale.get(), action_key)
-                                }}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            }.into_view()
-        })}
-
-        {move || turn_undo_dialog.get().map(|dialog| {
-            let restore_files = dialog.preview.restore_files.clone();
-            let remove_files = dialog.preview.remove_files.clone();
-            let remove_artifacts = dialog.preview.remove_artifacts.clone();
-            let unsupported_files = dialog.preview.unsupported_files.clone();
-            let conflicts = dialog.preview.conflicts.clone();
-            let has_text_changes = !restore_files.is_empty() || !remove_files.is_empty();
-            let can_confirm = conflicts.is_empty();
-            view! {
-                <div class="overlay">
-                    <div
-                        class="modal confirm-modal turn-undo-modal"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="turn-undo-title"
-                        data-testid="turn-undo-modal"
-                    >
-                        <h2 id="turn-undo-title">{move || t(locale.get(), "undo.title")}</h2>
-                        <div class="turn-undo-scroll">
-                            <p class="turn-undo-body">{move || t(locale.get(), "undo.body")}</p>
-                            <div class="turn-undo-warning">
-                                {move || t(locale.get(), "undo.binary_warning")}
-                            </div>
-                            {(!has_text_changes).then(|| view! {
-                                <p class="turn-undo-empty">
-                                    {move || t(locale.get(), "undo.no_text_changes")}
-                                </p>
-                            })}
-                            {(!restore_files.is_empty()).then(|| view! {
-                                <section class="turn-undo-section">
-                                    <h3>{move || t(locale.get(), "undo.restore_files")}</h3>
-                                    <ul>{restore_files.into_iter().map(|path| view! {
-                                        <li><code>{path}</code></li>
-                                    }).collect_view()}</ul>
-                                </section>
-                            })}
-                            {(!remove_files.is_empty()).then(|| view! {
-                                <section class="turn-undo-section">
-                                    <h3>{move || t(locale.get(), "undo.remove_files")}</h3>
-                                    <ul>{remove_files.into_iter().map(|path| view! {
-                                        <li><code>{path}</code></li>
-                                    }).collect_view()}</ul>
-                                </section>
-                            })}
-                            {(!remove_artifacts.is_empty()).then(|| view! {
-                                <section class="turn-undo-section">
-                                    <h3>{move || t(locale.get(), "undo.remove_artifacts")}</h3>
-                                    <ul>{remove_artifacts.into_iter().map(|name| view! {
-                                        <li><code>{name}</code></li>
-                                    }).collect_view()}</ul>
-                                </section>
-                            })}
-                            {(!unsupported_files.is_empty()).then(|| view! {
-                                <section class="turn-undo-section unsupported">
-                                    <h3>{move || t(locale.get(), "undo.unsupported_files")}</h3>
-                                    <ul>{unsupported_files.into_iter().map(|path| view! {
-                                        <li><code>{path}</code></li>
-                                    }).collect_view()}</ul>
-                                </section>
-                            })}
-                            {(!conflicts.is_empty()).then(|| view! {
-                                <section class="turn-undo-section conflicts">
-                                    <h3>{move || t(locale.get(), "undo.conflicts")}</h3>
-                                    <ul>{conflicts.into_iter().map(|path| view! {
-                                        <li><code>{path}</code></li>
-                                    }).collect_view()}</ul>
-                                </section>
-                            })}
-                            {move || turn_undo_error.get().map(|error| view! {
-                                <div class="turn-undo-error" role="alert">{error}</div>
-                            })}
-                        </div>
-                        <div class="row">
-                            <button
-                                disabled=move || turn_undo_busy.get()
-                                on:click=move |_| {
-                                    turn_undo_dialog.set(None);
-                                    turn_undo_error.set(None);
-                                }
-                            >
-                                {move || t(locale.get(), "settings.cancel")}
-                            </button>
-                            <button
-                                class="primary"
-                                disabled=move || turn_undo_busy.get() || !can_confirm
-                                on:click=move |_| confirm_turn_undo.call(())
-                            >
-                                {move || if turn_undo_busy.get() {
-                                    t(locale.get(), "undo.working")
-                                } else {
-                                    t(locale.get(), "undo.confirm")
-                                }}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            }.into_view()
-        })}
-
-        {move || edit_confirm.get().map(|ui_index| {
-            view! {
-                <div class="overlay">
-                    <div
-                        class="modal confirm-modal"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="edit-confirm-title"
-                        data-testid="edit-confirm-modal"
-                    >
-                        <h2 id="edit-confirm-title">{move || t(locale.get(), "msg.edit_confirm_title")}</h2>
-                        <div class="hint">{move || t(locale.get(), "msg.edit_confirm_hint")}</div>
-                        <div class="row">
-                            <button on:click=move |_| edit_confirm.set(None)>
-                                {move || t(locale.get(), "settings.cancel")}
-                            </button>
-                            <button on:click=move |_| {
-                                edit_confirm.set(None);
-                                branch_message(ui_index);
-                            }>
-                                {move || t(locale.get(), "msg.branch")}
-                            </button>
-                            <button class="primary" class:danger=true on:click=move |_| {
-                                edit_confirm.set(None);
-                                rewind_to_user_item(ui_index);
-                            }>
-                                {move || t(locale.get(), "msg.edit")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+        <SessionTransferOverlay
+            state=SessionTransferOverlayState {
+                locale, session_transfer, session_transfer_busy, session_transfer_error,
+                project_info, proj_list,
             }
-        })}
+            on_save=Callback::new(save_session_transfer)
+        />
+
+        <RenameSessionOverlay
+            state=RenameSessionOverlayState { locale, rename_session_target, rename_session_input }
+            on_renamed=Callback::new(move |_: ()| refresh_session_history())
+        />
+
+        <FolderModalOverlay
+            state=FolderModalOverlayState { locale, folder_modal, folder_modal_input }
+            on_save=Callback::new(save_folder_modal)
+        />
+
+        <FileEntryOverlay
+            state=FileEntryOverlayState {
+                locale, file_entry_modal, file_entry_input, file_entry_busy,
+                file_entry_error, file_cwd,
+            }
+            on_save=save_file_entry_modal
+        />
+
+        <TurnUndoOverlay
+            state=TurnUndoOverlayState {
+                locale, turn_undo_dialog, turn_undo_busy, turn_undo_error,
+            }
+            on_confirm=confirm_turn_undo
+        />
+
+        <EditConfirmOverlay
+            state=EditConfirmOverlayState { locale, edit_confirm }
+            on_branch=Callback::new(branch_message)
+            on_rewind=Callback::new(rewind_to_user_item)
+        />
 
         {move || ui_confirm.get().map(|action| {
             let action_ok = action.clone();
@@ -12947,91 +11684,17 @@ fn App() -> impl IntoView {
         }.into_view()
         })}
 
-        {move || model_switch_confirm.get().map(|(id, label, ignores_images)| {
-            let switch_yes = switch_http_model.clone();
-            let switch_without_future_warning = switch_http_model.clone();
-            let yes_id = id.clone();
-            let dont_ask_id = id.clone();
-            let hint_key = if ignores_images {
-                "models.switch_confirm_image_hint"
-            } else {
-                "models.switch_confirm_hint"
-            };
-            let yes_key = if ignores_images {
-                "models.switch_ignore_images"
-            } else {
-                "models.switch_yes"
-            };
-            let dont_ask_key = if ignores_images {
-                "models.switch_ignore_images_dont_ask"
-            } else {
-                "models.switch_dont_ask"
-            };
-            view! {
-                <div class="overlay" data-testid="model-switch-confirm-overlay">
-                    <div class="modal confirm-modal" data-testid="model-switch-confirm">
-                        <h2>{move || t(locale.get(), "models.switch_confirm_title")}</h2>
-                        <div class="hint">{move || tf(
-                            locale.get(),
-                            hint_key,
-                            &[("model", &label)],
-                        )}</div>
-                        <div class="row">
-                            <button on:click=move |_| model_switch_confirm.set(None)>
-                                {move || t(locale.get(), "models.switch_no")}
-                            </button>
-                            <button on:click=move |_| {
-                                model_switch_confirm.set(None);
-                                switch_without_future_warning.call((dont_ask_id.clone(), true));
-                            }>{move || t(locale.get(), dont_ask_key)}</button>
-                            <button class="primary" on:click=move |_| {
-                                model_switch_confirm.set(None);
-                                switch_yes.call((yes_id.clone(), false));
-                            }>{move || t(locale.get(), yes_key)}</button>
-                        </div>
-                    </div>
-                </div>
-            }.into_view()
-        })}
+        <ModelSwitchConfirmOverlay
+            state=ModelSwitchConfirmOverlayState { locale, model_switch_confirm }
+            on_switch=switch_http_model
+        />
 
-        {move || show_proj_settings.get().then(|| view! {
-            <div class="overlay">
-                <div class="modal proj-settings-modal">
-                    <div class="ps-head">
-                        <h2>{move || t(locale.get(), "proj_settings.title")}</h2>
-                        <button type="button" class="ps-close"
-                            title=move || t(locale.get(), "settings.cancel")
-                            on:click=move |_| show_proj_settings.set(false)>{compose_icon("close")}</button>
-                    </div>
-                    <label>
-                        {move || t(locale.get(), "proj_settings.name")}
-                        <input prop:value=move || proj_settings.get().name
-                            on:input=move |ev| { let v = event_target_value(&ev); proj_settings.update(|s| s.name = v); } />
-                    </label>
-                    <label>
-                        {move || t(locale.get(), "proj_settings.description")}
-                        <span class="ps-hint">{move || t(locale.get(), "proj_settings.description_hint")}</span>
-                        <textarea class="ps-textarea" rows="2"
-                            prop:value=move || proj_settings.get().description
-                            on:input=move |ev| { let v = event_target_value(&ev); proj_settings.update(|s| s.description = v); }></textarea>
-                    </label>
-                    <label>
-                        {move || t(locale.get(), "proj_settings.agent_context")}
-                        <span class="ps-hint">{move || t(locale.get(), "proj_settings.agent_context_hint")}</span>
-                        <textarea class="ps-textarea ps-ctx" rows="8"
-                            prop:value=move || proj_settings.get().agent_context
-                            on:input=move |ev| { let v = event_target_value(&ev); proj_settings.update(|s| s.agent_context = v); }></textarea>
-                    </label>
-                    <div class="row">
-                        <button type="button" disabled=move || proj_settings_busy.get()
-                            on:click=move |_| show_proj_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
-                        <button type="button" class="primary"
-                            disabled=move || proj_settings_busy.get() || proj_settings.get().name.trim().is_empty()
-                            on:click=save_proj_settings>{move || t(locale.get(), "settings.save")}</button>
-                    </div>
-                </div>
-            </div>
-        })}
+        <ProjSettingsOverlay
+            state=ProjSettingsOverlayState {
+                locale, show_proj_settings, proj_settings, proj_settings_busy,
+            }
+            on_save=Callback::new(save_proj_settings)
+        />
 
         {move || modal_artifact.get().map(|(path, name, kind)| {
             let session = active_session.get();
@@ -13288,1402 +11951,15 @@ fn App() -> impl IntoView {
             save_onboard_key=save_onboard_key
             dismiss_onboard=Callback::new(dismiss_onboard)
         />
-        {move || context_recovery_dialog.get().map(|frame_id| {
-            let compact_id = frame_id.clone();
-            let new_session_id = frame_id;
-            view! {
-                <div class="overlay context-recovery-overlay">
-                    <div
-                        class="modal context-recovery-modal"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="context-recovery-title"
-                        data-testid="context-recovery-modal"
-                    >
-                        <h2 id="context-recovery-title">
-                            {move || t(locale.get(), "context_recovery.title")}
-                        </h2>
-                        <p class="context-recovery-body">
-                            {move || t(locale.get(), "context_recovery.body")}
-                        </p>
-                        <div class="context-recovery-options">
-                            <button
-                                type="button"
-                                class="context-recovery-option recommended"
-                                data-testid="context-recovery-compact"
-                                disabled=move || context_recovery_busy.get()
-                                on:click=move |_| compact_context_recovery.call(compact_id.clone())
-                            >
-                                <span class="context-recovery-option-title">
-                                    {move || t(locale.get(), "context_recovery.compact")}
-                                </span>
-                                <span class="context-recovery-option-hint">
-                                    {move || t(locale.get(), "context_recovery.compact_hint")}
-                                </span>
-                            </button>
-                            <button
-                                type="button"
-                                class="context-recovery-option"
-                                data-testid="context-recovery-new-session"
-                                disabled=move || context_recovery_busy.get()
-                                on:click=move |_| new_session_context_recovery.call(new_session_id.clone())
-                            >
-                                <span class="context-recovery-option-title">
-                                    {move || t(locale.get(), "context_recovery.new_session")}
-                                </span>
-                                <span class="context-recovery-option-hint">
-                                    {move || t(locale.get(), "context_recovery.new_session_hint")}
-                                </span>
-                            </button>
-                            <button
-                                type="button"
-                                class="context-recovery-option"
-                                data-testid="context-recovery-pause"
-                                disabled=move || context_recovery_busy.get()
-                                on:click=move |_| {
-                                    context_recovery_dialog.set(None);
-                                    context_recovery_error.set(None);
-                                }
-                            >
-                                <span class="context-recovery-option-title">
-                                    {move || t(locale.get(), "context_recovery.pause")}
-                                </span>
-                                <span class="context-recovery-option-hint">
-                                    {move || t(locale.get(), "context_recovery.pause_hint")}
-                                </span>
-                            </button>
-                        </div>
-                        {move || context_recovery_error.get().map(|error| view! {
-                            <div class="context-recovery-error" role="alert">{error}</div>
-                        })}
-                    </div>
-                </div>
+        <ContextRecoveryOverlay
+            state=ContextRecoveryOverlayState {
+                locale, context_recovery_dialog, context_recovery_busy, context_recovery_error,
             }
-        })}
+            on_compact=compact_context_recovery
+            on_new_session=new_session_context_recovery
+        />
         <ContextMenuPortal menu=ctx_menu.read_only() set_menu=ctx_menu.write_only() on_pick=on_ctx_pick />
         </div>
-    }
-}
-
-/// True for items whose `render_item` produces an empty view, so the thread
-/// loop can drop their wrapper `<div>` and avoid a dangling `.thread` gap (#19).
-fn renders_nothing(item: &ChatItem) -> bool {
-    matches!(item, ChatItem::Assistant { text, .. } if text.trim().is_empty())
-        || matches!(item, ChatItem::Tool { name, .. } if name == "attempt_completion")
-}
-
-fn class_for(item: &ChatItem) -> &'static str {
-    match item {
-        ChatItem::User(_) => "msg user",
-        ChatItem::QueuedUser { .. } => "msg user queued",
-        ChatItem::Assistant { text, .. } if text.starts_with("Error: ") => "tool-wrap",
-        ChatItem::Assistant { .. } => "msg assistant",
-        ChatItem::Reasoning(_) => "msg reasoning",
-        ChatItem::Tool { name, .. } if is_run_monitor_tool(name) => "tool-wrap run-monitor-wrap",
-        ChatItem::Tool { name, .. } if is_image_generation_tool(name) => {
-            "tool-wrap image-generation-wrap"
-        }
-        ChatItem::Tool { .. } => "tool-wrap",
-        ChatItem::ApprovalPending { .. } => "tool-wrap approval-wrap-row",
-        ChatItem::AcpPermission { .. } => "tool-wrap approval-wrap-row",
-        ChatItem::AcpTool { .. } => "tool-wrap",
-        ChatItem::Usage { .. } => "usage-row",
-        ChatItem::Compaction { .. } => "context-compaction-row",
-        ChatItem::ReviewTransition { .. } => "review-transition-row",
-        ChatItem::Review(_) => "tool-wrap",
-        ChatItem::Plan(_) => "tool-wrap plan-wrap",
-        ChatItem::Question(_) => "tool-wrap plan-question-wrap",
-    }
-}
-
-/// "482" below 1k, "12.3k" above — same scale the status bar uses.
-fn fmt_tokens(n: u64) -> String {
-    if n < 1000 {
-        n.to_string()
-    } else {
-        format!("{:.1}k", n as f64 / 1000.0)
-    }
-}
-
-fn context_percent(used: usize, max: usize) -> usize {
-    if max == 0 {
-        0
-    } else {
-        ((((used as u128) * 100 + (max as u128 / 2)) / max as u128) as usize).min(100)
-    }
-}
-
-fn fmt_context_tokens(tokens: usize) -> String {
-    if tokens < 1_000 {
-        tokens.to_string()
-    } else if tokens < 1_000_000 {
-        format!("{:.1}K", tokens as f64 / 1_000.0)
-    } else {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    }
-}
-
-fn fmt_context_limit(tokens: usize) -> String {
-    if tokens >= 1_000_000 && tokens % 1_000_000 == 0 {
-        format!("{}M", tokens / 1_000_000)
-    } else if tokens >= 1_000 && tokens % 1_000 == 0 {
-        format!("{}K", tokens / 1_000)
-    } else {
-        fmt_context_tokens(tokens)
-    }
-}
-
-#[derive(Clone)]
-struct ContextUsageRow {
-    label: String,
-    tokens: usize,
-    color: &'static str,
-}
-
-fn context_usage_rows(snapshot: &ContextUsageSnapshot, locale: Locale) -> Vec<ContextUsageRow> {
-    let Some(usage) = snapshot.breakdown else {
-        // ACP only reports used/max; do not invent native category splits.
-        return vec![ContextUsageRow {
-            label: t(locale, "context_usage.remote_context").into(),
-            tokens: snapshot.used,
-            color: "conversation",
-        }];
-    };
-    [
-        ("context_usage.system_prompt", usage.system_prompt, "system"),
-        (
-            "context_usage.tool_definitions",
-            usage.tool_definitions,
-            "tools",
-        ),
-        ("context_usage.rules", usage.rules, "rules"),
-        ("context_usage.skills", usage.skills, "skills"),
-        (
-            "context_usage.mcp_dynamic_tools",
-            usage.mcp_dynamic_tools,
-            "dynamic",
-        ),
-        (
-            "context_usage.subagent_definitions",
-            usage.subagent_definitions,
-            "subagents",
-        ),
-        (
-            "context_usage.conversation",
-            usage.conversation,
-            "conversation",
-        ),
-    ]
-    .into_iter()
-    .map(|(key, tokens, color)| ContextUsageRow {
-        label: t(locale, key).into(),
-        tokens,
-        color,
-    })
-    .collect()
-}
-
-fn context_usage_detail_text(details: &ContextUsageDetails, color: &str) -> String {
-    let tools = |items: &[ContextToolDetail]| {
-        items
-            .iter()
-            .map(|item| format!("{}\n{}", item.name, item.description))
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    };
-    match color {
-        "system" => details.system_prompt.clone(),
-        "tools" => tools(&details.tool_definitions),
-        "rules" => details.rules.clone(),
-        "skills" => details.skills.clone(),
-        "dynamic" => tools(&details.mcp_dynamic_tools),
-        "subagents" => tools(&details.subagent_definitions),
-        _ => String::new(),
-    }
-}
-
-#[cfg(test)]
-mod token_format_tests {
-    use super::{
-        context_percent, context_usage_rows, fmt_context_limit, fmt_context_tokens, fmt_tokens,
-    };
-    use crate::dto::{ContextUsage, ContextUsageSnapshot};
-    use crate::i18n::Locale;
-
-    #[test]
-    fn small_counts_are_not_rounded_to_zero() {
-        assert_eq!(fmt_tokens(81), "81");
-        assert_eq!(fmt_tokens(136_286), "136.3k");
-    }
-
-    #[test]
-    fn context_counts_match_the_usage_panel_format() {
-        assert_eq!(context_percent(79_900, 300_000), 27);
-        assert_eq!(fmt_context_tokens(6_000), "6.0K");
-        assert_eq!(fmt_context_tokens(79_900), "79.9K");
-        assert_eq!(fmt_context_limit(300_000), "300K");
-    }
-
-    #[test]
-    fn acp_totals_keep_a_single_remote_row() {
-        let rows = context_usage_rows(
-            &ContextUsageSnapshot {
-                used: 1_200,
-                max: 8_000,
-                breakdown: None,
-                estimated: false,
-            },
-            Locale::En,
-        );
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].label, "Agent-reported total");
-        assert_eq!(rows[0].tokens, 1_200);
-    }
-
-    #[test]
-    fn categorized_native_usage_keeps_seven_rows() {
-        let rows = context_usage_rows(
-            &ContextUsageSnapshot {
-                used: 79_900,
-                max: 300_000,
-                breakdown: Some(ContextUsage {
-                    system_prompt: 6_000,
-                    tool_definitions: 22_700,
-                    rules: 2_200,
-                    skills: 6_100,
-                    mcp_dynamic_tools: 4_200,
-                    subagent_definitions: 2_400,
-                    conversation: 36_300,
-                }),
-                estimated: true,
-            },
-            Locale::En,
-        );
-        assert_eq!(rows.len(), 7);
-        assert_eq!(rows[6].label, "Conversation");
-        assert_eq!(rows[6].tokens, 36_300);
-    }
-}
-
-/// One thread render unit: either a single message, or a coalesced steps panel.
-#[derive(Clone)]
-enum ThreadRow {
-    Item {
-        i: usize,
-        item: ChatItem,
-        timestamp: Option<i64>,
-        commentary: bool,
-        compact_assistant: bool,
-        can_undo: bool,
-    },
-    Steps {
-        items: Vec<ChatItem>,
-        live: bool,
-        ui_indices: String,
-    },
-    Activity {
-        items: Vec<ChatItem>,
-        ui_indices: String,
-    },
-}
-
-/// Compact, foldable summary of consecutive tool calls. Collapsed by default;
-/// auto-opens while it is the live tail so progress stays visible.
-///
-/// Built as a manual accordion (signal + `class:open`) rather than
-/// `<details>/<summary>`: the UA disclosure marker survives `list-style:none`
-/// + `::-webkit-details-marker` here (WebKit and Blink alike), and there is no
-/// portable way to drop it — so we don't render one.
-fn disclosure_open(states: RwSignal<HashMap<String, bool>>, id: &str, automatic: bool) -> bool {
-    states.with(|values| values.get(id).copied().unwrap_or(automatic))
-}
-
-fn toggle_disclosure(states: RwSignal<HashMap<String, bool>>, id: &str, automatic: bool) {
-    states.update(|values| {
-        let current = values.get(id).copied().unwrap_or(automatic);
-        values.insert(id.to_string(), !current);
-    });
-}
-
-/// Collapsed-header label for a step group. `elapsed` is the pre-formatted run
-/// duration, and is only ever `Some` for a settled step-count header — the
-/// running and activity-done headers show it in the meta slot instead.
-fn steps_title(
-    locale: Locale,
-    completed_turn: bool,
-    live: bool,
-    n_tools: usize,
-    elapsed: Option<&str>,
-) -> String {
-    match (completed_turn, live, n_tools, elapsed) {
-        (true, _, _, _) => t(locale, "chat.activity_done").to_string(),
-        (_, true, _, _) => t(locale, "chat.steps_running").to_string(),
-        (_, _, 1, None) => t(locale, "chat.steps_1").to_string(),
-        (_, _, 1, Some(d)) => tf(locale, "chat.steps_1_time", &[("t", d)]),
-        (_, _, n, None) => tf(locale, "chat.steps_n", &[("n", &n.to_string())]),
-        (_, _, n, Some(d)) => tf(
-            locale,
-            "chat.steps_n_time",
-            &[("n", &n.to_string()), ("t", d)],
-        ),
-    }
-}
-
-#[cfg(test)]
-mod steps_title_tests {
-    use super::{steps_title, Locale};
-
-    #[test]
-    fn folds_the_run_duration_into_settled_step_counts() {
-        assert_eq!(steps_title(Locale::En, false, false, 1, None), "Ran 1 step");
-        assert_eq!(
-            steps_title(Locale::En, false, false, 1, Some("2s")),
-            "Ran 1 step · 2s"
-        );
-        assert_eq!(
-            steps_title(Locale::Zh, false, false, 3, Some("1.4s")),
-            "已执行 3 步 · 1.4s"
-        );
-    }
-
-    #[test]
-    fn running_and_done_headers_ignore_the_duration() {
-        assert_eq!(
-            steps_title(Locale::En, false, true, 3, Some("2s")),
-            "Working…"
-        );
-        assert_eq!(
-            steps_title(Locale::En, true, false, 3, Some("2s")),
-            steps_title(Locale::En, true, false, 3, None)
-        );
-    }
-}
-
-fn render_steps_group(
-    items: Vec<ChatItem>,
-    live: bool,
-    completed_turn: bool,
-    group_id: String,
-    disclosure_state: RwSignal<HashMap<String, bool>>,
-) -> impl IntoView {
-    let locale = use_locale();
-    let n_tools = items
-        .iter()
-        .filter(|c| matches!(c, ChatItem::Tool { .. } | ChatItem::AcpTool { .. }))
-        .count();
-    let now = now_ms();
-    let total_ms: u64 = items
-        .iter()
-        .map(|c| match c {
-            ChatItem::Tool {
-                duration_ms: Some(d),
-                ..
-            } => *d,
-            ChatItem::Tool {
-                duration_ms: None,
-                started_at_ms: Some(s),
-                ok: None,
-                ..
-            } if live => now.saturating_sub(*s),
-            _ => 0,
-        })
-        .sum();
-    let total_label =
-        (total_ms > 0 && (!live || n_tools > 0)).then(|| format_duration_ms(total_ms));
-    // A settled step-count header reads better with the duration inline; the
-    // running and activity-done headers keep it in the right-aligned meta slot,
-    // where it doubles as a ticking total.
-    let inline_time = (!completed_turn && !live)
-        .then(|| total_label.clone())
-        .flatten();
-    let meta_label = inline_time.is_none().then_some(total_label).flatten();
-    let title = move || {
-        steps_title(
-            locale.get(),
-            completed_turn,
-            live,
-            n_tools,
-            inline_time.as_deref(),
-        )
-    };
-    // The group re-renders on every streaming delta (fingerprint-keyed row),
-    // so this static line tracks the in-flight step while collapsed.
-    let now_line = live.then(|| steps_now_line(&items)).flatten();
-    let rows = items.into_iter().enumerate().map(|(position, it)| match it {
-        ChatItem::Assistant { text, .. } => {
-            let step_id = format!("{group_id}:progress:{position}");
-            let class_id = step_id.clone();
-            let aria_id = step_id.clone();
-            let toggle_id = step_id.clone();
-            let detail: String = text
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("")
-                .trim()
-                .chars()
-                .take(100)
-                .collect();
-            let html = md_to_html(&text);
-            view! {
-                <div class="step step-progress"
-                    class:open=move || disclosure_open(disclosure_state, &class_id, false)>
-                    <button type="button" class="step-head"
-                        aria-expanded=move || disclosure_open(disclosure_state, &aria_id, false).to_string()
-                        on:click=move |_| toggle_disclosure(disclosure_state, &toggle_id, false)>
-                        <span class="step-icon progress"></span>
-                        <span class="step-name">{move || t(locale.get(), "chat.progress")}</span>
-                        <span class="step-detail">{detail}</span>
-                    </button>
-                    <div class="step-progress-body body md" inner_html=html></div>
-                </div>
-            }.into_view()
-        }
-        ChatItem::Reasoning(text) => {
-            let step_id = format!("{group_id}:reasoning:{position}");
-            let class_id = step_id.clone();
-            let aria_id = step_id.clone();
-            let toggle_id = step_id.clone();
-            view! {
-                <div class="step step-think"
-                    class:open=move || disclosure_open(disclosure_state, &class_id, false)>
-                    <button type="button" class="step-head"
-                        aria-expanded=move || disclosure_open(disclosure_state, &aria_id, false).to_string()
-                        on:click=move |_| toggle_disclosure(disclosure_state, &toggle_id, false)>
-                        <span class="step-icon think"></span>
-                        <span class="step-name">{move || t(locale.get(), "chat.thinking")}</span>
-                    </button>
-                    <div class="step-think-body">{text}</div>
-                </div>
-            }.into_view()
-        }
-        ChatItem::Tool { name, ok, input, output, started_at_ms, duration_ms, .. } => {
-            let step_id = format!("{group_id}:tool:{position}");
-            let automatic = ok.is_none() && live;
-            let class_id = step_id.clone();
-            let aria_id = step_id.clone();
-            let toggle_id = step_id.clone();
-            let (badge_key, title) = tool_card_label(&name, &input);
-            let mut detail: String = input
-                .lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim()
-                .chars().take(80).collect();
-            if detail == title {
-                detail.clear();
-            }
-            let lines = if output.is_empty() { 0 } else { output.lines().count() };
-            let has_body = !input.is_empty() || !output.is_empty();
-            let icon = match ok {
-                Some(true) => view! { <span class="step-icon ok">"✓"</span> }.into_view(),
-                Some(false) => view! { <span class="step-icon fail">"✗"</span> }.into_view(),
-                None => view! { <span class="step-icon run"><span class="run-dot"></span></span> }.into_view(),
-            };
-            let meta_text = step_tool_meta(locale.get(), duration_ms, started_at_ms, ok, lines, now);
-            let meta = meta_text.map(|text| view! { <span class="step-meta">{text}</span> });
-            view! {
-                <div class="step"
-                    class:open=move || disclosure_open(disclosure_state, &class_id, automatic)
-                    class=("no-body", !has_body)>
-                    <button type="button" class="step-head" disabled=!has_body
-                        aria-expanded=move || (has_body && disclosure_open(disclosure_state, &aria_id, automatic)).to_string()
-                        on:click=move |_| {
-                        if has_body {
-                            toggle_disclosure(disclosure_state, &toggle_id, automatic)
-                        }
-                    }>
-                        {icon}
-                        {badge_key.map(|key| view! {
-                            <span class="tool-badge">{move || t(locale.get(), key)}</span>
-                        })}
-                        <span class="step-name">{title}</span>
-                        {(!detail.is_empty()).then(|| view! { <span class="step-detail">{detail}</span> })}
-                        {meta}
-                    </button>
-                    {has_body.then(|| view! {
-                        <div class="step-body">
-                            {(!input.is_empty()).then(|| view! { <pre class="tool-input">{input.clone()}</pre> })}
-                            {(!output.is_empty()).then(|| view! { <pre class="tool-output">{output.clone()}</pre> })}
-                        </div>
-                    })}
-                </div>
-            }.into_view()
-        }
-        ChatItem::AcpTool { call_id, title, kind, status, content, locations, .. } => {
-            let failed = status == "failed";
-            let done = matches!(status.as_str(), "completed" | "failed");
-            let running = !done;
-            let stable_part = if call_id.is_empty() {
-                format!("position-{position}")
-            } else {
-                call_id.clone()
-            };
-            let step_id = format!("{group_id}:acp:{stable_part}");
-            let automatic = running && live;
-            let class_id = step_id.clone();
-            let aria_id = step_id.clone();
-            let toggle_id = step_id.clone();
-            let detail = acp_tool_step_detail(&kind, &content, &locations);
-            let body = acp_tool_step_body(&content, &locations);
-            let has_body = !body.is_empty();
-            let icon = if failed {
-                view! { <span class="step-icon fail">"✗"</span> }.into_view()
-            } else if done {
-                view! { <span class="step-icon ok">"✓"</span> }.into_view()
-            } else {
-                view! { <span class="step-icon run"><span class="run-dot"></span></span> }.into_view()
-            };
-            let meta = (!done).then(|| status.clone());
-            view! {
-                <div class="step acp-tool" data-testid="acp-tool" data-status=status.clone()
-                    class:open=move || disclosure_open(disclosure_state, &class_id, automatic)
-                    class=("no-body", !has_body)>
-                    <button type="button" class="step-head" disabled=!has_body
-                        aria-expanded=move || (has_body && disclosure_open(disclosure_state, &aria_id, automatic)).to_string()
-                        on:click=move |_| {
-                        if has_body {
-                            toggle_disclosure(disclosure_state, &toggle_id, automatic)
-                        }
-                    }>
-                        {icon}
-                        <span class="step-name">{title.clone()}</span>
-                        {(!detail.is_empty()).then(|| view! { <span class="step-detail">{detail.clone()}</span> })}
-                        {meta.map(|text| view! { <span class="step-meta">{text}</span> })}
-                    </button>
-                    {has_body.then(|| view! {
-                        <div class="step-body">
-                            <pre class="tool-output">{body.clone()}</pre>
-                        </div>
-                    })}
-                </div>
-            }.into_view()
-        }
-        _ => view! {}.into_view(),
-    }).collect_view();
-    let class_group_id = group_id.clone();
-    let aria_group_id = group_id.clone();
-    let toggle_group_id = group_id.clone();
-    view! {
-        <div class="steps"
-            class=("activity-summary", completed_turn)
-            class:open=move || disclosure_open(disclosure_state, &class_group_id, live)>
-            <button type="button" class="steps-head"
-                aria-expanded=move || disclosure_open(disclosure_state, &aria_group_id, live).to_string()
-                on:click=move |_| {
-                toggle_disclosure(disclosure_state, &toggle_group_id, live)
-            }>
-                <span class="steps-chevron"></span>
-                <span class="steps-title">{title}</span>
-                {now_line.map(|text| view! { <span class="steps-now">{text}</span> })}
-                {meta_label.map(|label| view! { <span class="steps-meta">{label}</span> })}
-            </button>
-            <div class="steps-body">{rows}</div>
-        </div>
-    }
-}
-
-/// Latest step of a live run as "name · detail", shown in the collapsed
-/// steps header so folding the panel hides detail, not progress.
-fn steps_now_line(items: &[ChatItem]) -> Option<String> {
-    let first_line = |s: &str| -> String {
-        s.lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("")
-            .trim()
-            .chars()
-            .take(80)
-            .collect()
-    };
-    items.iter().rev().find_map(|item| match item {
-        ChatItem::Tool { name, input, .. } => {
-            let (_, title) = tool_card_label(name, input);
-            let detail = first_line(input);
-            Some(if detail.is_empty() || detail == title {
-                title
-            } else {
-                format!("{title} · {detail}")
-            })
-        }
-        ChatItem::AcpTool {
-            title,
-            kind,
-            content,
-            locations,
-            ..
-        } => {
-            let detail = acp_tool_step_detail(kind, content, locations);
-            Some(if detail.is_empty() {
-                title.clone()
-            } else {
-                format!("{title} · {detail}")
-            })
-        }
-        _ => None,
-    })
-}
-
-#[cfg(test)]
-mod steps_now_line_tests {
-    use super::steps_now_line;
-    use crate::dto::ChatItem;
-
-    fn tool(name: &str, input: &str) -> ChatItem {
-        ChatItem::Tool {
-            name: name.into(),
-            ok: None,
-            input: input.into(),
-            output: String::new(),
-            started_at_ms: None,
-            duration_ms: None,
-        }
-    }
-
-    #[test]
-    fn shows_latest_step() {
-        let items = vec![
-            ChatItem::Reasoning("hmm".into()),
-            tool("python", "\nfrom pypdf import PdfReader\nmore"),
-        ];
-        assert_eq!(
-            steps_now_line(&items),
-            Some("python · from pypdf import PdfReader".into())
-        );
-        assert_eq!(steps_now_line(&[ChatItem::Reasoning("hmm".into())]), None);
-        assert_eq!(steps_now_line(&[]), None);
-    }
-}
-
-fn acp_tool_is_terminal_stub(content: &str) -> bool {
-    let trimmed = content.trim();
-    trimmed.starts_with('[') && trimmed.contains("\"terminalId\"") && !trimmed.contains('\n')
-}
-
-fn acp_tool_step_detail(kind: &str, content: &str, locations: &str) -> String {
-    let from_locations = locations
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    if !from_locations.is_empty() {
-        return from_locations.chars().take(80).collect();
-    }
-    if acp_tool_is_terminal_stub(content) || content.trim().is_empty() {
-        return kind.chars().take(80).collect();
-    }
-    content
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-        .chars()
-        .take(80)
-        .collect()
-}
-
-fn acp_tool_step_body(content: &str, locations: &str) -> String {
-    let mut parts = Vec::new();
-    if !locations.trim().is_empty() {
-        parts.push(locations.trim().to_string());
-    }
-    if !content.trim().is_empty() && !acp_tool_is_terminal_stub(content) {
-        parts.push(content.trim().to_string());
-    }
-    parts.join("\n")
-}
-
-fn run_output_preview(run: &RunRecord) -> String {
-    let mut output = match (&run.stdout_tail, &run.stderr_tail) {
-        (Some(stdout), Some(stderr)) if !stdout.is_empty() && !stderr.is_empty() => {
-            format!("{stdout}\n[stderr]\n{stderr}")
-        }
-        (Some(stdout), _) => stdout.clone(),
-        (_, Some(stderr)) => stderr.clone(),
-        _ => String::new(),
-    };
-    let lines = output.lines().collect::<Vec<_>>();
-    if lines.len() > 8 {
-        output = lines[lines.len() - 8..].join("\n");
-    }
-    output
-}
-
-#[component]
-fn RunMonitorCard(
-    run_id: String,
-    runs: RwSignal<Vec<RunRecord>>,
-    clock: ReadSignal<i64>,
-    tool_ok: Option<bool>,
-    tool_output: String,
-) -> impl IntoView {
-    let locale = use_locale();
-    let fallback = serde_json::from_str::<RunRecord>(&tool_output).ok();
-    let lookup_id = run_id.clone();
-    // Outside the card closure on purpose: the run list refresh re-renders the
-    // body every few seconds, which would snap a native `<details>` shut while
-    // the user is reading it.
-    let env_open = create_rw_signal(false);
-    view! {
-        {move || {
-            let run = runs
-                .get()
-                .into_iter()
-                .find(|run| run.id == lookup_id)
-                .or_else(|| fallback.clone());
-            let Some(run) = run else {
-                let failed = tool_ok == Some(false);
-                let status = if failed { "failed" } else { "running" };
-                let status_class = format!("run-status {status}");
-                let detail = if failed && !tool_output.trim().is_empty() {
-                    tool_output.clone()
-                } else {
-                    t(locale.get(), "runs.waiting_record").to_string()
-                };
-                return view! {
-                    <article class="run-monitor-card" data-testid="run-monitor-card" data-run-id=run_id.clone()>
-                        <div class="run-monitor-head">
-                            <span class="run-monitor-icon"><span class="run-dot"></span></span>
-                            <div class="run-monitor-title">
-                                <strong>{t(locale.get(), "runs.monitoring")}</strong>
-                                <code>{run_id.clone()}</code>
-                            </div>
-                            <span class=status_class>{run_status_label(locale.get(), status)}</span>
-                        </div>
-                        <div class="run-monitor-empty">{detail}</div>
-                    </article>
-                }.into_view();
-            };
-            let title = run_title(&run);
-            let status = run.status.clone();
-            let status_class = format!("run-status {status}");
-            let active = matches!(status.as_str(), "submitted" | "running" | "cancelling");
-            let cancellable = matches!(status.as_str(), "submitted" | "running" | "cancelling");
-            let force_cancel = status == "cancelling";
-            let cancel_label = if force_cancel {
-                t(locale.get(), "runs.force_cancel")
-            } else {
-                t(locale.get(), "runs.cancel")
-            };
-            let started = run.started_at.unwrap_or(run.created_at);
-            let now = if active {
-                clock.get()
-            } else {
-                js_sys::Date::now() as i64 / 1000
-            };
-            let ended = run.ended_at.unwrap_or(now);
-            let elapsed_value = transfer_duration(ended.saturating_sub(started) as u64);
-            let elapsed = tf(locale.get(), "runs.elapsed", &[("time", &elapsed_value)]);
-            let mut meta = format!("{} · {} · {elapsed}", run.context_id, run.kind);
-            if active {
-                if let Some(last_heartbeat) = run.last_polled_at {
-                    let age = now.saturating_sub(last_heartbeat);
-                    let age = transfer_duration(age as u64);
-                    meta.push_str(" · ");
-                    meta.push_str(&tf(locale.get(), "runs.heartbeat", &[("time", &age)]));
-                }
-            }
-            // The wall limit only tells the user anything while the run can still
-            // hit it, so finished runs keep the shorter line.
-            if let Some(limit) = run.timeout_secs.filter(|_| active).filter(|secs| *secs > 0) {
-                let limit = transfer_duration(limit as u64);
-                meta.push_str(" · ");
-                meta.push_str(&tf(locale.get(), "runs.timeout", &[("time", &limit)]));
-            }
-            let progress = run_progress(&run);
-            let output = run_output_preview(&run);
-            let command = run.command.clone().filter(|value| !value.trim().is_empty());
-            let remote_workdir = run.remote_workdir.clone();
-            let poll_error = run.last_poll_error.clone().filter(|value| !value.trim().is_empty());
-            // ponytail: flat `key: value` rows only — nested `config`/`capabilities`
-            // render as compact JSON, not a tree. Unparseable or empty snapshots
-            // (old rows, transfer runs) yield no pairs, so the block disappears.
-            let env_pairs = research::metadata_pairs(&run.env_snapshot_json);
-            let cancel_id = run.id.clone();
-            let output_id = run.id.clone();
-            view! {
-                <article class="run-monitor-card" data-testid="run-monitor-card" data-run-id=run.id>
-                    <div class="run-monitor-head">
-                        <span class="run-monitor-icon">{
-                            if active {
-                                view! { <span class="run-dot"></span> }.into_view()
-                            } else if status == "succeeded" {
-                                view! { <span class="run-monitor-done">"✓"</span> }.into_view()
-                            } else {
-                                view! { <span class="run-monitor-failed">"!"</span> }.into_view()
-                            }
-                        }</span>
-                        <div class="run-monitor-title">
-                            <strong>{title}</strong>
-                            <code>{lookup_id.clone()}</code>
-                        </div>
-                        {if force_cancel {
-                            let run_id = cancel_id.clone();
-                            let label = run_status_label(locale.get(), &status);
-                            let tip = cancel_label.clone();
-                            view! {
-                                <button type="button" class=status_class
-                                    title=tip.clone()
-                                    aria-label=tip
-                                    on:click=move |_| {
-                                        let run_id = run_id.clone();
-                                        spawn_local(async move {
-                                            let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
-                                            let _ = invoke("cancel_run", arg).await;
-                                        });
-                                    }
-                                >{label}</button>
-                            }.into_view()
-                        } else {
-                            view! {
-                                <span class=status_class>{run_status_label(locale.get(), &status)}</span>
-                            }.into_view()
-                        }}
-                        {cancellable.then(|| {
-                            let run_id = cancel_id.clone();
-                            let tip = cancel_label.clone();
-                            view! {
-                                <button type="button" class="icon-btn run-monitor-cancel"
-                                    title=tip.clone()
-                                    aria-label=tip
-                                    on:click=move |_| {
-                                        let run_id = run_id.clone();
-                                        spawn_local(async move {
-                                            let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
-                                            let _ = invoke("cancel_run", arg).await;
-                                        });
-                                    }>{compose_icon("close")}</button>
-                            }
-                        })}
-                    </div>
-                    <div class="run-monitor-meta">{meta}</div>
-                    {progress.map(|progress| run_progress_meter(progress, locale.get()))}
-                    {command.map(|command| view! { <div class="run-monitor-command">{command}</div> })}
-                    {remote_workdir.map(|workdir| view! {
-                        <div class="run-monitor-remote">
-                            <span>{t(locale.get(), "runs.remote_workdir")}</span>
-                            <code>{workdir}</code>
-                        </div>
-                    })}
-                    {(!output.is_empty()).then(|| view! {
-                        <div class="run-monitor-output">
-                            <span>{t(locale.get(), "runs.output")}</span>
-                            <pre data-run-output-for=output_id.clone()>{output}</pre>
-                        </div>
-                    })}
-                    {(!env_pairs.is_empty()).then(|| view! {
-                        <details class="run-monitor-env" data-testid="run-monitor-env"
-                            open=env_open.get()>
-                            <summary on:click=move |event| {
-                                event.prevent_default();
-                                env_open.update(|open| *open = !*open);
-                            }>{t(locale.get(), "runs.environment")}</summary>
-                            <dl>
-                                {env_pairs.into_iter().map(|(key, value)| view! {
-                                    <dt>{key}</dt>
-                                    <dd>{value}</dd>
-                                }).collect_view()}
-                            </dl>
-                        </details>
-                    })}
-                    {poll_error.map(|error| view! { <div class="context-error">{error}</div> })}
-                </article>
-            }.into_view()
-        }}
-    }
-}
-
-fn render_item(
-    ui_index: usize,
-    item: &ChatItem,
-    timestamp: Option<i64>,
-    artifacts: &[Artifact],
-    on_artifact: Callback<usize>,
-    on_file: Callback<ModalArtifact>,
-    runs: RwSignal<Vec<RunRecord>>,
-    run_clock: ReadSignal<i64>,
-    busy: ReadSignal<bool>,
-    compact_assistant: bool,
-    can_modify: bool,
-    can_undo: bool,
-    on_edit: impl Fn(usize) + Clone + 'static,
-    on_branch: impl Fn(usize) + Clone + 'static,
-    on_undo: Callback<usize>,
-    session_id: String,
-    on_approval: Callback<(String, bool, Option<String>, String)>,
-    on_resume: Callback<usize>,
-    on_queue: Callback<QueueOp>,
-    disclosure_state: RwSignal<HashMap<String, bool>>,
-    plan_mode_active: Signal<bool>,
-    plan_compat: Signal<bool>,
-    on_plan_decision: Callback<PlanDecision>,
-    on_question_answer: Callback<(usize, Option<String>, String)>,
-    on_review_jump: Callback<usize>,
-) -> impl IntoView {
-    let locale = use_locale();
-    match item {
-        ChatItem::User(s) => view! {
-            <UserMessage
-                text=s.clone()
-                timestamp=timestamp
-                ui_index=ui_index
-                busy=busy
-                can_modify=can_modify
-                on_copy=Callback::new(copy_text)
-                on_edit=Callback::new(on_edit)
-                on_branch=Callback::new(on_branch)
-                on_file=on_file
-            />
-        }.into_view(),
-        ChatItem::QueuedUser { id, text } => view! {
-            <QueuedMessage
-                id=*id
-                text=text.clone()
-                can_cut_in=can_modify
-                on_queue=on_queue
-            />
-        }.into_view(),
-        ChatItem::Assistant { text, .. } if text.trim().is_empty() => view! {}.into_view(),
-        ChatItem::Assistant { text, .. } if text.starts_with("Error: ") => {
-            let msg = text.strip_prefix("Error: ").unwrap_or(text.as_str()).to_string();
-            let copy = msg.clone();
-            let hint_src = msg.clone();
-            view! {
-                <div class="finding err">
-                    <div class="finding-head">
-                        <span class="finding-tag">{move || format!("● {}", t(locale.get(), "chat.error"))}</span>
-                        <span class="finding-title">{msg}</span>
-                        {can_modify.then(|| view! {
-                            <button type="button" class="tool-btn"
-                                disabled=move || busy.get()
-                                on:click=move |_| on_resume.call(ui_index)>
-                                {move || t(locale.get(), "chat.resume")}
-                            </button>
-                        })}
-                        <button type="button" class="tool-btn card-copy"
-                            title=move || t(locale.get(), "ctx.copy_message")
-                            on:click=move |_| copy_text(copy.clone())>
-                            {move || t(locale.get(), "msg.copy")}
-                        </button>
-                    </div>
-                    {move || i18n::api_error_hint(locale.get(), &hint_src).map(|hint| view! {
-                        <div class="finding-body">{hint}</div>
-                    })}
-                </div>
-            }.into_view()
-        }
-        ChatItem::Assistant { text, .. } if compact_assistant => view! {
-            <div class="assistant-wrap">
-                <div class="body md" inner_html=md_to_html(text)></div>
-            </div>
-        }.into_view(),
-        ChatItem::Assistant { text, model, resources } => view! {
-            <AssistantMessage
-                text=text.clone()
-                model=model.clone()
-                timestamp=timestamp
-                resources=resources.clone()
-                artifacts=artifacts.to_vec()
-                source_item=ui_index
-                on_artifact=on_artifact
-                on_file=on_file
-                on_copy=Callback::new(copy_text)
-                can_undo=can_undo
-                on_undo=on_undo
-            />
-        }.into_view(),
-        ChatItem::Tool { name, .. } if name == "attempt_completion" => view! {}.into_view(),
-        ChatItem::Tool { name, ok, input, output, .. } if is_run_monitor_tool(name) => view! {
-            <RunMonitorCard
-                run_id=input.trim().to_string()
-                runs=runs
-                clock=run_clock
-                tool_ok=*ok
-                tool_output=output.clone()
-            />
-        }.into_view(),
-        ChatItem::Tool { name, ok, input, output, .. } if is_image_generation_tool(name) => view! {
-            <ImageGenerationCard
-                path=input.trim().to_string()
-                ok=*ok
-                output=output.clone()
-                on_file=on_file
-            />
-        }.into_view(),
-        ChatItem::Reasoning(s) => {
-            // The chat row is fingerprint-keyed, so every streaming delta
-            // rebuilds it and a plain `<details>` would snap shut mid-stream.
-            // Keep the open state in the shared disclosure map, like the step
-            // group does, and drive `open` from it.
-            let open_id = format!("{session_id}:reasoning:{ui_index}");
-            let toggle_id = open_id.clone();
-            view! {
-                <details class="rz"
-                    open=move || disclosure_open(disclosure_state, &open_id, false)>
-                    <summary on:click=move |event| {
-                        event.prevent_default();
-                        toggle_disclosure(disclosure_state, &toggle_id, false);
-                    }>{move || t(locale.get(), "chat.thinking")}</summary>
-                    <div class="body">{s.clone()}</div>
-                </details>
-            }.into_view()
-        }
-        ChatItem::Tool { name, ok, input, output, .. } => view! {
-            <ToolBlock name=name.clone() ok=*ok input=input.clone() output=output.clone() />
-        }.into_view(),
-        ChatItem::Usage {
-            input,
-            output,
-            reasoning,
-            cached,
-            ..
-        } => {
-            let (input, output, reasoning, cached) = (*input, *output, *reasoning, *cached);
-            view! {
-                <div class="usage-line" title=move || t(locale.get(), "msg.usage_title")>
-                    {move || {
-                        let loc = locale.get();
-                        let mut s = tf(loc, "msg.usage", &[
-                            ("in", &fmt_tokens(input)),
-                            ("out", &fmt_tokens(output)),
-                        ]);
-                        if cached > 0 {
-                            s.push_str(&tf(loc, "msg.usage.cached", &[("c", &fmt_tokens(cached))]));
-                        }
-                        if reasoning > 0 {
-                            s.push_str(&tf(loc, "msg.usage.reasoning", &[("r", &fmt_tokens(reasoning))]));
-                        }
-                        s
-                    }}
-                </div>
-            }.into_view()
-        }
-        ChatItem::Compaction {
-            before,
-            after,
-            strategy,
-        } => {
-            let automatic = strategy == "auto";
-            let counts = format!(
-                "{} → {}",
-                fmt_tokens(*before as u64),
-                fmt_tokens(*after as u64)
-            );
-            view! {
-                <div class="context-compaction-flag" data-testid="context-compaction-flag">
-                    <span class="gi doc" aria-hidden="true"></span>
-                    <span>{move || t(
-                        locale.get(),
-                        if automatic {
-                            "chat.context_auto_compacted"
-                        } else {
-                            "chat.context_compacted"
-                        },
-                    )}</span>
-                    <span class="context-compaction-count">{counts}</span>
-                </div>
-            }.into_view()
-        }
-        ChatItem::AcpTool { title, status, content, locations, .. } => view! {
-            <article class="tool-card" data-testid="acp-tool" data-status=status.clone()>
-                <header><strong>{title.clone()}</strong><span>{status.clone()}</span></header>
-                {(!content.is_empty()).then(|| view! { <pre>{content.clone()}</pre> })}
-                {(!locations.is_empty()).then(|| view! { <pre>{locations.clone()}</pre> })}
-            </article>
-        }.into_view(),
-        ChatItem::ApprovalPending { tool, preview, message: _ } => view! {
-            <ApprovalCard tool=tool.clone() preview=preview.clone() session_id=session_id.clone() on_decide=on_approval />
-        }.into_view(),
-        ChatItem::AcpPermission { request_id, tool, options } => {
-            let request_id = request_id.clone();
-            view! {
-                <article class="approval-card" data-testid="acp-permission-card">
-                    <header><strong>{tool.clone()}</strong><span>"ACP permission"</span></header>
-                    <footer class="approval-actions">
-                        {options.clone().into_iter().map(|option| {
-                            let request_id = request_id.clone();
-                            let option_id = option.id.clone();
-                            let class = if option.kind.starts_with("allow") { "primary" } else { "" };
-                            view! {
-                                <button type="button" class=class on:click=move |_| {
-                                    let request_id = request_id.clone();
-                                    let option_id = option_id.clone();
-                                    spawn_local(async move {
-                                        let args = to_value(&serde_json::json!({ "requestId": request_id, "optionId": option_id })).unwrap();
-                                        let _ = invoke_checked("respond_acp_permission", args).await;
-                                    });
-                                }>{option.name}</button>
-                            }
-                        }).collect_view()}
-                    </footer>
-                </article>
-            }.into_view()
-        }
-        ChatItem::ReviewTransition { phase, model } => {
-            let (icon, message_key, data_phase) = match phase {
-                ReviewTransitionPhase::Reviewing => {
-                    ("↗", "review.transition_to_reviewer", "reviewing")
-                }
-                ReviewTransitionPhase::Correcting => {
-                    ("↩", "review.transition_to_agent", "correcting")
-                }
-                ReviewTransitionPhase::Passed => {
-                    ("✓", "review.transition_passed", "passed")
-                }
-            };
-            let model = model.clone();
-            view! {
-                <div class="review-transition" data-phase=data_phase>
-                    <span class="review-transition-line"></span>
-                    <span class="review-transition-icon">{icon}</span>
-                    <span class="review-transition-text">{move || t(locale.get(), message_key)}</span>
-                    {model.map(|model| view! { <span class="review-transition-model">{model}</span> })}
-                    <span class="review-transition-line"></span>
-                </div>
-            }.into_view()
-        }
-        ChatItem::Plan(plan) => {
-            let streaming = plan.state == PlanState::Streaming;
-            let entries = plan.entries.clone();
-            view! {
-                <article class="plan-card" class:streaming=streaming
-                    class:compat=move || plan_compat.get() data-testid="plan-card">
-                    <header class="plan-card-head">
-                        <span class="plan-card-icon">{compose_icon("plan")}</span>
-                        <div>
-                            <strong>{move || t(locale.get(), "plan.card.title")}</strong>
-                            {move || if streaming {
-                                Some(view! { <span>{t(locale.get(), "plan.card.streaming")}</span> })
-                            } else {
-                                plan_mode_active.get().then(|| view! {
-                                    <span>{t(locale.get(), "plan.card.ready")}</span>
-                                })
-                            }}
-                        </div>
-                        {move || plan_compat.get().then(|| view! {
-                            <span class="plan-card-compat" data-testid="plan-compat"
-                                title=move || t(locale.get(), "plan.compat_full")>
-                                {move || t(locale.get(), "plan.compat")}
-                            </span>
-                        })}
-                    </header>
-                    <ul class="plan-card-body" data-testid="plan-entries">
-                        {entries.into_iter().map(|entry| {
-                            let (status, mark, label) = match entry.status {
-                                PlanStatus::Completed => ("completed", "✓", "plan.status.completed"),
-                                PlanStatus::InProgress => ("in_progress", "▸", "plan.status.in_progress"),
-                                PlanStatus::Pending => ("pending", "", "plan.status.pending"),
-                            };
-                            let high = entry.priority == PlanPriority::High;
-                            view! {
-                                <li data-status=status>
-                                    <span class="plan-entry-mark" role="img"
-                                        aria-label=move || t(locale.get(), label)>{mark}</span>
-                                    <span class="plan-entry-text">{entry.content}</span>
-                                    {high.then(|| view! {
-                                        <span class="plan-entry-priority" role="img"
-                                            aria-label=move || t(locale.get(), "plan.priority_high")>"!"</span>
-                                    })}
-                                </li>
-                            }
-                        }).collect_view()}
-                    </ul>
-                    {move || plan_mode_active.get().then(|| view! {
-                        <footer class="plan-card-actions">
-                            <button type="button" class="primary" data-testid="plan-approve"
-                                on:click=move |_| on_plan_decision.call(PlanDecision::Approve)>
-                                {move || t(locale.get(), "plan.approve")}
-                            </button>
-                            <button type="button" data-testid="plan-modify"
-                                on:click=move |_| on_plan_decision.call(PlanDecision::Modify)>
-                                {move || t(locale.get(), "plan.modify")}
-                            </button>
-                            <button type="button" data-testid="plan-save-exit"
-                                on:click=move |_| on_plan_decision.call(PlanDecision::SaveExit)>
-                                {move || t(locale.get(), "plan.save_exit")}
-                            </button>
-                        </footer>
-                    })}
-                </article>
-            }.into_view()
-        }
-        ChatItem::Question(question) => {
-            let state = question.state;
-            let pending = state == QuestionState::Pending;
-            let request_id = question.request_id.clone();
-            let options = question.options.clone();
-            // A question with no options can only be answered freeform.
-            let allow_freeform = question.allow_freeform || options.is_empty();
-            let freeform = create_rw_signal(String::new());
-            let data_state = match state {
-                QuestionState::Pending => "pending",
-                QuestionState::Answered => "answered",
-                QuestionState::Expired => "expired",
-            };
-            let request_id_keydown = request_id.clone();
-            let request_id_click = request_id.clone();
-            view! {
-                <section class="plan-question-card" data-testid="question-card" data-state=data_state>
-                    <div class="plan-question-head">
-                        <span class="plan-question-icon">{compose_icon("chat")}</span>
-                        <strong>{move || t(locale.get(), "plan.question.title")}</strong>
-                    </div>
-                    <p class="plan-question-text">{question.question.clone()}</p>
-                    {(pending && !options.is_empty()).then(|| view! {
-                        <div class="plan-question-options">{options.into_iter().map(|option| {
-                            let request_id = request_id.clone();
-                            let answer = option.label.clone();
-                            view! {
-                                <button type="button"
-                                    on:click=move |_| on_question_answer.call((ui_index, request_id.clone(), answer.clone()))>
-                                    <strong>{option.label}</strong>
-                                    {(!option.description.is_empty()).then(|| view! { <span>{option.description}</span> })}
-                                </button>
-                            }
-                        }).collect_view()}</div>
-                    })}
-                    {(pending && allow_freeform).then(|| view! {
-                        <div class="plan-question-freeform">
-                            <input type="text" prop:value=move || freeform.get()
-                                placeholder=move || t(locale.get(), "plan.question.placeholder")
-                                on:input=move |event| freeform.set(event_target_value(&event))
-                                on:keydown=move |event: web_sys::KeyboardEvent| {
-                                    if event.key() == "Enter" && !event.shift_key() {
-                                        event.prevent_default();
-                                        on_question_answer.call((ui_index, request_id_keydown.clone(), freeform.get()));
-                                    }
-                                } />
-                            <button type="button" class="primary" disabled=move || freeform.get().trim().is_empty()
-                                on:click=move |_| on_question_answer.call((ui_index, request_id_click.clone(), freeform.get()))>
-                                {move || t(locale.get(), "plan.question.send")}
-                            </button>
-                        </div>
-                    })}
-                    {(state == QuestionState::Answered).then(|| view! {
-                        <footer class="plan-question-note">{move || t(locale.get(), "plan.answer_sent")}</footer>
-                    })}
-                    {(state == QuestionState::Expired).then(|| view! {
-                        <footer class="plan-question-note expired">{move || t(locale.get(), "plan.question.expired")}</footer>
-                    })}
-                </section>
-            }.into_view()
-        }
-        ChatItem::Review(report) => {
-            let report = report.clone();
-            let count = report.findings.len();
-            let unreviewable = report.review_status == "unreviewable";
-            let coverage = report.evidence_coverage.to_string();
-            let count_text = count.to_string();
-            let all_resolved = count > 0
-                && report
-                    .findings
-                    .iter()
-                    .all(|finding| finding.status == "resolved");
-            let has_unaddressed = report
-                .findings
-                .iter()
-                .any(|finding| finding.status == "unaddressed");
-            let copy = format!(
-                "{}\n\n{}",
-                report.summary,
-                report
-                    .findings
-                    .iter()
-                    .map(|finding| format!(
-                        "- {}\n  Evidence: {}\n  Fix: {}",
-                        finding.claim, finding.evidence, finding.fix
-                    ))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            );
-            let model = match (report.reviewer_model.trim(), report.reviewer_effort.trim()) {
-                ("", "") => String::new(),
-                (model, "") => model.to_string(),
-                ("", effort) => effort.to_string(),
-                (model, effort) => format!("{model} · {effort}"),
-            };
-            let summary = report.summary.clone();
-            let coverage_gaps = report.coverage_gaps.clone();
-            let findings = report
-                .findings
-                .into_iter()
-                .enumerate()
-                .map(|(index, finding)| {
-                    let resolved = finding.status == "resolved";
-                    let status_key = match finding.status.as_str() {
-                        "resolved" => "review.resolved",
-                        "unaddressed" => "review.unaddressed",
-                        _ => "review.open",
-                    };
-                    let verdict_class = format!("review-pill verdict {}", finding.verdict);
-                    let severity_class = format!("review-pill severity {}", finding.severity);
-                    let message_index = finding.message_index;
-                    view! {
-                        <div class="review-finding" class:resolved=resolved>
-                            <div class="review-finding-head">
-                                <span class="review-finding-number">{index + 1}</span>
-                                <span class=verdict_class>{finding.verdict}</span>
-                                <span class=severity_class>{finding.severity}</span>
-                                <span class="review-pill status">{move || t(locale.get(), status_key)}</span>
-                                <button type="button" class="tool-btn review-jump"
-                                    on:click=move |_| on_review_jump.call(message_index)>
-                                    {move || t(locale.get(), "review.go_to_transcript")}
-                                </button>
-                            </div>
-                            <div class="review-claim">{finding.claim}</div>
-                            <div class="review-detail">
-                                <strong>{move || t(locale.get(), "review.evidence")}</strong>
-                                <span>{finding.evidence}</span>
-                            </div>
-                            <div class="review-detail">
-                                <strong>{move || t(locale.get(), "review.fix")}</strong>
-                                <span>{finding.fix}</span>
-                            </div>
-                        </div>
-                    }
-                })
-                .collect_view();
-            view! {
-                <div class="review-card">
-                    <div class="review-head">
-                        <span class="review-badge">"🔍"</span>
-                        <span>{move || t(locale.get(), "review.title")}</span>
-                        <span class="review-count">{move || tf(locale.get(), "review.findings_n", &[("n", &count_text)])}</span>
-                        {(!model.is_empty()).then(|| view! { <span class="review-model">{model}</span> })}
-                        <button type="button" class="tool-btn card-copy"
-                            title=move || t(locale.get(), "ctx.copy_message")
-                            on:click=move |_| copy_text(copy.clone())>
-                            {move || t(locale.get(), "msg.copy")}
-                        </button>
-                    </div>
-                    <div class="review-summary">{summary}</div>
-                    {(count == 0 && !unreviewable).then(|| view! {
-                        <div class="review-empty">"✓ "{move || t(locale.get(), "review.no_findings")}</div>
-                    })}
-                    {unreviewable.then(|| view! {
-                        <div class="review-empty review-unreviewable">
-                            "⚠ "{move || tf(locale.get(), "review.unreviewable", &[("pct", &coverage)])}
-                        </div>
-                    })}
-                    {(!coverage_gaps.is_empty()).then(|| view! {
-                        <details class="review-coverage-gaps">
-                            <summary>{move || t(locale.get(), "review.coverage_gaps")}</summary>
-                            <ul>{coverage_gaps.into_iter().map(|gap| view! { <li>{gap}</li> }).collect_view()}</ul>
-                        </details>
-                    })}
-                    {findings}
-                    {(count > 0).then(|| view! {
-                        <div class="review-foot" class:resolved=all_resolved class:unaddressed=has_unaddressed>
-                            {move || {
-                                let key = if all_resolved {
-                                    "review.all_fixed"
-                                } else if has_unaddressed {
-                                    "review.needs_attention"
-                                } else {
-                                    "review.agent_correcting"
-                                };
-                                t(locale.get(), key)
-                            }}
-                        </div>
-                    })}
-                </div>
-            }.into_view()
-        }
     }
 }
 

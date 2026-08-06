@@ -550,6 +550,11 @@ pub fn build(
                 y,
                 items: vec![
                     item(
+                        "attachWorkspaceDirectory",
+                        i18n::t(locale, "ctx.attach_directory"),
+                        path.clone(),
+                    ),
+                    item(
                         "renameWorkspaceDirectory",
                         i18n::t(locale, "files.rename_directory"),
                         path.clone(),

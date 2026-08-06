@@ -2335,6 +2335,24 @@ button.workflow-graph-port.output.active {
   flex-wrap: wrap;
   min-width: 0;
 }
+.memory-clear-btn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  padding: 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+.memory-clear-btn:hover {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 35%, var(--border-strong));
+  background: color-mix(in srgb, var(--err) 6%, var(--bg-input));
+}
 .memory-off-banner {
   display: flex;
   align-items: center;

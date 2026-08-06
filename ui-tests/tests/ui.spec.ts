@@ -487,6 +487,7 @@ test("Memory settings show the active project name", async ({ page }) => {
   await expect(page.getByTestId("memory-project-select")).toContainText("superscience");
   await expect(project).toContainText("(1)");
   await expect(page.locator(".conn-group-label")).toContainText("Project memory");
+  await expect(page.getByRole("button", { name: "Clear all" })).toHaveClass("memory-clear-btn");
 });
 
 test("Memory settings can browse another project's notes without switching workspace", async ({ page }) => {
@@ -604,7 +605,9 @@ test("background Agent completion appears in its owning conversation", async ({ 
     });
   }, sent.sessionId);
 
-  const card = page.locator(".step", { hasText: "delegate_tasks" }).last();
+  const activity = page.locator(".steps.activity-summary").last();
+  await activity.getByRole("button", { name: /Processed/ }).click();
+  const card = activity.locator(".step", { hasText: "delegate_tasks" }).last();
   await expect(card).toContainText("Background Agent batch completed");
   await expect(card).toContainText("· workflow");
 });
@@ -793,7 +796,9 @@ test("ACP turn maps config, overlapping tools, plan, usage, and exact permission
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByText("Hello from ACP.")).toBeVisible();
-  await expect(page.getByTestId("acp-tool")).toHaveCount(2);
+  const activity = page.locator(".steps.activity-summary").last();
+  await activity.getByRole("button", { name: /Processed/ }).click();
+  await expect(activity.getByTestId("acp-tool")).toHaveCount(2);
   await expect(page.getByText("Inspect")).toBeVisible();
   await expect(page.getByTestId("acp-session-config")).toHaveCount(0);
   await expect(page.locator(".model-picker-btn")).toContainText("Test ACP Agent");
@@ -2938,6 +2943,22 @@ test("workspace Files panel navigates deeply nested analysis modules", async ({ 
   ).toBeVisible();
 });
 
+test("workspace folder can be added to chat context (#694)", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Files" }).click();
+
+  const folder = page.locator('.fb-row.dir[data-workspace-path="DEG"]');
+  await folder.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Add folder to chat" }).click();
+
+  await expect(page.locator(".composer-attachment.ready")).toHaveText("DEG");
+  await composer(page).fill("Inspect this directory");
+  await composer(page).press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: "Inspect this directory\n\nUploaded files: DEG",
+  });
+});
+
 test("workspace file can be registered as an artifact", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Files" }).click();
@@ -4170,6 +4191,50 @@ test("run monitor output stays pinned to the tail across poll rebuilds (#654)", 
   });
 });
 
+test("a settled run card stops rebuilding itself on every poll (#654)", async ({ page }) => {
+  const longOutput = Array.from(
+    { length: 8 },
+    (_, index) => `settled line ${index} ` + "x".repeat(180),
+  ).join("\n");
+
+  await enterApp(page);
+  // The MONITORRUN turn never resolves, so the agent stays busy and the run
+  // list is polled once a second even though this run is already finished.
+  await page.evaluate((stdout) => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      context_id: "local",
+      title: "Settled pipeline",
+      kind: "local",
+      status: "failed",
+      created_at: Math.floor(Date.now() / 1000) - 30,
+      started_at: Math.floor(Date.now() / 1000) - 29,
+      ended_at: Math.floor(Date.now() / 1000) - 5,
+      exit_code: 1,
+      stdout_tail: stdout,
+      progress_json: "{}",
+    });
+  }, longOutput);
+
+  await composer(page).fill("MONITORRUN");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const output = page.locator('[data-run-id="run-local-002"] .run-monitor-output pre');
+  await expect(output).toBeVisible();
+  const bottomGap = () =>
+    output.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+  await expect.poll(bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(2);
+
+  // Tag the live node. Identical poll results must leave it in place: replacing
+  // it is what reset the panel to its top edge for a frame, once per second.
+  await output.evaluate((el) => {
+    (el as any).__stableProbe = true;
+  });
+  await page.waitForTimeout(3_000);
+  expect(await output.evaluate((el) => (el as any).__stableProbe === true)).toBe(true);
+  expect(await bottomGap()).toBeLessThanOrEqual(2);
+});
+
 test("reasoning details stays open while more thinking streams in", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("RZSTREAM");
@@ -4216,11 +4281,14 @@ test("active Run elapsed time advances without waiting for a backend refresh (#6
   await page.goto("/?mockLiveRunClock=1");
   await page.getByTestId("recent-session-card").nth(1).click();
 
-  const meta = page.getByTestId("auto-run-monitor").locator(".run-monitor-meta");
+  const card = page.getByTestId("auto-run-monitor").locator(".run-monitor-card");
+  const meta = card.locator(".run-monitor-meta");
   const elapsed = async () => (await meta.textContent())?.match(/Elapsed ([^·]+)/)?.[1].trim();
   await expect.poll(elapsed).toMatch(/\d+s/);
+  await card.evaluate((element) => ((element as any).__clockStableProbe = true));
   const initial = await elapsed();
   await expect.poll(elapsed, { timeout: 3_000 }).not.toBe(initial);
+  expect(await card.evaluate((element) => (element as any).__clockStableProbe === true)).toBe(true);
 });
 
 test("image generation shows a placeholder and replaces it with the PNG", async ({ page }) => {
@@ -5428,7 +5496,7 @@ test("model API URL explains that endpoint paths are added automatically", async
   await openModelsSettings(page);
 
   await expect(page.getByTestId("model-api-url-hint")).toHaveText(
-    "Enter the provider's API base URL. You do not need to append /chat/completions, /responses, or /v1/messages; Wisp adds the matching request path automatically.",
+    "Enter the provider's API base URL. You do not need to append /v1, /chat/completions, /responses, or /v1/messages; Wisp completes the request path and probes common OpenAI-compatible paths automatically.",
   );
   await expect(page.getByLabel("API URL")).toHaveAttribute(
     "aria-describedby",
@@ -6246,7 +6314,6 @@ test("awaiting approval marks the session dot and requests a desktop notificatio
   await page.goto("/?mockLongSession=1");
   await page.locator(".proj-card-main").first().click();
   await expect(newSessionButton(page)).toBeVisible();
-  await page.getByText("Long transcript", { exact: true }).click();
   await composer(page).fill("NEEDCONFIRM");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByRole("button", { name: "Allow once" })).toBeVisible({ timeout: 10_000 });
@@ -6295,6 +6362,28 @@ test("chat stays pinned to the bottom while streaming a long reply (#61)", async
       { timeout: 5000 },
     )
     .toBeLessThan(8);
+});
+
+test("streaming assistant keeps formatted Markdown with a lightweight live tail", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("MARKDOWNSTREAM");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByText("stream line 4", { exact: false })).toBeVisible({ timeout: 10_000 });
+  const live = page.locator(".msg.assistant .streaming-markdown");
+  await expect(live).toBeVisible();
+  await expect(live.locator(".streaming-markdown-prefix strong").first()).toBeVisible();
+  await live.evaluate((element) => ((element as any).__liveMarkdownProbe = true));
+
+  await expect(page.getByText("stream line 18", { exact: false })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(async () => Number(await live.getAttribute("data-pending-bytes") ?? 0))
+    .toBeGreaterThan(0);
+  expect(await live.evaluate((element) => (element as any).__liveMarkdownProbe === true)).toBe(true);
+
+  await expect(page.getByText("stream line 23", { exact: false })).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".msg.assistant .body.md")).toBeVisible();
+  await expect(page.locator(".msg.assistant .body.md strong")).toHaveCount(24);
+  await expect(page.locator(".msg.assistant .body.streaming")).toHaveCount(0);
 });
 
 test("chat keeps the user's reading position when streaming finishes (#670)", async ({ page }) => {
@@ -6400,10 +6489,10 @@ test("session history loads older pages with a stable cursor", async ({ page }) 
   await page.goto("/?mockManySessions=1");
   await page.locator(".proj-card-main").first().click();
 
-  await expect(page.getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();
-  expect(await page.getByRole("button", { name: "Paged session 101", exact: true }).count()).toBe(0);
+  await expect(page.locator(".sidebar").getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();
+  expect(await page.locator(".sidebar").getByRole("button", { name: "Paged session 101", exact: true }).count()).toBe(0);
   await page.getByRole("button", { name: "Load earlier sessions" }).click();
-  await expect(page.getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Load earlier sessions" })).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "list_sessions_page")).toMatchObject({
     cursor: { id: "session-100", ts: 1901 },
@@ -6462,7 +6551,6 @@ test("long transcripts load earlier turns without jumping to the new top", async
   await page.goto("/?mockLongSession=1");
   await page.locator(".proj-card-main").first().click();
   await expect(newSessionButton(page)).toBeVisible();
-  await page.getByText("Long transcript", { exact: true }).click();
 
   await expect(page.getByText("Newest page first question", { exact: true })).toBeVisible();
   const scroller = page.locator("#chat-scroller");
@@ -6482,7 +6570,6 @@ test("long transcripts load earlier turns without jumping to the new top", async
 test("opening a long conversation lands at the latest message and stays stable on scroll (#663)", async ({ page }) => {
   await page.goto("/?mockLongPages=8");
   await page.locator(".proj-card-main").first().click();
-  await page.getByText("Long transcript", { exact: true }).click();
 
   const scroller = page.locator("#chat-scroller");
   await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
@@ -6497,6 +6584,12 @@ test("opening a long conversation lands at the latest message and stays stable o
   await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(before - 240);
 
   const readingPosition = await scroller.evaluate((element) => element.scrollTop);
+  // Unfollow flips overflow-anchor back to auto, but Chromium only picks a
+  // scroll anchor at layout time. Wait for a frame so the anchor is armed —
+  // otherwise a same-frame prepend is never compensated (#663).
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
   await page.evaluate(() => {
     const thread = document.getElementById("chat-thread");
     const spacer = document.createElement("div");
@@ -6511,7 +6604,6 @@ test("opening a long conversation lands at the latest message and stays stable o
 test("conversation outline loads and jumps to an older user question", async ({ page }) => {
   await page.goto("/?mockLongSession=1");
   await page.locator(".proj-card-main").first().click();
-  await page.getByText("Long transcript", { exact: true }).click();
 
   const toggle = page.getByRole("button", { name: "Show conversation outline" });
   await expect(toggle).toBeVisible();
@@ -6564,7 +6656,6 @@ test("long transcript rendering keeps a bounded turn window", async ({ page }) =
   test.setTimeout(Math.max(30_000, pageCount * 2_000));
   await page.goto(`/?mockLongPages=${pageCount}`);
   await page.locator(".proj-card-main").first().click();
-  await page.getByText("Long transcript", { exact: true }).click();
 
   for (let loaded = 1; loaded < pageCount; loaded += 1) {
     await page.getByRole("button", { name: "Load earlier messages" }).click();
@@ -6586,10 +6677,34 @@ test("long transcript rendering keeps a bounded turn window", async ({ page }) =
   await expect(page.getByRole("button", { name: "Show earlier loaded messages" })).toBeVisible();
 });
 
+test("a multi-megabyte transcript stays interactive while an answer streams", async ({ page }) => {
+  test.setTimeout(45_000);
+  await page.goto(`/?mockLongPages=1&mockLongRows=160&mockLongRowBytes=${32 * 1024}`);
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.getByText(/Window page 0 row 159/)).toBeVisible({ timeout: 15_000 });
+  const historicAssistant = page.locator(".msg.assistant", {
+    hasText: /Window page 0 row 159/,
+  });
+  await historicAssistant.evaluate((element) => ((element as any).__historicRowProbe = true));
+
+  await composer(page).fill("MARKDOWNSTREAM");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("stream line 4", { exact: false })).toBeVisible({ timeout: 10_000 });
+  expect(await historicAssistant.evaluate((element) => (element as any).__historicRowProbe === true)).toBe(true);
+  await expect(historicAssistant.locator(".body.md")).toBeVisible();
+  await page.getByRole("button", { name: "Agent options" }).click({ timeout: 2_000 });
+  const menu = page.getByRole("menu", { name: "Agent options" });
+  await expect(menu).toBeVisible();
+  await menu.evaluate((element) => ((element as any).__largeTranscriptProbe = true));
+
+  await expect(page.getByText("stream line 23", { exact: false })).toBeVisible({ timeout: 10_000 });
+  expect(await historicAssistant.evaluate((element) => (element as any).__historicRowProbe === true)).toBe(true);
+  expect(await menu.evaluate((element) => (element as any).__largeTranscriptProbe === true)).toBe(true);
+});
+
 test("branching from a paged transcript uses the global user-turn index", async ({ page }) => {
   await page.goto("/?mockLongSession=1");
   await page.locator(".proj-card-main").first().click();
-  await page.getByText("Long transcript", { exact: true }).click();
   const firstLoadedUser = page.locator(".msg.user", { hasText: "Newest page first question" });
   await firstLoadedUser.getByRole("button", { name: "Branch" }).click();
 
@@ -6721,7 +6836,6 @@ test("MCP App opens as a persistent center tab and delivers tool data", async ({
 test("reopening a saved session restores its MCP App workbench", async ({ page }) => {
   const openSavedSession = async () => {
     await page.locator(".proj-card-main").first().click();
-    await page.getByText("Saved MCP App", { exact: true }).click();
     const app = page.frameLocator('iframe[title="Restored Motif workbench"]');
     await expect(app.locator("#state")).toHaveText("restored");
     await expect(page.locator('.center-tab[data-center-path^="mcp-app:"]'))
@@ -7114,6 +7228,13 @@ test("project switcher does not show a stale fallback name while opening", async
   await expect(page.locator(".proj-name")).toHaveText("superscience");
 });
 
+test("opening a workspace resumes its most recent conversation by default", async ({ page }) => {
+  await page.goto("/?mockLongSession=1");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.getByRole("tablist").getByRole("button", { name: "Long transcript" })).toBeVisible();
+  await expect(page.getByText("Newest page first question")).toBeVisible();
+});
+
 test("default workspace keeps history labels and compact navigation keeps hover labels", async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 800 });
   await enterApp(page);
@@ -7313,6 +7434,32 @@ test("general settings enable automatic context compaction by default", async ({
   });
 });
 
+test("general settings enable follow-up question suggestions by default", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "General");
+  const toggle = page.getByTestId("follow-up-questions-enabled");
+  await expect(toggle).toBeChecked();
+  await toggle.locator("..").click();
+  await expect(toggle).not.toBeChecked();
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
+    settings: { follow_up_questions: false },
+  });
+});
+
+test("general settings resume the last workspace conversation by default", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "General");
+  const toggle = page.getByTestId("resume-last-session-enabled");
+  await expect(toggle).toBeChecked();
+  await toggle.locator("..").click();
+  await expect(toggle).not.toBeChecked();
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
+    settings: { resume_last_session: false },
+  });
+});
+
 test("context compaction leaves a visible timeline flag", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("start a context-heavy analysis");
@@ -7462,6 +7609,26 @@ test("desktop pet remains independent and reflects global agent state", async ({
     (window as any).__tauriEmit("agent", { kind: "Done", frame_id: "pet-frame" });
   });
   await expect(pet).toHaveAttribute("data-state", "jumping");
+});
+
+test("desktop pet shows active Run titles and celebrates completion (#693)", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).__mockPetActiveRuns = [
+      { id: "run-data", title: "data_analysis.py" },
+    ];
+  });
+  await page.goto("/?pet=desktop&mockPet=1");
+
+  const pet = page.getByTestId("wisp-pet");
+  await expect(pet).toHaveAttribute("data-tauri-drag-region", "deep");
+  await expect(pet.getByText("Running: data_analysis.py")).toBeVisible();
+  await expect(pet).toHaveAttribute("data-state", "running");
+
+  await page.evaluate(() => {
+    (window as any).__mockPetActiveRuns = [];
+  });
+  await expect(pet).toHaveAttribute("data-state", "jumping", { timeout: 5_000 });
+  await expect(pet.getByText("Done")).toBeVisible();
 });
 
 test("notification navigation opens the project and session that need the user (#499)", async ({ page }) => {
@@ -7772,6 +7939,10 @@ test("completed commentary, reasoning, and tools fold into one activity summary"
   await expect(activity).toHaveCount(1);
   expect(browserErrors).toEqual([]);
   await expect(activity).not.toHaveClass(/open/);
+  // A collapsed summary owns no hidden transcript subtree; rows and their
+  // potentially large tool bodies mount only after the corresponding toggle.
+  await expect(activity.locator(".steps-body")).toHaveCount(0);
+  await expect(activity.locator(".step")).toHaveCount(0);
   await expect(page.locator(".step-body:visible")).toHaveCount(0);
   const activityHead = activity.getByRole("button", { name: /Processed/ });
   await expect(activityHead).toHaveAttribute("aria-expanded", "false");
@@ -7783,6 +7954,12 @@ test("completed commentary, reasoning, and tools fold into one activity summary"
   await expect(activity.locator(".step-name")).toContainText([
     "progress", "thinking", "shell", "progress", "thinking", "python", "progress", "write",
   ]);
+  await expect(activity.locator(".step-body")).toHaveCount(0);
+  const shell = activity.locator(".step", { hasText: "shell" });
+  await shell.locator(".step-head").click();
+  await expect(shell.locator(".step-body")).toHaveCount(1);
+  await expect(shell.locator(".tool-output")).toContainText("gene_0");
+  await activityHead.focus();
   await page.keyboard.press("Space");
   await expect(activityHead).toHaveAttribute("aria-expanded", "false");
   await expect(page.locator("details.rz")).toHaveCount(0);
@@ -7819,7 +7996,32 @@ test("live step disclosure choices survive tool updates and completion (#172)", 
   // Completion replaces the live disclosure with a fresh, collapsed summary.
   await expect(steps).toHaveClass(/activity-summary/);
   await expect(steps).not.toHaveClass(/open/);
-  await expect(shell).not.toHaveClass(/open/);
+  await expect(shell).toHaveCount(0);
+});
+
+test("provenance rows and collapsed bodies stay isolated while assistant text streams", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("STEPSDEMO");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText(/60,675 genes/)).toBeVisible({ timeout: 10_000 });
+
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  const panel = page.locator(".rightpane");
+  await panel.getByRole("button", { name: "Add panel" }).click();
+  await panel.locator(".rp-tab-add-menu").getByRole("button", { name: /^Provenance/ }).click();
+
+  const first = panel.locator(".prov-item").first();
+  await expect(first).toBeVisible();
+  await expect(first.locator(".prov-body")).toHaveCount(0);
+  await first.locator(".prov-head").click();
+  await expect(first.locator(".prov-body").last()).toContainText("gene_0");
+  await first.evaluate((element) => ((element as any).__streamStableProbe = true));
+
+  await composer(page).fill("SCROLLTEST");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("line 40", { exact: false })).toBeVisible({ timeout: 10_000 });
+  expect(await first.evaluate((element) => (element as any).__streamStableProbe === true)).toBe(true);
+  await expect(first).toHaveAttribute("open", "open");
 });
 
 test("completed ACP commentary, reasoning, and tools share one summary", async ({ page }) => {
@@ -8210,6 +8412,24 @@ test("the selection popup saves a highlight into the right pane and library", as
   await expect(page.getByRole("button", { name: "Highlights (1)", exact: true })).toBeVisible();
   await expect(page.locator(".highlight-card .highlight-text")).toContainText(selected.trim().slice(0, 30));
   await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("wisp-saved") ?? false)).toBe(true);
+
+  // Saved-mark application is revision-based: token batches in a later turn
+  // must not rebuild the transcript text index once per flush.
+  await composer(page).fill("MARKDOWNSTREAM");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("stream line 4", { exact: false })).toBeVisible({ timeout: 10_000 });
+  await page.evaluate(() => {
+    const registry = (CSS as any).highlights;
+    const set = registry.set.bind(registry);
+    (window as any).__savedMarkSetCalls = 0;
+    registry.set = (name: string, value: unknown) => {
+      if (name === "wisp-saved") (window as any).__savedMarkSetCalls += 1;
+      return set(name, value);
+    };
+  });
+  await expect(page.getByText("stream line 18", { exact: false })).toBeVisible({ timeout: 10_000 });
+  expect(await page.evaluate(() => (window as any).__savedMarkSetCalls)).toBe(0);
+  await expect(page.getByText("stream line 23", { exact: false })).toBeVisible({ timeout: 10_000 });
 
   // The global library lists it under the Highlights filter.
   await page.getByRole("button", { name: "Library", exact: true }).click();

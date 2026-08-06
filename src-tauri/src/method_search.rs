@@ -286,6 +286,7 @@ impl MethodSearchEvaluator for LocalPythonMethodSearchEvaluator {
         if let Some(path) = &request.final_verification_path {
             command.env("WISP_METHOD_SEARCH_FINAL", path);
         }
+        superscience_tools::process::hide_console_async(&mut command);
         let mut child = command
             .spawn()
             .map_err(|error| format!("Unable to start the configured Python evaluator: {error}"))?;

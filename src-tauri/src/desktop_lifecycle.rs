@@ -18,6 +18,24 @@ pub(crate) fn should_activate_workspace_window(window_label: &str) -> bool {
     window_label != "pet"
 }
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum TrayAction {
+    Show,
+    Restart,
+    Quit,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn tray_action(id: &str) -> Option<TrayAction> {
+    match id {
+        "tray-show" => Some(TrayAction::Show),
+        "tray-restart" => Some(TrayAction::Restart),
+        "tray-quit" => Some(TrayAction::Quit),
+        _ => None,
+    }
+}
+
 pub(crate) fn activate_workspace(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     let _ = app.show();
@@ -148,9 +166,10 @@ pub(crate) fn install_windows_shell(app: &mut App) -> tauri::Result<()> {
         .menu(&menu)
         .tooltip("SuperScience")
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "tray-show" => activate_workspace(app),
-            "tray-quit" => app.exit(0),
+        .on_menu_event(|app, event| match tray_action(event.id().as_ref()) {
+            Some(TrayAction::Show) => activate_workspace(app),
+            Some(TrayAction::Restart) => app.request_restart(),
+            Some(TrayAction::Quit) => app.exit(0),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -189,4 +208,17 @@ pub(crate) fn install_windows_shell(app: &mut App) -> tauri::Result<()> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{tray_action, TrayAction};
+
+    #[test]
+    fn windows_tray_actions_include_restart() {
+        assert_eq!(tray_action("tray-show"), Some(TrayAction::Show));
+        assert_eq!(tray_action("tray-restart"), Some(TrayAction::Restart));
+        assert_eq!(tray_action("tray-quit"), Some(TrayAction::Quit));
+        assert_eq!(tray_action("unknown"), None);
+    }
 }
