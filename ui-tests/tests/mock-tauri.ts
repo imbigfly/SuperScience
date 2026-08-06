@@ -112,6 +112,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockPlanFlow = query.get("mockPlanFlow");
   const mockPublication = query.get("mockPublication");
   const mockLongPages = Number(query.get("mockLongPages") ?? 0);
+  const mockLongRows = Math.min(200, Math.max(20, Number(query.get("mockLongRows") ?? 20)));
+  const mockLongRowBytes = Math.min(
+    64 * 1024,
+    Math.max(256, Number(query.get("mockLongRowBytes") ?? 256)),
+  );
   const mockLongSession = query.get("mockLongSession") === "1" || mockLongPages > 0;
   const mockResourceSession = query.get("mockResourceSession") === "1";
   const mockMcpAppSession = query.get("mockMcpAppSession") === "1";
@@ -1721,9 +1726,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               if (mockLongPages > 0) {
                 const pageIndex = before == null ? 0 : Number(before);
                 return {
-                  items: Array.from({ length: 20 }, (_, index) => ({
+                  items: Array.from({ length: mockLongRows }, (_, index) => ({
                     role: index % 2 === 0 ? "user" : "assistant",
-                    text: `Window page ${pageIndex} row ${index} ${"x".repeat(256)}`,
+                    text: `Window page ${pageIndex} row ${index} ${"x".repeat(mockLongRowBytes)}`,
                     tool_name: null,
                     ok: null,
                   })),
@@ -3635,6 +3640,28 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 50,
               );
               return fid;
+            }
+            // Slow stream keeps send_message pending until Done. This mirrors the
+            // native command lifecycle and leaves enough live time to assert that
+            // Markdown/projection work is deferred between token batches.
+            if (String(arg("message") ?? "").includes("MARKDOWNSTREAM")) {
+              return await new Promise<string>((resolve) => {
+                let n = 0;
+                const tick = () => {
+                  if (n < 24) {
+                    emit("agent", { kind: "Text", frame_id: fid, delta: `**stream line ${n}**\n` });
+                    n++;
+                    setTimeout(tick, 50);
+                  } else {
+                    emit("agent", { kind: "Done", frame_id: fid });
+                    resolve(fid);
+                  }
+                };
+                setTimeout(() => {
+                  emit("agent", { kind: "User", frame_id: fid, text: msg });
+                  tick();
+                }, 30);
+              });
             }
             // Long-stream path (#61 regression test): drip many text deltas so the
             // thread re-renders repeatedly and grows well past the viewport.

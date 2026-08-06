@@ -156,31 +156,47 @@ pub(crate) fn merge_conversation_outline(
     items: &[ChatItem],
     user_offset: usize,
 ) -> Vec<SessionOutlineItem> {
-    let mut outline = persisted.to_vec();
-    let mut local_index = 0usize;
-    for item in items {
-        let text = match item {
-            ChatItem::User(text) | ChatItem::QueuedUser { text, .. } => text,
-            _ => continue,
-        };
-        let user_index = user_offset + local_index;
-        local_index += 1;
-        if let Some(entry) = outline
-            .iter_mut()
-            .find(|entry| entry.user_index == user_index)
-        {
-            entry.text.clone_from(text);
-        } else {
-            outline.push(SessionOutlineItem {
-                user_index,
-                seq: None,
-                text: text.clone(),
-                sent_at: None,
-                response_at: None,
-            });
+    let mut persisted = persisted.to_vec();
+    if !persisted
+        .windows(2)
+        .all(|window| window[0].user_index <= window[1].user_index)
+    {
+        persisted.sort_by_key(|entry| entry.user_index);
+    }
+    let live = items
+        .iter()
+        .filter_map(|item| match item {
+            ChatItem::User(text) | ChatItem::QueuedUser { text, .. } => Some(text),
+            _ => None,
+        })
+        .enumerate()
+        .map(|(local_index, text)| SessionOutlineItem {
+            user_index: user_offset + local_index,
+            seq: None,
+            text: text.clone(),
+            sent_at: None,
+            response_at: None,
+        })
+        .collect::<Vec<_>>();
+
+    // Both inputs are ordered by user index, so merge once instead of finding
+    // every live turn in the growing persisted vector and sorting afterwards.
+    let mut outline = Vec::with_capacity(persisted.len() + live.len());
+    let mut persisted = persisted.into_iter().peekable();
+    let mut live = live.into_iter().peekable();
+    while let (Some(saved), Some(current)) = (persisted.peek(), live.peek()) {
+        match saved.user_index.cmp(&current.user_index) {
+            std::cmp::Ordering::Less => outline.push(persisted.next().unwrap()),
+            std::cmp::Ordering::Greater => outline.push(live.next().unwrap()),
+            std::cmp::Ordering::Equal => {
+                let mut saved = persisted.next().unwrap();
+                saved.text = live.next().unwrap().text;
+                outline.push(saved);
+            }
         }
     }
-    outline.sort_by_key(|entry| entry.user_index);
+    outline.extend(persisted);
+    outline.extend(live);
     outline
 }
 
@@ -337,6 +353,36 @@ mod conversation_outline_tests {
         assert_eq!(turn_duration_ms(Some(100), Some(480)), Some(380_000));
         assert_eq!(turn_duration_ms(Some(100), None), None);
         assert_eq!(turn_duration_ms(Some(100), Some(99)), None);
+    }
+
+    #[test]
+    fn normalizes_an_old_unsorted_directory_before_merging() {
+        let persisted = vec![
+            SessionOutlineItem {
+                user_index: 2,
+                seq: Some(5),
+                text: "third".into(),
+                sent_at: None,
+                response_at: None,
+            },
+            SessionOutlineItem {
+                user_index: 0,
+                seq: Some(1),
+                text: "first".into(),
+                sent_at: None,
+                response_at: None,
+            },
+        ];
+
+        let merged = merge_conversation_outline(&persisted, &[ChatItem::User("second".into())], 1);
+
+        assert_eq!(
+            merged
+                .iter()
+                .map(|entry| (entry.user_index, entry.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, "first"), (1, "second"), (2, "third")]
+        );
     }
 }
 

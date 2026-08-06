@@ -225,7 +225,6 @@ pub(crate) enum ThreadRow {
         timestamp: Option<i64>,
         commentary: bool,
         compact_assistant: bool,
-        can_undo: bool,
     },
     Steps {
         indices: Vec<usize>,
@@ -320,7 +319,8 @@ mod steps_title_tests {
 }
 
 pub(crate) fn render_steps_group(
-    items: Vec<ChatItem>,
+    indices: Vec<usize>,
+    source: RwSignal<Vec<ChatItem>>,
     live: bool,
     completed_turn: bool,
     turn_duration_ms: Option<u64>,
@@ -328,31 +328,44 @@ pub(crate) fn render_steps_group(
     disclosure_state: RwSignal<HashMap<String, bool>>,
 ) -> impl IntoView {
     let locale = use_locale();
-    let n_tools = items
-        .iter()
-        .filter(|c| matches!(c, ChatItem::Tool { .. } | ChatItem::AcpTool { .. }))
-        .count();
     let now = now_ms();
-    let total_ms = turn_duration_ms.unwrap_or_else(|| {
-        if completed_turn {
-            return 0;
-        }
-        items
-            .iter()
-            .map(|c| match c {
+    let (n_tools, tool_total_ms, now_line) = source.with_untracked(|items| {
+        let selected = || indices.iter().filter_map(|index| items.get(*index));
+        let n_tools = selected()
+            .filter(|item| matches!(item, ChatItem::Tool { .. } | ChatItem::AcpTool { .. }))
+            .count();
+        let total_ms = selected()
+            .map(|item| match item {
                 ChatItem::Tool {
-                    duration_ms: Some(d),
+                    duration_ms: Some(duration),
                     ..
-                } => *d,
+                } => *duration,
                 ChatItem::Tool {
                     duration_ms: None,
-                    started_at_ms: Some(s),
+                    started_at_ms: Some(started),
                     ok: None,
                     ..
-                } if live => now.saturating_sub(*s),
+                } if live => now.saturating_sub(*started),
                 _ => 0,
             })
-            .sum()
+            .sum::<u64>();
+        let now_line = live
+            .then(|| {
+                indices
+                    .iter()
+                    .rev()
+                    .filter_map(|index| items.get(*index))
+                    .find_map(step_now_line)
+            })
+            .flatten();
+        (n_tools, total_ms, now_line)
+    });
+    let total_ms = turn_duration_ms.unwrap_or_else(|| {
+        if completed_turn {
+            0
+        } else {
+            tool_total_ms
+        }
     });
     let total_label =
         (total_ms > 0 && (!live || n_tools > 0)).then(|| format_duration_ms(total_ms));
@@ -372,166 +385,16 @@ pub(crate) fn render_steps_group(
             inline_time.as_deref(),
         )
     };
-    // The group re-renders on every streaming delta (fingerprint-keyed row),
-    // so this static line tracks the in-flight step while collapsed.
-    let now_line = live.then(|| steps_now_line(&items)).flatten();
-    let rows = items.into_iter().enumerate().map(|(position, it)| match it {
-        ChatItem::Assistant { text, .. } => {
-            let step_id = format!("{group_id}:progress:{position}");
-            let class_id = step_id.clone();
-            let aria_id = step_id.clone();
-            let toggle_id = step_id.clone();
-            let detail: String = text
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("")
-                .trim()
-                .chars()
-                .take(100)
-                .collect();
-            let html = md_to_html(&text);
-            view! {
-                <div class="step step-progress"
-                    class:open=move || disclosure_open(disclosure_state, &class_id, false)>
-                    <button type="button" class="step-head"
-                        aria-expanded=move || disclosure_open(disclosure_state, &aria_id, false).to_string()
-                        on:click=move |_| toggle_disclosure(disclosure_state, &toggle_id, false)>
-                        <span class="step-icon progress"></span>
-                        <span class="step-name">{move || t(locale.get(), "chat.progress")}</span>
-                        <span class="step-detail">{detail}</span>
-                    </button>
-                    <div class="step-progress-body body md" inner_html=html></div>
-                </div>
-            }.into_view()
-        }
-        ChatItem::Reasoning(text) => {
-            let step_id = format!("{group_id}:reasoning:{position}");
-            let class_id = step_id.clone();
-            let aria_id = step_id.clone();
-            let toggle_id = step_id.clone();
-            view! {
-                <div class="step step-think"
-                    class:open=move || disclosure_open(disclosure_state, &class_id, false)>
-                    <button type="button" class="step-head"
-                        aria-expanded=move || disclosure_open(disclosure_state, &aria_id, false).to_string()
-                        on:click=move |_| toggle_disclosure(disclosure_state, &toggle_id, false)>
-                        <span class="step-icon think"></span>
-                        <span class="step-name">{move || t(locale.get(), "chat.thinking")}</span>
-                    </button>
-                    <div class="step-think-body">{text}</div>
-                </div>
-            }.into_view()
-        }
-        ChatItem::Tool { name, ok, input, output, started_at_ms, duration_ms, .. } => {
-            let step_id = format!("{group_id}:tool:{position}");
-            let automatic = ok.is_none() && live;
-            let class_id = step_id.clone();
-            let aria_id = step_id.clone();
-            let toggle_id = step_id.clone();
-            let (badge_key, title) = tool_card_label(&name, &input);
-            let mut detail: String = input
-                .lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim()
-                .chars().take(80).collect();
-            if detail == title {
-                detail.clear();
-            }
-            let lines = if output.is_empty() { 0 } else { output.lines().count() };
-            let has_body = !input.is_empty() || !output.is_empty();
-            let icon = match ok {
-                Some(true) => view! { <span class="step-icon ok">"✓"</span> }.into_view(),
-                Some(false) => view! { <span class="step-icon fail">"✗"</span> }.into_view(),
-                None => view! { <span class="step-icon run"><span class="run-dot"></span></span> }.into_view(),
-            };
-            let meta_text = step_tool_meta(locale.get(), duration_ms, started_at_ms, ok, lines, now);
-            let meta = meta_text.map(|text| view! { <span class="step-meta">{text}</span> });
-            view! {
-                <div class="step"
-                    class:open=move || disclosure_open(disclosure_state, &class_id, automatic)
-                    class=("no-body", !has_body)>
-                    <button type="button" class="step-head" disabled=!has_body
-                        aria-expanded=move || (has_body && disclosure_open(disclosure_state, &aria_id, automatic)).to_string()
-                        on:click=move |_| {
-                        if has_body {
-                            toggle_disclosure(disclosure_state, &toggle_id, automatic)
-                        }
-                    }>
-                        {icon}
-                        {badge_key.map(|key| view! {
-                            <span class="tool-badge">{move || t(locale.get(), key)}</span>
-                        })}
-                        <span class="step-name">{title}</span>
-                        {(!detail.is_empty()).then(|| view! { <span class="step-detail">{detail}</span> })}
-                        {meta}
-                    </button>
-                    {has_body.then(|| view! {
-                        <div class="step-body">
-                            {(!input.is_empty()).then(|| view! { <pre class="tool-input">{input.clone()}</pre> })}
-                            {(!output.is_empty()).then(|| view! { <pre class="tool-output">{output.clone()}</pre> })}
-                        </div>
-                    })}
-                </div>
-            }.into_view()
-        }
-        ChatItem::AcpTool { call_id, title, kind, status, content, locations, .. } => {
-            let failed = status == "failed";
-            let done = matches!(status.as_str(), "completed" | "failed");
-            let running = !done;
-            let stable_part = if call_id.is_empty() {
-                format!("position-{position}")
-            } else {
-                call_id.clone()
-            };
-            let step_id = format!("{group_id}:acp:{stable_part}");
-            let automatic = running && live;
-            let class_id = step_id.clone();
-            let aria_id = step_id.clone();
-            let toggle_id = step_id.clone();
-            let detail = acp_tool_step_detail(&kind, &content, &locations);
-            let body = acp_tool_step_body(&content, &locations);
-            let has_body = !body.is_empty();
-            let icon = if failed {
-                view! { <span class="step-icon fail">"✗"</span> }.into_view()
-            } else if done {
-                view! { <span class="step-icon ok">"✓"</span> }.into_view()
-            } else {
-                view! { <span class="step-icon run"><span class="run-dot"></span></span> }.into_view()
-            };
-            let meta = (!done).then(|| status.clone());
-            view! {
-                <div class="step acp-tool" data-testid="acp-tool" data-status=status.clone()
-                    class:open=move || disclosure_open(disclosure_state, &class_id, automatic)
-                    class=("no-body", !has_body)>
-                    <button type="button" class="step-head" disabled=!has_body
-                        aria-expanded=move || (has_body && disclosure_open(disclosure_state, &aria_id, automatic)).to_string()
-                        on:click=move |_| {
-                        if has_body {
-                            toggle_disclosure(disclosure_state, &toggle_id, automatic)
-                        }
-                    }>
-                        {icon}
-                        <span class="step-name">{title.clone()}</span>
-                        {(!detail.is_empty()).then(|| view! { <span class="step-detail">{detail.clone()}</span> })}
-                        {meta.map(|text| view! { <span class="step-meta">{text}</span> })}
-                    </button>
-                    {has_body.then(|| view! {
-                        <div class="step-body">
-                            <pre class="tool-output">{body.clone()}</pre>
-                        </div>
-                    })}
-                </div>
-            }.into_view()
-        }
-        _ => view! {}.into_view(),
-    }).collect_view();
     let class_group_id = group_id.clone();
-    let aria_group_id = group_id.clone();
     let toggle_group_id = group_id.clone();
+    let rows_group_id = group_id;
+    let group_open = create_memo(move |_| disclosure_open(disclosure_state, &class_group_id, live));
     view! {
         <div class="steps"
             class=("activity-summary", completed_turn)
-            class:open=move || disclosure_open(disclosure_state, &class_group_id, live)>
+            class:open=move || group_open.get()>
             <button type="button" class="steps-head"
-                aria-expanded=move || disclosure_open(disclosure_state, &aria_group_id, live).to_string()
+                aria-expanded=move || group_open.get().to_string()
                 on:click=move |_| {
                 toggle_disclosure(disclosure_state, &toggle_group_id, live)
             }>
@@ -540,14 +403,284 @@ pub(crate) fn render_steps_group(
                 {now_line.map(|text| view! { <span class="steps-now">{text}</span> })}
                 {meta_label.map(|label| view! { <span class="steps-meta">{label}</span> })}
             </button>
-            <div class="steps-body">{rows}</div>
+            {move || group_open.get().then(|| view! {
+                <div class="steps-body">{
+                    render_step_rows(
+                        &indices,
+                        source,
+                        live,
+                        &rows_group_id,
+                        disclosure_state,
+                        locale,
+                        now,
+                    )
+                }</div>
+            })}
         </div>
     }
 }
 
+fn render_step_rows(
+    indices: &[usize],
+    source: RwSignal<Vec<ChatItem>>,
+    live: bool,
+    group_id: &str,
+    disclosure_state: RwSignal<HashMap<String, bool>>,
+    locale: ReadSignal<Locale>,
+    now: u64,
+) -> View {
+    indices
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(position, index)| {
+            render_step_row(
+                source,
+                index,
+                position,
+                live,
+                group_id,
+                disclosure_state,
+                locale,
+                now,
+            )
+        })
+        .collect_view()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_step_row(
+    source: RwSignal<Vec<ChatItem>>,
+    index: usize,
+    position: usize,
+    live: bool,
+    group_id: &str,
+    disclosure_state: RwSignal<HashMap<String, bool>>,
+    locale: ReadSignal<Locale>,
+    now: u64,
+) -> View {
+    source.with_untracked(|items| match items.get(index) {
+        Some(ChatItem::Assistant { text, .. }) => {
+            let step_id = format!("{group_id}:progress:{position}");
+            let toggle_id = step_id.clone();
+            let detail = text
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(100)
+                .collect::<String>();
+            let step_open = create_memo(move |_| {
+                disclosure_open(disclosure_state, &step_id, false)
+            });
+            view! {
+                <div class="step step-progress" class:open=move || step_open.get()>
+                    <button type="button" class="step-head"
+                        aria-expanded=move || step_open.get().to_string()
+                        on:click=move |_| toggle_disclosure(disclosure_state, &toggle_id, false)>
+                        <span class="step-icon progress"></span>
+                        <span class="step-name">{move || t(locale.get(), "chat.progress")}</span>
+                        <span class="step-detail">{detail}</span>
+                    </button>
+                    {move || step_open.get().then(|| {
+                        let text = source.with_untracked(|items| match items.get(index) {
+                            Some(ChatItem::Assistant { text, .. }) => text.clone(),
+                            _ => String::new(),
+                        });
+                        if live {
+                            view! { <div class="step-progress-body body streaming">{text}</div> }.into_view()
+                        } else {
+                            view! { <div class="step-progress-body body md" inner_html=md_to_html(&text)></div> }.into_view()
+                        }
+                    })}
+                </div>
+            }
+            .into_view()
+        }
+        Some(ChatItem::Reasoning(_)) => {
+            let step_id = format!("{group_id}:reasoning:{position}");
+            let toggle_id = step_id.clone();
+            let step_open = create_memo(move |_| {
+                disclosure_open(disclosure_state, &step_id, false)
+            });
+            view! {
+                <div class="step step-think" class:open=move || step_open.get()>
+                    <button type="button" class="step-head"
+                        aria-expanded=move || step_open.get().to_string()
+                        on:click=move |_| toggle_disclosure(disclosure_state, &toggle_id, false)>
+                        <span class="step-icon think"></span>
+                        <span class="step-name">{move || t(locale.get(), "chat.thinking")}</span>
+                    </button>
+                    {move || step_open.get().then(|| {
+                        let text = source.with_untracked(|items| match items.get(index) {
+                            Some(ChatItem::Reasoning(text)) => text.clone(),
+                            _ => String::new(),
+                        });
+                        view! { <div class="step-think-body">{text}</div> }
+                    })}
+                </div>
+            }
+            .into_view()
+        }
+        Some(ChatItem::Tool {
+            name,
+            ok,
+            input,
+            output,
+            started_at_ms,
+            duration_ms,
+        }) => {
+            let step_id = format!("{group_id}:tool:{position}");
+            let automatic = ok.is_none() && live;
+            let toggle_id = step_id.clone();
+            let (badge_key, title) = tool_card_label(name, input);
+            let mut detail = input
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(80)
+                .collect::<String>();
+            if detail == title {
+                detail.clear();
+            }
+            // Counting an ever-growing stdout tail per chunk is quadratic. The
+            // final card still reports its settled line count.
+            let lines = if ok.is_some() && !output.is_empty() {
+                output.lines().count()
+            } else {
+                0
+            };
+            let has_input = !input.is_empty();
+            let has_output = !output.is_empty();
+            let has_body = has_input || has_output;
+            let icon = match ok {
+                Some(true) => view! { <span class="step-icon ok">"✓"</span> }.into_view(),
+                Some(false) => view! { <span class="step-icon fail">"✗"</span> }.into_view(),
+                None => view! { <span class="step-icon run"><span class="run-dot"></span></span> }.into_view(),
+            };
+            let meta = step_tool_meta(
+                locale.get(),
+                *duration_ms,
+                *started_at_ms,
+                *ok,
+                lines,
+                now,
+            )
+            .map(|text| view! { <span class="step-meta">{text}</span> });
+            let step_open = create_memo(move |_| {
+                has_body && disclosure_open(disclosure_state, &step_id, automatic)
+            });
+            view! {
+                <div class="step" class:open=move || step_open.get() class=("no-body", !has_body)>
+                    <button type="button" class="step-head" disabled=!has_body
+                        aria-expanded=move || step_open.get().to_string()
+                        on:click=move |_| {
+                            if has_body {
+                                toggle_disclosure(disclosure_state, &toggle_id, automatic)
+                            }
+                        }>
+                        {icon}
+                        {badge_key.map(|key| view! {
+                            <span class="tool-badge">{move || t(locale.get(), key)}</span>
+                        })}
+                        <span class="step-name">{title}</span>
+                        {(!detail.is_empty()).then(|| view! { <span class="step-detail">{detail}</span> })}
+                        {meta}
+                    </button>
+                    {move || step_open.get().then(|| {
+                        let (input, output) = source.with_untracked(|items| match items.get(index) {
+                            Some(ChatItem::Tool { input, output, .. }) => (input.clone(), output.clone()),
+                            _ => (String::new(), String::new()),
+                        });
+                        view! {
+                            <div class="step-body">
+                                {has_input.then(|| view! { <pre class="tool-input">{input}</pre> })}
+                                {has_output.then(|| view! { <pre class="tool-output">{output}</pre> })}
+                            </div>
+                        }
+                    })}
+                </div>
+            }
+            .into_view()
+        }
+        Some(ChatItem::AcpTool {
+            call_id,
+            title,
+            kind,
+            status,
+            content,
+            locations,
+            ..
+        }) => {
+            let failed = status == "failed";
+            let done = matches!(status.as_str(), "completed" | "failed");
+            let stable_part = if call_id.is_empty() {
+                format!("position-{position}")
+            } else {
+                call_id.clone()
+            };
+            let step_id = format!("{group_id}:acp:{stable_part}");
+            let automatic = !done && live;
+            let toggle_id = step_id.clone();
+            let detail = acp_tool_step_detail(kind, content, locations);
+            let has_body = !locations.trim().is_empty()
+                || (!content.trim().is_empty() && !acp_tool_is_terminal_stub(content));
+            let icon = if failed {
+                view! { <span class="step-icon fail">"✗"</span> }.into_view()
+            } else if done {
+                view! { <span class="step-icon ok">"✓"</span> }.into_view()
+            } else {
+                view! { <span class="step-icon run"><span class="run-dot"></span></span> }.into_view()
+            };
+            let meta = (!done).then(|| status.clone());
+            let title = title.clone();
+            let status = status.clone();
+            let step_open = create_memo(move |_| {
+                has_body && disclosure_open(disclosure_state, &step_id, automatic)
+            });
+            view! {
+                <div class="step acp-tool" data-testid="acp-tool" data-status=status
+                    class:open=move || step_open.get() class=("no-body", !has_body)>
+                    <button type="button" class="step-head" disabled=!has_body
+                        aria-expanded=move || step_open.get().to_string()
+                        on:click=move |_| {
+                            if has_body {
+                                toggle_disclosure(disclosure_state, &toggle_id, automatic)
+                            }
+                        }>
+                        {icon}
+                        <span class="step-name">{title}</span>
+                        {(!detail.is_empty()).then(|| view! { <span class="step-detail">{detail}</span> })}
+                        {meta.map(|text| view! { <span class="step-meta">{text}</span> })}
+                    </button>
+                    {move || step_open.get().then(|| {
+                        let body = source.with_untracked(|items| match items.get(index) {
+                            Some(ChatItem::AcpTool { content, locations, .. }) => {
+                                acp_tool_step_body(content, locations)
+                            }
+                            _ => String::new(),
+                        });
+                        view! { <div class="step-body"><pre class="tool-output">{body}</pre></div> }
+                    })}
+                </div>
+            }
+            .into_view()
+        }
+        _ => view! {}.into_view(),
+    })
+}
+
 /// Latest step of a live run as "name · detail", shown in the collapsed
 /// steps header so folding the panel hides detail, not progress.
+#[cfg(test)]
 pub(crate) fn steps_now_line(items: &[ChatItem]) -> Option<String> {
+    items.iter().rev().find_map(step_now_line)
+}
+
+fn step_now_line(item: &ChatItem) -> Option<String> {
     let first_line = |s: &str| -> String {
         s.lines()
             .find(|l| !l.trim().is_empty())
@@ -557,7 +690,7 @@ pub(crate) fn steps_now_line(items: &[ChatItem]) -> Option<String> {
             .take(80)
             .collect()
     };
-    items.iter().rev().find_map(|item| match item {
+    match item {
         ChatItem::Tool { name, input, .. } => {
             let (_, title) = tool_card_label(name, input);
             let detail = first_line(input);
@@ -582,7 +715,7 @@ pub(crate) fn steps_now_line(items: &[ChatItem]) -> Option<String> {
             })
         }
         _ => None,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -671,6 +804,123 @@ pub(crate) fn run_output_preview(run: &RunRecord) -> String {
 }
 
 #[component]
+pub(crate) fn ProvenancePane(
+    items: RwSignal<Vec<ChatItem>>,
+    rows: Memo<Vec<(usize, u64)>>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let expanded = create_rw_signal::<HashMap<usize, bool>>(HashMap::new());
+    let has_rows = create_memo(move |_| rows.with(|rows| !rows.is_empty()));
+    view! {
+        {move || if !has_rows.get() {
+            view! {
+                <div class="rp-empty">
+                    <span class="rp-empty-icon"></span>
+                    <div class="rp-empty-title">{move || t(locale.get(), "right.no_tools.title")}</div>
+                    <p>{move || t(locale.get(), "right.no_tools.body")}</p>
+                </div>
+            }
+            .into_view()
+        } else {
+            view! {
+                <div class="prov-list">
+                    <For
+                        each=move || rows.get()
+                        key=|(index, fingerprint)| (*index, *fingerprint)
+                        children=move |(index, _)| {
+                            let (name, ok, has_input, has_output) = items.with_untracked(|items| {
+                                match items.get(index) {
+                                    Some(ChatItem::Tool { name, ok, input, output, .. }) => {
+                                        (name.clone(), *ok, !input.is_empty(), !output.is_empty())
+                                    }
+                                    _ => (String::new(), None, false, false),
+                                }
+                            });
+                            let automatic = ok != Some(true);
+                            let row_open = create_memo(move |_| {
+                                expanded.with(|rows| rows.get(&index).copied().unwrap_or(automatic))
+                            });
+                            view! {
+                                <details class="prov-item" data-provenance-index=index.to_string()
+                                    open=move || row_open.get()>
+                                    <summary class="prov-head" aria-expanded=move || row_open.get().to_string()
+                                        on:click=move |event| {
+                                            event.prevent_default();
+                                            expanded.update(|rows| {
+                                                rows.insert(index, !row_open.get_untracked());
+                                            });
+                                        }>
+                                        <span class="prov-name">{name}</span>
+                                        {match ok {
+                                            Some(true) => view! { <span class="ok">"✓"</span> }.into_view(),
+                                            Some(false) => view! { <span class="fail">"✗"</span> }.into_view(),
+                                            None => view! { <span class="run">"…"</span> }.into_view(),
+                                        }}
+                                    </summary>
+                                    {move || row_open.get().then(|| {
+                                        let (input, output) = items.with_untracked(|items| {
+                                            match items.get(index) {
+                                                Some(ChatItem::Tool { input, output, .. }) => {
+                                                    (input.clone(), output.clone())
+                                                }
+                                                _ => (String::new(), String::new()),
+                                            }
+                                        });
+                                        view! {
+                                            <div class="prov-detail">
+                                                {has_input.then(|| view! {
+                                                    <div class="prov-label">{move || t(locale.get(), "right.input")}</div>
+                                                    <pre class="prov-body">{input}</pre>
+                                                })}
+                                                {has_output.then(|| view! {
+                                                    <div class="prov-label">{move || t(locale.get(), "right.output")}</div>
+                                                    <pre class="prov-body">{output}</pre>
+                                                })}
+                                            </div>
+                                        }
+                                    })}
+                                </details>
+                            }
+                        }
+                    />
+                </div>
+            }
+            .into_view()
+        }}
+    }
+}
+
+fn run_monitor_meta(
+    locale: Locale,
+    context_id: &str,
+    kind: &str,
+    started: i64,
+    ended_at: Option<i64>,
+    active: bool,
+    last_heartbeat: Option<i64>,
+    timeout_secs: Option<i64>,
+    now: i64,
+) -> String {
+    let ended = ended_at.unwrap_or(now);
+    let elapsed_value = transfer_duration(ended.saturating_sub(started) as u64);
+    let elapsed = tf(locale, "runs.elapsed", &[("time", &elapsed_value)]);
+    let mut meta = format!("{context_id} · {kind} · {elapsed}");
+    if active {
+        if let Some(last_heartbeat) = last_heartbeat {
+            let age = transfer_duration(now.saturating_sub(last_heartbeat) as u64);
+            meta.push_str(" · ");
+            meta.push_str(&tf(locale, "runs.heartbeat", &[("time", &age)]));
+        }
+        if let Some(limit) = timeout_secs.filter(|seconds| *seconds > 0) {
+            let limit = transfer_duration(limit as u64);
+            meta.push_str(" · ");
+            meta.push_str(&tf(locale, "runs.timeout", &[("time", &limit)]));
+        }
+    }
+    meta
+}
+
+#[component]
 pub(crate) fn RunMonitorCard(
     run_id: String,
     runs: RwSignal<Vec<RunRecord>>,
@@ -681,17 +931,27 @@ pub(crate) fn RunMonitorCard(
     let locale = use_locale();
     let fallback = serde_json::from_str::<RunRecord>(&tool_output).ok();
     let lookup_id = run_id.clone();
+    let selected_id = run_id.clone();
+    let fallback_for_selection = fallback.clone();
+    // Polls touch the shared run vector, but this memo only publishes when this
+    // card's record changes. Unrelated run updates therefore leave its DOM and
+    // disclosure state alone.
+    let selected_run = create_memo(move |_| {
+        runs.with(|records| {
+            records
+                .iter()
+                .find(|record| record.id == selected_id)
+                .cloned()
+        })
+        .or_else(|| fallback_for_selection.clone())
+    });
     // Outside the card closure on purpose: the run list refresh re-renders the
     // body every few seconds, which would snap a native `<details>` shut while
     // the user is reading it.
     let env_open = create_rw_signal(false);
     view! {
         {move || {
-            let run = runs
-                .get()
-                .into_iter()
-                .find(|run| run.id == lookup_id)
-                .or_else(|| fallback.clone());
+            let run = selected_run.get();
             let Some(run) = run else {
                 let failed = tool_ok == Some(false);
                 let status = if failed { "failed" } else { "running" };
@@ -727,30 +987,12 @@ pub(crate) fn RunMonitorCard(
                 t(locale.get(), "runs.cancel")
             };
             let started = run.started_at.unwrap_or(run.created_at);
-            let now = if active {
-                clock.get()
-            } else {
-                js_sys::Date::now() as i64 / 1000
-            };
-            let ended = run.ended_at.unwrap_or(now);
-            let elapsed_value = transfer_duration(ended.saturating_sub(started) as u64);
-            let elapsed = tf(locale.get(), "runs.elapsed", &[("time", &elapsed_value)]);
-            let mut meta = format!("{} · {} · {elapsed}", run.context_id, run.kind);
-            if active {
-                if let Some(last_heartbeat) = run.last_polled_at {
-                    let age = now.saturating_sub(last_heartbeat);
-                    let age = transfer_duration(age as u64);
-                    meta.push_str(" · ");
-                    meta.push_str(&tf(locale.get(), "runs.heartbeat", &[("time", &age)]));
-                }
-            }
-            // The wall limit only tells the user anything while the run can still
-            // hit it, so finished runs keep the shorter line.
-            if let Some(limit) = run.timeout_secs.filter(|_| active).filter(|secs| *secs > 0) {
-                let limit = transfer_duration(limit as u64);
-                meta.push_str(" · ");
-                meta.push_str(&tf(locale.get(), "runs.timeout", &[("time", &limit)]));
-            }
+            let meta_context = run.context_id.clone();
+            let meta_kind = run.kind.clone();
+            let ended_at = run.ended_at;
+            let last_heartbeat = run.last_polled_at;
+            let timeout_secs = run.timeout_secs;
+            let settled_now = js_sys::Date::now() as i64 / 1000;
             let progress = run_progress(&run);
             let output = run_output_preview(&run);
             let command = run.command.clone().filter(|value| !value.trim().is_empty());
@@ -817,7 +1059,20 @@ pub(crate) fn RunMonitorCard(
                             }
                         })}
                     </div>
-                    <div class="run-monitor-meta">{meta}</div>
+                    <div class="run-monitor-meta">{move || {
+                        let now = if active { clock.get() } else { settled_now };
+                        run_monitor_meta(
+                            locale.get(),
+                            &meta_context,
+                            &meta_kind,
+                            started,
+                            ended_at,
+                            active,
+                            last_heartbeat,
+                            timeout_secs,
+                            now,
+                        )
+                    }}</div>
                     {progress.map(|progress| run_progress_meter(progress, locale.get()))}
                     {command.map(|command| view! { <div class="run-monitor-command">{command}</div> })}
                     {remote_workdir.map(|workdir| view! {
@@ -866,7 +1121,7 @@ pub(crate) fn render_item(
     busy: ReadSignal<bool>,
     compact_assistant: bool,
     can_modify: bool,
-    can_undo: bool,
+    can_undo: Signal<bool>,
     on_edit: impl Fn(usize) + Clone + 'static,
     on_branch: impl Fn(usize) + Clone + 'static,
     on_undo: Callback<usize>,
@@ -935,7 +1190,7 @@ pub(crate) fn render_item(
         }
         ChatItem::Assistant { text, .. } if compact_assistant => view! {
             <div class="assistant-wrap">
-                <div class="body md" inner_html=md_to_html(text)></div>
+                <div class="body streaming">{text.clone()}</div>
             </div>
         }.into_view(),
         ChatItem::Assistant { text, model, resources } => view! {

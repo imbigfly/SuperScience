@@ -51,11 +51,25 @@ function findRanges(needle, onRange) {
 function apply() {
   if (!("highlights" in CSS)) return;
   const ranges = [];
-  for (const needle of needles) {
-    findRanges(needle, (range) => {
-      ranges.push(range);
-      return false;
-    });
+  // Index each rendered message once, then match every saved excerpt against
+  // that shared text. The previous needle-first loop rebuilt the full
+  // character-to-DOM map once per highlight.
+  for (const body of document.querySelectorAll("#chat-thread .msg .body")) {
+    const { hay, map } = indexBody(body);
+    for (const needle of needles) {
+      if (!needle) continue;
+      let from = 0;
+      let at;
+      while ((at = hay.indexOf(needle, from)) !== -1) {
+        const [startNode, startOffset] = map[at];
+        const [endNode, endOffset] = map[at + needle.length - 1];
+        const range = new Range();
+        range.setStart(startNode, startOffset);
+        range.setEnd(endNode, endOffset + 1);
+        ranges.push(range);
+        from = at + needle.length;
+      }
+    }
   }
   if (ranges.length) CSS.highlights.set(NAME, new Highlight(...ranges));
   else CSS.highlights.delete(NAME);

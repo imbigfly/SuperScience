@@ -531,7 +531,7 @@ pub(crate) fn AssistantMessage(
     on_artifact: Callback<usize>,
     on_file: Callback<ModalArtifact>,
     on_copy: Callback<String>,
-    can_undo: bool,
+    can_undo: Signal<bool>,
     on_undo: Callback<usize>,
 ) -> impl IntoView {
     let locale = use_locale();
@@ -697,7 +697,7 @@ pub(crate) fn AssistantMessage(
                 >
                     <span class="gi copy" aria-hidden="true"></span>
                 </button>
-                {can_undo.then(|| view! {
+                {move || can_undo.get().then(|| view! {
                     <button
                         type="button"
                         class="msg-icon-btn"
@@ -721,32 +721,34 @@ pub(crate) fn ToolBlock(
     output: String,
 ) -> impl IntoView {
     let locale = use_locale();
-    let open = ok != Some(true);
+    let expanded = create_rw_signal(ok != Some(true));
     let lang = tool_lang(&name).to_string();
     let hid = unique_dom_id("tool");
     let hid_for_effect = hid.clone();
     let has_input = !input.is_empty();
     let has_output = !output.is_empty();
-    let input_track = input.clone();
-    let output_track = output.clone();
-    let lang_track = lang.clone();
+    let (badge_key, title) = tool_card_label(&name, &input);
+    let input = store_value(input);
+    let output = store_value(output);
+    let lang = store_value(lang);
     create_effect(move |_| {
-        let _ = (&input_track, &output_track, &lang_track);
-        schedule_highlight(hid_for_effect.clone());
-    });
-    let name_for_label = name.clone();
-    let input_label = move || {
-        if matches!(name_for_label.as_str(), "python" | "r") {
-            t(locale.get(), "tool.copy_code")
-        } else {
-            t(locale.get(), "tool.copy_input")
+        if expanded.get() {
+            schedule_highlight(hid_for_effect.clone());
         }
+    });
+    let input_label_key = if matches!(name.as_str(), "python" | "r") {
+        "tool.copy_code"
+    } else {
+        "tool.copy_input"
     };
 
-    let (badge_key, title) = tool_card_label(&name, &input);
     view! {
-        <details class="tool" class:ext=badge_key.is_some() open=open>
-            <summary class="head">
+        <details class="tool" class:ext=badge_key.is_some() open=move || expanded.get()>
+            <summary class="head" aria-expanded=move || expanded.get().to_string()
+                on:click=move |event| {
+                    event.prevent_default();
+                    expanded.update(|open| *open = !*open);
+                }>
                 {badge_key.map(|key| view! {
                     <span class="tool-badge">{move || t(locale.get(), key)}</span>
                 })}
@@ -757,30 +759,37 @@ pub(crate) fn ToolBlock(
                     None => view!{ <span class="run"><span class="run-dot"></span>{move || t(locale.get(), "tool.running")}</span> }.into_view(),
                 }}
             </summary>
-            <div class="tool-panel" id=hid.clone()>
-                <div class="tool-actions">
-                    {has_input.then(|| {
-                        let text = input.clone();
-                        view! {
-                            <button type="button" class="tool-btn" on:click=move |_| copy_text(text.clone())>
-                                {input_label}
-                            </button>
-                        }
-                    })}
-                    {has_output.then(|| {
-                        let text = output.clone();
-                        view! {
-                            <button type="button" class="tool-btn" on:click=move |_| copy_text(text.clone())>{move || t(locale.get(), "tool.copy_output")}</button>
-                        }
-                    })}
-                </div>
-                {has_input.then(|| view! {
-                    <pre class="tool-input md-code"><code class=format!("language-{lang}")>{input.clone()}</code></pre>
-                })}
-                {has_output.then(|| view! {
-                    <pre class="tool-output md-code"><code class="language-plaintext">{output.clone()}</code></pre>
-                })}
-            </div>
+            {move || expanded.get().then(|| {
+                let input = input.get_value();
+                let output = output.get_value();
+                let input_for_copy = input.clone();
+                let output_for_copy = output.clone();
+                let language = lang.get_value();
+                view! {
+                    <div class="tool-panel" id=hid.clone()>
+                        <div class="tool-actions">
+                            {has_input.then(|| view! {
+                                <button type="button" class="tool-btn"
+                                    on:click=move |_| copy_text(input_for_copy.clone())>
+                                    {move || t(locale.get(), input_label_key)}
+                                </button>
+                            })}
+                            {has_output.then(|| view! {
+                                <button type="button" class="tool-btn"
+                                    on:click=move |_| copy_text(output_for_copy.clone())>
+                                    {move || t(locale.get(), "tool.copy_output")}
+                                </button>
+                            })}
+                        </div>
+                        {has_input.then(|| view! {
+                            <pre class="tool-input md-code"><code class=format!("language-{language}")>{input}</code></pre>
+                        })}
+                        {has_output.then(|| view! {
+                            <pre class="tool-output md-code"><code class="language-plaintext">{output}</code></pre>
+                        })}
+                    </div>
+                }
+            })}
         </details>
     }
 }

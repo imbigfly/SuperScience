@@ -31,12 +31,11 @@ use app_overlays::{
     UpdateCheckOverlay, UpdateCheckOverlayState,
 };
 use bindings::{
-    attach_chat_autoscroll, clear_selection, close_mcp_app, force_chat_bottom,
-    invoke, invoke_checked, invoke_timeout, is_mac, is_windows, jump_chat_to_item,
-    jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
-    listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_image_count,
-    preserve_chat_prepend_position, preview_selection, schedule_chat_follow,
-    schedule_run_output_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    attach_chat_autoscroll, clear_selection, close_mcp_app, force_chat_bottom, invoke,
+    invoke_checked, invoke_timeout, is_mac, is_windows, jump_chat_to_item, jump_chat_to_last_user,
+    jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
+    native_drop_in_composer, open_external_url, pasted_image_count, preserve_chat_prepend_position,
+    preview_selection, schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -175,6 +174,10 @@ fn App() -> impl IntoView {
     create_effect(move |_| save_send_with_modifier(send_with_modifier.get()));
 
     let items = create_rw_signal::<Vec<ChatItem>>(vec![]);
+    // Expensive transcript projections do not need token-by-token freshness.
+    // This revision advances for ordinary settled edits and for the structural
+    // events explicitly marked in the streaming handlers below.
+    let transcript_projection_epoch = create_rw_signal(0_u64);
     // Disclosure choices belong to the session/step identity, not to a render
     // instance. Content fingerprints intentionally remount changed rows while
     // streaming, so keeping this state here preserves explicit user choices.
@@ -187,7 +190,7 @@ fn App() -> impl IntoView {
             % EMPTY_SUBTITLE_COUNT,
     );
     create_effect(move |_| {
-        if items.get().is_empty() {
+        if items.with(Vec::is_empty) {
             empty_title_idx.set(
                 (js_sys::Math::random() * EMPTY_TITLE_COUNT as f64).floor() as usize
                     % EMPTY_TITLE_COUNT,
@@ -277,18 +280,69 @@ fn App() -> impl IntoView {
     // Configured model profiles + the composer's bottom-right picker state.
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
     let active_session = create_rw_signal::<Option<String>>(None);
+    let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
     let session_has_items = create_memo(move |_| items.with(|rows| !rows.is_empty()));
     let conversation_outline = create_memo(move |_| {
         let Some(id) = active_session.get() else {
             return Vec::new();
         };
+        let _ = transcript_projection_epoch.get();
         let persisted = conversation_outlines
             .with(|outlines| outlines.get(&id).cloned())
             .unwrap_or_default();
         let user_offset = transcript_pages
             .with(|pages| pages.get(&id).copied())
             .map_or(0, |page| page.user_offset);
-        items.with(|rows| merge_conversation_outline(&persisted, rows, user_offset))
+        items.with_untracked(|rows| merge_conversation_outline(&persisted, rows, user_offset))
+    });
+    let center_conversation_title = create_memo(move |_| {
+        let loc = locale.get();
+        let _ = transcript_projection_epoch.get();
+        if let Some(id) = active_session.get() {
+            if let Some(title) = sessions.with(|sessions| {
+                sessions
+                    .iter()
+                    .find(|session| session.id == id)
+                    .and_then(|session| {
+                        let clean = user_message_presentation(&session.title).body;
+                        (!clean.trim().is_empty()).then_some(clean)
+                    })
+            }) {
+                return title;
+            }
+        }
+        items.with_untracked(|items| {
+            items
+                .iter()
+                .find_map(|item| match item {
+                    ChatItem::User(message) => {
+                        let clean = user_message_presentation(message).body;
+                        let title = clean.trim();
+                        if title.is_empty() {
+                            None
+                        } else if title.chars().count() > 48 {
+                            Some(format!("{}…", title.chars().take(48).collect::<String>()))
+                        } else {
+                            Some(title.to_string())
+                        }
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| i18n::t(loc, "center.new_session").into())
+        })
+    });
+    let loaded_conversation_user_range = create_memo(move |_| {
+        let _ = transcript_projection_epoch.get();
+        let user_offset = active_session
+            .get()
+            .and_then(|id| transcript_pages.with(|pages| pages.get(&id).copied()))
+            .map_or(0, |page| page.user_offset);
+        let loaded = items.with_untracked(|rows| {
+            rows.iter()
+                .filter(|item| matches!(item, ChatItem::User(_) | ChatItem::QueuedUser { .. }))
+                .count()
+        });
+        user_offset..user_offset + loaded
     });
     create_effect(move |_| {
         let _ = active_session.get();
@@ -308,7 +362,8 @@ fn App() -> impl IntoView {
         if active_acp_agent_id.get().is_some() {
             acp_context_usage.with(|all| all.get(&session_id).cloned())
         } else {
-            items.with(|rows| latest_context_usage(rows))
+            let _ = transcript_projection_epoch.get();
+            items.with_untracked(|rows| latest_context_usage(rows))
         }
     });
     create_effect(move |_| {
@@ -491,7 +546,6 @@ fn App() -> impl IntoView {
     let proj_settings_busy = create_rw_signal(false);
 
     // Session history (left sidebar).
-    let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
     let session_history_cursor = create_rw_signal::<Option<SessionCursor>>(None);
     let session_history_loading = create_rw_signal(false);
     let refresh_session_history =
@@ -614,6 +668,19 @@ fn App() -> impl IntoView {
             .unwrap_or(false);
         busy.set(b);
     });
+    // Settled transcript edits refresh projections automatically. While a turn
+    // streams, stop subscribing to `items`; structural event handlers advance
+    // the revision explicitly, and the final busy -> idle transition refreshes
+    // once more with the completed assistant text.
+    create_effect(move |_| {
+        if busy.get() {
+            return;
+        }
+        items.with(|_| ());
+        transcript_projection_epoch.update(|revision| {
+            *revision = revision.wrapping_add(1);
+        });
+    });
 
     // Refresh the session's specialist whenever the active session changes
     // (including on load and on "no session").
@@ -682,21 +749,29 @@ fn App() -> impl IntoView {
     // Artifacts and notebook cells are projections of the active transcript.
     let proto_cache = Rc::new(RefCell::new(ProtoCache::new()));
     let artifacts_all = create_memo(move |_| {
-        items.with(|list| collect_artifacts(list, locale.get(), &mut proto_cache.borrow_mut()))
+        let _ = active_session.get();
+        let _ = transcript_projection_epoch.get();
+        items.with_untracked(|list| {
+            collect_artifacts(list, locale.get(), &mut proto_cache.borrow_mut())
+        })
     });
     // File-backed artifacts are scraped from chat text, so a file that was
     // renamed or overwritten still lingers and 404s on click (#41). Ask the
     // backend which referenced files are gone and drop them from the list.
     let missing_paths = create_rw_signal(std::collections::HashSet::<String>::new());
+    let artifact_file_paths = create_memo(move |_| {
+        artifacts_all.with(|artifacts| {
+            artifacts
+                .iter()
+                .filter_map(|artifact| match &artifact.data {
+                    PreviewData::File { path, .. } => Some(path.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+    });
     create_effect(move |_| {
-        let paths: Vec<String> = artifacts_all
-            .get()
-            .iter()
-            .filter_map(|a| match &a.data {
-                PreviewData::File { path, .. } => Some(path.clone()),
-                _ => None,
-            })
-            .collect();
+        let paths = artifact_file_paths.get();
         if paths.is_empty() {
             missing_paths.set(std::collections::HashSet::new());
             return;
@@ -739,7 +814,43 @@ fn App() -> impl IntoView {
     });
     let notebook_cache = Rc::new(RefCell::new(NotebookCache::new()));
     let notebook_cells = create_memo(move |_| {
-        items.with(|list| collect_notebook_cells(list, &mut notebook_cache.borrow_mut()))
+        let _ = active_session.get();
+        let _ = transcript_projection_epoch.get();
+        items.with_untracked(|list| collect_notebook_cells(list, &mut notebook_cache.borrow_mut()))
+    });
+    let provenance_rows = create_memo(move |_| {
+        let _ = active_session.get();
+        items.with(|rows| {
+            rows.iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    matches!(item, ChatItem::Tool { .. }).then(|| (index, item.fingerprint()))
+                })
+                .collect::<Vec<_>>()
+        })
+    });
+    let artifact_count = create_memo(move |_| artifacts.with(Vec::len));
+    let artifact_render_fingerprint =
+        create_memo(move |_| artifacts.with(|artifacts| artifacts_fingerprint(artifacts)));
+    let notebook_count = create_memo(move |_| notebook_cells.with(Vec::len));
+    let provenance_count = create_memo(move |_| provenance_rows.with(Vec::len));
+    let highlight_count = create_memo(move |_| {
+        let session = active_session.get();
+        library_items.with(|items| session_highlight_count(session, items))
+    });
+    let monitored_run_ids = create_memo(move |_| {
+        let _ = active_session.get();
+        let _ = transcript_projection_epoch.get();
+        items.with_untracked(|rows| {
+            rows.iter()
+                .filter_map(|item| match item {
+                    ChatItem::Tool { name, input, .. } if is_run_monitor_tool(name) => {
+                        Some(input.trim().to_string())
+                    }
+                    _ => None,
+                })
+                .collect::<HashSet<_>>()
+        })
     });
     let sel_artifact = create_rw_signal(0usize);
     let show_art_preview = create_rw_signal(false);
@@ -1296,10 +1407,6 @@ fn App() -> impl IntoView {
     create_effect(move |_| {
         attach_chat_autoscroll();
     });
-    create_effect(move |_| {
-        let _ = items.get();
-        schedule_chat_follow();
-    });
 
     // Wire the agent event stream once. Every event carries the session frame
     // id; route transcript mutations to `items` (active session) or the
@@ -1312,6 +1419,7 @@ fn App() -> impl IntoView {
     let pending_cb = pending_turns;
     let approval_cb = approval_pending;
     let conversation_outlines_cb = conversation_outlines;
+    let transcript_projection_epoch_cb = transcript_projection_epoch;
     // Desktop notification for task status (#327). The backend drops it while
     // any app window is focused or when disabled in settings, so callers just
     // fire on every done/error/approval event.
@@ -1462,6 +1570,13 @@ fn App() -> impl IntoView {
                 });
             }
         };
+        let refresh_transcript_projections = |frame_id: &str| {
+            if active_cb.get_untracked().as_deref() == Some(frame_id) {
+                transcript_projection_epoch_cb.update(|revision| {
+                    *revision = revision.wrapping_add(1);
+                });
+            }
+        };
         match ev {
             AgentEvent::User { frame_id, text } => {
                 set_pet_activity(&frame_id, "running");
@@ -1476,7 +1591,7 @@ fn App() -> impl IntoView {
                     start_user_turn(v, text, model.clone());
                 });
                 conversation_outlines_cb.update(|outlines| {
-                    let outline = outlines.entry(frame_id).or_default();
+                    let outline = outlines.entry(frame_id.clone()).or_default();
                     let user_index = outline
                         .last()
                         .map_or(0, |entry| entry.user_index.saturating_add(1));
@@ -1488,6 +1603,7 @@ fn App() -> impl IntoView {
                         response_at: None,
                     });
                 });
+                refresh_transcript_projections(&frame_id);
             }
             AgentEvent::MessageBoundary { .. } => {}
             AgentEvent::Resources {
@@ -1557,7 +1673,8 @@ fn App() -> impl IntoView {
                             duration_ms: None,
                         },
                     );
-                })
+                });
+                refresh_transcript_projections(&frame_id);
             }
             AgentEvent::ToolResult {
                 frame_id,
@@ -1625,7 +1742,8 @@ fn App() -> impl IntoView {
                     if name == "attempt_completion" && ok {
                         promote_assistant_text(v, &content);
                     }
-                })
+                });
+                refresh_transcript_projections(&frame_id);
             }
             AgentEvent::ToolPresentation {
                 frame_id,
@@ -1666,6 +1784,7 @@ fn App() -> impl IntoView {
                         context_usage,
                     );
                 });
+                refresh_transcript_projections(&frame_id);
             }
             AgentEvent::Compaction {
                 frame_id,
@@ -1731,6 +1850,7 @@ fn App() -> impl IntoView {
                     strip_approval_pending(items);
                     settle_plan_cards(items);
                 });
+                refresh_transcript_projections(&frame_id);
                 approval_cb.update(|s| {
                     s.remove(&frame_id);
                 });
@@ -1794,6 +1914,7 @@ fn App() -> impl IntoView {
                         });
                     });
                 }
+                refresh_transcript_projections(&frame_id);
                 approval_cb.update(|s| {
                     s.remove(&frame_id);
                 });
@@ -1842,6 +1963,7 @@ fn App() -> impl IntoView {
                         },
                     );
                 });
+                refresh_transcript_projections(&frame_id);
                 if active_cb.get().as_deref() == Some(&frame_id) {
                     status_cb.set(label);
                 }
@@ -2386,6 +2508,9 @@ fn App() -> impl IntoView {
                     text: display_message.clone(),
                 });
             });
+            transcript_projection_epoch.update(|revision| {
+                *revision = revision.wrapping_add(1);
+            });
             force_chat_bottom();
             let enqueue_msg = display_message.clone();
             spawn_local(async move {
@@ -2400,6 +2525,9 @@ fn App() -> impl IntoView {
                 if invoke_checked("enqueue_turn", args).await.is_err() {
                     route_items(active_session, items, transcripts, &session, |rows| {
                         remove_optimistic_send_rows(rows, &enqueue_msg);
+                    });
+                    transcript_projection_epoch.update(|revision| {
+                        *revision = revision.wrapping_add(1);
                     });
                     status.set(t(locale.get(), "status.send_failed").into());
                 }
@@ -2458,9 +2586,14 @@ fn App() -> impl IntoView {
             };
             // Mark the turn pending before touching active_session so the
             // session→ACP lookup effect does not clear a just-selected agent
-            // while send_message is still binding the session.
-            begin_pending_turn(pending_turns, running, &id);
-            if active_session.get_untracked().as_deref() != Some(id.as_str()) {
+            // while send_message is still binding a newly activated session.
+            // For the already-active session, insert its optimistic assistant
+            // first so the busy transition cannot briefly mistake the prior
+            // answer for the new live row and remount its Markdown.
+            let activates_session =
+                active_session.get_untracked().as_deref() != Some(id.as_str());
+            if activates_session {
+                begin_pending_turn(pending_turns, running, &id);
                 active_session.set(Some(id.clone()));
             }
             transcript_pages.update(|pages| {
@@ -2483,6 +2616,12 @@ fn App() -> impl IntoView {
                         resources: Vec::new(),
                     });
                 }
+            });
+            if !activates_session {
+                begin_pending_turn(pending_turns, running, &id);
+            }
+            transcript_projection_epoch.update(|revision| {
+                *revision = revision.wrapping_add(1);
             });
             force_chat_bottom();
             // Await the stop before send_message so the running turn is already
@@ -2531,6 +2670,9 @@ fn App() -> impl IntoView {
                         } else {
                             remove_optimistic_send_rows(rows, &display_message);
                         }
+                    });
+                    transcript_projection_epoch.update(|revision| {
+                        *revision = revision.wrapping_add(1);
                     });
                     if !started {
                         if input.get_untracked().is_empty() {
@@ -2943,6 +3085,11 @@ fn App() -> impl IntoView {
                 (id, if up { "move_up" } else { "move_down" }, None)
             }
         };
+        if action != "cutin" {
+            transcript_projection_epoch.update(|revision| {
+                *revision = revision.wrapping_add(1);
+            });
+        }
         spawn_local(async move {
             let args = to_value(&QueuedTurnActionArgs {
                 session_id: sid,
@@ -5430,10 +5577,6 @@ fn App() -> impl IntoView {
         let ticks = Cell::new(0_u8);
         let refresh = Closure::wrap(Box::new(move || {
             run_clock.set(now_secs());
-            // The clock rebuilds every active run card to redraw its elapsed
-            // time, which resets the output panel's scroll. Re-pin it here so
-            // the panel does not depend on a run-list poll landing this tick.
-            schedule_run_output_follow();
             let tick = (ticks.get() + 1) % 5;
             ticks.set(tick);
             let transfer_active = run_records.get_untracked().iter().any(|run| {
@@ -5546,16 +5689,18 @@ fn App() -> impl IntoView {
             focus_and_select_soon("add-host-alias");
         }
     });
-    // Re-underline saved excerpts whenever the transcript or library changes.
+    // Re-underline saved excerpts when a structural/settled transcript revision
+    // or the library changes. Token batches deliberately do not rescan the DOM.
     create_effect(move |_| {
-        let _ = items.get();
+        let _ = transcript_projection_epoch.get();
         let texts = match active_session.get() {
-            Some(session) => library_items
-                .get()
-                .iter()
-                .filter(|item| item.kind == "text" && item.source_session_id == session)
-                .map(|item| item.code.clone())
-                .collect::<Vec<_>>(),
+            Some(session) => library_items.with(|items| {
+                items
+                    .iter()
+                    .filter(|item| item.kind == "text" && item.source_session_id == session)
+                    .map(|item| item.code.clone())
+                    .collect::<Vec<_>>()
+            }),
             None => Vec::new(),
         };
         set_saved_marks(&serde_json::to_string(&texts).unwrap_or_default());
@@ -7148,6 +7293,30 @@ fn App() -> impl IntoView {
         }
     });
 
+    // Undo eligibility changes at turn boundaries, but the assistant Markdown
+    // does not. Publish the one eligible index separately so adding/removing
+    // its button never remounts and reparses the whole message row.
+    let undo_assistant_index = create_memo(move |_| {
+        if busy.get() || active_acp_agent_id.get().is_some() {
+            return None;
+        }
+        items.with(|list| {
+            let queue_start = trailing_queue_start(list);
+            (queue_start == list.len())
+                .then(|| {
+                    list.iter().enumerate().rev().find_map(|(index, item)| {
+                        matches!(
+                            item,
+                            ChatItem::Assistant { text, .. }
+                                if !text.trim().is_empty() && !text.starts_with("Error: ")
+                        )
+                        .then_some(index)
+                    })
+                })
+                .flatten()
+        })
+    });
+
     view! {
         {is_windows().then(|| view! {
             <WindowTitlebar locale=locale has_current_project=has_current_project
@@ -7319,27 +7488,7 @@ fn App() -> impl IntoView {
                 <div class="center-tabs" role="tablist">
                     <button type="button" class="center-tab" class:active=move || center_file.get().is_none()
                         on:click=move |_| center_file.set(None)>
-                        <span class="center-tab-label">{move || {
-                            let loc = locale.get();
-                            if let Some(id) = active_session.get() {
-                                if let Some(s) = sessions.get().iter().find(|s| s.id == id) {
-                                    let clean = user_message_presentation(&s.title).body;
-                                    let title = clean.trim();
-                                    if !title.is_empty() { return clean; }
-                                }
-                            }
-                            items.get().iter().find_map(|i| match i {
-                                ChatItem::User(msg) => {
-                                    let clean = user_message_presentation(msg).body;
-                                    let t = clean.trim();
-                                    if t.is_empty() { None }
-                                    else if t.chars().count() > 48 {
-                                        Some(format!("{}…", t.chars().take(48).collect::<String>()))
-                                    } else { Some(t.to_string()) }
-                                }
-                                _ => None,
-                            }).unwrap_or_else(|| i18n::t(loc, "center.new_session").into())
-                        }}</span>
+                        <span class="center-tab-label">{move || center_conversation_title.get()}</span>
                     </button>
                     <For
                         each=move || center_files.get()
@@ -7956,52 +8105,39 @@ fn App() -> impl IntoView {
                     <For
                         each=move || {
                             use std::hash::{Hash, Hasher};
-                            let arts_fp = artifacts.with(|a| artifacts_fingerprint(a));
+                            let arts_fp = artifact_render_fingerprint.get();
                             let busy_now = busy.get();
-                            let native_session = active_acp_agent_id.get().is_none();
-                            let outline = conversation_outline.get();
                             // `load_session` deliberately swaps the visible rows before
                             // publishing their session id. Carry the id in every keyed row
                             // so that second update rebuilds callbacks which must target the
                             // newly active session (notably background approval cards).
                             let thread_session_id = active_session.get().unwrap_or_default();
                             let user_offset = transcript_pages
-                                .get()
-                                .get(&thread_session_id)
-                                .copied()
+                                .with(|pages| pages.get(&thread_session_id).copied())
                                 .map_or(0, |page| page.user_offset);
                             let requested_start = if busy_now {
                                 usize::MAX
                             } else {
-                                transcript_pages
-                                    .get()
-                                    .get(&thread_session_id)
-                                    .map(|page| page.window_user_start)
-                                    .unwrap_or(usize::MAX)
+                                transcript_pages.with(|pages| {
+                                    pages
+                                        .get(&thread_session_id)
+                                        .map(|page| page.window_user_start)
+                                        .unwrap_or(usize::MAX)
+                                })
                             };
                             // Rows carry message indices, never cloned messages;
                             // `children` clones lazily, so a flush only pays for
                             // rows whose fingerprint key actually changed.
-                            items.with(|list| {
+                            conversation_outline.with(|outline| items.with(|list| {
                             // Queued user turns live after the active turn and
                             // must not make its process group look historical.
                             let queue_start = trailing_queue_start(list);
                             let last = queue_start.saturating_sub(1);
-                            let undo_index = (!busy_now
-                                && native_session
-                                && queue_start == list.len())
-                                .then(|| {
-                                    list.iter().enumerate().rev().find_map(|(index, item)| {
-                                        matches!(
-                                            item,
-                                            ChatItem::Assistant { text, .. }
-                                                if !text.trim().is_empty()
-                                                    && !text.starts_with("Error: ")
-                                        )
-                                        .then_some(index)
-                                    })
-                                })
-                                .flatten();
+                            let live_assistant_index = busy_now.then(|| {
+                                list[..queue_start]
+                                    .iter()
+                                    .rposition(|item| matches!(item, ChatItem::Assistant { .. }))
+                            }).flatten();
                             // Keep process layers separate while the turn runs;
                             // once complete, fold commentary + reasoning + tools
                             // into one activity summary before the final answer.
@@ -8082,9 +8218,7 @@ fn App() -> impl IntoView {
                                     // one cannot strand async markdown effects
                                     // under a disposed Leptos owner.
                                     let compact_assistant = commentary
-                                        || (busy_now
-                                            && matches!(&list[i], ChatItem::Assistant { .. }));
-                                    let can_undo = !compact_assistant && undo_index == Some(i);
+                                        || live_assistant_index == Some(i);
                                     let timestamp = transcript_item_timestamp(
                                         list,
                                         i,
@@ -8096,20 +8230,18 @@ fn App() -> impl IntoView {
                                     if matches!(&list[i], ChatItem::Assistant { .. }) { fp ^= arts_fp; }
                                     fp ^= (commentary as u64) << 63;
                                     fp ^= (compact_assistant as u64) << 62;
-                                    fp ^= (can_undo as u64) << 61;
                                     fp ^= timestamp.unwrap_or_default() as u64;
                                     rows.push((thread_session_id.clone(), i, fp, ThreadRow::Item {
                                         i,
                                         timestamp,
                                         commentary,
                                         compact_assistant,
-                                        can_undo,
                                     }));
                                     i += 1;
                                 }
                             }
                             rows
-                            })
+                            }))
                         }
                         key=|(session_id, start, fp, _)| (session_id.clone(), *start, *fp)
                         children=move |(session_id, start, _, row)| {
@@ -8119,20 +8251,26 @@ fn App() -> impl IntoView {
                                     timestamp,
                                     commentary,
                                     compact_assistant,
-                                    can_undo,
                                 } => {
                                     // Rebuilt only when the fingerprint key changed,
                                     // so this is the one clone that actually pays off.
                                     let item = items.with_untracked(|list| list[i].clone());
-                                    let arts = artifacts.get_untracked();
+                                    let arts = if matches!(&item, ChatItem::Assistant { .. })
+                                        && !compact_assistant
+                                    {
+                                        artifacts.get_untracked()
+                                    } else {
+                                        Vec::new()
+                                    };
                                     let on_resume = Callback::new(resume_turn);
                                     let class = if commentary {
                                         "msg assistant commentary"
                                     } else {
                                         class_for(&item)
                                     };
-                                    let user_index =
-                                        user_turn_index(&items.get_untracked(), i).map(|index| {
+                                    let user_index = items
+                                        .with_untracked(|rows| user_turn_index(rows, i))
+                                        .map(|index| {
                                             index
                                                 + transcript_pages
                                                     .with_untracked(|pages| {
@@ -8142,6 +8280,9 @@ fn App() -> impl IntoView {
                                         });
                                     let data_user_index =
                                         user_index.map(|index| index.to_string());
+                                    let can_undo = Signal::derive(move || {
+                                        !compact_assistant && undo_assistant_index.get() == Some(i)
+                                    });
                                     view! {
                                         <div class=class
                                             class:outline-target=move || user_index.is_some_and(|index| {
@@ -8164,13 +8305,11 @@ fn App() -> impl IntoView {
                                     // ponytail: position-keyed; move to stable
                                     // row ids if mid-list edits ever shift groups.
                                     let group_id = format!("{session_id}:steps:{start}");
-                                    let group_items = items.with_untracked(|list| {
-                                        indices.iter().map(|&j| list[j].clone()).collect::<Vec<_>>()
-                                    });
                                     view! {
                                         <div class="steps-wrap" data-ui-indices=ui_indices>{
                                             render_steps_group(
-                                                group_items,
+                                                indices,
+                                                items,
                                                 live,
                                                 false,
                                                 None,
@@ -8182,13 +8321,11 @@ fn App() -> impl IntoView {
                                 },
                                 ThreadRow::Activity { indices, ui_indices, duration_ms } => {
                                     let group_id = format!("{session_id}:activity:{start}");
-                                    let group_items = items.with_untracked(|list| {
-                                        indices.iter().map(|&j| list[j].clone()).collect::<Vec<_>>()
-                                    });
                                     view! {
                                         <div class="steps-wrap" data-ui-indices=ui_indices>{
                                             render_steps_group(
-                                                group_items,
+                                                indices,
+                                                items,
                                                 false,
                                                 true,
                                                 duration_ms,
@@ -8205,20 +8342,10 @@ fn App() -> impl IntoView {
                         let Some(frame_id) = active_session.get() else {
                             return Vec::<View>::new().into_view();
                         };
-                        let monitored = items.with(|rows| {
-                            rows.iter()
-                                .filter_map(|item| match item {
-                                    ChatItem::Tool { name, input, .. } if is_run_monitor_tool(name) => {
-                                        Some(input.trim().to_string())
-                                    }
-                                    _ => None,
-                                })
-                                .collect::<HashSet<_>>()
-                        });
+                        let monitored = monitored_run_ids.get();
                         let now = js_sys::Date::now() as i64 / 1000;
-                        run_records
-                            .get()
-                            .into_iter()
+                        run_records.with(|runs| runs
+                            .iter()
                             .filter(|run| run.frame_id.as_deref() == Some(frame_id.as_str()))
                             .filter(|run| !monitored.contains(&run.id))
                             .filter(|run| {
@@ -8226,7 +8353,7 @@ fn App() -> impl IntoView {
                                     || run.ended_at.is_some_and(|ended| now.saturating_sub(ended) <= 60)
                             })
                             .map(|run| {
-                                let run_id = run.id;
+                                let run_id = run.id.clone();
                                 view! {
                                     <div class="tool-wrap run-monitor-wrap auto-run-monitor"
                                         data-testid="auto-run-monitor">
@@ -8241,7 +8368,7 @@ fn App() -> impl IntoView {
                                 }
                             })
                             .collect_view()
-                            .into_view()
+                            .into_view())
                     }}
                     {move || (!busy.get()).then(|| active_session.get()).flatten().and_then(|id| {
                         transcript_pages.get().get(&id).copied().and_then(|page| {
@@ -8304,18 +8431,9 @@ fn App() -> impl IntoView {
                                             if !busy.get() {
                                                 return false;
                                             }
-                                            let offset = active_session
+                                            !loaded_conversation_user_range
                                                 .get()
-                                                .and_then(|id| transcript_pages
-                                                    .get()
-                                                    .get(&id)
-                                                    .copied())
-                                                .map_or(0, |page| page.user_offset);
-                                            !conversation_outline_target_is_loaded(
-                                                &items.get(),
-                                                offset,
-                                                target,
-                                            )
+                                                .contains(&target)
                                         }
                                         on:click=move |_| {
                                             jump_to_conversation_outline.call((target, before_seq));
@@ -9952,10 +10070,10 @@ fn App() -> impl IntoView {
                         {move || {
                             let loc = locale.get();
                             let active = right_tab.get();
-                            let art_n = artifacts.get().len();
-                            let notebook_n = notebook_cells.get().len();
-                            let prov_n = items.get().iter().filter(|i| matches!(i, ChatItem::Tool { .. })).count();
-                            let highlight_n = session_highlight_count(active_session.get(), &library_items.get());
+                            let art_n = artifact_count.get();
+                            let notebook_n = notebook_count.get();
+                            let prov_n = provenance_count.get();
+                            let highlight_n = highlight_count.get();
                             open_right_tabs.get().into_iter().map(|tab| {
                                 let label = match tab {
                                     RightTab::Artifacts => tab_count(loc, "right.artifacts", art_n),
@@ -10062,10 +10180,10 @@ fn App() -> impl IntoView {
                                 {move || {
                                     let loc = locale.get();
                                     let open = open_right_tabs.get();
-                                    let art_n = artifacts.get().len();
-                                    let notebook_n = notebook_cells.get().len();
-                                    let prov_n = items.get().iter().filter(|i| matches!(i, ChatItem::Tool { .. })).count();
-                                    let highlight_n = session_highlight_count(active_session.get(), &library_items.get());
+                                    let art_n = artifact_count.get();
+                                    let notebook_n = notebook_count.get();
+                                    let prov_n = provenance_count.get();
+                                    let highlight_n = highlight_count.get();
                                     ALL_RIGHT_TABS.iter().copied().map(|tab| {
                                         let label = match tab {
                                             RightTab::Artifacts => tab_count(loc, "right.artifacts", art_n),
@@ -10755,45 +10873,10 @@ fn App() -> impl IntoView {
                             }.into_view()
                         }
                         RightTab::Provenance => {
-                            let loc = locale.get();
-                            let tools: Vec<_> = items.get().iter().filter_map(|it| match it {
-                                ChatItem::Tool { name, ok, input, output, .. } => Some((name.clone(), *ok, input.clone(), output.clone())),
-                                _ => None,
-                            }).collect();
-                            if tools.is_empty() {
-                                view! {
-                                    <div class="rp-empty">
-                                        <span class="rp-empty-icon"></span>
-                                        <div class="rp-empty-title">{t(loc, "right.no_tools.title")}</div>
-                                        <p>{t(loc, "right.no_tools.body")}</p>
-                                    </div>
-                                }.into_view()
-                            } else {
-                                view! {
-                                    <div class="prov-list">
-                                        {tools.into_iter().map(|(name, ok, input, output)| view! {
-                                            <details class="prov-item" open=ok != Some(true)>
-                                                <summary class="prov-head">
-                                                    <span class="prov-name">{name.clone()}</span>
-                                                    {match ok {
-                                                        Some(true) => view! { <span class="ok">"✓"</span> }.into_view(),
-                                                        Some(false) => view! { <span class="fail">"✗"</span> }.into_view(),
-                                                        None => view! { <span class="run">"…"</span> }.into_view(),
-                                                    }}
-                                                </summary>
-                                                {(!input.is_empty()).then(|| view! {
-                                                    <div class="prov-label">{move || t(locale.get(), "right.input")}</div>
-                                                    <pre class="prov-body">{input.clone()}</pre>
-                                                })}
-                                                {(!output.is_empty()).then(|| view! {
-                                                    <div class="prov-label">{move || t(locale.get(), "right.output")}</div>
-                                                    <pre class="prov-body">{output.clone()}</pre>
-                                                })}
-                                            </details>
-                                        }).collect_view()}
-                                    </div>
-                                }.into_view()
+                            view! {
+                                <ProvenancePane items=items rows=provenance_rows />
                             }
+                            .into_view()
                         }
                         RightTab::Hosts => {
                             let loc = locale.get();

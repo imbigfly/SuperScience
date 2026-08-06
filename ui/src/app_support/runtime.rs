@@ -77,11 +77,8 @@ pub(crate) fn refresh_runs(into: RwSignal<Vec<RunRecord>>, locale: RwSignal<Loca
             // visibly jumped once per poll with nothing to show for it (#654).
             if into.with_untracked(|current| current != &list) {
                 into.set(list);
+                schedule_run_output_follow();
             }
-            // Unconditional: the elapsed-time clock rebuilds active run cards
-            // even when this poll changed nothing, and a rebuilt panel needs
-            // re-pinning either way.
-            schedule_run_output_follow();
             RUN_REFRESH_INITIALIZED.with(|ready| ready.set(true));
             if should_toast {
                 show_warning_toast(&t(locale.get_untracked(), "runs.ssh_retry_stopped"));
