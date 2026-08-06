@@ -375,6 +375,16 @@
 .msg.assistant .msg-actions { justify-content: flex-start; margin-left: -4px; opacity: 1; }
 .msg:hover .msg-actions, .msg:focus-within .msg-actions { opacity: 1; }
 .msg.assistant .assistant-wrap { display: flex; flex-direction: column; min-width: 0; max-width: 100%; }
+.follow-up-questions { margin-top: 10px; border-top: 1px solid var(--border-strong); background: color-mix(in srgb, var(--bg-panel) 72%, transparent); }
+.follow-up-questions-head { display: flex; align-items: center; gap: 8px; padding: 12px 8px; color: var(--text-muted); }
+.follow-up-questions-head > span { display: inline-flex; }
+.follow-up-questions-head svg { width: 16px; height: 16px; }
+.follow-up-questions-head strong { font-size: 13px; font-weight: 600; }
+.follow-up-close { display: inline-flex; margin-left: auto; padding: 4px; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; }
+.follow-up-options { display: flex; flex-direction: column; }
+.follow-up-options button { display: flex; gap: 10px; width: 100%; padding: 10px 8px; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; font-size: 13px; line-height: 1.4; text-align: left; cursor: pointer; }
+.follow-up-options button:hover { background: var(--surface-hover); }
+.follow-up-options button > span:first-child { color: var(--text-faint); }
 .message-artifacts { margin-top: 14px; max-width: 100%; }
 .message-artifacts-label { margin-bottom: 7px; color: var(--text-faint); font-size: 10px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; }
 .message-artifact-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; max-width: 620px; }
@@ -397,6 +407,9 @@ button.msg-icon-btn { display: inline-flex; align-items: center; justify-content
 button.msg-icon-btn:hover:not(:disabled) { color: var(--text); background: var(--bg-sunken); opacity: 1; }
 button.msg-icon-btn:disabled { opacity: .3; cursor: default; }
 button.msg-icon-btn .gi { width: 14px; height: 14px; }
+button.msg-review-btn { gap: 4px; line-height: 1; }
+button.msg-review-btn svg { width: 14px; height: 14px; }
+button.msg-review-btn span { font-size: 11px; }
 .msg.user .role { text-align: right; }
 .user-attachment-images { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; max-width: 100%; }
 .user-attachment-image {

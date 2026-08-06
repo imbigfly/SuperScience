@@ -664,6 +664,7 @@ pub(crate) fn AssistantMessage(
     on_artifact: Callback<usize>,
     on_file: Callback<ModalArtifact>,
     on_copy: Callback<String>,
+    on_review: Callback<()>,
     can_undo: Signal<bool>,
     on_undo: Callback<usize>,
 ) -> impl IntoView {
@@ -820,6 +821,16 @@ pub(crate) fn AssistantMessage(
                 </div>
             })}
             <div class="msg-actions">
+                <button
+                    type="button"
+                    class="msg-icon-btn msg-review-btn"
+                    title=move || t(locale.get(), "msg.review")
+                    aria-label=move || t(locale.get(), "msg.review")
+                    on:click=move |_| on_review.call(())
+                >
+                    {compose_icon("review")}
+                    <span>{move || t(locale.get(), "msg.review")}</span>
+                </button>
                 <button
                     type="button"
                     class="msg-icon-btn"

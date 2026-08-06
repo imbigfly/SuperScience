@@ -1540,6 +1540,12 @@ struct Settings {
     /// configured context budget. ACP agents own their remote context.
     #[serde(default = "default_auto_compact")]
     auto_compact: bool,
+    /// Generate three suggested next questions after a completed turn.
+    #[serde(default = "default_follow_up_questions")]
+    follow_up_questions: bool,
+    /// Restore the most recent conversation when a workspace opens.
+    #[serde(default = "default_resume_last_session")]
+    resume_last_session: bool,
     /// Max output tokens per LLM turn. 0 = provider default.
     #[serde(default)]
     max_tokens: u64,
@@ -1583,6 +1589,14 @@ const fn default_max_iter_setting() -> i64 {
 }
 
 const fn default_auto_compact() -> bool {
+    true
+}
+
+const fn default_follow_up_questions() -> bool {
+    true
+}
+
+const fn default_resume_last_session() -> bool {
     true
 }
 
@@ -6189,6 +6203,78 @@ async fn review_session(
     out
 }
 
+fn parse_follow_up_questions(raw: &str) -> Result<Vec<String>, String> {
+    let start = raw.find('[').ok_or("Model did not return a JSON array.")?;
+    let end = raw.rfind(']').ok_or("Model did not return a JSON array.")?;
+    let values: Vec<String> = serde_json::from_str(&raw[start..=end])
+        .map_err(|error| format!("Invalid follow-up question response: {error}"))?;
+    let mut questions = Vec::with_capacity(3);
+    for value in values {
+        let question = value.trim();
+        if !question.is_empty() && !questions.iter().any(|item| item == question) {
+            questions.push(question.to_string());
+        }
+        if questions.len() == 3 {
+            break;
+        }
+    }
+    (questions.len() == 3)
+        .then_some(questions)
+        .ok_or_else(|| "Model must return exactly three distinct follow-up questions.".into())
+}
+
+/// Suggest three next questions without modifying the session transcript.
+#[tauri::command]
+async fn generate_follow_up_questions(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<String>, String> {
+    if !state
+        .store
+        .get_setting("follow_up_questions")
+        .await
+        .ok()
+        .flatten()
+        .map(|value| value == "true")
+        .unwrap_or(true)
+    {
+        return Ok(Vec::new());
+    }
+    let messages = state
+        .store
+        .load_messages(&session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let specialist = specialists::session_specialist(&state.store, &session_id).await;
+    let (provider, api_url, model, api_key, max_tokens, reasoning_effort) = match specialist {
+        Some(ref specialist) if !specialist.model_id.trim().is_empty() => {
+            specialists::specialist_llm(&state.store, specialist).await
+        }
+        _ => load_session_settings(&state.store, &session_id).await,
+    };
+    let llm = wisp_llm::build(build_provider_config(
+        &provider,
+        &api_url,
+        &api_key,
+        &model,
+        max_tokens.min(512),
+        &reasoning_effort,
+    )?);
+    let completion = llm
+        .complete(
+            &[
+                Message::system(
+                    "Suggest exactly three concise, useful questions the user could ask next. Return only a JSON array of three strings. Do not answer them.",
+                ),
+                Message::user(review::serialize_transcript(&messages)),
+            ],
+            &[],
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    parse_follow_up_questions(&completion.content)
+}
+
 fn branch_title(raw: Option<&str>) -> Option<String> {
     let t = raw.map(str::trim).filter(|s| !s.is_empty())?;
     let short: String = t.chars().take(64).collect();
@@ -6817,6 +6903,7 @@ pub fn run() {
             quick_actions::run_quick_action,
             skill_portfolio::plan_skill_portfolio,
             review_session,
+            generate_follow_up_questions,
             side_chat,
             context_probe::probe_execution_context,
             runtime_launcher::update_execution_context_interpreters,

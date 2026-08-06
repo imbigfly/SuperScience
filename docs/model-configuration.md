@@ -1,5 +1,10 @@
 # Model configuration
 
+In General settings, **Suggest follow-up questions** is enabled by default.
+After a completed reply, Wisp uses that conversation's current model to offer
+three optional next questions. The suggestion panel can be hidden per reply,
+or the setting can be turned off to skip the extra model call entirely.
+
 wisp-science calls remote LLM APIs through model profiles. Desktop users
 configure these in **Settings -> Models**. Each row is a model profile with its
 own display name, provider, API URL, model ID, advanced options, and API key.

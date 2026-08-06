@@ -1964,6 +1964,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               locale: mockLocale,
               max_iter: 100,
               auto_compact: true,
+              follow_up_questions: true,
+              resume_last_session: true,
               max_tokens: 4096,
               reasoning_effort: "",
               supports_vision: true,
@@ -2774,6 +2776,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return activeProjectId === "other"
               ? { ...project, id: "other", name: "Other project", root: "/mock/other" }
               : project;
+          case "generate_follow_up_questions":
+            return [
+              "Review the records that need manual correction",
+              "Expand the search for underrepresented species",
+              "Generate a literature landscape visualization",
+            ];
           case "get_project_settings":
             return { name: project.name, description: "", agent_context: "" };
           case "get_onboarding_state":
@@ -4158,6 +4166,8 @@ export function parallelMock(): void {
             has_api_key: true,
             locale: "en",
             auto_compact: true,
+            follow_up_questions: true,
+            resume_last_session: true,
             supports_vision: true,
             sync_backend: "relay",
             sync_relay_url: "https://relay.example.test",
@@ -4166,6 +4176,11 @@ export function parallelMock(): void {
             has_sync_relay_token: true,
           };
           case "get_project_info": return project;
+          case "generate_follow_up_questions": return [
+            "Review the records that need manual correction",
+            "Expand the search for underrepresented species",
+            "Generate a literature landscape visualization",
+          ];
           case "get_onboarding_state": return { show: false, has_api_key: true };
           case "get_capabilities": return { skills: [], mcp_servers: [], memory_files: [], project };
           case "list_approval_grants": return [];
