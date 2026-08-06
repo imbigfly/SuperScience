@@ -176,6 +176,35 @@ fn configured_image_generation_tool_is_available_without_a_specialist() {
 }
 
 #[test]
+fn live_agent_settings_refresh_max_iter_on_reused_agent() {
+    // Mid-session Settings changes must not stay stuck at construction time.
+    let root =
+        std::env::temp_dir().join(format!("wisp_live_max_iter_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let skills = Arc::new(wisp_skills::SkillIndex::load(&[]));
+    let memory = Arc::new(wisp_core::MemoryManager::new(&root));
+    let mut agent = wisp_core::Agent::new(
+        wisp_llm::ProviderConfig::openai("http://127.0.0.1:9/v1", "sk-chat-test", "chat-model"),
+        skills,
+        memory,
+        root.clone(),
+        128_000,
+        100,
+        false,
+        None,
+    );
+    assert_eq!(agent.max_iter, 100);
+
+    super::apply_live_agent_settings(&mut agent, 0, true);
+    assert_eq!(agent.max_iter, 0);
+
+    super::apply_live_agent_settings(&mut agent, 50, false);
+    assert_eq!(agent.max_iter, 50);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn llm_dispatch_debug_detects_cached_model_mismatch() {
     assert!(!super::llm_model_mismatch("glm-5.2", "GLM-5.2"));
     assert!(super::llm_model_mismatch("gpt-5.6-luna", "glm-5.2"));
