@@ -994,6 +994,64 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
 }
 
 #[tokio::test]
+async fn local_launch_timeout_reattaches_when_supervisor_acknowledged() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_local_launch_reattach_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+
+    let handle = test_local_handle("local-run", false, None);
+    let RemoteRunHandle::LocalDetached { token, .. } = &handle else {
+        unreachable!()
+    };
+    let token = token.clone();
+    let mut run = wisp_store::RunRecord::new("local-run", "p", "local", "Local", "local_detached");
+    run.command = Some("long-analysis".into());
+    run.timeout_secs = Some(60);
+    run.remote_handle_json = Some(serde_json::to_string(&handle).unwrap());
+    store.create_run(&run).await.unwrap();
+    assert!(store
+        .activate_run_lifecycle("local-run", wisp_store::RunStatus::Submitted, "owner", 360)
+        .await
+        .unwrap());
+
+    let runner = ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        Err("run_in_context timed out after 20s".into()),
+        ok_output(&format!("__WISP_HANDLE__:{token}:4242:999\n")),
+    ]);
+    let mut remote = RemoteRun {
+        run_id: "local-run".into(),
+        project_id: "p".into(),
+        frame_id: None,
+        command: "long-analysis".into(),
+        timeout: Duration::from_secs(60),
+        input_refs: Vec::new(),
+        output_specs: Vec::new(),
+        harvest_root: Some(tmp.clone()),
+        handle,
+    };
+
+    let confirmed = ensure_remote_started(&store, "owner", &runner, &mut remote)
+        .await
+        .unwrap();
+
+    assert!(confirmed.is_confirmed());
+    let commands = runner.commands.lock().unwrap();
+    assert_eq!(commands.len(), 3);
+    assert!(commands[2].script.starts_with("prepare local Run"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
 async fn recovery_fails_unconfirmed_ssh_run_without_reconnecting() {
     let tmp = std::env::temp_dir().join(format!("wisp_ssh_stale_start_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();

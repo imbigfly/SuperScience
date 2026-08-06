@@ -653,7 +653,21 @@ pub(super) async fn ensure_remote_started(
             {
                 return Err("lifecycle lease expired before launch".into());
             }
-            launch_remote(runner, &remote.handle).await
+            match launch_remote(runner, &remote.handle).await {
+                Ok(handle) => Ok(handle),
+                Err(launch_error) if remote.handle.is_local_detached() => {
+                    // The Windows launch host can time out after its detached
+                    // supervisor has already acknowledged the command. Re-read
+                    // the idempotent control directory before declaring the Run
+                    // failed; this observes an existing handle but never starts
+                    // the command a second time.
+                    match prepare_remote(runner, remote).await {
+                        Ok(PrepareRemote::Existing(handle)) => Ok(handle),
+                        _ => Err(launch_error),
+                    }
+                }
+                Err(error) => Err(error),
+            }
         }
     }
 }
