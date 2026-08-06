@@ -503,7 +503,18 @@ impl Tool for ViewImageTool {
             Ok(path) => path,
             Err(error) => return ToolResult::fail(format!("view_image error: {error}")),
         };
-        image::view_image(&path.to_string_lossy())
+        if image::needs_resize(&path).unwrap_or(false)
+            && !env
+                .confirm(&format!(
+                    "{}Resize large image for model input? The original file will not be changed: {}",
+                    image::RESIZE_CONFIRM_PREFIX,
+                    path.display()
+                ))
+                .await
+        {
+            return ToolResult::fail("view_image cancelled: image resize was not approved");
+        }
+        image::view_image_resized(&path.to_string_lossy())
     }
 }
 

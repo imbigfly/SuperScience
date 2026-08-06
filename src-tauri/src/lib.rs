@@ -243,6 +243,44 @@ async fn receive_confirm_decision(receiver: ConfirmReceiver) -> wisp_tools::Conf
         .unwrap_or(wisp_tools::ConfirmDecision::Denied { feedback: None })
 }
 
+async fn request_image_resize_confirmation(
+    state: &AppState,
+    app: &AppHandle,
+    frame_id: &str,
+    project_id: &str,
+    message: String,
+) -> bool {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state.confirms.lock().unwrap().insert(
+        frame_id.to_string(),
+        PendingConfirm {
+            tx,
+            grant: None,
+            project_id: project_id.to_string(),
+        },
+    );
+    state
+        .awaiting_confirm
+        .lock()
+        .unwrap()
+        .insert(frame_id.to_string());
+    state.device_hub.mark_needs_user(frame_id, Some(project_id));
+    let _ = app.emit(
+        "confirm-request",
+        ConfirmRequest {
+            frame_id: frame_id.to_string(),
+            message,
+            tool: "image_resize".into(),
+            preview: String::new(),
+        },
+    );
+    let approved = receive_confirm_decision(rx).await.approved();
+    state.confirms.lock().unwrap().remove(frame_id);
+    state.awaiting_confirm.lock().unwrap().remove(frame_id);
+    state.device_hub.resolve_needs_user(frame_id);
+    approved
+}
+
 struct PendingConfirm {
     tx: ConfirmSender,
     grant: Option<ApprovalGrantKey>,
@@ -392,6 +430,9 @@ fn parse_confirm_payload(message: &str) -> (String, String) {
     }
     if let Some(rest) = message.strip_prefix(resource_leases::CONFIRM_PREFIX) {
         return (resource_leases::CONFIRM_TOOL.to_string(), rest.to_string());
+    }
+    if let Some(rest) = message.strip_prefix(wisp_tools::image::RESIZE_CONFIRM_PREFIX) {
+        return ("image_resize".to_string(), rest.to_string());
     }
     if let Some(rest) = message.strip_prefix("Run tool '") {
         if let Some((tool, _)) = rest.split_once("'?") {
@@ -2539,7 +2580,12 @@ impl Output for TauriOutput {
         &'a self,
         message: &'a str,
     ) -> OutputFuture<'a, wisp_tools::ConfirmDecision> {
-        Box::pin(async move { self.request_confirmation(message, true).await })
+        Box::pin(async move {
+            let allow_full_permission =
+                !message.starts_with(wisp_tools::image::RESIZE_CONFIRM_PREFIX);
+            self.request_confirmation(message, allow_full_permission)
+                .await
+        })
     }
     fn approval_mode(&self, tool: &str) -> wisp_tools::Approval {
         self.approvals
@@ -3805,18 +3851,56 @@ async fn build_vision_provider_config(store: &Store) -> Option<ProviderConfig> {
     }
 }
 
-fn load_image_attachments(
+async fn load_image_attachments(
+    state: &AppState,
+    app: &AppHandle,
+    frame_id: &str,
+    project_id: &str,
     root: &Path,
     attachments: &[String],
 ) -> Result<Vec<wisp_tools::ImageData>, String> {
-    attachments
+    let paths = attachments
         .iter()
         .filter(|attachment| wisp_tools::image::is_supported_image(Path::new(attachment)))
         .map(|attachment| {
             let path = wisp_tools::safety::validate_file_path(root, attachment)?;
-            let result = wisp_tools::image::view_image(&path.to_string_lossy());
+            Ok((attachment, path))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let oversized = paths
+        .iter()
+        .filter_map(|(attachment, path)| {
+            wisp_tools::image::needs_resize(path)
+                .ok()
+                .filter(|needed| *needed)
+                .map(|_| (*attachment).clone())
+        })
+        .collect::<Vec<_>>();
+    if !oversized.is_empty()
+        && !request_image_resize_confirmation(
+            state,
+            app,
+            frame_id,
+            project_id,
+            format!(
+                "These images exceed 5 MiB and must be resized before they can be sent to the model: {}. The original files will not be changed. Fine details may be lost.",
+                oversized.join(", ")
+            ),
+        )
+        .await
+    {
+        return Err("Image resize was cancelled; no model request was sent.".into());
+    }
+    paths
+        .into_iter()
+        .map(|(attachment, path)| {
+            let result = if wisp_tools::image::needs_resize(&path)? {
+                wisp_tools::image::view_image_resized(&path.to_string_lossy())
+            } else {
+                wisp_tools::image::view_image(&path.to_string_lossy())
+            };
             let mut image = result.image.ok_or(result.content)?;
-            image.label = format!("Attached image: {attachment}");
+            image.label = format!("Attached image: {attachment}. {}", image.label);
             Ok(image)
         })
         .collect()
@@ -4870,7 +4954,15 @@ async fn send_message_inner(
     let attached_images = if resume {
         Vec::new()
     } else {
-        load_image_attachments(&ap.root, attachments.as_deref().unwrap_or_default())?
+        load_image_attachments(
+            state,
+            &app,
+            &frame_id,
+            &ap.id,
+            &ap.root,
+            attachments.as_deref().unwrap_or_default(),
+        )
+        .await?
     };
 
     // Route on accepted send, not on eventual execution. In particular, a

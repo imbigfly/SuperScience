@@ -968,12 +968,14 @@ pub(crate) fn approval_allow_label_key(scope: &str) -> &'static str {
 pub(crate) fn ApprovalCard(
     tool: String,
     preview: String,
+    message: String,
     session_id: String,
     on_decide: Callback<(String, bool, Option<String>, String)>,
 ) -> impl IntoView {
     let locale = use_locale();
     let is_plan = tool == "update_plan";
     let is_resource_conflict = tool == "resource_conflict";
+    let is_image_resize = tool == "image_resize";
     let show_feedback = create_rw_signal(false);
     let feedback = create_rw_signal(String::new());
     let approval_scope = create_rw_signal(String::from("once"));
@@ -1009,6 +1011,7 @@ pub(crate) fn ApprovalCard(
         match tool_for_title.as_str() {
             _ if is_plan => t(loc, "approval.review_plan"),
             "resource_conflict" => t(loc, "approval.resource_conflict_title"),
+            "image_resize" => t(loc, "approval.image_resize_title"),
             "python" => t(loc, "approval.run_python"),
             "r" => t(loc, "approval.run_r"),
             "shell" => t(loc, "approval.run_shell"),
@@ -1047,8 +1050,8 @@ pub(crate) fn ApprovalCard(
                     let p = preview.clone();
                     let lang = lang.clone();
                     view! {
-                        {is_resource_conflict.then(|| view! {
-                            <p class="approval-conflict-message">{p.clone()}</p>
+                        {(is_resource_conflict || is_image_resize).then(|| view! {
+                            <p class="approval-conflict-message">{if is_image_resize && !p.is_empty() { p.clone() } else if is_image_resize { message.clone() } else { p.clone() }}</p>
                         })}
                         {show_tag.then(|| view! {
                             <div class="approval-tags"><span class="approval-tag">{tag}</span></div>
@@ -1065,11 +1068,13 @@ pub(crate) fn ApprovalCard(
                     "approval.plan_hint"
                 } else if is_resource_conflict {
                     "approval.resource_conflict_hint"
+                } else if is_image_resize {
+                    "approval.image_resize_hint"
                 } else {
                     "approval.hint"
                 })}</p>
                 <div class="approval-actions">
-                    {(!is_plan && !is_resource_conflict).then(|| view! {
+                    {(!is_plan && !is_resource_conflict && !is_image_resize).then(|| view! {
                         <label class="approval-scope">
                             <span>{move || t(locale.get(), "approval.scope")}</span>
                             <select
@@ -1093,6 +1098,8 @@ pub(crate) fn ApprovalCard(
                                 t(locale.get(), "approval.plan_approve").to_string()
                             } else if is_resource_conflict {
                                 t(locale.get(), "approval.resource_conflict_wait").to_string()
+                            } else if is_image_resize {
+                                t(locale.get(), "approval.image_resize_continue").to_string()
                             } else {
                                 t(locale.get(), approval_allow_label_key(&approval_scope.get())).to_string()
                             }
@@ -1104,6 +1111,8 @@ pub(crate) fn ApprovalCard(
                             "approval.plan_reject"
                         } else if is_resource_conflict {
                             "approval.resource_conflict_cancel"
+                        } else if is_image_resize {
+                            "approval.image_resize_cancel"
                         } else {
                             "confirm.deny"
                         })}
