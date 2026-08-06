@@ -3621,6 +3621,7 @@ async fn connect_mcp(conn: &McpConnection) -> anyhow::Result<wisp_mcp::McpClient
                     cmd.current_dir(dir);
                 }
             }
+            wisp_tools::process::hide_console_async(&mut cmd);
             wisp_mcp::McpClient::launch_with_command(cmd).await
         }
         McpTransport::Http { url, headers, auth } => match auth {
@@ -3985,6 +3986,7 @@ async fn connect_plugin_mcp(
         .envs(&launch.env)
         .env("WISP_PLUGIN_ROOT", &launch.install_root)
         .env("CLAUDE_PLUGIN_ROOT", &launch.install_root);
+    wisp_tools::process::hide_console_async(&mut command);
     wisp_mcp::McpClient::launch_with_command(command).await
 }
 

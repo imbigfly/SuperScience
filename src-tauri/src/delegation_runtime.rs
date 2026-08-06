@@ -3112,11 +3112,13 @@ fn parse_agent_result(raw: &str, request: &AgentDelegationRequest) -> Result<Val
 }
 
 async fn reviewer_host_evidence(project_root: &std::path::Path) -> String {
-    let output = tokio::process::Command::new("git")
+    let _git = wisp_tools::process::lock_git_command_async().await;
+    let mut command = tokio::process::Command::new("git");
+    command
         .args(["diff", "--no-ext-diff", "--", "."])
-        .current_dir(project_root)
-        .output()
-        .await;
+        .current_dir(project_root);
+    wisp_tools::process::hide_console_async(&mut command);
+    let output = command.output().await;
     let diff = output
         .ok()
         .filter(|output| output.status.success())

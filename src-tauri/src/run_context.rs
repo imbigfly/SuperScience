@@ -1800,10 +1800,14 @@ fn git_code_state(root: Option<&Path>) -> (Option<String>, Option<String>) {
     let Some(root) = root else {
         return (None, None);
     };
-    let commit = std::process::Command::new("git")
+    let _git = wisp_tools::process::lock_git_command();
+    let mut commit_cmd = std::process::Command::new("git");
+    commit_cmd
         .args(["rev-parse", "--verify", "HEAD"])
         .current_dir(root)
-        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    wisp_tools::process::hide_console(&mut commit_cmd);
+    let commit = commit_cmd
         .output()
         .ok()
         .filter(|output| output.status.success())
@@ -1811,10 +1815,13 @@ fn git_code_state(root: Option<&Path>) -> (Option<String>, Option<String>) {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let dirty_patch = commit.as_ref().and_then(|_| {
-        std::process::Command::new("git")
+        let mut diff_cmd = std::process::Command::new("git");
+        diff_cmd
             .args(["diff", "--binary", "--no-ext-diff", "HEAD", "--", "."])
             .current_dir(root)
-            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("GIT_OPTIONAL_LOCKS", "0");
+        wisp_tools::process::hide_console(&mut diff_cmd);
+        diff_cmd
             .output()
             .ok()
             .filter(|output| output.status.success() && output.stdout.len() <= MAX_PATCH_BYTES)

@@ -9,10 +9,6 @@ use tokio::{io::AsyncWriteExt, sync::Mutex};
 
 const GIT_AUTHOR_NAME: &str = "Wisp Science Agent";
 const GIT_AUTHOR_EMAIL: &str = "wisp-agent@localhost";
-// Git for Windows can fail during DLL initialization when several project
-// windows probe it at once. One app-wide lock keeps capability probes from
-// launching overlapping git.exe processes.
-static GIT_PROBE_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[derive(Debug, Clone)]
 pub(crate) struct GitCommandOutput {
@@ -42,6 +38,7 @@ impl GitCommandRunner for ProcessGitCommandRunner {
         args: Vec<OsString>,
         stdin: Option<Vec<u8>>,
     ) -> anyhow::Result<GitCommandOutput> {
+        let _git = wisp_tools::process::lock_git_command_async().await;
         let mut command = tokio::process::Command::new("git");
         command
             .args(args)
@@ -54,6 +51,7 @@ impl GitCommandRunner for ProcessGitCommandRunner {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        wisp_tools::process::hide_console_async(&mut command);
         let mut child = command.spawn()?;
         if let Some(stdin) = stdin {
             let mut pipe = child
@@ -205,7 +203,6 @@ impl GitWorktreeIsolation {
         if !project_root.is_dir() {
             anyhow::bail!("the project directory does not exist");
         }
-        let _probe = GIT_PROBE_LOCK.lock().await;
         let version = self
             .runner
             .run(project_root, os_args(["--version"]), None)
@@ -915,6 +912,7 @@ mod tests {
             _args: Vec<OsString>,
             _stdin: Option<Vec<u8>>,
         ) -> anyhow::Result<GitCommandOutput> {
+            let _git = wisp_tools::process::lock_git_command_async().await;
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active.fetch_max(active, Ordering::SeqCst);
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
