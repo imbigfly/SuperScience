@@ -19,14 +19,10 @@ pub(crate) const CONFIRM_TOOL: &str = "resource_conflict";
 pub(crate) enum ResourceAccess {
     Read,
     Write,
-    /// Shell and persistent language cells can discover paths dynamically, so
-    /// their project access cannot yet be narrowed to declared inputs/outputs.
-    Opaque,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ResourceScope {
-    Project,
     Path(String),
 }
 
@@ -39,7 +35,6 @@ pub(crate) struct ResourceRequest {
 impl ResourceRequest {
     pub(crate) fn description(&self) -> String {
         match &self.scope {
-            ResourceScope::Project => "the project workspace".into(),
             ResourceScope::Path(path) => format!("`{path}`"),
         }
     }
@@ -166,7 +161,6 @@ fn requests_conflict(left: &ResourceRequest, right: &ResourceRequest) -> bool {
 
 fn scopes_overlap(left: &ResourceScope, right: &ResourceScope) -> bool {
     match (left, right) {
-        (ResourceScope::Project, _) | (_, ResourceScope::Project) => true,
         (ResourceScope::Path(left), ResourceScope::Path(right)) => {
             is_path_prefix(left, right) || is_path_prefix(right, left)
         }
@@ -213,10 +207,6 @@ pub(crate) fn request_for_call(
     match tool {
         "read" | "view_image" => path_request(ResourceAccess::Read),
         "write" | "edit" | "generate_image" => path_request(ResourceAccess::Write),
-        "shell" | "python" | "r" => Some(ResourceRequest {
-            access: ResourceAccess::Opaque,
-            scope: ResourceScope::Project,
-        }),
         _ => None,
     }
 }
@@ -266,19 +256,11 @@ mod tests {
     }
 
     #[test]
-    fn project_wide_execution_conflicts_with_any_path_access() {
-        let opaque = ResourceRequest {
-            access: ResourceAccess::Opaque,
-            scope: ResourceScope::Project,
-        };
-        assert!(requests_conflict(
-            &opaque,
-            &path(ResourceAccess::Write, "plot.R")
-        ));
-        assert!(requests_conflict(
-            &opaque,
-            &path(ResourceAccess::Read, "data/input.csv")
-        ));
+    fn unstructured_execution_tools_do_not_request_leases() {
+        let root = Path::new(".");
+        for tool in ["shell", "python", "r"] {
+            assert_eq!(request_for_call(root, tool, &serde_json::json!({})), None);
+        }
     }
 
     #[tokio::test]

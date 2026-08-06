@@ -61,6 +61,9 @@ desktop app or a headless CLI.
 - Reads, writes, searches, and runs shell commands inside a project-rooted
   path sandbox, behind explicit approval gates; an opt-in per-conversation
   **Full Permission** mode auto-approves after a warning.
+- Coordinates exact file-tool paths across parallel conversations. Shell,
+  Python, and R calls remain concurrent because their file access and child
+  process lifetimes cannot be inferred reliably from command text.
 - Loads reusable Agent Skills (`SKILL.md`) with progressive disclosure — the
   catalog never floods the prompt.
 - Drives external coding agents (Codex, Claude Code, …) over ACP v1, and spins
