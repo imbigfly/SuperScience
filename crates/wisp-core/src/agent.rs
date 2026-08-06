@@ -519,7 +519,9 @@ async fn agent_loop_inner(
             break;
         }
         if iteration_limit_reached(iteration, max_iter) {
-            break;
+            // Fail resumably (like empty-response / max_tokens) so the UI shows
+            // a concrete reason instead of a quiet "Processed" end-of-turn.
+            anyhow::bail!(iteration_limit_message(max_iter));
         }
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
             anyhow::bail!("stopped by user");
@@ -560,6 +562,12 @@ fn append_skipped_tool_results(
 
 fn iteration_limit_reached(iteration: usize, max_iter: usize) -> bool {
     max_iter != 0 && iteration >= max_iter
+}
+
+fn iteration_limit_message(max_iter: usize) -> String {
+    format!(
+        "已达到本轮 Agent 最大迭代次数（{max_iter}），任务可能尚未完成。已完成的工具结果均已保留；请点击“继续执行”接着做，或在设置中提高「每轮最大 Agent 迭代次数」（0 表示不限制）。(hit max agent iterations: {max_iter})"
+    )
 }
 
 async fn describe_image(
@@ -682,6 +690,14 @@ mod tests {
         assert!(!iteration_limit_reached(usize::MAX, 0));
         assert!(!iteration_limit_reached(99, 100));
         assert!(iteration_limit_reached(100, 100));
+    }
+
+    #[test]
+    fn iteration_limit_message_names_the_cap() {
+        let msg = iteration_limit_message(100);
+        assert!(msg.contains("100"), "{msg}");
+        assert!(msg.contains("hit max agent iterations"), "{msg}");
+        assert!(msg.contains("继续执行"), "{msg}");
     }
 
     #[test]
@@ -1754,6 +1770,56 @@ mod tests {
         assert!(other.starts_with("HEAD-MARK"), "other head kept");
         assert!(other.ends_with("TAIL-MARK"), "other tail kept");
         assert!(other.contains("bytes omitted from noisy_other"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn max_iter_limit_fails_with_visible_message() {
+        // max_iter=2 is below STUCK_REPEAT_LIMIT, so the iteration cap fires
+        // first and must surface a resumable error (not silent Ok(())).
+        let provider = FixedProvider {
+            completion: Completion {
+                tool_calls: vec![ToolCall {
+                    id: "call_1".into(),
+                    kind: "function".into(),
+                    function: FunctionCall {
+                        name: "ok_tool".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            },
+        };
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(OkTool));
+        let mut ctx = ContextManager::new(100_000);
+        let root = std::env::temp_dir().join(format!(
+            "wisp-core-max-iter-msg-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let err = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            "keep going",
+            2,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        let text = err.to_string();
+        assert!(
+            text.contains("hit max agent iterations: 2"),
+            "unexpected error: {text}"
+        );
+        assert!(text.contains("继续执行"), "missing resume hint: {text}");
         std::fs::remove_dir_all(root).ok();
     }
 
