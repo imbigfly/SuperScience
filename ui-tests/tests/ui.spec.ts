@@ -254,6 +254,10 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await page.getByRole("button", { name: "Send" }).click();
   // Deltas "Hello " + "from mock wisp-science." accumulate into one assistant bubble.
   await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await page.locator(".msg.assistant").getByRole("button", { name: "Review" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "review_session")).toMatchObject({
+    sessionId: expect.stringMatching(/^s-/),
+  });
   await page.locator(".msg.assistant").getByRole("button", { name: "Copy" }).click();
   await expect(page.locator(".copy-toast")).toHaveText("Copied");
 });

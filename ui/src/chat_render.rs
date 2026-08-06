@@ -1127,6 +1127,7 @@ pub(crate) fn render_item(
     on_branch: impl Fn(usize) + Clone + 'static,
     on_undo: Callback<usize>,
     session_id: String,
+    on_review: Callback<String>,
     on_approval: Callback<(String, bool, Option<String>, String)>,
     on_resume: Callback<usize>,
     on_queue: Callback<QueueOp>,
@@ -1205,6 +1206,7 @@ pub(crate) fn render_item(
                 on_artifact=on_artifact
                 on_file=on_file
                 on_copy=Callback::new(copy_text)
+                on_review=Callback::new(move |_| on_review.call(session_id.clone()))
                 can_undo=can_undo
                 on_undo=on_undo
             />

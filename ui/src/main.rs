@@ -4600,6 +4600,21 @@ fn App() -> impl IntoView {
         }
     });
 
+    let request_session_review = Callback::new(move |session_id: String| {
+        let loc = locale.get_untracked();
+        status.set(t(loc, "status.reviewing"));
+        spawn_local(async move {
+            let arg = to_value(&tauri_args::review_session(&Some(session_id))).unwrap();
+            if let Err(err) = invoke_checked("review_session", arg).await {
+                status.set(tf(
+                    loc,
+                    "status.review_failed",
+                    &[("msg", &localize_backend(loc, &js_error_text(err)))],
+                ));
+            }
+        });
+    });
+
     let jump_to_conversation_outline =
         Callback::new(move |(target, before_seq): (usize, Option<i64>)| {
             let Some(id) = active_session.get_untracked() else {
@@ -8321,7 +8336,7 @@ fn App() -> impl IntoView {
                                                 render_item(
                                                     i, &item, timestamp, &arts, on_artifact_select, on_file_link,
                                                     run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, session_id,
-                                                    respond_confirm, on_resume, on_queue,
+                                                    request_session_review, respond_confirm, on_resume, on_queue,
                                                     step_disclosure_state,
                                                     plan_mode_active, plan_compat, on_plan_decision,
                                                     on_question_answer, jump_to_review_message,
