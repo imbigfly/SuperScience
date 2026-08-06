@@ -6227,6 +6227,29 @@ test("resource conflict approval explains the owner and only offers wait or canc
   });
 });
 
+test("large image approval warns before resizing and cannot be remembered", async ({ page }) => {
+  await enterApp(page, "/?mockSessionModels=1");
+  await page.locator('[data-session-id="s-model-a"]').click();
+  await page.evaluate(() => (window as any).__tauriEmit("confirm-request", {
+    frame_id: "s-model-a",
+    message: "plot.png exceeds 5 MiB. The original file will not be changed. Fine details may be lost.",
+    tool: "image_resize",
+    preview: "",
+  }));
+
+  await expect(page.getByText("Resize large image for model input?")).toBeVisible();
+  await expect(page.getByText(/Fine details may be lost/)).toBeVisible();
+  await expect(page.getByLabel("Approval scope")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await page.getByRole("button", { name: "Resize & continue" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "confirm_response")).toMatchObject({
+    sessionId: "s-model-a",
+    approved: true,
+    scope: "once",
+  });
+});
+
 test("Escape closes plan feedback before rejecting the plan", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("NEEDPLAN");

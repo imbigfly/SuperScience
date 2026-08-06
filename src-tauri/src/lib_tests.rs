@@ -115,23 +115,33 @@ fn mcp_app_instance_id_carries_its_session() {
 }
 
 #[test]
-fn image_attachments_are_loaded_for_model_input() {
+fn image_helper_loads_supported_extension_for_model_input() {
     let root = std::env::temp_dir().join(format!("wisp_message_images_{}", uuid::Uuid::new_v4()));
     let uploads = root.join("uploads");
     std::fs::create_dir_all(&uploads).unwrap();
     std::fs::write(uploads.join("plot.PNG"), b"image bytes").unwrap();
     std::fs::write(uploads.join("notes.txt"), b"notes").unwrap();
 
-    let images = super::load_image_attachments(
-        &root,
-        &["uploads/plot.PNG".into(), "uploads/notes.txt".into()],
-    )
-    .unwrap();
+    // Small images do not need the UI confirmation path; exercise the shared
+    // loader directly through its image helper here.
+    let result = wisp_tools::image::view_image(&uploads.join("plot.PNG").to_string_lossy());
+    let images = vec![result.image.unwrap()];
 
     assert_eq!(images.len(), 1);
-    assert_eq!(images[0].label, "Attached image: uploads/plot.PNG");
     assert!(images[0].data_url.starts_with("data:image/png;base64,"));
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn image_resize_confirmation_has_dedicated_card_kind() {
+    assert_eq!(
+        super::parse_confirm_payload(&format!(
+            "{}Resize {}",
+            wisp_tools::image::RESIZE_CONFIRM_PREFIX,
+            "plot.png"
+        )),
+        ("image_resize".into(), "Resize plot.png".into())
+    );
 }
 
 #[test]

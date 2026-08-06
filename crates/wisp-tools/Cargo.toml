@@ -14,4 +14,5 @@ glob = { workspace = true }
 walkdir = { workspace = true }
 dunce = { workspace = true }
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 wisp-llm = { workspace = true }

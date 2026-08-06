@@ -1309,8 +1309,8 @@ pub(crate) fn render_item(
                 {(!locations.is_empty()).then(|| view! { <pre>{locations.clone()}</pre> })}
             </article>
         }.into_view(),
-        ChatItem::ApprovalPending { tool, preview, message: _ } => view! {
-            <ApprovalCard tool=tool.clone() preview=preview.clone() session_id=session_id.clone() on_decide=on_approval />
+        ChatItem::ApprovalPending { tool, preview, message } => view! {
+            <ApprovalCard tool=tool.clone() preview=preview.clone() message=message.clone() session_id=session_id.clone() on_decide=on_approval />
         }.into_view(),
         ChatItem::AcpPermission { request_id, tool, options } => {
             let request_id = request_id.clone();
