@@ -1,7 +1,6 @@
 //! Keep subprocesses from opening a console on Windows GUI builds.
 
-use std::sync::OnceLock;
-use tokio::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -14,13 +13,17 @@ fn git_command_lock() -> &'static Mutex<()> {
     GIT_COMMAND_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// Hold while spawning Git so concurrent startup probes do not overlap.
-pub fn lock_git_command() -> tokio::sync::MutexGuard<'static, ()> {
-    git_command_lock().blocking_lock()
+pub struct GitCommandGuard {
+    _guard: std::sync::MutexGuard<'static, ()>,
 }
 
-pub async fn lock_git_command_async() -> tokio::sync::MutexGuard<'static, ()> {
-    git_command_lock().lock().await
+/// Hold only while starting Git; do not keep this guard across `.await`.
+pub fn lock_git_command() -> GitCommandGuard {
+    GitCommandGuard {
+        _guard: git_command_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
+    }
 }
 
 #[cfg_attr(not(windows), allow(unused_variables))]

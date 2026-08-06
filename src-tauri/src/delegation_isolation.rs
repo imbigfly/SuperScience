@@ -38,7 +38,6 @@ impl GitCommandRunner for ProcessGitCommandRunner {
         args: Vec<OsString>,
         stdin: Option<Vec<u8>>,
     ) -> anyhow::Result<GitCommandOutput> {
-        let _git = wisp_tools::process::lock_git_command_async().await;
         let mut command = tokio::process::Command::new("git");
         command
             .args(args)
@@ -52,7 +51,10 @@ impl GitCommandRunner for ProcessGitCommandRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         wisp_tools::process::hide_console_async(&mut command);
-        let mut child = command.spawn()?;
+        let mut child = {
+            let _git = wisp_tools::process::lock_git_command();
+            command.spawn()?
+        };
         if let Some(stdin) = stdin {
             let mut pipe = child
                 .stdin
@@ -900,8 +902,8 @@ mod tests {
 
     #[derive(Default)]
     struct ConcurrentProbeRunner {
-        active: AtomicUsize,
-        max_active: AtomicUsize,
+        in_lock: AtomicUsize,
+        max_in_lock: AtomicUsize,
     }
 
     #[async_trait]
@@ -912,11 +914,13 @@ mod tests {
             _args: Vec<OsString>,
             _stdin: Option<Vec<u8>>,
         ) -> anyhow::Result<GitCommandOutput> {
-            let _git = wisp_tools::process::lock_git_command_async().await;
-            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            self.max_active.fetch_max(active, Ordering::SeqCst);
+            {
+                let _git = wisp_tools::process::lock_git_command();
+                let active = self.in_lock.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max_in_lock.fetch_max(active, Ordering::SeqCst);
+                self.in_lock.fetch_sub(1, Ordering::SeqCst);
+            }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            self.active.fetch_sub(1, Ordering::SeqCst);
             anyhow::bail!("git executable was not found")
         }
     }
@@ -940,7 +944,7 @@ mod tests {
 
         assert!(!first_available);
         assert!(!second_available);
-        assert_eq!(runner.max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(runner.max_in_lock.load(Ordering::SeqCst), 1);
         let _ = fs::remove_dir_all(root);
     }
 

@@ -1859,7 +1859,12 @@ async fn record_created_run_lineage(
         .map_err(|error| error.to_string())?;
 
     let command = run.command.as_deref().unwrap_or_default();
-    let (git_commit, dirty_patch) = git_code_state(root);
+    let (git_commit, dirty_patch) = match root.map(|path| path.to_path_buf()) {
+        Some(root) => tokio::task::spawn_blocking(move || git_code_state(Some(&root)))
+            .await
+            .map_err(|error| format!("git snapshot task failed: {error}"))?,
+        None => (None, None),
+    };
     store
         .save_run_code_snapshot(&wisp_store::RunCodeSnapshot {
             id: format!("run-code:{}:command", run.id),
