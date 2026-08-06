@@ -5858,6 +5858,12 @@ fn App() -> impl IntoView {
     // or the library changes. Token batches deliberately do not rescan the DOM.
     create_effect(move |_| {
         let _ = transcript_projection_epoch.get();
+        if active_session
+            .get()
+            .is_some_and(|id| running.get().contains(&id))
+        {
+            return;
+        }
         let texts = match active_session.get() {
             Some(session) => library_items.with(|items| {
                 items
