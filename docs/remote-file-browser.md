@@ -6,6 +6,8 @@ file, create a folder, and refresh the current directory. Right-click a local
 file or folder to rename or delete it. These operations are constrained to the
 project root, reject path separators in names, and never overwrite an existing
 entry; deleting a non-empty folder requires an explicit confirmation.
+Right-clicking a local folder can also add its path to chat, allowing the agent
+to inspect its files and directory structure with the normal project tools.
 
 Selecting an SSH context opens the remote user's home directory and supports:
 

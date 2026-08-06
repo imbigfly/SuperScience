@@ -5841,7 +5841,10 @@ fn App() -> impl IntoView {
                 });
                 return;
             }
-            if action == "attachWorkspaceFile" {
+            if matches!(
+                action.as_str(),
+                "attachWorkspaceFile" | "attachWorkspaceDirectory"
+            ) {
                 let _ = attach_ready_path(attachments, payload);
                 focus_composer();
                 return;
