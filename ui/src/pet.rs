@@ -163,8 +163,8 @@ impl DesktopPetActivity {
 }
 
 fn install_runtime_poll(status: RwSignal<PetStatus>, activity: RwSignal<DesktopPetActivity>) {
-    let callback = Closure::wrap(Box::new(move || refresh_desktop_pet(status, activity))
-        as Box<dyn FnMut()>);
+    let callback =
+        Closure::wrap(Box::new(move || refresh_desktop_pet(status, activity)) as Box<dyn FnMut()>);
     let _ = window().set_interval_with_callback_and_timeout_and_arguments_0(
         callback.as_ref().unchecked_ref(),
         2_000,

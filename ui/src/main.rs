@@ -1879,10 +1879,12 @@ fn App() -> impl IntoView {
                             "sessionId": frame_id.clone(),
                         }))
                         .unwrap();
-                        let Ok(value) = invoke_checked("generate_follow_up_questions", args).await else {
+                        let Ok(value) = invoke_checked("generate_follow_up_questions", args).await
+                        else {
                             return;
                         };
-                        let Ok(questions) = serde_wasm_bindgen::from_value::<Vec<String>>(value) else {
+                        let Ok(questions) = serde_wasm_bindgen::from_value::<Vec<String>>(value)
+                        else {
                             return;
                         };
                         if questions.len() == 3
@@ -2626,8 +2628,7 @@ fn App() -> impl IntoView {
             // For the already-active session, insert its optimistic assistant
             // first so the busy transition cannot briefly mistake the prior
             // answer for the new live row and remount its Markdown.
-            let activates_session =
-                active_session.get_untracked().as_deref() != Some(id.as_str());
+            let activates_session = active_session.get_untracked().as_deref() != Some(id.as_str());
             if activates_session {
                 begin_pending_turn(pending_turns, running, &id);
                 active_session.set(Some(id.clone()));
