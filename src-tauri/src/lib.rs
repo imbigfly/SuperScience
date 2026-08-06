@@ -164,6 +164,10 @@ enum AgentEvent {
         after: usize,
         strategy: String,
     },
+    CompactionStarted {
+        frame_id: String,
+        strategy: String,
+    },
     /// The context estimate crossed the warning threshold and remains high.
     ContextWarning {
         frame_id: String,
@@ -2537,6 +2541,12 @@ impl Output for TauriOutput {
             frame_id: self.frame_id.clone(),
             before,
             after,
+            strategy: strategy.into(),
+        });
+    }
+    fn compaction_started(&self, strategy: &str) {
+        self.emit(AgentEvent::CompactionStarted {
+            frame_id: self.frame_id.clone(),
             strategy: strategy.into(),
         });
     }

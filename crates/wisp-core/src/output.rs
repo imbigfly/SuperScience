@@ -32,6 +32,7 @@ pub trait Output: Send + Sync {
     ) {
     }
     fn compaction(&self, _before: usize, _after: usize, _strategy: &str) {}
+    fn compaction_started(&self, _strategy: &str) {}
     /// Fired once when the context estimate crosses the warning threshold and
     /// automatic compaction is disabled or could not bring it back under.
     fn context_warning(&self, _ctx_tokens: usize, _max_context: usize) {}

@@ -1288,7 +1288,7 @@ pub(crate) fn render_item(
                 fmt_tokens(*after as u64)
             );
             view! {
-                <div class="context-compaction-flag" data-testid="context-compaction-flag">
+                <div class="context-compaction-flag" class:auto=automatic data-testid="context-compaction-flag">
                     <span class="gi doc" aria-hidden="true"></span>
                     <span>{move || t(
                         locale.get(),

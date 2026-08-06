@@ -102,6 +102,11 @@
 }
 .context-compaction-flag .gi { flex: 0 0 auto; }
 .context-compaction-count { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.context-compaction-flag.auto { animation: context-compaction-arrive .5s ease-out both; }
+@keyframes context-compaction-arrive {
+  from { opacity: 0; transform: translateY(4px); filter: blur(2px); }
+}
+@media (prefers-reduced-motion: reduce) { .context-compaction-flag.auto { animation: none; } }
 /* Confirm/approval dialog: pin the buttons and scroll only the message body, so
    a long command to approve can never push the Approve button off-screen (#63).
    Overrides the generic .modal whole-modal scroll above (later, equal specificity). */

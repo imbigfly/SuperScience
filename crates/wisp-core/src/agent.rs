@@ -284,6 +284,7 @@ async fn agent_loop_inner(
         // retrievability contract as manual `/compact`.
         if ctx.needs_auto_compact_with_reserve(fixed_request_tokens) {
             let archive = auto_compact_archive_path(root);
+            output.compaction_started("auto");
             match ctx
                 .compact_with_reserve(provider, &archive, fixed_request_tokens)
                 .await
@@ -310,6 +311,7 @@ async fn agent_loop_inner(
                 Err(error) if error.is_context_overflow() && !overflow_recovery_used => {
                     overflow_recovery_used = true;
                     let archive = auto_compact_archive_path(root);
+                    output.compaction_started("overflow");
                     match ctx
                         .compact_with_reserve(provider, &archive, fixed_request_tokens)
                         .await

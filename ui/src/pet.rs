@@ -105,6 +105,7 @@ impl DesktopPetActivity {
             | AgentEvent::Reasoning { frame_id, .. }
             | AgentEvent::ToolCall { frame_id, .. }
             | AgentEvent::Stdout { frame_id, .. }
+            | AgentEvent::CompactionStarted { frame_id, .. }
             | AgentEvent::CorrectionStarted { frame_id, .. } => self.mark_running(frame_id),
             AgentEvent::ToolResult {
                 frame_id,
