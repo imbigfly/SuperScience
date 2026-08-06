@@ -3619,7 +3619,7 @@ pub(super) fn SettingsView(
                                             } />
                                         <span class="toggle-track" aria-hidden="true"></span>
                                     </label>
-                                    <button type="button" on:click=move |_| {
+                                    <button type="button" class="memory-clear-btn" on:click=move |_| {
                                         let project_id = memory_view
                                             .get_untracked()
                                             .map(|view| view.project_id)

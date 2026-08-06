@@ -487,6 +487,7 @@ test("Memory settings show the active project name", async ({ page }) => {
   await expect(page.getByTestId("memory-project-select")).toContainText("wisp-science");
   await expect(project).toContainText("(1)");
   await expect(page.locator(".conn-group-label")).toContainText("Project memory");
+  await expect(page.getByRole("button", { name: "Clear all" })).toHaveClass("memory-clear-btn");
 });
 
 test("Memory settings can browse another project's notes without switching workspace", async ({ page }) => {
