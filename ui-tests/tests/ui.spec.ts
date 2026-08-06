@@ -7230,6 +7230,13 @@ test("project switcher does not show a stale fallback name while opening", async
   await expect(page.locator(".proj-name")).toHaveText("wisp-science");
 });
 
+test("opening a workspace resumes its most recent conversation by default", async ({ page }) => {
+  await page.goto("/?mockLongSession=1");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.getByRole("tablist").getByRole("button", { name: "Long transcript" })).toBeVisible();
+  await expect(page.getByText("Newest page first question")).toBeVisible();
+});
+
 test("default workspace keeps history labels and compact navigation keeps hover labels", async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 800 });
   await enterApp(page);
@@ -7439,6 +7446,19 @@ test("general settings enable follow-up question suggestions by default", async 
   await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
     settings: { follow_up_questions: false },
+  });
+});
+
+test("general settings resume the last workspace conversation by default", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "General");
+  const toggle = page.getByTestId("resume-last-session-enabled");
+  await expect(toggle).toBeChecked();
+  await toggle.locator("..").click();
+  await expect(toggle).not.toBeChecked();
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
+    settings: { resume_last_session: false },
   });
 });
 

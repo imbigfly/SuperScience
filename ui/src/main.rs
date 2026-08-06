@@ -6679,8 +6679,20 @@ fn App() -> impl IntoView {
                     }
                 };
 
-                // No await occurs after this final guard, so a newer transition
-                // cannot interleave before these current-project actions run.
+                let session_id = match session_id {
+                    Some(session_id) => Some(session_id),
+                    None if settings.get_untracked().resume_last_session => {
+                        let args = to_value(&serde_json::json!({ "cursor": null })).unwrap();
+                        invoke_checked("list_sessions_page", args)
+                            .await
+                            .ok()
+                            .and_then(|value| {
+                                serde_wasm_bindgen::from_value::<SessionPage>(value).ok()
+                            })
+                            .and_then(|page| page.items.into_iter().next().map(|item| item.id))
+                    }
+                    None => None,
+                };
                 if !project_transition_is_current(
                     &transition_epoch,
                     &transition_target,

@@ -1328,6 +1328,18 @@ pub(super) fn SettingsView(
                                 <span class="toggle-track" aria-hidden="true"></span>
                             </label>
                         </div>
+                        <div class="span-2 appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "settings.resume_last_session")}</strong>
+                                <span>{move || t(locale.get(), "settings.resume_last_session_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="resume-last-session-enabled"
+                                    prop:checked=move || settings.get().resume_last_session
+                                    on:change=move |ev| settings.update(|current| current.resume_last_session = event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
                         <label class="span-2">{move || t(locale.get(), "settings.proxy_url")}
                             <input data-testid="proxy-url" placeholder="http://127.0.0.1:7890"
                                 on:input=move |ev| settings.update(|s| {

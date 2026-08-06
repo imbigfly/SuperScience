@@ -1543,6 +1543,9 @@ struct Settings {
     /// Generate three suggested next questions after a completed turn.
     #[serde(default = "default_follow_up_questions")]
     follow_up_questions: bool,
+    /// Restore the most recent conversation when a workspace opens.
+    #[serde(default = "default_resume_last_session")]
+    resume_last_session: bool,
     /// Max output tokens per LLM turn. 0 = provider default.
     #[serde(default)]
     max_tokens: u64,
@@ -1590,6 +1593,10 @@ const fn default_auto_compact() -> bool {
 }
 
 const fn default_follow_up_questions() -> bool {
+    true
+}
+
+const fn default_resume_last_session() -> bool {
     true
 }
 
