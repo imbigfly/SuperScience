@@ -361,13 +361,8 @@ pub(crate) fn render_steps_group(
             .flatten();
         (n_tools, total_ms, now_line)
     });
-    let total_ms = turn_duration_ms.unwrap_or_else(|| {
-        if completed_turn {
-            0
-        } else {
-            tool_total_ms
-        }
-    });
+    let total_ms =
+        turn_duration_ms.unwrap_or_else(|| if completed_turn { 0 } else { tool_total_ms });
     let total_label =
         (total_ms > 0 && (!live || n_tools > 0)).then(|| format_duration_ms(total_ms));
     // A settled step-count header reads better with the duration inline; the

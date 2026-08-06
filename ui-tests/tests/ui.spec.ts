@@ -2953,6 +2953,22 @@ test("workspace Files panel navigates deeply nested analysis modules", async ({ 
   ).toBeVisible();
 });
 
+test("workspace folder can be added to chat context (#694)", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Files" }).click();
+
+  const folder = page.locator('.fb-row.dir[data-workspace-path="DEG"]');
+  await folder.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Add folder to chat" }).click();
+
+  await expect(page.locator(".composer-attachment.ready")).toHaveText("DEG");
+  await composer(page).fill("Inspect this directory");
+  await composer(page).press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: "Inspect this directory\n\nUploaded files: DEG",
+  });
+});
+
 test("workspace file can be registered as an artifact", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Files" }).click();
@@ -7603,6 +7619,26 @@ test("desktop pet remains independent and reflects global agent state", async ({
     (window as any).__tauriEmit("agent", { kind: "Done", frame_id: "pet-frame" });
   });
   await expect(pet).toHaveAttribute("data-state", "jumping");
+});
+
+test("desktop pet shows active Run titles and celebrates completion (#693)", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).__mockPetActiveRuns = [
+      { id: "run-data", title: "data_analysis.py" },
+    ];
+  });
+  await page.goto("/?pet=desktop&mockPet=1");
+
+  const pet = page.getByTestId("wisp-pet");
+  await expect(pet).toHaveAttribute("data-tauri-drag-region", "deep");
+  await expect(pet.getByText("Running: data_analysis.py")).toBeVisible();
+  await expect(pet).toHaveAttribute("data-state", "running");
+
+  await page.evaluate(() => {
+    (window as any).__mockPetActiveRuns = [];
+  });
+  await expect(pet).toHaveAttribute("data-state", "jumping", { timeout: 5_000 });
+  await expect(pet.getByText("Done")).toBeVisible();
 });
 
 test("notification navigation opens the project and session that need the user (#499)", async ({ page }) => {

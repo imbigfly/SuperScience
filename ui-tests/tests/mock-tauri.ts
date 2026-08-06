@@ -2063,7 +2063,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               } : null,
             };
           case "get_pet_runtime_status":
-            return { running: [], waiting: [], reviewing: [] };
+            return {
+              running: [],
+              waiting: [],
+              reviewing: [],
+              activeRuns: (window as any).__mockPetActiveRuns ?? [],
+            };
           case "set_pet_window_visible":
             (window as any).__petWindowVisible = Boolean(arg("visible"));
             return null;

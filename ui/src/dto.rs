@@ -542,7 +542,10 @@ mod fingerprint_tests {
     #[test]
     fn same_content_same_fingerprint() {
         let text = "a".repeat(1000);
-        assert_eq!(assistant(text.clone()).fingerprint(), assistant(text).fingerprint());
+        assert_eq!(
+            assistant(text.clone()).fingerprint(),
+            assistant(text).fingerprint()
+        );
     }
 
     #[test]
@@ -589,7 +592,10 @@ mod fingerprint_tests {
         let mut b = a.clone();
         a.replace_range(500..503, "foo");
         b.replace_range(500..503, "bar");
-        assert_eq!(ChatItem::User(a).fingerprint(), ChatItem::User(b).fingerprint());
+        assert_eq!(
+            ChatItem::User(a).fingerprint(),
+            ChatItem::User(b).fingerprint()
+        );
     }
 }
 

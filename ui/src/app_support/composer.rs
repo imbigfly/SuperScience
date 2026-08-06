@@ -216,7 +216,7 @@ fn ready_attachment_key(path: &str) -> String {
     format!("path:{path}")
 }
 
-/// Attach an already-project-relative (or absolute native) path as a chip.
+/// Attach an already-project-relative (or absolute native) file or directory path as a chip.
 /// Returns false when the path was already attached.
 pub(crate) fn attach_ready_path(
     attachments: RwSignal<Vec<ComposerAttachment>>,
