@@ -427,9 +427,24 @@ test("storage separates project paths and filters usage when a project is clicke
     .toContainText("120.0 MB");
 });
 
-test("sidebar Report a problem starts an AI-guided issue chat (#596)", async ({ page }) => {
+test("sidebar Feedback leaves a workspace file and starts an AI-guided issue chat (#596)", async ({ page }) => {
   await enterApp(page);
+  await page.setInputFiles("#composer-file-input", {
+    name: "counts.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("a,b\n1,2"),
+  });
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  const tile = page.locator('.rp-tile[data-artifact-name="counts.csv"]');
+  await tile.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Open in center" }).click();
+  await expect(page.locator(".center-tab.active")).toContainText("counts.csv");
+
   await page.getByTestId("report-problem-entry").click();
+  await expect(page.locator(".center-tabs > .center-tab")).toHaveClass(/active/);
+  await expect(page.locator(".center-file-preview")).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "new_session")).not.toBeNull();
   await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
     message: expect.stringContaining("GitHub issue"),

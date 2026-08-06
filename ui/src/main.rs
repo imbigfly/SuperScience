@@ -4341,6 +4341,7 @@ fn App() -> impl IntoView {
         let status = status;
         let locale = locale;
         let demo_mode = demo_mode;
+        let center_file = center_file;
         let active_session = active_session;
         let sel_artifact = sel_artifact;
         let right_tab = right_tab;
@@ -4353,6 +4354,7 @@ fn App() -> impl IntoView {
                 return;
             }
             demo_mode.set(false);
+            center_file.set(None);
             if let Some(old) = active_session.get() {
                 transcripts.update(|m| {
                     m.insert(old, items.get());

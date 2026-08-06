@@ -1405,7 +1405,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.notifications_hint") => Some("Notify when a background task finishes, fails, or waits for approval. Its conversation opens only in the window that started the task."),
         (Locale::En, "settings.update_check") => Some("Check for updates"),
         (Locale::En, "settings.update_check_hint") => Some("Check GitHub Releases on startup and show a prompt in the sidebar when a newer version is available."),
-        (Locale::En, "issue_report.sidebar") => Some("Report a problem"),
+        (Locale::En, "issue_report.sidebar") => Some("Feedback"),
         (Locale::En, "issue_report.session_title") => Some("Bug report"),
         (Locale::En, "issue_report.chat_prompt") => Some(
             "Help me file a GitHub issue for {repo}.\n\n\
@@ -3310,7 +3310,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.notifications_hint") => Some("窗口不在前台时，任务完成、失败或等待确认会发送系统通知；对应会话只会在启动任务的窗口打开。"),
         (Locale::Zh, "settings.update_check") => Some("检查更新"),
         (Locale::Zh, "settings.update_check_hint") => Some("启动时检查 GitHub Releases，有新版本时在侧边栏显示提示。"),
-        (Locale::Zh, "issue_report.sidebar") => Some("报告问题"),
+        (Locale::Zh, "issue_report.sidebar") => Some("反馈"),
         (Locale::Zh, "issue_report.session_title") => Some("问题报告"),
         (Locale::Zh, "issue_report.chat_prompt") => Some(
             "请帮我向 {repo} 提交一个 GitHub issue。\n\n\
