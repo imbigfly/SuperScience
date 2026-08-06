@@ -35,7 +35,8 @@ use bindings::{
     invoke_checked, invoke_timeout, is_mac, is_windows, jump_chat_to_item, jump_chat_to_last_user,
     jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
     native_drop_in_composer, open_external_url, pasted_image_count, preserve_chat_prepend_position,
-    preview_selection, schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    preview_selection, schedule_chat_follow, cancel_saved_marks_apply, set_saved_marks,
+    CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -668,6 +669,9 @@ fn App() -> impl IntoView {
             .get()
             .map(|id| r.contains(&id))
             .unwrap_or(false);
+        if b {
+            cancel_saved_marks_apply();
+        }
         busy.set(b);
     });
     // Settled transcript edits refresh projections automatically. While a turn
@@ -4313,6 +4317,120 @@ fn App() -> impl IntoView {
         }
     };
 
+    let start_issue_report = {
+        let items = items;
+        let running = running;
+        let status = status;
+        let locale = locale;
+        let demo_mode = demo_mode;
+        let active_session = active_session;
+        let sel_artifact = sel_artifact;
+        let right_tab = right_tab;
+        let models = models;
+        let busy = busy;
+        let needs_api_key = needs_api_key;
+        let transcripts = transcripts;
+        move |_| {
+            if busy.get() {
+                return;
+            }
+            demo_mode.set(false);
+            if let Some(old) = active_session.get() {
+                transcripts.update(|m| {
+                    m.insert(old, items.get());
+                });
+            }
+            attachments.set(vec![]);
+            sel_artifact.set(0);
+            right_tab.set(RightTab::Artifacts);
+            spawn_local(async move {
+                let loc = locale.get_untracked();
+                let bootstrap = invoke("get_bootstrap_status", JsValue::UNDEFINED).await;
+                let bootstrap = serde_wasm_bindgen::from_value::<BootstrapStatus>(bootstrap)
+                    .unwrap_or(BootstrapStatus {
+                        skills_loaded: 0,
+                        python_ok: false,
+                        python_initializing: false,
+                        mcp_catalog: 0,
+                        uv_ok: false,
+                        node_ok: false,
+                        npm_ok: false,
+                        sci_ok: false,
+                        pixi_ok: false,
+                        app_version: String::new(),
+                        os: String::new(),
+                        arch: String::new(),
+                        workspace: String::new(),
+                        startup: String::new(),
+                        errors: vec![],
+                    });
+                let model = active_model_label(&models.get_untracked())
+                    .unwrap_or_else(|| "not configured".into());
+                let text = issue_report_chat_prompt(loc, &bootstrap, &model);
+                let turn_model = active_model_label(&models.get_untracked());
+                items.set(vec![
+                    ChatItem::User(text.clone()),
+                    ChatItem::Assistant {
+                        text: String::new(),
+                        model: turn_model,
+                        resources: Vec::new(),
+                    },
+                ]);
+                force_chat_bottom();
+                let Some(id) = invoke("new_session", JsValue::UNDEFINED)
+                    .await
+                    .as_string()
+                    .filter(|id| !id.is_empty())
+                else {
+                    status.set(t(loc, "status.send_failed").into());
+                    return;
+                };
+                active_session.set(Some(id.clone()));
+                running.update(|r| {
+                    r.insert(id.clone());
+                });
+                refresh_session_history();
+                let title = t(loc, "issue_report.session_title");
+                let rename = to_value(&serde_json::json!({ "id": id, "title": title })).unwrap();
+                let _ = invoke_checked("rename_session", rename).await;
+                refresh_session_history();
+                let arg = to_value(&SendMessageArgs {
+                    session_id: Some(id.clone()),
+                    message: text,
+                    attachments: vec![],
+                    references: vec![],
+                    resume: false,
+                    acp_agent_id: None,
+                    guide: None,
+                    replace: None,
+                })
+                .unwrap();
+                match invoke_checked("send_message", arg).await {
+                    Ok(_) => {
+                        running.update(|r| {
+                            r.remove(&id);
+                        });
+                        refresh_session_history();
+                    }
+                    Err(err) => {
+                        let raw = js_error_text(err);
+                        if raw.contains(NO_API_KEY_MARK) {
+                            needs_api_key.set(true);
+                        }
+                        status.set(tf(
+                            loc,
+                            "status.send_failed",
+                            &[("msg", &localize_backend(loc, &raw))],
+                        ));
+                        running.update(|r| {
+                            r.clear();
+                        });
+                    }
+                }
+            });
+        }
+    };
+
     let use_plugin = Callback::new(
         move |(plugin_id, version, display_name, skill_names, enabled): (
             String,
@@ -5745,6 +5863,12 @@ fn App() -> impl IntoView {
     // or the library changes. Token batches deliberately do not rescan the DOM.
     create_effect(move |_| {
         let _ = transcript_projection_epoch.get();
+        if active_session
+            .get()
+            .is_some_and(|id| running.get().contains(&id))
+        {
+            return;
+        }
         let texts = match active_session.get() {
             Some(session) => library_items.with(|items| {
                 items
@@ -7532,6 +7656,7 @@ fn App() -> impl IntoView {
                 )));
             })
             open_capabilities=Callback::new(open_capabilities)
+            open_issue_report=Callback::new(start_issue_report)
             open_settings=Callback::new(open_settings)
             on_sidebar_resize_start=Callback::new(on_sidebar_resize_start)
         />

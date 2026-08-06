@@ -98,6 +98,8 @@ extern "C" {
 extern "C" {
     /// Underline the given saved excerpts (JSON string array) in the transcript.
     pub(crate) fn set_saved_marks(json: &str);
+    /// Cancel a pending underline pass scheduled by `set_saved_marks`.
+    pub(crate) fn cancel_saved_marks_apply();
     /// Scroll the first occurrence of a saved excerpt into view.
     pub(crate) fn reveal_saved_mark(text: &str);
 }

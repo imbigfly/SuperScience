@@ -1952,6 +1952,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               app_version: "0.29.0",
               os: "windows",
               arch: "x86_64",
+              startup: "total=120ms store=90ms window_ready=600000ms",
               workspace: project.root,
               errors: [],
             };
@@ -4160,6 +4161,7 @@ export function parallelMock(): void {
             app_version: "0.29.0",
             os: "windows",
             arch: "x86_64",
+            startup: "total=120ms store=90ms window_ready=600000ms",
             workspace: project.root,
             errors: [],
           };

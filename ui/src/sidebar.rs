@@ -60,6 +60,7 @@ pub(super) fn Sidebar(
     open_folder_actions: Callback<(web_sys::MouseEvent, String, String)>,
     open_capabilities: Callback<web_sys::MouseEvent>,
     open_settings: Callback<web_sys::MouseEvent>,
+    open_issue_report: Callback<web_sys::MouseEvent>,
     open_update: Callback<web_sys::MouseEvent>,
     on_sidebar_resize_start: Callback<web_sys::MouseEvent>,
 ) -> impl IntoView {
@@ -653,6 +654,7 @@ pub(super) fn Sidebar(
                     </div>
                 }})}
                 <button class="side-btn" title=move || t(locale.get(), "sidebar.capabilities") on:click=move |ev| open_capabilities.call(ev)><span class="gi grid"></span>{move || t(locale.get(), "sidebar.capabilities")}</button>
+                <button class="side-btn" data-testid="report-problem-entry" title=move || t(locale.get(), "issue_report.sidebar") on:click=move |ev| open_issue_report.call(ev)><span class="gi doc"></span>{move || t(locale.get(), "issue_report.sidebar")}</button>
                 <button class="side-btn" title=move || t(locale.get(), "sidebar.settings") on:click=move |ev| open_settings.call(ev)><span class="gi gear"></span>{move || t(locale.get(), "sidebar.settings")}</button>
             </div>
         </aside>

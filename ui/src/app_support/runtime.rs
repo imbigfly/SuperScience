@@ -1970,8 +1970,10 @@ pub(crate) fn ContextDetailsOverlay(
                                                 .flatten();
                                             let method_progress = method_search_progress(&run);
                                             let method_run_id = run.id.clone();
-                                            let stdout_tail = run.stdout_tail.clone().unwrap_or_default();
-                                            let stderr_tail = run.stderr_tail.clone().unwrap_or_default();
+                                            let stdout_tail =
+                                                fold_carriage_returns(run.stdout_tail.as_deref().unwrap_or_default());
+                                            let stderr_tail =
+                                                fold_carriage_returns(run.stderr_tail.as_deref().unwrap_or_default());
                                             let output = match (stdout_tail.is_empty(), stderr_tail.is_empty()) {
                                                 (false, false) => format!("{stdout_tail}\n\n[stderr]\n{stderr_tail}"),
                                                 (false, true) => stdout_tail,

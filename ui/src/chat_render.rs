@@ -784,7 +784,11 @@ pub(crate) fn acp_tool_step_body(content: &str, locations: &str) -> String {
 }
 
 pub(crate) fn run_output_preview(run: &RunRecord) -> String {
-    let mut output = match (&run.stdout_tail, &run.stderr_tail) {
+    // Tails are stored raw; fold `\r` progress-bar frames before slicing lines
+    // so a single overwritten line cannot dominate the preview.
+    let stdout = run.stdout_tail.as_deref().map(fold_carriage_returns);
+    let stderr = run.stderr_tail.as_deref().map(fold_carriage_returns);
+    let mut output = match (&stdout, &stderr) {
         (Some(stdout), Some(stderr)) if !stdout.is_empty() && !stderr.is_empty() => {
             format!("{stdout}\n[stderr]\n{stderr}")
         }

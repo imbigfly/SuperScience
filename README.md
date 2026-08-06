@@ -217,6 +217,16 @@ Settings → Agent Context** are stored in `.wisp/WISP.md` and applied after
 | `WISP_MCP_COMMAND`   | Launch an arbitrary stdio MCP server (full command line)      |
 | `WISP_MCP_PKG`       | Launch a bundled bio-tools server, e.g. `mcp_pubmed`          |
 
+### Startup logs (Windows)
+
+Packaged Windows builds have no console, so each launch writes its log to
+`%APPDATA%\science.wisp-science\wisp-science\logs\wisp.log` (overwritten on the
+next launch). The `startup finished` line breaks the pre-first-paint work down
+by phase — `total=…ms store=…ms skills=…ms …` — which is the fastest way to
+report a slow or blank launch. Recovery sweeps, the scratch sandbox purge, and
+restoring project windows run after the main window is interactive and are
+logged separately as `deferred startup finished`.
+
 ### Bundled bio-tools MCP
 
 `WISP_MCP_PKG=mcp_pubmed` launches `mcp-servers/bio-tools/run_server.py

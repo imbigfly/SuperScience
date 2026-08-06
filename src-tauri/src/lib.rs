@@ -1518,6 +1518,59 @@ async fn persist_ui_events(
     }
 }
 
+/// Live streaming deltas merge for at most this long before crossing the
+/// WebView IPC boundary. LLM tokens and shell/runtime stdout arrive per
+/// network/pipe chunk — hundreds of events per second during long tasks —
+/// and emitting each one individually saturates the WebView main thread
+/// (IPC + deserialize + listeners), freezing every button in the UI (#65).
+const LIVE_EVENT_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+
+fn is_streaming_delta_event(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::Text { .. } | AgentEvent::Reasoning { .. } | AgentEvent::Stdout { .. }
+    )
+}
+
+/// Coalesce live `agent` events: consecutive same-kind streaming deltas merge
+/// and flush on the ticker; any other event flushes the pending delta first
+/// and is forwarded immediately, so arrival order is preserved and tool/done
+/// boundaries never lag behind their output.
+async fn coalesce_live_agent_events(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    flush_interval: std::time::Duration,
+    mut emit: impl FnMut(AgentEvent),
+) {
+    let mut pending: Option<AgentEvent> = None;
+    let mut ticker = tokio::time::interval(flush_interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    ticker.tick().await;
+    loop {
+        tokio::select! {
+            event = rx.recv() => match event {
+                Some(event) if is_streaming_delta_event(&event) => {
+                    if let Some(evicted) = merge_pending_ui_event(&mut pending, event) {
+                        emit(evicted);
+                    }
+                }
+                Some(event) => {
+                    if let Some(pending) = pending.take() {
+                        emit(pending);
+                    }
+                    emit(event);
+                }
+                None => break,
+            },
+            _ = ticker.tick(), if pending.is_some() => {
+                emit(pending.take().unwrap());
+            }
+        }
+    }
+    if let Some(pending) = pending {
+        emit(pending);
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct Settings {
     provider: String,
@@ -1698,6 +1751,8 @@ struct BootstrapStatus {
     os: String,
     arch: String,
     workspace: String,
+    /// Launch timings for bug reports; see `StartupReport`.
+    startup: String,
     errors: Vec<String>,
 }
 
@@ -2204,6 +2259,10 @@ struct TauriOutput {
     persist: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
     /// Ordered UI events used to rebuild the same transcript layout after a restart.
     ui_events: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
+    /// Live-surface sink: events pass through `coalesce_live_agent_events` so a
+    /// token/stdout flood cannot saturate the WebView IPC channel. `None`
+    /// emits directly (tests).
+    live_events: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
     message_seq: std::sync::atomic::AtomicI64,
     /// Provenance sink: each tool-execution record the turn produces is sent here
     /// and persisted as an `execution_log` row by a background drain task.
@@ -2227,7 +2286,14 @@ impl TauriOutput {
                 let _ = tx.send(event.clone());
             }
         }
-        emit_agent_event_to_surfaces(&self.app, event);
+        match &self.live_events {
+            Some(tx) => {
+                if let Err(send_error) = tx.send(event) {
+                    emit_agent_event_to_surfaces(&self.app, send_error.0);
+                }
+            }
+            None => emit_agent_event_to_surfaces(&self.app, event),
+        }
     }
 
     async fn request_confirmation(
@@ -5357,6 +5423,17 @@ async fn send_message_inner(
         (handle, tx)
     };
 
+    let (live_event_handle, live_event_tx) = {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+        let app = app.clone();
+        let handle = tokio::spawn(coalesce_live_agent_events(
+            rx,
+            LIVE_EVENT_FLUSH_INTERVAL,
+            move |event| emit_agent_event_to_surfaces(&app, event),
+        ));
+        (handle, tx)
+    };
+
     let output = TauriOutput {
         app: app.clone(),
         frame_id: frame_id.clone(),
@@ -5375,6 +5452,7 @@ async fn send_message_inner(
         full_permission_sessions: state.full_permission_sessions.clone(),
         persist: Some(persist_tx),
         ui_events: Some(ui_event_tx),
+        live_events: Some(live_event_tx),
         message_seq: std::sync::atomic::AtomicI64::new(start_seq),
         prov: Some(prov_tx),
     };
@@ -5436,6 +5514,14 @@ async fn send_message_inner(
     // Close the persist channel and wait for the task to flush; its final seq is
     // the authoritative persisted count.
     drop(output);
+    // Drain the live coalescer before the direct Done/Error emit below so the
+    // final buffered deltas cannot arrive after the turn boundary.
+    if tokio::time::timeout(std::time::Duration::from_secs(5), live_event_handle)
+        .await
+        .is_err()
+    {
+        tracing::warn!("live event coalescer did not finish cleanly");
+    }
     if tokio::time::timeout(std::time::Duration::from_secs(5), ui_event_handle)
         .await
         .is_err()
@@ -6552,14 +6638,244 @@ fn inherit_user_path() {
     }
 }
 
+/// A `setup` phase slower than this keeps the window blank long enough for a
+/// user to notice, so the breakdown is logged as a warning instead of info.
+const SLOW_STARTUP_TOTAL: std::time::Duration = std::time::Duration::from_millis(1500);
+
+static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn process_elapsed_ms() -> u128 {
+    PROCESS_START
+        .get()
+        .map(|start| start.elapsed().as_millis())
+        .unwrap_or_default()
+}
+
+/// What a blank-window report needs to be actionable, in plain milliseconds:
+/// how long `setup` blocked the event loop and where, when the main webview
+/// actually finished loading its page (the moment the white screen ends), and
+/// how long the deferred sweeps ran. Carries no paths, names or user data, so
+/// it can go straight into an issue draft.
+#[derive(Default, Clone)]
+struct StartupReport {
+    setup: String,
+    window_ready_ms: Option<u128>,
+    deferred_ms: Option<u128>,
+}
+
+impl StartupReport {
+    fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.setup.is_empty() {
+            parts.push(self.setup.clone());
+        }
+        if let Some(ms) = self.window_ready_ms {
+            parts.push(format!("window_ready={ms}ms"));
+        }
+        if let Some(ms) = self.deferred_ms {
+            parts.push(format!("deferred={ms}ms"));
+        }
+        parts.join(" ")
+    }
+}
+
+static STARTUP_REPORT: StdMutex<StartupReport> = StdMutex::new(StartupReport {
+    setup: String::new(),
+    window_ready_ms: None,
+    deferred_ms: None,
+});
+
+fn update_startup_report(update: impl FnOnce(&mut StartupReport)) {
+    if let Ok(mut report) = STARTUP_REPORT.lock() {
+        update(&mut report);
+    }
+}
+
+pub(crate) fn startup_report_summary() -> String {
+    STARTUP_REPORT
+        .lock()
+        .map(|report| report.summary())
+        .unwrap_or_default()
+}
+
+/// Windows creates the main WebView2 before `setup` runs but cannot service it
+/// until the event loop pumps messages, so everything `setup` does on the way
+/// to the first paint is time the user spends looking at a blank window. Record
+/// each phase that still has to happen there so a slow launch names its cause
+/// instead of being an unexplained white screen.
+#[derive(Default)]
+struct StartupTimeline {
+    phases: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl StartupTimeline {
+    fn record<T>(&mut self, phase: &'static str, work: impl FnOnce() -> T) -> T {
+        let started = std::time::Instant::now();
+        let value = work();
+        self.phases.push((phase, started.elapsed()));
+        value
+    }
+
+    fn total(&self) -> std::time::Duration {
+        self.phases.iter().map(|(_, elapsed)| *elapsed).sum()
+    }
+
+    /// `total=…ms phase=…ms …`, slowest phase first.
+    fn summary(&self) -> String {
+        let mut phases = self.phases.clone();
+        phases.sort_by(|left, right| right.1.cmp(&left.1));
+        std::iter::once(format!("total={}ms", self.total().as_millis()))
+            .chain(
+                phases
+                    .into_iter()
+                    .map(|(phase, elapsed)| format!("{phase}={}ms", elapsed.as_millis())),
+            )
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Log the breakdown and keep it for `get_bootstrap_status`, so a user who
+    /// cannot find a log file can still hand over the numbers from the
+    /// in-app issue report.
+    fn finish(self) {
+        let summary = self.summary();
+        if self.total() >= SLOW_STARTUP_TOTAL {
+            tracing::warn!(target: "wisp", %summary, "slow startup blocked the first paint");
+        } else {
+            tracing::info!(target: "wisp", %summary, "startup finished");
+        }
+        update_startup_report(|report| report.setup = summary);
+    }
+}
+
+/// Windows release builds have no console, so tracing output went to a sink and
+/// a launch problem on a user machine left nothing to read. Keep the latest
+/// launch in a log file next to the database instead.
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+#[derive(Clone)]
+struct SharedLogFile(Arc<StdMutex<std::fs::File>>);
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+impl SharedLogFile {
+    fn create() -> Option<Self> {
+        let dir = dirs::data_dir()?
+            .join("science.wisp-science")
+            .join("wisp-science")
+            .join("logs");
+        std::fs::create_dir_all(&dir).ok()?;
+        let path = dir.join("wisp.log");
+        // Someone hitting a slow launch restarts the app before asking for
+        // help, so the run that has to be explained is always the previous
+        // one. Keep it.
+        let _ = std::fs::rename(&path, dir.join("wisp.previous.log"));
+        let file = std::fs::File::create(path).ok()?;
+        Some(Self(Arc::new(StdMutex::new(file))))
+    }
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+impl std::io::Write for SharedLogFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut file = self
+            .0
+            .lock()
+            .map_err(|_| std::io::Error::other("log file lock poisoned"))?;
+        std::io::Write::write(&mut *file, buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut file = self
+            .0
+            .lock()
+            .map_err(|_| std::io::Error::other("log file lock poisoned"))?;
+        std::io::Write::flush(&mut *file)
+    }
+}
+
+/// Startup work whose result nobody can see until the app is already usable:
+/// crash recovery sweeps, the scratch sandbox purge, and the extra windows a
+/// previous session left open. Each of these can take seconds to minutes (a
+/// sandbox purge walks a directory tree, every restored window boots its own
+/// WebView2), so they run after `setup` hands the event loop back.
+fn spawn_deferred_startup(
+    app: &tauri::AppHandle,
+    orphans: scratch_commands::OrphanScratchProjects,
+) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let started = std::time::Instant::now();
+        let (store, run_manager) = {
+            let state = app.state::<AppState>();
+            (state.store.clone(), state.run_manager.clone())
+        };
+
+        scratch_commands::purge_orphan_scratch_projects(&store, orphans).await;
+        if let Err(error) = store.recover_stale_publication_freezes(i64::MAX).await {
+            tracing::warn!(target: "wisp", %error, "failed to recover interrupted Publication freezes");
+        }
+        match store.recover_interrupted_method_search_runs().await {
+            Ok(paused) if paused > 0 => {
+                tracing::warn!(target: "wisp", paused, "paused interrupted method searches for explicit resume");
+            }
+            Err(error) => {
+                tracing::warn!(target: "wisp", %error, "failed to checkpoint interrupted method searches");
+            }
+            _ => {}
+        }
+        if let Err(error) = run_manager.recover(&store).await {
+            tracing::warn!(target: "wisp", %error, "failed to recover incomplete runs");
+        }
+        match store.recover_interrupted_agent_workflows().await {
+            Ok((attempts, workflows)) if workflows > 0 => {
+                tracing::warn!(target: "wisp", attempts, workflows, "recovered interrupted Agent workflows");
+            }
+            Err(error) => {
+                tracing::warn!(target: "wisp", %error, "failed to recover interrupted Agent workflows");
+            }
+            _ => {}
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let pet_enabled = store
+                .get_setting("pet_enabled")
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|value| value == "true");
+            if let Err(error) = desktop_lifecycle::sync_pet_window(&app, pet_enabled) {
+                tracing::warn!(target: "wisp", %error, "failed to initialize pet window");
+            }
+        }
+
+        // Restore the project windows open when the app last quit (#52). The
+        // "main" window comes from tauri.conf; these are the extra per-project
+        // ones. A project that was since deleted simply fails to spawn.
+        for id in project_commands::persisted_windows(&store).await {
+            let state = app.state::<AppState>();
+            let _ = project_commands::spawn_project_window(&app, state.inner(), &id, None).await;
+        }
+        let ms = started.elapsed().as_millis();
+        update_startup_report(|report| report.deferred_ms = Some(ms));
+        tracing::info!(target: "wisp", ms = ms as u64, "deferred startup finished");
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = PROCESS_START.set(std::time::Instant::now());
     inherit_user_path();
     let filter = tracing_subscriber::EnvFilter::from_default_env()
         .add_directive("wisp=info".parse().unwrap());
     let subscriber = tracing_subscriber::fmt().with_env_filter(filter);
     #[cfg(all(not(debug_assertions), target_os = "windows"))]
-    subscriber.with_writer(std::io::sink).init();
+    match SharedLogFile::create() {
+        Some(log) => subscriber
+            .with_ansi(false)
+            .with_writer(move || log.clone())
+            .init(),
+        None => subscriber.with_writer(std::io::sink).init(),
+    }
     #[cfg(not(all(not(debug_assertions), target_os = "windows")))]
     subscriber.init();
 
@@ -6588,7 +6904,28 @@ pub fn run() {
             tauri::WindowEvent::Destroyed => record_window_focus(window.label(), false),
             _ => {}
         })
+        // The blank window ends when the main webview finishes loading its
+        // page, which is the number a "白屏很久" report actually needs: a small
+        // `setup` total next to a huge `window_ready` moves the search from the
+        // backend to WebView2 and asset loading.
+        .on_page_load(|webview, payload| {
+            if webview.label() != "main"
+                || !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+            {
+                return;
+            }
+            let ms = process_elapsed_ms();
+            let first = STARTUP_REPORT
+                .lock()
+                .map(|report| report.window_ready_ms.is_none())
+                .unwrap_or_default();
+            if first {
+                update_startup_report(|report| report.window_ready_ms = Some(ms));
+                tracing::info!(target: "wisp", ms = ms as u64, "main window finished loading");
+            }
+        })
         .setup(move |app| {
+            let mut startup = StartupTimeline::default();
             if let Ok(res) = app.path().resource_dir() {
                 wisp_paths::set_resource_root(res);
             }
@@ -6599,31 +6936,25 @@ pub fn run() {
                 .join("wisp-science");
             std::fs::create_dir_all(&app_data).expect("create app data dir");
             let db_path = app_data.join("wisp.sqlite");
-            let store = tauri::async_runtime::block_on(Store::open(&db_path)).expect("open store");
-            tauri::async_runtime::block_on(
-                store.recover_stale_publication_freezes(i64::MAX),
-            )
-            .expect("recover interrupted Publication freezes");
-            tauri::async_runtime::block_on(scratch_commands::purge_orphan_scratch_projects(
-                &store,
-                &app_data,
-            ));
-            tauri::async_runtime::block_on(models::load_custom_credentials(&store))
-                .expect("load custom credentials");
-            let library = tauri::async_runtime::block_on(LibraryStore::open(
-                &app_data.join("library.sqlite"),
-            ))
-            .expect("open global library");
-            let paused_method_searches = tauri::async_runtime::block_on(
-                store.recover_interrupted_method_search_runs(),
-            )
-            .expect("checkpoint interrupted method searches");
-            if paused_method_searches > 0 {
-                tracing::warn!(target: "wisp", paused_method_searches, "paused interrupted method searches for explicit resume");
-            }
+            let store = startup.record("store", || {
+                tauri::async_runtime::block_on(Store::open(&db_path)).expect("open store")
+            });
+            let orphan_scratch = startup.record("scratch_scan", || {
+                tauri::async_runtime::block_on(scratch_commands::collect_orphan_scratch_projects(
+                    &store, &app_data,
+                ))
+            });
+            startup.record("credentials", || {
+                tauri::async_runtime::block_on(models::load_custom_credentials(&store))
+                    .expect("load custom credentials")
+            });
+            let library = startup.record("library", || {
+                tauri::async_runtime::block_on(LibraryStore::open(
+                    &app_data.join("library.sqlite"),
+                ))
+                .expect("open global library")
+            });
             let run_manager = run_context::RunManager::new();
-            tauri::async_runtime::block_on(run_manager.recover(&store))
-                .expect("recover incomplete runs");
             let runtime_manager = wisp_runtime::RuntimeManager::new(Arc::new(
                 runtime_launcher::TauriRuntimeLauncher::new(
                     store.clone(),
@@ -6639,7 +6970,7 @@ pub fn run() {
                 install_macos_app_menu(app.handle(), &locale).expect("install macOS app menu");
             }
 
-            let (active_id, ws) = tauri::async_runtime::block_on(async {
+            let (active_id, ws) = startup.record("active_project", || tauri::async_runtime::block_on(async {
                 // Legacy single-workspace installs stored one global `workspace_dir`
                 // setting. Backfill the `default` project's dir from it (or the
                 // platform default) so its existing sessions stay reachable. Env
@@ -6671,7 +7002,7 @@ pub fn run() {
                     .flatten()
                     .unwrap_or_else(|| ("Workspace".into(), legacy_ws.clone()));
                 (active_id, dir)
-            });
+            }));
 
             // Env override wins for the active root only (dev escape hatch; not persisted).
             let default_workspace = app
@@ -6693,33 +7024,30 @@ pub fn run() {
                     .unwrap_or_default(),
             );
 
-            let skills = Arc::new(load_skill_index(&root));
+            let skills = Arc::new(startup.record("skills", || load_skill_index(&root)));
             let memory = Arc::new(MemoryManager::new(&root));
-            let bootstrap = StdMutex::new(app_commands::initial_bootstrap(&root, skills.all().len()));
-            let approvals = Arc::new(StdRwLock::new(tauri::async_runtime::block_on(
-                build_approval_policy(&store),
-            )));
-            let approval_grants = Arc::new(StdMutex::new(tauri::async_runtime::block_on(
-                load_approval_grants(&store),
-            )));
+            let bootstrap = StdMutex::new(startup.record("tool_probe", || {
+                app_commands::initial_bootstrap(&root, skills.all().len())
+            }));
+            let approvals = Arc::new(StdRwLock::new(startup.record("approvals", || {
+                tauri::async_runtime::block_on(build_approval_policy(&store))
+            })));
+            let approval_grants = Arc::new(StdMutex::new(startup.record("approval_grants", || {
+                tauri::async_runtime::block_on(load_approval_grants(&store))
+            })));
             let full_permission_sessions = Arc::new(StdRwLock::new(HashSet::new()));
             let browser_extension_dir = wisp_paths::browser_extension_dir()
                 .unwrap_or_else(|| wisp_paths::resource_root().join("browser-extension"));
-            let browser_bridge = tauri::async_runtime::block_on(
-                browser_bridge::BrowserBridge::start(browser_extension_dir),
-            );
+            let browser_bridge = startup.record("browser_bridge", || {
+                tauri::async_runtime::block_on(browser_bridge::BrowserBridge::start(
+                    browser_extension_dir,
+                ))
+            });
             let device_hub = Arc::new(device_hub::DeviceHub::default());
             let device_bridge = Arc::new(device_bridge::DeviceBridge::new(
                 device_hub.clone(),
                 store.clone(),
             ));
-            if let Ok((attempts, workflows)) = tauri::async_runtime::block_on(
-                store.recover_interrupted_agent_workflows(),
-            ) {
-                if workflows > 0 {
-                    tracing::warn!(target: "wisp", attempts, workflows, "recovered interrupted Agent workflows");
-                }
-            }
             let state = AppState {
                 app_data,
                 store,
@@ -6758,16 +7086,6 @@ pub fn run() {
                 reviewing: Arc::new(StdMutex::new(HashSet::new())),
                 scratch: std::sync::RwLock::new(HashMap::new()),
             };
-            #[cfg(target_os = "windows")]
-            let pet_enabled = tauri::async_runtime::block_on(async {
-                state
-                    .store
-                    .get_setting("pet_enabled")
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|value| value == "true")
-            });
             app.manage(state);
             app.manage(app_updates::PendingAppUpdate::default());
             app.manage(terminal_sessions::TerminalManager::new());
@@ -6789,10 +7107,9 @@ pub fn run() {
             set_dev_flag(app.handle());
             #[cfg(target_os = "windows")]
             {
-                desktop_lifecycle::install_windows_shell(app)?;
-                if let Err(error) = desktop_lifecycle::sync_pet_window(app.handle(), pet_enabled) {
-                    tracing::warn!(target: "wisp", %error, "failed to initialize pet window");
-                }
+                startup.record("windows_shell", || {
+                    desktop_lifecycle::install_windows_shell(app)
+                })?;
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_decorations(false);
                     let _ = window.set_shadow(true);
@@ -6816,28 +7133,14 @@ pub fn run() {
                     }
                 });
             }
-            // Restore the project windows open when the app last quit (#52). The
-            // "main" window comes from tauri.conf; these are the extra per-project
-            // ones. A project that was since deleted simply fails to spawn.
-            {
-                let handle = app.handle().clone();
-                let ids = tauri::async_runtime::block_on(async {
-                    project_commands::persisted_windows(&handle.state::<AppState>().store).await
-                });
-                for id in ids {
-                    let handle = app.handle().clone();
-                    tauri::async_runtime::block_on(async {
-                        let st = handle.state::<AppState>();
-                        let _ = project_commands::spawn_project_window(&handle, st.inner(), &id, None).await;
-                    });
-                }
-            }
+            spawn_deferred_startup(app.handle(), orphan_scratch);
             // Dev runs the bare debug binary, which does not grab focus on macOS.
             // release launches from the .app bundle and activates normally.
             #[cfg(debug_assertions)]
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_focus();
             }
+            startup.finish();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
