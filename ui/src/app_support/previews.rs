@@ -1168,7 +1168,7 @@ pub(crate) fn FilePreview(dom_id: String, path: String, kind: String) -> impl In
             }
             // Images need a full under-budget payload; text-ish kinds only pull a
             // head so multi-GB logs never enter the WebView (#large-text-preview).
-            let budget = if kind == "image" {
+            let budget = if matches!(kind.as_str(), "image" | "document") {
                 Some(32 * 1024 * 1024)
             } else {
                 Some(TEXT_PREVIEW_MAX_BYTES)
@@ -1190,7 +1190,7 @@ pub(crate) fn FilePreview(dom_id: String, path: String, kind: String) -> impl In
                 }
                 return;
             }
-            if kind == "markdown" {
+            if matches!(kind.as_str(), "markdown" | "document") {
                 if let Some(el) = el {
                     let raw = fc.text.as_deref().unwrap_or("");
                     let (clipped, shown) = clip_preview_text(raw);

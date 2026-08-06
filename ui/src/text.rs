@@ -1124,6 +1124,8 @@ pub(crate) fn file_kind(path: &str) -> Option<&'static str> {
         "docx" => "docx",
         "xlsx" => "xlsx",
         "pptx" => "pptx",
+        "doc" | "docm" | "odt" | "rtf" | "epub" | "xls" | "xlsm" | "xlsb" | "ods"
+        | "ppt" | "pps" | "pot" | "pptm" | "ppsx" | "ppsm" | "odp" => "document",
         // ponytail: LaTeX sources open as plain text, not code. The vendored
         // highlight.js is the common bundle with no `latex` grammar, and asking
         // it for one throws; the `latex` preview kind is KaTeX for inline
@@ -1441,6 +1443,8 @@ mod md_catalog_tests {
         assert_eq!(file_kind("analysis.Rmd"), Some("markdown"));
         assert_eq!(file_kind("analysis.qmd"), Some("markdown"));
         assert_eq!(file_kind("analysis.ipynb"), Some("notebook"));
+        assert_eq!(file_kind("protocol.rtf"), Some("document"));
+        assert_eq!(file_kind("supplement.odt"), Some("document"));
     }
 
     #[test]

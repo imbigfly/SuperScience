@@ -15,4 +15,5 @@ walkdir = { workspace = true }
 dunce = { workspace = true }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+anydoc = "0.1.6"
 wisp-llm = { workspace = true }

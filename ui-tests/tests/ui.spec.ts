@@ -3064,6 +3064,13 @@ test("script previews show source while unknown file types are explicitly unsupp
   await expect(page.locator(".center-file-preview .rp-code-body code")).toHaveClass(/language-ini/);
   await expect(page.locator(".center-file-preview")).toContainText("[project]");
 
+  await openInCenter("protocol.rtf");
+  await expect(page.locator('.center-file-preview[data-preview-kind="document"]')).toContainText(
+    "Experimental protocol",
+  );
+  await expect(page.locator('.center-file-preview[data-preview-kind="document"] strong')).toHaveText("12000 g");
+  await expect.poll(() => lastInvokeArgs(page, "read_file")).toMatchObject({ path: "protocol.rtf" });
+
   // Genuinely binary payloads stay explicitly unsupported.
   await openInCenter("analysis.unknown");
   await expect(page.locator(".center-file-preview .rp-error")).toHaveText(
