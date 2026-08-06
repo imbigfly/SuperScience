@@ -35,7 +35,8 @@ use bindings::{
     invoke_checked, invoke_timeout, is_mac, is_windows, jump_chat_to_item, jump_chat_to_last_user,
     jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
     native_drop_in_composer, open_external_url, pasted_image_count, preserve_chat_prepend_position,
-    preview_selection, schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    preview_selection, schedule_chat_follow, cancel_saved_marks_apply, set_saved_marks,
+    CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -668,6 +669,9 @@ fn App() -> impl IntoView {
             .get()
             .map(|id| r.contains(&id))
             .unwrap_or(false);
+        if b {
+            cancel_saved_marks_apply();
+        }
         busy.set(b);
     });
     // Settled transcript edits refresh projections automatically. While a turn

@@ -8341,12 +8341,19 @@ test("the selection popup saves a highlight into the right pane and library", as
   await expect(page.getByRole("button", { name: "Highlights (1)", exact: true })).toBeVisible();
   await expect(page.locator(".highlight-card .highlight-text")).toContainText(selected.trim().slice(0, 30));
   await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("wisp-saved") ?? false)).toBe(true);
+  // Let the double-rAF underline pass finish before the next turn starts.
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
 
   // Saved-mark application is revision-based: token batches in a later turn
   // must not rebuild the transcript text index once per flush.
   await composer(page).fill("MARKDOWNSTREAM");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("stream line 4", { exact: false })).toBeVisible({ timeout: 10_000 });
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
   await page.evaluate(() => {
     const registry = (CSS as any).highlights;
     const set = registry.set.bind(registry);
