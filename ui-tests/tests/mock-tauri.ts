@@ -298,6 +298,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { path: "pixi.toml", is_dir: false, size: 64 },
     { path: "analysis.ipynb", is_dir: false, size: 4096 },
     { path: "analysis.unknown", is_dir: false, size: 128 },
+    { path: "protocol.rtf", is_dir: false, size: 256 },
     { path: "manuscript.docx", is_dir: false, size: 11351 },
     { path: "office-preview.xlsx", is_dir: false, size: 3600 },
     { path: "office-preview.pptx", is_dir: false, size: 8600 },
@@ -3143,6 +3144,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             if (path.toLowerCase().endsWith(".unknown")) {
               return { path, mime: "application/octet-stream", text: null, base64: "AA==" };
+            }
+            if (path.toLowerCase().endsWith(".rtf")) {
+              return { path, mime: "application/rtf", text: "# Experimental protocol\n\nCentrifuge at **12000 g**.", base64: null };
             }
             if (path.toLowerCase().includes(".pdf")) {
               return { path, mime: "application/pdf", text: null, base64: pdfBase64 };

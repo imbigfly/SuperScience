@@ -90,6 +90,9 @@ desktop app or a headless CLI.
   [feature plugins](docs/feature-plugins.md) that package Skills and MCP servers.
 - Fully offline previews for Jupyter notebooks, PDF, DOCX/XLSX/PPTX, and
   images — including region cropping straight into the composer.
+- Local Markdown extraction for Word, PowerPoint, Excel, OpenDocument, RTF,
+  EPUB, and text-based PDF files, so agents can read documents without Python
+  or an external conversion service.
 - A [Publication Workspace](docs/publication-evidence.md) that freezes
   manuscript revisions and exports verifiable, deterministic Evidence Capsules.
 
