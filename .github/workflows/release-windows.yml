@@ -9,6 +9,15 @@ on:
         description: Tag to build and publish (e.g. v0.1.0)
         required: true
         default: v0.1.0
+      signing_policy:
+        description: SignPath signing policy slug (test-signing for dry runs)
+        required: true
+        default: release-signing
+      publish:
+        description: Publish GitHub release (uncheck for a signing dry-run)
+        type: boolean
+        required: true
+        default: true
 
 permissions:
   contents: write
@@ -18,6 +27,7 @@ jobs:
     runs-on: windows-latest
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      SIGNING_POLICY: ${{ github.event_name == 'workflow_dispatch' && inputs.signing_policy || 'release-signing' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,17 +78,63 @@ jobs:
           $body >> $env:GITHUB_OUTPUT
           "EOF" >> $env:GITHUB_OUTPUT
 
-      - uses: tauri-apps/tauri-action@v1
+      # Build only; signing (SignPath) must happen before the release is published.
+      - name: Build Tauri bundles
+        shell: pwsh
+        run: cargo tauri build --bundles msi,nsis
+
+      # SignPath: the API token belongs to a CI user that is a submitter for the
+      # release-signing policy. OrganizationId is not a secret.
+      - name: Sign installers with SignPath
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name SignPath -Scope CurrentUser -Force
+          $artifacts = @(
+            Get-ChildItem "target/release/bundle/msi/*.msi"
+            Get-ChildItem "target/release/bundle/nsis/*.exe"
+          )
+          if ($artifacts.Count -eq 0) {
+            Write-Error "No installer artifacts found to sign"
+          }
+          foreach ($artifact in $artifacts) {
+            Write-Host "Signing $($artifact.Name)"
+            $signed = Join-Path $env:RUNNER_TEMP $artifact.Name
+            Submit-SigningRequest `
+              -InputArtifactPath $artifact.FullName `
+              -ApiToken $env:SIGNPATH_API_TOKEN `
+              -OrganizationId "5664b725-0848-42aa-a098-65be8f18d107" `
+              -ProjectSlug "wisp-science" `
+              -SigningPolicySlug $env:SIGNING_POLICY `
+              -OutputArtifactPath $signed `
+              -Description "wisp-science $env:RELEASE_TAG" `
+              -WaitForCompletion
+            Move-Item -Force $signed $artifact.FullName
+          }
+
+      # Dry-run (publish=false): keep the signed installers as workflow artifacts
+      # so the signatures can be inspected without cutting a release.
+      - name: Upload signed installers as workflow artifacts
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish
+        uses: actions/upload-artifact@v4
         with:
-          projectPath: src-tauri
-          tauriScript: cargo tauri
-          tagName: ${{ env.RELEASE_TAG }}
-          releaseName: wisp-science ${{ env.RELEASE_TAG }}
-          releaseBody: ${{ steps.notes.outputs.body }}
-          releaseDraft: false
+          name: signed-installers-${{ env.RELEASE_TAG }}
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+
+      - name: Publish GitHub release
+        if: github.event_name != 'workflow_dispatch' || inputs.publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: wisp-science ${{ env.RELEASE_TAG }}
+          body: ${{ steps.notes.outputs.body }}
+          draft: false
           prerelease: false
-          uploadUpdaterJson: false
-          uploadUpdaterSignatures: false
-          args: --bundles msi,nsis
+          fail_on_unmatched_files: true
+          files: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
