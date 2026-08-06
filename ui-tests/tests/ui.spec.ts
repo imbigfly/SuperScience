@@ -6308,7 +6308,6 @@ test("awaiting approval marks the session dot and requests a desktop notificatio
   await page.goto("/?mockLongSession=1");
   await page.locator(".proj-card-main").first().click();
   await expect(newSessionButton(page)).toBeVisible();
-  await page.getByText("Long transcript", { exact: true }).click();
   await composer(page).fill("NEEDCONFIRM");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByRole("button", { name: "Allow once" })).toBeVisible({ timeout: 10_000 });
@@ -6484,10 +6483,10 @@ test("session history loads older pages with a stable cursor", async ({ page }) 
   await page.goto("/?mockManySessions=1");
   await page.locator(".proj-card-main").first().click();
 
-  await expect(page.getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();
-  expect(await page.getByRole("button", { name: "Paged session 101", exact: true }).count()).toBe(0);
+  await expect(page.locator(".sidebar").getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();
+  expect(await page.locator(".sidebar").getByRole("button", { name: "Paged session 101", exact: true }).count()).toBe(0);
   await page.getByRole("button", { name: "Load earlier sessions" }).click();
-  await expect(page.getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Load earlier sessions" })).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "list_sessions_page")).toMatchObject({
     cursor: { id: "session-100", ts: 1901 },
@@ -6546,7 +6545,6 @@ test("long transcripts load earlier turns without jumping to the new top", async
   await page.goto("/?mockLongSession=1");
   await page.locator(".proj-card-main").first().click();
   await expect(newSessionButton(page)).toBeVisible();
-  await page.getByText("Long transcript", { exact: true }).click();
 
   await expect(page.getByText("Newest page first question", { exact: true })).toBeVisible();
   const scroller = page.locator("#chat-scroller");
@@ -6566,7 +6564,6 @@ test("long transcripts load earlier turns without jumping to the new top", async
 test("opening a long conversation lands at the latest message and stays stable on scroll (#663)", async ({ page }) => {
   await page.goto("/?mockLongPages=8");
   await page.locator(".proj-card-main").first().click();
-  await page.getByText("Long transcript", { exact: true }).click();
 
   const scroller = page.locator("#chat-scroller");
   await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
@@ -6601,7 +6598,6 @@ test("opening a long conversation lands at the latest message and stays stable o
 test("conversation outline loads and jumps to an older user question", async ({ page }) => {
   await page.goto("/?mockLongSession=1");
   await page.locator(".proj-card-main").first().click();
-  await page.getByText("Long transcript", { exact: true }).click();
 
   const toggle = page.getByRole("button", { name: "Show conversation outline" });
   await expect(toggle).toBeVisible();
@@ -6654,7 +6650,6 @@ test("long transcript rendering keeps a bounded turn window", async ({ page }) =
   test.setTimeout(Math.max(30_000, pageCount * 2_000));
   await page.goto(`/?mockLongPages=${pageCount}`);
   await page.locator(".proj-card-main").first().click();
-  await page.getByText("Long transcript", { exact: true }).click();
 
   for (let loaded = 1; loaded < pageCount; loaded += 1) {
     await page.getByRole("button", { name: "Load earlier messages" }).click();
@@ -6680,7 +6675,6 @@ test("a multi-megabyte transcript stays interactive while an answer streams", as
   test.setTimeout(45_000);
   await page.goto(`/?mockLongPages=1&mockLongRows=160&mockLongRowBytes=${32 * 1024}`);
   await page.locator(".proj-card-main").first().click();
-  await page.getByText("Long transcript", { exact: true }).click();
   await expect(page.getByText(/Window page 0 row 159/)).toBeVisible({ timeout: 15_000 });
   const historicAssistant = page.locator(".msg.assistant", {
     hasText: /Window page 0 row 159/,
@@ -6705,7 +6699,6 @@ test("a multi-megabyte transcript stays interactive while an answer streams", as
 test("branching from a paged transcript uses the global user-turn index", async ({ page }) => {
   await page.goto("/?mockLongSession=1");
   await page.locator(".proj-card-main").first().click();
-  await page.getByText("Long transcript", { exact: true }).click();
   const firstLoadedUser = page.locator(".msg.user", { hasText: "Newest page first question" });
   await firstLoadedUser.getByRole("button", { name: "Branch" }).click();
 
@@ -6837,7 +6830,6 @@ test("MCP App opens as a persistent center tab and delivers tool data", async ({
 test("reopening a saved session restores its MCP App workbench", async ({ page }) => {
   const openSavedSession = async () => {
     await page.locator(".proj-card-main").first().click();
-    await page.getByText("Saved MCP App", { exact: true }).click();
     const app = page.frameLocator('iframe[title="Restored Motif workbench"]');
     await expect(app.locator("#state")).toHaveText("restored");
     await expect(page.locator('.center-tab[data-center-path^="mcp-app:"]'))
@@ -7230,6 +7222,13 @@ test("project switcher does not show a stale fallback name while opening", async
   await expect(page.locator(".proj-name")).toHaveText("wisp-science");
 });
 
+test("opening a workspace resumes its most recent conversation by default", async ({ page }) => {
+  await page.goto("/?mockLongSession=1");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.getByRole("tablist").getByRole("button", { name: "Long transcript" })).toBeVisible();
+  await expect(page.getByText("Newest page first question")).toBeVisible();
+});
+
 test("default workspace keeps history labels and compact navigation keeps hover labels", async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 800 });
   await enterApp(page);
@@ -7439,6 +7438,19 @@ test("general settings enable follow-up question suggestions by default", async 
   await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
     settings: { follow_up_questions: false },
+  });
+});
+
+test("general settings resume the last workspace conversation by default", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "General");
+  const toggle = page.getByTestId("resume-last-session-enabled");
+  await expect(toggle).toBeChecked();
+  await toggle.locator("..").click();
+  await expect(toggle).not.toBeChecked();
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
+    settings: { resume_last_session: false },
   });
 });
 

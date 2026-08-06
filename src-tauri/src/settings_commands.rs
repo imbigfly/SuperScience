@@ -130,6 +130,14 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         .flatten()
         .map(|value| value == "true")
         .unwrap_or(true);
+    let resume_last_session = state
+        .store
+        .get_setting("resume_last_session")
+        .await
+        .ok()
+        .flatten()
+        .map(|value| value == "true")
+        .unwrap_or(true);
     let proxy_url = state
         .store
         .get_setting("proxy_url")
@@ -148,6 +156,7 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         max_iter,
         auto_compact,
         follow_up_questions,
+        resume_last_session,
         max_tokens,
         reasoning_effort,
         proxy_url,
@@ -317,6 +326,14 @@ pub(super) async fn set_settings(
         .set_setting(
             "follow_up_questions",
             &settings.follow_up_questions.to_string(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .set_setting(
+            "resume_last_session",
+            &settings.resume_last_session.to_string(),
         )
         .await
         .map_err(|e| e.to_string())?;
