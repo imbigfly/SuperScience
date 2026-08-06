@@ -254,6 +254,12 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await page.getByRole("button", { name: "Send" }).click();
   // Deltas "Hello " + "from mock wisp-science." accumulate into one assistant bubble.
   await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  const followUps = page.getByTestId("follow-up-questions");
+  await expect(followUps.getByRole("button")).toHaveCount(4);
+  await followUps.getByRole("button", { name: "Expand the search for underrepresented species" }).click();
+  await expect(composer(page)).toHaveValue("Expand the search for underrepresented species");
+  await followUps.getByRole("button", { name: "Hide follow-up questions" }).click();
+  await expect(followUps).toHaveCount(0);
   await page.locator(".msg.assistant").getByRole("button", { name: "Review" }).click();
   await expect.poll(() => lastInvokeArgs(page, "review_session")).toMatchObject({
     sessionId: expect.stringMatching(/^s-/),
@@ -7420,6 +7426,19 @@ test("general settings enable automatic context compaction by default", async ({
   await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
     settings: { auto_compact: false },
+  });
+});
+
+test("general settings enable follow-up question suggestions by default", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "General");
+  const toggle = page.getByTestId("follow-up-questions-enabled");
+  await expect(toggle).toBeChecked();
+  await toggle.locator("..").click();
+  await expect(toggle).not.toBeChecked();
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
+    settings: { follow_up_questions: false },
   });
 });
 

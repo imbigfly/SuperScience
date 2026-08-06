@@ -273,6 +273,8 @@ fn App() -> impl IntoView {
     // on `kind`; track just `kind` so editing command/url doesn't rebuild them.
     let conn_form_kind = create_memo(move |_| conn_form.get().map(|f| f.kind).unwrap_or_default());
     let settings = create_rw_signal(Settings::default());
+    let follow_up_questions = create_rw_signal(HashMap::<String, Vec<String>>::new());
+    let follow_up_generation = create_rw_signal(HashMap::<String, u64>::new());
     // This mirrors the last persisted sync configuration. Keep it separate
     // from `settings`, which also holds unsaved edits while Settings is open.
     let sync_actions_available = create_rw_signal(false);
@@ -1579,6 +1581,12 @@ fn App() -> impl IntoView {
         };
         match ev {
             AgentEvent::User { frame_id, text } => {
+                follow_up_questions.update(|questions| {
+                    questions.remove(&frame_id);
+                });
+                follow_up_generation.update(|generations| {
+                    *generations.entry(frame_id.clone()).or_default() += 1;
+                });
                 set_pet_activity(&frame_id, "running");
                 flush_now();
                 let outline_text = text.clone();
@@ -1860,6 +1868,34 @@ fn App() -> impl IntoView {
                     stopping_session.set(None);
                 }
                 refresh_session_history();
+                if settings.get_untracked().follow_up_questions {
+                    let generation = follow_up_generation.try_update(|generations| {
+                        let generation = generations.entry(frame_id.clone()).or_default();
+                        *generation += 1;
+                        *generation
+                    });
+                    spawn_local(async move {
+                        let args = to_value(&serde_json::json!({
+                            "sessionId": frame_id.clone(),
+                        }))
+                        .unwrap();
+                        let Ok(value) = invoke_checked("generate_follow_up_questions", args).await else {
+                            return;
+                        };
+                        let Ok(questions) = serde_wasm_bindgen::from_value::<Vec<String>>(value) else {
+                            return;
+                        };
+                        if questions.len() == 3
+                            && follow_up_generation
+                                .with_untracked(|generations| generations.get(&frame_id).copied())
+                                == generation
+                        {
+                            follow_up_questions.update(|all| {
+                                all.insert(frame_id, questions);
+                            });
+                        }
+                    });
+                }
             }
             AgentEvent::Error { frame_id, message } => {
                 flush_now();
@@ -8382,6 +8418,41 @@ fn App() -> impl IntoView {
                             }
                         }
                     />
+                    {move || active_session.get().and_then(|frame_id| {
+                        follow_up_questions.with(|all| all.get(&frame_id).cloned()).map(|questions| {
+                            let close_frame_id = frame_id.clone();
+                            view! {
+                                <section class="follow-up-questions" data-testid="follow-up-questions">
+                                    <div class="follow-up-questions-head">
+                                        <span>{move || compose_icon("review")}</span>
+                                        <strong>{move || t(locale.get(), "follow_up.title")}</strong>
+                                        <button type="button" class="follow-up-close"
+                                            title=move || t(locale.get(), "follow_up.close")
+                                            aria-label=move || t(locale.get(), "follow_up.close")
+                                            on:click=move |_| follow_up_questions.update(|all| {
+                                                all.remove(&close_frame_id);
+                                            })>
+                                            {compose_icon("chevron-down")}
+                                        </button>
+                                    </div>
+                                    <div class="follow-up-options">
+                                        {questions.into_iter().map(|question| {
+                                            let selected = question.clone();
+                                            view! {
+                                                <button type="button" on:click=move |_| {
+                                                    input.set(selected.clone());
+                                                    focus_composer();
+                                                }>
+                                                    <span aria-hidden="true">"↳"</span>
+                                                    <span>{question}</span>
+                                                </button>
+                                            }
+                                        }).collect_view()}
+                                    </div>
+                                </section>
+                            }
+                        })
+                    })}
                     {move || {
                         let Some(frame_id) = active_session.get() else {
                             return Vec::<View>::new().into_view();
