@@ -105,6 +105,8 @@ desktop app or a headless CLI.
   `/` applies a skill to the next turn.
 - Ctrl+K / Ctrl+P palettes (including quick UI/code font sizing), side chat, conversation folders, a global library
   of cells and figures, and in-app update checks.
+- Manual Reviewer checks keep sending paused and show live review progress until
+  the independent audit finishes.
 - **Feedback** opens a blank conversation immediately and attaches non-sensitive
   version, platform, model, and startup diagnostics to the first message you send;
   it never contacts the model before you write that message.

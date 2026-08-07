@@ -268,6 +268,26 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await expect(page.locator(".copy-toast")).toHaveText("Copied");
 });
 
+test("manual review blocks sending and shows a playful progress animation", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).__reviewDelayMs = 800;
+  });
+  await enterApp(page);
+  await composer(page).fill("review this answer");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+
+  await page.locator(".msg.assistant").getByRole("button", { name: "Review" }).click();
+  await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
+  const progress = page.getByTestId("review-live");
+  await expect(progress).toBeVisible();
+  await expect(progress).toContainText("Reviewer is checking the margins");
+  await expect(progress.locator(".review-live-lens")).toBeVisible();
+
+  await expect(page.getByRole("button", { name: "Send" })).toBeEnabled();
+  await expect(progress).toHaveCount(0);
+});
+
 test("undo returns the latest prompt and keeps unsupported Word files", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("revise my notes");
