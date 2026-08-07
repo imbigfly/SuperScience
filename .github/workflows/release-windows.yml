@@ -85,7 +85,10 @@ jobs:
 
       # SignPath: the API token belongs to a CI user that is a submitter for the
       # release-signing policy. OrganizationId is not a secret.
+      # Set repo variable SKIP_WINDOWS_SIGNING=true to publish unsigned
+      # installers (e.g. while the release certificate is still being issued).
       - name: Sign installers with SignPath
+        if: vars.SKIP_WINDOWS_SIGNING != 'true'
         shell: pwsh
         env:
           SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
