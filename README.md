@@ -197,7 +197,8 @@ keyring and model profiles in `.wisp/wisp.sqlite` (Settings → Models); see
 [Model configuration](docs/model-configuration.md). Custom credentials map a
 display name to an environment variable and are injected only into newly
 launched local Python and bundled MCP processes — never copied to SSH/WSL
-hosts.
+hosts. Built-in credential rows link to the services' official setup pages and
+explain what each integration enables and how Wisp behaves without it.
 
 **Settings → Storage** lists workspace paths per project. Select a project to
 view that workspace's local footprint separately from shared app data.
