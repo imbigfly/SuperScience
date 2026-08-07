@@ -10,9 +10,9 @@ on:
         required: true
         default: v0.1.0
       signing_policy:
-        description: SignPath signing policy slug (test-signing for dry runs)
+        description: SignPath signing policy slug (tag pushes always use release-signing)
         required: true
-        default: release-signing
+        default: test-signing
       publish:
         description: Publish GitHub release (uncheck for a signing dry-run)
         type: boolean
@@ -77,6 +77,12 @@ jobs:
           "body<<EOF" >> $env:GITHUB_OUTPUT
           $body >> $env:GITHUB_OUTPUT
           "EOF" >> $env:GITHUB_OUTPUT
+
+      # Safety net: never publish installers signed with the test certificate.
+      - name: Guard against publishing test-signed installers
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && env.SIGNING_POLICY != 'release-signing'
+        shell: pwsh
+        run: Write-Error "publish=true requires signing_policy=release-signing"
 
       # Build only; signing (SignPath) must happen before the release is published.
       - name: Build Tauri bundles
