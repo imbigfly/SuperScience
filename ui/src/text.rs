@@ -1184,6 +1184,10 @@ pub(crate) fn user_message_presentation(text: &str) -> UserMessagePresentation {
             // an actionable edit target. It is transport metadata, not text
             // the user typed, so keep it out of the rendered chat bubble.
             continue;
+        } else if block.starts_with("Feedback context: ") {
+            // Diagnostic context is sent to the agent with the first feedback
+            // turn, but is not text the user typed.
+            continue;
         } else {
             None
         };
@@ -1554,7 +1558,7 @@ mod md_catalog_tests {
     #[test]
     fn presents_persisted_user_context_as_structured_sections() {
         let parsed = user_message_presentation(
-            "Inspect this\n\nUploaded files: uploads/plot.png, data.csv\n\nAttached artifacts: counts.csv\n\nProject context: Atlas\n\nSelected skills: bear-review\n\nSelected workflows: Roundtable\n\nTarget environments: CPU, GPU\n\nTarget runtimes: Python · GPU\n\nAI source-edit instruction: hidden",
+            "Inspect this\n\nUploaded files: uploads/plot.png, data.csv\n\nAttached artifacts: counts.csv\n\nProject context: Atlas\n\nSelected skills: bear-review\n\nSelected workflows: Roundtable\n\nTarget environments: CPU, GPU\n\nTarget runtimes: Python · GPU\n\nAI source-edit instruction: hidden\n\nFeedback context: hidden diagnostics",
         );
         assert_eq!(parsed.body, "Inspect this");
         assert_eq!(parsed.attachments, ["uploads/plot.png", "data.csv"]);

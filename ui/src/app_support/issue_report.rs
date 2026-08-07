@@ -3,14 +3,32 @@ use crate::i18n::{tf, Locale};
 
 pub(crate) const GITHUB_ISSUE_NEW: &str = "https://github.com/xuzhougeng/wisp-science/issues/new";
 
-/// User message that kicks off an agent-guided GitHub issue draft. Non-sensitive
+/// Hidden context attached to the user's first feedback turn. Non-sensitive
 /// bootstrap metadata is embedded so the model never has to ask for version/OS
 /// or read transcripts, API keys, or absolute paths.
 pub(crate) fn issue_report_chat_prompt(
     locale: Locale,
-    bootstrap: &BootstrapStatus,
+    bootstrap: Option<&BootstrapStatus>,
     model: &str,
 ) -> String {
+    let empty = BootstrapStatus {
+        skills_loaded: 0,
+        python_ok: false,
+        python_initializing: false,
+        mcp_catalog: 0,
+        uv_ok: false,
+        node_ok: false,
+        npm_ok: false,
+        sci_ok: false,
+        pixi_ok: false,
+        app_version: String::new(),
+        os: String::new(),
+        arch: String::new(),
+        workspace: String::new(),
+        startup: String::new(),
+        errors: vec![],
+    };
+    let bootstrap = bootstrap.unwrap_or(&empty);
     let startup = bootstrap.startup.trim();
     let startup = if startup.is_empty() {
         if locale == Locale::Zh {
@@ -64,7 +82,7 @@ mod tests {
     fn chat_prompt_includes_startup_timings_without_paths() {
         let prompt = issue_report_chat_prompt(
             Locale::Zh,
-            &bootstrap("total=120ms store=90ms window_ready=600000ms"),
+            Some(&bootstrap("total=120ms store=90ms window_ready=600000ms")),
             "deepseek-chat",
         );
         assert!(prompt.contains("total=120ms store=90ms window_ready=600000ms"));

@@ -395,6 +395,7 @@ fn App() -> impl IntoView {
     let project_info = create_rw_signal::<Option<ProjectInfo>>(None);
     let demo_mode = create_rw_signal(false); // true = the synthetic "Example project" is open
     let scratch_open = create_rw_signal(false); // ephemeral scratch chat overlay
+    let feedback_context = create_rw_signal::<Option<String>>(None);
     let project_open_error = create_rw_signal(None::<String>);
     let project_transfer = create_rw_signal(None::<ProjectTransferProgress>);
     let app_shell_entering = create_rw_signal(false);
@@ -2518,6 +2519,16 @@ fn App() -> impl IntoView {
         let quotes = composer_quotes.get();
         let paths = attachment_paths(&saved_attachments);
         let display_message = message_with_composer_context(&message, &paths, &refs, &quotes);
+        let attached_feedback = feedback_context.get();
+        let agent_message = attached_feedback.as_ref().map_or_else(
+            || display_message.clone(),
+            |context| {
+                format!(
+                    "{display_message}\n\nFeedback context: {}",
+                    serde_json::to_string(context).unwrap_or_default()
+                )
+            },
+        );
         let reference_args = refs
             .iter()
             .map(ComposerReferenceChip::arg)
@@ -2610,6 +2621,7 @@ fn App() -> impl IntoView {
         composer_references.set(vec![]);
         composer_quotes.set(vec![]);
         picker_mode.set(None);
+        feedback_context.set(None);
         spawn_local(async move {
             let id = if branch {
                 let args = to_value(&tauri_args::branch_session(
@@ -2625,6 +2637,7 @@ fn App() -> impl IntoView {
                         attachments.set(saved_attachments);
                         composer_references.set(refs);
                         composer_quotes.set(quotes);
+                        feedback_context.set(attached_feedback.clone());
                         status.set(t(locale.get(), "status.send_failed").into());
                         return;
                     }
@@ -2639,6 +2652,7 @@ fn App() -> impl IntoView {
                         attachments.set(saved_attachments);
                         composer_references.set(refs);
                         composer_quotes.set(quotes);
+                        feedback_context.set(attached_feedback.clone());
                         status.set(t(locale.get(), "status.send_failed").into());
                         return;
                     }
@@ -2697,7 +2711,7 @@ fn App() -> impl IntoView {
             // duplicate; after a session switch only the persisted body remains.
             let args = to_value(&SendMessageArgs {
                 session_id: Some(id.clone()),
-                message: display_message.clone(),
+                message: agent_message,
                 attachments: paths,
                 references: reference_args,
                 resume: false,
@@ -2746,6 +2760,7 @@ fn App() -> impl IntoView {
                         if composer_quotes.get_untracked().is_empty() {
                             composer_quotes.set(quotes);
                         }
+                        feedback_context.set(attached_feedback.clone());
                     }
                     if raw.contains(NO_API_KEY_MARK) {
                         needs_api_key.set(true);
@@ -4337,8 +4352,6 @@ fn App() -> impl IntoView {
 
     let start_issue_report = {
         let items = items;
-        let running = running;
-        let status = status;
         let locale = locale;
         let demo_mode = demo_mode;
         let center_file = center_file;
@@ -4346,13 +4359,8 @@ fn App() -> impl IntoView {
         let sel_artifact = sel_artifact;
         let right_tab = right_tab;
         let models = models;
-        let busy = busy;
-        let needs_api_key = needs_api_key;
         let transcripts = transcripts;
         move |_| {
-            if busy.get() {
-                return;
-            }
             demo_mode.set(false);
             center_file.set(None);
             if let Some(old) = active_session.get() {
@@ -4361,93 +4369,23 @@ fn App() -> impl IntoView {
                 });
             }
             attachments.set(vec![]);
+            composer_references.set(vec![]);
+            composer_quotes.set(vec![]);
             sel_artifact.set(0);
             right_tab.set(RightTab::Artifacts);
-            spawn_local(async move {
-                let loc = locale.get_untracked();
-                let bootstrap = invoke("get_bootstrap_status", JsValue::UNDEFINED).await;
-                let bootstrap = serde_wasm_bindgen::from_value::<BootstrapStatus>(bootstrap)
-                    .unwrap_or(BootstrapStatus {
-                        skills_loaded: 0,
-                        python_ok: false,
-                        python_initializing: false,
-                        mcp_catalog: 0,
-                        uv_ok: false,
-                        node_ok: false,
-                        npm_ok: false,
-                        sci_ok: false,
-                        pixi_ok: false,
-                        app_version: String::new(),
-                        os: String::new(),
-                        arch: String::new(),
-                        workspace: String::new(),
-                        startup: String::new(),
-                        errors: vec![],
-                    });
-                let model = active_model_label(&models.get_untracked())
-                    .unwrap_or_else(|| "not configured".into());
-                let text = issue_report_chat_prompt(loc, &bootstrap, &model);
-                let turn_model = active_model_label(&models.get_untracked());
-                items.set(vec![
-                    ChatItem::User(text.clone()),
-                    ChatItem::Assistant {
-                        text: String::new(),
-                        model: turn_model,
-                        resources: Vec::new(),
-                    },
-                ]);
-                force_chat_bottom();
-                let Some(id) = invoke("new_session", JsValue::UNDEFINED)
-                    .await
-                    .as_string()
-                    .filter(|id| !id.is_empty())
-                else {
-                    status.set(t(loc, "status.send_failed").into());
-                    return;
-                };
-                active_session.set(Some(id.clone()));
-                running.update(|r| {
-                    r.insert(id.clone());
-                });
-                refresh_session_history();
-                let title = t(loc, "issue_report.session_title");
-                let rename = to_value(&serde_json::json!({ "id": id, "title": title })).unwrap();
-                let _ = invoke_checked("rename_session", rename).await;
-                refresh_session_history();
-                let arg = to_value(&SendMessageArgs {
-                    session_id: Some(id.clone()),
-                    message: text,
-                    attachments: vec![],
-                    references: vec![],
-                    resume: false,
-                    acp_agent_id: None,
-                    guide: None,
-                    replace: None,
-                })
-                .unwrap();
-                match invoke_checked("send_message", arg).await {
-                    Ok(_) => {
-                        running.update(|r| {
-                            r.remove(&id);
-                        });
-                        refresh_session_history();
-                    }
-                    Err(err) => {
-                        let raw = js_error_text(err);
-                        if raw.contains(NO_API_KEY_MARK) {
-                            needs_api_key.set(true);
-                        }
-                        status.set(tf(
-                            loc,
-                            "status.send_failed",
-                            &[("msg", &localize_backend(loc, &raw))],
-                        ));
-                        running.update(|r| {
-                            r.clear();
-                        });
-                    }
-                }
-            });
+            active_session.set(None);
+            items.set(vec![]);
+            input.set(String::new());
+            let model = active_model_label(&models.get_untracked())
+                .unwrap_or_else(|| "not configured".into());
+            feedback_context.set(Some(issue_report_chat_prompt(
+                locale.get_untracked(),
+                bootstrap.get_untracked().as_ref(),
+                &model,
+            )));
+            show_sidebar.set(false);
+            show_right.set(false);
+            focus_composer();
         }
     };
 
@@ -8892,6 +8830,21 @@ fn App() -> impl IntoView {
                         on:mousedown=on_composer_resize_start></div>
                     <input id="composer-file-input" type="file" multiple=true class="composer-file-input"
                         on:change=on_files_selected />
+                    {move || feedback_context.get().is_some().then(|| view! {
+                        <div class="composer-attachments composer-reference-chips" data-testid="feedback-context">
+                            <div class="composer-attachment-row composer-reference-card context">
+                                <span class="composer-attachment-icon">{compose_icon("server")}</span>
+                                <span class="composer-attachment-copy">
+                                    <span class="composer-attachment ready">{move || t(locale.get(), "issue_report.context")}</span>
+                                    <span class="composer-attachment-meta">{move || t(locale.get(), "issue_report.context_attached")}</span>
+                                </span>
+                                <button type="button" class="composer-attachment-remove"
+                                    title=move || t(locale.get(), "composer.remove_attachment")
+                                    aria-label=move || t(locale.get(), "composer.remove_attachment")
+                                    on:click=move |_| feedback_context.set(None)>{compose_icon("close")}</button>
+                            </div>
+                        </div>
+                    })}
                     {move || (!attachments.get().is_empty()).then(|| view! {
                         <div class="composer-attachments">
                             {attachments.get().into_iter().map(|att| {

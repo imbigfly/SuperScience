@@ -1427,7 +1427,8 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.update_check") => Some("Check for updates"),
         (Locale::En, "settings.update_check_hint") => Some("Check GitHub Releases on startup and show a prompt in the sidebar when a newer version is available."),
         (Locale::En, "issue_report.sidebar") => Some("Feedback"),
-        (Locale::En, "issue_report.session_title") => Some("Bug report"),
+        (Locale::En, "issue_report.context") => Some("System information"),
+        (Locale::En, "issue_report.context_attached") => Some("Attached automatically"),
         (Locale::En, "issue_report.chat_prompt") => Some(
             "Help me file a GitHub issue for {repo}.\n\n\
              [Collected automatically — do not ask me for API keys, transcripts, project files, env vars, usernames, or absolute paths]\n\
@@ -3353,7 +3354,8 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.update_check") => Some("检查更新"),
         (Locale::Zh, "settings.update_check_hint") => Some("启动时检查 GitHub Releases，有新版本时在侧边栏显示提示。"),
         (Locale::Zh, "issue_report.sidebar") => Some("反馈"),
-        (Locale::Zh, "issue_report.session_title") => Some("问题报告"),
+        (Locale::Zh, "issue_report.context") => Some("系统信息"),
+        (Locale::Zh, "issue_report.context_attached") => Some("已自动附加"),
         (Locale::Zh, "issue_report.chat_prompt") => Some(
             "请帮我向 {repo} 提交一个 GitHub issue。\n\n\
              【已自动采集，请勿向我索要 API key、transcript、项目文件、环境变量、用户名或绝对路径】\n\
