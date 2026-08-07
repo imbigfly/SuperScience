@@ -3,8 +3,8 @@ use super::app_updates::{update_check_from_release, GithubRelease};
 use super::desktop_lifecycle::{should_activate_workspace_window, should_hide_workspace_on_close};
 use super::session_commands::transcript_page_items;
 use super::{
-    begin_queued_cutin, branch_title, coalesce_live_agent_events, copy_dir_recursive,
-    enable_referenced_contexts, events_to_items, merge_pending_ui_event,
+    begin_queued_cutin, branch_title, client_turn_error, coalesce_live_agent_events,
+    copy_dir_recursive, enable_referenced_contexts, events_to_items, merge_pending_ui_event,
     message_uses_resource_bindings, messages_to_items, parse_disabled_skills,
     parse_enabled_skill_names, parse_follow_up_questions, parse_skill_tags, persist_ui_events,
     receive_confirm_decision, reclaim_unconsumed_cutin, resolve_acp_artifact_references,
@@ -32,6 +32,15 @@ async fn native_confirmation_waits_for_an_explicit_response() {
     );
     sender.send(wisp_tools::ConfirmDecision::Approved).unwrap();
     assert_eq!(decision.await, wisp_tools::ConfirmDecision::Approved);
+}
+
+#[test]
+fn client_turn_error_prefixes_only_started_turns() {
+    assert_eq!(client_turn_error(false, "no model"), "no model");
+    assert_eq!(
+        client_turn_error(true, "api: 400 max tokens"),
+        "[turn-started] api: 400 max tokens"
+    );
 }
 
 #[test]

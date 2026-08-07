@@ -1169,6 +1169,18 @@ test("post-start send failures keep the persisted user row and hide the phase pr
   await expect(composer(page)).toHaveValue("");
 });
 
+test("post-start API errors keep the user bubble when an Error event lands first", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("POSTSTARTFAIL_EVENT keep question A");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".user-bubble")).toContainText("POSTSTARTFAIL_EVENT keep question A");
+  await expect(page.locator(".finding.err")).toContainText("max_tokens too high");
+  await expect(page.locator(".finding.err")).not.toContainText("[turn-started]");
+  await expect(composer(page)).toHaveValue("");
+  // Resume must still see the original question in the transcript.
+  await expect(page.getByRole("button", { name: /Resume|继续执行/ })).toBeVisible();
+});
+
 test("automatic reviewer resolves its finding and jumps past UI-only rows (#550)", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("REVIEWBASE");

@@ -212,6 +212,29 @@ pub(crate) fn acp_select_options(option: &serde_json::Value) -> Vec<(String, Str
     result
 }
 
+/// True once the turn has left the pure optimistic "user + blank assistant"
+/// shape: a streamed error card, reasoning, tools, or real answer means the
+/// user row is already durable and must not be rolled back with the draft.
+pub(crate) fn turn_activity_after_user(rows: &[ChatItem], user_index: usize) -> bool {
+    rows.get(user_index + 1..).is_some_and(|tail| {
+        tail.iter().any(|item| match item {
+            ChatItem::Assistant { text, .. } => !text.trim().is_empty(),
+            ChatItem::Reasoning(_)
+            | ChatItem::Tool { .. }
+            | ChatItem::AcpTool { .. }
+            | ChatItem::ApprovalPending { .. }
+            | ChatItem::AcpPermission { .. }
+            | ChatItem::Usage { .. }
+            | ChatItem::Compaction { .. }
+            | ChatItem::ReviewTransition { .. }
+            | ChatItem::Review(_)
+            | ChatItem::Plan(_)
+            | ChatItem::Question(_) => true,
+            ChatItem::User(_) | ChatItem::QueuedUser { .. } => false,
+        })
+    })
+}
+
 pub(crate) fn remove_optimistic_send_rows(rows: &mut Vec<ChatItem>, display_message: &str) {
     let Some(index) = rows.iter().rposition(|item| {
         matches!(item, ChatItem::User(value) if value == display_message)
@@ -221,6 +244,12 @@ pub(crate) fn remove_optimistic_send_rows(rows: &mut Vec<ChatItem>, display_mess
     };
     if matches!(rows.get(index), Some(ChatItem::QueuedUser { .. })) {
         rows.remove(index);
+        return;
+    }
+    // A live Error/Reasoning/Tool event often arrives before send_message's
+    // Result. Rolling the optimistic pair back then drops the only visible
+    // copy of the user's question until a later reload (#resume ghost).
+    if turn_activity_after_user(rows, index) {
         return;
     }
     if matches!(rows.get(index + 1), Some(ChatItem::Assistant { text, .. }) if text.is_empty()) {
@@ -251,10 +280,29 @@ pub(crate) fn mark_optimistic_send_failed(
         );
         return;
     }
+    let has_error_card = rows[index + 1..].iter().any(|item| {
+        matches!(item, ChatItem::Assistant { text, .. } if text.starts_with("Error: "))
+    });
     if let Some(ChatItem::Assistant { text, .. }) = rows.get_mut(index + 1) {
         if text.is_empty() {
-            *text = format!("Error: {error}");
+            if has_error_card {
+                // AgentEvent::Error already landed a card; drop the blank slot.
+                rows.remove(index + 1);
+            } else {
+                *text = format!("Error: {error}");
+            }
         }
+        return;
+    }
+    if !has_error_card {
+        rows.insert(
+            index + 1,
+            ChatItem::Assistant {
+                text: format!("Error: {error}"),
+                model: None,
+                resources: Vec::new(),
+            },
+        );
     }
 }
 
@@ -262,4 +310,106 @@ pub(crate) fn split_turn_started_error(error: &str) -> (bool, &str) {
     error
         .strip_prefix("[turn-started] ")
         .map_or((false, error), |message| (true, message))
+}
+
+/// Resolve whether `send_message` failed after the turn was accepted, using
+/// both the explicit backend marker and whatever is already on the transcript
+/// (events can finish before the invoke Promise rejects).
+pub(crate) fn send_failed_after_start<'a>(
+    rows: &[ChatItem],
+    display_message: &str,
+    raw: &'a str,
+) -> (bool, &'a str) {
+    let (prefixed, message) = split_turn_started_error(raw);
+    if prefixed {
+        return (true, message);
+    }
+    let started = rows
+        .iter()
+        .rposition(|item| {
+            matches!(item, ChatItem::User(value) if value == display_message)
+                || matches!(item, ChatItem::QueuedUser { text, .. } if text == display_message)
+        })
+        .is_some_and(|index| turn_activity_after_user(rows, index));
+    (started, message)
+}
+
+#[cfg(test)]
+mod optimistic_send_tests {
+    use super::{
+        mark_optimistic_send_failed, remove_optimistic_send_rows, send_failed_after_start,
+        split_turn_started_error,
+    };
+    use crate::dto::ChatItem;
+
+    fn empty_assistant() -> ChatItem {
+        ChatItem::Assistant {
+            text: String::new(),
+            model: None,
+            resources: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn prestart_failure_strips_the_optimistic_pair() {
+        let mut rows = vec![
+            ChatItem::User("question A".into()),
+            empty_assistant(),
+        ];
+        remove_optimistic_send_rows(&mut rows, "question A");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn poststart_prefix_keeps_the_user_row() {
+        let mut rows = vec![
+            ChatItem::User("question A".into()),
+            empty_assistant(),
+        ];
+        let (started, message) =
+            send_failed_after_start(&rows, "question A", "[turn-started] max tokens");
+        assert!(started);
+        assert_eq!(message, "max tokens");
+        mark_optimistic_send_failed(&mut rows, "question A", message);
+        assert!(matches!(&rows[0], ChatItem::User(text) if text == "question A"));
+        assert!(matches!(
+            &rows[1],
+            ChatItem::Assistant { text, .. } if text == "Error: max tokens"
+        ));
+    }
+
+    #[test]
+    fn error_event_before_invoke_rejection_keeps_the_user_row() {
+        let mut rows = vec![
+            ChatItem::User("question A".into()),
+            empty_assistant(),
+            ChatItem::Assistant {
+                text: "Error: api: 400 max tokens".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+        ];
+        let (started, message) =
+            send_failed_after_start(&rows, "question A", "api: 400 max tokens");
+        assert!(started);
+        assert_eq!(message, "api: 400 max tokens");
+        // Rollback path must not erase the durable user bubble.
+        remove_optimistic_send_rows(&mut rows, "question A");
+        mark_optimistic_send_failed(&mut rows, "question A", message);
+        assert!(matches!(&rows[0], ChatItem::User(text) if text == "question A"));
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(
+            &rows[1],
+            ChatItem::Assistant { text, .. } if text == "Error: api: 400 max tokens"
+        ));
+    }
+
+    #[test]
+    fn split_turn_started_error_strips_only_the_control_prefix() {
+        assert_eq!(
+            split_turn_started_error("[turn-started] boom"),
+            (true, "boom")
+        );
+        assert_eq!(split_turn_started_error("boom"), (false, "boom"));
+    }
 }
