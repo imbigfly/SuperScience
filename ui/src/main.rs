@@ -2006,23 +2006,11 @@ fn App() -> impl IntoView {
                     route_items(active_cb, items_cb, transcripts_cb, &frame_id, |v| {
                         strip_approval_pending(v);
                         settle_plan_cards(v);
-                        // Prefer filling the optimistic blank assistant so a later
-                        // invoke rejection does not see "user + empty" and roll the
-                        // durable user bubble back into the draft.
-                        let error_text = format!("Error: {message}");
-                        if let Some(ChatItem::Assistant { text, .. }) = v
-                            .iter_mut()
-                            .rev()
-                            .find(|item| matches!(item, ChatItem::Assistant { text, .. } if text.is_empty()))
-                        {
-                            *text = error_text;
-                        } else {
-                            v.push(ChatItem::Assistant {
-                                text: error_text,
-                                model,
-                                resources: Vec::new(),
-                            });
-                        }
+                        v.push(ChatItem::Assistant {
+                            text: format!("Error: {message}"),
+                            model,
+                            resources: Vec::new(),
+                        });
                     });
                 }
                 refresh_transcript_projections(&frame_id);
