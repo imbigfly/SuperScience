@@ -3226,6 +3226,14 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "export_session":
             return "/mock/export.zip";
+          case "import_session_archive":
+            return {
+              frame_id: "imported-frame",
+              status: "imported",
+              message_count: 3,
+              artifact_count: 0,
+              missing_artifacts: [],
+            };
           case "get_artifact_provenance":
             return {
               code: "import matplotlib\nplt.savefig('volcano.png')",
@@ -4205,6 +4213,10 @@ export function parallelMock(): void {
           case "read_file": return { path: "x", mime: "text/plain", text: "", base64: null };
           case "missing_files": return [];
           case "export_session": return "/mock/export.zip";
+          case "import_session_archive": return {
+            frame_id: "imported-frame", status: "imported",
+            message_count: 3, artifact_count: 0, missing_artifacts: [],
+          };
           case "upload_file": return { id: "a", name: "x", kind: "text/csv", path: "x", ts: 1 };
           case "new_session": return `s-${Math.random().toString(36).slice(2)}`;
           case "start_scratch_chat": {

@@ -27,6 +27,7 @@ mod research;
 mod resources;
 mod runs;
 pub mod secrets;
+mod session_imports;
 mod sessions;
 mod turn_undo;
 
@@ -121,6 +122,7 @@ const AGENT_WORKFLOW_RUN_ACTIVITIES_MIGRATION_SQL: &str =
 const METHOD_SEARCH_MIGRATION: &str = "0034_method_search";
 const METHOD_SEARCH_MIGRATION_SQL: &str = include_str!("../migrations/0034_method_search.sql");
 const METHOD_SEARCH_CONTROL_MIGRATION: &str = "0035_method_search_control";
+const SESSION_IMPORTS_MIGRATION: &str = "0036_session_imports";
 
 #[derive(Clone)]
 pub struct Store {
@@ -489,6 +491,23 @@ impl Store {
             )
             .await?;
             Self::record_migration(pool, METHOD_SEARCH_CONTROL_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, SESSION_IMPORTS_MIGRATION).await? {
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS session_imports (\
+                 source_session_id TEXT PRIMARY KEY, \
+                 frame_id TEXT NOT NULL REFERENCES frames(id) ON DELETE CASCADE, \
+                 source_path TEXT NOT NULL, \
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS ix_session_imports_frame ON session_imports(frame_id)",
+            )
+            .execute(pool)
+            .await?;
+            Self::record_migration(pool, SESSION_IMPORTS_MIGRATION).await?;
         }
         Ok(())
     }
