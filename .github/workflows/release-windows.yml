@@ -102,10 +102,9 @@ jobs:
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module -Name SignPath -Scope CurrentUser -Force
           $artifacts = @(
-            # MSI needs a dedicated artifact configuration (root element msi-file);
-            # the NSIS .exe uses the project's default pe-file configuration.
+            # MSI and NSIS use different root file types, so select each configuration explicitly.
             @{ Files = Get-ChildItem "target/release/bundle/msi/*.msi"; ConfigSlug = "msi-installer" }
-            @{ Files = Get-ChildItem "target/release/bundle/nsis/*.exe"; ConfigSlug = $null }
+            @{ Files = Get-ChildItem "target/release/bundle/nsis/*.exe"; ConfigSlug = "nsis-installer" }
           )
           $found = $artifacts | ForEach-Object { $_.Files }
           if (-not $found) {
