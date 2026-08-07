@@ -3816,7 +3816,10 @@ test("Run surface binds an exact publication evidence source", async ({ page }) 
   await page.locator(".context-card", { hasText: "ssh:gpu-server" })
     .getByRole("button", { name: "View runs" }).click();
 
+  const runsModal = page.locator(".context-details-modal.runs-details");
+  await expect(runsModal).toBeVisible();
   const run = page.locator(".run-card", { hasText: "Kinase screen QC" });
+  await expect(run.locator(".run-use-publication")).toBeVisible();
   await run.getByRole("button", { name: "Use in publication" }).click();
   const dialog = page.getByTestId("publication-binding-dialog");
   await expect(dialog).toContainText("run-kinase-001");
