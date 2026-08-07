@@ -280,6 +280,7 @@ fn App() -> impl IntoView {
     // from `settings`, which also holds unsaved edits while Settings is open.
     let sync_actions_available = create_rw_signal(false);
     let pet_status = create_rw_signal(PetStatus::default());
+    let run_records = create_rw_signal::<Vec<RunRecord>>(vec![]);
     // Configured model profiles + the composer's bottom-right picker state.
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
     let active_session = create_rw_signal::<Option<String>>(None);
@@ -858,6 +859,28 @@ fn App() -> impl IntoView {
                 })
                 .collect::<HashSet<_>>()
         })
+    });
+    let automatic_session_runs = create_memo(move |_| {
+        let Some(frame_id) = active_session.get() else {
+            return Vec::new();
+        };
+        let monitored = monitored_run_ids.get();
+        let now = js_sys::Date::now() as i64 / 1000;
+        let mut runs = run_records.with(|runs| {
+            runs.iter()
+                .filter(|run| run.frame_id.as_deref() == Some(frame_id.as_str()))
+                .filter(|run| !monitored.contains(&run.id))
+                .filter(|run| {
+                    matches!(run.status.as_str(), "submitted" | "running" | "cancelling")
+                        || run
+                            .ended_at
+                            .is_some_and(|ended| now.saturating_sub(ended) <= 60)
+                })
+                .map(|run| (run.id.clone(), run.created_at))
+                .collect::<Vec<_>>()
+        });
+        runs.sort_by_key(|(_, created_at)| *created_at);
+        runs
     });
     let sel_artifact = create_rw_signal(0usize);
     let show_art_preview = create_rw_signal(false);
@@ -5500,7 +5523,6 @@ fn App() -> impl IntoView {
     let runtime_infos = create_rw_signal::<Vec<RuntimeInfo>>(vec![]);
     let runtime_object_states =
         create_rw_signal::<HashMap<String, RuntimeObjectState>>(HashMap::new());
-    let run_records = create_rw_signal::<Vec<RunRecord>>(vec![]);
     let run_clock = create_rw_signal(now_secs());
     let show_add_host = create_rw_signal(false);
     let host_alias = create_rw_signal(String::new());
@@ -8477,7 +8499,47 @@ fn App() -> impl IntoView {
                                     i += 1;
                                 }
                             }
-                            rows
+                            // Runs without an inline `monitor_run` tool row only carry a
+                            // session id. Use their persisted creation time to put the
+                            // fallback card before the next user turn instead of always
+                            // appending it to the live end of the conversation.
+                            let automatic_runs = automatic_session_runs.get();
+                            let mut automatic_runs = automatic_runs.into_iter().peekable();
+                            let mut anchored = Vec::with_capacity(rows.len() + automatic_runs.len());
+                            let mut synthetic_start = list.len();
+                            for row in rows {
+                                let next_user_at = match &row.4 {
+                                    ThreadRow::Item { i, timestamp, .. }
+                                        if matches!(list[*i], ChatItem::User(_)) => *timestamp,
+                                    _ => None,
+                                };
+                                if let Some(next_user_at) = next_user_at {
+                                    while automatic_runs
+                                        .peek()
+                                        .is_some_and(|(_, created_at)| *created_at < next_user_at)
+                                    {
+                                        let (run_id, _) = automatic_runs.next().unwrap();
+                                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                                        run_id.hash(&mut h);
+                                        anchored.push((
+                                            thread_session_id.clone(), synthetic_start, false, h.finish(),
+                                            ThreadRow::AutoRun { run_id },
+                                        ));
+                                        synthetic_start += 1;
+                                    }
+                                }
+                                anchored.push(row);
+                            }
+                            for (run_id, _) in automatic_runs {
+                                let mut h = std::collections::hash_map::DefaultHasher::new();
+                                run_id.hash(&mut h);
+                                anchored.push((
+                                    thread_session_id.clone(), synthetic_start, false, h.finish(),
+                                    ThreadRow::AutoRun { run_id },
+                                ));
+                                synthetic_start += 1;
+                            }
+                            anchored
                             }))
                         }
                         key=|(session_id, start, streaming, fp, _)| {
@@ -8485,6 +8547,18 @@ fn App() -> impl IntoView {
                         }
                         children=move |(session_id, start, _, _, row)| {
                             match row {
+                                ThreadRow::AutoRun { run_id } => view! {
+                                    <div class="tool-wrap run-monitor-wrap auto-run-monitor"
+                                        data-testid="auto-run-monitor">
+                                        <RunMonitorCard
+                                            run_id=run_id
+                                            runs=run_records
+                                            clock=run_clock.read_only()
+                                            tool_ok=None
+                                            tool_output=String::new()
+                                        />
+                                    </div>
+                                }.into_view(),
                                 ThreadRow::Item {
                                     i,
                                     timestamp,
@@ -8624,38 +8698,6 @@ fn App() -> impl IntoView {
                             }
                         })
                     })}
-                    {move || {
-                        let Some(frame_id) = active_session.get() else {
-                            return Vec::<View>::new().into_view();
-                        };
-                        let monitored = monitored_run_ids.get();
-                        let now = js_sys::Date::now() as i64 / 1000;
-                        run_records.with(|runs| runs
-                            .iter()
-                            .filter(|run| run.frame_id.as_deref() == Some(frame_id.as_str()))
-                            .filter(|run| !monitored.contains(&run.id))
-                            .filter(|run| {
-                                matches!(run.status.as_str(), "submitted" | "running" | "cancelling")
-                                    || run.ended_at.is_some_and(|ended| now.saturating_sub(ended) <= 60)
-                            })
-                            .map(|run| {
-                                let run_id = run.id.clone();
-                                view! {
-                                    <div class="tool-wrap run-monitor-wrap auto-run-monitor"
-                                        data-testid="auto-run-monitor">
-                                        <RunMonitorCard
-                                            run_id=run_id
-                                            runs=run_records
-                                            clock=run_clock.read_only()
-                                            tool_ok=None
-                                            tool_output=String::new()
-                                        />
-                                    </div>
-                                }
-                            })
-                            .collect_view()
-                            .into_view())
-                    }}
                     {move || (!busy.get()).then(|| active_session.get()).flatten().and_then(|id| {
                         transcript_pages.get().get(&id).copied().and_then(|page| {
                             let (_, start, total) = items.with(|rows| {

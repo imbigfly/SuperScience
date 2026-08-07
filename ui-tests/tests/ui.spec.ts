@@ -4262,6 +4262,17 @@ test("active session Runs appear automatically with elapsed time and heartbeat (
   await expect(automatic).toContainText("Elapsed 1m");
   await expect(automatic).toContainText("Heartbeat");
   await expect(automatic).toContainText("2 of 3 stages complete");
+
+  await composer(page).fill("MDLIST later turn");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".msg.user", { hasText: "MDLIST later turn" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const card = document.querySelector('[data-testid="auto-run-monitor"]');
+    const laterTurn = [...document.querySelectorAll(".msg.user")]
+      .find((element) => element.textContent?.includes("MDLIST later turn"));
+    return !!card && !!laterTurn
+      && !!(card.compareDocumentPosition(laterTurn) & Node.DOCUMENT_POSITION_FOLLOWING);
+  })).toBe(true);
 });
 
 test("active Run elapsed time advances without waiting for a backend refresh (#663)", async ({ page }) => {
