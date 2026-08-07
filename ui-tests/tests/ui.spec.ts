@@ -5345,6 +5345,22 @@ test("appearance settings persist separate light and dark palettes and font size
     .getPropertyValue("--code-font-size").trim())).toBe("15px");
 });
 
+test("UI font size setting scales chat message body text", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("MDLIST");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("FX细胞")).toBeVisible({ timeout: 10_000 });
+  const bodyFontSize = () => page.locator(".msg.assistant .body.md").first()
+    .evaluate((el) => getComputedStyle(el).fontSize);
+  expect(await bodyFontSize()).toBe("15px");
+
+  await openSettingsSection(page, "Appearance");
+  await page.getByRole("slider", { name: "UI font size" }).fill("18");
+  await page.getByRole("button", { name: "Back to app" }).click();
+
+  await expect.poll(bodyFontSize).toBe("19px");
+});
+
 test("vision assignment keeps model fields and stored key placeholder untouched", async ({ page }) => {
   await enterApp(page);
   await openModelsSettings(page);

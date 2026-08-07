@@ -382,7 +382,7 @@
   font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: 0; text-transform: none;
 }
 /* overflow-wrap:anywhere so protein/DNA runs without spaces cannot blow out the column */
-.msg .body { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; min-width: 0; max-width: 100%; box-sizing: border-box; line-height: 1.55; font-size: 14.5px; font-family: var(--font-ui); }
+.msg .body { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; min-width: 0; max-width: 100%; box-sizing: border-box; line-height: 1.55; font-size: calc(var(--ui-font-size, 14px) + 0.5px); font-family: var(--font-ui); }
 .msg.user { align-self: flex-end; width: auto; max-width: min(78%, 760px); min-width: 0; }
 .msg.user .user-bubble { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; min-width: 0; max-width: 100%; }
 .msg.user .body {
@@ -488,7 +488,7 @@ button.msg-review-btn span { font-size: 11px; }
 .msg.assistant .role-model { font-size: 10.5px; font-weight: 500; font-family: var(--font-mono); color: var(--text-faint); letter-spacing: 0; text-transform: none; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev); }
 .msg.assistant .role::before { content: ""; width: 15px; height: 15px; border-radius: 5px; background: center / contain no-repeat url("logo.svg"); }
 .msg.assistant .body { color: var(--text); font-family: var(--font-response); }
-.msg.assistant .body.md { display: block; font-size: 15px; line-height: 1.55; letter-spacing: -0.004em; white-space: normal; }
+.msg.assistant .body.md { display: block; font-size: calc(var(--ui-font-size, 14px) + 1px); line-height: 1.55; letter-spacing: -0.004em; white-space: normal; }
 .msg.assistant .body.md:empty { display: none; }
 .msg.assistant .streaming-markdown { white-space: normal; }
 .streaming-markdown-prefix:empty { display: none; }
@@ -496,11 +496,11 @@ button.msg-review-btn span { font-size: 11px; }
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-.msg.reasoning .body { color: var(--text-faint); font-style: italic; font-size: 13.5px; border-left: 2px solid var(--border-strong); padding-left: 12px; font-family: var(--font-ui); }
+.msg.reasoning .body { color: var(--text-faint); font-style: italic; font-size: calc(var(--ui-font-size, 14px) - 0.5px); border-left: 2px solid var(--border-strong); padding-left: 12px; font-family: var(--font-ui); }
 .msg.assistant.commentary { margin-bottom: -8px; }
 .msg.assistant.commentary .role,
 .msg.assistant.commentary .msg-actions { display: none; }
-.msg.assistant.commentary .body.md { color: var(--text-muted); font-size: 14px; line-height: 1.5; }
+.msg.assistant.commentary .body.md { color: var(--text-muted); font-size: var(--ui-font-size, 14px); line-height: 1.5; }
 
 .tool-wrap { align-self: stretch; }
 .tool { align-self: stretch; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px 13px; font-size: 13px; }
@@ -647,7 +647,7 @@ details.rz .body { margin-top: 6px; }
 }
 .md {
   font-family: var(--font-response);
-  font-size: 15px;
+  font-size: calc(var(--ui-font-size, 14px) + 1px);
   line-height: 1.65;
   letter-spacing: -0.004em;
   white-space: normal;
