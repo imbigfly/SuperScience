@@ -3878,10 +3878,10 @@ async fn build_vision_provider_config(store: &Store) -> Option<ProviderConfig> {
 }
 
 async fn load_image_attachments(
-    state: &AppState,
-    app: &AppHandle,
-    frame_id: &str,
-    project_id: &str,
+    _state: &AppState,
+    _app: &AppHandle,
+    _frame_id: &str,
+    _project_id: &str,
     root: &Path,
     attachments: &[String],
 ) -> Result<Vec<superscience_tools::ImageData>, String> {
@@ -7082,31 +7082,25 @@ pub fn run() {
                 .join("superscience");
             std::fs::create_dir_all(&app_data).expect("create app data dir");
             let db_path = app_data.join("superscience.sqlite");
-            let store = tauri::async_runtime::block_on(Store::open(&db_path)).expect("open store");
-            tauri::async_runtime::block_on(
-                store.recover_stale_publication_freezes(i64::MAX),
-            )
-            .expect("recover interrupted Publication freezes");
-            tauri::async_runtime::block_on(scratch_commands::purge_orphan_scratch_projects(
-                &store,
-                &app_data,
-            ));
-            tauri::async_runtime::block_on(models::load_custom_credentials(&store))
-                .expect("load custom credentials");
-            let library = tauri::async_runtime::block_on(LibraryStore::open(
-                &app_data.join("library.sqlite"),
-            ))
-            .expect("open global library");
-            let paused_method_searches = tauri::async_runtime::block_on(
-                store.recover_interrupted_method_search_runs(),
-            )
-            .expect("checkpoint interrupted method searches");
-            if paused_method_searches > 0 {
-                tracing::warn!(target: "superscience", paused_method_searches, "paused interrupted method searches for explicit resume");
-            }
+            let store = startup.record("store", || {
+                tauri::async_runtime::block_on(Store::open(&db_path)).expect("open store")
+            });
+            let orphan_scratch = startup.record("scratch_scan", || {
+                tauri::async_runtime::block_on(scratch_commands::collect_orphan_scratch_projects(
+                    &store, &app_data,
+                ))
+            });
+            startup.record("credentials", || {
+                tauri::async_runtime::block_on(models::load_custom_credentials(&store))
+                    .expect("load custom credentials")
+            });
+            let library = startup.record("library", || {
+                tauri::async_runtime::block_on(LibraryStore::open(
+                    &app_data.join("library.sqlite"),
+                ))
+                .expect("open global library")
+            });
             let run_manager = run_context::RunManager::new();
-            tauri::async_runtime::block_on(run_manager.recover(&store))
-                .expect("recover incomplete runs");
             let runtime_manager = superscience_runtime::RuntimeManager::new(Arc::new(
                 runtime_launcher::TauriRuntimeLauncher::new(
                     store.clone(),
@@ -7163,7 +7157,14 @@ pub fn run() {
                 .map(|d| d.join("superscience"))
                 .unwrap_or_else(|_| app_data.join("workspace"));
             let root = resolve_workspace(
-                std::env::var("WISP_WORKSPACE").ok(),
+                {
+                    let v = env_brand("WORKSPACE", "");
+                    if v.is_empty() {
+                        None
+                    } else {
+                        Some(v)
+                    }
+                },
                 Some(ws),
                 default_workspace,
             );
