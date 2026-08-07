@@ -1786,6 +1786,28 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "new_session").length)).toBeGreaterThan(before);
 });
 
+test("Ctrl+P changes UI and code font sizes", async ({ page }) => {
+  await enterApp(page);
+  const input = page.locator("#action-palette-input");
+  const storedSize = (key: string) => page.evaluate((name) => localStorage.getItem(name), key);
+
+  await page.keyboard.press("Control+p");
+  await input.fill("font");
+  await expect(page.locator(".action-palette-row")).toHaveCount(4);
+
+  for (const [command, key, expected] of [
+    ["increase ui size", "wisp-ui-font-size", "15"],
+    ["decrease ui size", "wisp-ui-font-size", "14"],
+    ["increase code size", "wisp-code-font-size", "13"],
+    ["decrease code size", "wisp-code-font-size", "12"],
+  ] as const) {
+    await input.fill(command);
+    await input.press("Enter");
+    await expect.poll(() => storedSize(key)).toBe(expected);
+    await page.keyboard.press("Control+p");
+  }
+});
+
 test("new session focuses the composer", async ({ page }) => {
   await enterApp(page);
   await newSessionButton(page).click();

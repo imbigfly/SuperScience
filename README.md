@@ -103,7 +103,7 @@ desktop app or a headless CLI.
 - `@` attaches artifacts, files, execution contexts, and language runtimes;
   `#` reaches saved sessions through a cited, read-only **Reader** specialist;
   `/` applies a skill to the next turn.
-- Ctrl+K / Ctrl+P palettes, side chat, conversation folders, a global library
+- Ctrl+K / Ctrl+P palettes (including quick UI/code font sizing), side chat, conversation folders, a global library
   of cells and figures, and in-app update checks.
 - **Feedback** opens a blank conversation immediately and attaches non-sensitive
   version, platform, model, and startup diagnostics to the first message you send;
