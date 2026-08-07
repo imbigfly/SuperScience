@@ -1892,6 +1892,7 @@ fn dynamic_task_editor(
                     |task| task.task_kind,
                 ) == WorkflowTaskKind::RunActivity>
                 <summary>{move || t(locale.get(), "agents.task.advanced")}</summary>
+                <p class="dynamic-agent-advanced-hint">{move || t(locale.get(), "agents.task.advanced_hint")}</p>
                 <div class="dynamic-agent-advanced-grid">
                     <label>
                         <span>{move || t(locale.get(), "agents.task.model")}</span>
@@ -1970,6 +1971,7 @@ fn dynamic_task_editor(
                     <label>
                         <span>{move || t(locale.get(), "agents.task.max_tokens")}</span>
                         <input type="number" min="1" inputmode="numeric"
+                            prop:placeholder=move || t(locale.get(), "agents.task.max_tokens_hint")
                             prop:value=move || task_value(state.dynamic_form, key, |task| task.max_tokens.clone())
                             on:input=move |event| update_task(state.dynamic_form, key, |task| {
                                 task.max_tokens = event_target_value(&event);
@@ -1978,6 +1980,7 @@ fn dynamic_task_editor(
                     <label>
                         <span>{move || t(locale.get(), "agents.task.max_tools")}</span>
                         <input type="number" min="1" inputmode="numeric"
+                            prop:placeholder=move || t(locale.get(), "agents.task.max_tools_hint")
                             prop:value=move || task_value(state.dynamic_form, key, |task| task.max_tool_calls.clone())
                             on:input=move |event| update_task(state.dynamic_form, key, |task| {
                                 task.max_tool_calls = event_target_value(&event);
@@ -1986,6 +1989,7 @@ fn dynamic_task_editor(
                     <label>
                         <span>{move || t(locale.get(), "agents.task.max_cost")}</span>
                         <input type="number" min="1" inputmode="numeric"
+                            prop:placeholder=move || t(locale.get(), "agents.task.max_cost_hint")
                             prop:value=move || task_value(state.dynamic_form, key, |task| task.max_cost_microunits.clone())
                             on:input=move |event| update_task(state.dynamic_form, key, |task| {
                                 task.max_cost_microunits = event_target_value(&event);
@@ -1995,7 +1999,7 @@ fn dynamic_task_editor(
                         <span>{move || t(locale.get(), "agents.task.output_schema")}</span>
                         <textarea spellcheck="false"
                             prop:value=move || task_value(state.dynamic_form, key, |task| task.output_schema.clone())
-                            prop:placeholder="{\"type\":\"object\"}"
+                            prop:placeholder=move || t(locale.get(), "agents.task.output_schema_hint")
                             on:input=move |event| update_task(state.dynamic_form, key, |task| {
                                 task.output_schema = event_target_value(&event);
                             })></textarea>
