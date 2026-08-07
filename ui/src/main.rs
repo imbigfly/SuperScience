@@ -5341,6 +5341,7 @@ fn App() -> impl IntoView {
     let reviewer_model_menu_open = create_rw_signal(false);
     let compute_menu_open = create_rw_signal(false);
     let compute_search = create_rw_signal(String::new());
+    let hosts_attach_search = create_rw_signal(String::new());
     let specialist_menu_open = create_rw_signal(false);
     let auto_review_enabled = create_rw_signal(false);
     let delegation_enabled = create_rw_signal(false);
@@ -11218,6 +11219,7 @@ fn App() -> impl IntoView {
                                                 let status_class = format!("context-status {status}");
                                                 let summary = context_capability_summary(&ctx);
                                                 let label = if ctx.label.trim().is_empty() { ctx.id.clone() } else { ctx.label.clone() };
+                                                let can_detach = ctx.kind != "local";
                                                 let active_context_id = ctx.id.clone();
                                                 let pressed_context_id = ctx.id.clone();
                                                 let select_context_id = ctx.id.clone();
@@ -11225,6 +11227,7 @@ fn App() -> impl IntoView {
                                                 let runs_context_id = ctx.id.clone();
                                                 let probe_context_id = ctx.id.clone();
                                                 let terminal_context_id = ctx.id.clone();
+                                                let detach_context_id = ctx.id.clone();
                                                 let runtime_config_context = ctx.clone();
                                                 let config_context_id = ctx.id.clone();
                                                 view! {
@@ -11255,7 +11258,7 @@ fn App() -> impl IntoView {
                                                                     on:click=move |_| {
                                                                         selected_context_id.set(Some(runtime_context_id.clone()));
                                                                         context_details_modal.set(Some((runtime_context_id.clone(), ContextModalKind::Runtimes)));
-                                                                    }>{compose_icon("terminal")}</button>
+                                                                    }>{compose_icon("runtime-panel")}</button>
                                                                 <button type="button" class="context-terminal context-runs"
                                                                     title=t(loc, "contexts.view_runs")
                                                                     aria-label=t(loc, "contexts.view_runs")
@@ -11300,12 +11303,112 @@ fn App() -> impl IntoView {
                                                                         selected_context_id.set(Some(terminal_context_id.clone()));
                                                                         open_terminal_for_context.call(terminal_context_id.clone());
                                                                     }>{compose_icon("terminal")}</button>
+                                                                {can_detach.then(|| view! {
+                                                                    <button type="button" class="context-terminal context-detach"
+                                                                        title=t(loc, "contexts.detach")
+                                                                        aria-label=t(loc, "contexts.detach")
+                                                                        on:click=move |_| {
+                                                                            toggle_session_compute_resource
+                                                                                .call((detach_context_id.clone(), false));
+                                                                        }>{compose_icon("minus")}</button>
+                                                                })}
                                                             </div>
                                                         </div>
                                                     </div>
                                                 }.into_view()
                                             }).collect_view()
                                         }}
+                                        <div class="context-attach" data-testid="context-attach">
+                                            <div class="control-section-head">
+                                                <span>{t(loc, "contexts.attach")}</span>
+                                            </div>
+                                            <div class="compute-menu-search context-attach-search">
+                                                {compose_icon("search")}
+                                                <input type="search" inputmode="search" autocomplete="off"
+                                                    aria-label=t(loc, "compute.search")
+                                                    placeholder=t(loc, "compute.search")
+                                                    prop:value=move || hosts_attach_search.get()
+                                                    on:input=move |ev| hosts_attach_search.set(event_target_value(&ev)) />
+                                            </div>
+                                            <div class="context-attach-list">
+                                                {move || {
+                                                    let query = hosts_attach_search.get().trim().to_lowercase();
+                                                    let enabled = session_execution_contexts.get();
+                                                    let mut rows = Vec::new();
+                                                    for host in ssh_hosts.get() {
+                                                        let context_id = format!("ssh:{}", host.alias);
+                                                        if enabled.contains(&context_id) {
+                                                            continue;
+                                                        }
+                                                        if !query.is_empty()
+                                                            && !host.alias.to_lowercase().contains(&query)
+                                                        {
+                                                            continue;
+                                                        }
+                                                        let toggle_id = context_id.clone();
+                                                        let name = host.alias.clone();
+                                                        rows.push(view! {
+                                                            <button type="button"
+                                                                class="context-attach-row"
+                                                                data-context-id=context_id.clone()
+                                                                on:click=move |_| {
+                                                                    toggle_session_compute_resource
+                                                                        .call((toggle_id.clone(), true));
+                                                                }>
+                                                                <span class="compute-resource-icon">{compose_icon("server")}</span>
+                                                                <span class="compute-resource-name">{name}</span>
+                                                                <span class="compute-resource-state">
+                                                                    {t(loc, "contexts.attach_action")}
+                                                                </span>
+                                                            </button>
+                                                        }.into_view());
+                                                    }
+                                                    for ctx in execution_contexts.get()
+                                                        .into_iter()
+                                                        .filter(|ctx| ctx.kind == "wsl")
+                                                    {
+                                                        if enabled.contains(&ctx.id) {
+                                                            continue;
+                                                        }
+                                                        let name = if ctx.label.trim().is_empty() {
+                                                            ctx.id.clone()
+                                                        } else {
+                                                            ctx.label.clone()
+                                                        };
+                                                        if !query.is_empty()
+                                                            && !name.to_lowercase().contains(&query)
+                                                            && !ctx.id.to_lowercase().contains(&query)
+                                                        {
+                                                            continue;
+                                                        }
+                                                        let context_id = ctx.id.clone();
+                                                        let toggle_id = context_id.clone();
+                                                        rows.push(view! {
+                                                            <button type="button"
+                                                                class="context-attach-row"
+                                                                data-context-id=context_id.clone()
+                                                                on:click=move |_| {
+                                                                    toggle_session_compute_resource
+                                                                        .call((toggle_id.clone(), true));
+                                                                }>
+                                                                <span class="compute-resource-icon">{compose_icon("terminal")}</span>
+                                                                <span class="compute-resource-name">{name}</span>
+                                                                <span class="compute-resource-state">
+                                                                    {t(loc, "contexts.attach_action")}
+                                                                </span>
+                                                            </button>
+                                                        }.into_view());
+                                                    }
+                                                    if rows.is_empty() {
+                                                        view! {
+                                                            <div class="control-empty">{t(loc, "contexts.attach_empty")}</div>
+                                                        }.into_view()
+                                                    } else {
+                                                        rows.collect_view()
+                                                    }
+                                                }}
+                                            </div>
+                                        </div>
                                         <div class="context-actions">
                                             <button type="button" class="rp-hosts-add"
                                                 on:click=move |_| {

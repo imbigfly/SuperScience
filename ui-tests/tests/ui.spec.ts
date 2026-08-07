@@ -669,8 +669,10 @@ test("model switch warning can be permanently dismissed", async ({ page }) => {
 
   await page.locator(".model-picker-btn").click();
   await page.getByRole("button", { name: /opus-4\.8/ }).click();
-  await page.getByTestId("model-switch-confirm")
-    .getByRole("button", { name: "Switch and don't ask again" }).click();
+  const modal = page.getByTestId("model-switch-confirm");
+  await expect(modal.getByRole("checkbox", { name: "Don't ask again" })).not.toBeChecked();
+  await modal.getByRole("checkbox", { name: "Don't ask again" }).check();
+  await modal.getByRole("button", { name: "Yes, switch" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
   await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-model-switch-warning-disabled")))
     .toBe("1");
@@ -3483,6 +3485,42 @@ test("compute menu selects remote resources per session", async ({ page }) => {
     .not.toBe(firstSession);
 });
 
+test("environment panel attaches and detaches remote servers", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+
+  await expect(page.locator(".context-card", { hasText: "local" })).toBeVisible();
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toHaveCount(0);
+
+  const attach = page.getByTestId("context-attach");
+  await expect(attach.getByText("Attach server")).toBeVisible();
+  const server = attach.locator('.context-attach-row[data-context-id="ssh:gpu-server"]');
+  await expect(server).toBeVisible();
+  await attach.getByRole("searchbox", { name: "Search servers" }).fill("missing");
+  await expect(attach.locator('[data-context-id="ssh:gpu-server"]')).toHaveCount(0);
+  await attach.getByRole("searchbox", { name: "Search servers" }).fill("gpu");
+  await server.click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_execution_context_enabled")).toMatchObject({
+    sessionId: expect.any(String),
+    contextId: "ssh:gpu-server",
+    enabled: true,
+  });
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
+  await expect(attach.locator('[data-context-id="ssh:gpu-server"]')).toHaveCount(0);
+
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "Remove from session" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_execution_context_enabled")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    enabled: false,
+  });
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toHaveCount(0);
+  await expect(attach.locator('[data-context-id="ssh:gpu-server"]')).toBeVisible();
+  await expect(page.locator(".context-card", { hasText: "local" })
+    .getByRole("button", { name: "Remove from session" })).toHaveCount(0);
+});
+
 test("settings manages servers and probes them with the default environment skill", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Environments");
@@ -4003,6 +4041,10 @@ test("right panel shows execution contexts and runs", async ({ page }) => {
   await expect(page.locator(".context-card", { hasText: "local" })).toBeVisible();
   await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toContainText("NVIDIA A100");
   const sshContext = page.locator(".context-card", { hasText: "ssh:gpu-server" });
+  // View runtimes uses runtime-panel icon, open terminal keeps terminal icon.
+  const runtimeSvg = await sshContext.getByRole("button", { name: "View runtimes" }).locator("svg").innerHTML();
+  const terminalSvg = await sshContext.getByRole("button", { name: "Open terminal" }).locator("svg").innerHTML();
+  expect(runtimeSvg).not.toEqual(terminalSvg);
   await sshContext.getByRole("button", { name: "Probe context" }).click();
   await expect.poll(() => lastInvokeArgs(page, "probe_execution_context")).toMatchObject({
     contextId: "ssh:gpu-server",
