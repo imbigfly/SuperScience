@@ -458,15 +458,21 @@ const MODEL_LIMITS: [(&str, u64, u64); 18] = [
     ("glm-4.6", 131_072, 200_000),
 ];
 
+/// Documented (max output tokens, context window) for a known model family,
+/// or None when the model id matches no entry in `MODEL_LIMITS`.
+pub(crate) fn known_model_limits(model: &str) -> Option<(u64, u64)> {
+    let model = model.trim().to_ascii_lowercase();
+    MODEL_LIMITS
+        .iter()
+        .find(|(prefix, _, _)| model.starts_with(prefix))
+        .map(|&(_, max_tokens, context_window)| (max_tokens, context_window))
+}
+
 /// Auto-fill max_tokens/context_window to the model's documented ceiling when
 /// the model id matches a known family. Runs whenever the model id changes;
 /// unknown models keep whatever is already in the form.
 fn apply_known_model_limits(form: &mut ModelForm) {
-    let model = form.model.trim().to_ascii_lowercase();
-    if let Some(&(_, max_tokens, context_window)) = MODEL_LIMITS
-        .iter()
-        .find(|(prefix, _, _)| model.starts_with(prefix))
-    {
+    if let Some((max_tokens, context_window)) = known_model_limits(&form.model) {
         form.max_tokens = max_tokens;
         form.context_window = context_window;
     }
@@ -4933,5 +4939,13 @@ mod model_limit_tests {
         form.model = "totally-unknown".into();
         apply_known_model_limits(&mut form);
         assert_eq!(form.max_tokens, 8_192);
+    }
+
+    #[test]
+    fn known_model_limits_reports_documented_ceiling() {
+        // Longer prefixes win: glm-5.2 must not resolve through glm-5.
+        assert_eq!(known_model_limits("GLM-5.2"), Some((131_072, 1_000_000)));
+        assert_eq!(known_model_limits("deepseek-v4-pro"), Some((384_000, 1_000_000)));
+        assert_eq!(known_model_limits("totally-unknown"), None);
     }
 }
