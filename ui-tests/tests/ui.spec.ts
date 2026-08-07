@@ -4941,13 +4941,13 @@ test("DOCX artifacts render offline with headings, tables, and equations", async
   await enterApp(page);
   await composer(page).fill("open manuscript.docx");
   await page.getByRole("button", { name: "Send" }).click();
+  // Opening the artifact while its streaming turn still owns the artifact
+  // projection can replace the clicked tile before the selection signal lands.
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
   await page.getByRole("button", { name: "Toggle panel" }).click();
-  // This test targets rendering, not pointer behavior. Invoke the visible
-  // tile directly because the artifact panel replaces its DOM while the turn
-  // streams, which can otherwise detach Playwright's click target mid-action.
   const manuscriptTile = page.locator('.rp-tile[data-artifact-name="manuscript.docx"] .rp-tile-main');
   await expect(manuscriptTile).toBeVisible();
-  await manuscriptTile.evaluate((element: HTMLElement) => element.click());
+  await manuscriptTile.click();
 
   // docx-preview renders a `.docx-wrapper` of `section.docx` pages, fully offline.
   const docx = page.locator(".rp-docx");

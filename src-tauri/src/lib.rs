@@ -5789,9 +5789,41 @@ async fn enqueue_turn(
 /// - `cancel` → drop it from the queue.
 /// - `cutin`  → pull it out and fold it into the *running* turn via the guide
 ///   path (#410); if nothing is running it stays queued and runs normally.
+fn begin_queued_cutin(rt: &SessionRuntime, id: u64) -> Option<(u64, QueuedItem)> {
+    let item = {
+        let mut queued = rt.queued.lock().unwrap();
+        queued
+            .iter()
+            .position(|item| item.id == id)
+            .map(|index| queued.remove(index))?
+    };
+    let guidance_id = rt
+        .guidance_seq
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    rt.pending_guidance
+        .lock()
+        .unwrap()
+        .push((guidance_id, item.message.clone()));
+    Some((guidance_id, item))
+}
+
+fn reclaim_unconsumed_cutin(rt: &SessionRuntime, guidance_id: u64, item: QueuedItem) -> bool {
+    let mut pending = rt.pending_guidance.lock().unwrap();
+    let before = pending.len();
+    pending.retain(|(pending_id, _)| *pending_id != guidance_id);
+    let unconsumed = pending.len() != before;
+    drop(pending);
+    if unconsumed {
+        rt.queued.lock().unwrap().insert(0, item);
+    }
+    unconsumed
+}
+
 #[tauri::command]
 async fn queued_turn_action(
     state: State<'_, AppState>,
+    app: AppHandle,
+    window: tauri::WebviewWindow,
     session_id: String,
     id: u64,
     action: String,
@@ -5819,19 +5851,25 @@ async fn queued_turn_action(
         "cutin" => {
             let running = state.running_turns.lock().await.contains(&session_id);
             if running {
-                let text = {
-                    let mut q = rt.queued.lock().unwrap();
-                    q.iter()
-                        .position(|it| it.id == id)
-                        .map(|i| q.remove(i).message)
-                };
                 // ponytail: cut-in folds only text into the turn, matching the
                 // guide path; attachments on a cut-in item are dropped.
-                if let Some(text) = text {
-                    let gid = rt
-                        .guidance_seq
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    rt.pending_guidance.lock().unwrap().push((gid, text));
+                if let Some((guidance_id, item)) = begin_queued_cutin(&rt, id) {
+                    // Wait until the running turn reaches an iteration boundary
+                    // or ends. If it ended without consuming the guidance, put
+                    // the item back at the front and let the normal driver run it.
+                    let guard = rt.workflow.clone().lock_owned().await;
+                    let unconsumed = reclaim_unconsumed_cutin(&rt, guidance_id, item);
+                    drop(guard);
+                    if unconsumed {
+                        if !rt.draining.swap(true, Ordering::SeqCst) {
+                            spawn_queue_driver(
+                                app,
+                                rt.clone(),
+                                session_id,
+                                window.label().to_string(),
+                            );
+                        }
+                    }
                 }
             }
         }
