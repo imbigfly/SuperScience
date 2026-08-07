@@ -982,6 +982,43 @@ pub(crate) fn session_model_label(
     )
 }
 
+/// Mirrors `models::effective_context_window` in src-tauri: a configured
+/// window below 4K counts as "unset" and falls back to 128K.
+pub(crate) fn effective_context_window(value: u64) -> u64 {
+    if value >= 4_096 {
+        value
+    } else {
+        128_000
+    }
+}
+
+/// Context window of the model a session is bound to right now, with the same
+/// fallbacks as `model_label` (bound profile → active → first chat model).
+/// None for ACP-bound sessions, where the agent — not an HTTP profile — owns
+/// the window. The usage gauge shows this limit instead of the stale
+/// `max_context` carried by the last turn's usage event, so switching models
+/// or editing the profile moves the gauge immediately.
+pub(crate) fn session_context_window(
+    models: &[ModelProfile],
+    session_models: &HashMap<String, String>,
+    session_id: Option<&str>,
+) -> Option<u64> {
+    let bound = session_id.and_then(|session_id| session_models.get(session_id));
+    if bound.is_some_and(|id| id.starts_with("acp:")) {
+        return None;
+    }
+    models
+        .iter()
+        .find(|model| model.is_chat_model() && bound == Some(&model.id))
+        .or_else(|| {
+            models
+                .iter()
+                .find(|model| model.active && model.is_chat_model())
+        })
+        .or_else(|| models.iter().find(|model| model.is_chat_model()))
+        .map(|model| effective_context_window(model.context_window))
+}
+
 #[cfg(test)]
 mod model_label_tests {
     use super::model_label;
@@ -994,6 +1031,66 @@ mod model_label_tests {
         );
         // A bare marker carries no label — fall through to the normal lookup.
         assert_eq!(model_label(&[], Some("acp:")), None);
+    }
+}
+
+#[cfg(test)]
+mod session_context_window_tests {
+    use super::{session_context_window, ModelProfile};
+    use std::collections::HashMap;
+
+    fn profile(id: &str, active: bool, context_window: u64) -> ModelProfile {
+        ModelProfile {
+            id: id.into(),
+            label: id.into(),
+            provider: "openai".into(),
+            api_url: String::new(),
+            model: format!("model-{id}"),
+            has_api_key: true,
+            active,
+            max_tokens: 8_192,
+            context_window,
+            reasoning_effort: String::new(),
+            supports_vision: false,
+            use_for_vision: false,
+            use_for_image_generation: false,
+        }
+    }
+
+    #[test]
+    fn bound_session_uses_its_own_profile_window() {
+        let models = vec![profile("a", true, 128_000), profile("b", false, 1_000_000)];
+        let bindings = HashMap::from([("s1".to_string(), "b".to_string())]);
+        assert_eq!(
+            session_context_window(&models, &bindings, Some("s1")),
+            Some(1_000_000)
+        );
+    }
+
+    #[test]
+    fn deleted_binding_falls_back_to_active_profile() {
+        let models = vec![profile("a", true, 200_000)];
+        let bindings = HashMap::from([("s1".to_string(), "gone".to_string())]);
+        assert_eq!(
+            session_context_window(&models, &bindings, Some("s1")),
+            Some(200_000)
+        );
+    }
+
+    #[test]
+    fn window_below_4k_falls_back_to_128k() {
+        let models = vec![profile("a", true, 0)];
+        assert_eq!(
+            session_context_window(&models, &HashMap::new(), None),
+            Some(128_000)
+        );
+    }
+
+    #[test]
+    fn acp_bound_session_has_no_http_window() {
+        let models = vec![profile("a", true, 128_000)];
+        let bindings = HashMap::from([("s1".to_string(), "acp:Codex".to_string())]);
+        assert_eq!(session_context_window(&models, &bindings, Some("s1")), None);
     }
 }
 

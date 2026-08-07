@@ -1571,15 +1571,17 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toContainText("27%");
+  await expect(trigger).toContainText("62%");
   await expect(page.locator(".topbar .hint")).toHaveCount(0);
 
   await trigger.click();
   const panel = page.getByTestId("context-usage-panel");
   await expect(panel).toBeVisible();
   await expect(panel.getByRole("heading", { name: "Context Usage" })).toBeVisible();
-  await expect(panel).toContainText("27% Full");
-  await expect(panel).toContainText("~79.9K / 300K Tokens");
+  await expect(panel).toContainText("62% Full");
+  // The limit tracks the session's bound model (128K), not the stale
+  // max_context carried by the last turn's usage event (300K).
+  await expect(panel).toContainText("~79.9K / 128K Tokens");
   await expect(panel.locator(".context-usage-row")).toHaveCount(7);
   await expect(panel.locator(".context-usage-segment")).toHaveCount(7);
   await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
@@ -1620,15 +1622,37 @@ test("legacy native usage totals fall back to Conversation, not Agent-managed", 
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toContainText("3%");
+  await expect(trigger).toContainText("20%");
   await trigger.click();
   const panel = page.getByTestId("context-usage-panel");
   await expect(panel).toBeVisible();
-  await expect(panel).toContainText("~25.4K / 1M Tokens");
+  await expect(panel).toContainText("~25.4K / 128K Tokens");
   await expect(panel.locator(".context-usage-row")).toHaveCount(7);
   await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
   await expect(panel.getByText("25.4K", { exact: true })).toBeVisible();
   await expect(panel.getByText("Agent-managed context")).toHaveCount(0);
+});
+
+test("context usage limit follows the session's current model", async ({ page }) => {
+  await enterApp(page);
+  await page.locator("#composer-input").fill("CONTEXTUSAGE");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect(trigger).toContainText("62%");
+  await trigger.click();
+  await expect(page.getByTestId("context-usage-panel")).toContainText("~79.9K / 128K Tokens");
+  await page.keyboard.press("Escape");
+
+  // Switching the session's model re-bases the limit immediately — no new turn.
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /opus-4\.8/ }).click();
+  await page.getByTestId("model-switch-confirm")
+    .getByRole("button", { name: "Yes, switch" }).click();
+  await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
+  await expect(trigger).toContainText("40%");
+  await trigger.click();
+  await expect(page.getByTestId("context-usage-panel")).toContainText("~79.9K / 200K Tokens");
 });
 
 test("artifact type badges stay neutral instead of rainbow pills", async ({ page }) => {
@@ -5436,6 +5460,25 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
   await expect(providerSelect(page)).toHaveValue("openai_responses");
   await expect(effort).toHaveValue("medium");
   await expect(page.getByLabel("Use for image analysis")).toBeChecked();
+});
+
+test("model settings rejects max output tokens above the known ceiling", async ({ page }) => {
+  await enterApp(page);
+  await openModelsSettings(page);
+
+  // deepseek-v4-pro matches the MODEL_LIMITS family (384K output ceiling).
+  const maxTokens = page.getByLabel("Max output tokens");
+  await maxTokens.fill("1000000");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.locator(".settings-status"))
+    .toContainText("accepts at most 384000 output tokens");
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toBeNull();
+
+  // The documented ceiling itself saves fine.
+  await maxTokens.fill("384000");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "save_model"))
+    .toMatchObject({ profile: { max_tokens: 384000 } });
 });
 
 test("onboarding key setup adds the flash model before the pro model", async ({ page }) => {

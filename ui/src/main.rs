@@ -367,7 +367,21 @@ fn App() -> impl IntoView {
             acp_context_usage.with(|all| all.get(&session_id).cloned())
         } else {
             let _ = transcript_projection_epoch.get();
-            items.with_untracked(|rows| latest_context_usage(rows))
+            let snapshot = items.with_untracked(|rows| latest_context_usage(rows));
+            // A usage row only appears after a turn runs, so its `max` names
+            // the model that produced it. Re-base the limit on the model the
+            // session is bound to now: switching models or editing the
+            // profile's window must move the gauge without waiting a turn.
+            snapshot.map(|mut snapshot| {
+                if let Some(max) = session_context_window(
+                    &models.get(),
+                    &session_model_ids.get(),
+                    Some(&session_id),
+                ) {
+                    snapshot.max = max as usize;
+                }
+                snapshot
+            })
         }
     });
     create_effect(move |_| {
@@ -4035,6 +4049,22 @@ fn App() -> impl IntoView {
             let text = tf(loc, "status.save_failed", &[("msg", &err)]);
             model_form_msg.set(Some((false, text)));
             return;
+        }
+        // A recognized model family has a documented output ceiling; saving a
+        // larger max_tokens only ever surfaces as a provider 400 mid-turn.
+        if let Some((ceiling, _)) = settings_view::known_model_limits(&form.model) {
+            if form.max_tokens > ceiling {
+                let text = tf(
+                    loc,
+                    "err.max_tokens_ceiling",
+                    &[
+                        ("model", form.model.trim()),
+                        ("max", &ceiling.to_string()),
+                    ],
+                );
+                model_form_msg.set(Some((false, text)));
+                return;
+            }
         }
         settings_busy.set(true);
         model_form_msg.set(Some((true, t(loc, "status.saving_settings").into())));
