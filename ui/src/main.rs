@@ -7354,6 +7354,10 @@ fn App() -> impl IntoView {
             "theme-light" => theme_mode.set("light".into()),
             "theme-dark" => theme_mode.set("dark".into()),
             "theme-system" => theme_mode.set("system".into()),
+            "font-ui-increase" => ui_font_size.update(|size| *size = (*size + 1).min(18)),
+            "font-ui-decrease" => ui_font_size.update(|size| *size = size.saturating_sub(1).max(12)),
+            "font-code-increase" => code_font_size.update(|size| *size = (*size + 1).min(18)),
+            "font-code-decrease" => code_font_size.update(|size| *size = size.saturating_sub(1).max(10)),
             _ => {}
         })
     };
