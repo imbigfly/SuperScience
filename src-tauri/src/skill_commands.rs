@@ -170,7 +170,7 @@ pub(super) async fn pick_skill_source(app: AppHandle) -> Result<Option<String>, 
     // Folder picking is offered via a second button in the UI.
     app.dialog()
         .file()
-        .add_filter("Wisp skill", &["md", "zip"])
+        .add_filter("SuperScience skill", &["md", "zip"])
         .pick_file(move |p| {
             let _ = tx.send(p);
         });
@@ -256,7 +256,7 @@ fn install_skill_source(src: &Path, skills_dir: &Path) -> Result<String, String>
         .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
     {
         let temp_root =
-            std::env::temp_dir().join(format!("wisp-skill-import-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("superscience-skill-import-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&temp_root)
             .map_err(|error| format!("create skill ZIP staging directory: {error}"))?;
         let temp_dir = SkillImportTempDir(temp_root.clone());
@@ -440,7 +440,7 @@ mod tests {
     impl TestDir {
         fn new() -> Self {
             let path =
-                std::env::temp_dir().join(format!("wisp-skill-test-{}", uuid::Uuid::new_v4()));
+                std::env::temp_dir().join(format!("superscience-skill-test-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&path).expect("create test directory");
             Self(path)
         }

@@ -71,7 +71,7 @@ pub(super) async fn create_project(
     std::fs::create_dir_all(&path)
         .map_err(|e| format!("Failed to create working directory: {e}"))?;
     // Writability probe: create + remove a temp marker.
-    let marker = path.join(".wisp-write-test");
+    let marker = path.join(".superscience-write-test");
     std::fs::write(&marker, b"").map_err(|e| format!("Working directory is not writable: {e}"))?;
     let _ = std::fs::remove_file(&marker);
 

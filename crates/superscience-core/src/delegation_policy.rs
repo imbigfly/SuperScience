@@ -292,7 +292,7 @@ impl CapabilityRegistry {
             .find(|definition| definition.id == "code_run")
             .expect("code_run capability")
             .revision = 3;
-        Self::new("wisp-capabilities-v4", definitions)
+        Self::new("superscience-capabilities-v4", definitions)
             .expect("built-in capability definitions must be valid")
     }
 
@@ -1164,7 +1164,7 @@ fn resolved_prompt(proposal: &DelegatedTaskProposal) -> String {
         "Do not delegate further."
     };
     let base = format!(
-        "You are a bounded Wisp sub-Agent. Complete only the assigned task and return evidence to the parent Agent. {delegation}"
+        "You are a bounded SuperScience sub-Agent. Complete only the assigned task and return evidence to the parent Agent. {delegation}"
     );
     match &proposal.specialist {
         Some(specialist) => format!(

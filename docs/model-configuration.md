@@ -3,6 +3,10 @@
 superscience calls remote LLM APIs through model profiles. Desktop users
 configure these in **Settings -> Models**. Each row is a model profile with its
 own display name, provider, API URL, model ID, advanced options, and API key.
+For recognized model families the form auto-fills **Max output tokens** and
+**Context window** to the vendor's documented ceilings, and saving a max-output
+value above the documented ceiling is rejected with an inline error instead of
+failing mid-turn with a provider 400.
 
 The composer model picker binds the selected HTTP model to the current
 conversation. Switching one populated conversation asks for confirmation and
@@ -20,7 +24,11 @@ optionally **Use for image analysis**. Image attachments are sent directly to a
 visual input model. When the input model is non-visual, SuperScience first calls the
 assigned vision model and passes its text observations to the input model.
 `view_image` and image reads use the assigned vision model in the same way.
-Raster image input supports PNG, JPEG, GIF, and WebP files up to 5 MiB.
+Raster image input supports PNG, JPEG, GIF, and WebP. Files up to 5 MiB are
+sent unchanged. For larger files, SuperScience pauses before the model request and asks
+whether to create a temporary JPEG input copy with a longest edge of 2048
+pixels. The project file is never modified, and the confirmation warns that
+fine details may be lost. Source images above 50 MiB remain rejected.
 
 When switching a populated conversation to a non-visual model, the confirmation
 explains that previously sent images will be omitted from future requests to
@@ -114,7 +122,10 @@ manual `/compact`, and overflow recovery dialog available. ACP agents are not
 modified because their remote transcripts are owned by the ACP process.
 
 After a native-agent reply, the composer footer shows the estimated percentage
-of the active model's context window. Open it for a detail card aligned to the
+of the active model's context window. The limit tracks the model the session
+is currently bound to: switching models or editing a profile's context window
+re-bases the gauge immediately, without waiting for the next reply. Open it
+for a detail card aligned to the
 composer width that splits the same calibrated request estimate into system
 prompt, built-in tool definitions, rules, selected Skills, MCP and other
 dynamic tools, subagent definitions, and conversation content. These buckets

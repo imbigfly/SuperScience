@@ -24,7 +24,7 @@ pub struct Skill {
     pub body: String,
     pub dir: PathBuf,
     pub declared_version: Option<String>,
-    pub wisp: Option<SuperscienceSkillMetadata>,
+    pub superscience: Option<SuperscienceSkillMetadata>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -456,7 +456,7 @@ fn parse_skill(path: &Path, dir: PathBuf) -> Result<Skill, String> {
         body,
         dir,
         declared_version: manifest.version,
-        wisp: manifest.wisp,
+        superscience: manifest.superscience,
     })
 }
 
@@ -491,7 +491,7 @@ mod tests {
             body: String::new(),
             dir: PathBuf::new(),
             declared_version: None,
-            wisp: None,
+            superscience: None,
         }
     }
 
@@ -833,7 +833,7 @@ mod tests {
     #[test]
     fn catalog_snapshot_keeps_shadowed_and_parse_error_records() {
         let root = std::env::temp_dir().join(format!(
-            "wisp-skill-audit-{}-{}",
+            "superscience-skill-audit-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

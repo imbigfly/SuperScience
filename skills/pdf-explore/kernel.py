@@ -44,7 +44,7 @@ def pdf_resolve(path_or_id):
     """Expand ``~`` and return a local filesystem path.
 
     Artifact/version ids from the reference host are not supported in
-    wisp — a UUID-shaped string that is not an existing path raises with
+    superscience — a UUID-shaped string that is not an existing path raises with
     a clear message instead of resolving.
     """
     if not isinstance(path_or_id, str) or not path_or_id:

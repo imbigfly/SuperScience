@@ -220,6 +220,9 @@ mod token_format_tests {
 /// of the whole render window into one clone per actually-changed row.
 #[derive(Clone)]
 pub(crate) enum ThreadRow {
+    AutoRun {
+        run_id: String,
+    },
     Item {
         i: usize,
         timestamp: Option<i64>,
@@ -784,7 +787,11 @@ pub(crate) fn acp_tool_step_body(content: &str, locations: &str) -> String {
 }
 
 pub(crate) fn run_output_preview(run: &RunRecord) -> String {
-    let mut output = match (&run.stdout_tail, &run.stderr_tail) {
+    // Tails are stored raw; fold `\r` progress-bar frames before slicing lines
+    // so a single overwritten line cannot dominate the preview.
+    let stdout = run.stdout_tail.as_deref().map(fold_carriage_returns);
+    let stderr = run.stderr_tail.as_deref().map(fold_carriage_returns);
+    let mut output = match (&stdout, &stderr) {
         (Some(stdout), Some(stderr)) if !stdout.is_empty() && !stderr.is_empty() => {
             format!("{stdout}\n[stderr]\n{stderr}")
         }
@@ -1284,7 +1291,7 @@ pub(crate) fn render_item(
                 fmt_tokens(*after as u64)
             );
             view! {
-                <div class="context-compaction-flag" data-testid="context-compaction-flag">
+                <div class="context-compaction-flag" class:auto=automatic data-testid="context-compaction-flag">
                     <span class="gi doc" aria-hidden="true"></span>
                     <span>{move || t(
                         locale.get(),
@@ -1305,8 +1312,8 @@ pub(crate) fn render_item(
                 {(!locations.is_empty()).then(|| view! { <pre>{locations.clone()}</pre> })}
             </article>
         }.into_view(),
-        ChatItem::ApprovalPending { tool, preview, message: _ } => view! {
-            <ApprovalCard tool=tool.clone() preview=preview.clone() session_id=session_id.clone() on_decide=on_approval />
+        ChatItem::ApprovalPending { tool, preview, message } => view! {
+            <ApprovalCard tool=tool.clone() preview=preview.clone() message=message.clone() session_id=session_id.clone() on_decide=on_approval />
         }.into_view(),
         ChatItem::AcpPermission { request_id, tool, options } => {
             let request_id = request_id.clone();

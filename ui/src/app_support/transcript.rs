@@ -26,7 +26,7 @@ pub(crate) fn review_message_ui_index(items: &[ChatItem], message_index: usize) 
 
 #[cfg(test)]
 mod review_jump_tests {
-    use super::review_message_ui_index;
+    use super::{composer_text_from_user_message, review_message_ui_index};
     use crate::dto::{ChatItem, ContextUsage, ReviewTransitionPhase};
 
     fn assistant(text: &str) -> ChatItem {
@@ -61,6 +61,16 @@ mod review_jump_tests {
 
         assert_eq!(review_message_ui_index(&items, 3), Some(5));
     }
+
+    #[test]
+    fn editing_a_feedback_turn_excludes_hidden_diagnostics() {
+        assert_eq!(
+            composer_text_from_user_message(
+                "The app froze\n\nFeedback context: \"SuperScience version: 0.34.0\""
+            ),
+            "The app froze"
+        );
+    }
 }
 
 pub(crate) fn composer_text_from_user_message(text: &str) -> String {
@@ -74,6 +84,7 @@ pub(crate) fn composer_text_from_user_message(text: &str) -> String {
         "\n\nTarget environments: ",
         "\n\nTarget runtimes: ",
         "\n\nAI source-edit instruction: ",
+        "\n\nFeedback context: ",
     ]
     .iter()
     .filter_map(|marker| text.find(marker))

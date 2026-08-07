@@ -56,6 +56,11 @@ impl AnthropicProvider {
         tools: &[ToolSchema],
         stream: bool,
     ) -> (String, Vec<Value>, Value) {
+        // Anthropic requires every `tool_use` to be answered by a matching
+        // `tool_result` before the next user turn. Match chat-completions #74 /
+        // Responses sanitize: drop unanswered calls and orphan results.
+        let messages = sanitize_messages(messages);
+
         // system: concatenate all system messages.
         let system: String = messages
             .iter()
@@ -73,7 +78,7 @@ impl AnthropicProvider {
             }
         };
 
-        for m in messages {
+        for m in &messages {
             match m.role {
                 Role::System => {}
                 Role::Tool => {
@@ -146,6 +151,55 @@ impl AnthropicProvider {
         let val: Value = serde_json::from_str(&text)?;
         Ok(val)
     }
+}
+
+/// Keep only tool-call pairings Anthropic accepts.
+///
+/// A turn interrupted after the assistant emitted `tool_use` but before its
+/// `tool_result` was persisted leaves a dangling id. Anthropic rejects that
+/// with a 400 when the next user turn arrives; strip unanswered calls (and
+/// orphan results) the same way as OpenAI chat-completions / Responses.
+fn sanitize_messages(messages: &[Message]) -> Vec<Message> {
+    let mut answered = std::collections::HashSet::new();
+    let mut requested = std::collections::HashSet::new();
+    for m in messages {
+        match m.role {
+            Role::Tool => {
+                if let Some(id) = &m.tool_call_id {
+                    answered.insert(id.clone());
+                }
+            }
+            Role::Assistant => {
+                for tc in &m.tool_calls {
+                    requested.insert(tc.id.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    messages
+        .iter()
+        .filter_map(|m| match m.role {
+            Role::Assistant => {
+                let mut out = m.clone();
+                out.tool_calls.retain(|tc| answered.contains(&tc.id));
+                if out.content.as_text().is_empty() && out.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(out)
+                }
+            }
+            Role::Tool => {
+                let id = m.tool_call_id.as_deref().unwrap_or("");
+                if requested.contains(id) {
+                    Some(m.clone())
+                } else {
+                    None
+                }
+            }
+            _ => Some(m.clone()),
+        })
+        .collect()
 }
 
 fn user_content(c: &Content) -> Value {
@@ -464,6 +518,125 @@ fn parse_sse_event(event: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assistant_with_call(text: &str, call_id: &str, name: &str, args: &str) -> Message {
+        let mut m = Message::assistant(text);
+        m.tool_calls = vec![ToolCall {
+            id: call_id.into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: name.into(),
+                arguments: args.into(),
+            },
+        }];
+        m
+    }
+
+    fn wire_messages(messages: &[Message]) -> Vec<Value> {
+        let provider = AnthropicProvider::new(crate::ProviderConfig::anthropic(
+            "https://example.test",
+            "",
+            "claude-test",
+        ));
+        let (_, out, _) = provider.build_body(messages, &[], false);
+        out
+    }
+
+    #[test]
+    fn matched_tool_use_and_result_pass_through() {
+        let messages = vec![
+            Message::user("run"),
+            assistant_with_call("", "tu_1", "read", "{\"path\":\"a\"}"),
+            Message::tool("tu_1", "read", "ok"),
+        ];
+        let out = wire_messages(&messages);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1]["role"], "assistant");
+        assert_eq!(out[1]["content"][0]["type"], "tool_use");
+        assert_eq!(out[1]["content"][0]["id"], "tu_1");
+        assert_eq!(out[2]["role"], "user");
+        assert_eq!(out[2]["content"][0]["type"], "tool_result");
+        assert_eq!(out[2]["content"][0]["tool_use_id"], "tu_1");
+    }
+
+    /// Interrupted turn: assistant emitted tool_use, user resumed before the
+    /// tool_result was persisted. Anthropic 400s unless we strip the dangling call.
+    #[test]
+    fn drops_unanswered_tool_use_so_resume_can_retry() {
+        let messages = vec![
+            Message::user("poll training"),
+            assistant_with_call("", "tu_orphan", "shell", "{\"cmd\":\"sleep 110\"}"),
+            Message::user("继续"),
+        ];
+        let out = wire_messages(&messages);
+        let tool_uses: Vec<_> = out
+            .iter()
+            .flat_map(|m| {
+                m.get("content")
+                    .and_then(|c| c.as_array())
+                    .into_iter()
+                    .flatten()
+            })
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+            .collect();
+        assert!(
+            tool_uses.is_empty(),
+            "unanswered tool_use must not be sent: {out:?}"
+        );
+        assert_eq!(out.last().unwrap()["role"], "user");
+        assert_eq!(out.last().unwrap()["content"], "继续");
+    }
+
+    #[test]
+    fn keeps_answered_call_when_sibling_is_unanswered() {
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![
+            ToolCall {
+                id: "a".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                },
+            },
+            ToolCall {
+                id: "b".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: "shell".into(),
+                    arguments: "{}".into(),
+                },
+            },
+        ];
+        let messages = vec![
+            Message::user("hi"),
+            asst,
+            Message::tool("a", "read", "ok"),
+            Message::user("继续"),
+        ];
+        let out = wire_messages(&messages);
+        let tool_uses: Vec<_> = out
+            .iter()
+            .flat_map(|m| {
+                m.get("content")
+                    .and_then(|c| c.as_array())
+                    .into_iter()
+                    .flatten()
+            })
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+            .collect();
+        assert_eq!(tool_uses.len(), 1);
+        assert_eq!(tool_uses[0]["id"], "a");
+    }
+
+    #[test]
+    fn drops_orphan_tool_result() {
+        let messages = vec![Message::user("hi"), Message::tool("ghost", "read", "stale")];
+        let out = wire_messages(&messages);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["role"], "user");
+        assert_eq!(out[0]["content"], "hi");
+    }
 
     #[test]
     fn input_tokens_are_cache_inclusive() {

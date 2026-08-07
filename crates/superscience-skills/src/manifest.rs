@@ -12,7 +12,7 @@ pub struct SkillManifest {
     #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]
-    pub wisp: Option<SuperscienceSkillMetadata>,
+    pub superscience: Option<SuperscienceSkillMetadata>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
 }
@@ -124,7 +124,7 @@ impl SuperscienceSkillMetadata {
     pub fn validate(&mut self) -> Result<(), String> {
         if self.schema_version != 1 {
             return Err(format!(
-                "unsupported wisp.schema_version {}; expected 1",
+                "unsupported superscience.schema_version {}; expected 1",
                 self.schema_version
             ));
         }
@@ -186,8 +186,8 @@ pub fn parse_skill_document(
         .take()
         .map(|version| version.trim().to_string())
         .filter(|version| !version.is_empty());
-    if let Some(wisp) = &mut manifest.wisp {
-        wisp.validate()?;
+    if let Some(superscience) = &mut manifest.superscience {
+        superscience.validate()?;
     }
     let body = text[body_start.unwrap_or(text.len())..].trim().to_string();
     Ok((manifest, body))
@@ -203,7 +203,7 @@ fn normalize_and_validate(
         .iter()
         .find(|value| !vocabulary.contains(&value.as_str()))
     {
-        return Err(format!("unknown wisp.{field} value '{value}'"));
+        return Err(format!("unknown superscience.{field} value '{value}'"));
     }
     Ok(())
 }
@@ -234,7 +234,7 @@ mod tests {
         assert_eq!(manifest.description, "line one line two");
         assert_eq!(manifest.tags.0, ["a", "b"]);
         assert!(manifest.extra.contains_key("license"));
-        assert_eq!(manifest.wisp.unwrap().domains, ["oncology", "single-cell"]);
+        assert_eq!(manifest.superscience.unwrap().domains, ["oncology", "single-cell"]);
         assert_eq!(body, "# Body");
     }
 
@@ -250,6 +250,6 @@ mod tests {
             "fallback".into(),
         )
         .unwrap_err();
-        assert!(error.contains("unknown wisp.roles"));
+        assert!(error.contains("unknown superscience.roles"));
     }
 }

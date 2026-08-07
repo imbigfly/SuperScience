@@ -85,6 +85,9 @@ own machines.
   [feature plugins](docs/feature-plugins.md) that package Skills and MCP servers.
 - Fully offline previews for Jupyter notebooks, PDF, DOCX/XLSX/PPTX, and
   images — including region cropping straight into the composer.
+- Local Markdown extraction for Word, PowerPoint, Excel, OpenDocument, RTF,
+  EPUB, and text-based PDF files, so agents can read documents without Python
+  or an external conversion service.
 - A [Publication Workspace](docs/publication-evidence.md) that freezes
   manuscript revisions and exports verifiable, deterministic Evidence Capsules.
 
@@ -95,8 +98,13 @@ own machines.
 - `@` attaches artifacts, files, execution contexts, and language runtimes;
   `#` reaches saved sessions through a cited, read-only **Reader** specialist;
   `/` applies a skill to the next turn.
-- Ctrl+K / Ctrl+P palettes, side chat, conversation folders, a global library
+- Ctrl+K / Ctrl+P palettes (including quick UI/code font sizing), side chat, conversation folders, a global library
   of cells and figures, and in-app update checks.
+- Manual Reviewer checks keep sending paused and show live review progress until
+  the independent audit finishes.
+- **Feedback** opens a blank conversation immediately and attaches non-sensitive
+  version, platform, model, and startup diagnostics to the first message you send;
+  it never contacts the model before you write that message.
 - [Encrypted manual sync](docs/project-sync.md) and one-click
   [project transfer](docs/project-transfer.md) keep machines in step — nothing
   ever syncs in the background.
@@ -189,7 +197,8 @@ keyring and model profiles in `.superscience/superscience.sqlite` (Settings → 
 [Model configuration](docs/model-configuration.md). Custom credentials map a
 display name to an environment variable and are injected only into newly
 launched local Python and bundled MCP processes — never copied to SSH/WSL
-hosts.
+hosts. Built-in credential rows link to the services' official setup pages and
+explain what each integration enables and how SuperScience behaves without it.
 
 **Settings → Storage** lists workspace paths per project. Select a project to
 view that workspace's local footprint separately from shared app data.
@@ -211,6 +220,16 @@ Settings → Agent Context** are stored in `.superscience/SUPERSCIENCE.md` and a
 | `SUPERSCIENCE_KERNEL_WORKER` | Override path to `kernel_worker.py` (bundled by default)      |
 | `SUPERSCIENCE_MCP_COMMAND`   | Launch an arbitrary stdio MCP server (full command line)      |
 | `SUPERSCIENCE_MCP_PKG`       | Launch a bundled bio-tools server, e.g. `mcp_pubmed`          |
+
+### Startup logs (Windows)
+
+Packaged Windows builds have no console, so each launch writes its log to
+`%APPDATA%\science.superscience\superscience\logs\superscience.log` (overwritten on the
+next launch). The `startup finished` line breaks the pre-first-paint work down
+by phase — `total=…ms store=…ms skills=…ms …` — which is the fastest way to
+report a slow or blank launch. Recovery sweeps, the scratch sandbox purge, and
+restoring project windows run after the main window is interactive and are
+logged separately as `deferred startup finished`.
 
 ### Bundled bio-tools MCP
 
@@ -394,6 +413,8 @@ and pull requests (ordered by the number of issues reported):
   <a href="https://github.com/XuuChen"><img src="https://avatars.githubusercontent.com/u/99383234?v=4&amp;s=96" width="64" height="64" alt="@XuuChen" title="@XuuChen"></a>
 </p>
 
+- Free code signing on Windows provided by [SignPath.io](https://signpath.io),
+  certificate by the [SignPath Foundation](https://signpath.org).
 - We first looked at closed scientific-agent products such as Claude Science,
   then chose to build openly after finding them closed and unfriendly to users
   in some regions. Early work learned from their Skills and MCP tool selection;

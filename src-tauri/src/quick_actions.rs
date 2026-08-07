@@ -240,7 +240,7 @@ impl Tool for CreateWorkflowTool {
                     .collect()
             });
         let side_effects = skill
-            .wisp
+            .superscience
             .as_ref()
             .map(|metadata| metadata.side_effects)
             .unwrap_or_default();
@@ -918,7 +918,7 @@ fn method_search_base_proposal() -> dynamic_workflow::DynamicAgentWorkflowPropos
             ),
             dynamic_workflow::DynamicAgentTaskProposal {
                 id: "method_search".into(),
-                instruction: "After the user reviews and starts the frozen contract, run the bounded Wisp-native candidate search and wait for its durable Run to finish.".into(),
+                instruction: "After the user reviews and starts the frozen contract, run the bounded SuperScience-native candidate search and wait for its durable Run to finish.".into(),
                 depends_on: vec!["prepare_contract".into()],
                 task_kind: superscience_core::WorkflowTaskKind::RunActivity,
                 run_activity: Some(dynamic_workflow::RunActivityProposal {
@@ -1886,7 +1886,7 @@ mod tests {
     const DEMO_SKILL_MD: &str = "---\n\
          name: demo-skill\n\
          description: Demo skill for workflow conversion.\n\
-         wisp:\n  \
+         superscience:\n  \
          schema_version: 1\n  \
          side_effects: code_execution\n\
          ---\n\

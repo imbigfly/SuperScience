@@ -220,7 +220,7 @@ impl StoreWorkflowRunActivityDriver {
         ])
         .to_string();
         run.progress_json = serde_json::json!({
-            "schema": "wisp.method-search-progress.v1",
+            "schema": "superscience.method-search-progress.v1",
             "phase": "awaiting_approval",
             "baseline_primary": audit.baseline.median_primary,
             "best_primary": audit.baseline.median_primary,
@@ -480,7 +480,7 @@ struct MethodSearchCheckpoint {
 impl Default for MethodSearchCheckpoint {
     fn default() -> Self {
         Self {
-            schema: "wisp.method-search-checkpoint.v1".into(),
+            schema: "superscience.method-search-checkpoint.v1".into(),
             next_sequence: 1,
             cost_microunits: 0,
             best_candidate_id: None,
@@ -993,7 +993,7 @@ fn checkpoint_from_state(state: &MethodSearchRunState) -> Result<MethodSearchChe
     }
     let checkpoint: MethodSearchCheckpoint =
         serde_json::from_str(&state.checkpoint_json).map_err(|error| error.to_string())?;
-    if checkpoint.schema != "wisp.method-search-checkpoint.v1"
+    if checkpoint.schema != "superscience.method-search-checkpoint.v1"
         || checkpoint.next_sequence == 0
         || checkpoint.next_sequence > 51
     {
@@ -1042,7 +1042,7 @@ async fn persist_progress(
             .total_cmp(&right.utility.unwrap_or(f64::NEG_INFINITY))
     });
     let progress = MethodSearchProgress {
-        schema: "wisp.method-search-progress.v1".into(),
+        schema: "superscience.method-search-progress.v1".into(),
         phase: "search".into(),
         baseline_primary: contract.audit.baseline.median_primary,
         best_primary: best
@@ -1507,7 +1507,7 @@ async fn finalize_search(
     )
     .await?;
     let history = serde_json::to_vec_pretty(&serde_json::json!({
-        "schema": "wisp.method-search-history.v1",
+        "schema": "superscience.method-search-history.v1",
         "run_id": run_id,
         "candidates": candidates,
         "strategies": store.list_method_strategy_stats(run_id).await.map_err(|e| e.to_string())?
@@ -1531,7 +1531,7 @@ async fn finalize_search(
         "validation_only"
     };
     let report_value = serde_json::json!({
-        "schema": "wisp.method-search-verification.v1",
+        "schema": "superscience.method-search-verification.v1",
         "run_id": run_id,
         "result_status": result_status,
         "selected_candidate_id": selected_id,
@@ -2395,7 +2395,7 @@ pub(crate) fn linked_activity_state(
     model_profile_id: &str,
 ) -> String {
     serde_json::json!({
-        "schema": "wisp.workflow-run-activity.v1",
+        "schema": "superscience.workflow-run-activity.v1",
         "spec_artifact_version_id": spec_artifact_version_id,
         "spec_sha256": spec_sha256,
         "model_profile_id": model_profile_id
@@ -2441,7 +2441,7 @@ mod tests {
     impl TestDirectory {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "wisp-method-coordinator-test-{}",
+                "superscience-method-coordinator-test-{}",
                 uuid::Uuid::new_v4()
             ));
             std::fs::create_dir_all(&path).unwrap();
@@ -2584,7 +2584,7 @@ mod tests {
         std::fs::write(root.0.join("analysis/evaluate.py"), "# scripted\n").unwrap();
         std::fs::write(root.0.join("data/validation.csv"), "x,y\n1,1\n").unwrap();
         std::fs::write(root.0.join("data/final.csv"), "x,y\n2,2\n").unwrap();
-        let store = Store::open(&root.0.join("wisp.db")).await.unwrap();
+        let store = Store::open(&root.0.join("superscience.db")).await.unwrap();
         store
             .create_project("project", "Project", root.0.to_str().unwrap())
             .await
@@ -2617,7 +2617,7 @@ mod tests {
                 }],
                 constraints: vec!["Keep the public signature unchanged".into()],
                 strategy_sources: vec![superscience_core::method_search::MethodStrategySource {
-                    source_ref: "doi:10.0000/wisp.fixture".into(),
+                    source_ref: "doi:10.0000/superscience.fixture".into(),
                     title: "Fixture method".into(),
                     summary: "Try a bounded representation improvement.".into(),
                     category: "literature_or_method".into(),
@@ -2763,7 +2763,7 @@ mod tests {
                 serde_json::from_str::<Vec<String>>(&strategy.source_refs_json).unwrap_or_default()
             })
             .collect::<Vec<_>>();
-        assert_eq!(strategy_sources, ["doi:10.0000/wisp.fixture"]);
+        assert_eq!(strategy_sources, ["doi:10.0000/superscience.fixture"]);
         let graph = store.research_graph("project").await.unwrap();
         assert!(graph
             .nodes
@@ -2932,7 +2932,7 @@ mod tests {
     fn frozen_context_python_configuration_is_used_without_shell_parsing() {
         let mut context = ExecutionContext::new("local", "Local").unwrap();
         context.config_json = serde_json::json!({
-            "python_executable": "/opt/wisp/python"
+            "python_executable": "/opt/superscience/python"
         })
         .to_string();
         context.capabilities_json = serde_json::json!({
@@ -2941,7 +2941,7 @@ mod tests {
         .to_string();
         assert_eq!(
             configured_python(&context).unwrap().as_deref(),
-            Some("/opt/wisp/python")
+            Some("/opt/superscience/python")
         );
     }
 }

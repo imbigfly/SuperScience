@@ -35,7 +35,8 @@ use bindings::{
     invoke_checked, invoke_timeout, is_mac, is_windows, jump_chat_to_item, jump_chat_to_last_user,
     jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
     native_drop_in_composer, open_external_url, pasted_image_count, preserve_chat_prepend_position,
-    preview_selection, schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    preview_selection, schedule_chat_follow, cancel_saved_marks_apply, set_saved_marks,
+    CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -209,6 +210,7 @@ fn App() -> impl IntoView {
     // in-flight turn; `transcripts` caches the live transcript of background
     // (non-active) sessions so switching to them shows streaming progress.
     let running = create_rw_signal::<HashSet<String>>(HashSet::new());
+    let reviewing = create_rw_signal::<HashSet<String>>(HashSet::new());
     let approval_pending = create_rw_signal::<HashSet<String>>(HashSet::new());
     let pet_activity = create_rw_signal((String::from("idle"), 0_u64));
     let pending_turns = create_rw_signal::<HashMap<String, usize>>(HashMap::new());
@@ -279,6 +281,7 @@ fn App() -> impl IntoView {
     // from `settings`, which also holds unsaved edits while Settings is open.
     let sync_actions_available = create_rw_signal(false);
     let pet_status = create_rw_signal(PetStatus::default());
+    let run_records = create_rw_signal::<Vec<RunRecord>>(vec![]);
     // Configured model profiles + the composer's bottom-right picker state.
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
     let active_session = create_rw_signal::<Option<String>>(None);
@@ -365,7 +368,21 @@ fn App() -> impl IntoView {
             acp_context_usage.with(|all| all.get(&session_id).cloned())
         } else {
             let _ = transcript_projection_epoch.get();
-            items.with_untracked(|rows| latest_context_usage(rows))
+            let snapshot = items.with_untracked(|rows| latest_context_usage(rows));
+            // A usage row only appears after a turn runs, so its `max` names
+            // the model that produced it. Re-base the limit on the model the
+            // session is bound to now: switching models or editing the
+            // profile's window must move the gauge without waiting a turn.
+            snapshot.map(|mut snapshot| {
+                if let Some(max) = session_context_window(
+                    &models.get(),
+                    &session_model_ids.get(),
+                    Some(&session_id),
+                ) {
+                    snapshot.max = max as usize;
+                }
+                snapshot
+            })
         }
     });
     create_effect(move |_| {
@@ -394,6 +411,7 @@ fn App() -> impl IntoView {
     let project_info = create_rw_signal::<Option<ProjectInfo>>(None);
     let demo_mode = create_rw_signal(false); // true = the synthetic "Example project" is open
     let scratch_open = create_rw_signal(false); // ephemeral scratch chat overlay
+    let feedback_context = create_rw_signal::<Option<String>>(None);
     let project_open_error = create_rw_signal(None::<String>);
     let project_transfer = create_rw_signal(None::<ProjectTransferProgress>);
     let app_shell_entering = create_rw_signal(false);
@@ -403,6 +421,7 @@ fn App() -> impl IntoView {
     let model_menu_open = create_rw_signal(false);
     let model_switch_confirm = create_rw_signal::<Option<(String, String, bool)>>(None);
     let status = create_rw_signal(String::new());
+    let compaction_active = create_rw_signal(false);
     let switch_http_model = Callback::new(move |(id, dont_ask_again): (String, bool)| {
         provisional_acp_selection.set(None);
         active_acp_agent_id.set(None);
@@ -668,6 +687,9 @@ fn App() -> impl IntoView {
             .get()
             .map(|id| r.contains(&id))
             .unwrap_or(false);
+        if b {
+            cancel_saved_marks_apply();
+        }
         busy.set(b);
     });
     // Settled transcript edits refresh projections automatically. While a turn
@@ -853,6 +875,28 @@ fn App() -> impl IntoView {
                 })
                 .collect::<HashSet<_>>()
         })
+    });
+    let automatic_session_runs = create_memo(move |_| {
+        let Some(frame_id) = active_session.get() else {
+            return Vec::new();
+        };
+        let monitored = monitored_run_ids.get();
+        let now = js_sys::Date::now() as i64 / 1000;
+        let mut runs = run_records.with(|runs| {
+            runs.iter()
+                .filter(|run| run.frame_id.as_deref() == Some(frame_id.as_str()))
+                .filter(|run| !monitored.contains(&run.id))
+                .filter(|run| {
+                    matches!(run.status.as_str(), "submitted" | "running" | "cancelling")
+                        || run
+                            .ended_at
+                            .is_some_and(|ended| now.saturating_sub(ended) <= 60)
+                })
+                .map(|run| (run.id.clone(), run.created_at))
+                .collect::<Vec<_>>()
+        });
+        runs.sort_by_key(|(_, created_at)| *created_at);
+        runs
     });
     let sel_artifact = create_rw_signal(0usize);
     let show_art_preview = create_rw_signal(false);
@@ -1451,6 +1495,7 @@ fn App() -> impl IntoView {
     };
     let pet_activity_cb = pet_activity;
     let status_cb = status;
+    let compaction_active_cb = compaction_active;
     let locale_cb = locale;
     let models_cb = models;
     let session_models_cb = session_model_ids;
@@ -1572,6 +1617,11 @@ fn App() -> impl IntoView {
                 });
             }
         };
+        let finish_compaction = |frame_id: &str| {
+            if active_cb.get_untracked().as_deref() == Some(frame_id) {
+                compaction_active_cb.set(false);
+            }
+        };
         let refresh_transcript_projections = |frame_id: &str| {
             if active_cb.get_untracked().as_deref() == Some(frame_id) {
                 transcript_projection_epoch_cb.update(|revision| {
@@ -1580,6 +1630,11 @@ fn App() -> impl IntoView {
             }
         };
         match ev {
+            AgentEvent::CompactionStarted { frame_id, .. } => {
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    compaction_active_cb.set(true);
+                }
+            }
             AgentEvent::User { frame_id, text } => {
                 follow_up_questions.update(|questions| {
                     questions.remove(&frame_id);
@@ -1633,6 +1688,7 @@ fn App() -> impl IntoView {
                 });
             }
             AgentEvent::Text { frame_id, delta } => {
+                finish_compaction(&frame_id);
                 set_pet_activity(&frame_id, "running");
                 let needs_response_time = conversation_outlines_cb.with_untracked(|outlines| {
                     outlines
@@ -1653,6 +1709,7 @@ fn App() -> impl IntoView {
                 queue(frame_id, PendingDelta::Text(delta));
             }
             AgentEvent::Reasoning { frame_id, delta } => {
+                finish_compaction(&frame_id);
                 set_pet_activity(&frame_id, "running");
                 queue(frame_id, PendingDelta::Reasoning(delta));
             }
@@ -1661,6 +1718,7 @@ fn App() -> impl IntoView {
                 name,
                 preview,
             } => {
+                finish_compaction(&frame_id);
                 set_pet_activity(&frame_id, "review");
                 flush_now();
                 route_items(active_cb, items_cb, transcripts_cb, &frame_id, |v| {
@@ -1800,6 +1858,7 @@ fn App() -> impl IntoView {
                 after,
                 strategy,
             } => {
+                finish_compaction(&frame_id);
                 route_items(active_cb, items_cb, transcripts_cb, &frame_id, |items| {
                     items.push(ChatItem::Compaction {
                         before,
@@ -1844,6 +1903,7 @@ fn App() -> impl IntoView {
                 frame_id,
                 stop_reason: _,
             } => {
+                finish_compaction(&frame_id);
                 flush_now();
                 conversation_outlines_cb.update(|outlines| {
                     if let Some(entry) = outlines
@@ -1900,6 +1960,7 @@ fn App() -> impl IntoView {
                 }
             }
             AgentEvent::Error { frame_id, message } => {
+                finish_compaction(&frame_id);
                 flush_now();
                 conversation_outlines_cb.update(|outlines| {
                     if let Some(entry) = outlines
@@ -1932,7 +1993,7 @@ fn App() -> impl IntoView {
                 let offer_context_recovery = !rolled_back
                     && i18n::is_context_limit_error(&message)
                     && active_cb.get_untracked().as_deref() == Some(&frame_id)
-                    // ACP owns its remote transcript and cannot run Wisp's
+                    // ACP owns its remote transcript and cannot run SuperScience's
                     // /compact + resume path. Do not offer an action that
                     // cannot preserve its opaque session state.
                     && active_acp_agent_id.get_untracked().is_none();
@@ -1945,11 +2006,23 @@ fn App() -> impl IntoView {
                     route_items(active_cb, items_cb, transcripts_cb, &frame_id, |v| {
                         strip_approval_pending(v);
                         settle_plan_cards(v);
-                        v.push(ChatItem::Assistant {
-                            text: format!("Error: {message}"),
-                            model,
-                            resources: Vec::new(),
-                        });
+                        // Prefer filling the optimistic blank assistant so a later
+                        // invoke rejection does not see "user + empty" and roll the
+                        // durable user bubble back into the draft.
+                        let error_text = format!("Error: {message}");
+                        if let Some(ChatItem::Assistant { text, .. }) = v
+                            .iter_mut()
+                            .rev()
+                            .find(|item| matches!(item, ChatItem::Assistant { text, .. } if text.is_empty()))
+                        {
+                            *text = error_text;
+                        } else {
+                            v.push(ChatItem::Assistant {
+                                text: error_text,
+                                model,
+                                resources: Vec::new(),
+                            });
+                        }
                     });
                 }
                 refresh_transcript_projections(&frame_id);
@@ -2535,6 +2608,16 @@ fn App() -> impl IntoView {
         let quotes = composer_quotes.get();
         let paths = attachment_paths(&saved_attachments);
         let display_message = message_with_composer_context(&message, &paths, &refs, &quotes);
+        let attached_feedback = feedback_context.get();
+        let agent_message = attached_feedback.as_ref().map_or_else(
+            || display_message.clone(),
+            |context| {
+                format!(
+                    "{display_message}\n\nFeedback context: {}",
+                    serde_json::to_string(context).unwrap_or_default()
+                )
+            },
+        );
         let reference_args = refs
             .iter()
             .map(ComposerReferenceChip::arg)
@@ -2627,6 +2710,7 @@ fn App() -> impl IntoView {
         composer_references.set(vec![]);
         composer_quotes.set(vec![]);
         picker_mode.set(None);
+        feedback_context.set(None);
         spawn_local(async move {
             let id = if branch {
                 let args = to_value(&tauri_args::branch_session(
@@ -2642,6 +2726,7 @@ fn App() -> impl IntoView {
                         attachments.set(saved_attachments);
                         composer_references.set(refs);
                         composer_quotes.set(quotes);
+                        feedback_context.set(attached_feedback.clone());
                         status.set(t(locale.get(), "status.send_failed").into());
                         return;
                     }
@@ -2656,6 +2741,7 @@ fn App() -> impl IntoView {
                         attachments.set(saved_attachments);
                         composer_references.set(refs);
                         composer_quotes.set(quotes);
+                        feedback_context.set(attached_feedback.clone());
                         status.set(t(locale.get(), "status.send_failed").into());
                         return;
                     }
@@ -2714,7 +2800,7 @@ fn App() -> impl IntoView {
             // duplicate; after a session switch only the persisted body remains.
             let args = to_value(&SendMessageArgs {
                 session_id: Some(id.clone()),
-                message: display_message.clone(),
+                message: agent_message,
                 attachments: paths,
                 references: reference_args,
                 resume: false,
@@ -2739,18 +2825,43 @@ fn App() -> impl IntoView {
                 }
                 Err(error) => {
                     let raw = js_error_text(error);
-                    let (started, message_text) = split_turn_started_error(&raw);
+                    // Prefer transcript evidence: Error/Reasoning/Tool events can
+                    // finish before invoke rejects, and a bare string must not
+                    // treat an already-started turn as a pre-start rollback.
+                    // Draft restore must follow whether the bubble was actually
+                    // removed — not a prior snapshot of "started" that races
+                    // the live agent bus.
+                    let (_, status_message) = split_turn_started_error(&raw);
+                    let rolled_back = Rc::new(Cell::new(false));
+                    let rolled_back_flag = rolled_back.clone();
                     route_items(active_session, items, transcripts, &id, |rows| {
+                        let (started, message_text) =
+                            send_failed_after_start(rows, &display_message, &raw);
+                        let had_user = rows.iter().any(|item| {
+                            matches!(item, ChatItem::User(value) if value == &display_message)
+                                || matches!(
+                                    item,
+                                    ChatItem::QueuedUser { text, .. } if text == &display_message
+                                )
+                        });
                         if started {
                             mark_optimistic_send_failed(rows, &display_message, message_text);
                         } else {
                             remove_optimistic_send_rows(rows, &display_message);
                         }
+                        let kept_user = rows.iter().any(|item| {
+                            matches!(item, ChatItem::User(value) if value == &display_message)
+                                || matches!(
+                                    item,
+                                    ChatItem::QueuedUser { text, .. } if text == &display_message
+                                )
+                        });
+                        rolled_back_flag.set(had_user && !kept_user);
                     });
                     transcript_projection_epoch.update(|revision| {
                         *revision = revision.wrapping_add(1);
                     });
-                    if !started {
+                    if rolled_back.get() {
                         if input.get_untracked().is_empty() {
                             input.set(message);
                         }
@@ -2763,6 +2874,7 @@ fn App() -> impl IntoView {
                         if composer_quotes.get_untracked().is_empty() {
                             composer_quotes.set(quotes);
                         }
+                        feedback_context.set(attached_feedback.clone());
                     }
                     if raw.contains(NO_API_KEY_MARK) {
                         needs_api_key.set(true);
@@ -2770,7 +2882,7 @@ fn App() -> impl IntoView {
                     status.set(tf(
                         locale.get(),
                         "status.send_failed",
-                        &[("msg", &localize_backend(locale.get(), message_text))],
+                        &[("msg", &localize_backend(locale.get(), status_message))],
                     ));
                 }
             }
@@ -3504,7 +3616,12 @@ fn App() -> impl IntoView {
         upload_from_paste(attachments, uploading, event, count);
     };
 
-    let composer_blocked = move || uploading.get();
+    let composer_blocked = move || {
+        uploading.get()
+            || active_session
+                .get()
+                .is_some_and(|id| reviewing.with(|ids| ids.contains(&id)))
+    };
 
     let run_update_check = Rc::new(move || {
         if update_check_busy.get() {
@@ -3577,7 +3694,7 @@ fn App() -> impl IntoView {
                             modal.set(Some(UpdateCheckModal::Failed {
                                 message: text,
                                 release_url: Some(
-                                    "https://github.com/xuzhougeng/wisp-science/releases".into(),
+                                    "https://github.com/imbigfly/SuperScience/releases".into(),
                                 ),
                             }));
                         }
@@ -3591,7 +3708,7 @@ fn App() -> impl IntoView {
                         modal.set(Some(UpdateCheckModal::Failed {
                             message: text,
                             release_url: Some(
-                                "https://github.com/xuzhougeng/wisp-science/releases".into(),
+                                "https://github.com/imbigfly/SuperScience/releases".into(),
                             ),
                         }));
                     }
@@ -4015,6 +4132,22 @@ fn App() -> impl IntoView {
             model_form_msg.set(Some((false, text)));
             return;
         }
+        // A recognized model family has a documented output ceiling; saving a
+        // larger max_tokens only ever surfaces as a provider 400 mid-turn.
+        if let Some((ceiling, _)) = settings_view::known_model_limits(&form.model) {
+            if form.max_tokens > ceiling {
+                let text = tf(
+                    loc,
+                    "err.max_tokens_ceiling",
+                    &[
+                        ("model", form.model.trim()),
+                        ("max", &ceiling.to_string()),
+                    ],
+                );
+                model_form_msg.set(Some((false, text)));
+                return;
+            }
+        }
         settings_busy.set(true);
         model_form_msg.set(Some((true, t(loc, "status.saving_settings").into())));
         let provider = provider_value(&form.provider);
@@ -4352,6 +4485,45 @@ fn App() -> impl IntoView {
         }
     };
 
+    let start_issue_report = {
+        let items = items;
+        let locale = locale;
+        let demo_mode = demo_mode;
+        let center_file = center_file;
+        let active_session = active_session;
+        let sel_artifact = sel_artifact;
+        let right_tab = right_tab;
+        let models = models;
+        let transcripts = transcripts;
+        move |_| {
+            demo_mode.set(false);
+            center_file.set(None);
+            if let Some(old) = active_session.get() {
+                transcripts.update(|m| {
+                    m.insert(old, items.get());
+                });
+            }
+            attachments.set(vec![]);
+            composer_references.set(vec![]);
+            composer_quotes.set(vec![]);
+            sel_artifact.set(0);
+            right_tab.set(RightTab::Artifacts);
+            active_session.set(None);
+            items.set(vec![]);
+            input.set(String::new());
+            let model = active_model_label(&models.get_untracked())
+                .unwrap_or_else(|| "not configured".into());
+            feedback_context.set(Some(issue_report_chat_prompt(
+                locale.get_untracked(),
+                bootstrap.get_untracked().as_ref(),
+                &model,
+            )));
+            show_sidebar.set(false);
+            show_right.set(false);
+            focus_composer();
+        }
+    };
+
     let use_plugin = Callback::new(
         move |(plugin_id, version, display_name, skill_names, enabled): (
             String,
@@ -4677,10 +4849,17 @@ fn App() -> impl IntoView {
     });
 
     let request_session_review = Callback::new(move |session_id: String| {
+        if reviewing.with_untracked(|ids| ids.contains(&session_id)) {
+            return;
+        }
+        reviewing.update(|ids| {
+            ids.insert(session_id.clone());
+        });
         let loc = locale.get_untracked();
         status.set(t(loc, "status.reviewing"));
         spawn_local(async move {
-            let arg = to_value(&tauri_args::review_session(&Some(session_id))).unwrap();
+            let arg =
+                to_value(&tauri_args::review_session(&Some(session_id.clone()))).unwrap();
             if let Err(err) = invoke_checked("review_session", arg).await {
                 status.set(tf(
                     loc,
@@ -4688,6 +4867,9 @@ fn App() -> impl IntoView {
                     &[("msg", &localize_backend(loc, &js_error_text(err)))],
                 ));
             }
+            reviewing.update(|ids| {
+                ids.remove(&session_id);
+            });
         });
     });
 
@@ -5251,6 +5433,7 @@ fn App() -> impl IntoView {
     let reviewer_model_menu_open = create_rw_signal(false);
     let compute_menu_open = create_rw_signal(false);
     let compute_search = create_rw_signal(String::new());
+    let hosts_attach_search = create_rw_signal(String::new());
     let specialist_menu_open = create_rw_signal(false);
     let auto_review_enabled = create_rw_signal(false);
     let delegation_enabled = create_rw_signal(false);
@@ -5401,7 +5584,6 @@ fn App() -> impl IntoView {
     let runtime_infos = create_rw_signal::<Vec<RuntimeInfo>>(vec![]);
     let runtime_object_states =
         create_rw_signal::<HashMap<String, RuntimeObjectState>>(HashMap::new());
-    let run_records = create_rw_signal::<Vec<RunRecord>>(vec![]);
     let run_clock = create_rw_signal(now_secs());
     let show_add_host = create_rw_signal(false);
     let host_alias = create_rw_signal(String::new());
@@ -5784,6 +5966,12 @@ fn App() -> impl IntoView {
     // or the library changes. Token batches deliberately do not rescan the DOM.
     create_effect(move |_| {
         let _ = transcript_projection_epoch.get();
+        if active_session
+            .get()
+            .is_some_and(|id| running.get().contains(&id))
+        {
+            return;
+        }
         let texts = match active_session.get() {
             Some(session) => library_items.with(|items| {
                 items
@@ -7187,6 +7375,12 @@ fn App() -> impl IntoView {
             composer_references.update(|items| items.push(reference));
         }
     });
+    #[derive(Default, serde::Deserialize)]
+    struct SessionArchiveImportSummary {
+        frame_id: String,
+        status: String,
+        message_count: usize,
+    }
     let palette_action = {
         let new_session = palette_new_session.clone();
         let open_scratch = open_scratch.clone();
@@ -7215,14 +7409,58 @@ fn App() -> impl IntoView {
                     show_session_import.set(Some(SessionImportProvider::Claude));
                 }
             }
+            "import-session" => {
+                if let Some(project) = project_info
+                    .get_untracked()
+                    .filter(|_| !demo_mode.get_untracked())
+                {
+                    spawn_local(async move {
+                        let arg = to_value(&serde_json::json!({})).unwrap();
+                        let value = match invoke_checked("import_session_archive", arg).await {
+                            Ok(value) => value,
+                            Err(error) => {
+                                show_toast(&localize_backend(
+                                    locale.get_untracked(),
+                                    &js_error_text(error),
+                                ));
+                                return;
+                            }
+                        };
+                        if value.is_null() {
+                            return;
+                        }
+                        let summary = serde_wasm_bindgen::from_value::<
+                            SessionArchiveImportSummary,
+                        >(value)
+                        .unwrap_or_default();
+                        let loc = locale.get_untracked();
+                        let key = match summary.status.as_str() {
+                            "imported" => "import.session_imported",
+                            "updated" => "import.session_updated",
+                            _ => "import.session_skipped",
+                        };
+                        show_toast(&tf(
+                            loc,
+                            key,
+                            &[("n", &summary.message_count.to_string())],
+                        ));
+                        refresh_sessions(sessions, pending_turns, running, session_history_cursor);
+                        refresh_folders(folders);
+                        if summary.status != "skipped" && !summary.frame_id.is_empty() {
+                            open_project_transition
+                                .call((project.id, Some(summary.frame_id)));
+                        }
+                    });
+                }
+            }
             "project-settings" => project_settings.call(()),
             "export-current-project" => export_current_project.call(()),
             "skills" => manage_skills.call(()),
             "check-updates" => run_update_check(),
-            "docs" => open_external_url("https://github.com/xuzhougeng/wisp-science#readme".into()),
-            "star-us" => open_external_url("https://github.com/xuzhougeng/wisp-science".into()),
+            "docs" => open_external_url("https://github.com/imbigfly/SuperScience#readme".into()),
+            "star-us" => open_external_url("https://github.com/imbigfly/SuperScience".into()),
             "issues" => {
-                open_external_url("https://github.com/xuzhougeng/wisp-science/issues".into())
+                open_external_url("https://github.com/imbigfly/SuperScience/issues".into())
             }
             "toggle-sidebar" => show_sidebar.update(|show| *show = !*show),
             "artifacts" => {
@@ -7259,6 +7497,10 @@ fn App() -> impl IntoView {
             "theme-light" => theme_mode.set("light".into()),
             "theme-dark" => theme_mode.set("dark".into()),
             "theme-system" => theme_mode.set("system".into()),
+            "font-ui-increase" => ui_font_size.update(|size| *size = (*size + 1).min(18)),
+            "font-ui-decrease" => ui_font_size.update(|size| *size = size.saturating_sub(1).max(12)),
+            "font-code-increase" => code_font_size.update(|size| *size = (*size + 1).min(18)),
+            "font-code-decrease" => code_font_size.update(|size| *size = size.saturating_sub(1).max(10)),
             _ => {}
         })
     };
@@ -7272,11 +7514,11 @@ fn App() -> impl IntoView {
             match action.as_str() {
                 "check-updates" => run_update_check(),
                 "docs" => {
-                    open_external_url("https://github.com/xuzhougeng/wisp-science#readme".into())
+                    open_external_url("https://github.com/imbigfly/SuperScience#readme".into())
                 }
-                "star-us" => open_external_url("https://github.com/xuzhougeng/wisp-science".into()),
+                "star-us" => open_external_url("https://github.com/imbigfly/SuperScience".into()),
                 "issues" => {
-                    open_external_url("https://github.com/xuzhougeng/wisp-science/issues".into())
+                    open_external_url("https://github.com/imbigfly/SuperScience/issues".into())
                 }
                 other => {
                     if let Some(action) = match other {
@@ -7571,6 +7813,7 @@ fn App() -> impl IntoView {
                 )));
             })
             open_capabilities=Callback::new(open_capabilities)
+            open_issue_report=Callback::new(start_issue_report)
             open_settings=Callback::new(open_settings)
             on_sidebar_resize_start=Callback::new(on_sidebar_resize_start)
         />
@@ -7640,6 +7883,31 @@ fn App() -> impl IntoView {
                                     {move || t(locale.get(), "status.open_settings")}
                                 </button>
                             </span>
+                        }.into_view())
+                    } else if compaction_active.get() {
+                        Some(view! {
+                            <div class="context-compaction-live" role="status" data-testid="context-compaction-live">
+                                <span class="context-compaction-spectrum" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+                                <span class="context-compaction-live-copy">
+                                    <strong>{move || t(locale.get(), "chat.compacting_title")}</strong>
+                                    <span>{move || t(locale.get(), "chat.compacting_note")}</span>
+                                </span>
+                            </div>
+                        }.into_view())
+                    } else if active_session
+                        .get()
+                        .is_some_and(|id| reviewing.with(|ids| ids.contains(&id)))
+                    {
+                        Some(view! {
+                            <div class="review-live" role="status" data-testid="review-live">
+                                <span class="review-live-lens" aria-hidden="true">
+                                    <i></i><i></i><i></i>
+                                </span>
+                                <span class="context-compaction-live-copy">
+                                    <strong>{move || t(locale.get(), "chat.reviewing_title")}</strong>
+                                    <span>{move || t(locale.get(), "chat.reviewing_note")}</span>
+                                </span>
+                            </div>
                         }.into_view())
                     } else {
                         let s = status.get();
@@ -8366,7 +8634,47 @@ fn App() -> impl IntoView {
                                     i += 1;
                                 }
                             }
-                            rows
+                            // Runs without an inline `monitor_run` tool row only carry a
+                            // session id. Use their persisted creation time to put the
+                            // fallback card before the next user turn instead of always
+                            // appending it to the live end of the conversation.
+                            let automatic_runs = automatic_session_runs.get();
+                            let mut automatic_runs = automatic_runs.into_iter().peekable();
+                            let mut anchored = Vec::with_capacity(rows.len() + automatic_runs.len());
+                            let mut synthetic_start = list.len();
+                            for row in rows {
+                                let next_user_at = match &row.4 {
+                                    ThreadRow::Item { i, timestamp, .. }
+                                        if matches!(list[*i], ChatItem::User(_)) => *timestamp,
+                                    _ => None,
+                                };
+                                if let Some(next_user_at) = next_user_at {
+                                    while automatic_runs
+                                        .peek()
+                                        .is_some_and(|(_, created_at)| *created_at < next_user_at)
+                                    {
+                                        let (run_id, _) = automatic_runs.next().unwrap();
+                                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                                        run_id.hash(&mut h);
+                                        anchored.push((
+                                            thread_session_id.clone(), synthetic_start, false, h.finish(),
+                                            ThreadRow::AutoRun { run_id },
+                                        ));
+                                        synthetic_start += 1;
+                                    }
+                                }
+                                anchored.push(row);
+                            }
+                            for (run_id, _) in automatic_runs {
+                                let mut h = std::collections::hash_map::DefaultHasher::new();
+                                run_id.hash(&mut h);
+                                anchored.push((
+                                    thread_session_id.clone(), synthetic_start, false, h.finish(),
+                                    ThreadRow::AutoRun { run_id },
+                                ));
+                                synthetic_start += 1;
+                            }
+                            anchored
                             }))
                         }
                         key=|(session_id, start, streaming, fp, _)| {
@@ -8374,6 +8682,18 @@ fn App() -> impl IntoView {
                         }
                         children=move |(session_id, start, _, _, row)| {
                             match row {
+                                ThreadRow::AutoRun { run_id } => view! {
+                                    <div class="tool-wrap run-monitor-wrap auto-run-monitor"
+                                        data-testid="auto-run-monitor">
+                                        <RunMonitorCard
+                                            run_id=run_id
+                                            runs=run_records
+                                            clock=run_clock.read_only()
+                                            tool_ok=None
+                                            tool_output=String::new()
+                                        />
+                                    </div>
+                                }.into_view(),
                                 ThreadRow::Item {
                                     i,
                                     timestamp,
@@ -8513,38 +8833,6 @@ fn App() -> impl IntoView {
                             }
                         })
                     })}
-                    {move || {
-                        let Some(frame_id) = active_session.get() else {
-                            return Vec::<View>::new().into_view();
-                        };
-                        let monitored = monitored_run_ids.get();
-                        let now = js_sys::Date::now() as i64 / 1000;
-                        run_records.with(|runs| runs
-                            .iter()
-                            .filter(|run| run.frame_id.as_deref() == Some(frame_id.as_str()))
-                            .filter(|run| !monitored.contains(&run.id))
-                            .filter(|run| {
-                                matches!(run.status.as_str(), "submitted" | "running" | "cancelling")
-                                    || run.ended_at.is_some_and(|ended| now.saturating_sub(ended) <= 60)
-                            })
-                            .map(|run| {
-                                let run_id = run.id.clone();
-                                view! {
-                                    <div class="tool-wrap run-monitor-wrap auto-run-monitor"
-                                        data-testid="auto-run-monitor">
-                                        <RunMonitorCard
-                                            run_id=run_id
-                                            runs=run_records
-                                            clock=run_clock.read_only()
-                                            tool_ok=None
-                                            tool_output=String::new()
-                                        />
-                                    </div>
-                                }
-                            })
-                            .collect_view()
-                            .into_view())
-                    }}
                     {move || (!busy.get()).then(|| active_session.get()).flatten().and_then(|id| {
                         transcript_pages.get().get(&id).copied().and_then(|page| {
                             let (_, start, total) = items.with(|rows| {
@@ -8781,6 +9069,21 @@ fn App() -> impl IntoView {
                         on:mousedown=on_composer_resize_start></div>
                     <input id="composer-file-input" type="file" multiple=true class="composer-file-input"
                         on:change=on_files_selected />
+                    {move || feedback_context.get().is_some().then(|| view! {
+                        <div class="composer-attachments composer-reference-chips" data-testid="feedback-context">
+                            <div class="composer-attachment-row composer-reference-card context">
+                                <span class="composer-attachment-icon">{compose_icon("server")}</span>
+                                <span class="composer-attachment-copy">
+                                    <span class="composer-attachment ready">{move || t(locale.get(), "issue_report.context")}</span>
+                                    <span class="composer-attachment-meta">{move || t(locale.get(), "issue_report.context_attached")}</span>
+                                </span>
+                                <button type="button" class="composer-attachment-remove"
+                                    title=move || t(locale.get(), "composer.remove_attachment")
+                                    aria-label=move || t(locale.get(), "composer.remove_attachment")
+                                    on:click=move |_| feedback_context.set(None)>{compose_icon("close")}</button>
+                            </div>
+                        </div>
+                    })}
                     {move || (!attachments.get().is_empty()).then(|| view! {
                         <div class="composer-attachments">
                             {attachments.get().into_iter().map(|att| {
@@ -9073,18 +9376,12 @@ fn App() -> impl IntoView {
                                     </div>
                                     <div class="compose-group">
                                         <div class="compose-group-label">{move || t(locale.get(), "composer.group_session")}</div>
-                                        <button type="button" class="compose-item"
+                                        <button type="button" class="compose-item" disabled=composer_blocked
                                             on:click=move |_| {
                                                 compose_menu_open.set(false);
-                                                let loc = locale.get();
-                                                status.set(t(loc, "status.reviewing"));
-                                                let sid = active_session.get();
-                                                spawn_local(async move {
-                                                    let arg = to_value(&tauri_args::review_session(&sid)).unwrap();
-                                                    if let Err(err) = invoke_checked("review_session", arg).await {
-                                                        status.set(tf(loc, "status.review_failed", &[("msg", &localize_backend(loc, &js_error_text(err)))]));
-                                                    }
-                                                });
+                                                if let Some(sid) = active_session.get() {
+                                                    request_session_review.call(sid);
+                                                }
                                             }>
                                             <span class="compose-item-icon">{compose_icon("review")}</span>
                                             <span class="compose-item-text">
@@ -11078,6 +11375,7 @@ fn App() -> impl IntoView {
                                                 let status_class = format!("context-status {status}");
                                                 let summary = context_capability_summary(&ctx);
                                                 let label = if ctx.label.trim().is_empty() { ctx.id.clone() } else { ctx.label.clone() };
+                                                let can_detach = ctx.kind != "local";
                                                 let active_context_id = ctx.id.clone();
                                                 let pressed_context_id = ctx.id.clone();
                                                 let select_context_id = ctx.id.clone();
@@ -11085,6 +11383,7 @@ fn App() -> impl IntoView {
                                                 let runs_context_id = ctx.id.clone();
                                                 let probe_context_id = ctx.id.clone();
                                                 let terminal_context_id = ctx.id.clone();
+                                                let detach_context_id = ctx.id.clone();
                                                 let runtime_config_context = ctx.clone();
                                                 let config_context_id = ctx.id.clone();
                                                 view! {
@@ -11115,7 +11414,7 @@ fn App() -> impl IntoView {
                                                                     on:click=move |_| {
                                                                         selected_context_id.set(Some(runtime_context_id.clone()));
                                                                         context_details_modal.set(Some((runtime_context_id.clone(), ContextModalKind::Runtimes)));
-                                                                    }>{compose_icon("terminal")}</button>
+                                                                    }>{compose_icon("runtime-panel")}</button>
                                                                 <button type="button" class="context-terminal context-runs"
                                                                     title=t(loc, "contexts.view_runs")
                                                                     aria-label=t(loc, "contexts.view_runs")
@@ -11160,12 +11459,112 @@ fn App() -> impl IntoView {
                                                                         selected_context_id.set(Some(terminal_context_id.clone()));
                                                                         open_terminal_for_context.call(terminal_context_id.clone());
                                                                     }>{compose_icon("terminal")}</button>
+                                                                {can_detach.then(|| view! {
+                                                                    <button type="button" class="context-terminal context-detach"
+                                                                        title=t(loc, "contexts.detach")
+                                                                        aria-label=t(loc, "contexts.detach")
+                                                                        on:click=move |_| {
+                                                                            toggle_session_compute_resource
+                                                                                .call((detach_context_id.clone(), false));
+                                                                        }>{compose_icon("minus")}</button>
+                                                                })}
                                                             </div>
                                                         </div>
                                                     </div>
                                                 }.into_view()
                                             }).collect_view()
                                         }}
+                                        <div class="context-attach" data-testid="context-attach">
+                                            <div class="control-section-head">
+                                                <span>{t(loc, "contexts.attach")}</span>
+                                            </div>
+                                            <div class="compute-menu-search context-attach-search">
+                                                {compose_icon("search")}
+                                                <input type="search" inputmode="search" autocomplete="off"
+                                                    aria-label=t(loc, "compute.search")
+                                                    placeholder=t(loc, "compute.search")
+                                                    prop:value=move || hosts_attach_search.get()
+                                                    on:input=move |ev| hosts_attach_search.set(event_target_value(&ev)) />
+                                            </div>
+                                            <div class="context-attach-list">
+                                                {move || {
+                                                    let query = hosts_attach_search.get().trim().to_lowercase();
+                                                    let enabled = session_execution_contexts.get();
+                                                    let mut rows = Vec::new();
+                                                    for host in ssh_hosts.get() {
+                                                        let context_id = format!("ssh:{}", host.alias);
+                                                        if enabled.contains(&context_id) {
+                                                            continue;
+                                                        }
+                                                        if !query.is_empty()
+                                                            && !host.alias.to_lowercase().contains(&query)
+                                                        {
+                                                            continue;
+                                                        }
+                                                        let toggle_id = context_id.clone();
+                                                        let name = host.alias.clone();
+                                                        rows.push(view! {
+                                                            <button type="button"
+                                                                class="context-attach-row"
+                                                                data-context-id=context_id.clone()
+                                                                on:click=move |_| {
+                                                                    toggle_session_compute_resource
+                                                                        .call((toggle_id.clone(), true));
+                                                                }>
+                                                                <span class="compute-resource-icon">{compose_icon("server")}</span>
+                                                                <span class="compute-resource-name">{name}</span>
+                                                                <span class="compute-resource-state">
+                                                                    {t(loc, "contexts.attach_action")}
+                                                                </span>
+                                                            </button>
+                                                        }.into_view());
+                                                    }
+                                                    for ctx in execution_contexts.get()
+                                                        .into_iter()
+                                                        .filter(|ctx| ctx.kind == "wsl")
+                                                    {
+                                                        if enabled.contains(&ctx.id) {
+                                                            continue;
+                                                        }
+                                                        let name = if ctx.label.trim().is_empty() {
+                                                            ctx.id.clone()
+                                                        } else {
+                                                            ctx.label.clone()
+                                                        };
+                                                        if !query.is_empty()
+                                                            && !name.to_lowercase().contains(&query)
+                                                            && !ctx.id.to_lowercase().contains(&query)
+                                                        {
+                                                            continue;
+                                                        }
+                                                        let context_id = ctx.id.clone();
+                                                        let toggle_id = context_id.clone();
+                                                        rows.push(view! {
+                                                            <button type="button"
+                                                                class="context-attach-row"
+                                                                data-context-id=context_id.clone()
+                                                                on:click=move |_| {
+                                                                    toggle_session_compute_resource
+                                                                        .call((toggle_id.clone(), true));
+                                                                }>
+                                                                <span class="compute-resource-icon">{compose_icon("terminal")}</span>
+                                                                <span class="compute-resource-name">{name}</span>
+                                                                <span class="compute-resource-state">
+                                                                    {t(loc, "contexts.attach_action")}
+                                                                </span>
+                                                            </button>
+                                                        }.into_view());
+                                                    }
+                                                    if rows.is_empty() {
+                                                        view! {
+                                                            <div class="control-empty">{t(loc, "contexts.attach_empty")}</div>
+                                                        }.into_view()
+                                                    } else {
+                                                        rows.collect_view()
+                                                    }
+                                                }}
+                                            </div>
+                                        </div>
                                         <div class="context-actions">
                                             <button type="button" class="rp-hosts-add"
                                                 on:click=move |_| {

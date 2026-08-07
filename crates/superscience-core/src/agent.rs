@@ -279,11 +279,12 @@ async fn agent_loop_inner(
         let fixed_request_tokens = ContextManager::estimated_tool_tokens(&schemas);
         // Match the long-context behaviour used by mangopi-cli: check the
         // budget at every model boundary, not only when the user first sends a
-        // turn. Wisp's archive-first compactor preserves the full transcript
+        // turn. SuperScience's archive-first compactor preserves the full transcript
         // on disk before folding old turns, so automatic recovery has the same
         // retrievability contract as manual `/compact`.
         if ctx.needs_auto_compact_with_reserve(fixed_request_tokens) {
             let archive = auto_compact_archive_path(root);
+            output.compaction_started("auto");
             match ctx
                 .compact_with_reserve(provider, &archive, fixed_request_tokens)
                 .await
@@ -310,6 +311,7 @@ async fn agent_loop_inner(
                 Err(error) if error.is_context_overflow() && !overflow_recovery_used => {
                     overflow_recovery_used = true;
                     let archive = auto_compact_archive_path(root);
+                    output.compaction_started("overflow");
                     match ctx
                         .compact_with_reserve(provider, &archive, fixed_request_tokens)
                         .await
@@ -517,7 +519,9 @@ async fn agent_loop_inner(
             break;
         }
         if iteration_limit_reached(iteration, max_iter) {
-            break;
+            // Fail resumably (like empty-response / max_tokens) so the UI shows
+            // a concrete reason instead of a quiet "Processed" end-of-turn.
+            anyhow::bail!(iteration_limit_message(max_iter));
         }
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
             anyhow::bail!("stopped by user");
@@ -560,6 +564,12 @@ fn iteration_limit_reached(iteration: usize, max_iter: usize) -> bool {
     max_iter != 0 && iteration >= max_iter
 }
 
+fn iteration_limit_message(max_iter: usize) -> String {
+    format!(
+        "已达到本轮 Agent 最大迭代次数（{max_iter}），任务可能尚未完成。已完成的工具结果均已保留；请点击“继续执行”接着做，或在设置中提高「每轮最大 Agent 迭代次数」（0 表示不限制）。(hit max agent iterations: {max_iter})"
+    )
+}
+
 async fn describe_image(
     provider: &dyn Provider,
     img: &ImageData,
@@ -589,7 +599,7 @@ async fn describe_image(
     let comp = provider
         .complete(
             &[
-                Message::system("You are Wisp's vision subagent. Return concise, factual observations for a non-visual main agent. Do not invent details that are not visible."),
+                Message::system("You are SuperScience's vision subagent. Return concise, factual observations for a non-visual main agent. Do not invent details that are not visible."),
                 user,
             ],
             &[],
@@ -683,8 +693,16 @@ mod tests {
     }
 
     #[test]
+    fn iteration_limit_message_names_the_cap() {
+        let msg = iteration_limit_message(100);
+        assert!(msg.contains("100"), "{msg}");
+        assert!(msg.contains("hit max agent iterations"), "{msg}");
+        assert!(msg.contains("继续执行"), "{msg}");
+    }
+
+    #[test]
     fn every_text_tool_result_is_bounded_before_it_enters_model_context() {
-        let root = std::env::temp_dir().join(format!("wisp-budget-tool-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("superscience-budget-tool-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let raw = format!("BEGIN\n{}\nEND", "界".repeat(20_000));
         let original_len = raw.len();
@@ -1697,13 +1715,21 @@ mod tests {
                 arguments: "{}".into(),
             },
         };
-        let provider = FixedProvider {
-            completion: Completion {
+        // Tools once, then a clean stop. max_iter=1 with a perpetual tool-call
+        // provider used to Ok(()) because the cap broke silently; it now
+        // surfaces an error, so end the turn intentionally.
+        let provider = SequenceProvider::new([
+            Completion {
                 tool_calls: vec![call("c1", "python"), call("c2", "noisy_other")],
                 finish_reason: Some("tool_calls".into()),
                 ..Completion::default()
             },
-        };
+            Completion {
+                content: "done".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
         let mut tools = Registry::builtins();
         tools.add(Box::new(NoisyTool { name: "python" }));
         tools.add(Box::new(NoisyTool {
@@ -1724,7 +1750,7 @@ mod tests {
             &root,
             &NullOutput,
             "run both",
-            1,
+            0,
             None,
         )
         .await
@@ -1752,6 +1778,56 @@ mod tests {
         assert!(other.starts_with("HEAD-MARK"), "other head kept");
         assert!(other.ends_with("TAIL-MARK"), "other tail kept");
         assert!(other.contains("bytes omitted from noisy_other"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn max_iter_limit_fails_with_visible_message() {
+        // max_iter=2 is below STUCK_REPEAT_LIMIT, so the iteration cap fires
+        // first and must surface a resumable error (not silent Ok(())).
+        let provider = FixedProvider {
+            completion: Completion {
+                tool_calls: vec![ToolCall {
+                    id: "call_1".into(),
+                    kind: "function".into(),
+                    function: FunctionCall {
+                        name: "ok_tool".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            },
+        };
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(OkTool));
+        let mut ctx = ContextManager::new(100_000);
+        let root = std::env::temp_dir().join(format!(
+            "superscience-core-max-iter-msg-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let err = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            "keep going",
+            2,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        let text = err.to_string();
+        assert!(
+            text.contains("hit max agent iterations: 2"),
+            "unexpected error: {text}"
+        );
+        assert!(text.contains("继续执行"), "missing resume hint: {text}");
         std::fs::remove_dir_all(root).ok();
     }
 

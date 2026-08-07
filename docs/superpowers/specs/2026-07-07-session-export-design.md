@@ -30,3 +30,14 @@ If no active session exists, the frontend does not call export. If the user canc
 ## Tests
 
 Add a Playwright test that enters the chat, opens the custom context menu, clicks the export action, and verifies that `export_session` is invoked with the active session id.
+
+## Import (added 2026-08-07)
+
+The Edit menu's "Import session archive" action re-imports an export zip into the current project via the `import_session_archive` command.
+
+- The command opens a native zip picker; cancel returns `None`.
+- `manifest.json` and `messages.json` are required; anything else marks the file as not a superscience session export.
+- Messages are appended to a new frame created in an `imported` sidebar folder, with frame timestamps taken from the message timeline so the session keeps its original chronology.
+- A `session_imports` table (migration `0036_session_imports`) maps the exporting side's `session_id` to the local frame. Re-importing the same source session fast-forwards it (`replace_messages`) when the archive holds more messages, and reports `skipped` otherwise — importing never duplicates a session or merges diverged histories.
+- Artifacts are extracted to their recorded `workspace_path` when it is relative, traversal-free, and unoccupied; otherwise they land under `imports/<session_id>/`. Extracted files are registered as artifacts of the new frame. Artifact extraction runs only on first import, not on fast-forward updates.
+- Not restored: `provenance/*.json` (execution_log cell indexes are meaningless across databases) and the derived `transcript.md` / `tool-calls.json`.

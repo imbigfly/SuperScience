@@ -1,9 +1,9 @@
 //! In-process coordination for project resources used by parallel conversations.
 //!
-//! This is intentionally an advisory Wisp lease, not an OS file lock: child
+//! This is intentionally an advisory SuperScience lease, not an OS file lock: child
 //! interpreters and external editors do not consistently participate in
 //! platform file-lock APIs. The host wraps complete tool calls instead, which
-//! protects Wisp-vs-Wisp access and leaves checksum/file-watcher protection as
+//! protects SuperScience-vs-SuperScience access and leaves checksum/file-watcher protection as
 //! the separate boundary for external changes.
 
 use std::{
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn tool_requests_normalize_project_relative_paths() {
         let root =
-            std::env::temp_dir().join(format!("wisp-resource-request-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("superscience-resource-request-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("plot.R"), "plot(1)\n").unwrap();
         let request =

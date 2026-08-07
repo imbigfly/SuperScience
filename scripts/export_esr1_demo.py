@@ -11,8 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SEED = ROOT / "seed"
-SRC_UP = Path(r"D:\Wisp-Science\ESR1_ws")
-SRC_DOWN = Path(r"D:\Wisp-Science\ESR1_downstream")
+SRC_UP = Path(r"D:\SuperScience-Science\ESR1_ws")
+SRC_DOWN = Path(r"D:\SuperScience-Science\ESR1_downstream")
 DB = Path(
     r"C:\Users\xuzhougeng\AppData\Roaming\science.superscience\superscience\superscience.sqlite"
 )
@@ -243,8 +243,8 @@ REDACT = [
     (re.compile(r" +\."), "."),
     (re.compile(r"D:\\\\ESR1_project", re.I), "data"),
     (re.compile(r"D:/ESR1_project", re.I), "data"),
-    (re.compile(r"D:\\Wisp-Science\\ESR1_(?:ws|downstream)", re.I), "."),
-    (re.compile(r"D:/Wisp-Science/ESR1_(?:ws|downstream)", re.I), "."),
+    (re.compile(r"D:\\SuperScience-Science\\ESR1_(?:ws|downstream)", re.I), "."),
+    (re.compile(r"D:/SuperScience-Science/ESR1_(?:ws|downstream)", re.I), "."),
     (re.compile(r"~/GSE153250_ESR1", re.I), "~/workspace/GSE153250"),
     (re.compile(r"miniconda3", re.I), "conda-tools"),
     (re.compile(r"~/bin/(\w+)", re.I), r"~/tools/\1"),
@@ -356,7 +356,7 @@ def messages_to_ui_items(rows: list[sqlite3.Row]) -> list[dict]:
                 val = args.get("code")
             elif name == "shell":
                 val = args.get("cmd")
-            elif name in ("monitor_run", "wisp_monitor_run"):
+            elif name in ("monitor_run", "superscience_monitor_run"):
                 val = args.get("run_id")
             if val and cid:
                 tool_inputs[cid] = val

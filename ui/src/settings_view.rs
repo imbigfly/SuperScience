@@ -1,13 +1,13 @@
 use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanelState};
 use crate::app_support::{
     allow_drop, build_conn_json, close_details_ancestor, compose_icon, conn_form_from_row,
-    context_capability_summary, copy_text, drag_session_id, focus_element_soon,
+    context_capability_summary, drag_session_id, focus_element_soon,
     format_relative_time, join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form,
     quick_action_label, reviewer_backend_key, reviewer_backend_label,
     reviewer_missing_acp_profile_id, set_reviewer_backend, settings_section_label,
     settings_subpage_label, skill_matches_filter, start_session_drag, CRED_GROUPS,
 };
-use crate::bindings::{invoke, invoke_checked, is_mac, is_windows, open_external_url};
+use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
 use crate::i18n::{localize_backend, set_document_lang, t, tf, Locale};
 use crate::text::{
@@ -458,15 +458,21 @@ const MODEL_LIMITS: [(&str, u64, u64); 18] = [
     ("glm-4.6", 131_072, 200_000),
 ];
 
+/// Documented (max output tokens, context window) for a known model family,
+/// or None when the model id matches no entry in `MODEL_LIMITS`.
+pub(crate) fn known_model_limits(model: &str) -> Option<(u64, u64)> {
+    let model = model.trim().to_ascii_lowercase();
+    MODEL_LIMITS
+        .iter()
+        .find(|(prefix, _, _)| model.starts_with(prefix))
+        .map(|&(_, max_tokens, context_window)| (max_tokens, context_window))
+}
+
 /// Auto-fill max_tokens/context_window to the model's documented ceiling when
 /// the model id matches a known family. Runs whenever the model id changes;
 /// unknown models keep whatever is already in the form.
 fn apply_known_model_limits(form: &mut ModelForm) {
-    let model = form.model.trim().to_ascii_lowercase();
-    if let Some(&(_, max_tokens, context_window)) = MODEL_LIMITS
-        .iter()
-        .find(|(prefix, _, _)| model.starts_with(prefix))
-    {
+    if let Some((max_tokens, context_window)) = known_model_limits(&form.model) {
         form.max_tokens = max_tokens;
         form.context_window = context_window;
     }
@@ -607,7 +613,7 @@ fn github_issue_draft_url(title: &str, body: &str) -> String {
     let body = js_sys::encode_uri_component(body)
         .as_string()
         .unwrap_or_default();
-    format!("https://github.com/xuzhougeng/wisp-science/issues/new?title={title}&body={body}")
+    format!("https://github.com/imbigfly/SuperScience/issues/new?title={title}&body={body}")
 }
 
 #[derive(Clone, Copy)]
@@ -858,59 +864,9 @@ pub(super) fn SettingsView(
     let quick_action_form = create_rw_signal(None::<QuickAction>);
     let quick_action_busy = create_rw_signal(false);
     let quick_action_error = create_rw_signal(None::<String>);
-    let issue_report_open = create_rw_signal(false);
-    let issue_report_title = create_rw_signal(String::new());
-    let issue_report_problem = create_rw_signal(String::new());
-    let issue_report_reproduction = create_rw_signal(String::new());
-    let issue_report_expected = create_rw_signal(String::new());
-    let issue_report_actual = create_rw_signal(String::new());
-    let issue_report_reference = create_rw_signal(String::new());
-    let issue_report_context = create_rw_signal("local".to_string());
-    let issue_report_screenshot = create_rw_signal(false);
-    let issue_report_markdown = create_rw_signal(String::new());
-    let issue_report_external_confirm = create_rw_signal(false);
-    let generate_issue_report = Callback::new(move |()| {
-        let bootstrap = bootstrap.get_untracked();
-        let app_version = bootstrap
-            .as_ref()
-            .map(|status| status.app_version.as_str())
-            .filter(|value| !value.is_empty())
-            .unwrap_or(env!("CARGO_PKG_VERSION"));
-        let os = bootstrap
-            .as_ref()
-            .map(|status| status.os.as_str())
-            .filter(|value| !value.is_empty())
-            .unwrap_or("unknown");
-        let arch = bootstrap
-            .as_ref()
-            .map(|status| status.arch.as_str())
-            .filter(|value| !value.is_empty())
-            .unwrap_or("unknown");
-        let model =
-            active_model_label(&models.get_untracked()).unwrap_or_else(|| "not configured".into());
-        issue_report_markdown.set(build_issue_report_markdown(
-            locale.get_untracked(),
-            &issue_report_problem.get_untracked(),
-            &issue_report_reproduction.get_untracked(),
-            &issue_report_expected.get_untracked(),
-            &issue_report_actual.get_untracked(),
-            &issue_report_reference.get_untracked(),
-            app_version,
-            os,
-            arch,
-            &model,
-            &issue_report_context.get_untracked(),
-            issue_report_screenshot.get_untracked(),
-        ));
-        issue_report_external_confirm.set(false);
-    });
     window_capture_escape(move || {
         if !show_settings.get_untracked() {
             return false;
-        }
-        if issue_report_open.get_untracked() {
-            issue_report_open.set(false);
-            return true;
         }
         if joining.get_untracked() {
             joining.set(false);
@@ -1065,7 +1021,7 @@ pub(super) fn SettingsView(
             "project-sync.md"
         };
         crate::bindings::open_external_url(format!(
-            "https://github.com/xuzhougeng/wisp-science/blob/main/docs/{page}"
+            "https://github.com/imbigfly/SuperScience/blob/main/docs/{page}"
         ));
     };
     let join_project = move |_| {
@@ -1141,14 +1097,6 @@ pub(super) fn SettingsView(
             quick_action_busy.set(false);
         });
     });
-    let generate_issue_report_open = generate_issue_report.clone();
-    let generate_issue_report_problem = generate_issue_report.clone();
-    let generate_issue_report_reproduction = generate_issue_report.clone();
-    let generate_issue_report_expected = generate_issue_report.clone();
-    let generate_issue_report_actual = generate_issue_report.clone();
-    let generate_issue_report_reference = generate_issue_report.clone();
-    let generate_issue_report_context = generate_issue_report.clone();
-    let generate_issue_report_screenshot = generate_issue_report.clone();
 
     move || {
         show_settings.get().then(|| view! {
@@ -1402,96 +1350,6 @@ pub(super) fn SettingsView(
                                     } />
                                 <span class="toggle-track" aria-hidden="true"></span>
                             </label>
-                        </div>
-                        <div class="span-2 appearance-config-row" data-testid="report-problem-entry">
-                            <div>
-                                <strong>{move || t(locale.get(), "issue_report.entry_title")}</strong>
-                                <span>{move || t(locale.get(), "issue_report.entry_hint")}</span>
-                            </div>
-                            <button type="button" class="settings-add-btn" data-testid="report-problem-open"
-                                on:click={
-                                let generate = generate_issue_report_open.clone();
-                                move |_| {
-                                    issue_report_title.set(String::new());
-                                    issue_report_problem.set(String::new());
-                                    issue_report_reproduction.set(String::new());
-                                    issue_report_expected.set(String::new());
-                                    issue_report_actual.set(String::new());
-                                    issue_report_reference.set(String::new());
-                                    issue_report_context.set("local".into());
-                                    issue_report_screenshot.set(false);
-                                    issue_report_external_confirm.set(false);
-                                    generate.call(());
-                                    issue_report_open.set(true);
-                                }
-                            }>
-                                {move || t(locale.get(), "issue_report.open")}
-                            </button>
-                        </div>
-                        <div class="span-2 settings-sync-block">
-                            <h3>{move || t(locale.get(), "settings.sync.title")}</h3>
-                            <p class="settings-field-hint">{move || t(locale.get(), "settings.sync.hint")}</p>
-                            <label>{move || t(locale.get(), "settings.sync.backend")}
-                                <select data-testid="sync-backend"
-                                    prop:value=move || settings.get().sync_backend
-                                    on:change=move |ev| settings.update(|current| current.sync_backend = dom_value(&ev))>
-                                    <option value="relay">{move || t(locale.get(), "settings.sync.relay")}</option>
-                                    <option value="folder">{move || t(locale.get(), "settings.sync.folder")}</option>
-                                </select>
-                            </label>
-                            {move || if settings.get().sync_backend == "folder" {
-                                view! {
-                                    <label>{move || t(locale.get(), "settings.sync.folder_path")}
-                                        <div class="settings-path-row">
-                                            <input class="settings-path-input" data-testid="sync-folder"
-                                                prop:value=move || settings.get().sync_folder
-                                                on:input=move |ev| settings.update(|current| current.sync_folder = event_target_input(&ev).value()) />
-                                            <button type="button" class="settings-add-btn" data-testid="sync-choose-folder"
-                                                on:click=choose_sync_folder>
-                                                {move || t(locale.get(), "projects.choose_dir")}
-                                            </button>
-                                        </div>
-                                        <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.folder_hint")}</span>
-                                    </label>
-                                }.into_view()
-                            } else {
-                                view! {
-                                    <label>{move || t(locale.get(), "settings.sync.relay_url")}
-                                        <input data-testid="sync-relay-url" type="url"
-                                            prop:value=move || settings.get().sync_relay_url
-                                            placeholder="https://sync.example.com"
-                                            on:input=move |ev| settings.update(|current| current.sync_relay_url = event_target_input(&ev).value()) />
-                                    </label>
-                                    <label>{move || t(locale.get(), "settings.sync.relay_token")}
-                                        <input data-testid="sync-relay-token" type="password"
-                                            prop:value=move || settings.get().sync_relay_token
-                                            placeholder=move || if settings.get().has_sync_relay_token {
-                                                t(locale.get(), "settings.key_stored")
-                                            } else {
-                                                t(locale.get(), "settings.sync.token_placeholder")
-                                            }
-                                            on:input=move |ev| settings.update(|current| current.sync_relay_token = event_target_input(&ev).value()) />
-                                        <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.relay_hint")}</span>
-                                    </label>
-                                }.into_view()
-                            }}
-                            <p class="settings-field-hint">
-                                {move || t(locale.get(), "settings.sync.join_hint")}
-                            </p>
-                            <div class="row settings-sync-actions">
-                                <button type="button" on:click=open_sync_guide>
-                                    {compose_icon("doc")}
-                                    <span>{move || t(locale.get(), "projects.sync.guide")}</span>
-                                </button>
-                                <button type="button" class="primary"
-                                    on:click=move |_| {
-                                        join_error.set(None);
-                                        joining.set(true);
-                                    }>
-                                    {compose_icon("link")}
-                                    <span>{move || t(locale.get(), "projects.sync.join")}</span>
-                                </button>
-                            </div>
                         </div>
                         </div>
                         {move || settings_message.get().map(|(ok, text)| view! {
@@ -4179,8 +4037,35 @@ pub(super) fn SettingsView(
                 {move || (settings_section.get() == "credentials").then(|| view! {
                     <div class="settings-pane">
                         <p class="settings-note">{move || t(locale.get(), "cred.desc")}</p>
-                        {CRED_GROUPS.iter().map(|g| view! {
-                            <div class="conn-group-label">{move || t(locale.get(), g.name_key)}</div>
+                        {CRED_GROUPS.iter().map(|g| {
+                            let tooltip_id = format!("cred-help-{}", g.id);
+                            let described_by = tooltip_id.clone();
+                            view! {
+                            <div class="cred-group-heading">
+                                <div class="conn-group-label">{move || t(locale.get(), g.name_key)}</div>
+                                <span class="cred-help">
+                                    <button
+                                        type="button"
+                                        class="cred-help-trigger"
+                                        aria-label=move || format!("{}: {}", t(locale.get(), g.name_key), t(locale.get(), "cred.help.aria"))
+                                        aria-describedby=described_by
+                                    >"?"</button>
+                                    <span id=tooltip_id class="cred-help-tooltip" role="tooltip">
+                                        <span class="cred-help-section">
+                                            <strong>{move || t(locale.get(), "cred.help.what")}</strong>
+                                            <span>{move || t(locale.get(), g.about_key)}</span>
+                                        </span>
+                                        <span class="cred-help-section">
+                                            <strong>{move || t(locale.get(), "cred.help.configured")}</strong>
+                                            <span>{move || t(locale.get(), g.configured_key)}</span>
+                                        </span>
+                                        <span class="cred-help-section">
+                                            <strong>{move || t(locale.get(), "cred.help.unconfigured")}</strong>
+                                            <span>{move || t(locale.get(), g.unconfigured_key)}</span>
+                                        </span>
+                                    </span>
+                                </span>
+                            </div>
                             <div class="settings-form-grid">
                                 {g.fields.iter().map(|f| {
                                     let id = f.id;
@@ -4214,8 +4099,22 @@ pub(super) fn SettingsView(
                                     }
                                 }).collect_view()}
                             </div>
-                            <p class="settings-note">{move || t(locale.get(), g.hint_key)}</p>
-                        }).collect_view()}
+                            <div class="cred-setup-note">
+                                <span>{move || t(locale.get(), g.hint_key)}</span>
+                                <span class="cred-setup-links">
+                                    {g.links.iter().map(|link| {
+                                        let url = link.url;
+                                        view! {
+                                            <button type="button" class="cred-external-link"
+                                                on:click=move |_| crate::bindings::open_external_url(url.into())>
+                                                <span>{move || t(locale.get(), link.label_key)}</span>
+                                                <span aria-hidden="true">"↗"</span>
+                                            </button>
+                                        }
+                                    }).collect_view()}
+                                </span>
+                            </div>
+                        }}).collect_view()}
                         <div class="conn-group-label">{move || t(locale.get(), "cred.custom.name")}</div>
                         <p class="settings-note">{move || t(locale.get(), "cred.custom.hint")}</p>
                         <For
@@ -4403,6 +4302,81 @@ pub(super) fn SettingsView(
                                     }
                                 });
                             }>{move || t(locale.get(), "settings.save")}</button>
+                        </div>
+                    </div>
+                }.into_view())}
+                {move || (settings_section.get() == "channels" && channels_open.get().is_none()).then(|| view! {
+                    <div class="settings-pane">
+                        <div class="settings-form-grid">
+                            <div class="span-2 settings-sync-block">
+                                <h3>{move || t(locale.get(), "settings.sync.title")}</h3>
+                                <p class="settings-field-hint">{move || t(locale.get(), "settings.sync.hint")}</p>
+                                <label>{move || t(locale.get(), "settings.sync.backend")}
+                                    <select data-testid="sync-backend"
+                                        prop:value=move || settings.get().sync_backend
+                                        on:change=move |ev| settings.update(|current| current.sync_backend = dom_value(&ev))>
+                                        <option value="relay">{move || t(locale.get(), "settings.sync.relay")}</option>
+                                        <option value="folder">{move || t(locale.get(), "settings.sync.folder")}</option>
+                                    </select>
+                                </label>
+                                {move || if settings.get().sync_backend == "folder" {
+                                    view! {
+                                        <label>{move || t(locale.get(), "settings.sync.folder_path")}
+                                            <div class="settings-path-row">
+                                                <input class="settings-path-input" data-testid="sync-folder"
+                                                    prop:value=move || settings.get().sync_folder
+                                                    on:input=move |ev| settings.update(|current| current.sync_folder = event_target_input(&ev).value()) />
+                                                <button type="button" class="settings-add-btn" data-testid="sync-choose-folder"
+                                                    on:click=choose_sync_folder>
+                                                    {move || t(locale.get(), "projects.choose_dir")}
+                                                </button>
+                                            </div>
+                                            <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.folder_hint")}</span>
+                                        </label>
+                                    }.into_view()
+                                } else {
+                                    view! {
+                                        <label>{move || t(locale.get(), "settings.sync.relay_url")}
+                                            <input data-testid="sync-relay-url" type="url"
+                                                prop:value=move || settings.get().sync_relay_url
+                                                placeholder="https://sync.example.com"
+                                                on:input=move |ev| settings.update(|current| current.sync_relay_url = event_target_input(&ev).value()) />
+                                        </label>
+                                        <label>{move || t(locale.get(), "settings.sync.relay_token")}
+                                            <input data-testid="sync-relay-token" type="password"
+                                                prop:value=move || settings.get().sync_relay_token
+                                                placeholder=move || if settings.get().has_sync_relay_token {
+                                                    t(locale.get(), "settings.key_stored")
+                                                } else {
+                                                    t(locale.get(), "settings.sync.token_placeholder")
+                                                }
+                                                on:input=move |ev| settings.update(|current| current.sync_relay_token = event_target_input(&ev).value()) />
+                                            <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.relay_hint")}</span>
+                                        </label>
+                                    }.into_view()
+                                }}
+                                <p class="settings-field-hint">
+                                    {move || t(locale.get(), "settings.sync.join_hint")}
+                                </p>
+                                <div class="row settings-sync-actions">
+                                    <button type="button" on:click=open_sync_guide>
+                                        {compose_icon("doc")}
+                                        <span>{move || t(locale.get(), "projects.sync.guide")}</span>
+                                    </button>
+                                    <button type="button" class="primary"
+                                        on:click=move |_| {
+                                            join_error.set(None);
+                                            joining.set(true);
+                                        }>
+                                        {compose_icon("link")}
+                                        <span>{move || t(locale.get(), "projects.sync.join")}</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row settings-footer">
+                            <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
+                            <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
                         </div>
                     </div>
                 }.into_view())}
@@ -4930,170 +4904,6 @@ pub(super) fn SettingsView(
                     }
                 })}
             </div>
-            {move || issue_report_open.get().then(|| {
-                view! {
-                    <div class="overlay" data-testid="issue-report-modal">
-                        <div class="modal issue-report-modal" role="dialog" aria-modal="true"
-                            aria-labelledby="issue-report-title">
-                            <div class="ps-head">
-                                <h2 id="issue-report-title">{move || t(locale.get(), "issue_report.title")}</h2>
-                                <button type="button" class="ps-close"
-                                    title=move || t(locale.get(), "settings.cancel")
-                                    aria-label=move || t(locale.get(), "settings.cancel")
-                                    on:click=move |_| issue_report_open.set(false)>
-                                    {compose_icon("close")}
-                                </button>
-                            </div>
-                            <p class="hint issue-report-privacy">{move || t(locale.get(), "issue_report.privacy")}</p>
-                            <div class="issue-report-fields">
-                                <label>{move || t(locale.get(), "issue_report.issue_title")}
-                                    <input data-testid="issue-report-issue-title"
-                                        prop:value=move || issue_report_title.get()
-                                        on:input=move |event| {
-                                            issue_report_title.set(event_target_value(&event));
-                                            issue_report_external_confirm.set(false);
-                                        } />
-                                </label>
-                                <label>{move || t(locale.get(), "issue_report.problem")}
-                                    <textarea data-testid="issue-report-problem"
-                                        prop:value=move || issue_report_problem.get()
-                                        on:input={
-                                            let generate = generate_issue_report_problem.clone();
-                                            move |event| {
-                                                issue_report_problem.set(event_target_value(&event));
-                                                generate.call(());
-                                            }
-                                        }></textarea>
-                                </label>
-                                <label>{move || t(locale.get(), "issue_report.reproduction")}
-                                    <textarea data-testid="issue-report-reproduction"
-                                        prop:value=move || issue_report_reproduction.get()
-                                        on:input={
-                                            let generate = generate_issue_report_reproduction.clone();
-                                            move |event| {
-                                                issue_report_reproduction.set(event_target_value(&event));
-                                                generate.call(());
-                                            }
-                                        }></textarea>
-                                </label>
-                                <div class="issue-report-two-column">
-                                    <label>{move || t(locale.get(), "issue_report.expected")}
-                                        <textarea data-testid="issue-report-expected"
-                                            prop:value=move || issue_report_expected.get()
-                                            on:input={
-                                                let generate = generate_issue_report_expected.clone();
-                                                move |event| {
-                                                    issue_report_expected.set(event_target_value(&event));
-                                                    generate.call(());
-                                                }
-                                            }></textarea>
-                                    </label>
-                                    <label>{move || t(locale.get(), "issue_report.actual")}
-                                        <textarea data-testid="issue-report-actual"
-                                            prop:value=move || issue_report_actual.get()
-                                            on:input={
-                                                let generate = generate_issue_report_actual.clone();
-                                                move |event| {
-                                                    issue_report_actual.set(event_target_value(&event));
-                                                    generate.call(());
-                                                }
-                                            }></textarea>
-                                    </label>
-                                </div>
-                                <div class="issue-report-two-column">
-                                    <label>{move || t(locale.get(), "issue_report.reference")}
-                                        <input data-testid="issue-report-reference"
-                                            prop:value=move || issue_report_reference.get()
-                                            on:input={
-                                                let generate = generate_issue_report_reference.clone();
-                                                move |event| {
-                                                    issue_report_reference.set(event_target_value(&event));
-                                                    generate.call(());
-                                                }
-                                            } />
-                                    </label>
-                                    <label>{move || t(locale.get(), "issue_report.context")}
-                                        <select data-testid="issue-report-context"
-                                            prop:value=move || issue_report_context.get()
-                                            on:change={
-                                                let generate = generate_issue_report_context.clone();
-                                                move |event| {
-                                                    issue_report_context.set(event_target_value(&event));
-                                                    generate.call(());
-                                                }
-                                            }>
-                                            <option value="local">"local"</option>
-                                            <option value="ssh">"ssh"</option>
-                                            <option value="wsl">"wsl"</option>
-                                            <option value="not-applicable">{move || t(locale.get(), "issue_report.not_applicable")}</option>
-                                        </select>
-                                    </label>
-                                </div>
-                                <label class="settings-check issue-report-screenshot">
-                                    <input type="checkbox" data-testid="issue-report-screenshot"
-                                        prop:checked=move || issue_report_screenshot.get()
-                                        on:change={
-                                            let generate = generate_issue_report_screenshot.clone();
-                                            move |event| {
-                                                issue_report_screenshot.set(event_target_checked(&event));
-                                                generate.call(());
-                                            }
-                                        } />
-                                    <span>{move || t(locale.get(), "issue_report.screenshot")}</span>
-                                </label>
-                                <label>{move || t(locale.get(), "issue_report.preview")}
-                                    <textarea class="issue-report-preview" data-testid="issue-report-preview"
-                                        prop:value=move || issue_report_markdown.get()
-                                        on:input=move |event| {
-                                            issue_report_markdown.set(event_target_value(&event));
-                                            issue_report_external_confirm.set(false);
-                                        }></textarea>
-                                </label>
-                                <label class="settings-check issue-report-confirm">
-                                    <input type="checkbox" data-testid="issue-report-confirm"
-                                        prop:checked=move || issue_report_external_confirm.get()
-                                        on:change=move |event| {
-                                            issue_report_external_confirm.set(event_target_checked(&event));
-                                        } />
-                                    <span>{move || t(locale.get(), "issue_report.confirm_external")}</span>
-                                </label>
-                                <p class="hint">{move || t(locale.get(), "issue_report.github_hint")}</p>
-                            </div>
-                            <div class="row">
-                                <button type="button" on:click=move |_| issue_report_open.set(false)>
-                                    {move || t(locale.get(), "settings.cancel")}
-                                </button>
-                                <button type="button" data-testid="issue-report-copy"
-                                    disabled=move || issue_report_markdown.get().trim().is_empty()
-                                    on:click=move |_| {
-                                        let title = issue_report_title.get_untracked();
-                                        let body = issue_report_markdown.get_untracked();
-                                        copy_text(format!("# {}\n\n{body}", title.trim()));
-                                    }>
-                                    {move || t(locale.get(), "issue_report.copy")}
-                                </button>
-                                <button type="button" class="primary" data-testid="issue-report-github"
-                                    disabled=move || {
-                                        !issue_report_external_confirm.get()
-                                            || issue_report_title.get().trim().is_empty()
-                                            || issue_report_markdown.get().trim().is_empty()
-                                    }
-                                    on:click=move |_| {
-                                        issue_report_external_confirm.set(false);
-                                        let title = issue_report_title.get_untracked();
-                                        let body = issue_report_markdown.get_untracked();
-                                        open_external_url(github_issue_draft_url(
-                                            title.trim(),
-                                            &body,
-                                        ));
-                                    }>
-                                    {move || t(locale.get(), "issue_report.github")}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                }
-            })}
             {move || delete_confirm.get().map(|target| {
                 let label = target.label().to_string();
                 let is_plugin = matches!(target, DeleteConfirm::Plugin { .. });
@@ -5209,5 +5019,13 @@ mod model_limit_tests {
         form.model = "totally-unknown".into();
         apply_known_model_limits(&mut form);
         assert_eq!(form.max_tokens, 8_192);
+    }
+
+    #[test]
+    fn known_model_limits_reports_documented_ceiling() {
+        // Longer prefixes win: glm-5.2 must not resolve through glm-5.
+        assert_eq!(known_model_limits("GLM-5.2"), Some((131_072, 1_000_000)));
+        assert_eq!(known_model_limits("deepseek-v4-pro"), Some((384_000, 1_000_000)));
+        assert_eq!(known_model_limits("totally-unknown"), None);
     }
 }

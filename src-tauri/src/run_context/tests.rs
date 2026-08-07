@@ -407,7 +407,7 @@ async fn run_in_context_rejects_nested_ssh_transfer_commands() {
 #[tokio::test]
 async fn monitor_run_waits_once_for_an_existing_run() {
     use superscience_tools::Tool;
-    let tmp = std::env::temp_dir().join(format!("wisp_monitor_run_{}", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!("superscience_monitor_run_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -1584,7 +1584,7 @@ fn ok_output(stdout: &str) -> Result<RunCommandOutput, String> {
 
 #[tokio::test]
 async fn ssh_download_uses_context_connection_options() {
-    let tmp = std::env::temp_dir().join(format!("wisp-run-download-{}", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!("superscience-run-download-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let store = superscience_store::Store::open(&tmp.join("superscience.sqlite"))
         .await
@@ -1596,7 +1596,7 @@ async fn ssh_download_uses_context_connection_options() {
     ]));
     let manager = RunManager::with_runner(runner.clone());
     let identity =
-        std::env::temp_dir().join(format!("wisp-run-download-key-{}", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("superscience-run-download-key-{}", uuid::Uuid::new_v4()));
     std::fs::write(&identity, b"test-key\n").unwrap();
     let mut context = superscience_store::ExecutionContext::new("ssh:CPU", "CPU").unwrap();
     context.config_json = serde_json::json!({

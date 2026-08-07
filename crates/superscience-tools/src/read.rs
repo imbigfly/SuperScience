@@ -11,9 +11,20 @@ const MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
 const BINARY_EXTS: &[&str] = &[
-    "pdf", "docx", "xlsx", "pptx", "zip", "gz", "7z", "tar", "exe", "dll", "so", "dylib", "wasm",
-    "sqlite", "db",
+    "pdf", "doc", "docx", "docm", "odt", "rtf", "epub", "ppt", "pps", "pot", "pptx", "pptm",
+    "ppsx", "ppsm", "xls", "xlsx", "xlsm", "xlsb", "ods", "odp", "zip", "gz", "7z", "tar", "exe",
+    "dll", "so", "dylib", "wasm", "sqlite", "db",
 ];
+
+/// Convert rich documents before the ordinary text/binary split. CSV stays raw:
+/// scientific workflows generally need its exact delimiter and quoting semantics.
+pub fn document_markdown(path: &std::path::Path, bytes: &[u8]) -> Option<Result<String, String>> {
+    let format = anydoc::Format::from_path(path)?;
+    if format == anydoc::Format::Csv {
+        return None;
+    }
+    Some(anydoc::to_markdown_bytes(bytes, format).map_err(|error| error.to_string()))
+}
 
 fn looks_binary(path: &std::path::Path, bytes: &[u8]) -> bool {
     let by_ext = path
@@ -53,11 +64,11 @@ impl Tool for ReadTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "read",
-            "Read a local file. Text sources are limited to 50 MiB and returned text to 1 MiB; images use the configured vision model.",
+            "Read a local text or document file. Office, OpenDocument, RTF, EPUB, and text-based PDF files are converted locally to Markdown. Sources are limited to 50 MiB and returned text to 1 MiB; images use the configured vision model.",
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Path to the file to read (text, or image: png/jpg/jpeg/gif/webp)" },
+                    "path": { "type": "string", "description": "Path to a text, document, or image file" },
                     "offset": { "type": "integer", "description": "Line number to start reading from (0-indexed, default 0)" },
                     "limit": { "type": "integer", "description": "Maximum number of lines to read (default: all lines)" }
                 },
@@ -108,12 +119,13 @@ impl Tool for ReadTool {
             }
             Err(e) => return ToolResult::fail(format!("read {requested_path} error: {e}")),
         }
-        if looks_binary(&path, &bytes) {
+        let converted = document_markdown(&path, &bytes).and_then(Result::ok);
+        if converted.is_none() && looks_binary(&path, &bytes) {
             return ToolResult::fail(format!(
-                "read {requested_path} error: binary file; use the python tool (pypdfium2/pypdf for PDFs) to extract text, or view_image for images"
+                "read {requested_path} error: document has no locally extractable text; use OCR or a vision-capable model for scanned pages"
             ));
         }
-        let text = String::from_utf8_lossy(&bytes);
+        let text = converted.unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
         let offset = arg_int_opt(args, "offset").unwrap_or(0).max(0) as usize;
         let limit = arg_int_opt(args, "limit")
             .map(|l| l.max(0) as usize)
@@ -181,8 +193,34 @@ mod tests {
             )
             .await;
         assert!(!result.success);
-        assert!(result.content.contains("python"));
+        assert!(result.content.contains("no locally extractable text"));
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn rich_text_documents_are_read_as_markdown() {
+        let tmp = std::env::temp_dir().join(format!("wisp_read_rtf_{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let rtf = tmp.join("protocol.rtf");
+        std::fs::write(
+            &rtf,
+            br#"{\rtf1\ansi{\fonttbl{\f0 Arial;}}\b Experimental protocol\b0\par Centrifuge at 12000 g.}"#,
+        )
+        .unwrap();
+
+        let result = ReadTool
+            .run(
+                &json!({ "path": rtf.to_string_lossy() }),
+                &TestEnv(tmp.clone()),
+            )
+            .await;
+
+        assert!(result.success, "{}", result.content);
+        assert!(result.content.contains("**Experimental protocol**"));
+        assert!(result.content.contains("Centrifuge at 12000 g."));
+        assert!(!result.content.contains("\\rtf1"));
+        std::fs::remove_dir_all(tmp).ok();
     }
 
     #[tokio::test]

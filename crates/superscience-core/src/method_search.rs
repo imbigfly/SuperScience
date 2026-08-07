@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 
-pub const METHOD_SEARCH_SCHEMA_V1: &str = "wisp.method-search.v1";
+pub const METHOD_SEARCH_SCHEMA_V1: &str = "superscience.method-search.v1";
 pub const EVALUATOR_PROTOCOL_V1: &str = "wisp_evaluate_jsonl_v1";
 pub const EVALUATOR_RESULT_PREFIX: &str = "wisp_evaluate: ";
 pub const MAX_EVALUATOR_OUTPUT_BYTES: usize = 64 * 1024;

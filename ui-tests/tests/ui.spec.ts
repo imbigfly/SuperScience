@@ -258,6 +258,26 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await expect(page.locator(".copy-toast")).toHaveText("Copied");
 });
 
+test("manual review blocks sending and shows a playful progress animation", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).__reviewDelayMs = 800;
+  });
+  await enterApp(page);
+  await composer(page).fill("review this answer");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+
+  await page.locator(".msg.assistant").getByRole("button", { name: "Review" }).click();
+  await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
+  const progress = page.getByTestId("review-live");
+  await expect(progress).toBeVisible();
+  await expect(progress).toContainText("Reviewer is checking the margins");
+  await expect(progress.locator(".review-live-lens")).toBeVisible();
+
+  await expect(page.getByRole("button", { name: "Send" })).toBeEnabled();
+  await expect(progress).toHaveCount(0);
+});
+
 test("undo returns the latest prompt and keeps unsupported Word files", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("revise my notes");
@@ -417,66 +437,49 @@ test("storage separates project paths and filters usage when a project is clicke
     .toContainText("120.0 MB");
 });
 
-test("problem reports stay local until a reviewed Markdown draft is explicitly opened (#596)", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+test("sidebar Feedback opens a blank conversation and waits for the user's first turn (#596)", async ({ page }) => {
   await enterApp(page);
-  await openSettingsSection(page, "General");
-
-  const entry = page.getByTestId("report-problem-entry");
-  await entry.getByRole("button", { name: "Create report" }).click();
-  const modal = page.getByTestId("issue-report-modal");
-  await expect(modal).toBeVisible();
-  await modal.getByTestId("issue-report-issue-title").fill("Runtime preflight failed");
-  const problem = modal.getByTestId("issue-report-problem");
-  await problem.fill("The analysis stops before producing a result.");
-  await expect(problem).toHaveValue("The analysis stops before producing a result.");
-  await modal.getByTestId("issue-report-reproduction").fill("1. Start the analysis\n2. Wait for preflight");
-  await modal.getByTestId("issue-report-expected").fill("The missing package is named.");
-  await modal.getByTestId("issue-report-actual").fill("A generic failure is shown.");
-  await modal.getByTestId("issue-report-reference").fill("run-safe-123");
-  await modal.getByTestId("issue-report-context").selectOption("ssh");
-  await modal.getByTestId("issue-report-screenshot").check();
-  await expect(modal.getByTestId("issue-report-context")).toHaveValue("ssh");
-  await expect(modal.getByTestId("issue-report-screenshot")).toBeChecked();
-
-  const preview = modal.getByTestId("issue-report-preview");
-  await expect(preview).toHaveValue(/The analysis stops before producing a result\./);
-  await expect(preview).toHaveValue(/Wisp version: 0\.29\.0/);
-  await expect(preview).toHaveValue(/OS \/ architecture: windows \/ x86_64/);
-  await expect(preview).toHaveValue(/Model profile: deepseek-v4-pro/);
-  await expect(preview).toHaveValue(/Execution context type: ssh/);
-  await expect(preview).toHaveValue(/Wisp did not collect or upload an image/);
-  await expect(preview).not.toHaveValue(/\/mock\/root/);
-
-  const github = modal.getByTestId("issue-report-github");
-  await expect(github).toBeDisabled();
-  await preview.fill(`${await preview.inputValue()}\n\nAdditional reviewed detail.`);
-  await modal.getByTestId("issue-report-copy").click();
-  await expect(page.locator(".copy-toast")).toHaveText("Copied");
-  const copied = await page.evaluate(() => navigator.clipboard.readText());
-  expect(copied).toContain("# Runtime preflight failed");
-  expect(copied).toContain("Additional reviewed detail.");
-
-  await modal.getByTestId("issue-report-confirm").check();
-  await expect(github).toBeEnabled();
-  await github.click();
-  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: expect.stringContaining("github.com/xuzhougeng/wisp-science/issues/new"),
+  await page.setInputFiles("#composer-file-input", {
+    name: "counts.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("a,b\n1,2"),
   });
-  const opened = String((await lastInvokeArgs(page, "open_external_url"))?.url ?? "");
-  expect(opened).toContain("github.com/xuzhougeng/wisp-science/issues/new");
-  expect(decodeURIComponent(opened)).toContain("title=Runtime preflight failed");
-  expect(decodeURIComponent(opened)).toContain("Additional reviewed detail.");
-});
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  const tile = page.locator('.rp-tile[data-artifact-name="counts.csv"]');
+  await tile.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Open in center" }).click();
+  await expect(page.locator(".center-tab.active")).toContainText("counts.csv");
+  const sendsBefore = (await invokeArgsList(page, "send_message")).length;
+  const sessionsBefore = (await invokeArgsList(page, "new_session")).length;
 
-test("problem report consumes Escape before Settings (#596)", async ({ page }) => {
-  await enterApp(page);
-  await openSettingsSection(page, "General");
-  await page.getByTestId("report-problem-entry").getByRole("button", { name: "Create report" }).click();
-  await expect(page.getByTestId("issue-report-modal")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("issue-report-modal")).toHaveCount(0);
-  await expect(page.locator(".settings-page")).toBeVisible();
+  await page.getByTestId("report-problem-entry").click();
+  await expect(page.getByTestId("feedback-context")).toContainText("System information");
+  await expect(page.getByTestId("feedback-context")).toContainText("Attached automatically");
+  await expect(page.locator("#composer-input")).toBeFocused();
+  await expect(page.locator(".center-file-preview")).toHaveCount(0);
+  expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
+  expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
+
+  await page.locator("#composer-input").fill("The app freezes when I open a document");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => invokeArgsList(page, "new_session")).toHaveLength(sessionsBefore + 1);
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: expect.stringContaining("The app freezes when I open a document"),
+  });
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(sent?.message).toContain("Feedback context:");
+  expect(sent?.message).toContain("GitHub issue");
+  expect(sent?.message).toMatch(/SuperScience version: 0\.29\.0/);
+  expect(sent?.message).toMatch(/OS \/ architecture: windows \/ x86_64/);
+  expect(sent?.message).toMatch(/Model profile: deepseek-v4-pro/);
+  expect(sent?.message).not.toMatch(/\/mock\/root/);
+  await expect(page.getByTestId("feedback-context")).toHaveCount(0);
+  const userBubble = page.locator(".msg.user").last();
+  await expect(userBubble).toContainText("The app freezes when I open a document");
+  await expect(userBubble).not.toContainText("Feedback context");
+  await expect(userBubble).not.toContainText("GitHub issue");
 });
 
 test("Memory settings show the active project name", async ({ page }) => {
@@ -676,10 +679,12 @@ test("model switch warning can be permanently dismissed", async ({ page }) => {
 
   await page.locator(".model-picker-btn").click();
   await page.getByRole("button", { name: /opus-4\.8/ }).click();
-  await page.getByTestId("model-switch-confirm")
-    .getByRole("button", { name: "Switch and don't ask again" }).click();
+  const modal = page.getByTestId("model-switch-confirm");
+  await expect(modal.getByRole("checkbox", { name: "Don't ask again" })).not.toBeChecked();
+  await modal.getByRole("checkbox", { name: "Don't ask again" }).check();
+  await modal.getByRole("button", { name: "Yes, switch" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-model-switch-warning-disabled")))
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-model-switch-warning-disabled")))
     .toBe("1");
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 
@@ -846,7 +851,7 @@ test("ACP turn maps config, overlapping tools, plan, usage, and exact permission
   await expect(page.getByRole("button", { name: /deepseek-v4-pro/ })).toBeDisabled();
 });
 
-test("persisted wisp:plan reload rebuilds all entry states and priority", async ({ page }) => {
+test("persisted superscience:plan reload rebuilds all entry states and priority", async ({ page }) => {
   await openMockPlanSession(page, "acp");
 
   const assertPlan = async () => {
@@ -1127,7 +1132,7 @@ test("Full Permission requires a warning and stays scoped to the conversation", 
   await expect(page.getByRole("heading", { name: "Enable Full Permission?" })).toHaveCount(0);
 });
 
-test("ACP turns retain explicitly selected Wisp skills", async ({ page }) => {
+test("ACP turns retain explicitly selected SuperScience skills", async ({ page }) => {
   await enterApp(page);
   await newSessionButton(page).click();
   await page.locator(".model-picker-btn").click();
@@ -1172,6 +1177,18 @@ test("post-start send failures keep the persisted user row and hide the phase pr
   await expect(page.locator(".finding.err")).toContainText("execution failed after turn/start");
   await expect(page.locator(".finding.err")).not.toContainText("[turn-started]");
   await expect(composer(page)).toHaveValue("");
+});
+
+test("post-start API errors keep the user bubble when an Error event lands first", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("POSTSTARTFAIL_EVENT keep question A");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".user-bubble")).toContainText("POSTSTARTFAIL_EVENT keep question A");
+  await expect(page.locator(".finding.err")).toContainText("max_tokens too high");
+  await expect(page.locator(".finding.err")).not.toContainText("[turn-started]");
+  await expect(composer(page)).toHaveValue("");
+  // Resume must still see the original question in the transcript.
+  await expect(page.getByRole("button", { name: /Resume|继续执行/ })).toBeVisible();
 });
 
 test("automatic reviewer resolves its finding and jumps past UI-only rows (#550)", async ({ page }) => {
@@ -1578,15 +1595,17 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toContainText("27%");
+  await expect(trigger).toContainText("62%");
   await expect(page.locator(".topbar .hint")).toHaveCount(0);
 
   await trigger.click();
   const panel = page.getByTestId("context-usage-panel");
   await expect(panel).toBeVisible();
   await expect(panel.getByRole("heading", { name: "Context Usage" })).toBeVisible();
-  await expect(panel).toContainText("27% Full");
-  await expect(panel).toContainText("~79.9K / 300K Tokens");
+  await expect(panel).toContainText("62% Full");
+  // The limit tracks the session's bound model (128K), not the stale
+  // max_context carried by the last turn's usage event (300K).
+  await expect(panel).toContainText("~79.9K / 128K Tokens");
   await expect(panel.locator(".context-usage-row")).toHaveCount(7);
   await expect(panel.locator(".context-usage-segment")).toHaveCount(7);
   await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
@@ -1627,15 +1646,37 @@ test("legacy native usage totals fall back to Conversation, not Agent-managed", 
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toContainText("3%");
+  await expect(trigger).toContainText("20%");
   await trigger.click();
   const panel = page.getByTestId("context-usage-panel");
   await expect(panel).toBeVisible();
-  await expect(panel).toContainText("~25.4K / 1M Tokens");
+  await expect(panel).toContainText("~25.4K / 128K Tokens");
   await expect(panel.locator(".context-usage-row")).toHaveCount(7);
   await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
   await expect(panel.getByText("25.4K", { exact: true })).toBeVisible();
   await expect(panel.getByText("Agent-managed context")).toHaveCount(0);
+});
+
+test("context usage limit follows the session's current model", async ({ page }) => {
+  await enterApp(page);
+  await page.locator("#composer-input").fill("CONTEXTUSAGE");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect(trigger).toContainText("62%");
+  await trigger.click();
+  await expect(page.getByTestId("context-usage-panel")).toContainText("~79.9K / 128K Tokens");
+  await page.keyboard.press("Escape");
+
+  // Switching the session's model re-bases the limit immediately — no new turn.
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /opus-4\.8/ }).click();
+  await page.getByTestId("model-switch-confirm")
+    .getByRole("button", { name: "Yes, switch" }).click();
+  await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
+  await expect(trigger).toContainText("40%");
+  await trigger.click();
+  await expect(page.getByTestId("context-usage-panel")).toContainText("~79.9K / 200K Tokens");
 });
 
 test("artifact type badges stay neutral instead of rainbow pills", async ({ page }) => {
@@ -1682,7 +1723,7 @@ test("Cmd+Enter sends when the modifier shortcut is selected on macOS", async ({
       configurable: true,
       value: "MacIntel",
     });
-    localStorage.setItem("wisp-send-with-modifier", "1");
+    localStorage.setItem("superscience-send-with-modifier", "1");
   });
   await enterApp(page);
   await expect(page.locator(".composer-hint")).toContainText("Cmd+Enter to send · Enter for newline");
@@ -1747,7 +1788,7 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await input.fill("dark theme");
   await input.press("Enter");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-theme"))).toBe("dark");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-theme"))).toBe("dark");
 
   await page.keyboard.press("Control+p");
   await input.fill("open files");
@@ -1767,6 +1808,28 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   const before = await page.evaluate(() => ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "new_session").length);
   await page.keyboard.press("Control+n");
   await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "new_session").length)).toBeGreaterThan(before);
+});
+
+test("Ctrl+P changes UI and code font sizes", async ({ page }) => {
+  await enterApp(page);
+  const input = page.locator("#action-palette-input");
+  const storedSize = (key: string) => page.evaluate((name) => localStorage.getItem(name), key);
+
+  await page.keyboard.press("Control+p");
+  await input.fill("font");
+  await expect(page.locator(".action-palette-row")).toHaveCount(4);
+
+  for (const [command, key, expected] of [
+    ["increase ui size", "superscience-ui-font-size", "15"],
+    ["decrease ui size", "superscience-ui-font-size", "14"],
+    ["increase code size", "superscience-code-font-size", "13"],
+    ["decrease code size", "superscience-code-font-size", "12"],
+  ] as const) {
+    await input.fill(command);
+    await input.press("Enter");
+    await expect.poll(() => storedSize(key)).toBe(expected);
+    await page.keyboard.press("Control+p");
+  }
 });
 
 test("new session focuses the composer", async ({ page }) => {
@@ -2359,7 +2422,7 @@ test("Workflow library includes a built-in Roundtable DAG", async ({ page }) => 
   expect(chair.x).toBeGreaterThan(reviews[0].x);
 });
 
-test("Workflow library includes the Wisp-native seven-node method-search DAG", async ({ page }) => {
+test("Workflow library includes the SuperScience-native seven-node method-search DAG", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Workflows");
   const studio = page.getByTestId("workflow-studio");
@@ -3099,6 +3162,13 @@ test("script previews show source while unknown file types are explicitly unsupp
   await expect(page.locator(".center-file-preview .rp-code-body code")).toHaveClass(/language-ini/);
   await expect(page.locator(".center-file-preview")).toContainText("[project]");
 
+  await openInCenter("protocol.rtf");
+  await expect(page.locator('.center-file-preview[data-preview-kind="document"]')).toContainText(
+    "Experimental protocol",
+  );
+  await expect(page.locator('.center-file-preview[data-preview-kind="document"] strong')).toHaveText("12000 g");
+  await expect.poll(() => lastInvokeArgs(page, "read_file")).toMatchObject({ path: "protocol.rtf" });
+
   // Genuinely binary payloads stay explicitly unsupported.
   await openInCenter("analysis.unknown");
   await expect(page.locator(".center-file-preview .rp-error")).toHaveText(
@@ -3437,6 +3507,42 @@ test("compute menu selects remote resources per session", async ({ page }) => {
     .not.toBe(firstSession);
 });
 
+test("environment panel attaches and detaches remote servers", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+
+  await expect(page.locator(".context-card", { hasText: "local" })).toBeVisible();
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toHaveCount(0);
+
+  const attach = page.getByTestId("context-attach");
+  await expect(attach.getByText("Attach server")).toBeVisible();
+  const server = attach.locator('.context-attach-row[data-context-id="ssh:gpu-server"]');
+  await expect(server).toBeVisible();
+  await attach.getByRole("searchbox", { name: "Search servers" }).fill("missing");
+  await expect(attach.locator('[data-context-id="ssh:gpu-server"]')).toHaveCount(0);
+  await attach.getByRole("searchbox", { name: "Search servers" }).fill("gpu");
+  await server.click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_execution_context_enabled")).toMatchObject({
+    sessionId: expect.any(String),
+    contextId: "ssh:gpu-server",
+    enabled: true,
+  });
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
+  await expect(attach.locator('[data-context-id="ssh:gpu-server"]')).toHaveCount(0);
+
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "Remove from session" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_execution_context_enabled")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    enabled: false,
+  });
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toHaveCount(0);
+  await expect(attach.locator('[data-context-id="ssh:gpu-server"]')).toBeVisible();
+  await expect(page.locator(".context-card", { hasText: "local" })
+    .getByRole("button", { name: "Remove from session" })).toHaveCount(0);
+});
+
 test("settings manages servers and probes them with the default environment skill", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Environments");
@@ -3594,7 +3700,7 @@ test("Escape closes the SSH connectivity dialog", async ({ page }) => {
     );
     context.last_probe_status = "error";
     context.last_probe_error =
-      "SSH authentication succeeded, but the remote account did not execute Wisp's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early.";
+      "SSH authentication succeeded, but the remote account did not execute SuperScience's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early.";
   });
 
   const menu = await openComputeMenu(page);
@@ -3792,7 +3898,10 @@ test("Run surface binds an exact publication evidence source", async ({ page }) 
   await page.locator(".context-card", { hasText: "ssh:gpu-server" })
     .getByRole("button", { name: "View runs" }).click();
 
+  const runsModal = page.locator(".context-details-modal.runs-details");
+  await expect(runsModal).toBeVisible();
   const run = page.locator(".run-card", { hasText: "Kinase screen QC" });
+  await expect(run.locator(".run-use-publication")).toBeVisible();
   await run.getByRole("button", { name: "Use in publication" }).click();
   const dialog = page.getByTestId("publication-binding-dialog");
   await expect(dialog).toContainText("run-kinase-001");
@@ -3954,6 +4063,10 @@ test("right panel shows execution contexts and runs", async ({ page }) => {
   await expect(page.locator(".context-card", { hasText: "local" })).toBeVisible();
   await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toContainText("NVIDIA A100");
   const sshContext = page.locator(".context-card", { hasText: "ssh:gpu-server" });
+  // View runtimes uses runtime-panel icon, open terminal keeps terminal icon.
+  const runtimeSvg = await sshContext.getByRole("button", { name: "View runtimes" }).locator("svg").innerHTML();
+  const terminalSvg = await sshContext.getByRole("button", { name: "Open terminal" }).locator("svg").innerHTML();
+  expect(runtimeSvg).not.toEqual(terminalSvg);
   await sshContext.getByRole("button", { name: "Probe context" }).click();
   await expect.poll(() => lastInvokeArgs(page, "probe_execution_context")).toMatchObject({
     contextId: "ssh:gpu-server",
@@ -4275,6 +4388,17 @@ test("active session Runs appear automatically with elapsed time and heartbeat (
   await expect(automatic).toContainText("Elapsed 1m");
   await expect(automatic).toContainText("Heartbeat");
   await expect(automatic).toContainText("2 of 3 stages complete");
+
+  await composer(page).fill("MDLIST later turn");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".msg.user", { hasText: "MDLIST later turn" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const card = document.querySelector('[data-testid="auto-run-monitor"]');
+    const laterTurn = [...document.querySelectorAll(".msg.user")]
+      .find((element) => element.textContent?.includes("MDLIST later turn"));
+    return !!card && !!laterTurn
+      && !!(card.compareDocumentPosition(laterTurn) & Node.DOCUMENT_POSITION_FOLLOWING);
+  })).toBe(true);
 });
 
 test("active Run elapsed time advances without waiting for a backend refresh (#663)", async ({ page }) => {
@@ -4943,13 +5067,13 @@ test("DOCX artifacts render offline with headings, tables, and equations", async
   await enterApp(page);
   await composer(page).fill("open manuscript.docx");
   await page.getByRole("button", { name: "Send" }).click();
+  // Opening the artifact while its streaming turn still owns the artifact
+  // projection can replace the clicked tile before the selection signal lands.
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
   await page.getByRole("button", { name: "Toggle panel" }).click();
-  // This test targets rendering, not pointer behavior. Invoke the visible
-  // tile directly because the artifact panel replaces its DOM while the turn
-  // streams, which can otherwise detach Playwright's click target mid-action.
   const manuscriptTile = page.locator('.rp-tile[data-artifact-name="manuscript.docx"] .rp-tile-main');
   await expect(manuscriptTile).toBeVisible();
-  await manuscriptTile.evaluate((element: HTMLElement) => element.click());
+  await manuscriptTile.click();
 
   // docx-preview renders a `.docx-wrapper` of `section.docx` pages, fully offline.
   const docx = page.locator(".rp-docx");
@@ -5020,7 +5144,7 @@ test("PPTX files render lazily inside the app", async ({ page }) => {
   const presentation = page.locator(".artifact-modal .rp-pptx");
   await expect(presentation).toBeVisible();
   await expect(presentation.locator('[data-slide-index="0"]')).toBeVisible();
-  await expect(presentation).toContainText("Wisp PPTX preview");
+  await expect(presentation).toContainText("SuperScience PPTX preview");
   await expect.poll(() => lastInvokeArgs(page, "read_file_bytes"))
     .toMatchObject({ path: "office-preview.pptx", maxBytes: 32 * 1024 * 1024 });
 });
@@ -5341,11 +5465,11 @@ test("appearance settings persist separate light and dark palettes and font size
   await page.getByRole("slider", { name: "UI font size" }).fill("16");
   await page.getByRole("slider", { name: "Code font size" }).fill("15");
   await expect.poll(() => page.evaluate(() => ({
-    theme: localStorage.getItem("wisp-theme"),
-    light: localStorage.getItem("wisp-light-palette"),
-    dark: localStorage.getItem("wisp-dark-palette"),
+    theme: localStorage.getItem("superscience-theme"),
+    light: localStorage.getItem("superscience-light-palette"),
+    dark: localStorage.getItem("superscience-dark-palette"),
     ui: localStorage.getItem("superscience-ui-font-size"),
-    code: localStorage.getItem("wisp-code-font-size"),
+    code: localStorage.getItem("superscience-code-font-size"),
   }))).toEqual({ theme: "dark", light: "catppuccin", dark: "gruvbox", ui: "16", code: "15" });
 
   await page.reload();
@@ -5356,6 +5480,22 @@ test("appearance settings persist separate light and dark palettes and font size
     .getPropertyValue("--ui-font-size").trim())).toBe("16px");
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement)
     .getPropertyValue("--code-font-size").trim())).toBe("15px");
+});
+
+test("UI font size setting scales chat message body text", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("MDLIST");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("FX细胞")).toBeVisible({ timeout: 10_000 });
+  const bodyFontSize = () => page.locator(".msg.assistant .body.md").first()
+    .evaluate((el) => getComputedStyle(el).fontSize);
+  expect(await bodyFontSize()).toBe("15px");
+
+  await openSettingsSection(page, "Appearance");
+  await page.getByRole("slider", { name: "UI font size" }).fill("18");
+  await page.getByRole("button", { name: "Back to app" }).click();
+
+  await expect.poll(bodyFontSize).toBe("19px");
 });
 
 test("vision assignment keeps model fields and stored key placeholder untouched", async ({ page }) => {
@@ -5409,6 +5549,25 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
   await expect(providerSelect(page)).toHaveValue("openai_responses");
   await expect(effort).toHaveValue("medium");
   await expect(page.getByLabel("Use for image analysis")).toBeChecked();
+});
+
+test("model settings rejects max output tokens above the known ceiling", async ({ page }) => {
+  await enterApp(page);
+  await openModelsSettings(page);
+
+  // deepseek-v4-pro matches the MODEL_LIMITS family (384K output ceiling).
+  const maxTokens = page.getByLabel("Max output tokens");
+  await maxTokens.fill("1000000");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.locator(".settings-status"))
+    .toContainText("accepts at most 384000 output tokens");
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toBeNull();
+
+  // The documented ceiling itself saves fine.
+  await maxTokens.fill("384000");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "save_model"))
+    .toMatchObject({ profile: { max_tokens: 384000 } });
 });
 
 test("onboarding key setup adds the flash model before the pro model", async ({ page }) => {
@@ -5496,7 +5655,7 @@ test("model API URL explains that endpoint paths are added automatically", async
   await openModelsSettings(page);
 
   await expect(page.getByTestId("model-api-url-hint")).toHaveText(
-    "Enter the provider's API base URL. You do not need to append /v1, /chat/completions, /responses, or /v1/messages; Wisp completes the request path and probes common OpenAI-compatible paths automatically.",
+    "Enter the provider's API base URL. You do not need to append /v1, /chat/completions, /responses, or /v1/messages; SuperScience completes the request path and probes common OpenAI-compatible paths automatically.",
   );
   await expect(page.getByLabel("API URL")).toHaveAttribute(
     "aria-describedby",
@@ -5551,7 +5710,7 @@ test("check for updates shows an up-to-date modal", async ({ page }) => {
   const modal = page.getByTestId("update-check-modal");
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("You're up to date");
-  await expect(modal).toContainText("Wisp 0.9.0 is already the latest version.");
+  await expect(modal).toContainText("SuperScience 0.9.0 is already the latest version.");
   await modal.getByRole("button", { name: "OK" }).click();
   await expect(modal).toHaveCount(0);
 });
@@ -5563,19 +5722,19 @@ test("check for updates shows an available-update modal before opening releases"
     current_version: "0.9.0",
     latest_version: "1.2.3",
     update_available: true,
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v1.2.3",
+    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v1.2.3",
   });
 
   await page.getByRole("button", { name: "Check for updates" }).click();
   const modal = page.getByTestId("update-check-modal");
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("Update available");
-  await expect(modal).toContainText("Wisp 1.2.3 is available.");
+  await expect(modal).toContainText("SuperScience 1.2.3 is available.");
   await expect(await lastInvokeArgs(page, "open_external_url")).toBeNull();
   await page.getByTestId("update-check-open-releases").click();
   await expect(modal).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v1.2.3",
+    url: "https://github.com/imbigfly/SuperScience/releases/tag/v1.2.3",
   });
 });
 
@@ -5586,7 +5745,7 @@ test("macOS update download is verified before a separate install confirmation",
     current_version: "0.27.0",
     latest_version: "0.28.0",
     update_available: true,
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.28.0",
+    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.28.0",
     notes: "Signed macOS update",
     install_supported: true,
   });
@@ -5598,7 +5757,7 @@ test("macOS update download is verified before a separate install confirmation",
   await expect(await lastInvokeArgs(page, "install_update")).toBeNull();
 
   await modal.getByRole("button", { name: "Download update" }).click();
-  await expect(modal).toContainText("Downloading Wisp 0.28.0");
+  await expect(modal).toContainText("Downloading SuperScience 0.28.0");
   await expect(modal).toContainText("25 B / 100 B");
   await modal.evaluate((element) => ((window as any).__downloadingModal = element));
   await page.evaluate(() => (window as any).__mockUpdateProgress(10));
@@ -5616,7 +5775,7 @@ test("macOS update download is verified before a separate install confirmation",
   await expect(await lastInvokeArgs(page, "install_update")).toBeNull();
 
   await modal.getByRole("button", { name: "Install and restart" }).click();
-  await expect(modal).toContainText("Installing Wisp 0.28.0");
+  await expect(modal).toContainText("Installing SuperScience 0.28.0");
   await expect.poll(() => page.evaluate(() => (window as any).__mockUpdateInstalled)).toBe(true);
 });
 
@@ -5624,7 +5783,7 @@ test("update signature failure keeps the current app and offers Releases", async
   await enterApp(page);
   await page.getByRole("button", { name: "Settings" }).click();
   const releaseUrl =
-    "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.28.0";
+    "https://github.com/imbigfly/SuperScience/releases/tag/v0.28.0";
   await setMockUpdateCheck(page, {
     latest_version: "0.28.0",
     update_available: true,
@@ -5667,7 +5826,7 @@ test("install is blocked while a task is active", async ({ page }) => {
   await setMockUpdateCheck(page, {
     latest_version: "0.28.0",
     update_available: true,
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.28.0",
+    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.28.0",
     install_supported: true,
   });
 
@@ -5710,7 +5869,7 @@ test("stale update card refreshes to the latest release before opening it (#521)
     current_version: "0.23.0",
     latest_version: "0.24.0",
     update_available: true,
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.24.0",
+    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.24.0",
   });
 
   await page.keyboard.press("Control+p");
@@ -5718,22 +5877,22 @@ test("stale update card refreshes to the latest release before opening it (#521)
   await input.fill("check for updates");
   await input.press("Enter");
   let modal = page.getByTestId("update-check-modal");
-  await expect(modal).toContainText("Wisp 0.24.0 is available.");
+  await expect(modal).toContainText("SuperScience 0.24.0 is available.");
   await modal.getByRole("button", { name: "Later" }).click();
   await expect(page.getByTestId("update-card")).toContainText("v0.24.0");
 
   await setMockUpdateCheck(page, {
     latest_version: "0.25.0",
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.25.0",
+    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.25.0",
   });
   await page.getByTestId("update-card").click();
 
   modal = page.getByTestId("update-check-modal");
-  await expect(modal).toContainText("Wisp 0.25.0 is available.");
+  await expect(modal).toContainText("SuperScience 0.25.0 is available.");
   await expect(page.getByTestId("update-card")).toContainText("v0.25.0");
   await modal.getByTestId("update-check-open-releases").click();
   await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.25.0",
+    url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.25.0",
   });
 });
 
@@ -5769,6 +5928,61 @@ test("command palette click shows checking feedback immediately", async ({ page 
   await expect(modal).toContainText("Contacting GitHub Releases");
   await resolveMockUpdateCheck(page);
   await expect(modal).toContainText("You're up to date", { timeout: 2_000 });
+});
+
+test("credential services explain their behavior and open official setup links", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Credentials");
+
+  await expect(page.locator(".cred-help-trigger")).toHaveCount(4);
+  const openAlexHelp = page.getByRole("button", { name: "OpenAlex: About this credential" });
+  const openAlexTooltip = page.locator("#cred-help-openalex");
+  await expect(openAlexTooltip).not.toBeVisible();
+  await openAlexHelp.hover();
+  await expect(openAlexTooltip).toBeVisible();
+  await expect(openAlexTooltip).toContainText("What it is");
+  await expect(openAlexTooltip).toContainText("When configured");
+  await expect(openAlexTooltip).toContainText("When not configured");
+  await expect(openAlexTooltip).toContainText("falls back to anonymous OpenAlex requests");
+
+  const ncbiHelp = page.getByRole("button", { name: "NCBI E-utilities (PubMed): About this credential" });
+  await ncbiHelp.focus();
+  await expect(page.locator("#cred-help-ncbi")).toBeVisible();
+  await expect(page.locator("#cred-help-ncbi")).toContainText("3 requests/s limit");
+
+  const links = [
+    ["Get OpenAlex API key", "https://openalex.org/settings/api"],
+    ["Open InfiniSynapse console", "https://app.infinisynapse.cn/tasks"],
+    ["Visit InfiniSynapse", "https://infinisynapse.cn"],
+    ["Get SCIMaster API key", "https://scimaster.bohrium.com/vibe-write/home"],
+    ["Open NCBI account", "https://www.ncbi.nlm.nih.gov/account/"],
+  ] as const;
+  for (const [label, url] of links) {
+    await page.getByRole("button", { name: label, exact: true }).click();
+    await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({ url });
+  }
+  await expect(page.locator(".settings-page")).toBeVisible();
+});
+
+test("Chinese NCBI credential help gives the complete account navigation path", async ({ page }) => {
+  await page.goto("/?mockLocale=zh");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "新建会话" })).toBeVisible();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "凭据", exact: true }).click();
+
+  const help = page.getByRole("button", { name: /NCBI E-utilities.*了解该凭据/ });
+  await help.focus();
+  const tooltip = page.locator("#cred-help-ncbi");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText("这是什么");
+  await expect(tooltip).toContainText("配置后");
+  await expect(tooltip).toContainText("未配置时");
+  await expect(tooltip).toContainText("每秒 3 次");
+  await expect(page.locator(".cred-setup-note", { hasText: "API Key Management" }))
+    .toContainText("右上角用户名");
+  await expect(page.getByRole("button", { name: "打开 NCBI 账户页面", exact: true }))
+    .toBeVisible();
 });
 
 test("credentials settings include SCIMaster and save its key", async ({ page }) => {
@@ -6262,13 +6476,36 @@ test("resource conflict approval explains the owner and only offers wait or canc
   });
 });
 
+test("large image approval warns before resizing and cannot be remembered", async ({ page }) => {
+  await enterApp(page, "/?mockSessionModels=1");
+  await page.locator('[data-session-id="s-model-a"]').click();
+  await page.evaluate(() => (window as any).__tauriEmit("confirm-request", {
+    frame_id: "s-model-a",
+    message: "plot.png exceeds 5 MiB. The original file will not be changed. Fine details may be lost.",
+    tool: "image_resize",
+    preview: "",
+  }));
+
+  await expect(page.getByText("Resize large image for model input?")).toBeVisible();
+  await expect(page.getByText(/Fine details may be lost/)).toBeVisible();
+  await expect(page.getByLabel("Approval scope")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await page.getByRole("button", { name: "Resize & continue" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "confirm_response")).toMatchObject({
+    sessionId: "s-model-a",
+    approved: true,
+    scope: "once",
+  });
+});
+
 test("Escape closes plan feedback before rejecting the plan", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("NEEDPLAN");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Review plan before starting?")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Other" }).click();
-  const feedback = page.getByPlaceholder("Tell wisp what to change in this plan.");
+  const feedback = page.getByPlaceholder("Tell superscience what to change in this plan.");
   await expect(feedback).toBeVisible();
 
   await page.keyboard.press("Escape");
@@ -6849,7 +7086,7 @@ test("reopening a saved session restores its MCP App workbench", async ({ page }
   await openSavedSession();
 });
 
-test("real Motif MCP App reaches ready state through the Wisp host", async ({ page }) => {
+test("real Motif MCP App reaches ready state through the SuperScience host", async ({ page }) => {
   test.skip(!motifAppHtmlPath, "set WISP_MOTIF_APP_HTML for release acceptance");
   const html = readFileSync(motifAppHtmlPath!, "utf8");
   await enterApp(page);
@@ -6869,7 +7106,7 @@ test("real Motif MCP App reaches ready state through the Wisp host", async ({ pa
           description: "Open the Motif workbench",
           inputSchema: { type: "object", properties: {} },
         },
-        arguments: { content: ">wisp-acceptance\nACGTACGT", filename: "wisp-acceptance.fasta" },
+        arguments: { content: ">superscience-acceptance\nACGTACGT", filename: "superscience-acceptance.fasta" },
         result: {
           content: [{ type: "text", text: "Motif acceptance payload" }],
           structuredContent: {
@@ -6879,8 +7116,8 @@ test("real Motif MCP App reaches ready state through the Wisp host", async ({ pa
             residueCount: 8,
             payload: {
               schema: "motif.claude-science.inventory.v2",
-              inventory: { title: "Wisp acceptance" },
-              records: [{ id: "wisp-acceptance", name: "Wisp acceptance", sequence: "ACGTACGT", molecule: "dna" }],
+              inventory: { title: "SuperScience acceptance" },
+              records: [{ id: "superscience-acceptance", name: "SuperScience acceptance", sequence: "ACGTACGT", molecule: "dna" }],
             },
           },
           isError: false,
@@ -6973,7 +7210,7 @@ test("bound BibTeX resources open their immutable text preview", async ({ page }
   await expect(page.locator('.center-tab[data-center-path="artifact-version:resource-version-bib"]'))
     .toContainText("references.bib");
   await expect(page.locator(".center-file-preview"))
-    .toContainText("@article{wisp");
+    .toContainText("@article{superscience");
   await expect.poll(() => lastInvokeArgs(page, "read_artifact_version"))
     .toMatchObject({ versionId: "resource-version-bib" });
 });
@@ -7050,7 +7287,7 @@ test("projects landing stays centered on wide windows", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".projects-head")).toBeVisible();
   await expect(page.locator(".projects-brand-mark")).toBeVisible();
-  await expect(page.locator(".projects-title")).toContainText("Wisp Science");
+  await expect(page.locator(".projects-title")).toContainText("SuperScience");
   await expect.poll(async () => page.locator(".projects-head").evaluate((el) => {
     const rect = el.getBoundingClientRect();
     return Math.round(rect.width);
@@ -7116,13 +7353,18 @@ test("Windows uses the integrated title bar without covering the project landing
   await page.keyboard.press("Escape");
   await expect(page.locator(".codex-import-modal")).toHaveCount(0);
 
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Import session archive" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "import_session_archive")).not.toBeNull();
+  await expect(page.locator(".copy-toast")).toContainText("Session imported (3 messages)");
+
   await page.getByRole("button", { name: "Help" }).click();
   await page.getByRole("menuitem", { name: "Documentation" }).click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? [])
       .filter((c: any) => c.cmd === "open_external_url")
       .map((c: any) => (c.args instanceof Map ? c.args.get("url") : c.args?.url))
-  )).toContain("https://github.com/xuzhougeng/wisp-science#readme");
+  )).toContain("https://github.com/imbigfly/SuperScience#readme");
 
   await context.close();
 });
@@ -7354,7 +7596,7 @@ test("projects sync manually, copy a device code, and join on another device", a
 
   await expect(page.getByRole("button", { name: "Join synced project" })).toHaveCount(0);
   await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("button", { name: "General", exact: true }).click();
+  await page.getByRole("button", { name: "Remote Access", exact: true }).click();
   await page.getByRole("button", { name: "Join synced project" }).click();
   const joinDialog = page.getByRole("dialog", { name: "Join a synced project" });
   const deviceCode = page.getByTestId("sync-device-code");
@@ -7390,7 +7632,7 @@ test("project sync actions appear only after a sync backend is configured", asyn
   await expect(projectCard.getByRole("button", { name: "Sync now" })).toHaveCount(0);
   await expect(projectCard.getByRole("button", { name: "Copy device code" })).toHaveCount(0);
 
-  await openSettingsSection(page, "General");
+  await openSettingsSection(page, "Remote Access");
   await page.getByTestId("sync-relay-url").fill("https://relay.example.test");
   await page.getByTestId("sync-relay-token").fill("secret-token");
   await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
@@ -7399,9 +7641,9 @@ test("project sync actions appear only after a sync backend is configured", asyn
   await expect(projectCard.getByRole("button", { name: "Copy device code" })).toBeVisible();
 });
 
-test("general settings configure a cloud-drive sync folder", async ({ page }) => {
+test("remote access settings configure a cloud-drive sync folder", async ({ page }) => {
   await page.goto("/");
-  await openSettingsSection(page, "General");
+  await openSettingsSection(page, "Remote Access");
   await page.getByTestId("sync-backend").selectOption("folder");
   await page.locator(".settings-path-row").getByRole("button", { name: "Choose folder" }).click();
   await expect(page.getByTestId("sync-folder")).toHaveValue("/mock/root/new-project");
@@ -7468,6 +7710,13 @@ test("context compaction leaves a visible timeline flag", async ({ page }) => {
   const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
 
   await emitTauriEvent(page, "agent", {
+    kind: "CompactionStarted",
+    frame_id: frameId,
+    strategy: "auto",
+  });
+  await expect(page.getByTestId("context-compaction-live")).toContainText("Centrifuging context");
+
+  await emitTauriEvent(page, "agent", {
     kind: "Compaction",
     frame_id: frameId,
     before: 812_000,
@@ -7476,6 +7725,7 @@ test("context compaction leaves a visible timeline flag", async ({ page }) => {
   });
 
   const flag = page.getByTestId("context-compaction-flag");
+  await expect(page.getByTestId("context-compaction-live")).toBeHidden();
   await expect(flag).toContainText("Context automatically compacted");
   await expect(flag).toContainText("812.0k → 236.0k");
 });
@@ -7560,7 +7810,7 @@ test("pet stays off until the user explicitly configures its directory", async (
   });
 
   await page.goto("/?pet=desktop&mockPet=1");
-  const pet = page.getByTestId("wisp-pet");
+  const pet = page.getByTestId("superscience-pet");
   await expect(pet).toBeVisible();
   await expect.poll(() => pet.getAttribute("data-state")).toMatch(/^(idle|looking)$/);
   await pet.click();
@@ -7570,7 +7820,7 @@ test("pet stays off until the user explicitly configures its directory", async (
 test("desktop pet remains independent and reflects global agent state", async ({ page }) => {
   await page.goto("/?pet=desktop&mockPet=1");
 
-  const pet = page.getByTestId("wisp-pet");
+  const pet = page.getByTestId("superscience-pet");
   await expect(page.getByTestId("pet-window-root")).toBeVisible();
   await expect(pet).toBeVisible();
   await expect(pet).toHaveAttribute("data-tauri-drag-region", "deep");
@@ -7614,15 +7864,20 @@ test("desktop pet remains independent and reflects global agent state", async ({
 test("desktop pet shows active Run titles and celebrates completion (#693)", async ({ page }) => {
   await page.addInitScript(() => {
     (window as any).__mockPetActiveRuns = [
-      { id: "run-data", title: "data_analysis.py" },
+      { id: "run-data", title: "siibra atlas query example (with assignment)" },
     ];
   });
   await page.goto("/?pet=desktop&mockPet=1");
 
-  const pet = page.getByTestId("wisp-pet");
+  const pet = page.getByTestId("superscience-pet");
+  const sprite = pet.locator(".superscience-pet-sprite");
+  const label = pet.locator(".superscience-pet-state-label");
   await expect(pet).toHaveAttribute("data-tauri-drag-region", "deep");
-  await expect(pet.getByText("Running: data_analysis.py")).toBeVisible();
+  await expect(label).toHaveText("Running: siibra atlas query example (with assignment)");
+  await expect(label).toBeVisible();
   await expect(pet).toHaveAttribute("data-state", "running");
+  const [spriteBox, labelBox] = await Promise.all([sprite.boundingBox(), label.boundingBox()]);
+  expect(labelBox!.y + labelBox!.height).toBeLessThanOrEqual(spriteBox!.y);
 
   await page.evaluate(() => {
     (window as any).__mockPetActiveRuns = [];
@@ -7830,7 +8085,7 @@ test("project removal offers a files-preserving action in the in-app dialog (#96
   const modal = page.locator(".project-delete-choice-modal");
   await expect(modal).toBeVisible();
   await expect(modal.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
-  await expect(modal.getByRole("button", { name: "Remove from Wisp only", exact: true })).toBeVisible();
+  await expect(modal.getByRole("button", { name: "Remove from SuperScience only", exact: true })).toBeVisible();
   await expect(modal.getByRole("button", { name: "Delete project and local data", exact: true })).toBeVisible();
 
   // Escape works immediately after opening; it does not depend on modal focus.
@@ -7838,7 +8093,7 @@ test("project removal offers a files-preserving action in the in-app dialog (#96
   await expect(modal).toHaveCount(0);
   await page.locator(".proj-card:not(.proj-example) .pc-del").first().click();
   await page.locator(".project-delete-choice-modal")
-    .getByRole("button", { name: "Remove from Wisp only", exact: true })
+    .getByRole("button", { name: "Remove from SuperScience only", exact: true })
     .click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? [])
@@ -8411,19 +8666,26 @@ test("the selection popup saves a highlight into the right pane and library", as
   // The Highlights tab opens with the excerpt, and the transcript is underlined.
   await expect(page.getByRole("button", { name: "Highlights (1)", exact: true })).toBeVisible();
   await expect(page.locator(".highlight-card .highlight-text")).toContainText(selected.trim().slice(0, 30));
-  await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("wisp-saved") ?? false)).toBe(true);
+  await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("superscience-saved") ?? false)).toBe(true);
+  // Let the double-rAF underline pass finish before the next turn starts.
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
 
   // Saved-mark application is revision-based: token batches in a later turn
   // must not rebuild the transcript text index once per flush.
   await composer(page).fill("MARKDOWNSTREAM");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("stream line 4", { exact: false })).toBeVisible({ timeout: 10_000 });
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
   await page.evaluate(() => {
     const registry = (CSS as any).highlights;
     const set = registry.set.bind(registry);
     (window as any).__savedMarkSetCalls = 0;
     registry.set = (name: string, value: unknown) => {
-      if (name === "wisp-saved") (window as any).__savedMarkSetCalls += 1;
+      if (name === "superscience-saved") (window as any).__savedMarkSetCalls += 1;
       return set(name, value);
     };
   });

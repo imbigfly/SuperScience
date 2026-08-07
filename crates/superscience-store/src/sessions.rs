@@ -1442,7 +1442,7 @@ impl Store {
     }
 
     /// Per-project totals for the Usage settings page. A project is the durable
-    /// workspace boundary in Wisp; scratch projects are intentionally omitted.
+    /// workspace boundary in SuperScience; scratch projects are intentionally omitted.
     pub async fn token_usage_by_project(&self) -> Result<Vec<ProjectTokenUsage>> {
         let rows = sqlx::query(
             "WITH session_usage AS (\

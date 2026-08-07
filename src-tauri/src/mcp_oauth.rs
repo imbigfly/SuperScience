@@ -237,7 +237,7 @@ pub async fn begin_authorization(
             .header("accept", "application/json")
             .json(&json!({
                 "client_name": "SuperScience",
-                "client_uri": "https://github.com/xuzhougeng/wisp-science",
+                "client_uri": "https://github.com/imbigfly/SuperScience",
                 "redirect_uris": [redirect_uri],
                 "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],

@@ -223,7 +223,7 @@ workdir="$HOME/{workdir}"
 mkdir -p "$workdir"
 mkdir -p "$workdir/inputs"
 if [ -f "$workdir/token" ]; then
-  [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'wisp token mismatch' >&2; exit 73; }}
+  [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'superscience token mismatch' >&2; exit 73; }}
 else
   printf '%s\n' '{token}' > "$workdir/token.tmp"
   mv "$workdir/token.tmp" "$workdir/token"
@@ -550,7 +550,7 @@ fn ssh_launch_payload(handle: &RemoteRunHandle) -> String {
     format!(
         r#"set -eu
 workdir="$HOME/{workdir}"
-[ -f "$workdir/token" ] && [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'wisp token mismatch' >&2; exit 73; }}
+[ -f "$workdir/token" ] && [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'superscience token mismatch' >&2; exit 73; }}
 lock="$workdir/_launch_lock"
 if [ -d "$lock" ] && [ ! -f "$workdir/_submitted" ]; then
   owner=$(cat "$lock/owner" 2>/dev/null || true)

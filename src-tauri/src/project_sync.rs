@@ -30,7 +30,7 @@ const JOIN_CODE_PREFIX: &str = "superscience-sync:";
 const LEGACY_JOIN_CODE_PREFIX: &str = "wisp-sync:";
 const RELAY_TOKEN_SECRET: &str = "sync_relay_token";
 const SYNC_FOLDER_NAME: &str = "SuperScience Sync";
-const LEGACY_SYNC_FOLDER_NAME: &str = "Wisp Sync";
+const LEGACY_SYNC_FOLDER_NAME: &str = "SuperScience Sync";
 
 fn sync_folder_relay_root(parent: &Path) -> PathBuf {
     let preferred = parent.join(SYNC_FOLDER_NAME);

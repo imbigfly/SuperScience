@@ -475,7 +475,7 @@ fn run_bundled_ssh_probe(
     }
     if !bundled_probe_protocol_observed(&stdout, specs) {
         return Err(
-            "SSH authentication succeeded, but the remote account did not execute Wisp's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early."
+            "SSH authentication succeeded, but the remote account did not execute SuperScience's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early."
                 .into(),
         );
     }
@@ -1041,7 +1041,7 @@ mod tests {
         let error = probe_context_with_runner(&ctx, &mut runner).unwrap_err();
 
         assert!(error.contains("SSH authentication succeeded"));
-        assert!(error.contains("did not execute Wisp's non-interactive probe commands"));
+        assert!(error.contains("did not execute SuperScience's non-interactive probe commands"));
     }
 
     #[test]

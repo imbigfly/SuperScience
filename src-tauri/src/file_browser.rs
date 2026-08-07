@@ -132,9 +132,17 @@ pub(super) fn mime_for_path(path: &Path) -> &'static str {
         Some("webp") => "image/webp",
         Some("svg") => "image/svg+xml",
         Some("pdf") => "application/pdf",
+        Some("doc" | "docm") => "application/msword",
         Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        Some("xls" | "xlsm" | "xlsb") => "application/vnd.ms-excel",
         Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        Some("ppt" | "pps" | "pot" | "pptm" | "ppsx" | "ppsm") => "application/vnd.ms-powerpoint",
         Some("pptx") => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        Some("odt") => "application/vnd.oasis.opendocument.text",
+        Some("ods") => "application/vnd.oasis.opendocument.spreadsheet",
+        Some("odp") => "application/vnd.oasis.opendocument.presentation",
+        Some("rtf") => "application/rtf",
+        Some("epub") => "application/epub+zip",
         Some("bib") => "text/x-bibtex",
         Some("csv") => "text/csv",
         Some("tsv") => "text/tab-separated-values",
@@ -995,6 +1003,16 @@ fn read_remote_file_with_runner(
             return Err(format!("remote file exceeds {cap} byte limit"));
         }
         let full = read_remote_file_bytes_with_runner(context, path, Some(cap), runner)?;
+        if let Some(Ok(markdown)) = superscience_tools::read::document_markdown(Path::new(path), &full) {
+            return Ok(FileContent {
+                path: path.to_string(),
+                mime: mime.into(),
+                text: Some(markdown),
+                base64: None,
+                truncated: false,
+                total_bytes: Some(total),
+            });
+        }
         return Ok(file_content_from_bytes(
             path.to_string(),
             mime,
@@ -1107,6 +1125,16 @@ pub(super) fn read_file_at(
     } else {
         std::fs::read(&real).map_err(|e| format!("{e}"))?
     };
+    if let Some(Ok(markdown)) = superscience_tools::read::document_markdown(&real, &bytes) {
+        return Ok(FileContent {
+            path: real.to_string_lossy().into_owned(),
+            mime: mime.into(),
+            text: Some(markdown),
+            base64: None,
+            truncated: false,
+            total_bytes: Some(total),
+        });
+    }
     Ok(file_content_from_bytes(
         real.to_string_lossy().into_owned(),
         mime,
@@ -1300,7 +1328,7 @@ mod tests {
 
     fn test_identity_file() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "wisp-file-browser-test-key-{}",
+            "superscience-file-browser-test-key-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::write(&path, b"test-key\n").unwrap();
@@ -1336,6 +1364,25 @@ mod tests {
             mime_for_path(Path::new("talk.pptx")),
             "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         );
+        assert_eq!(mime_for_path(Path::new("notes.rtf")), "application/rtf");
+    }
+
+    #[test]
+    fn rich_document_preview_uses_anydoc_markdown() {
+        let base =
+            std::env::temp_dir().join(format!("superscience-anydoc-preview-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(
+            base.join("protocol.rtf"),
+            br#"{\rtf1\ansi\b Experimental protocol\b0\par Centrifuge at 12000 g.}"#,
+        )
+        .unwrap();
+
+        let content = read_file_at(&base, "protocol.rtf".into(), None).unwrap();
+        assert_eq!(content.mime, "application/rtf");
+        assert!(content.text.unwrap().contains("**Experimental protocol**"));
+        assert!(content.base64.is_none());
+        std::fs::remove_dir_all(base).ok();
     }
 
     #[test]

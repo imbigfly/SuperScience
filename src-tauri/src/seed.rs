@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn extracts_esr1_demo_assets() {
-        let tmp = std::env::temp_dir().join(format!("wisp-seed-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("superscience-seed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 

@@ -189,6 +189,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "skill" => view! { <path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/> }.into_view(),
         "computer" => view! { <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/> }.into_view(),
         "server" => view! { <rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/><circle cx="7" cy="7.5" r="0.5" fill="currentColor"/><circle cx="7" cy="16.5" r="0.5" fill="currentColor"/> }.into_view(),
+        "search" => view! { <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/> }.into_view(),
         "terminal" => view! { <path d="m4 17 6-5-6-5"/><path d="M12 19h8"/> }.into_view(),
         "grid" => view! { <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/> }.into_view(),
         "list" => view! { <path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/> }.into_view(),
@@ -968,12 +969,14 @@ pub(crate) fn approval_allow_label_key(scope: &str) -> &'static str {
 pub(crate) fn ApprovalCard(
     tool: String,
     preview: String,
+    message: String,
     session_id: String,
     on_decide: Callback<(String, bool, Option<String>, String)>,
 ) -> impl IntoView {
     let locale = use_locale();
     let is_plan = tool == "update_plan";
     let is_resource_conflict = tool == "resource_conflict";
+    let is_image_resize = tool == "image_resize";
     let show_feedback = create_rw_signal(false);
     let feedback = create_rw_signal(String::new());
     let approval_scope = create_rw_signal(String::from("once"));
@@ -1009,6 +1012,7 @@ pub(crate) fn ApprovalCard(
         match tool_for_title.as_str() {
             _ if is_plan => t(loc, "approval.review_plan"),
             "resource_conflict" => t(loc, "approval.resource_conflict_title"),
+            "image_resize" => t(loc, "approval.image_resize_title"),
             "python" => t(loc, "approval.run_python"),
             "r" => t(loc, "approval.run_r"),
             "shell" => t(loc, "approval.run_shell"),
@@ -1047,8 +1051,8 @@ pub(crate) fn ApprovalCard(
                     let p = preview.clone();
                     let lang = lang.clone();
                     view! {
-                        {is_resource_conflict.then(|| view! {
-                            <p class="approval-conflict-message">{p.clone()}</p>
+                        {(is_resource_conflict || is_image_resize).then(|| view! {
+                            <p class="approval-conflict-message">{if is_image_resize && !p.is_empty() { p.clone() } else if is_image_resize { message.clone() } else { p.clone() }}</p>
                         })}
                         {show_tag.then(|| view! {
                             <div class="approval-tags"><span class="approval-tag">{tag}</span></div>
@@ -1065,11 +1069,13 @@ pub(crate) fn ApprovalCard(
                     "approval.plan_hint"
                 } else if is_resource_conflict {
                     "approval.resource_conflict_hint"
+                } else if is_image_resize {
+                    "approval.image_resize_hint"
                 } else {
                     "approval.hint"
                 })}</p>
                 <div class="approval-actions">
-                    {(!is_plan && !is_resource_conflict).then(|| view! {
+                    {(!is_plan && !is_resource_conflict && !is_image_resize).then(|| view! {
                         <label class="approval-scope">
                             <span>{move || t(locale.get(), "approval.scope")}</span>
                             <select
@@ -1093,6 +1099,8 @@ pub(crate) fn ApprovalCard(
                                 t(locale.get(), "approval.plan_approve").to_string()
                             } else if is_resource_conflict {
                                 t(locale.get(), "approval.resource_conflict_wait").to_string()
+                            } else if is_image_resize {
+                                t(locale.get(), "approval.image_resize_continue").to_string()
                             } else {
                                 t(locale.get(), approval_allow_label_key(&approval_scope.get())).to_string()
                             }
@@ -1104,6 +1112,8 @@ pub(crate) fn ApprovalCard(
                             "approval.plan_reject"
                         } else if is_resource_conflict {
                             "approval.resource_conflict_cancel"
+                        } else if is_image_resize {
+                            "approval.image_resize_cancel"
                         } else {
                             "confirm.deny"
                         })}

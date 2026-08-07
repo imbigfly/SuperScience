@@ -1,6 +1,6 @@
 use super::*;
 
-const MODEL_SWITCH_WARNING_DISABLED_KEY: &str = "wisp-model-switch-warning-disabled";
+const MODEL_SWITCH_WARNING_DISABLED_KEY: &str = "superscience-model-switch-warning-disabled";
 
 pub(crate) fn model_switch_warning_disabled() -> bool {
     web_sys::window()
@@ -24,7 +24,7 @@ pub(crate) fn disable_model_switch_warning() {
 
 const SELECTION_POPUP_DISABLED_KEY: &str = "selectionPopupDisabled";
 
-const SEND_WITH_MODIFIER_KEY: &str = "wisp-send-with-modifier";
+const SEND_WITH_MODIFIER_KEY: &str = "superscience-send-with-modifier";
 
 pub(crate) fn load_selection_popup_enabled() -> bool {
     !web_sys::window()
@@ -90,7 +90,7 @@ fn load_palette_mode(key: &str, fallback: &str, valid: &[&str]) -> String {
 
 pub(crate) fn load_light_palette() -> String {
     load_palette_mode(
-        "wisp-light-palette",
+        "superscience-light-palette",
         "paper",
         &["paper", "codex", "github", "catppuccin", "everforest"],
     )
@@ -98,7 +98,7 @@ pub(crate) fn load_light_palette() -> String {
 
 pub(crate) fn load_dark_palette() -> String {
     load_palette_mode(
-        "wisp-dark-palette",
+        "superscience-dark-palette",
         "charcoal",
         &["charcoal", "codex", "github", "catppuccin", "gruvbox"],
     )
@@ -113,8 +113,8 @@ pub(crate) fn apply_palette_modes(light: &str, dark: &str) {
         let _ = root.set_attribute("data-dark-palette", dark);
     }
     if let Ok(Some(storage)) = window.local_storage() {
-        let _ = storage.set_item("wisp-light-palette", light);
-        let _ = storage.set_item("wisp-dark-palette", dark);
+        let _ = storage.set_item("superscience-light-palette", light);
+        let _ = storage.set_item("superscience-dark-palette", dark);
     }
 }
 
@@ -148,7 +148,7 @@ pub(crate) fn load_ui_font_size() -> u16 {
 }
 
 pub(crate) fn load_code_font_size() -> u16 {
-    load_font_size("wisp-code-font-size", 12, 10, 18)
+    load_font_size("superscience-code-font-size", 12, 10, 18)
 }
 
 pub(crate) fn apply_font_sizes(ui_size: u16, code_size: u16) {
@@ -161,7 +161,7 @@ pub(crate) fn apply_font_sizes(ui_size: u16, code_size: u16) {
     }
     if let Ok(Some(storage)) = window.local_storage() {
         let _ = storage.set_item("superscience-ui-font-size", &ui_size.to_string());
-        let _ = storage.set_item("wisp-code-font-size", &code_size.to_string());
+        let _ = storage.set_item("superscience-code-font-size", &code_size.to_string());
     }
 }
 

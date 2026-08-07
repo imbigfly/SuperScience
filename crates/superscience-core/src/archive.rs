@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn prune_enforces_size_cap() {
-        let dir = std::env::temp_dir().join(format!("wisp-archive-prune-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("superscience-archive-prune-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..5 {
             std::fs::write(dir.join(format!("part-{i}.txt")), "z".repeat(2_000)).unwrap();

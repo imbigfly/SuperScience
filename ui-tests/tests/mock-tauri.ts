@@ -174,7 +174,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     current_version: "0.9.0",
     latest_version: "0.9.0",
     update_available: false,
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases",
+    release_url: "https://github.com/imbigfly/SuperScience/releases",
     notes: "",
     install_supported: false,
     downloaded: false,
@@ -298,6 +298,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { path: "pixi.toml", is_dir: false, size: 64 },
     { path: "analysis.ipynb", is_dir: false, size: 4096 },
     { path: "analysis.unknown", is_dir: false, size: 128 },
+    { path: "protocol.rtf", is_dir: false, size: 256 },
     { path: "manuscript.docx", is_dir: false, size: 11351 },
     { path: "office-preview.xlsx", is_dir: false, size: 3600 },
     { path: "office-preview.pptx", is_dir: false, size: 8600 },
@@ -1061,7 +1062,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       last_polled_at: null,
       last_poll_error: null,
       progress_json: JSON.stringify({
-        schema: "wisp.method-search-progress.v1",
+        schema: "superscience.method-search-progress.v1",
         phase: "awaiting_approval",
         baseline_primary: 0.5372,
         best_primary: 0.5717,
@@ -1089,7 +1090,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       updated_at: 1783482800,
     },
     spec: {
-      schema: "wisp.method-search.v1",
+      schema: "superscience.method-search.v1",
       objective: "Improve validation AUPRC without violating runtime limits.",
       target: {
         language: "python",
@@ -1121,7 +1122,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       final_verification: { artifact_version_id: "holdout-version-001", path: "data/holdout.csv", repetitions: 5 },
     },
     audit: {
-      schema: "wisp.method-search-audit.v1",
+      schema: "superscience.method-search-audit.v1",
       preparationId: "prepare-001",
       baseline: {
         repetitions: 3,
@@ -1333,6 +1334,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           return value;
         };
         switch (cmd) {
+          case "review_session": {
+            const delay = Number((window as any).__reviewDelayMs ?? 0);
+            if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+            return null;
+          }
           case "get_research_graph":
             return researchGraph;
           case "get_publication_workspace":
@@ -1590,7 +1596,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 items: [
                   { role: "user", text: "Prepare the regression plan", tool_name: null, ok: null },
                   // This is the load_session row produced from the persisted
-                  // plan tool message — `wisp:plan` for ACP, the `propose_plan`
+                  // plan tool message — `superscience:plan` for ACP, the `propose_plan`
                   // result for built-in; LoadedItem::into_chat rebuilds both.
                   {
                     role: "plan",
@@ -1921,7 +1927,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               completedBytes: 512, totalBytes: 1024, currentPath: "data/example.tsv",
             });
             if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
-            return "/mock/wisp-project.zip";
+            return "/mock/superscience-project.zip";
           }
           case "sync_project":
             if ((window as any).__failSyncConflict) {
@@ -1952,6 +1958,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               app_version: "0.29.0",
               os: "windows",
               arch: "x86_64",
+              startup: "total=120ms store=90ms window_ready=600000ms",
               workspace: project.root,
               errors: [],
             };
@@ -3143,6 +3150,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (path.toLowerCase().endsWith(".unknown")) {
               return { path, mime: "application/octet-stream", text: null, base64: "AA==" };
             }
+            if (path.toLowerCase().endsWith(".rtf")) {
+              return { path, mime: "application/rtf", text: "# Experimental protocol\n\nCentrifuge at **12000 g**.", base64: null };
+            }
             if (path.toLowerCase().includes(".pdf")) {
               return { path, mime: "application/pdf", text: null, base64: pdfBase64 };
             }
@@ -3156,7 +3166,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return { path, mime: "text/markdown", text: "# Draft manuscript\n\nOriginal body paragraph.\n", base64: null };
             }
             if (path.toLowerCase().includes(".json")) {
-              return { path, mime: "application/json", text: '{"model":{"name":"wisp","enabled":true}}', base64: null };
+              return { path, mime: "application/json", text: '{"model":{"name":"superscience","enabled":true}}', base64: null };
             }
             if (path.toLowerCase().includes(".html")) {
               return { path, mime: "text/html", text: '<style>#mode::after{content:"Desktop"}@media(max-width:900px){#mode::after{content:"Mobile"}}</style><div id="mode"></div>', base64: null };
@@ -3200,7 +3210,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return {
                 path: "artifact-version:resource-version-bib",
                 mime: "text/x-bibtex",
-                text: "@article{wisp,\n  title = {Wisp Science}\n}",
+                text: "@article{superscience,\n  title = {SuperScience}\n}",
                 base64: null,
               };
             }
@@ -3221,6 +3231,14 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "export_session":
             return "/mock/export.zip";
+          case "import_session_archive":
+            return {
+              frame_id: "imported-frame",
+              status: "imported",
+              message_count: 3,
+              artifact_count: 0,
+              missing_artifacts: [],
+            };
           case "get_artifact_provenance":
             return {
               code: "import matplotlib\nplt.savefig('volcano.png')",
@@ -3489,10 +3507,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }, 0);
             return null;
           case "send_message": {
-            const fid = (args && (args.sessionId ?? args.session_id)) || "t1";
-            const msg = (args && args.message) || "";
+            const fid = String(arg("sessionId") ?? arg("session_id") ?? "") || "t1";
+            const msg = String(arg("message") ?? "");
             sessionModels[fid] ??= activeHttpModelId();
-            const acpAgentId = args?.acpAgentId ?? acpBindings[fid];
+            const acpAgentId = arg("acpAgentId") ?? acpBindings[fid];
             if (acpAgentId && String(msg).includes("ACPTHINK")) {
               // Codex-style ordering: visible commentary streams first, then
               // reasoning, then tool activity. The UI must preserve those as
@@ -3545,6 +3563,25 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             if (String(msg).includes("PRESTARTFAIL")) {
               throw new Error("No model profile is available");
+            }
+            if (String(msg).includes("POSTSTARTFAIL_EVENT")) {
+              // Mirrors the real backend: live Error event + turn-started
+              // rejection (plain message only on the event card).
+              return await new Promise<string>((_resolve, reject) => {
+                setTimeout(() => {
+                  emit("agent", { kind: "User", frame_id: fid, text: msg });
+                  emit("agent", {
+                    kind: "Error",
+                    frame_id: fid,
+                    message: 'api: 400 {"error":{"message":"max_tokens too high"}}',
+                  });
+                  reject(
+                    new Error(
+                      '[turn-started] api: 400 {"error":{"message":"max_tokens too high"}}',
+                    ),
+                  );
+                }, 30);
+              });
             }
             if (String(msg).includes("POSTSTARTFAIL")) {
               throw new Error("[turn-started] execution failed after turn/start");
@@ -4160,6 +4197,7 @@ export function parallelMock(): void {
             app_version: "0.29.0",
             os: "windows",
             arch: "x86_64",
+            startup: "total=120ms store=90ms window_ready=600000ms",
             workspace: project.root,
             errors: [],
           };
@@ -4199,6 +4237,10 @@ export function parallelMock(): void {
           case "read_file": return { path: "x", mime: "text/plain", text: "", base64: null };
           case "missing_files": return [];
           case "export_session": return "/mock/export.zip";
+          case "import_session_archive": return {
+            frame_id: "imported-frame", status: "imported",
+            message_count: 3, artifact_count: 0, missing_artifacts: [],
+          };
           case "upload_file": return { id: "a", name: "x", kind: "text/csv", path: "x", ts: 1 };
           case "new_session": return `s-${Math.random().toString(36).slice(2)}`;
           case "start_scratch_chat": {
@@ -4246,7 +4288,7 @@ export function parallelMock(): void {
               current_version: "0.9.0",
               latest_version: "0.9.0",
               update_available: false,
-              release_url: "https://github.com/xuzhougeng/wisp-science/releases",
+              release_url: "https://github.com/imbigfly/SuperScience/releases",
             };
           case "send_message": {
             const fid = (args && (args.sessionId ?? args.session_id)) || "t1";

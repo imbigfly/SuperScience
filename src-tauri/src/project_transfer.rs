@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
-const ARCHIVE_KIND: &str = "wisp-project";
+const ARCHIVE_KIND: &str = "superscience-project";
 const ARCHIVE_VERSION: u32 = 1;
 const MANIFEST_PATH: &str = "manifest.json";
 const DATABASE_PATH: &str = "metadata/project.sqlite";
@@ -186,7 +186,7 @@ pub(super) fn directory_component(raw: &str) -> String {
         value.pop();
     }
     if value.is_empty() {
-        "wisp-project".into()
+        "superscience-project".into()
     } else {
         value
     }
@@ -818,7 +818,7 @@ async fn pick_archive(app: &AppHandle) -> Result<Option<PathBuf>, String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .add_filter("Wisp project", &["zip"])
+        .add_filter("SuperScience project", &["zip"])
         .pick_file(move |path| {
             let _ = sender.send(path);
         });
@@ -886,11 +886,11 @@ pub(super) async fn export_project(
         return Err("Wait for running jobs to finish before exporting this project.".into());
     }
 
-    let default_name = format!("wisp-project-{}.zip", archive_component(&name));
+    let default_name = format!("superscience-project-{}.zip", archive_component(&name));
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .add_filter("Wisp project", &["zip"])
+        .add_filter("SuperScience project", &["zip"])
         .set_file_name(&default_name)
         .save_file(move |path| {
             let _ = sender.send(path);
@@ -977,7 +977,7 @@ pub(super) async fn import_project(
         return Ok(None);
     };
     let destination = unique_destination(&parent, &manifest.project.name)?;
-    let staging = TempDir(parent.join(format!(".wisp-import-{}", uuid::Uuid::new_v4())));
+    let staging = TempDir(parent.join(format!(".superscience-import-{}", uuid::Uuid::new_v4())));
     std::fs::create_dir(&staging.0)
         .map_err(|error| format!("cannot create import staging directory: {error}"))?;
     std::fs::create_dir_all(&state.app_data).map_err(|error| error.to_string())?;
@@ -1112,14 +1112,14 @@ mod tests {
 
     #[test]
     fn temporary_archive_is_hidden_beside_the_final_destination() {
-        let destination = Path::new("C:/exports/wisp-project-study.zip");
+        let destination = Path::new("C:/exports/superscience-project-study.zip");
         let temporary = temporary_archive_path(destination).unwrap();
         assert_eq!(temporary.parent(), destination.parent());
         assert!(temporary
             .file_name()
             .unwrap()
             .to_string_lossy()
-            .starts_with(".wisp-project-study.zip."));
+            .starts_with(".superscience-project-study.zip."));
         assert!(temporary
             .file_name()
             .unwrap()

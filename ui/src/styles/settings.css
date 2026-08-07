@@ -195,6 +195,117 @@ body:has(.settings-page) .projects-screen { display: none; }
   margin: 16px 2px 6px;
 }
 .settings-pane-list .settings-list + .conn-group-label { margin-top: 20px; }
+.cred-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 16px 2px 6px;
+}
+.cred-group-heading .conn-group-label { margin: 0; }
+.cred-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.cred-help-trigger {
+  display: inline-grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--bg-input);
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+}
+.cred-help-trigger:hover,
+.cred-help-trigger:focus-visible {
+  border-color: var(--clay);
+  color: var(--clay);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.cred-help-tooltip {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  left: -8px;
+  display: grid;
+  gap: 10px;
+  width: min(390px, calc(100vw - 72px));
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--text-muted);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.5;
+  text-transform: none;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition: opacity .12s ease, transform .12s ease, visibility .12s ease;
+}
+.cred-help:hover .cred-help-tooltip,
+.cred-help:focus-within .cred-help-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+.cred-help-section {
+  display: grid;
+  gap: 2px;
+}
+.cred-help-section strong {
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+.cred-setup-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px 10px;
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.cred-setup-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+.cred-external-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--clay);
+  font: inherit;
+  font-weight: 550;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--clay) 45%, transparent);
+  text-underline-offset: 2px;
+}
+.cred-external-link:hover { color: var(--text); }
+.cred-external-link:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--clay);
+  outline-offset: 3px;
+}
 .cred-field-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .custom-credential-card {
   display: grid;

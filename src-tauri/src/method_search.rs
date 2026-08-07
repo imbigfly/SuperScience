@@ -759,7 +759,7 @@ pub(crate) async fn prepare_method_search_with_evaluator(
     }
 
     let audit = MethodSearchAuditReport {
-        schema: "wisp.method-search-audit.v1".into(),
+        schema: "superscience.method-search-audit.v1".into(),
         preparation_id: preparation_id.clone(),
         baseline,
         sentinel_reachable,
@@ -963,7 +963,7 @@ async fn continue_recovered_workflow(
     {
         Ok(value) => value,
         Err(error) => {
-            tracing::error!(target: "wisp", %run_id, %error, "failed to settle recovered method-search Workflow attempt");
+            tracing::error!(target: "superscience", %run_id, %error, "failed to settle recovered method-search Workflow attempt");
             return;
         }
     };
@@ -978,7 +978,7 @@ async fn continue_recovered_workflow(
         )
         .await
         {
-            tracing::error!(target: "wisp", %run_id, %workflow_id, %error, "failed to continue Workflow after recovered method search");
+            tracing::error!(target: "superscience", %run_id, %workflow_id, %error, "failed to continue Workflow after recovered method search");
         }
     }
 }
@@ -1225,7 +1225,7 @@ mod tests {
     impl TestDirectory {
         fn new() -> Self {
             let path = std::env::temp_dir()
-                .join(format!("wisp-method-search-test-{}", uuid::Uuid::new_v4()));
+                .join(format!("superscience-method-search-test-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&path).unwrap();
             Self(path)
         }
@@ -1329,7 +1329,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(temp.path().join("data/validation.csv"), "x,y\n1,1\n").unwrap();
-        let store = Store::open(&temp.path().join("wisp.db")).await.unwrap();
+        let store = Store::open(&temp.path().join("superscience.db")).await.unwrap();
         store
             .create_project("project", "Project", temp.path().to_str().unwrap())
             .await

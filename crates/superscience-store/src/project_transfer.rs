@@ -1604,7 +1604,7 @@ mod tests {
     fn windows_paths_become_portable_and_restore_on_macos() {
         let root = r"C:\Users\Alice\SuperScience\Study";
         assert_eq!(
-            portable_project_path(root, r"c:\users\alice\wisp\study\figures\plot.png"),
+            portable_project_path(root, r"c:\users\alice\superscience\study\figures\plot.png"),
             ("figures/plot.png".into(), false)
         );
         assert_eq!(

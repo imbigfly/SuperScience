@@ -56,8 +56,10 @@ html.pet-window-shell body {
 .pet-window-root .superscience-pet-state-label {
   position: absolute;
   left: 50%;
-  bottom: -19px;
+  bottom: calc(100% + 6px);
   display: none;
+  width: max-content;
+  max-width: 160px;
   min-width: 52px;
   padding: 2px 7px;
   border: 1px solid rgba(25, 29, 34, .13);
@@ -67,6 +69,7 @@ html.pet-window-shell body {
   color: #34383e;
   font: 600 10px/1.35 "Segoe UI Variable", "Segoe UI", sans-serif;
   text-align: center;
+  white-space: normal;
   transform: translateX(-50%);
   backdrop-filter: blur(8px);
 }

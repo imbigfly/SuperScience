@@ -47,7 +47,7 @@ mod project_sync_backend_tests {
         settings.sync_backend = "folder".into();
         assert!(!project_sync_backend_configured(&settings));
 
-        settings.sync_folder = "C:\\Wisp Sync".into();
+        settings.sync_folder = "C:\\SuperScience Sync".into();
         assert!(project_sync_backend_configured(&settings));
     }
 }
@@ -699,19 +699,38 @@ pub(crate) struct CredField {
     pub(crate) secret: bool,
 }
 
-/// A credential service shown in Settings → Credentials: display name, help
-/// text, and its fields. Mirrors the backend `CREDENTIALS` registry in
-/// models.rs — keep ids in sync.
+/// An official setup destination shown below a built-in credential group.
+pub(crate) struct CredLink {
+    pub(crate) label_key: &'static str,
+    pub(crate) url: &'static str,
+}
+
+/// A credential service shown in Settings → Credentials: display name,
+/// structured help, setup guidance, official links, and its fields. Mirrors
+/// the backend `CREDENTIALS` registry in models.rs — keep ids in sync.
 pub(crate) struct CredGroup {
+    pub(crate) id: &'static str,
     pub(crate) name_key: &'static str,
+    pub(crate) about_key: &'static str,
+    pub(crate) configured_key: &'static str,
+    pub(crate) unconfigured_key: &'static str,
     pub(crate) hint_key: &'static str,
+    pub(crate) links: &'static [CredLink],
     pub(crate) fields: &'static [CredField],
 }
 
 pub(crate) const CRED_GROUPS: &[CredGroup] = &[
     CredGroup {
+        id: "openalex",
         name_key: "cred.openalex.name",
+        about_key: "cred.openalex.about",
+        configured_key: "cred.openalex.configured",
+        unconfigured_key: "cred.openalex.unconfigured",
         hint_key: "cred.openalex.hint",
+        links: &[CredLink {
+            label_key: "cred.openalex.link",
+            url: "https://openalex.org/settings/api",
+        }],
         fields: &[CredField {
             id: "openalex_api_key",
             label_key: "cred.openalex_api_key.label",
@@ -719,8 +738,22 @@ pub(crate) const CRED_GROUPS: &[CredGroup] = &[
         }],
     },
     CredGroup {
+        id: "infinisynapse",
         name_key: "cred.infinisynapse.name",
+        about_key: "cred.infinisynapse.about",
+        configured_key: "cred.infinisynapse.configured",
+        unconfigured_key: "cred.infinisynapse.unconfigured",
         hint_key: "cred.infinisynapse.hint",
+        links: &[
+            CredLink {
+                label_key: "cred.infinisynapse.console_link",
+                url: "https://app.infinisynapse.cn/tasks",
+            },
+            CredLink {
+                label_key: "cred.infinisynapse.docs_link",
+                url: "https://infinisynapse.cn",
+            },
+        ],
         fields: &[CredField {
             id: "infinisynapse_api_key",
             label_key: "cred.infinisynapse_api_key.label",
@@ -728,8 +761,16 @@ pub(crate) const CRED_GROUPS: &[CredGroup] = &[
         }],
     },
     CredGroup {
+        id: "scimaster",
         name_key: "cred.scimaster.name",
+        about_key: "cred.scimaster.about",
+        configured_key: "cred.scimaster.configured",
+        unconfigured_key: "cred.scimaster.unconfigured",
         hint_key: "cred.scimaster.hint",
+        links: &[CredLink {
+            label_key: "cred.scimaster.link",
+            url: "https://scimaster.bohrium.com/vibe-write/home",
+        }],
         fields: &[CredField {
             id: "scimaster_api_key",
             label_key: "cred.scimaster_api_key.label",
@@ -737,8 +778,16 @@ pub(crate) const CRED_GROUPS: &[CredGroup] = &[
         }],
     },
     CredGroup {
+        id: "ncbi",
         name_key: "cred.ncbi.name",
+        about_key: "cred.ncbi.about",
+        configured_key: "cred.ncbi.configured",
+        unconfigured_key: "cred.ncbi.unconfigured",
         hint_key: "cred.ncbi.hint",
+        links: &[CredLink {
+            label_key: "cred.ncbi.link",
+            url: "https://www.ncbi.nlm.nih.gov/account/",
+        }],
         fields: &[
             CredField {
                 id: "ncbi_api_key",

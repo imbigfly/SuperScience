@@ -1,4 +1,4 @@
-//! Built-in agent tools for Wisp, Windows-first.
+//! Built-in agent tools for SuperScience, Windows-first.
 //!
 //! Tools implement [`tool::Tool`] and run against a [`env::ToolEnv`] the host
 //! supplies. [`Registry`] bundles the built-ins, exposes their JSON schemas to
@@ -503,7 +503,18 @@ impl Tool for ViewImageTool {
             Ok(path) => path,
             Err(error) => return ToolResult::fail(format!("view_image error: {error}")),
         };
-        image::view_image(&path.to_string_lossy())
+        if image::needs_resize(&path).unwrap_or(false)
+            && !env
+                .confirm(&format!(
+                    "{}Resize large image for model input? The original file will not be changed: {}",
+                    image::RESIZE_CONFIRM_PREFIX,
+                    path.display()
+                ))
+                .await
+        {
+            return ToolResult::fail("view_image cancelled: image resize was not approved");
+        }
+        image::view_image_resized(&path.to_string_lossy())
     }
 }
 
@@ -824,7 +835,7 @@ mod approval_tests {
 
     #[tokio::test]
     async fn plan_mode_blocks_writers_and_lets_readers_through() {
-        let dir = std::env::temp_dir().join("wisp-plan-mode-gate");
+        let dir = std::env::temp_dir().join("superscience-plan-mode-gate");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("note.txt"), "hello").unwrap();
         let reg = Registry::builtins();

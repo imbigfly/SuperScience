@@ -46,7 +46,7 @@
     current_version: "0.9.0",
     latest_version: "0.10.0",
     update_available: true,
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases",
+    release_url: "https://github.com/imbigfly/SuperScience/releases",
     notes: "## What's new\n\n- Sidebar update prompt with changelog\n- Fixed streaming thinking bounce\n- **Breaking:** renamed `foo` to `bar`",
   };
   let mockUpdateCheckEnabled = true;
@@ -54,7 +54,7 @@
   // default ("About you") category.
   let memoryFiles = [
     { name: "2026-07-01.md", preview: "User prefers DeepSeek.", bytes: 128 },
-    { name: "Projects--2026-07-02.md", preview: "Wisp: two-column memory pane in settings.", bytes: 96 },
+    { name: "Projects--2026-07-02.md", preview: "SuperScience: two-column memory pane in settings.", bytes: 96 },
     { name: "Projects--2026-06-28.md", preview: "Library rerun tracking shipped in #474.", bytes: 88 },
     { name: "Preferences--2026-07-03.md", preview: "Reply in Chinese; keep diffs minimal.", bytes: 72 },
   ];
@@ -149,7 +149,7 @@
   // Agent-created SSH trust edges (ssh_trust_edges_v1). One edge whose
   // destination context no longer exists, to exercise the orphan rendering.
   const mockTrustEdges = [
-    { source_context_id: "ssh:cpu1", destination_context_id: "ssh:gpu2", destination_target: "researcher@gpu2.lab", destination_port: 22, key_path: ".ssh/wisp-gpu2-ed25519", managed: true, verified_at: 1719900000 },
+    { source_context_id: "ssh:cpu1", destination_context_id: "ssh:gpu2", destination_target: "researcher@gpu2.lab", destination_port: 22, key_path: ".ssh/superscience-gpu2-ed25519", managed: true, verified_at: 1719900000 },
     { source_context_id: "ssh:gpu2", destination_context_id: "ssh:cpu1", destination_target: "researcher@cpu1.lab", destination_port: null, key_path: null, managed: false, verified_at: 1719800000 },
   ];
   const mockChannels = {
@@ -489,7 +489,7 @@
           case "get_onboarding_state":
             return { show: false, has_api_key: true };
           case "get_bootstrap_status":
-            return { skills_loaded: 66, python_ok: true, mcp_catalog: 24, uv_ok: true, node_ok: true, npm_ok: true, sci_ok: true, pixi_ok: true, app_version: "0.4.0-mock", workspace: project.root, errors: [] };
+            return { skills_loaded: 66, python_ok: true, mcp_catalog: 24, uv_ok: true, node_ok: true, npm_ok: true, sci_ok: true, pixi_ok: true, app_version: "0.4.0-mock", os: "windows", arch: "x86_64", startup: "total=120ms store=90ms window_ready=600000ms", workspace: project.root, errors: [] };
           case "get_capabilities":
             return {
               skills: [{ name: "bear-support", description: "Find papers supporting a claim." }],
@@ -542,7 +542,7 @@
                 started_at: Math.floor(Date.now() / 1000) - 90,
                 ended_at: null, exit_code: null,
                 stdout_tail: "..... started mapping\nMar 12 loading genome",
-                stderr_tail: null, remote_workdir: "/scratch/wisp/r2",
+                stderr_tail: null, remote_workdir: "/scratch/superscience/r2",
                 timeout_secs: 14400, last_poll_error: null,
                 progress_json: "",
                 env_snapshot_json: JSON.stringify({

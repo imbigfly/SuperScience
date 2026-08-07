@@ -341,7 +341,7 @@ mod tests {
             body: "body".into(),
             dir: root.clone(),
             declared_version: None,
-            wisp: None,
+            superscience: None,
         };
         let rendered = render_skill(&skill);
         assert!(rendered.contains("## Python Kernel Sidecar"));
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn catalog_listing_pages_without_losing_records() {
         let root = std::env::temp_dir().join(format!(
-            "wisp-skill-listing-{}-{}",
+            "superscience-skill-listing-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn inventory_count_stays_authoritative_when_catalog_contains_disabled_skills() {
         let root = std::env::temp_dir().join(format!(
-            "wisp-skill-inventory-{}-{}",
+            "superscience-skill-inventory-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

@@ -119,7 +119,7 @@ umask 077
 workdir="$HOME/{workdir}"
 mkdir -p "$workdir"
 if [ -f "$workdir/token" ]; then
-  [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'wisp token mismatch' >&2; exit 73; }}
+  [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'superscience token mismatch' >&2; exit 73; }}
 else
   printf '%s\n' '{token}' > "$workdir/token.tmp"
   mv "$workdir/token.tmp" "$workdir/token"
@@ -261,7 +261,7 @@ pub(super) fn posix_launch_payload(handle: &RemoteRunHandle) -> String {
     format!(
         r#"set -eu
 workdir="$HOME/{workdir}"
-[ -f "$workdir/token" ] && [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'wisp token mismatch' >&2; exit 73; }}
+[ -f "$workdir/token" ] && [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'superscience token mismatch' >&2; exit 73; }}
 process_start() {{
   pid=$1
   if [ -r "/proc/$pid/stat" ]; then
@@ -627,7 +627,7 @@ New-Item -ItemType Directory -Force -Path $workdir | Out-Null
 $tokenPath = Join-Path $workdir 'token'
 if (Test-Path -LiteralPath $tokenPath) {{
   if ((Get-Content -LiteralPath $tokenPath -Raw).Trim() -ne '{token}') {{
-    Write-Error 'wisp token mismatch'
+    Write-Error 'superscience token mismatch'
     exit 73
   }}
 }} else {{
@@ -662,7 +662,7 @@ pub(super) fn windows_launch_payload(handle: &RemoteRunHandle) -> String {
 $workdir = Join-Path $env:USERPROFILE '{workdir_win}'
 $tokenPath = Join-Path $workdir 'token'
 if (-not (Test-Path -LiteralPath $tokenPath) -or ((Get-Content -LiteralPath $tokenPath -Raw).Trim() -ne '{token}')) {{
-  Write-Error 'wisp token mismatch'
+  Write-Error 'superscience token mismatch'
   exit 73
 }}
 $submitted = Join-Path $workdir '_submitted'

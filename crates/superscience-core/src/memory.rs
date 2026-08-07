@@ -128,7 +128,7 @@ mod tests {
     use super::*;
 
     fn temp_root(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("wisp-memory-{label}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("superscience-memory-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root

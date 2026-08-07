@@ -13,7 +13,7 @@ const MAX_RATIONALE_CHARS: usize = 4_000;
 const MAX_TASK_RATIONALE_CHARS: usize = 2_000;
 const PLANNER_TIMEOUT: Duration = Duration::from_secs(120);
 
-const PLANNER_SYSTEM_PROMPT: &str = r#"You are Wisp's Skill workflow planning agent.
+const PLANNER_SYSTEM_PROMPT: &str = r#"You are SuperScience's Skill workflow planning agent.
 
 Understand the research request semantically in its original language, then choose and compose the smallest sufficient, non-overlapping workflow from the supplied effective Skill catalog. Account for composite Skills that already contain other workflows; do not select both a composite Skill and a subsumed Skill unless the tasks are genuinely distinct. Create dependency edges that reflect the actual research sequence instead of making every task parallel.
 
@@ -173,7 +173,7 @@ fn planning_catalog(
                 description: skill.description.clone(),
                 tags: skill.tags.clone(),
                 scope: scope.clone(),
-                metadata: skill.wisp.clone(),
+                metadata: skill.superscience.clone(),
             })
         })
         .collect()

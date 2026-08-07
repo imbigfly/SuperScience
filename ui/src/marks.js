@@ -75,18 +75,31 @@ function apply() {
   else CSS.highlights.delete(NAME);
 }
 
+function sameNeedles(a, b) {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
 /** @param {string} json JSON array of saved excerpt strings */
 export function set_saved_marks(json) {
+  let next;
   try {
-    needles = JSON.parse(json).map(squash).filter(Boolean);
+    next = JSON.parse(json).map(squash).filter(Boolean);
   } catch {
-    needles = [];
+    next = [];
   }
+  if (sameNeedles(next, needles)) return;
+  needles = next;
   cancelAnimationFrame(pending);
   // Double rAF so the walk runs after Leptos has patched the transcript DOM.
   pending = requestAnimationFrame(() => {
     pending = requestAnimationFrame(apply);
   });
+}
+
+/** Drop a pending underline pass (e.g. when a turn starts streaming). */
+export function cancel_saved_marks_apply() {
+  cancelAnimationFrame(pending);
+  pending = 0;
 }
 
 /** Scroll the first occurrence of a saved excerpt into view and flash it. */

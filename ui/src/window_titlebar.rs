@@ -26,6 +26,7 @@ const EDIT_ITEMS: &[MenuItem] = &[
     ("commands", "menu.commands", "Ctrl+P"),
     ("import-codex", "command.import_codex", ""),
     ("import-claude", "command.import_claude", ""),
+    ("import-session", "command.import_session", ""),
     ("project-settings", "command.project_settings", ""),
     ("skills", "command.skills", ""),
 ];
@@ -68,11 +69,11 @@ pub(super) fn WindowTitlebar(
             match action {
                 "quit" => spawn_local(async { window_control("close").await }),
                 "docs" => {
-                    open_external_url("https://github.com/xuzhougeng/wisp-science#readme".into())
+                    open_external_url("https://github.com/imbigfly/SuperScience#readme".into())
                 }
-                "star-us" => open_external_url("https://github.com/xuzhougeng/wisp-science".into()),
+                "star-us" => open_external_url("https://github.com/imbigfly/SuperScience".into()),
                 "issues" => {
-                    open_external_url("https://github.com/xuzhougeng/wisp-science/issues".into())
+                    open_external_url("https://github.com/imbigfly/SuperScience/issues".into())
                 }
                 other => on_action.call(other),
             }

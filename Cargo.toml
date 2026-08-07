@@ -17,12 +17,12 @@ members = [
 default-members = ["crates/superscience-cli"]
 
 [workspace.package]
-version = "0.34.0"
+version = "0.35.0"
 edition = "2021"
 rust-version = "1.88"
 license = "AGPL-3.0-only"
 authors = ["SuperScience contributors"]
-repository = "https://github.com/xuzhougeng/wisp-science"
+repository = "https://github.com/imbigfly/SuperScience"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

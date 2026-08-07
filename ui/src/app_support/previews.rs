@@ -582,7 +582,7 @@ fn dispatch_pins_ask_ai(path: &str, text: &str) {
     };
     let init = web_sys::CustomEventInit::new();
     init.set_detail(&detail);
-    let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("wisp:pins-ask-ai", &init)
+    let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("superscience:pins-ask-ai", &init)
     else {
         return;
     };
@@ -1168,7 +1168,7 @@ pub(crate) fn FilePreview(dom_id: String, path: String, kind: String) -> impl In
             }
             // Images need a full under-budget payload; text-ish kinds only pull a
             // head so multi-GB logs never enter the WebView (#large-text-preview).
-            let budget = if kind == "image" {
+            let budget = if matches!(kind.as_str(), "image" | "document") {
                 Some(32 * 1024 * 1024)
             } else {
                 Some(TEXT_PREVIEW_MAX_BYTES)
@@ -1190,7 +1190,7 @@ pub(crate) fn FilePreview(dom_id: String, path: String, kind: String) -> impl In
                 }
                 return;
             }
-            if kind == "markdown" {
+            if matches!(kind.as_str(), "markdown" | "document") {
                 if let Some(el) = el {
                     let raw = fc.text.as_deref().unwrap_or("");
                     let (clipped, shown) = clip_preview_text(raw);

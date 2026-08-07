@@ -396,7 +396,7 @@ pub(crate) fn ProjectsScreen(
             <div class="projects-head">
                 <div class="projects-brand">
                     <span class="projects-brand-mark" aria-hidden="true"></span>
-                    <div class="projects-title">"Wisp Science"<span class="beta">"Beta"</span></div>
+                    <div class="projects-title">"SuperScience"<span class="beta">"Beta"</span></div>
                 </div>
                 <div class="projects-actions">
                     <button type="button" class="projects-icon-btn"
@@ -857,7 +857,7 @@ pub(crate) fn ProjectsScreen(
             <div class="projects-footer">
                 <span>{move || t(locale.get(), "projects.star_hint")}</span>
                 <button type="button" class="projects-star-link"
-                    on:click=move |_| open_external_url("https://github.com/xuzhougeng/wisp-science".into())>
+                    on:click=move |_| open_external_url("https://github.com/imbigfly/SuperScience".into())>
                     {move || t(locale.get(), "projects.star_link")}
                 </button>
             </div>

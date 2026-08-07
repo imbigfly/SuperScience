@@ -85,6 +85,8 @@ Science 强调真实科研实践发生在你自己的机器上。
   **Reader** 专员检索已保存的会话；`/` 让下一轮使用指定 skill。
 - Ctrl+K / Ctrl+P 命令面板、侧边对话、会话文件夹、跨项目的代码与图表
   全局库，以及应用内更新检查。
+- **反馈**会立即打开空白新对话，并在用户发送第一条消息时自动附加版本、平台、
+  模型与启动耗时等非敏感诊断信息；用户输入前不会调用模型。
 - [加密手动同步](docs/project-sync.zh-CN.md)与一键[项目迁移](docs/project-transfer.md)
   让多台设备保持一致——绝不在后台运行。
 
@@ -172,6 +174,7 @@ SuperScience 可以启动任何已安装、通过 stdio 使用 ACP v1 的本地 
 模型配置保存在 `.superscience/superscience.sqlite`（Settings → Models）；字段说明见
 [模型配置](docs/model-configuration.md)。自定义凭据将名称映射到环境变量，
 只注入新启动的本地 Python 与内置 MCP 进程，绝不复制到 SSH/WSL 主机。
+内置凭据项会链接到各服务的官方配置页面，并说明集成用途以及未配置时 SuperScience 的运行方式。
 
 **设置 → 存储**会逐个列出项目工作区路径；选择项目后，可单独查看该工作区的
 本地占用，并与应用共享数据区分开。

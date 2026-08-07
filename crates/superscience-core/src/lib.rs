@@ -1,4 +1,4 @@
-//! Agent runtime for Wisp: context compaction, system-prompt assembly, the
+//! Agent runtime for SuperScience: context compaction, system-prompt assembly, the
 //! agent loop, markdown memory, and memory tools.
 
 pub mod agent;

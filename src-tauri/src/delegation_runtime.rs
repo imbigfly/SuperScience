@@ -1212,17 +1212,17 @@ async fn spawn_agent_workflow_with_completion_override(
                 )
                 .await
                 {
-                    tracing::error!(target: "wisp", workflow_id = %workflow_id, %error, "failed to persist automatic Agent completion");
+                    tracing::error!(target: "superscience", workflow_id = %workflow_id, %error, "failed to persist automatic Agent completion");
                 }
             }
             Err(error) => {
-                tracing::error!(target: "wisp", workflow_id = %workflow_id, %error, "automatic Agent workflow failed");
+                tracing::error!(target: "superscience", workflow_id = %workflow_id, %error, "automatic Agent workflow failed");
                 if let Err(persist_error) = crate::delegation_completion::persist_execution_failure(
                     &store, &delivery, &error,
                 )
                 .await
                 {
-                    tracing::error!(target: "wisp", workflow_id = %workflow_id, %persist_error, "failed to persist automatic Agent failure");
+                    tracing::error!(target: "superscience", workflow_id = %workflow_id, %persist_error, "failed to persist automatic Agent failure");
                 }
             }
         }
@@ -2287,7 +2287,7 @@ impl TauriDelegator {
             IsolationDisposition::Applied { commit } => response.evidence.push(AgentEvidence {
                 kind: "workspace_merge".into(),
                 summary: format!(
-                    "Conflict preflight passed and Wisp cherry-picked {} isolated project change(s): {}",
+                    "Conflict preflight passed and SuperScience cherry-picked {} isolated project change(s): {}",
                     result.changed_files.len(),
                     summarize_changed_files(&result.changed_files)
                 ),
@@ -3707,7 +3707,7 @@ fn permission_option_with_resources(
     resources: &crate::delegation_resources::ScientificTaskGrant,
     project_root: &std::path::Path,
 ) -> Option<String> {
-    // ACP vendors can name equivalent tools differently. Wisp recognizes only
+    // ACP vendors can name equivalent tools differently. SuperScience recognizes only
     // bounded file operations and the already-filtered project MCP bridge;
     // unknown command, process, and network requests fail closed.
     let identities = tool_identity_fields(&request.tool_call);
@@ -3748,9 +3748,9 @@ fn permission_option_with_resources(
         matches_identity(
             identity,
             &[
-                "wisp_delegate_tasks",
+                "superscience_delegate_tasks",
                 "delegate_tasks",
-                "wisp_get_delegated_result",
+                "superscience_get_delegated_result",
                 "get_delegated_result",
             ],
         )
@@ -3768,7 +3768,7 @@ fn permission_option_with_resources(
                                     "run_in_context",
                                     "wisp_list_execution_contexts",
                                     "list_execution_contexts",
-                                    "wisp_get_run",
+                                    "superscience_get_run",
                                     "get_run",
                                     "wisp_cancel_run",
                                     "cancel_run",
@@ -4020,18 +4020,18 @@ fn acp_bridge_tool_allowlist(
     };
     for tool in &permissions.tools {
         match tool.as_str() {
-            "delegate_tasks" => add("wisp_delegate_tasks"),
-            "get_delegated_result" => add("wisp_get_delegated_result"),
+            "delegate_tasks" => add("superscience_delegate_tasks"),
+            "get_delegated_result" => add("superscience_get_delegated_result"),
             "run_in_context" if permissions.execute => {
                 add("wisp_list_execution_contexts");
                 add("wisp_run_in_context");
             }
-            "get_run" if permissions.execute => add("wisp_get_run"),
+            "get_run" if permissions.execute => add("superscience_get_run"),
             "cancel_run" if permissions.execute => add("wisp_cancel_run"),
             "python" | "r" if permissions.execute => {
                 add("wisp_list_execution_contexts");
                 add("wisp_run_in_context");
-                add("wisp_get_run");
+                add("superscience_get_run");
                 add("wisp_cancel_run");
             }
             _ => {}
@@ -4814,9 +4814,9 @@ mod tests {
         assert!(git(&["add", "."]).status.success());
         assert!(git(&[
             "-c",
-            "user.name=Wisp Test",
+            "user.name=SuperScience Test",
             "-c",
-            "user.email=wisp-test@localhost",
+            "user.email=superscience-test@localhost",
             "commit",
             "-m",
             "base",
@@ -4859,8 +4859,8 @@ mod tests {
         // for the worktree to disappear races the later branch deletion, so poll
         // until the branch — the last resource cleaned — is gone.
         let branch_present = || {
-            String::from_utf8_lossy(&git(&["branch", "--list", "wisp-agent/*"]).stdout)
-                .contains("wisp-agent/")
+            String::from_utf8_lossy(&git(&["branch", "--list", "superscience-agent/*"]).stdout)
+                .contains("superscience-agent/")
         };
         let mut cleaned = false;
         for _ in 0..500 {
@@ -5063,7 +5063,7 @@ mod tests {
             acp::AcpAgentProfile {
                 id: "missing-acp".into(),
                 label: "Missing ACP".into(),
-                command: format!("wisp-missing-acp-{}", uuid::Uuid::new_v4()),
+                command: format!("superscience-missing-acp-{}", uuid::Uuid::new_v4()),
                 args: vec![],
             },
         ];
@@ -5959,7 +5959,7 @@ mod tests {
         };
         let prompt = delegation_prompt(&request).unwrap();
         let markers = [
-            "bounded Wisp sub-Agent",
+            "bounded SuperScience sub-Agent",
             "Specialist identity: Code scientist",
             "Apply the saved scientific coding rubric.",
             "Controlled Agent task",
@@ -6923,7 +6923,7 @@ mod tests {
             );
         }
         let bridge_request = superscience_acp::AcpPermissionRequest {
-            tool_call: json!({"name":"wisp_get_run"}),
+            tool_call: json!({"name":"superscience_get_run"}),
             ..spoofed.clone()
         };
         assert_eq!(
@@ -6939,7 +6939,7 @@ mod tests {
             Some("allow".into())
         );
         let delegation_request = superscience_acp::AcpPermissionRequest {
-            tool_call: json!({"name":"wisp_delegate_tasks", "kind":"execute"}),
+            tool_call: json!({"name":"superscience_delegate_tasks", "kind":"execute"}),
             ..spoofed.clone()
         };
         assert_eq!(
@@ -7028,7 +7028,7 @@ mod tests {
                 },
                 &crate::delegation_resources::ScientificTaskGrant::default()
             ),
-            ["wisp_delegate_tasks", "wisp_get_delegated_result"]
+            ["superscience_delegate_tasks", "superscience_get_delegated_result"]
         );
         assert_eq!(
             acp_bridge_tool_allowlist(
@@ -7048,7 +7048,7 @@ mod tests {
             [
                 "wisp_list_execution_contexts",
                 "wisp_run_in_context",
-                "wisp_get_run",
+                "superscience_get_run",
                 "wisp_cancel_run",
             ]
         );
@@ -7328,7 +7328,7 @@ mod tests {
 
     #[test]
     fn bound_skill_prompt_rejects_catalog_drift() {
-        let root = std::env::temp_dir().join(format!("wisp-bound-skill-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("superscience-bound-skill-{}", uuid::Uuid::new_v4()));
         let dir = root.join("demo");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("SKILL.md");

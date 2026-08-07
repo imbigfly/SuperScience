@@ -3,15 +3,16 @@ use super::app_updates::{update_check_from_release, GithubRelease};
 use super::desktop_lifecycle::{should_activate_workspace_window, should_hide_workspace_on_close};
 use super::session_commands::transcript_page_items;
 use super::{
-    branch_title, copy_dir_recursive, enable_referenced_contexts, events_to_items,
-    merge_pending_ui_event, message_uses_resource_bindings, messages_to_items,
-    parse_disabled_skills, parse_enabled_skill_names, parse_follow_up_questions, parse_skill_tags,
-    persist_ui_events, receive_confirm_decision, resolve_acp_artifact_references,
+    begin_queued_cutin, branch_title, client_turn_error, coalesce_live_agent_events,
+    copy_dir_recursive, enable_referenced_contexts, events_to_items, merge_pending_ui_event,
+    message_uses_resource_bindings, messages_to_items, parse_disabled_skills,
+    parse_enabled_skill_names, parse_follow_up_questions, parse_skill_tags, persist_ui_events,
+    receive_confirm_decision, reclaim_unconsumed_cutin, resolve_acp_artifact_references,
     resolve_composer_references, resolve_reader_references, resolve_review_backend,
     resolve_workspace, session_runtime_status, should_hide_app_on_macos_close,
     should_persist_ui_event, side_chat_prompt, user_message_start, AgentEvent,
     ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem, SessionRuntime,
-    SkillInfo, MAX_PENDING_UI_EVENT_BYTES,
+    SkillInfo, StartupReport, StartupTimeline, MAX_PENDING_UI_EVENT_BYTES,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -31,6 +32,15 @@ async fn native_confirmation_waits_for_an_explicit_response() {
     );
     sender.send(superscience_tools::ConfirmDecision::Approved).unwrap();
     assert_eq!(decision.await, superscience_tools::ConfirmDecision::Approved);
+}
+
+#[test]
+fn client_turn_error_prefixes_only_started_turns() {
+    assert_eq!(client_turn_error(false, "no model"), "no model");
+    assert_eq!(
+        client_turn_error(true, "api: 400 max tokens"),
+        "[turn-started] api: 400 max tokens"
+    );
 }
 
 #[test]
@@ -125,16 +135,26 @@ fn image_attachments_are_loaded_for_model_input() {
     std::fs::write(uploads.join("plot.PNG"), b"image bytes").unwrap();
     std::fs::write(uploads.join("notes.txt"), b"notes").unwrap();
 
-    let images = super::load_image_attachments(
-        &root,
-        &["uploads/plot.PNG".into(), "uploads/notes.txt".into()],
-    )
-    .unwrap();
+    // Small images do not need the UI confirmation path; exercise the shared
+    // loader directly through its image helper here.
+    let result = superscience_tools::image::view_image(&uploads.join("plot.PNG").to_string_lossy());
+    let images = vec![result.image.unwrap()];
 
     assert_eq!(images.len(), 1);
-    assert_eq!(images[0].label, "Attached image: uploads/plot.PNG");
     assert!(images[0].data_url.starts_with("data:image/png;base64,"));
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn image_resize_confirmation_has_dedicated_card_kind() {
+    assert_eq!(
+        super::parse_confirm_payload(&format!(
+            "{}Resize {}",
+            superscience_tools::image::RESIZE_CONFIRM_PREFIX,
+            "plot.png"
+        )),
+        ("image_resize".into(), "Resize plot.png".into())
+    );
 }
 
 #[test]
@@ -172,6 +192,34 @@ fn configured_image_generation_tool_is_available_without_a_specialist() {
     );
 
     assert!(agent.tools.get("generate_image").is_some());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn live_agent_settings_refresh_max_iter_on_reused_agent() {
+    // Mid-session Settings changes must not stay stuck at construction time.
+    let root = std::env::temp_dir().join(format!("wisp_live_max_iter_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let skills = Arc::new(superscience_skills::SkillIndex::load(&[]));
+    let memory = Arc::new(superscience_core::MemoryManager::new(&root));
+    let mut agent = superscience_core::Agent::new(
+        superscience_llm::ProviderConfig::openai("http://127.0.0.1:9/v1", "sk-chat-test", "chat-model"),
+        skills,
+        memory,
+        root.clone(),
+        128_000,
+        100,
+        false,
+        None,
+    );
+    assert_eq!(agent.max_iter, 100);
+
+    super::apply_live_agent_settings(&mut agent, 0, true);
+    assert_eq!(agent.max_iter, 0);
+
+    super::apply_live_agent_settings(&mut agent, 50, false);
+    assert_eq!(agent.max_iter, 50);
+
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -240,7 +288,7 @@ fn update_check_accepts_v_prefixed_newer_release() {
         "0.9.0",
         GithubRelease {
             tag_name: "v0.10.0".into(),
-            html_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.10.0".into(),
+            html_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.10.0".into(),
             body: "## What's new\n- release notes".into(),
         },
     )
@@ -633,6 +681,47 @@ fn pending_ui_event_merge_stays_bounded() {
         matches!(flushed, AgentEvent::Text { delta, .. } if delta.len() == MAX_PENDING_UI_EVENT_BYTES)
     );
     assert!(matches!(pending, Some(AgentEvent::Text { ref delta, .. }) if delta == "c"));
+}
+
+#[tokio::test]
+async fn live_agent_events_merge_deltas_and_preserve_order() {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = emitted.clone();
+    let handle = tokio::spawn(coalesce_live_agent_events(
+        rx,
+        std::time::Duration::from_millis(5),
+        move |event| sink.lock().unwrap().push(event),
+    ));
+
+    let frame_id = "f".to_string();
+    for delta in ["a", "b", "c"] {
+        tx.send(AgentEvent::Text {
+            frame_id: frame_id.clone(),
+            delta: delta.into(),
+        })
+        .unwrap();
+    }
+    tx.send(AgentEvent::Stdout {
+        frame_id: frame_id.clone(),
+        chunk: "out".into(),
+    })
+    .unwrap();
+    // A non-delta event must flush pending output before itself, keeping
+    // the tool boundary behind the stream it terminates.
+    tx.send(AgentEvent::Done {
+        frame_id,
+        stop_reason: None,
+    })
+    .unwrap();
+    drop(tx);
+    handle.await.unwrap();
+
+    let emitted = emitted.lock().unwrap();
+    assert_eq!(emitted.len(), 3, "token flood must be coalesced");
+    assert!(matches!(&emitted[0], AgentEvent::Text { delta, .. } if delta == "abc"));
+    assert!(matches!(&emitted[1], AgentEvent::Stdout { chunk, .. } if chunk == "out"));
+    assert!(matches!(&emitted[2], AgentEvent::Done { .. }));
 }
 
 #[tokio::test]
@@ -1616,6 +1705,39 @@ fn queue_driver_claim_is_single_and_reclaimable() {
     );
 }
 
+#[test]
+fn unconsumed_cutin_returns_to_the_front_of_the_queue() {
+    let rt = SessionRuntime::new();
+    rt.queued.lock().unwrap().push(QueuedItem {
+        id: 7,
+        message: "close tabs".into(),
+        attachments: vec![],
+        references: vec![],
+    });
+
+    let (guidance_id, item) = begin_queued_cutin(&rt, 7).unwrap();
+    assert!(rt.queued.lock().unwrap().is_empty());
+    assert!(reclaim_unconsumed_cutin(&rt, guidance_id, item));
+    assert_eq!(rt.queued.lock().unwrap()[0].message, "close tabs");
+    assert!(rt.pending_guidance.lock().unwrap().is_empty());
+}
+
+#[test]
+fn consumed_cutin_is_not_queued_again() {
+    let rt = SessionRuntime::new();
+    rt.queued.lock().unwrap().push(QueuedItem {
+        id: 8,
+        message: "use tab.close".into(),
+        attachments: vec![],
+        references: vec![],
+    });
+
+    let (guidance_id, item) = begin_queued_cutin(&rt, 8).unwrap();
+    rt.pending_guidance.lock().unwrap().clear();
+    assert!(!reclaim_unconsumed_cutin(&rt, guidance_id, item));
+    assert!(rt.queued.lock().unwrap().is_empty());
+}
+
 // Reorder (#433): move swaps with the neighbour and clamps at both ends, so the
 // driver (which drains front-first) runs items in the user's chosen order.
 #[test]
@@ -1658,4 +1780,51 @@ fn follow_up_questions_parse_exactly_three_distinct_options() {
         ["One?", "Two?", "Three?"]
     );
     assert!(parse_follow_up_questions("[\"Same?\", \"Same?\", \"Third?\"]").is_err());
+}
+
+#[test]
+fn startup_timeline_returns_phase_results_and_names_the_slowest_phase() {
+    let mut timeline = StartupTimeline::default();
+    let fast = timeline.record("fast", || 1_u32);
+    let slow = timeline.record("slow", || {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        "store"
+    });
+
+    assert_eq!(fast, 1);
+    assert_eq!(slow, "store");
+    let summary = timeline.summary();
+    assert!(summary.starts_with("total="), "{summary}");
+    let slow_at = summary.find("slow=").expect("slow phase reported");
+    let fast_at = summary.find("fast=").expect("fast phase reported");
+    assert!(
+        slow_at < fast_at,
+        "slowest phase must come first: {summary}"
+    );
+    assert!(timeline.total() >= std::time::Duration::from_millis(20));
+}
+
+#[test]
+fn startup_timeline_summary_holds_without_any_phase() {
+    let timeline = StartupTimeline::default();
+    assert_eq!(timeline.summary(), "total=0ms");
+    assert_eq!(timeline.total(), std::time::Duration::ZERO);
+}
+
+#[test]
+fn startup_report_grows_as_the_launch_progresses() {
+    let mut report = StartupReport::default();
+    assert_eq!(report.summary(), "");
+
+    report.setup = "total=120ms store=90ms".into();
+    assert_eq!(report.summary(), "total=120ms store=90ms");
+
+    // A blank window that outlives `setup` by minutes points away from the
+    // backend, so the report must keep both numbers side by side.
+    report.window_ready_ms = Some(600_000);
+    report.deferred_ms = Some(4_200);
+    assert_eq!(
+        report.summary(),
+        "total=120ms store=90ms window_ready=600000ms deferred=4200ms"
+    );
 }

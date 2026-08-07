@@ -191,6 +191,57 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums;
 }
+.context-compaction-live {
+  display: flex; align-items: center; gap: 9px; flex: 0 1 260px; min-width: 0;
+  color: var(--text-muted);
+}
+.review-live {
+  display: flex; align-items: center; gap: 9px; flex: 0 1 280px; min-width: 0;
+  color: var(--text-muted);
+}
+.review-live-lens {
+  position: relative; display: flex; align-items: center; gap: 3px; width: 30px; height: 18px;
+  padding: 3px 5px; overflow: hidden; border: 1px solid var(--border); border-radius: 3px;
+  background: color-mix(in srgb, var(--clay) 5%, transparent);
+}
+.review-live-lens::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 8px; height: 8px;
+  border: 1.5px solid var(--clay); border-radius: 50%;
+  box-shadow: 5px 6px 0 -4px var(--clay);
+  animation: review-lens-scan 1.4s ease-in-out infinite alternate;
+}
+.review-live-lens i {
+  width: 3px; height: 3px; margin-top: 9px; border-radius: 50%;
+  background: var(--clay); opacity: .35; animation: review-dot-squirm .7s ease-in-out infinite alternate;
+}
+.review-live-lens i:nth-child(2) { animation-delay: -.25s; }
+.review-live-lens i:nth-child(3) { animation-delay: -.5s; }
+@keyframes review-lens-scan { to { transform: translateX(14px) rotate(-8deg); } }
+@keyframes review-dot-squirm { to { opacity: .9; transform: translateY(-2px); } }
+.context-compaction-live-copy { display: grid; min-width: 0; line-height: 1.15; }
+.context-compaction-live-copy strong { font-size: 11.5px; font-weight: 620; white-space: nowrap; }
+.context-compaction-live-copy span { color: var(--text-faint); font-size: 9.5px; white-space: nowrap; }
+.context-compaction-spectrum {
+  position: relative; display: flex; align-items: end; gap: 2px; width: 30px; height: 18px;
+  padding: 3px 4px; overflow: hidden; border: 1px solid var(--border); border-radius: 3px;
+  background: color-mix(in srgb, var(--clay) 5%, transparent);
+}
+.context-compaction-spectrum::after {
+  content: ""; position: absolute; inset: 0 auto 0 -35%; width: 35%;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--clay) 35%, transparent), transparent);
+  animation: context-spectrum-scan 1.5s linear infinite;
+}
+.context-compaction-spectrum i { width: 3px; height: 45%; background: var(--clay); opacity: .55; animation: context-spectrum-pulse .9s ease-in-out infinite alternate; }
+.context-compaction-spectrum i:nth-child(2) { height: 80%; animation-delay: -.3s; }
+.context-compaction-spectrum i:nth-child(3) { height: 58%; animation-delay: -.6s; }
+.context-compaction-spectrum i:nth-child(4) { height: 100%; animation-delay: -.15s; }
+.context-compaction-spectrum i:nth-child(5) { height: 35%; animation-delay: -.45s; }
+@keyframes context-spectrum-scan { to { transform: translateX(400%); } }
+@keyframes context-spectrum-pulse { to { opacity: 1; transform: scaleY(.62); } }
+@media (prefers-reduced-motion: reduce) {
+  .context-compaction-spectrum::after, .context-compaction-spectrum i,
+  .review-live-lens::after, .review-live-lens i { animation: none; }
+}
 .hint.hint-action { flex: 0 1 auto; max-width: min(280px, 36cqw); color: var(--text-muted); }
 .link-inline { border: none; background: none; padding: 0; font: inherit; font-size: inherit; color: var(--clay-strong); font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .link-inline:hover { opacity: .85; }
@@ -354,7 +405,7 @@
   font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: 0; text-transform: none;
 }
 /* overflow-wrap:anywhere so protein/DNA runs without spaces cannot blow out the column */
-.msg .body { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; min-width: 0; max-width: 100%; box-sizing: border-box; line-height: 1.55; font-size: 14.5px; font-family: var(--font-ui); }
+.msg .body { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; min-width: 0; max-width: 100%; box-sizing: border-box; line-height: 1.55; font-size: calc(var(--ui-font-size, 14px) + 0.5px); font-family: var(--font-ui); }
 .msg.user { align-self: flex-end; width: auto; max-width: min(78%, 760px); min-width: 0; }
 .msg.user .user-bubble { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; min-width: 0; max-width: 100%; }
 .msg.user .body {
@@ -460,7 +511,7 @@ button.msg-review-btn span { font-size: 11px; }
 .msg.assistant .role-model { font-size: 10.5px; font-weight: 500; font-family: var(--font-mono); color: var(--text-faint); letter-spacing: 0; text-transform: none; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev); }
 .msg.assistant .role::before { content: ""; width: 15px; height: 15px; background: center / contain no-repeat url("logo.png"); }
 .msg.assistant .body { color: var(--text); font-family: var(--font-response); }
-.msg.assistant .body.md { display: block; font-size: 15px; line-height: 1.55; letter-spacing: -0.004em; white-space: normal; }
+.msg.assistant .body.md { display: block; font-size: calc(var(--ui-font-size, 14px) + 1px); line-height: 1.55; letter-spacing: -0.004em; white-space: normal; }
 .msg.assistant .body.md:empty { display: none; }
 .msg.assistant .streaming-markdown { white-space: normal; }
 .streaming-markdown-prefix:empty { display: none; }
@@ -468,11 +519,11 @@ button.msg-review-btn span { font-size: 11px; }
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-.msg.reasoning .body { color: var(--text-faint); font-style: italic; font-size: 13.5px; border-left: 2px solid var(--border-strong); padding-left: 12px; font-family: var(--font-ui); }
+.msg.reasoning .body { color: var(--text-faint); font-style: italic; font-size: calc(var(--ui-font-size, 14px) - 0.5px); border-left: 2px solid var(--border-strong); padding-left: 12px; font-family: var(--font-ui); }
 .msg.assistant.commentary { margin-bottom: -8px; }
 .msg.assistant.commentary .role,
 .msg.assistant.commentary .msg-actions { display: none; }
-.msg.assistant.commentary .body.md { color: var(--text-muted); font-size: 14px; line-height: 1.5; }
+.msg.assistant.commentary .body.md { color: var(--text-muted); font-size: var(--ui-font-size, 14px); line-height: 1.5; }
 
 .tool-wrap { align-self: stretch; }
 .tool { align-self: stretch; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px 13px; font-size: 13px; }
@@ -627,7 +678,7 @@ details.rz .body { margin-top: 6px; }
 }
 .md {
   font-family: var(--font-response);
-  font-size: 15px;
+  font-size: calc(var(--ui-font-size, 14px) + 1px);
   line-height: 1.65;
   letter-spacing: -0.004em;
   white-space: normal;

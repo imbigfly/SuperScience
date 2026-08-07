@@ -35,6 +35,10 @@ Remote PDF, DOCX, XLSX, and PPTX previews use the same raw-byte IPC and bounded
 OOXML validation as local previews. The remote size check runs before transfer;
 Office archives are then checked locally for entry count, expanded size,
 compression ratio, unsafe paths, macros, ActiveX, and embedded OLE content.
+Other supported rich-document formats (legacy Word/PowerPoint/Excel,
+OpenDocument, RTF, and EPUB) are converted locally to Markdown with AnyDoc for
+preview and agent reading. Text-based PDFs are extractable by the agent; scanned
+PDFs still require OCR or a vision-capable model.
 
 Large text, code, CSV, and log previews (local or remote) load only a bounded
 head — about 1 MiB by default, and at most 8 000 rendered lines in the UI —

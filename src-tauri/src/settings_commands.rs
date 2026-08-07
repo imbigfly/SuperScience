@@ -230,7 +230,7 @@ pub(super) async fn set_settings(
         load_pet_asset(Path::new(pet_directory))?;
     }
     tracing::info!(
-        target: "wisp",
+        target: "superscience",
         provider = %provider,
         api_url = %api_url,
         model = %model,
@@ -403,7 +403,7 @@ pub(super) async fn add_custom_credential(
 ) -> Result<models::CustomCredentialStatus, String> {
     let credential = models::add_custom_credential(&state.store, &name, &env_var, &value).await?;
     tracing::info!(
-        target: "wisp",
+        target: "superscience",
         id = %credential.id,
         env_var = %credential.env_var,
         "added custom credential"
@@ -418,7 +418,7 @@ pub(super) async fn remove_custom_credential(
     id: String,
 ) -> Result<(), String> {
     models::remove_custom_credential(&state.store, &id).await?;
-    tracing::info!(target: "wisp", id = %id, "removed custom credential");
+    tracing::info!(target: "superscience", id = %id, "removed custom credential");
     clear_idle_agents(&state).await;
     Ok(())
 }
@@ -590,7 +590,7 @@ pub(super) async fn set_credential(
     if id == "scimaster_api_key" {
         sync_scimaster_config(&value)?;
     }
-    tracing::info!(target: "wisp", id = %id, present = !value.is_empty(), "saving credential");
+    tracing::info!(target: "superscience", id = %id, present = !value.is_empty(), "saving credential");
     models::store_credential(&id, &value)?;
     // Respawn kernels/MCP on the next turn so they inherit the new env.
     clear_idle_agents(&state).await;
@@ -629,7 +629,7 @@ pub(super) async fn validate_settings(
     )?;
 
     tracing::info!(
-        target: "wisp",
+        target: "superscience",
         provider = %provider_name,
         api_url = %settings.api_url,
         model = %settings.model,
@@ -641,15 +641,15 @@ pub(super) async fn validate_settings(
     )
     .await
     .map_err(|_| {
-        tracing::warn!(target: "wisp", "settings validation timed out");
+        tracing::warn!(target: "superscience", "settings validation timed out");
         "Validation timed out after 30s".to_string()
     })?;
     if let Err(e) = result {
-        tracing::warn!(target: "wisp", error = %e, vision = settings.supports_vision, "settings validation failed");
+        tracing::warn!(target: "superscience", error = %e, vision = settings.supports_vision, "settings validation failed");
         return Err(e);
     }
 
-    tracing::info!(target: "wisp", "settings validation succeeded");
+    tracing::info!(target: "superscience", "settings validation succeeded");
     Ok(format!(
         "Validated {} with {}",
         provider_name, settings.model
@@ -733,7 +733,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "wisp-scimaster-config-test-{}-{unique}",
+            "superscience-scimaster-config-test-{}-{unique}",
             std::process::id()
         ));
         let path = dir.join("config.json");
@@ -763,7 +763,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "wisp-storage-usage-test-{}-{unique}",
+            "superscience-storage-usage-test-{}-{unique}",
             std::process::id()
         ));
         let app_data = root.join("app");
