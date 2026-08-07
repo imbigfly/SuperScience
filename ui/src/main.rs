@@ -7282,6 +7282,12 @@ fn App() -> impl IntoView {
             composer_references.update(|items| items.push(reference));
         }
     });
+    #[derive(Default, serde::Deserialize)]
+    struct SessionArchiveImportSummary {
+        frame_id: String,
+        status: String,
+        message_count: usize,
+    }
     let palette_action = {
         let new_session = palette_new_session.clone();
         let open_scratch = open_scratch.clone();
@@ -7308,6 +7314,50 @@ fn App() -> impl IntoView {
             "import-claude" => {
                 if project_info.get_untracked().is_some() && !demo_mode.get_untracked() {
                     show_session_import.set(Some(SessionImportProvider::Claude));
+                }
+            }
+            "import-session" => {
+                if let Some(project) = project_info
+                    .get_untracked()
+                    .filter(|_| !demo_mode.get_untracked())
+                {
+                    spawn_local(async move {
+                        let arg = to_value(&serde_json::json!({})).unwrap();
+                        let value = match invoke_checked("import_session_archive", arg).await {
+                            Ok(value) => value,
+                            Err(error) => {
+                                show_toast(&localize_backend(
+                                    locale.get_untracked(),
+                                    &js_error_text(error),
+                                ));
+                                return;
+                            }
+                        };
+                        if value.is_null() {
+                            return;
+                        }
+                        let summary = serde_wasm_bindgen::from_value::<
+                            SessionArchiveImportSummary,
+                        >(value)
+                        .unwrap_or_default();
+                        let loc = locale.get_untracked();
+                        let key = match summary.status.as_str() {
+                            "imported" => "import.session_imported",
+                            "updated" => "import.session_updated",
+                            _ => "import.session_skipped",
+                        };
+                        show_toast(&tf(
+                            loc,
+                            key,
+                            &[("n", &summary.message_count.to_string())],
+                        ));
+                        refresh_sessions(sessions, pending_turns, running, session_history_cursor);
+                        refresh_folders(folders);
+                        if summary.status != "skipped" && !summary.frame_id.is_empty() {
+                            open_project_transition
+                                .call((project.id, Some(summary.frame_id)));
+                        }
+                    });
                 }
             }
             "project-settings" => project_settings.call(()),

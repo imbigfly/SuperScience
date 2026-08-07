@@ -2511,6 +2511,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             AGENT_WORKFLOW_RUN_ACTIVITIES_MIGRATION.to_string(),
             METHOD_SEARCH_MIGRATION.to_string(),
             METHOD_SEARCH_CONTROL_MIGRATION.to_string(),
+            SESSION_IMPORTS_MIGRATION.to_string(),
         ]
     );
 

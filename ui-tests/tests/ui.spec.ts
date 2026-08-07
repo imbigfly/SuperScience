@@ -7264,6 +7264,11 @@ test("Windows uses the integrated title bar without covering the project landing
   await page.keyboard.press("Escape");
   await expect(page.locator(".codex-import-modal")).toHaveCount(0);
 
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Import session archive" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "import_session_archive")).not.toBeNull();
+  await expect(page.locator(".copy-toast")).toContainText("Session imported (3 messages)");
+
   await page.getByRole("button", { name: "Help" }).click();
   await page.getByRole("menuitem", { name: "Documentation" }).click();
   await expect.poll(async () => page.evaluate(() =>

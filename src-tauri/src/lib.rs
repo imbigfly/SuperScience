@@ -74,6 +74,7 @@ mod seed;
 mod session_commands;
 mod session_context_tool;
 mod session_export;
+mod session_import;
 mod settings_commands;
 mod skill_commands;
 mod skill_portfolio;
@@ -95,6 +96,7 @@ use file_browser::{
     read_remote_file_bytes, rename_entry, search_files, FileContent,
 };
 use session_export::{capture_env, export_session, get_artifact_provenance};
+use session_import::import_session_archive;
 #[cfg(test)]
 use skill_commands::{copy_dir_recursive, validate_skill_name};
 
@@ -7413,6 +7415,7 @@ pub fn run() {
             app_commands::export_text_file,
             app_commands::import_json_file,
             export_session,
+            import_session_archive,
             debug_request::export_debug_request,
             debug_request::get_context_usage_details,
             project_transfer::export_project,

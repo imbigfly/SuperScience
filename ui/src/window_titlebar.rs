@@ -26,6 +26,7 @@ const EDIT_ITEMS: &[MenuItem] = &[
     ("commands", "menu.commands", "Ctrl+P"),
     ("import-codex", "command.import_codex", ""),
     ("import-claude", "command.import_claude", ""),
+    ("import-session", "command.import_session", ""),
     ("project-settings", "command.project_settings", ""),
     ("skills", "command.skills", ""),
 ];

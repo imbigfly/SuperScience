@@ -94,7 +94,7 @@ struct ExportManifest {
 
 /// Normalize a UI path (absolute or relative) to the workspace-relative form used
 /// in `execution_log.files_written`.
-fn to_workspace_rel(root: &std::path::Path, path: &str) -> String {
+pub(super) fn to_workspace_rel(root: &std::path::Path, path: &str) -> String {
     let p = std::path::Path::new(path);
     p.strip_prefix(root)
         .unwrap_or(p)
@@ -102,7 +102,7 @@ fn to_workspace_rel(root: &std::path::Path, path: &str) -> String {
         .replace('\\', "/")
 }
 
-fn zip_component(raw: &str) -> String {
+pub(super) fn zip_component(raw: &str) -> String {
     let s = raw
         .chars()
         .map(|c| {
