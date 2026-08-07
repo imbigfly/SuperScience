@@ -2038,6 +2038,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 { model: "deepseek-v4-pro", tokens: 120000 },
                 { model: "opus-4.8", tokens: 30000 },
               ],
+              tools: [
+                { kind: "skill", name: "bear-support", calls: 12 },
+                { kind: "mcp", name: "pubmed_search", calls: 8 },
+                { kind: "skill", name: "bear-map", calls: 3 },
+              ],
             };
           case "get_session_token_usage": {
             const projectId = String(arg("projectId") ?? "default");

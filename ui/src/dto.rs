@@ -1351,6 +1351,13 @@ pub(crate) struct ModelTokenUsage {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct ToolCallUsage {
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    pub(crate) calls: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct TokenUsageOverview {
     #[serde(default)]
     pub(crate) workspaces: Vec<ProjectTokenUsage>,
@@ -1358,6 +1365,8 @@ pub(crate) struct TokenUsageOverview {
     pub(crate) days: Vec<TokenUsageDay>,
     #[serde(default)]
     pub(crate) models: Vec<ModelTokenUsage>,
+    #[serde(default)]
+    pub(crate) tools: Vec<ToolCallUsage>,
 }
 
 /// Mirrors `SshTrustEdge` in src-tauri/src/run_context/transfer.rs — align

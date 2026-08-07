@@ -218,6 +218,54 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
         .append_session_ui_event("scratch", 1, &usage(999, 999, "scratch-model"))
         .await
         .unwrap();
+    let tool_call = |name: &str, preview: &str| {
+        format!(
+            "{{\"kind\":\"ToolCall\",\"frame_id\":\"x\",\"name\":\"{name}\",\"preview\":\"{preview}\"}}"
+        )
+    };
+    store
+        .append_session_ui_event("root", 3, &tool_call("use_skill", "bear-support"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("root", 4, &tool_call("use_skill", "bear-support"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("root", 5, &tool_call("use_skill", "bear-map"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event(
+            "root",
+            6,
+            &tool_call(
+                "use_skill",
+                "Skipped because 'ask_user' ended the turn before this call. Wait for the user's next message.",
+            ),
+        )
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("child", 2, &tool_call("mcp:pubmed_search", "query"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("other", 2, &tool_call("mcp:pubmed_search", "query"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("other", 3, &tool_call("mcp:web_fetch", "url"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("other", 4, &tool_call("shell", "ls"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("scratch", 2, &tool_call("use_skill", "scratch-skill"))
+        .await
+        .unwrap();
     // A session with no usage events must not appear at all.
     store
         .create_frame("quiet", "p", "OPERON", "m")
@@ -285,6 +333,20 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
             .map(|day| day.tokens)
             .sum::<i64>(),
         227
+    );
+
+    let tools = store.tool_call_usage_ranking().await.unwrap();
+    assert_eq!(
+        tools
+            .iter()
+            .map(|row| (row.kind.as_str(), row.name.as_str(), row.calls))
+            .collect::<Vec<_>>(),
+        vec![
+            ("mcp", "pubmed_search", 2),
+            ("skill", "bear-support", 2),
+            ("mcp", "web_fetch", 1),
+            ("skill", "bear-map", 1),
+        ]
     );
 
     let _ = std::fs::remove_file(&tmp);

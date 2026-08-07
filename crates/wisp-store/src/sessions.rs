@@ -55,6 +55,15 @@ pub struct ModelTokenUsage {
     pub tokens: i64,
 }
 
+/// One ranked SKILL or MCP tool from persisted `ToolCall` transcript events.
+#[derive(serde::Serialize)]
+pub struct ToolCallUsage {
+    /// `"skill"` for `use_skill`, `"mcp"` for `mcp:*` tools.
+    pub kind: String,
+    pub name: String,
+    pub calls: i64,
+}
+
 /// One bounded, turn-aligned slice of a saved conversation.
 pub struct SessionTranscriptPage {
     pub messages: Vec<(i64, Message)>,
@@ -1552,6 +1561,58 @@ impl Store {
                 Ok(ModelTokenUsage {
                     model: row.try_get("model_key")?,
                     tokens: row.try_get("tokens")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Ranked SKILL (`use_skill`) and MCP (`mcp:*`) tool-call counts from
+    /// persisted transcript events. Skill identity comes from the call preview
+    /// (the skill name); skipped-batch placeholders are ignored.
+    pub async fn tool_call_usage_ranking(&self) -> Result<Vec<ToolCallUsage>> {
+        let rows = sqlx::query(
+            "SELECT kind, name, COUNT(*) AS calls FROM (\
+                SELECT CASE \
+                        WHEN json_extract(e.event_json,'$.name') = 'use_skill' THEN 'skill' \
+                        ELSE 'mcp' \
+                    END AS kind, \
+                    CASE \
+                        WHEN json_extract(e.event_json,'$.name') = 'use_skill' THEN \
+                            COALESCE(\
+                                NULLIF(TRIM(json_extract(e.event_json,'$.preview')),''),\
+                                'unknown'\
+                            ) \
+                        ELSE COALESCE(\
+                            NULLIF(SUBSTR(json_extract(e.event_json,'$.name'),5),''),\
+                            'unknown'\
+                        ) \
+                    END AS name \
+                FROM session_ui_events e \
+                JOIN frames f ON f.id=e.frame_id \
+                JOIN frames r ON r.id=COALESCE(f.root_frame_id,f.id) \
+                JOIN projects p ON p.id=r.project_id \
+                WHERE p.id NOT LIKE 'scratch:%' \
+                  AND e.event_json LIKE '{\"kind\":\"ToolCall\"%' \
+                  AND (\
+                        json_extract(e.event_json,'$.name') LIKE 'mcp:%' \
+                        OR (\
+                            json_extract(e.event_json,'$.name') = 'use_skill' \
+                            AND COALESCE(json_extract(e.event_json,'$.preview'),'') \
+                                NOT LIKE 'Skipped%' \
+                        )\
+                  )\
+             ) ranked \
+             GROUP BY kind, name \
+             ORDER BY calls DESC, kind, name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ToolCallUsage {
+                    kind: row.try_get("kind")?,
+                    name: row.try_get("name")?,
+                    calls: row.try_get("calls")?,
                 })
             })
             .collect()

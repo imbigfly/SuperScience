@@ -148,10 +148,11 @@ as an agent-reported total instead of inventing a breakdown it cannot observe.
 
 **Settings → Usage** shows global input, output, reasoning, and cached-token
 totals, a 53-week activity chart with **Daily**, **Weekly**, and **Cumulative**
-views, and an input-plus-output token share by model. Usage is grouped by
-project workspace. Open a workspace to inspect its sessions, which are loaded
-20 at a time with Previous/Next pagination; sub-agent rounds remain folded into
-their root session.
+views, an input-plus-output token share by model, and a ranked list of SKILL
+(`use_skill`) and MCP (`mcp:*`) tool calls beneath the model chart. Usage is
+grouped by project workspace. Open a workspace to inspect its sessions, which
+are loaded 20 at a time with Previous/Next pagination; sub-agent rounds remain
+folded into their root session.
 
 New usage rounds persist the model and timestamp used for that request. Older
 usage events did not contain those fields, so their dashboard model falls back

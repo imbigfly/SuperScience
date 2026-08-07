@@ -382,6 +382,11 @@ test("Usage groups workspaces, charts activity and models, and paginates session
     /conic-gradient/,
   );
 
+  const toolRank = page.getByTestId("usage-tool-rank");
+  await expect(toolRank.getByText("bear-support", { exact: true })).toBeVisible();
+  await expect(toolRank.getByText("pubmed_search", { exact: true })).toBeVisible();
+  await expect(toolRank.getByTestId("usage-tool-rank-row")).toHaveCount(3);
+
   const workspaces = page.getByTestId("usage-workspace-row");
   await expect(workspaces).toHaveCount(2);
   await workspaces.first().click();
