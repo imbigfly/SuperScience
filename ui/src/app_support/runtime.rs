@@ -1834,7 +1834,9 @@ pub(crate) fn ContextDetailsOverlay(
 
         view! {
             <div class="overlay context-details-overlay" role="presentation">
-                <div class="modal context-details-modal" class:runtime-details=kind == ContextModalKind::Runtimes
+                <div class="modal context-details-modal"
+                    class:runtime-details=kind == ContextModalKind::Runtimes
+                    class:runs-details=kind == ContextModalKind::Runs
                     class:environment-open=move || {
                         runtime_environment.get().is_some() && !runtime_environment_pinned.get()
                     }
@@ -1993,33 +1995,39 @@ pub(crate) fn ContextDetailsOverlay(
                                             view! {
                                                 <div class="run-card" class:method-search=method_search>
                                                     <div class="run-card-head">
-                                                        <span class="run-title">{title}</span>
-                                                        <span class=status_class>{run.status.clone()}</span>
-                                                        <button type="button" class="secondary run-use-publication"
-                                                            on:click=move |_| {
-                                                                on_use_in_publication.call(publication_source.clone());
-                                                            }>
-                                                            {t(locale.get(), "publication.use")}
-                                                        </button>
-                                                        {cancellable.then(|| {
-                                                            let run_id = cancel_id.clone();
-                                                            let tip = cancel_label.clone();
-                                                            view! {
-                                                                <button type="button" class="icon-btn run-cancel"
-                                                                    title=tip.clone()
-                                                                    aria-label=tip
-                                                                    on:click=move |_| {
-                                                                        let run_id = run_id.clone();
-                                                                        spawn_local(async move {
-                                                                            let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
-                                                                            let _ = invoke("cancel_run", arg).await;
-                                                                            refresh_runs(runs, locale);
-                                                                        });
-                                                                    }>{compose_icon("close")}</button>
-                                                            }
-                                                        })}
+                                                        <div class="run-card-main">
+                                                            <div class="run-card-title-row">
+                                                                <span class="run-title" title=title.clone()>{title}</span>
+                                                                <span class=status_class>{run.status.clone()}</span>
+                                                            </div>
+                                                            <div class="run-meta">{meta}</div>
+                                                        </div>
+                                                        <div class="run-card-actions">
+                                                            <button type="button" class="run-use-publication"
+                                                                on:click=move |_| {
+                                                                    on_use_in_publication.call(publication_source.clone());
+                                                                }>
+                                                                {t(locale.get(), "publication.use")}
+                                                            </button>
+                                                            {cancellable.then(|| {
+                                                                let run_id = cancel_id.clone();
+                                                                let tip = cancel_label.clone();
+                                                                view! {
+                                                                    <button type="button" class="icon-btn run-cancel"
+                                                                        title=tip.clone()
+                                                                        aria-label=tip
+                                                                        on:click=move |_| {
+                                                                            let run_id = run_id.clone();
+                                                                            spawn_local(async move {
+                                                                                let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+                                                                                let _ = invoke("cancel_run", arg).await;
+                                                                                refresh_runs(runs, locale);
+                                                                            });
+                                                                        }>{compose_icon("close")}</button>
+                                                                }
+                                                            })}
+                                                        </div>
                                                     </div>
-                                                    <div class="run-meta">{meta}</div>
                                                     {progress.map(|progress| run_progress_meter(progress, locale.get()))}
                                                     {method_progress.map(|progress| view! {
                                                         <div class="method-search-card-progress">
