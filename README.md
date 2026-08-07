@@ -105,6 +105,9 @@ desktop app or a headless CLI.
   `/` applies a skill to the next turn.
 - Ctrl+K / Ctrl+P palettes, side chat, conversation folders, a global library
   of cells and figures, and in-app update checks.
+- **Feedback** opens a blank conversation immediately and attaches non-sensitive
+  version, platform, model, and startup diagnostics to the first message you send;
+  it never contacts the model before you write that message.
 - [Encrypted manual sync](docs/project-sync.md) and one-click
   [project transfer](docs/project-transfer.md) keep machines in step — nothing
   ever syncs in the background.

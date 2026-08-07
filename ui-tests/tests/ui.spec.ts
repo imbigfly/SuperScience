@@ -427,7 +427,7 @@ test("storage separates project paths and filters usage when a project is clicke
     .toContainText("120.0 MB");
 });
 
-test("sidebar Feedback leaves a workspace file and starts an AI-guided issue chat (#596)", async ({ page }) => {
+test("sidebar Feedback opens a blank conversation and waits for the user's first turn (#596)", async ({ page }) => {
   await enterApp(page);
   await page.setInputFiles("#composer-file-input", {
     name: "counts.csv",
@@ -441,22 +441,35 @@ test("sidebar Feedback leaves a workspace file and starts an AI-guided issue cha
   await tile.click({ button: "right" });
   await page.locator(".ctx-menu").getByRole("button", { name: "Open in center" }).click();
   await expect(page.locator(".center-tab.active")).toContainText("counts.csv");
+  const sendsBefore = (await invokeArgsList(page, "send_message")).length;
+  const sessionsBefore = (await invokeArgsList(page, "new_session")).length;
 
   await page.getByTestId("report-problem-entry").click();
-  await expect(page.locator(".center-tabs > .center-tab")).toHaveClass(/active/);
+  await expect(page.getByTestId("feedback-context")).toContainText("System information");
+  await expect(page.getByTestId("feedback-context")).toContainText("Attached automatically");
+  await expect(page.locator("#composer-input")).toBeFocused();
   await expect(page.locator(".center-file-preview")).toHaveCount(0);
-  await expect.poll(() => lastInvokeArgs(page, "new_session")).not.toBeNull();
+  expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
+  expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
+
+  await page.locator("#composer-input").fill("The app freezes when I open a document");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => invokeArgsList(page, "new_session")).toHaveLength(sessionsBefore + 1);
   await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
-    message: expect.stringContaining("GitHub issue"),
+    message: expect.stringContaining("The app freezes when I open a document"),
   });
   const sent = await lastInvokeArgs(page, "send_message");
+  expect(sent?.message).toContain("Feedback context:");
+  expect(sent?.message).toContain("GitHub issue");
   expect(sent?.message).toMatch(/Wisp version: 0\.29\.0/);
   expect(sent?.message).toMatch(/OS \/ architecture: windows \/ x86_64/);
   expect(sent?.message).toMatch(/Model profile: deepseek-v4-pro/);
   expect(sent?.message).not.toMatch(/\/mock\/root/);
-  await expect.poll(() => invokeArgsList(page, "rename_session")).toContainEqual(
-    expect.objectContaining({ title: "Bug report" }),
-  );
+  await expect(page.getByTestId("feedback-context")).toHaveCount(0);
+  const userBubble = page.locator(".msg.user").last();
+  await expect(userBubble).toContainText("The app freezes when I open a document");
+  await expect(userBubble).not.toContainText("Feedback context");
+  await expect(userBubble).not.toContainText("GitHub issue");
 });
 
 test("Memory settings show the active project name", async ({ page }) => {
