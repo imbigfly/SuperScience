@@ -220,6 +220,9 @@ mod token_format_tests {
 /// of the whole render window into one clone per actually-changed row.
 #[derive(Clone)]
 pub(crate) enum ThreadRow {
+    AutoRun {
+        run_id: String,
+    },
     Item {
         i: usize,
         timestamp: Option<i64>,

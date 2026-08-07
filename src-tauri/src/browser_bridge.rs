@@ -724,7 +724,7 @@ impl Tool for WebExecuteJsTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             self.name(),
-            "Execute JavaScript in a tab from the user's real, persistent Chrome/Chromium session. Call web_scan first and do not guess selectors. If web_scan reports human_intervention.required=true, do not automate the challenge; wait for the user to complete it and confirm before continuing. For a task that will trigger multiple file downloads, first tell the user how to allow automatic multiple downloads for the trusted target site at chrome://settings/content/automaticDownloads or edge://settings/content/automaticDownloads, then wait for confirmation; until confirmed, trigger at most one file download. A JSON script with cmd='cdp' may call one Chrome DevTools Protocol method for trusted input or other advanced browser actions.",
+            "Execute JavaScript in a tab from the user's real, persistent Chrome/Chromium session. Call web_scan first and do not guess selectors. To close tabs, never call window.close(); send {\"cmd\":\"tabs\",\"method\":\"close\",\"tabIds\":[...]} using ids returned by web_open_tab/web_scan. If web_scan reports human_intervention.required=true, do not automate the challenge; wait for the user to complete it and confirm before continuing. For a task that will trigger multiple file downloads, first tell the user how to allow automatic multiple downloads for the trusted target site at chrome://settings/content/automaticDownloads or edge://settings/content/automaticDownloads, then wait for confirmation; until confirmed, trigger at most one file download. A JSON script with cmd='cdp' may call one Chrome DevTools Protocol method for trusted input or other advanced browser actions.",
             json!({
                 "type": "object",
                 "properties": {
@@ -764,6 +764,11 @@ impl Tool for WebExecuteJsTool {
                 "browser script is {} bytes (maximum {MAX_SCRIPT_BYTES})",
                 script.len()
             ));
+        }
+        if script.starts_with("window.close()") {
+            return ToolResult::fail(
+                "window.close() cannot close ordinary browser tabs. Use the browser-use skill's tab command: {\"cmd\":\"tabs\",\"method\":\"close\",\"tabIds\":[...]} with tab ids returned by web_open_tab/web_scan.",
+            );
         }
         let tab_id = match tab_id_arg(args) {
             Ok(tab_id) => tab_id,
@@ -942,6 +947,21 @@ mod tests {
     use base64::Engine;
     use sha2::{Digest, Sha256};
 
+    struct NoEnv(PathBuf);
+
+    #[async_trait]
+    impl ToolEnv for NoEnv {
+        fn project_root(&self) -> &std::path::Path {
+            &self.0
+        }
+
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+
+        async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+    }
+
     #[test]
     fn manifest_key_matches_the_only_accepted_extension_origin() {
         let manifest_path = wisp_paths::browser_extension_dir()
@@ -990,6 +1010,20 @@ mod tests {
             WebScreenshotTool::new(bridge).minimum_approval(),
             Approval::Ask
         );
+    }
+
+    #[tokio::test]
+    async fn execute_js_rejects_window_close_with_the_tab_command() {
+        let bridge = Arc::new(BrowserBridge::new(PathBuf::from("extension")));
+        let result = WebExecuteJsTool::new(bridge)
+            .run(
+                &json!({ "script": "window.close(); 'close-requested'" }),
+                &NoEnv(PathBuf::from(".")),
+            )
+            .await;
+        assert!(!result.success);
+        assert!(result.content.contains("\"method\":\"close\""));
+        assert!(result.content.contains("tabIds"));
     }
 
     #[test]
