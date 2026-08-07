@@ -63,7 +63,7 @@
 .control-refresh { width:24px; height:24px; font-size:15px; }
 .control-count { color:var(--text-faint); font-variant-numeric:tabular-nums; }
 .control-empty { padding:12px; border:1px dashed var(--border-strong); border-radius:var(--radius-sm); color:var(--text-faint); font-size:12.5px; background:var(--bg-sunken); }
-.context-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.context-actions { display:grid; grid-template-columns:1fr; gap:8px; }
 .context-card, .runtime-card, .run-card { border:1px solid var(--border-strong); border-radius:var(--radius-sm); padding:10px 12px; background:var(--bg-elev); box-shadow:var(--shadow-sm); min-width:0; }
 .context-card { transition:border-color .12s ease, background .12s ease, box-shadow .12s ease; }
 .context-card:hover { border-color:var(--text-faint); background:var(--surface-hover); }
@@ -77,11 +77,22 @@
 .run-card-main { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:4px; }
 .run-card-title-row { display:flex; align-items:center; gap:8px; min-width:0; }
 .run-card-actions { display:flex; align-items:center; gap:6px; flex:0 0 auto; }
-.context-card-tools { display:flex; align-items:center; gap:6px; width:100%; }
+.context-card-tools { display:flex; align-items:center; gap:6px; width:100%; flex-wrap:wrap; }
 .context-runtime-config { margin-left:auto; }
 .context-terminal { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; padding:0; border:1px solid var(--border); border-radius: var(--radius-xs); background:var(--bg-sunken); color:var(--text-muted); cursor:pointer; }
 .context-terminal:hover { border-color:color-mix(in srgb, var(--clay-strong) 30%, var(--border)); background:var(--clay-soft); color:var(--clay-strong); }
 .context-terminal svg { width:14px; height:14px; }
+.context-detach { color:var(--text-faint); }
+.context-detach:hover { border-color:color-mix(in srgb, var(--err) 35%, var(--border)); background:color-mix(in srgb, var(--err) 10%, var(--bg-sunken)); color:var(--err); }
+.context-attach { display:flex; flex-direction:column; gap:8px; margin-top:4px; padding-top:12px; border-top:1px solid var(--border); }
+.context-attach-search { margin:0; }
+.context-attach-list { display:flex; flex-direction:column; gap:4px; max-height:220px; overflow-y:auto; }
+.context-attach-row { display:grid; grid-template-columns:22px minmax(0, 1fr) auto; gap:10px; align-items:center; width:100%; min-height:36px; padding:6px 9px; border:1px solid var(--border); border-radius:var(--radius-xs); background:var(--bg-elev); color:var(--text); font:inherit; font-size:12.5px; text-align:left; cursor:pointer; }
+.context-attach-row:hover { border-color:color-mix(in srgb, var(--clay-strong) 30%, var(--border)); background:var(--clay-soft); }
+.context-attach-row .compute-resource-icon { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; color:var(--text-faint); }
+.context-attach-row .compute-resource-icon svg { width:15px; height:15px; }
+.context-attach-row .compute-resource-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.context-attach-row .compute-resource-state { color:var(--clay-strong); font-size:11px; font-weight:650; }
 .context-id, .run-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:650; }
 .run-title { flex:1 1 auto; }
 .context-label, .context-meta { margin-top:4px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11.5px; color:var(--text-muted); }

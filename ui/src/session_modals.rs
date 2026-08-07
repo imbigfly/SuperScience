@@ -4,7 +4,7 @@ use crate::app_support::{
 use crate::bindings::invoke_checked;
 use crate::dto::*;
 use crate::i18n::{t, tf, Locale};
-use crate::text::{dom_value, event_target_value, parent_path};
+use crate::text::{dom_value, event_target_checked, event_target_value, parent_path};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 use wasm_bindgen::JsCast;
@@ -533,9 +533,8 @@ pub(crate) fn ModelSwitchConfirmOverlay(
     view! {
         {move || model_switch_confirm.get().map(|(id, label, ignores_images)| {
             let switch_yes = on_switch.clone();
-            let switch_without_future_warning = on_switch.clone();
             let yes_id = id.clone();
-            let dont_ask_id = id.clone();
+            let dont_ask_again = create_rw_signal(false);
             let hint_key = if ignores_images {
                 "models.switch_confirm_image_hint"
             } else {
@@ -546,31 +545,29 @@ pub(crate) fn ModelSwitchConfirmOverlay(
             } else {
                 "models.switch_yes"
             };
-            let dont_ask_key = if ignores_images {
-                "models.switch_ignore_images_dont_ask"
-            } else {
-                "models.switch_dont_ask"
-            };
             view! {
                 <div class="overlay" data-testid="model-switch-confirm-overlay">
-                    <div class="modal confirm-modal" data-testid="model-switch-confirm">
+                    <div class="modal confirm-modal model-switch-confirm" data-testid="model-switch-confirm">
                         <h2>{move || t(locale.get(), "models.switch_confirm_title")}</h2>
                         <div class="hint">{move || tf(
                             locale.get(),
                             hint_key,
                             &[("model", &label)],
                         )}</div>
+                        <label class="confirm-option" data-testid="model-switch-dont-ask">
+                            <input type="checkbox"
+                                prop:checked=move || dont_ask_again.get()
+                                on:change=move |ev| dont_ask_again.set(event_target_checked(&ev)) />
+                            <span>{move || t(locale.get(), "models.switch_dont_ask")}</span>
+                        </label>
                         <div class="row">
-                            <button on:click=move |_| model_switch_confirm.set(None)>
+                            <button type="button" on:click=move |_| model_switch_confirm.set(None)>
                                 {move || t(locale.get(), "models.switch_no")}
                             </button>
-                            <button on:click=move |_| {
+                            <button type="button" class="primary" on:click=move |_| {
+                                let skip_future = dont_ask_again.get_untracked();
                                 model_switch_confirm.set(None);
-                                switch_without_future_warning.call((dont_ask_id.clone(), true));
-                            }>{move || t(locale.get(), dont_ask_key)}</button>
-                            <button class="primary" on:click=move |_| {
-                                model_switch_confirm.set(None);
-                                switch_yes.call((yes_id.clone(), false));
+                                switch_yes.call((yes_id.clone(), skip_future));
                             }>{move || t(locale.get(), yes_key)}</button>
                         </div>
                     </div>

@@ -113,6 +113,29 @@
 .confirm-modal { overflow: hidden; }
 .confirm-modal .hint { flex: 1 1 auto; min-height: 0; overflow-y: auto; white-space: pre-wrap; }
 .confirm-modal .row { flex: 0 0 auto; }
+.confirm-modal .confirm-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.confirm-modal .confirm-option input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--clay-strong);
+  cursor: pointer;
+}
+.model-switch-confirm .row button {
+  min-width: 88px;
+}
+.model-switch-confirm .row button.primary {
+  flex: 0 1 auto;
+}
 .project-delete-choice-modal { max-width: 560px; }
 .project-delete-choice-modal .delete-with-data {
   color: var(--err); border-color: color-mix(in srgb, var(--err) 42%, var(--border-strong));
