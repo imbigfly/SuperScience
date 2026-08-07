@@ -2006,11 +2006,23 @@ fn App() -> impl IntoView {
                     route_items(active_cb, items_cb, transcripts_cb, &frame_id, |v| {
                         strip_approval_pending(v);
                         settle_plan_cards(v);
-                        v.push(ChatItem::Assistant {
-                            text: format!("Error: {message}"),
-                            model,
-                            resources: Vec::new(),
-                        });
+                        // Prefer filling the optimistic blank assistant so a later
+                        // invoke rejection does not see "user + empty" and roll the
+                        // durable user bubble back into the draft.
+                        let error_text = format!("Error: {message}");
+                        if let Some(ChatItem::Assistant { text, .. }) = v
+                            .iter_mut()
+                            .rev()
+                            .find(|item| matches!(item, ChatItem::Assistant { text, .. } if text.is_empty()))
+                        {
+                            *text = error_text;
+                        } else {
+                            v.push(ChatItem::Assistant {
+                                text: error_text,
+                                model,
+                                resources: Vec::new(),
+                            });
+                        }
                     });
                 }
                 refresh_transcript_projections(&frame_id);
@@ -2774,18 +2786,43 @@ fn App() -> impl IntoView {
                 }
                 Err(error) => {
                     let raw = js_error_text(error);
-                    let (started, message_text) = split_turn_started_error(&raw);
+                    // Prefer transcript evidence: Error/Reasoning/Tool events can
+                    // finish before invoke rejects, and a bare string must not
+                    // treat an already-started turn as a pre-start rollback.
+                    // Draft restore must follow whether the bubble was actually
+                    // removed — not a prior snapshot of "started" that races
+                    // the live agent bus.
+                    let (_, status_message) = split_turn_started_error(&raw);
+                    let rolled_back = Rc::new(Cell::new(false));
+                    let rolled_back_flag = rolled_back.clone();
                     route_items(active_session, items, transcripts, &id, |rows| {
+                        let (started, message_text) =
+                            send_failed_after_start(rows, &display_message, &raw);
+                        let had_user = rows.iter().any(|item| {
+                            matches!(item, ChatItem::User(value) if value == &display_message)
+                                || matches!(
+                                    item,
+                                    ChatItem::QueuedUser { text, .. } if text == &display_message
+                                )
+                        });
                         if started {
                             mark_optimistic_send_failed(rows, &display_message, message_text);
                         } else {
                             remove_optimistic_send_rows(rows, &display_message);
                         }
+                        let kept_user = rows.iter().any(|item| {
+                            matches!(item, ChatItem::User(value) if value == &display_message)
+                                || matches!(
+                                    item,
+                                    ChatItem::QueuedUser { text, .. } if text == &display_message
+                                )
+                        });
+                        rolled_back_flag.set(had_user && !kept_user);
                     });
                     transcript_projection_epoch.update(|revision| {
                         *revision = revision.wrapping_add(1);
                     });
-                    if !started {
+                    if rolled_back.get() {
                         if input.get_untracked().is_empty() {
                             input.set(message);
                         }
@@ -2806,7 +2843,7 @@ fn App() -> impl IntoView {
                     status.set(tf(
                         locale.get(),
                         "status.send_failed",
-                        &[("msg", &localize_backend(locale.get(), message_text))],
+                        &[("msg", &localize_backend(locale.get(), status_message))],
                     ));
                 }
             }

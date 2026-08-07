@@ -3507,10 +3507,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }, 0);
             return null;
           case "send_message": {
-            const fid = (args && (args.sessionId ?? args.session_id)) || "t1";
-            const msg = (args && args.message) || "";
+            const fid = String(arg("sessionId") ?? arg("session_id") ?? "") || "t1";
+            const msg = String(arg("message") ?? "");
             sessionModels[fid] ??= activeHttpModelId();
-            const acpAgentId = args?.acpAgentId ?? acpBindings[fid];
+            const acpAgentId = arg("acpAgentId") ?? acpBindings[fid];
             if (acpAgentId && String(msg).includes("ACPTHINK")) {
               // Codex-style ordering: visible commentary streams first, then
               // reasoning, then tool activity. The UI must preserve those as
@@ -3563,6 +3563,25 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             if (String(msg).includes("PRESTARTFAIL")) {
               throw new Error("No model profile is available");
+            }
+            if (String(msg).includes("POSTSTARTFAIL_EVENT")) {
+              // Mirrors the real backend: live Error event + turn-started
+              // rejection (plain message only on the event card).
+              return await new Promise<string>((_resolve, reject) => {
+                setTimeout(() => {
+                  emit("agent", { kind: "User", frame_id: fid, text: msg });
+                  emit("agent", {
+                    kind: "Error",
+                    frame_id: fid,
+                    message: 'api: 400 {"error":{"message":"max_tokens too high"}}',
+                  });
+                  reject(
+                    new Error(
+                      '[turn-started] api: 400 {"error":{"message":"max_tokens too high"}}',
+                    ),
+                  );
+                }, 30);
+              });
             }
             if (String(msg).includes("POSTSTARTFAIL")) {
               throw new Error("[turn-started] execution failed after turn/start");

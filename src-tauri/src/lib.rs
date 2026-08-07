@@ -4880,7 +4880,9 @@ async fn send_message_inner(
                         message: error.clone(),
                     },
                 );
-                return Err(error);
+                // ACP prompt submission always accepts the user turn first
+                // (except early validation). Resume is always mid-turn.
+                return Err(client_turn_error(true, &error));
             }
         }
     }
@@ -5669,6 +5671,11 @@ async fn send_message_inner(
             rt.set_last_seq(agent.ctx.messages.len() as i64);
         }
     }
+    // Resume is already mid-turn. A normal send is mid-turn once the loop
+    // accepted the user message (ctx grew past turn_start via on_message).
+    // The UI uses this marker so it keeps the optimistic user bubble instead of
+    // rolling the draft back; the visual Error card stays prefix-free.
+    let turn_started = resume || agent.ctx.messages.len() > turn_start;
     drop(guard);
     // After the persist flush so the seen snapshot covers the final messages.
     mark_seen_if_viewed(&state, &frame_id).await;
@@ -5685,15 +5692,28 @@ async fn send_message_inner(
             Ok(frame_id)
         }
         Err(e) => {
+            let message = format!("{e}");
             emit_agent_event(
                 &app,
                 AgentEvent::Error {
                     frame_id: frame_id.clone(),
-                    message: format!("{e}"),
+                    message: message.clone(),
                 },
             );
-            Err(format!("{e}"))
+            Err(client_turn_error(turn_started, &message))
         }
+    }
+}
+
+/// Invoke-facing failure string for `send_message`. The live Error event carries
+/// the plain message; only the Promise rejection uses the control prefix so the
+/// UI can preserve a started turn's user row without painting `[turn-started]`
+/// into the transcript.
+fn client_turn_error(turn_started: bool, message: &str) -> String {
+    if turn_started {
+        format!("[turn-started] {message}")
+    } else {
+        message.to_string()
     }
 }
 
