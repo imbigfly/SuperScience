@@ -1334,6 +1334,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           return value;
         };
         switch (cmd) {
+          case "review_session": {
+            const delay = Number((window as any).__reviewDelayMs ?? 0);
+            if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+            return null;
+          }
           case "get_research_graph":
             return researchGraph;
           case "get_publication_workspace":

@@ -195,6 +195,29 @@
   display: flex; align-items: center; gap: 9px; flex: 0 1 260px; min-width: 0;
   color: var(--text-muted);
 }
+.review-live {
+  display: flex; align-items: center; gap: 9px; flex: 0 1 280px; min-width: 0;
+  color: var(--text-muted);
+}
+.review-live-lens {
+  position: relative; display: flex; align-items: center; gap: 3px; width: 30px; height: 18px;
+  padding: 3px 5px; overflow: hidden; border: 1px solid var(--border); border-radius: 3px;
+  background: color-mix(in srgb, var(--clay) 5%, transparent);
+}
+.review-live-lens::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 8px; height: 8px;
+  border: 1.5px solid var(--clay); border-radius: 50%;
+  box-shadow: 5px 6px 0 -4px var(--clay);
+  animation: review-lens-scan 1.4s ease-in-out infinite alternate;
+}
+.review-live-lens i {
+  width: 3px; height: 3px; margin-top: 9px; border-radius: 50%;
+  background: var(--clay); opacity: .35; animation: review-dot-squirm .7s ease-in-out infinite alternate;
+}
+.review-live-lens i:nth-child(2) { animation-delay: -.25s; }
+.review-live-lens i:nth-child(3) { animation-delay: -.5s; }
+@keyframes review-lens-scan { to { transform: translateX(14px) rotate(-8deg); } }
+@keyframes review-dot-squirm { to { opacity: .9; transform: translateY(-2px); } }
 .context-compaction-live-copy { display: grid; min-width: 0; line-height: 1.15; }
 .context-compaction-live-copy strong { font-size: 11.5px; font-weight: 620; white-space: nowrap; }
 .context-compaction-live-copy span { color: var(--text-faint); font-size: 9.5px; white-space: nowrap; }
@@ -216,7 +239,8 @@
 @keyframes context-spectrum-scan { to { transform: translateX(400%); } }
 @keyframes context-spectrum-pulse { to { opacity: 1; transform: scaleY(.62); } }
 @media (prefers-reduced-motion: reduce) {
-  .context-compaction-spectrum::after, .context-compaction-spectrum i { animation: none; }
+  .context-compaction-spectrum::after, .context-compaction-spectrum i,
+  .review-live-lens::after, .review-live-lens i { animation: none; }
 }
 .hint.hint-action { flex: 0 1 auto; max-width: min(280px, 36cqw); color: var(--text-muted); }
 .link-inline { border: none; background: none; padding: 0; font: inherit; font-size: inherit; color: var(--clay-strong); font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }

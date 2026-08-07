@@ -210,6 +210,7 @@ fn App() -> impl IntoView {
     // in-flight turn; `transcripts` caches the live transcript of background
     // (non-active) sessions so switching to them shows streaming progress.
     let running = create_rw_signal::<HashSet<String>>(HashSet::new());
+    let reviewing = create_rw_signal::<HashSet<String>>(HashSet::new());
     let approval_pending = create_rw_signal::<HashSet<String>>(HashSet::new());
     let pet_activity = create_rw_signal((String::from("idle"), 0_u64));
     let pending_turns = create_rw_signal::<HashMap<String, usize>>(HashMap::new());
@@ -3539,7 +3540,12 @@ fn App() -> impl IntoView {
         upload_from_paste(attachments, uploading, event, count);
     };
 
-    let composer_blocked = move || uploading.get();
+    let composer_blocked = move || {
+        uploading.get()
+            || active_session
+                .get()
+                .is_some_and(|id| reviewing.with(|ids| ids.contains(&id)))
+    };
 
     let run_update_check = Rc::new(move || {
         if update_check_busy.get() {
@@ -4767,10 +4773,17 @@ fn App() -> impl IntoView {
     });
 
     let request_session_review = Callback::new(move |session_id: String| {
+        if reviewing.with_untracked(|ids| ids.contains(&session_id)) {
+            return;
+        }
+        reviewing.update(|ids| {
+            ids.insert(session_id.clone());
+        });
         let loc = locale.get_untracked();
         status.set(t(loc, "status.reviewing"));
         spawn_local(async move {
-            let arg = to_value(&tauri_args::review_session(&Some(session_id))).unwrap();
+            let arg =
+                to_value(&tauri_args::review_session(&Some(session_id.clone()))).unwrap();
             if let Err(err) = invoke_checked("review_session", arg).await {
                 status.set(tf(
                     loc,
@@ -4778,6 +4791,9 @@ fn App() -> impl IntoView {
                     &[("msg", &localize_backend(loc, &js_error_text(err)))],
                 ));
             }
+            reviewing.update(|ids| {
+                ids.remove(&session_id);
+            });
         });
     });
 
@@ -7802,6 +7818,21 @@ fn App() -> impl IntoView {
                                 </span>
                             </div>
                         }.into_view())
+                    } else if active_session
+                        .get()
+                        .is_some_and(|id| reviewing.with(|ids| ids.contains(&id)))
+                    {
+                        Some(view! {
+                            <div class="review-live" role="status" data-testid="review-live">
+                                <span class="review-live-lens" aria-hidden="true">
+                                    <i></i><i></i><i></i>
+                                </span>
+                                <span class="context-compaction-live-copy">
+                                    <strong>{move || t(locale.get(), "chat.reviewing_title")}</strong>
+                                    <span>{move || t(locale.get(), "chat.reviewing_note")}</span>
+                                </span>
+                            </div>
+                        }.into_view())
                     } else {
                         let s = status.get();
                         (!s.is_empty()).then(|| {
@@ -9264,18 +9295,12 @@ fn App() -> impl IntoView {
                                     </div>
                                     <div class="compose-group">
                                         <div class="compose-group-label">{move || t(locale.get(), "composer.group_session")}</div>
-                                        <button type="button" class="compose-item"
+                                        <button type="button" class="compose-item" disabled=composer_blocked
                                             on:click=move |_| {
                                                 compose_menu_open.set(false);
-                                                let loc = locale.get();
-                                                status.set(t(loc, "status.reviewing"));
-                                                let sid = active_session.get();
-                                                spawn_local(async move {
-                                                    let arg = to_value(&tauri_args::review_session(&sid)).unwrap();
-                                                    if let Err(err) = invoke_checked("review_session", arg).await {
-                                                        status.set(tf(loc, "status.review_failed", &[("msg", &localize_backend(loc, &js_error_text(err)))]));
-                                                    }
-                                                });
+                                                if let Some(sid) = active_session.get() {
+                                                    request_session_review.call(sid);
+                                                }
                                             }>
                                             <span class="compose-item-icon">{compose_icon("review")}</span>
                                             <span class="compose-item-text">
