@@ -674,9 +674,10 @@ test("switching to a text-only model confirms historical images will be ignored"
   const modal = page.getByTestId("model-switch-confirm");
   await expect(modal).toContainText("does not accept image input");
   await expect(modal).toContainText("saved conversation and existing text replies stay unchanged");
+  await expect(modal.getByTestId("model-switch-dont-ask")).toHaveCSS("flex-direction", "row");
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
 
-  await modal.getByRole("button", { name: "Ignore old images and switch" }).click();
+  await modal.getByRole("button", { name: "Ignore & switch" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "default" });
   await expect(page.locator(".model-picker-label")).toHaveText("deepseek-v4-pro");
 });

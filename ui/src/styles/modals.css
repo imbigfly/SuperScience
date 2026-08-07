@@ -111,27 +111,54 @@
    a long command to approve can never push the Approve button off-screen (#63).
    Overrides the generic .modal whole-modal scroll above (later, equal specificity). */
 .confirm-modal { overflow: hidden; }
-.confirm-modal .hint { flex: 1 1 auto; min-height: 0; overflow-y: auto; white-space: pre-wrap; }
+.confirm-modal .hint {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  color: var(--text-muted); font-size: 13px; line-height: 1.55;
+  font-weight: 400; white-space: pre-wrap;
+}
 .confirm-modal .row { flex: 0 0 auto; }
+/* Override `.modal label { flex-direction: column }` so checkbox + text sit in a row. */
 .confirm-modal .confirm-option {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 8px;
-  margin-top: 12px;
+  margin: 0;
   font-size: 13px;
+  font-weight: 400;
   color: var(--text-muted);
   cursor: pointer;
   user-select: none;
 }
 .confirm-modal .confirm-option input {
+  box-sizing: border-box;
   width: 15px;
   height: 15px;
   margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   accent-color: var(--clay-strong);
   cursor: pointer;
 }
+.confirm-modal .confirm-option input:focus {
+  border: none;
+  box-shadow: none;
+}
+.confirm-modal .confirm-option input:focus-visible {
+  outline: 2px solid var(--clay);
+  outline-offset: 2px;
+}
+.model-switch-confirm .row {
+  flex-wrap: wrap;
+  align-items: center;
+}
 .model-switch-confirm .row button {
-  min-width: 88px;
+  min-width: 72px;
+  white-space: nowrap;
 }
 .model-switch-confirm .row button.primary {
   flex: 0 1 auto;
