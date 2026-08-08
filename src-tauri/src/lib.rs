@@ -5163,6 +5163,9 @@ async fn send_message_inner(
         agent.add_tool(Box::new(quick_actions::ExplainWorkflowTool::new(
             state.store.clone(),
         )));
+        agent.add_tool(Box::new(quick_actions::SearchModelsTool::new(
+            state.store.clone(),
+        )));
         agent.add_tool(Box::new(quick_actions::CreateWorkflowTool::new(
             state.store.clone(),
             skills.clone(),
