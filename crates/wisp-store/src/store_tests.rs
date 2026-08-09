@@ -2690,6 +2690,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             METHOD_SEARCH_MIGRATION.to_string(),
             METHOD_SEARCH_CONTROL_MIGRATION.to_string(),
             SESSION_IMPORTS_MIGRATION.to_string(),
+            EXPLORATION_BRANCHES_MIGRATION.to_string(),
         ]
     );
 
@@ -2859,7 +2860,11 @@ async fn run_artifact_lineage_migration_repairs_partial_application() {
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
-    sqlx::query("DROP INDEX ux_artifacts_project_logical_key")
+    sqlx::query("DROP INDEX IF EXISTS ux_artifacts_project_logical_key")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP INDEX IF EXISTS ix_artifacts_project_logical_key")
         .execute(&store.pool)
         .await
         .unwrap();
@@ -2890,6 +2895,11 @@ async fn run_artifact_lineage_migration_repairs_partial_application() {
     }
     sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(RUN_ARTIFACT_LINEAGE_MIGRATION)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+        .bind(EXPLORATION_BRANCHES_MIGRATION)
         .execute(&store.pool)
         .await
         .unwrap();
@@ -5869,4 +5879,556 @@ async fn scratch_projects_hidden_from_user_lists() {
     assert!(hits.iter().all(|h| h.project_id == "real"));
 
     let _ = std::fs::remove_file(&tmp);
+}
+
+fn exploration_test_artifact(
+    artifact_id: &str,
+    frame_id: &str,
+    logical_key: &str,
+    storage_path: &str,
+) -> ArtifactVersionDraft {
+    ArtifactVersionDraft {
+        version_id: None,
+        artifact_id: artifact_id.into(),
+        project_id: "p".into(),
+        root_frame_id: frame_id.into(),
+        filename: storage_path.rsplit('/').next().unwrap().into(),
+        content_type: "text/plain".into(),
+        storage_path: storage_path.into(),
+        logical_key: Some(logical_key.into()),
+        size_bytes: Some(4),
+        checksum: Some("f".repeat(64)),
+        producing_run_id: None,
+        env_snapshot_hash: None,
+        materialization: ArtifactMaterialization::Snapshot,
+        capture_timing: ArtifactCaptureTiming::AtCreation,
+    }
+}
+
+async fn exploration_store_fixture(label: &str) -> (Store, std::path::PathBuf) {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_exploration_{label}_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store
+        .create_project("p", "Project", "/tmp/project")
+        .await
+        .unwrap();
+    store
+        .create_frame("main", "p", "OPERON", "model")
+        .await
+        .unwrap();
+    store
+        .append_message("main", 1, &Message::user("compare approaches"))
+        .await
+        .unwrap();
+    store
+        .append_message("main", 2, &Message::assistant("stable checkpoint"))
+        .await
+        .unwrap();
+    store
+        .create_frame("branch", "p", "OPERON", "model")
+        .await
+        .unwrap();
+    (store, tmp)
+}
+
+async fn create_exploration_checkpoint_fixture(store: &Store) {
+    store
+        .create_workspace_snapshot(&WorkspaceSnapshotRecord {
+            id: "snapshot".into(),
+            project_id: "p".into(),
+            manifest_json: r#"{"version":1,"files":[]}"#.into(),
+            manifest_sha256: "a".repeat(64),
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_context_archive(&ContextArchiveRecord {
+            id: "archive".into(),
+            project_id: "p".into(),
+            frame_id: "main".into(),
+            storage_path: ".wisp/history/archive.json".into(),
+            checksum: "b".repeat(64),
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_exploration_family(&ExplorationFamily {
+            id: "family".into(),
+            project_id: "p".into(),
+            root_frame_id: "main".into(),
+            mainline_frame_id: "main".into(),
+            generation: 0,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_exploration_checkpoint(&ExplorationCheckpoint {
+            id: "checkpoint".into(),
+            family_id: "family".into(),
+            project_id: "p".into(),
+            source_frame_id: "main".into(),
+            source_message_seq: 2,
+            source_frame_head_seq: 2,
+            source_ui_event_seq: 0,
+            source_family_generation: 0,
+            source_state_generation: 0,
+            workspace_snapshot_id: "snapshot".into(),
+            context_archive_id: "archive".into(),
+            guard_hash: "c".repeat(64),
+            entity_hash: "d".repeat(64),
+            isolation_summary_json: r#"{"level":"full"}"#.into(),
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn exploration_scope_state_machine_and_generations_are_isolated() {
+    let (store, tmp) = exploration_store_fixture("scope").await;
+    create_exploration_checkpoint_fixture(&store).await;
+    store
+        .create_exploration(&Exploration {
+            id: "explore".into(),
+            checkpoint_id: "checkpoint".into(),
+            frame_id: "branch".into(),
+            name: "Alternative normalization".into(),
+            status: ExplorationStatus::Creating,
+            workspace_dir: "/tmp/explorations/explore/workspace".into(),
+            workspace_backend: "snapshot".into(),
+            scope_generation: 0,
+            warnings_json: "[]".into(),
+            created_at: 2,
+            updated_at: 2,
+            promoted_at: None,
+            archived_at: None,
+            discarded_at: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .exploration_for_frame("branch")
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        "explore"
+    );
+    assert_eq!(store.list_explorations("main").await.unwrap().len(), 1);
+    let frame_scope: Option<String> =
+        sqlx::query_scalar("SELECT exploration_id FROM frames WHERE id='branch'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(frame_scope.as_deref(), Some("explore"));
+
+    let branch_scope = StateScope::exploration("p", "explore");
+    let main_scope = StateScope::mainline("p");
+    assert_eq!(store.bump_state_generation(&branch_scope).await.unwrap(), 1);
+    assert_eq!(store.state_generation(&branch_scope).await.unwrap(), 1);
+    assert_eq!(store.project_state_generation("p").await.unwrap(), 0);
+    assert_eq!(store.bump_state_generation(&main_scope).await.unwrap(), 1);
+    assert_eq!(store.project_state_generation("p").await.unwrap(), 1);
+
+    assert!(store
+        .transition_exploration(
+            "explore",
+            ExplorationStatus::Creating,
+            ExplorationStatus::Active,
+        )
+        .await
+        .unwrap());
+    assert!(store
+        .transition_exploration(
+            "explore",
+            ExplorationStatus::Active,
+            ExplorationStatus::Archived,
+        )
+        .await
+        .unwrap());
+    assert!(store
+        .transition_exploration(
+            "explore",
+            ExplorationStatus::Archived,
+            ExplorationStatus::Active,
+        )
+        .await
+        .unwrap());
+    assert!(store
+        .transition_exploration(
+            "explore",
+            ExplorationStatus::Active,
+            ExplorationStatus::Promoting,
+        )
+        .await
+        .unwrap());
+    assert!(store
+        .transition_exploration(
+            "explore",
+            ExplorationStatus::Promoting,
+            ExplorationStatus::Promoted,
+        )
+        .await
+        .unwrap());
+    assert!(store
+        .transition_exploration(
+            "explore",
+            ExplorationStatus::Promoted,
+            ExplorationStatus::Active,
+        )
+        .await
+        .is_err());
+    assert!(store.bump_state_generation(&branch_scope).await.is_err());
+
+    assert!(!store
+        .compare_and_swap_exploration_mainline("family", "wrong", 0, "branch")
+        .await
+        .unwrap());
+    assert!(store
+        .compare_and_swap_exploration_mainline("family", "main", 0, "branch")
+        .await
+        .unwrap());
+    let family = store
+        .get_exploration_family("family")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(family.mainline_frame_id, "branch");
+    assert_eq!(family.generation, 1);
+    assert!(!store
+        .compare_and_swap_exploration_mainline("family", "main", 0, "branch")
+        .await
+        .unwrap());
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn exploration_artifact_heads_keep_same_logical_key_private() {
+    let (store, tmp) = exploration_store_fixture("artifact-head").await;
+    create_exploration_checkpoint_fixture(&store).await;
+    store
+        .create_exploration(&Exploration {
+            id: "explore".into(),
+            checkpoint_id: "checkpoint".into(),
+            frame_id: "branch".into(),
+            name: "Alternative".into(),
+            status: ExplorationStatus::Creating,
+            workspace_dir: "/tmp/explore".into(),
+            workspace_backend: "snapshot".into(),
+            scope_generation: 0,
+            warnings_json: "[]".into(),
+            created_at: 2,
+            updated_at: 2,
+            promoted_at: None,
+            archived_at: None,
+            discarded_at: None,
+        })
+        .await
+        .unwrap();
+
+    let main_version = store
+        .save_artifact_version(&exploration_test_artifact(
+            "artifact-main",
+            "main",
+            "path:results/table.tsv",
+            "results/table.tsv",
+        ))
+        .await
+        .unwrap();
+    let branch_version = store
+        .save_artifact_version(&exploration_test_artifact(
+            "artifact-branch",
+            "branch",
+            "path:results/table.tsv",
+            "/tmp/explore/results/table.tsv",
+        ))
+        .await
+        .unwrap();
+    let now = chrono::Utc::now().timestamp();
+    store
+        .upsert_artifact_head(&ArtifactHead {
+            project_id: "p".into(),
+            scope_key: MAINLINE_SCOPE_KEY.into(),
+            logical_key: "path:results/table.tsv".into(),
+            artifact_id: "artifact-main".into(),
+            artifact_version_id: main_version.clone(),
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+    store
+        .upsert_artifact_head(&ArtifactHead {
+            project_id: "p".into(),
+            scope_key: "explore".into(),
+            logical_key: "path:results/table.tsv".into(),
+            artifact_id: "artifact-branch".into(),
+            artifact_version_id: branch_version.clone(),
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+    store
+        .record_exploration_baseline_artifact_head(&ExplorationBaselineArtifactHead {
+            checkpoint_id: "checkpoint".into(),
+            logical_key: "path:results/table.tsv".into(),
+            artifact_id: "artifact-main".into(),
+            artifact_version_id: main_version.clone(),
+            fingerprint: "e".repeat(64),
+        })
+        .await
+        .unwrap();
+    store
+        .record_exploration_baseline_entity(&ExplorationBaselineEntity {
+            checkpoint_id: "checkpoint".into(),
+            entity_kind: "run".into(),
+            entity_id: "run-baseline".into(),
+            version_id: None,
+            fingerprint: "a".repeat(64),
+        })
+        .await
+        .unwrap();
+
+    let main = store
+        .get_artifact_head("p", MAINLINE_SCOPE_KEY, "path:results/table.tsv")
+        .await
+        .unwrap()
+        .unwrap();
+    let branch = store
+        .get_artifact_head("p", "explore", "path:results/table.tsv")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(main.artifact_version_id, main_version);
+    assert_eq!(branch.artifact_version_id, branch_version);
+    assert_eq!(
+        store
+            .list_artifact_heads("p", MAINLINE_SCOPE_KEY)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .list_artifact_heads("p", "explore")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let raw_same_key: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM artifacts WHERE project_id='p' AND logical_key='path:results/table.tsv'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(raw_same_key, 2);
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn exploration_checkpoint_rejects_stale_mainline_state() {
+    let (store, tmp) = exploration_store_fixture("stale-checkpoint").await;
+    store
+        .create_workspace_snapshot(&WorkspaceSnapshotRecord {
+            id: "snapshot".into(),
+            project_id: "p".into(),
+            manifest_json: "{}".into(),
+            manifest_sha256: "a".repeat(64),
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_context_archive(&ContextArchiveRecord {
+            id: "archive".into(),
+            project_id: "p".into(),
+            frame_id: "main".into(),
+            storage_path: ".wisp/history/archive.json".into(),
+            checksum: "b".repeat(64),
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_exploration_family(&ExplorationFamily {
+            id: "family".into(),
+            project_id: "p".into(),
+            root_frame_id: "main".into(),
+            mainline_frame_id: "main".into(),
+            generation: 0,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .bump_state_generation(&StateScope::mainline("p"))
+        .await
+        .unwrap();
+    let stale = ExplorationCheckpoint {
+        id: "checkpoint".into(),
+        family_id: "family".into(),
+        project_id: "p".into(),
+        source_frame_id: "main".into(),
+        source_message_seq: 2,
+        source_frame_head_seq: 2,
+        source_ui_event_seq: 0,
+        source_family_generation: 0,
+        source_state_generation: 0,
+        workspace_snapshot_id: "snapshot".into(),
+        context_archive_id: "archive".into(),
+        guard_hash: "c".repeat(64),
+        entity_hash: "d".repeat(64),
+        isolation_summary_json: "{}".into(),
+        created_at: 1,
+    };
+    assert!(store.create_exploration_checkpoint(&stale).await.is_err());
+
+    store
+        .append_message("main", 3, &Message::user("mainline moved"))
+        .await
+        .unwrap();
+    let mut wrong_head = stale;
+    wrong_head.id = "checkpoint-2".into();
+    wrong_head.source_state_generation = 1;
+    assert!(store
+        .create_exploration_checkpoint(&wrong_head)
+        .await
+        .is_err());
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn exploration_migration_repairs_partial_legacy_state() {
+    let (store, tmp) = exploration_store_fixture("migration").await;
+    let version = store
+        .save_artifact_version(&exploration_test_artifact(
+            "artifact-main",
+            "main",
+            "path:result.txt",
+            "result.txt",
+        ))
+        .await
+        .unwrap();
+    for table in [
+        "exploration_promotions",
+        "exploration_effects",
+        "exploration_baseline_artifact_heads",
+        "exploration_baseline_entities",
+        "explorations",
+        "exploration_checkpoints",
+        "exploration_families",
+        "context_archives",
+        "workspace_snapshots",
+        "artifact_heads",
+        "project_state_counters",
+    ] {
+        sqlx::query(&format!("DROP TABLE {table}"))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+    }
+    for table in [
+        "frames",
+        "artifacts",
+        "runs",
+        "research_nodes",
+        "research_edges",
+        "external_resources",
+    ] {
+        sqlx::query(&format!("ALTER TABLE {table} DROP COLUMN exploration_id"))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("DROP INDEX IF EXISTS ix_artifacts_project_logical_key")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE UNIQUE INDEX ux_artifacts_project_logical_key \
+         ON artifacts(project_id,logical_key) WHERE logical_key IS NOT NULL",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+        .bind(EXPLORATION_BRANCHES_MIGRATION)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+
+    let repaired = Store::open(&tmp).await.unwrap();
+    for table in [
+        "exploration_families",
+        "exploration_checkpoints",
+        "explorations",
+        "artifact_heads",
+        "exploration_promotions",
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+        )
+        .bind(table)
+        .fetch_one(&repaired.pool)
+        .await
+        .unwrap();
+        assert!(exists, "missing repaired table {table}");
+    }
+    for table in [
+        "frames",
+        "artifacts",
+        "runs",
+        "research_nodes",
+        "research_edges",
+        "external_resources",
+    ] {
+        assert!(Store::has_column(&repaired.pool, table, "exploration_id")
+            .await
+            .unwrap());
+    }
+    let old_unique: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' \
+         AND name='ux_artifacts_project_logical_key')",
+    )
+    .fetch_one(&repaired.pool)
+    .await
+    .unwrap();
+    assert!(!old_unique);
+    let head = repaired
+        .get_artifact_head("p", MAINLINE_SCOPE_KEY, "path:result.txt")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(head.artifact_version_id, version);
+    repaired
+        .save_artifact_version(&exploration_test_artifact(
+            "artifact-second",
+            "branch",
+            "path:result.txt",
+            "/tmp/explore/result.txt",
+        ))
+        .await
+        .unwrap();
+
+    repaired.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
 }
