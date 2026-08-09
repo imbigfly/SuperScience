@@ -29,13 +29,13 @@ fn coded_error(code: &str, message: impl AsRef<str>) -> String {
 }
 
 #[derive(Clone)]
-struct ExplorationService {
+pub(crate) struct ExplorationService {
     store: Store,
     app_data: PathBuf,
 }
 
 impl ExplorationService {
-    fn new(store: Store, app_data: PathBuf) -> Self {
+    pub(crate) fn new(store: Store, app_data: PathBuf) -> Self {
         Self { store, app_data }
     }
 
@@ -43,7 +43,7 @@ impl ExplorationService {
         PersistentExplorationWorkspace::new(self.app_data.clone())
     }
 
-    async fn create_checkpoint(
+    pub(crate) async fn create_checkpoint(
         &self,
         project_id: &str,
         source_frame_id: &str,
@@ -253,7 +253,7 @@ impl ExplorationService {
         Ok(checkpoint)
     }
 
-    async fn create_exploration(
+    pub(crate) async fn create_exploration(
         &self,
         checkpoint_id: &str,
         name: &str,

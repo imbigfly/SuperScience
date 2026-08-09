@@ -38,6 +38,7 @@ mod device_bridge;
 mod device_hub;
 mod dynamic_workflow;
 mod exploration_commands;
+mod exploration_promotion;
 mod exploration_workspace;
 mod file_browser;
 mod harvest;
@@ -2211,6 +2212,14 @@ impl AppState {
         self.project_activity(project_id)
             .try_read_owned()
             .map_err(|_| "This project is being synchronized. Try again when sync finishes.".into())
+    }
+    fn begin_project_exclusive_activity(
+        &self,
+        project_id: &str,
+    ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, String> {
+        self.project_activity(project_id)
+            .try_write_owned()
+            .map_err(|_| "ProjectBusy: another project operation is still active".into())
     }
     /// Snapshot a window's active project. Falls back to the "main" window's
     /// project (always initialized at startup) for un-scoped or early calls.
@@ -7280,6 +7289,11 @@ pub fn run() {
             let store = startup.record("store", || {
                 tauri::async_runtime::block_on(Store::open(&db_path)).expect("open store")
             });
+            startup.record("exploration_recovery", || {
+                tauri::async_runtime::block_on(
+                    exploration_promotion::recover_incomplete_promotions(&store, &app_data),
+                )
+            });
             let orphan_scratch = startup.record("scratch_scan", || {
                 tauri::async_runtime::block_on(scratch_commands::collect_orphan_scratch_projects(
                     &store, &app_data,
@@ -7576,6 +7590,10 @@ pub fn run() {
             exploration_commands::open_exploration,
             exploration_commands::archive_exploration,
             exploration_commands::restore_exploration,
+            exploration_promotion::preview_exploration_diff,
+            exploration_promotion::preview_exploration_promotion,
+            exploration_promotion::promote_exploration,
+            exploration_promotion::discard_exploration,
             session_commands::list_sessions_page,
             runtime_commands::list_execution_contexts,
             runtime_commands::list_runtimes,

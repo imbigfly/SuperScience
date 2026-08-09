@@ -219,6 +219,55 @@ pub struct ExplorationEffect {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExplorationPromotionStatus {
+    Prepared,
+    FilesApplied,
+    MetadataCommitted,
+    Committed,
+    RolledBack,
+    Failed,
+}
+
+impl ExplorationPromotionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Prepared => "prepared",
+            Self::FilesApplied => "files_applied",
+            Self::MetadataCommitted => "metadata_committed",
+            Self::Committed => "committed",
+            Self::RolledBack => "rolled_back",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "prepared" => Ok(Self::Prepared),
+            "files_applied" => Ok(Self::FilesApplied),
+            "metadata_committed" => Ok(Self::MetadataCommitted),
+            "committed" => Ok(Self::Committed),
+            "rolled_back" => Ok(Self::RolledBack),
+            "failed" => Ok(Self::Failed),
+            _ => anyhow::bail!("Unknown exploration promotion status '{value}'"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExplorationPromotion {
+    pub id: String,
+    pub exploration_id: String,
+    pub expected_guard_hash: String,
+    pub status: ExplorationPromotionStatus,
+    pub diff_json: String,
+    pub journal_path: Option<String>,
+    pub error: Option<String>,
+    pub started_at: i64,
+    pub committed_at: Option<i64>,
+}
+
 impl Store {
     pub async fn create_workspace_snapshot(
         &self,
@@ -1069,6 +1118,38 @@ impl Store {
         Ok(entities)
     }
 
+    pub async fn list_exploration_baseline_entities(
+        &self,
+        checkpoint_id: &str,
+    ) -> Result<Vec<ExplorationBaselineEntity>> {
+        let rows = sqlx::query(
+            "SELECT checkpoint_id,entity_kind,entity_id,version_id,fingerprint \
+             FROM exploration_baseline_entities WHERE checkpoint_id=? \
+             ORDER BY entity_kind,entity_id",
+        )
+        .bind(checkpoint_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ExplorationBaselineEntity {
+                    checkpoint_id: row.try_get("checkpoint_id")?,
+                    entity_kind: row.try_get("entity_kind")?,
+                    entity_id: row.try_get("entity_id")?,
+                    version_id: row.try_get("version_id")?,
+                    fingerprint: row.try_get("fingerprint")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn snapshot_mainline_entities(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ExplorationBaselineEntity>> {
+        snapshot_mainline_entities_from(&self.pool, project_id, "").await
+    }
+
     pub async fn record_exploration_baseline_artifact_head(
         &self,
         head: &ExplorationBaselineArtifactHead,
@@ -1091,6 +1172,30 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn list_exploration_baseline_artifact_heads(
+        &self,
+        checkpoint_id: &str,
+    ) -> Result<Vec<ExplorationBaselineArtifactHead>> {
+        let rows = sqlx::query(
+            "SELECT checkpoint_id,logical_key,artifact_id,artifact_version_id,fingerprint \
+             FROM exploration_baseline_artifact_heads WHERE checkpoint_id=? ORDER BY logical_key",
+        )
+        .bind(checkpoint_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ExplorationBaselineArtifactHead {
+                    checkpoint_id: row.try_get("checkpoint_id")?,
+                    logical_key: row.try_get("logical_key")?,
+                    artifact_id: row.try_get("artifact_id")?,
+                    artifact_version_id: row.try_get("artifact_version_id")?,
+                    fingerprint: row.try_get("fingerprint")?,
+                })
+            })
+            .collect()
     }
 
     pub async fn upsert_artifact_head(&self, head: &ArtifactHead) -> Result<()> {
@@ -1196,6 +1301,271 @@ impl Store {
             })
             .collect()
     }
+
+    pub async fn create_exploration_promotion(
+        &self,
+        promotion: &ExplorationPromotion,
+    ) -> Result<()> {
+        validate_id("Exploration promotion", &promotion.id)?;
+        validate_id("Exploration promotion scope", &promotion.exploration_id)?;
+        validate_sha256(
+            "Exploration promotion guard",
+            &promotion.expected_guard_hash,
+        )?;
+        validate_json("Exploration promotion diff", &promotion.diff_json)?;
+        if promotion.status != ExplorationPromotionStatus::Prepared
+            || promotion.committed_at.is_some()
+        {
+            anyhow::bail!("A new exploration promotion must start prepared");
+        }
+        if let Some(path) = promotion.journal_path.as_deref() {
+            validate_nonempty("Exploration promotion journal", path)?;
+        }
+        sqlx::query(
+            "INSERT INTO exploration_promotions(\
+               id,exploration_id,expected_guard_hash,status,diff_json,journal_path,error,started_at,committed_at\
+             ) VALUES(?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(&promotion.id)
+        .bind(&promotion.exploration_id)
+        .bind(&promotion.expected_guard_hash)
+        .bind(promotion.status.as_str())
+        .bind(&promotion.diff_json)
+        .bind(promotion.journal_path.as_deref())
+        .bind(promotion.error.as_deref())
+        .bind(promotion.started_at)
+        .bind(promotion.committed_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_exploration_promotion(
+        &self,
+        promotion_id: &str,
+    ) -> Result<Option<ExplorationPromotion>> {
+        let row = sqlx::query(
+            "SELECT id,exploration_id,expected_guard_hash,status,diff_json,journal_path,error,started_at,committed_at \
+             FROM exploration_promotions WHERE id=?",
+        )
+        .bind(promotion_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(exploration_promotion_from_row).transpose()
+    }
+
+    pub async fn list_incomplete_exploration_promotions(
+        &self,
+    ) -> Result<Vec<ExplorationPromotion>> {
+        let rows = sqlx::query(
+            "SELECT id,exploration_id,expected_guard_hash,status,diff_json,journal_path,error,started_at,committed_at \
+             FROM exploration_promotions WHERE status IN ('prepared','files_applied','metadata_committed') \
+             ORDER BY started_at,id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(exploration_promotion_from_row)
+            .collect()
+    }
+
+    pub async fn transition_exploration_promotion(
+        &self,
+        promotion_id: &str,
+        expected: ExplorationPromotionStatus,
+        next: ExplorationPromotionStatus,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        let committed_at = matches!(next, ExplorationPromotionStatus::Committed)
+            .then(|| chrono::Utc::now().timestamp());
+        let updated = sqlx::query(
+            "UPDATE exploration_promotions SET status=?,error=?,\
+               committed_at=COALESCE(?,committed_at) WHERE id=? AND status=?",
+        )
+        .bind(next.as_str())
+        .bind(error)
+        .bind(committed_at)
+        .bind(promotion_id)
+        .bind(expected.as_str())
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Atomically adopts the selected exploration's scoped metadata and frame.
+    /// File changes must already be durably journaled and applied; the family
+    /// CAS keeps a stale promotion from selecting a second mainline.
+    pub async fn commit_exploration_promotion_metadata(&self, promotion_id: &str) -> Result<()> {
+        let mut tx = self.begin_write().await?;
+        let row = sqlx::query(
+            "SELECT promotion.exploration_id,promotion.status,exploration.frame_id,\
+                    exploration.status AS exploration_status,checkpoint.project_id,\
+                    checkpoint.family_id,checkpoint.source_frame_id,\
+                    checkpoint.source_family_generation \
+             FROM exploration_promotions promotion \
+             JOIN explorations exploration ON exploration.id=promotion.exploration_id \
+             JOIN exploration_checkpoints checkpoint ON checkpoint.id=exploration.checkpoint_id \
+             WHERE promotion.id=?",
+        )
+        .bind(promotion_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Exploration promotion not found"))?;
+        let exploration_id: String = row.try_get("exploration_id")?;
+        let promotion_status: String = row.try_get("status")?;
+        let exploration_status: String = row.try_get("exploration_status")?;
+        let frame_id: String = row.try_get("frame_id")?;
+        let project_id: String = row.try_get("project_id")?;
+        let family_id: String = row.try_get("family_id")?;
+        let source_frame_id: String = row.try_get("source_frame_id")?;
+        let source_family_generation: i64 = row.try_get("source_family_generation")?;
+        if promotion_status != ExplorationPromotionStatus::FilesApplied.as_str()
+            || exploration_status != ExplorationStatus::Promoting.as_str()
+        {
+            anyhow::bail!("Exploration promotion is not ready for metadata commit");
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let family = sqlx::query(
+            "UPDATE exploration_families SET mainline_frame_id=?,generation=generation+1,updated_at=? \
+             WHERE id=? AND project_id=? AND mainline_frame_id=? AND generation=?",
+        )
+        .bind(&frame_id)
+        .bind(now)
+        .bind(&family_id)
+        .bind(&project_id)
+        .bind(&source_frame_id)
+        .bind(source_family_generation)
+        .execute(&mut *tx)
+        .await?;
+        if family.rows_affected() != 1 {
+            anyhow::bail!("Exploration family mainline advanced before metadata commit");
+        }
+
+        sqlx::query(
+            "INSERT INTO artifact_heads(project_id,scope_key,logical_key,artifact_id,artifact_version_id,updated_at) \
+             SELECT project_id,?,logical_key,artifact_id,artifact_version_id,? FROM artifact_heads \
+             WHERE project_id=? AND scope_key=? \
+             ON CONFLICT(project_id,scope_key,logical_key) DO UPDATE SET \
+               artifact_id=excluded.artifact_id,artifact_version_id=excluded.artifact_version_id,\
+               updated_at=excluded.updated_at",
+        )
+        .bind(MAINLINE_SCOPE_KEY)
+        .bind(now)
+        .bind(&project_id)
+        .bind(&exploration_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE artifacts SET exploration_id=NULL,latest_version_id=COALESCE((\
+               SELECT head.artifact_version_id FROM artifact_heads head \
+               WHERE head.project_id=artifacts.project_id AND head.scope_key=? \
+                 AND head.artifact_id=artifacts.id LIMIT 1),latest_version_id) \
+             WHERE project_id=? AND exploration_id=?",
+        )
+        .bind(&exploration_id)
+        .bind(&project_id)
+        .bind(&exploration_id)
+        .execute(&mut *tx)
+        .await?;
+        for table in [
+            "runs",
+            "research_nodes",
+            "research_edges",
+            "external_resources",
+            "frames",
+        ] {
+            let statement = format!(
+                "UPDATE {table} SET exploration_id=NULL WHERE project_id=? AND exploration_id=?"
+            );
+            sqlx::query(&statement)
+                .bind(&project_id)
+                .bind(&exploration_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(
+            "UPDATE explorations SET status='promoted',updated_at=?,promoted_at=? \
+             WHERE id=? AND status='promoting'",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(&exploration_id)
+        .execute(&mut *tx)
+        .await?;
+        self.bump_state_generation_in_tx(&mut tx, &StateScope::mainline(&project_id))
+            .await?;
+        let promotion = sqlx::query(
+            "UPDATE exploration_promotions SET status='metadata_committed' \
+             WHERE id=? AND status='files_applied'",
+        )
+        .bind(promotion_id)
+        .execute(&mut *tx)
+        .await?;
+        if promotion.rows_affected() != 1 {
+            anyhow::bail!("Exploration promotion metadata status changed concurrently");
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+async fn snapshot_mainline_entities_from<'e, E>(
+    executor: E,
+    project_id: &str,
+    checkpoint_id: &str,
+) -> Result<Vec<ExplorationBaselineEntity>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite> + Copy,
+{
+    let mut entities = Vec::new();
+    for (kind, query) in [
+        (
+            "run",
+            "SELECT id,status,title,COALESCE(ended_at,created_at) AS version \
+             FROM runs WHERE project_id=? AND exploration_id IS NULL \
+               AND status NOT IN ('submitted','running','cancelling') ORDER BY id",
+        ),
+        (
+            "research_node",
+            "SELECT id,kind || ':' || title AS status,metadata_json AS title,updated_at AS version \
+             FROM research_nodes WHERE project_id=? AND exploration_id IS NULL ORDER BY id",
+        ),
+        (
+            "research_edge",
+            "SELECT id,relation AS status,source_id || ':' || target_id || ':' || metadata_json AS title,created_at AS version \
+             FROM research_edges WHERE project_id=? AND exploration_id IS NULL ORDER BY id",
+        ),
+        (
+            "external_resource",
+            "SELECT id,visibility AS status,kind || ':' || uri AS title,updated_at AS version \
+             FROM external_resources WHERE project_id=? AND exploration_id IS NULL ORDER BY id",
+        ),
+    ] {
+        for row in sqlx::query(query).bind(project_id).fetch_all(executor).await? {
+            let entity_id: String = row.try_get("id")?;
+            let status: String = row.try_get("status")?;
+            let title: String = row.try_get("title")?;
+            let version: i64 = row.try_get("version")?;
+            let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(
+                &serde_json::json!({
+                    "kind": kind,
+                    "id": &entity_id,
+                    "status": &status,
+                    "title": &title,
+                    "version": version,
+                }),
+            )?));
+            entities.push(ExplorationBaselineEntity {
+                checkpoint_id: checkpoint_id.to_string(),
+                entity_kind: kind.to_string(),
+                entity_id,
+                version_id: Some(version.to_string()),
+                fingerprint,
+            });
+        }
+    }
+    Ok(entities)
 }
 
 fn validate_checkpoint(checkpoint: &ExplorationCheckpoint) -> Result<()> {
@@ -1409,5 +1779,20 @@ fn artifact_head_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ArtifactHead> 
         artifact_id: row.try_get("artifact_id")?,
         artifact_version_id: row.try_get("artifact_version_id")?,
         updated_at: row.try_get("updated_at")?,
+    })
+}
+
+fn exploration_promotion_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ExplorationPromotion> {
+    let status: String = row.try_get("status")?;
+    Ok(ExplorationPromotion {
+        id: row.try_get("id")?,
+        exploration_id: row.try_get("exploration_id")?,
+        expected_guard_hash: row.try_get("expected_guard_hash")?,
+        status: ExplorationPromotionStatus::from_storage(&status)?,
+        diff_json: row.try_get("diff_json")?,
+        journal_path: row.try_get("journal_path")?,
+        error: row.try_get("error")?,
+        started_at: row.try_get("started_at")?,
+        committed_at: row.try_get("committed_at")?,
     })
 }

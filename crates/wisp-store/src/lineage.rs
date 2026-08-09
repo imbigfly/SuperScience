@@ -633,4 +633,37 @@ impl Store {
         })
         .transpose()
     }
+
+    pub async fn list_external_resources_owned_by_exploration(
+        &self,
+        exploration_id: &str,
+    ) -> Result<Vec<ExternalResource>> {
+        let rows = sqlx::query(
+            "SELECT id,project_id,kind,uri,version,checksum,size_bytes,license,visibility,\
+                    access_instructions,accessed_at,created_at,updated_at \
+             FROM external_resources WHERE exploration_id=? ORDER BY created_at,id",
+        )
+        .bind(exploration_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ExternalResource {
+                    id: row.try_get("id")?,
+                    project_id: row.try_get("project_id")?,
+                    kind: row.try_get("kind")?,
+                    uri: row.try_get("uri")?,
+                    version: row.try_get("version")?,
+                    checksum: row.try_get("checksum")?,
+                    size_bytes: row.try_get("size_bytes")?,
+                    license: row.try_get("license")?,
+                    visibility: row.try_get("visibility")?,
+                    access_instructions: row.try_get("access_instructions")?,
+                    accessed_at: row.try_get("accessed_at")?,
+                    created_at: row.try_get("created_at")?,
+                    updated_at: row.try_get("updated_at")?,
+                })
+            })
+            .collect()
+    }
 }

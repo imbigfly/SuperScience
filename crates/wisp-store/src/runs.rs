@@ -277,6 +277,23 @@ impl Store {
         rows.into_iter().map(run_from_row).collect()
     }
 
+    pub async fn list_runs_owned_by_exploration(
+        &self,
+        exploration_id: &str,
+    ) -> Result<Vec<RunRecord>> {
+        let rows = sqlx::query(
+            "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
+                    input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
+                    stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json \
+             FROM runs WHERE exploration_id=? ORDER BY created_at,id",
+        )
+        .bind(exploration_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(run_from_row).collect()
+    }
+
     pub async fn list_active_runs(&self) -> Result<Vec<RunRecord>> {
         let rows = sqlx::query(
             "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\

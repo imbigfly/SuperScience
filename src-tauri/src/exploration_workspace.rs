@@ -632,6 +632,9 @@ fn entries_equivalent(before: &WorkspaceSnapshotEntry, after: &WorkspaceSnapshot
         && before.executable == after.executable
         && before.materialization == after.materialization
         && before.recoverable == after.recoverable
+        && (before.materialization == SnapshotMaterialization::Blob
+            || (before.reference_uri == after.reference_uri
+                && before.modified_unix_millis == after.modified_unix_millis))
 }
 
 fn validate_relative_path(path: &str) -> Result<(), String> {
@@ -1098,5 +1101,22 @@ mod tests {
         let error = limited.checkpoint(&project).await.unwrap_err();
         assert!(error.contains("more than 1 entries"));
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn referenced_file_fingerprint_includes_modified_time() {
+        let before = WorkspaceSnapshotEntry {
+            path: "large.bin".into(),
+            size_bytes: DEFAULT_BLOB_LIMIT + 1,
+            checksum: None,
+            executable: false,
+            materialization: SnapshotMaterialization::Reference,
+            reference_uri: Some("/project/large.bin".into()),
+            recoverable: false,
+            modified_unix_millis: Some(10),
+        };
+        let mut after = before.clone();
+        after.modified_unix_millis = Some(11);
+        assert!(!entries_equivalent(&before, &after));
     }
 }

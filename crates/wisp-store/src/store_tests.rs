@@ -6115,6 +6115,128 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
 }
 
 #[tokio::test]
+async fn exploration_promotion_transaction_adopts_frame_and_artifact_head_together() {
+    let (store, tmp) = exploration_store_fixture("promotion").await;
+    create_exploration_checkpoint_fixture(&store).await;
+    store
+        .create_exploration(&Exploration {
+            id: "explore".into(),
+            checkpoint_id: "checkpoint".into(),
+            frame_id: "branch".into(),
+            name: "Promote me".into(),
+            status: ExplorationStatus::Creating,
+            workspace_dir: "/tmp/explorations/explore/workspace".into(),
+            workspace_backend: "snapshot".into(),
+            scope_generation: 0,
+            warnings_json: "[]".into(),
+            created_at: 2,
+            updated_at: 2,
+            promoted_at: None,
+            archived_at: None,
+            discarded_at: None,
+        })
+        .await
+        .unwrap();
+    store
+        .transition_exploration(
+            "explore",
+            ExplorationStatus::Creating,
+            ExplorationStatus::Active,
+        )
+        .await
+        .unwrap();
+    let branch_version = store
+        .save_artifact_version(&exploration_test_artifact(
+            "artifact-branch",
+            "branch",
+            "path:result.txt",
+            "result.txt",
+        ))
+        .await
+        .unwrap();
+    store
+        .create_exploration_promotion(&ExplorationPromotion {
+            id: "promotion".into(),
+            exploration_id: "explore".into(),
+            expected_guard_hash: "e".repeat(64),
+            status: ExplorationPromotionStatus::Prepared,
+            diff_json: r#"{"files":[]}"#.into(),
+            journal_path: Some("exploration-promotions/promotion/journal.json".into()),
+            error: None,
+            started_at: 3,
+            committed_at: None,
+        })
+        .await
+        .unwrap();
+    store
+        .transition_exploration(
+            "explore",
+            ExplorationStatus::Active,
+            ExplorationStatus::Promoting,
+        )
+        .await
+        .unwrap();
+    store
+        .transition_exploration_promotion(
+            "promotion",
+            ExplorationPromotionStatus::Prepared,
+            ExplorationPromotionStatus::FilesApplied,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .commit_exploration_promotion_metadata("promotion")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.frame_state_scope("branch").await.unwrap(),
+        Some(StateScope::mainline("p"))
+    );
+    assert_eq!(
+        store
+            .get_exploration_family("family")
+            .await
+            .unwrap()
+            .unwrap()
+            .mainline_frame_id,
+        "branch"
+    );
+    assert_eq!(
+        store
+            .get_artifact_head("p", MAINLINE_SCOPE_KEY, "path:result.txt")
+            .await
+            .unwrap()
+            .unwrap()
+            .artifact_version_id,
+        branch_version
+    );
+    assert_eq!(
+        store
+            .get_exploration("explore")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ExplorationStatus::Promoted
+    );
+    assert_eq!(
+        store
+            .get_exploration_promotion("promotion")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ExplorationPromotionStatus::MetadataCommitted
+    );
+    assert_eq!(store.project_state_generation("p").await.unwrap(), 1);
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
 async fn exploration_artifact_heads_keep_same_logical_key_private() {
     let (store, tmp) = exploration_store_fixture("artifact-head").await;
     create_exploration_checkpoint_fixture(&store).await;

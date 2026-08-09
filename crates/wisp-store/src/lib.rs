@@ -47,7 +47,8 @@ pub use ask_user_requests::AskUserPoll;
 pub use explorations::{
     ArtifactHead, ContextArchiveRecord, Exploration, ExplorationBaselineArtifactHead,
     ExplorationBaselineEntity, ExplorationCheckpoint, ExplorationEffect, ExplorationFamily,
-    ExplorationStatus, StateScope, WorkspaceSnapshotRecord, MAINLINE_SCOPE_KEY,
+    ExplorationPromotion, ExplorationPromotionStatus, ExplorationStatus, StateScope,
+    WorkspaceSnapshotRecord, MAINLINE_SCOPE_KEY,
 };
 pub use external_session_cache::ExternalSessionCacheRecord;
 pub use library::{

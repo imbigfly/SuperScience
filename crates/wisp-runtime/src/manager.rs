@@ -444,6 +444,34 @@ impl RuntimeManager {
         }
     }
 
+    pub async fn stop_scope(&self, project_id: &str, scope_key: &str) {
+        let sessions = {
+            let registry = self.registry();
+            registry
+                .sessions
+                .iter()
+                .filter(|(key, _)| key.project_id == project_id && key.scope_key == scope_key)
+                .map(|(key, session)| (key.clone(), session.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (_, session) in &sessions {
+            session.request_stop();
+        }
+        for (_, session) in &sessions {
+            session.wait_dead().await;
+        }
+        let mut registry = self.registry();
+        for (key, session) in sessions {
+            if registry
+                .sessions
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
+            {
+                registry.sessions.remove(&key);
+            }
+        }
+    }
+
     pub async fn shutdown_all(&self) {
         let sessions = self
             .registry()
@@ -1188,6 +1216,32 @@ mod tests {
         assert_eq!(remaining[0].key, key_b);
         manager.shutdown_all().await;
         assert_eq!(launcher.shutdowns.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn stopping_a_scope_keeps_sibling_runtime_state() {
+        let launcher = FakeLauncher::default();
+        let manager = manager(&launcher);
+        let mainline = RuntimeKey::local_python("project-a");
+        let selected = RuntimeKey::python_in_scope("project-a", "exploration-a", LOCAL_CONTEXT_ID);
+        let sibling = RuntimeKey::python_in_scope("project-a", "exploration-b", LOCAL_CONTEXT_ID);
+        for key in [&mainline, &selected, &sibling] {
+            manager
+                .start(key.clone(), PathBuf::from(&key.scope_key))
+                .await
+                .unwrap();
+        }
+
+        manager.stop_scope("project-a", "exploration-a").await;
+        let remaining = manager
+            .list()
+            .into_iter()
+            .map(|runtime| runtime.key)
+            .collect::<Vec<_>>();
+        assert!(remaining.contains(&mainline));
+        assert!(remaining.contains(&sibling));
+        assert!(!remaining.contains(&selected));
+        manager.shutdown_all().await;
     }
 
     #[tokio::test]

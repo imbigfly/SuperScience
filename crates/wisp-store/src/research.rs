@@ -226,6 +226,36 @@ impl Store {
                 .collect::<Result<Vec<_>>>()?,
         })
     }
+
+    pub async fn research_graph_owned_by_exploration(
+        &self,
+        exploration_id: &str,
+    ) -> Result<ResearchGraph> {
+        let node_rows = sqlx::query(
+            "SELECT id,project_id,kind,title,ref_id,metadata_json,created_at,updated_at \
+             FROM research_nodes WHERE exploration_id=? ORDER BY created_at,id",
+        )
+        .bind(exploration_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let edge_rows = sqlx::query(
+            "SELECT id,project_id,source_id,target_id,relation,metadata_json,created_at \
+             FROM research_edges WHERE exploration_id=? ORDER BY created_at,id",
+        )
+        .bind(exploration_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(ResearchGraph {
+            nodes: node_rows
+                .into_iter()
+                .map(research_node_from_row)
+                .collect::<Result<Vec<_>>>()?,
+            edges: edge_rows
+                .into_iter()
+                .map(research_edge_from_row)
+                .collect::<Result<Vec<_>>>()?,
+        })
+    }
 }
 
 fn exploration_id(scope: &StateScope) -> Option<&str> {
