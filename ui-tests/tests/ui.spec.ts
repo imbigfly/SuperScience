@@ -2215,6 +2215,11 @@ test("side chat answers in a temporary side panel and can switch model", async (
   await expect(panel).toBeVisible();
   await expect(panel.locator(".sidechat-in-pane")).toBeVisible();
   await expect(panel.getByText("Side answer: what did the main thread miss?")).toBeVisible();
+  const evidence = panel.getByTestId("sidechat-evidence");
+  await expect(evidence).toContainText("1 conversation sources · snapshot 12");
+  await evidence.locator("summary").click();
+  await expect(evidence).toContainText("[S1] · Turn 2 · assistant · event 7");
+  await expect(evidence).toContainText("The main thread recorded this evidence.");
   await expect(panel).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   const closeBox = await panel.getByRole("button", { name: "Close tab" }).first().boundingBox();
   const panelBox = await panel.boundingBox();
@@ -2240,6 +2245,23 @@ test("side chat answers in a temporary side panel and can switch model", async (
   await expect.poll(() => lastInvokeArgs(page, "side_chat")).toMatchObject({
     question: "acp side question", acpAgentId: "acp-test",
   });
+});
+
+test("side chat reports when the frozen conversation has no evidence", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("NO_EVIDENCE_TEST");
+  await page.getByRole("button", { name: "Message options" }).click();
+  await page.getByRole("button", { name: "Side chat" }).click();
+
+  const panel = page.locator(".rightpane");
+  await expect(panel.getByText(
+    "The current conversation does not contain enough evidence to answer that.",
+  )).toBeVisible();
+  await expect(panel.getByTestId("sidechat-evidence")).toHaveCount(0);
+  await expect.poll(async () => {
+    const args = await lastInvokeArgs(page, "send_message");
+    return args?.message ?? null;
+  }).toBeNull();
 });
 
 test("side chat stays at the latest message after sending and switching tabs", async ({ page }) => {

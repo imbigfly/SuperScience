@@ -1316,6 +1316,14 @@ button.stop:disabled { opacity: .6; cursor: default; }
 .sidechat-model-label { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
 .sidechat-answer { font-size: 13.5px; line-height: 1.55; color: var(--text); }
 .sidechat-answer.error { color: var(--err); }
+.sidechat-evidence { margin-top: 5px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-sunken); overflow: hidden; }
+.sidechat-evidence > summary { padding: 8px 10px; color: var(--text-muted); font-size: 11.5px; cursor: pointer; user-select: none; }
+.sidechat-evidence[open] > summary { border-bottom: 1px solid var(--border); }
+.sidechat-evidence-list { display: flex; flex-direction: column; gap: 8px; padding: 9px; }
+.sidechat-evidence-item { min-width: 0; padding: 8px 9px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-elev); }
+.sidechat-evidence-meta { color: var(--text-muted); font-family: var(--font-mono); font-size: 10.5px; overflow-wrap: anywhere; }
+.sidechat-evidence-item blockquote { margin: 6px 0 0; padding-left: 9px; border-left: 2px solid var(--clay); color: var(--text); font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sidechat-evidence-why { margin-top: 5px; color: var(--text-faint); font-size: 10.5px; line-height: 1.35; }
 .sidechat-thinking { color: var(--text-faint); font-size: 13px; }
 .sidechat-composer { flex: 0 0 auto; padding: 12px 14px 14px; border-top: 1px solid var(--border); background: var(--bg-app); }
 .sidechat-quotes { flex-direction: column; align-items: stretch; flex-wrap: nowrap; max-height: 132px; margin: 0 0 8px; padding: 2px 4px 2px 0; overflow-y: auto; }

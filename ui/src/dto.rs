@@ -387,6 +387,47 @@ pub(crate) enum ChatItem {
     Question(QuestionCard),
 }
 
+#[derive(Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SideChatEvidence {
+    pub(crate) source_id: String,
+    #[serde(default)]
+    pub(crate) event_seq: Option<i64>,
+    #[serde(default)]
+    pub(crate) message_seq: Option<i64>,
+    pub(crate) turn: usize,
+    pub(crate) role: String,
+    pub(crate) excerpt: String,
+    #[serde(default)]
+    pub(crate) relevance: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SideChatResponse {
+    pub(crate) answer: String,
+    #[allow(dead_code)]
+    pub(crate) session_id: Option<String>,
+    pub(crate) snapshot_version: i64,
+    #[serde(default)]
+    pub(crate) evidence: Vec<SideChatEvidence>,
+    #[serde(default)]
+    pub(crate) no_evidence: bool,
+}
+
+#[derive(Clone)]
+pub(crate) enum SideChatItem {
+    User(String),
+    Assistant {
+        text: String,
+        model: Option<String>,
+        evidence: Vec<SideChatEvidence>,
+        snapshot_version: i64,
+        no_evidence: bool,
+        error: bool,
+    },
+}
+
 #[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TurnUndoPreview {

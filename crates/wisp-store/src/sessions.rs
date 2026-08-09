@@ -75,6 +75,16 @@ pub struct SessionTranscriptPage {
     pub latest_seq: i64,
 }
 
+/// One immutable read boundary over the append-only visual transcript.
+///
+/// `through_event_seq` is the newest completed message boundary visible when
+/// the snapshot was taken. Readers must not load events beyond it: the main
+/// conversation may keep streaming while a secondary read-only answer runs.
+pub struct SessionUiEventSnapshot {
+    pub through_event_seq: i64,
+    pub events: Vec<(i64, String)>,
+}
+
 /// Maximum stdout characters returned for one tool activity group when a
 /// transcript page is replayed. The Tauri/UI layer applies its byte ceiling as
 /// a second guard; this database-side cap prevents legacy event logs from
@@ -1004,6 +1014,39 @@ impl Store {
         rows.into_iter()
             .map(|row| row.try_get("event_json").map_err(Into::into))
             .collect()
+    }
+
+    /// Freeze and load the complete visual transcript through its newest
+    /// completed model-message boundary. Unlike `messages`, this event log is
+    /// not rewritten by context compaction, so it remains suitable for
+    /// evidence retrieval over the conversation the user can still see.
+    pub async fn load_session_ui_event_snapshot(
+        &self,
+        frame_id: &str,
+    ) -> Result<SessionUiEventSnapshot> {
+        let through_event_seq: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq),0) FROM session_ui_events WHERE frame_id=? \
+             AND json_extract(event_json,'$.kind')='MessageBoundary'",
+        )
+        .bind(frame_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let rows = sqlx::query(
+            "SELECT seq,event_json FROM session_ui_events \
+             WHERE frame_id=? AND seq<=? ORDER BY seq",
+        )
+        .bind(frame_id)
+        .bind(through_event_seq)
+        .fetch_all(&self.pool)
+        .await?;
+        let events = rows
+            .into_iter()
+            .map(|row| Ok((row.try_get("seq")?, row.try_get("event_json")?)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(SessionUiEventSnapshot {
+            through_event_seq,
+            events,
+        })
     }
 
     pub async fn load_latest_session_ui_event(

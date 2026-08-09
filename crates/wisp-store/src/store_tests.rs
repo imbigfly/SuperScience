@@ -2092,6 +2092,55 @@ async fn session_ui_events_keep_insertion_order() {
 }
 
 #[tokio::test]
+async fn side_chat_snapshot_survives_compaction_and_stops_at_completed_boundary() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_side_snapshot_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "P", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+
+    let events = [
+        r#"{"kind":"User","frame_id":"f","text":"old decision"}"#,
+        r#"{"kind":"MessageBoundary","frame_id":"f","seq":1}"#,
+        r#"{"kind":"Text","frame_id":"f","delta":"old answer"}"#,
+        r#"{"kind":"MessageBoundary","frame_id":"f","seq":2}"#,
+        r#"{"kind":"Text","frame_id":"f","delta":"still streaming"}"#,
+    ];
+    for (index, event) in events.iter().enumerate() {
+        store
+            .append_session_ui_event("f", index as i64 + 1, event)
+            .await
+            .unwrap();
+    }
+    store
+        .append_message("f", 1, &Message::user("old decision"))
+        .await
+        .unwrap();
+    store
+        .replace_messages(
+            "f",
+            &[
+                Message::system("compacted checkpoint"),
+                Message::user("recent tail"),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let snapshot = store.load_session_ui_event_snapshot("f").await.unwrap();
+    assert_eq!(snapshot.through_event_seq, 4);
+    assert_eq!(snapshot.events.len(), 4);
+    assert!(snapshot.events[0].1.contains("old decision"));
+    assert!(snapshot.events[2].1.contains("old answer"));
+    assert!(snapshot
+        .events
+        .iter()
+        .all(|(_, event)| !event.contains("still streaming")));
+}
+
+#[tokio::test]
 async fn project_crud_and_listing() {
     let tmp = std::env::temp_dir().join(format!("wisp_store_proj_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();

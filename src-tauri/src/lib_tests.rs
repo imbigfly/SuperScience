@@ -10,9 +10,9 @@ use super::{
     persist_ui_events, provenance_ui_file_changes, receive_confirm_decision,
     reclaim_unconsumed_cutin, resolve_acp_artifact_references, resolve_composer_references,
     resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
-    should_hide_app_on_macos_close, should_persist_ui_event, side_chat_prompt, user_message_start,
-    AgentEvent, ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem,
-    SessionRuntime, SkillInfo, StartupReport, StartupTimeline, MAX_PENDING_UI_EVENT_BYTES,
+    should_hide_app_on_macos_close, should_persist_ui_event, user_message_start, AgentEvent,
+    ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem, SessionRuntime,
+    SkillInfo, StartupReport, StartupTimeline, MAX_PENDING_UI_EVENT_BYTES,
     UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
 };
 use std::collections::{HashMap, HashSet};
@@ -1195,17 +1195,6 @@ fn resource_bindings_cover_messages_rendered_as_assistant_output() {
     assert!(message_uses_resource_bindings(&completion));
     let ordinary_tool = wisp_llm::Message::tool("call-2", "read_file", "result");
     assert!(!message_uses_resource_bindings(&ordinary_tool));
-}
-
-#[test]
-fn side_chat_prompt_keeps_context_read_only() {
-    let p = side_chat_prompt("[USER]\nhi", "what happened?");
-    assert!(p.contains("[USER]\nhi"));
-    assert!(p.contains("what happened?"));
-    assert!(p.contains("Do not continue the main task"));
-
-    let empty = side_chat_prompt("", "summarize");
-    assert!(empty.contains("No saved transcript"));
 }
 
 #[test]
