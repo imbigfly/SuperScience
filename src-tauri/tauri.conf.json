@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SuperScience",
+  "productName": "天成科研助手",
   "version": "0.36.0",
   "identifier": "science.superscience",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "withGlobalTauri": true,
     "windows": [
-      { "title": "SuperScience", "width": 1100, "height": 760, "resizable": true, "dragDropEnabled": false }
+      { "title": "天成科研助手", "width": 1100, "height": 760, "resizable": true, "dragDropEnabled": false }
     ],
     "security": { "csp": null }
   },

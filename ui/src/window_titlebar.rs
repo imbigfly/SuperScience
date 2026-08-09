@@ -104,7 +104,7 @@ pub(super) fn WindowTitlebar(
         <header class="window-titlebar" data-tauri-drag-region>
             <div class="window-brand" data-tauri-drag-region>
                 <span class="window-brand-icon"></span>
-                <span>"SuperScience"</span>
+                <span>"天成科研助手"</span>
                 <span class="window-brand-version">{concat!("v", env!("CARGO_PKG_VERSION"))}</span>
             </div>
             <nav class="window-menu" aria-label="Application menu">

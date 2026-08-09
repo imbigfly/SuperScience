@@ -7,7 +7,23 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IDENTITY="${APPLE_SIGNING_IDENTITY:-SuperScience Local Codesign}"
 TARGET="${TARGET:-aarch64-apple-darwin}"
 BUNDLE="$ROOT/target/$TARGET/release/bundle"
-APP="$BUNDLE/macos/SuperScience.app"
+
+cd "$ROOT"
+PRODUCT_NAME="$(
+  python3 - <<'PY'
+import json
+print(json.load(open("src-tauri/tauri.conf.json"))["productName"])
+PY
+)"
+VERSION="$(
+  python3 - <<'PY'
+import json
+print(json.load(open("src-tauri/tauri.conf.json"))["version"])
+PY
+)"
+APP="$BUNDLE/macos/${PRODUCT_NAME}.app"
+ARCH_SUFFIX="${TARGET%%-*}"
+DMG="$BUNDLE/dmg/${PRODUCT_NAME}_${VERSION}_${ARCH_SUFFIX}.dmg"
 
 if ! security find-identity -v -p codesigning | grep -Fq "$IDENTITY"; then
   echo "error: code-signing identity not found: $IDENTITY" >&2
@@ -16,7 +32,6 @@ if ! security find-identity -v -p codesigning | grep -Fq "$IDENTITY"; then
   exit 1
 fi
 
-cd "$ROOT"
 unset NO_COLOR FORCE_COLOR || true
 
 # Build unsigned (or adhoc) first; we re-sign without hardened runtime so a
@@ -25,15 +40,6 @@ cargo tauri build \
   --config src-tauri/tauri.macos.conf.json \
   --bundles app \
   --target "$TARGET"
-
-VERSION="$(
-  python3 - <<'PY'
-import json
-print(json.load(open("src-tauri/tauri.conf.json"))["version"])
-PY
-)"
-ARCH_SUFFIX="${TARGET%%-*}"
-DMG="$BUNDLE/dmg/SuperScience_${VERSION}_${ARCH_SUFFIX}.dmg"
 
 echo "Signing with: $IDENTITY"
 # No --options runtime: hardened runtime + self-signed + no notarization often
@@ -45,13 +51,13 @@ codesign -dv "$APP" 2>&1 | sed -n '1,12p'
 STAGE="$(mktemp -d)"
 cleanup() { rm -rf "$STAGE"; }
 trap cleanup EXIT
-cp -R "$APP" "$STAGE/SuperScience.app"
+cp -R "$APP" "$STAGE/${PRODUCT_NAME}.app"
 ln -s /Applications "$STAGE/Applications"
 
 mkdir -p "$(dirname "$DMG")"
 rm -f "$DMG"
 hdiutil create \
-  -volname "SuperScience" \
+  -volname "$PRODUCT_NAME" \
   -srcfolder "$STAGE" \
   -ov -format UDZO \
   -fs HFS+ \

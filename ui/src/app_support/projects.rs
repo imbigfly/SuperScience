@@ -396,7 +396,7 @@ pub(crate) fn ProjectsScreen(
             <div class="projects-head">
                 <div class="projects-brand">
                     <span class="projects-brand-mark" aria-hidden="true"></span>
-                    <div class="projects-title">"SuperScience"<span class="beta">"Beta"</span></div>
+                    <div class="projects-title">"天成科研助手"<span class="beta">"Beta"</span></div>
                 </div>
                 <div class="projects-actions">
                     <button type="button" class="projects-icon-btn"
