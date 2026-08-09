@@ -53,7 +53,8 @@ pub use explorations::{
 };
 pub use external_session_cache::ExternalSessionCacheRecord;
 pub use library::{
-    LibraryItem, LibraryItemDetail, LibraryItemVersion, LibraryStore, NewLibraryItem,
+    LibraryItem, LibraryItemDetail, LibraryItemSummary, LibraryItemVersion, LibraryStore,
+    NewLibraryItem,
 };
 pub use method_search::{
     MethodCandidate, MethodCandidateBlob, MethodCandidateStatus, MethodSearchRunState,

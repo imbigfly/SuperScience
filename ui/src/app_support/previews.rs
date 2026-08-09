@@ -1362,7 +1362,7 @@ pub(crate) fn ArtifactModal(
     on_open_center: Callback<ModalArtifact>,
     on_open_path: Callback<(String, String)>, // open an input file (path, kind)
     on_rerun: Callback<String>,               // drop a rerun request into the composer (#455)
-    library_items: ReadSignal<Vec<LibraryItem>>,
+    library_items: ReadSignal<Vec<LibraryItemSummary>>,
     on_library_changed: Callback<()>,
 ) -> impl IntoView {
     let locale = use_locale();
@@ -1394,10 +1394,11 @@ pub(crate) fn ArtifactModal(
     let star_session = session.clone();
     let starred = create_memo(move |_| {
         star_session.as_deref().is_some_and(|session| {
-            library_items
-                .get()
-                .iter()
-                .any(|item| item.matches_figure(session, &star_path))
+            library_items.with(|items| {
+                items
+                    .iter()
+                    .any(|item| item.matches_figure(session, &star_path))
+            })
         })
     });
     let click_path = path.clone();
@@ -1436,8 +1437,13 @@ pub(crate) fn ArtifactModal(
                             aria-pressed=move || starred.get().to_string()
                             on:click=move |_| {
                                 let Some(session_id) = click_session.clone() else { return; };
-                                let existing = library_items.get_untracked().into_iter().find(|item| {
-                                    item.matches_figure(&session_id, &click_path)
+                                let existing = library_items.with_untracked(|items| {
+                                    items
+                                        .iter()
+                                        .find(|item| {
+                                            item.matches_figure(&session_id, &click_path)
+                                        })
+                                        .cloned()
                                 });
                                 let path = click_path.clone();
                                 let name = click_name.clone();

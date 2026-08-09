@@ -1187,7 +1187,7 @@ pub(crate) struct LibraryItem {
     pub(crate) title: String,
     pub(crate) language: Option<String>,
     #[serde(default)]
-    pub(crate) code: String,
+    pub(crate) code: Rc<str>,
     pub(crate) content_type: Option<String>,
     pub(crate) source_project_id: String,
     pub(crate) source_project_name: String,
@@ -1202,9 +1202,29 @@ impl LibraryItem {
         self.kind == "code"
             && self.source_session_id == session
             && self.language.as_deref().unwrap_or_default() == language
-            && self.code == code
+            && self.code.as_ref() == code
     }
+}
 
+/// Bounded Library list row. Full code/text is fetched only for the active
+/// session or an opened detail.
+#[derive(Deserialize, Clone, PartialEq)]
+pub(crate) struct LibraryItemSummary {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) title: String,
+    pub(crate) language: Option<String>,
+    #[serde(default)]
+    pub(crate) code_preview: String,
+    pub(crate) source_project_id: String,
+    pub(crate) source_project_name: String,
+    pub(crate) source_session_id: String,
+    pub(crate) source_session_title: String,
+    pub(crate) source_path: Option<String>,
+    pub(crate) created_at: i64,
+}
+
+impl LibraryItemSummary {
     pub(crate) fn matches_figure(&self, session: &str, path: &str) -> bool {
         self.kind == "figure"
             && self.source_session_id == session
@@ -3465,6 +3485,53 @@ pub(crate) struct RunRecord {
     #[serde(default)]
     pub(crate) progress_json: String,
     pub(crate) env_snapshot_json: String,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub(crate) struct RunSummary {
+    pub(crate) id: String,
+    pub(crate) frame_id: Option<String>,
+    pub(crate) context_id: String,
+    pub(crate) title: String,
+    pub(crate) kind: String,
+    pub(crate) status: String,
+    pub(crate) created_at: i64,
+    pub(crate) started_at: Option<i64>,
+    pub(crate) ended_at: Option<i64>,
+    pub(crate) exit_code: Option<i64>,
+    #[serde(rename = "remote_workdir", alias = "remoteWorkdir")]
+    pub(crate) remote_workdir: Option<String>,
+    pub(crate) timeout_secs: Option<i64>,
+    pub(crate) last_polled_at: Option<i64>,
+    #[serde(rename = "last_poll_error", alias = "lastPollError")]
+    pub(crate) last_poll_error: Option<String>,
+    #[serde(default)]
+    pub(crate) progress_json: String,
+    #[serde(default)]
+    pub(crate) output_fingerprint: String,
+}
+
+impl From<&RunRecord> for RunSummary {
+    fn from(run: &RunRecord) -> Self {
+        Self {
+            id: run.id.clone(),
+            frame_id: run.frame_id.clone(),
+            context_id: run.context_id.clone(),
+            title: run.title.clone(),
+            kind: run.kind.clone(),
+            status: run.status.clone(),
+            created_at: run.created_at,
+            started_at: run.started_at,
+            ended_at: run.ended_at,
+            exit_code: run.exit_code,
+            remote_workdir: run.remote_workdir.clone(),
+            timeout_secs: run.timeout_secs,
+            last_polled_at: run.last_polled_at,
+            last_poll_error: run.last_poll_error.clone(),
+            progress_json: run.progress_json.clone(),
+            output_fingerprint: String::new(),
+        }
+    }
 }
 
 #[derive(Deserialize, Clone)]

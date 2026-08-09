@@ -45,7 +45,7 @@ use i18n::{
     EMPTY_SUBTITLE_COUNT, EMPTY_TITLE_COUNT,
 };
 use leptos::{ev, window_event_listener, *};
-use library::{refresh_library, HighlightsPane, LibraryScreen};
+use library::{refresh_library, refresh_session_library, HighlightsPane, LibraryScreen};
 use notebook::{collect_notebook_cells, NotebookCache, NotebookView};
 use overlays::{AddHostOverlay, CapabilitiesOverlay, OnboardingOverlay, RuntimeInterpreterOverlay};
 use pet::{PetDesktop, PetOverlay};
@@ -129,7 +129,7 @@ pub(crate) fn window_capture_escape(mut close_topmost: impl FnMut() -> bool + 's
     });
 }
 
-fn session_highlight_count(session: Option<String>, items: &[LibraryItem]) -> usize {
+fn session_highlight_count(session: Option<String>, items: &[LibraryItemSummary]) -> usize {
     let Some(session) = session else { return 0 };
     items
         .iter()
@@ -282,7 +282,7 @@ fn App() -> impl IntoView {
     // from `settings`, which also holds unsaved edits while Settings is open.
     let sync_actions_available = create_rw_signal(false);
     let pet_status = create_rw_signal(PetStatus::default());
-    let run_records = create_rw_signal::<Vec<RunRecord>>(vec![]);
+    let run_records = create_rw_signal::<Vec<RunSummary>>(vec![]);
     // Configured model profiles + the composer's bottom-right picker state.
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
     let active_session = create_rw_signal::<Option<String>>(None);
@@ -415,9 +415,17 @@ fn App() -> impl IntoView {
     let show_projects = create_rw_signal(true); // app lands on the Projects screen
     let show_library = create_rw_signal(false);
     let show_session_import = create_rw_signal(None::<SessionImportProvider>);
-    let library_items = create_rw_signal::<Vec<LibraryItem>>(vec![]);
-    let refresh_library_items = Callback::new(move |_: ()| refresh_library(library_items));
+    let library_items = create_rw_signal::<Vec<LibraryItemSummary>>(vec![]);
+    let session_library_items = create_rw_signal::<Vec<LibraryItem>>(vec![]);
+    let refresh_library_items = Callback::new(move |_: ()| {
+        refresh_library(library_items);
+        refresh_session_library(session_library_items, active_session.read_only());
+    });
     refresh_library_items.call(());
+    create_effect(move |_| {
+        let _ = active_session.get();
+        refresh_session_library(session_library_items, active_session.read_only());
+    });
     let project_info = create_rw_signal::<Option<ProjectInfo>>(None);
     let demo_mode = create_rw_signal(false); // true = the synthetic "Example project" is open
     let scratch_open = create_rw_signal(false); // ephemeral scratch chat overlay
@@ -3134,10 +3142,7 @@ fn App() -> impl IntoView {
                                 .cloned()
                                 .collect::<Vec<_>>()
                         });
-                        items.set(updated.clone());
-                        transcripts.update(|all| {
-                            all.insert(dialog.session_id.clone(), updated);
-                        });
+                        items.set(updated);
                         conversation_outlines.update(|outlines| {
                             if let Some(outline) = outlines.get_mut(&dialog.session_id) {
                                 outline.retain(|entry| entry.user_index < dialog.user_index);
@@ -3183,11 +3188,17 @@ fn App() -> impl IntoView {
         let composer_references = composer_references;
         let transcripts = transcripts;
         move |ui_index: usize| {
-            let list = items.get();
-            let Some(user_idx) = user_message_index(&list, ui_index) else {
-                return;
-            };
-            let Some(ChatItem::User(text)) = list.get(ui_index) else {
+            let Some((user_idx, draft, prefix_items)) = items.with(|list| {
+                let user_idx = user_message_index(list, ui_index)?;
+                let ChatItem::User(text) = list.get(ui_index)? else {
+                    return None;
+                };
+                Some((
+                    user_idx,
+                    composer_text_from_user_message(text),
+                    list.iter().take(ui_index).cloned().collect::<Vec<_>>(),
+                ))
+            }) else {
                 return;
             };
             let sid = active_session.get();
@@ -3199,8 +3210,6 @@ fn App() -> impl IntoView {
                     .as_deref()
                     .and_then(|id| transcript_pages.with(|pages| pages.get(id).copied()))
                     .map_or(0, |page| page.user_offset);
-            let prefix_items = list.iter().take(ui_index).cloned().collect::<Vec<_>>();
-            let draft = composer_text_from_user_message(text);
             attachments.set(vec![]);
             composer_references.set(vec![]);
             composer_quotes.set(vec![]);
@@ -3247,18 +3256,19 @@ fn App() -> impl IntoView {
                         }
                         Err(_) => (prefix_items, None),
                     };
-                if let Some(old) = sid {
-                    transcripts.update(|m| {
-                        m.insert(old, list.clone());
-                        m.insert(id.clone(), branch_items.clone());
-                    });
-                }
+                replace_visible_transcript(
+                    sid,
+                    Some(&id),
+                    branch_items,
+                    items,
+                    transcripts,
+                    running,
+                );
                 if let Some(page_state) = page_state {
                     transcript_pages.update(|pages| {
                         pages.insert(id.clone(), page_state);
                     });
                 }
-                items.set(branch_items);
                 input.set(draft);
                 active_session.set(Some(id));
                 refresh_session_history();
@@ -3425,12 +3435,13 @@ fn App() -> impl IntoView {
                                         },
                                     );
                                 });
-                                transcripts.update(|m| {
-                                    m.insert(id.clone(), chats.clone());
-                                });
                                 if active_session.get().as_deref() == Some(&id) {
                                     items.set(chats);
                                     force_chat_bottom();
+                                } else {
+                                    transcripts.update(|m| {
+                                        m.insert(id.clone(), chats);
+                                    });
                                 }
                             }
                         }
@@ -3544,26 +3555,29 @@ fn App() -> impl IntoView {
                 return;
             };
 
-            if active_session.get_untracked().as_deref() == Some(source_id.as_str()) {
-                transcripts.update(|all| {
-                    all.insert(source_id.clone(), items.get_untracked());
-                });
-            }
             let prompt = t(locale.get_untracked(), "context_recovery.new_prompt");
             let model = active_model_label(&models.get_untracked());
-            active_acp_agent_id.set(None);
-            active_session.set(Some(id.clone()));
-            transcript_pages.update(|pages| {
-                pages.entry(id.clone()).or_default().window_user_start = usize::MAX;
-            });
-            items.set(vec![
+            let initial = vec![
                 ChatItem::User(prompt.clone()),
                 ChatItem::Assistant {
                     text: String::new(),
                     model,
                     resources: Vec::new(),
                 },
-            ]);
+            ];
+            replace_visible_transcript(
+                active_session.get_untracked(),
+                None,
+                initial,
+                items,
+                transcripts,
+                running,
+            );
+            active_acp_agent_id.set(None);
+            active_session.set(Some(id.clone()));
+            transcript_pages.update(|pages| {
+                pages.entry(id.clone()).or_default().window_user_start = usize::MAX;
+            });
             input.set(String::new());
             attachments.set(vec![]);
             composer_references.set(vec![]);
@@ -4422,28 +4436,26 @@ fn App() -> impl IntoView {
 
     let new_session = move |_| {
         demo_mode.set(false); // starting a fresh chat leaves the demo view
-                              // Stash the current transcript under its id so a running turn keeps
-                              // streaming into the cache, then create a fresh frame and show it.
-                              // We do NOT cancel any running turn — parallel conversations keep going.
-        if let Some(old) = active_session.get() {
-            transcripts.update(|m| {
-                m.insert(old, items.get());
-            });
-        }
         attachments.set(vec![]);
         sel_artifact.set(0);
         right_tab.set(RightTab::Artifacts);
         spawn_local(async move {
             let v = invoke("new_session", JsValue::UNDEFINED).await;
-            // Guard the malformed-response case: a `None` id would blank the active
-            // session and strand the user on an empty, unusable view (#15). The old
-            // transcript is already stashed above, so bailing keeps it reachable.
+            // Guard the malformed-response case before moving the visible
+            // transcript, so failure leaves the current session untouched (#15).
             let Some(id) = v.as_string() else {
                 status.set(t(locale.get(), "status.send_failed").into());
                 return;
             };
+            replace_visible_transcript(
+                active_session.get_untracked(),
+                None,
+                Vec::new(),
+                items,
+                transcripts,
+                running,
+            );
             active_session.set(Some(id));
-            items.set(vec![]);
             refresh_session_history();
             focus_composer();
         });
@@ -4546,18 +4558,20 @@ fn App() -> impl IntoView {
         move |_| {
             demo_mode.set(false);
             center_file.set(None);
-            if let Some(old) = active_session.get() {
-                transcripts.update(|m| {
-                    m.insert(old, items.get());
-                });
-            }
+            replace_visible_transcript(
+                active_session.get_untracked(),
+                None,
+                Vec::new(),
+                items,
+                transcripts,
+                running,
+            );
             attachments.set(vec![]);
             composer_references.set(vec![]);
             composer_quotes.set(vec![]);
             sel_artifact.set(0);
             right_tab.set(RightTab::Artifacts);
             active_session.set(None);
-            items.set(vec![]);
             input.set(String::new());
             let model = active_model_label(&models.get_untracked())
                 .unwrap_or_else(|| "not configured".into());
@@ -4594,11 +4608,6 @@ fn App() -> impl IntoView {
                 .map(|name| ComposerReferenceArg::Skill { name })
                 .collect();
             let turn_model = active_model_label(&models.get());
-            if let Some(old) = active_session.get() {
-                transcripts.update(|cache| {
-                    cache.insert(old, items.get());
-                });
-            }
             spawn_local(async move {
                 if !enabled {
                     let args = to_value(&serde_json::json!({
@@ -4624,20 +4633,28 @@ fn App() -> impl IntoView {
                     status.set(t(locale.get(), "status.send_failed").into());
                     return;
                 };
-                demo_mode.set(false);
-                show_settings.set(false);
-                attachments.set(vec![]);
-                sel_artifact.set(0);
-                right_tab.set(RightTab::Artifacts);
-                active_session.set(Some(session_id.clone()));
-                items.set(vec![
+                let initial = vec![
                     ChatItem::User(prompt.clone()),
                     ChatItem::Assistant {
                         text: String::new(),
                         model: turn_model,
                         resources: Vec::new(),
                     },
-                ]);
+                ];
+                replace_visible_transcript(
+                    active_session.get_untracked(),
+                    None,
+                    initial,
+                    items,
+                    transcripts,
+                    running,
+                );
+                demo_mode.set(false);
+                show_settings.set(false);
+                attachments.set(vec![]);
+                sel_artifact.set(0);
+                right_tab.set(RightTab::Artifacts);
+                active_session.set(Some(session_id.clone()));
                 running.update(|sessions| {
                     sessions.insert(session_id.clone());
                 });
@@ -4686,12 +4703,6 @@ fn App() -> impl IntoView {
         attachments.set(vec![]);
         sel_artifact.set(0);
         right_tab.set(RightTab::Artifacts);
-        // Stash the transcript we're leaving under its id.
-        if let Some(old) = active_session.get() {
-            transcripts.update(|m| {
-                m.insert(old, items.get());
-            });
-        }
         // Swap the visible transcript before changing the active id. Agent
         // events are app-wide and route by `active_session`; publishing the new
         // id while `items` still belongs to the old frame creates a transition
@@ -4699,8 +4710,14 @@ fn App() -> impl IntoView {
         // (#595). A cached transcript gives running/recent sessions an
         // immediate view; an uncached idle session intentionally shows empty
         // until its persisted page arrives.
-        let cached = transcripts.with(|m| m.get(&id).cloned().unwrap_or_default());
-        items.set(cached);
+        replace_visible_transcript(
+            active_session.get_untracked(),
+            Some(&id),
+            Vec::new(),
+            items,
+            transcripts,
+            running,
+        );
         let is_running = running.get().contains(&id);
         active_session.set(Some(id.clone()));
         if is_running {
@@ -4755,9 +4772,6 @@ fn App() -> impl IntoView {
                         },
                     );
                 });
-                transcripts.update(|m| {
-                    m.insert(id.clone(), chats.clone());
-                });
                 // Only repaint the view if we're still on this session — a rapid
                 // switch could have moved on while the load was in flight, and an
                 // unguarded set would clobber the newer view with stale rows (#53).
@@ -4774,6 +4788,10 @@ fn App() -> impl IntoView {
                         }
                     }
                     force_chat_bottom();
+                } else {
+                    transcripts.update(|m| {
+                        m.insert(id.clone(), chats);
+                    });
                 }
             }
         });
@@ -5045,13 +5063,22 @@ fn App() -> impl IntoView {
                 .into_iter()
                 .map(LoadedItem::into_chat)
                 .collect::<Vec<_>>();
-            transcripts.update(|saved| {
-                let current = saved.entry(id.clone()).or_default();
-                current.splice(0..0, older.iter().cloned());
-                // Settle over the merged window: an old page's question finds
-                // its answering user message in the rows already loaded.
-                settle_question_cards(current);
-            });
+            let still_active = active_session.get_untracked().as_deref() == Some(id.as_str());
+            if still_active {
+                preserve_chat_prepend_position();
+                items.update(|current| {
+                    current.splice(0..0, older);
+                    // Settle over the merged window: an old page's question
+                    // finds its answering user message in the loaded rows.
+                    settle_question_cards(current);
+                });
+            } else {
+                transcripts.update(|saved| {
+                    let current = saved.entry(id.clone()).or_default();
+                    current.splice(0..0, older);
+                    settle_question_cards(current);
+                });
+            }
             transcript_pages.update(|pages| {
                 pages.insert(
                     id.clone(),
@@ -5063,12 +5090,6 @@ fn App() -> impl IntoView {
                     },
                 );
             });
-            if active_session.get_untracked().as_deref() == Some(id.as_str()) {
-                preserve_chat_prepend_position();
-                items.update(|current| {
-                    current.splice(0..0, older);
-                });
-            }
         });
     });
 
@@ -5211,12 +5232,13 @@ fn App() -> impl IntoView {
                         },
                     );
                 });
-                transcripts.update(|saved| {
-                    saved.insert(id.clone(), chats.clone());
-                });
                 if active_session.get_untracked().as_deref() == Some(id.as_str()) {
                     items.set(chats);
                     jump_chat_to_user(target);
+                } else {
+                    transcripts.update(|saved| {
+                        saved.insert(id.clone(), chats);
+                    });
                 }
             });
         });
@@ -5226,11 +5248,14 @@ fn App() -> impl IntoView {
         let items = items;
         // Demos are read-only transcripts; they don't stream, so we don't touch
         // `running`. We do stash the current chat so returning to it is possible.
-        if let Some(old) = active_session.get() {
-            transcripts.update(|m| {
-                m.insert(old, items.get());
-            });
-        }
+        replace_visible_transcript(
+            active_session.get_untracked(),
+            None,
+            Vec::new(),
+            items,
+            transcripts,
+            running,
+        );
         attachments.set(vec![]);
         sel_artifact.set(0);
         right_tab.set(RightTab::Artifacts);
@@ -6288,11 +6313,11 @@ fn App() -> impl IntoView {
             return;
         }
         let texts = match active_session.get() {
-            Some(session) => library_items.with(|items| {
+            Some(session) => session_library_items.with(|items| {
                 items
                     .iter()
                     .filter(|item| item.kind == "text" && item.source_session_id == session)
-                    .map(|item| item.code.clone())
+                    .map(|item| item.code.to_string())
                     .collect::<Vec<_>>()
             }),
             None => Vec::new(),
@@ -7144,14 +7169,16 @@ fn App() -> impl IntoView {
             show_research_graph.set(false);
             research_graph.set(ResearchGraph::default());
             demo_mode.set(false);
-            // Stash the transcript we're leaving, like every other switch path —
-            // dropping it made running sessions "roll back" on return (#194).
-            if let Some(old) = active_session.get() {
-                transcripts.update(|m| {
-                    m.insert(old, items.get());
-                });
-            }
-            items.set(vec![]);
+            // Move the visible rows into the inactive cache so background
+            // sessions keep streaming without cloning a long transcript.
+            replace_visible_transcript(
+                active_session.get_untracked(),
+                None,
+                Vec::new(),
+                items,
+                transcripts,
+                running,
+            );
             active_session.set(None);
             collapsed_folders.set(HashSet::new());
             project_info.set(None);
@@ -7614,11 +7641,6 @@ fn App() -> impl IntoView {
         });
     let palette_new_session = Callback::new(move |_: ()| {
         demo_mode.set(false);
-        if let Some(old) = active_session.get() {
-            transcripts.update(|m| {
-                m.insert(old, items.get());
-            });
-        }
         attachments.set(vec![]);
         composer_references.set(vec![]);
         composer_quotes.set(vec![]);
@@ -7629,8 +7651,15 @@ fn App() -> impl IntoView {
                 status.set(t(locale.get(), "status.send_failed").into());
                 return;
             };
+            replace_visible_transcript(
+                active_session.get_untracked(),
+                None,
+                Vec::new(),
+                items,
+                transcripts,
+                running,
+            );
             active_session.set(Some(id));
-            items.set(vec![]);
             refresh_session_history();
             focus_composer();
         });
@@ -8914,6 +8943,15 @@ fn App() -> impl IntoView {
                                     .iter()
                                     .rposition(|item| matches!(item, ChatItem::Assistant { .. }))
                             }).flatten();
+                            let live_reasoning_index = busy_now.then(|| {
+                                let turn_start = list[..queue_start]
+                                    .iter()
+                                    .rposition(|item| matches!(item, ChatItem::User(_)))?;
+                                list[turn_start + 1..queue_start]
+                                    .iter()
+                                    .rposition(|item| matches!(item, ChatItem::Reasoning(_)))
+                                    .map(|offset| turn_start + 1 + offset)
+                            }).flatten();
                             // Keep process layers separate while the turn runs;
                             // once complete, fold commentary + reasoning + tools
                             // into one activity summary before the final answer.
@@ -8999,6 +9037,7 @@ fn App() -> impl IntoView {
                                             ChatItem::Assistant { text, .. }
                                                 if !text.starts_with("Error: ")
                                         );
+                                    let streaming_reasoning = live_reasoning_index == Some(i);
                                     let compact_assistant = commentary
                                         || live_assistant_index == Some(i);
                                     let timestamp = transcript_item_timestamp(
@@ -9007,7 +9046,7 @@ fn App() -> impl IntoView {
                                         user_offset,
                                         &outline,
                                     );
-                                    let mut fp = if streaming_assistant {
+                                    let mut fp = if streaming_assistant || streaming_reasoning {
                                         0
                                     } else {
                                         list[i].fingerprint()
@@ -9021,12 +9060,13 @@ fn App() -> impl IntoView {
                                     fp ^= (commentary as u64) << 63;
                                     fp ^= (compact_assistant as u64) << 62;
                                     fp ^= timestamp.unwrap_or_default() as u64;
-                                    rows.push((thread_session_id.clone(), i, streaming_assistant, fp, ThreadRow::Item {
+                                    rows.push((thread_session_id.clone(), i, streaming_assistant || streaming_reasoning, fp, ThreadRow::Item {
                                         i,
                                         timestamp,
                                         commentary,
                                         compact_assistant,
                                         streaming_assistant,
+                                        streaming_reasoning,
                                     }));
                                     i += 1;
                                 }
@@ -9097,10 +9137,15 @@ fn App() -> impl IntoView {
                                     commentary,
                                     compact_assistant,
                                     streaming_assistant,
+                                    streaming_reasoning,
                                 } => {
                                     // Rebuilt only when the fingerprint key changed,
                                     // so this is the one clone that actually pays off.
-                                    let item = items.with_untracked(|list| list[i].clone());
+                                    let item = if streaming_reasoning {
+                                        ChatItem::Reasoning(String::new())
+                                    } else {
+                                        items.with_untracked(|list| list[i].clone())
+                                    };
                                     let arts = if matches!(&item, ChatItem::Assistant { .. })
                                         && !compact_assistant
                                     {
@@ -9188,6 +9233,15 @@ fn App() -> impl IntoView {
                                                         source_item=i
                                                         on_artifact=on_artifact_select
                                                         on_file=on_file_link
+                                                    />
+                                                }.into_view()
+                                            } else if streaming_reasoning {
+                                                view! {
+                                                    <StreamingReasoningMessage
+                                                        items=items
+                                                        source_item=i
+                                                        session_id=session_id
+                                                        disclosure_state=step_disclosure_state
                                                     />
                                                 }.into_view()
                                             } else {
@@ -9436,16 +9490,17 @@ fn App() -> impl IntoView {
                 // the shared clock makes this tray recompute after run polling
                 // stops, so settled cards cannot remain over the conversation.
                 let now = run_clock.get();
-                let transfers = run_records
-                    .get()
-                    .into_iter()
+                let transfers = run_records.with(|records| {
+                    records
+                        .iter()
                     .filter(|run| run.frame_id.as_deref() == Some(session_id.as_str()))
                     .filter_map(|run| {
-                        let progress = run_progress(&run)?;
+                            let progress = run_progress(run)?;
                         transfer_progress_visible(&progress, &run.status, now)
-                            .then_some((run, progress))
+                                .then_some((run.clone(), progress))
                     })
-                    .collect::<Vec<_>>();
+                        .collect::<Vec<_>>()
+                });
                 (!transfers.is_empty()).then(|| view! {
                     <div class="transfer-tray" aria-live="polite">
                         {transfers.into_iter().map(|(run, progress)| {
@@ -10471,11 +10526,6 @@ fn App() -> impl IntoView {
                                                                     }
                                                                     let agent_id = id.clone();
                                                                     demo_mode.set(false);
-                                                                    if let Some(old) = active_session.get_untracked() {
-                                                                        transcripts.update(|cache| {
-                                                                            cache.insert(old, items.get_untracked());
-                                                                        });
-                                                                    }
                                                                     sel_artifact.set(0);
                                                                     right_tab.set(RightTab::Artifacts);
                                                                     spawn_local(async move {
@@ -10483,10 +10533,17 @@ fn App() -> impl IntoView {
                                                                             status.set(t(locale.get(), "status.send_failed").into());
                                                                             return;
                                                                         };
+                                                                        replace_visible_transcript(
+                                                                            active_session.get_untracked(),
+                                                                            None,
+                                                                            Vec::new(),
+                                                                            items,
+                                                                            transcripts,
+                                                                            running,
+                                                                        );
                                                                         provisional_acp_selection.set(Some((frame_id.clone(), agent_id.clone())));
                                                                         active_acp_agent_id.set(Some(agent_id));
                                                                         active_session.set(Some(frame_id));
-                                                                        items.set(vec![]);
                                                                         refresh_session_history();
                                                                         focus_composer();
                                                                         show_toast(&t(locale.get(), "composer.acp_new_session_toast"));
@@ -11403,21 +11460,23 @@ fn App() -> impl IntoView {
                             view! {
                                 <NotebookView cells=notebook_cells.get() locale=locale.get()
                                     active_session=active_session.read_only()
-                                    library_items=library_items.read_only()
+                                    library_items=session_library_items.read_only()
                                     on_library_changed=refresh_library_items />
                             }.into_view()
                         }
                         RightTab::Highlights => {
                             let session = active_session.get();
-                            let excerpts = library_items
-                                .get()
-                                .into_iter()
+                            let excerpts = session_library_items.with(|items| {
+                                items
+                                    .iter()
                                 .filter(|item| {
                                     item.kind == "text"
                                         && session.as_deref()
                                             == Some(item.source_session_id.as_str())
                                 })
-                                .collect::<Vec<_>>();
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                            });
                             view! {
                                 <HighlightsPane locale=locale.get() excerpts=excerpts
                                     on_library_changed=refresh_library_items />

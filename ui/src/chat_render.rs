@@ -1,13 +1,15 @@
 use crate::acp::PlanDecision;
 use crate::app_support::*;
-use crate::bindings::{invoke, invoke_checked};
+use crate::bindings::{invoke, invoke_checked, schedule_run_output_follow};
 use crate::dto::*;
 use crate::i18n::{self, t, tf, use_locale, Locale};
 use crate::research;
 use crate::text::{event_target_value, format_duration_ms, md_to_html, tool_card_label};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// True for items whose `render_item` produces an empty view, so the thread
 /// loop can drop their wrapper `<div>` and avoid a dangling `.thread` gap (#19).
@@ -231,6 +233,7 @@ pub(crate) enum ThreadRow {
         commentary: bool,
         compact_assistant: bool,
         streaming_assistant: bool,
+        streaming_reasoning: bool,
     },
     Steps {
         indices: Vec<usize>,
@@ -242,6 +245,65 @@ pub(crate) enum ThreadRow {
         ui_indices: String,
         duration_ms: Option<u64>,
     },
+}
+
+const STREAMING_REASONING_MAX_BYTES: usize = 64 * 1024;
+
+fn streaming_reasoning_text(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut start = text.len().saturating_sub(max_bytes);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…\n{}", &text[start..])
+}
+
+/// Keep the live reasoning row mounted while its source string grows. Closed
+/// details do not subscribe to or materialize the body; an opened live view is
+/// bounded so repeated signal flushes cannot copy an ever-growing string.
+#[component]
+pub(crate) fn StreamingReasoningMessage(
+    items: RwSignal<Vec<ChatItem>>,
+    source_item: usize,
+    session_id: String,
+    disclosure_state: RwSignal<HashMap<String, bool>>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let open_id = format!("{session_id}:reasoning:{source_item}");
+    let toggle_id = open_id.clone();
+    let open_key = open_id.clone();
+    let open = create_memo(move |_| disclosure_open(disclosure_state, &open_key, false));
+    view! {
+        <details class="rz" open=move || open.get()>
+            <summary on:click=move |event| {
+                event.prevent_default();
+                toggle_disclosure(disclosure_state, &toggle_id, false);
+            }>{move || t(locale.get(), "chat.thinking")}</summary>
+            {move || open.get().then(|| {
+                let text = items.with(|rows| match rows.get(source_item) {
+                    Some(ChatItem::Reasoning(text)) => {
+                        streaming_reasoning_text(text, STREAMING_REASONING_MAX_BYTES)
+                    }
+                    _ => String::new(),
+                });
+                view! { <div class="body">{text}</div> }
+            })}
+        </details>
+    }
+}
+
+#[cfg(test)]
+mod streaming_reasoning_tests {
+    use super::streaming_reasoning_text;
+
+    #[test]
+    fn keeps_short_text_and_bounds_utf8_tail() {
+        assert_eq!(streaming_reasoning_text("短文", 16), "短文");
+        let preview = streaming_reasoning_text("甲乙丙丁", 7);
+        assert_eq!(preview, "…\n丙丁");
+    }
 }
 
 /// Compact, foldable summary of consecutive tool calls. Collapsed by default;
@@ -829,26 +891,6 @@ pub(crate) fn acp_tool_step_body(content: &str, locations: &str) -> String {
     parts.join("\n")
 }
 
-pub(crate) fn run_output_preview(run: &RunRecord) -> String {
-    // Tails are stored raw; fold `\r` progress-bar frames before slicing lines
-    // so a single overwritten line cannot dominate the preview.
-    let stdout = run.stdout_tail.as_deref().map(fold_carriage_returns);
-    let stderr = run.stderr_tail.as_deref().map(fold_carriage_returns);
-    let mut output = match (&stdout, &stderr) {
-        (Some(stdout), Some(stderr)) if !stdout.is_empty() && !stderr.is_empty() => {
-            format!("{stdout}\n[stderr]\n{stderr}")
-        }
-        (Some(stdout), _) => stdout.clone(),
-        (_, Some(stderr)) => stderr.clone(),
-        _ => String::new(),
-    };
-    let lines = output.lines().collect::<Vec<_>>();
-    if lines.len() > 8 {
-        output = lines[lines.len() - 8..].join("\n");
-    }
-    output
-}
-
 #[component]
 pub(crate) fn ProvenancePane(
     items: RwSignal<Vec<ChatItem>>,
@@ -969,7 +1011,7 @@ fn run_monitor_meta(
 #[component]
 pub(crate) fn RunMonitorCard(
     run_id: String,
-    runs: RwSignal<Vec<RunRecord>>,
+    runs: RwSignal<Vec<RunSummary>>,
     clock: ReadSignal<i64>,
     tool_ok: Option<bool>,
     tool_output: String,
@@ -977,9 +1019,10 @@ pub(crate) fn RunMonitorCard(
     let locale = use_locale();
     let dismissed = create_rw_signal(false);
     let fallback = serde_json::from_str::<RunRecord>(&tool_output).ok();
+    let detail = create_rw_signal(fallback.clone());
     let lookup_id = run_id.clone();
     let selected_id = run_id.clone();
-    let fallback_for_selection = fallback.clone();
+    let fallback_for_selection = fallback.as_ref().map(RunSummary::from);
     // Polls touch the shared run vector, but this memo only publishes when this
     // card's record changes. Unrelated run updates therefore leave its DOM and
     // disclosure state alone.
@@ -991,6 +1034,39 @@ pub(crate) fn RunMonitorCard(
                 .cloned()
         })
         .or_else(|| fallback_for_selection.clone())
+    });
+    let detail_epoch = Rc::new(Cell::new(0_u64));
+    create_effect({
+        let detail_epoch = Rc::clone(&detail_epoch);
+        move |_| {
+            let Some(summary) = selected_run.get() else {
+                return;
+            };
+            let epoch = detail_epoch.get().wrapping_add(1);
+            detail_epoch.set(epoch);
+            let detail_epoch = Rc::clone(&detail_epoch);
+            spawn_local(async move {
+                let args = to_value(&serde_json::json!({ "runId": &summary.id })).unwrap();
+                let Ok(value) = invoke_checked("get_run_detail", args).await else {
+                    return;
+                };
+                let Ok(record) = serde_wasm_bindgen::from_value::<RunRecord>(value) else {
+                    return;
+                };
+                // A Run may settle between the summary poll and this detail
+                // read. Wait for the next summary instead of briefly rendering
+                // a newer lifecycle inside an older card and remounting it on
+                // the following poll.
+                let same_lifecycle = record.status == summary.status
+                    && record.ended_at == summary.ended_at
+                    && record.exit_code == summary.exit_code;
+                let changed = detail.with_untracked(|current| current.as_ref() != Some(&record));
+                if detail_epoch.get() == epoch && same_lifecycle && changed {
+                    detail.set(Some(record));
+                    schedule_run_output_follow();
+                }
+            });
+        }
     });
     // Outside the card closure on purpose: the run list refresh re-renders the
     // body every few seconds, which would snap a native `<details>` shut while
@@ -1048,14 +1124,24 @@ pub(crate) fn RunMonitorCard(
             let timeout_secs = run.timeout_secs;
             let settled_now = js_sys::Date::now() as i64 / 1000;
             let progress = run_progress(&run);
-            let output = run_output_preview(&run);
-            let command = run.command.clone().filter(|value| !value.trim().is_empty());
-            let remote_workdir = run.remote_workdir.clone();
+            let detail = detail.get();
+            let output = detail.as_ref().map(run_output_preview).unwrap_or_default();
+            let command = detail
+                .as_ref()
+                .and_then(|record| record.command.clone())
+                .filter(|value| !value.trim().is_empty());
+            let remote_workdir = detail
+                .as_ref()
+                .and_then(|record| record.remote_workdir.clone())
+                .or_else(|| run.remote_workdir.clone());
             let poll_error = run.last_poll_error.clone().filter(|value| !value.trim().is_empty());
             // ponytail: flat `key: value` rows only — nested `config`/`capabilities`
             // render as compact JSON, not a tree. Unparseable or empty snapshots
             // (old rows, transfer runs) yield no pairs, so the block disappears.
-            let env_pairs = research::metadata_pairs(&run.env_snapshot_json);
+            let env_pairs = detail
+                .as_ref()
+                .map(|record| research::metadata_pairs(&record.env_snapshot_json))
+                .unwrap_or_default();
             let cancel_id = run.id.clone();
             let output_id = run.id.clone();
             view! {
@@ -1180,7 +1266,7 @@ pub(crate) fn render_item(
     artifacts: &[Artifact],
     on_artifact: Callback<usize>,
     on_file: Callback<ModalArtifact>,
-    runs: RwSignal<Vec<RunRecord>>,
+    runs: RwSignal<Vec<RunSummary>>,
     run_clock: ReadSignal<i64>,
     busy: ReadSignal<bool>,
     compact_assistant: bool,

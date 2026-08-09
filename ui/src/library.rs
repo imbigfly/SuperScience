@@ -1,11 +1,13 @@
 use crate::app_support::{compose_icon, copy_text, RpCodeView};
 use crate::bindings::{invoke, invoke_checked, reveal_saved_mark};
-use crate::dto::{LibraryItem, LibraryItemDetail, LibraryItemVersion};
+use crate::dto::{LibraryItem, LibraryItemDetail, LibraryItemSummary, LibraryItemVersion};
 use crate::i18n::{t, tf, Locale};
 use crate::text::event_target_value;
 use crate::window_capture_escape;
 use leptos::*;
 use serde_wasm_bindgen::to_value;
+use std::cell::Cell;
+use std::rc::Rc;
 use wasm_bindgen::JsValue;
 
 /// Right-pane list of this session's saved text excerpts ("划线").
@@ -38,13 +40,13 @@ pub(super) fn HighlightsPane(
                         <button type="button" class="highlight-text"
                             title=t(locale, "highlight.reveal")
                             on:click=move |_| reveal_saved_mark(&reveal)>
-                            {item.code.clone()}
+                            {item.code.to_string()}
                         </button>
                         <div class="highlight-actions">
                             <button type="button" class="icon-btn"
                                 title=t(locale, "ctx.copy")
                                 aria-label=t(locale, "ctx.copy")
-                                on:click=move |_| copy_text(copy.clone())>{compose_icon("copy")}</button>
+                                on:click=move |_| copy_text(copy.to_string())>{compose_icon("copy")}</button>
                             <button type="button" class="icon-btn starred"
                                 title=t(locale, "library.remove")
                                 aria-label=t(locale, "library.remove")
@@ -69,7 +71,7 @@ pub(super) fn HighlightsPane(
 #[component]
 pub(super) fn LibraryScreen(
     locale: ReadSignal<Locale>,
-    items: ReadSignal<Vec<LibraryItem>>,
+    items: ReadSignal<Vec<LibraryItemSummary>>,
     on_close: Callback<()>,
     on_open_source: Callback<(String, String)>,
     on_changed: Callback<()>,
@@ -80,9 +82,50 @@ pub(super) fn LibraryScreen(
 ) -> impl IntoView {
     let query = create_rw_signal(String::new());
     let filter = create_rw_signal("all");
+    let search_results = create_rw_signal(None::<Vec<LibraryItemSummary>>);
+    let search_epoch = Rc::new(Cell::new(0_u64));
     let selected = create_rw_signal(None::<LibraryItemDetail>);
     let loading = create_rw_signal(false);
     let error = create_rw_signal(None::<String>);
+    create_effect({
+        let search_epoch = Rc::clone(&search_epoch);
+        move |_| {
+            let query_now = query.get();
+            let filter_now = filter.get();
+            let epoch = search_epoch.get().wrapping_add(1);
+            search_epoch.set(epoch);
+            if query_now.trim().is_empty() {
+                search_results.set(None);
+                return;
+            }
+            search_results.set(Some(Vec::new()));
+            let search_epoch = Rc::clone(&search_epoch);
+            leptos::set_timeout(
+                move || {
+                    if search_epoch.get() != epoch {
+                        return;
+                    }
+                    spawn_local(async move {
+                        let args = to_value(&serde_json::json!({
+                            "query": query_now,
+                            "kind": (filter_now != "all").then_some(filter_now),
+                        }))
+                        .unwrap();
+                        if let Ok(value) = invoke_checked("search_library_items", args).await {
+                            if let Ok(rows) =
+                                serde_wasm_bindgen::from_value::<Vec<LibraryItemSummary>>(value)
+                            {
+                                if search_epoch.get() == epoch {
+                                    search_results.set(Some(rows));
+                                }
+                            }
+                        }
+                    });
+                },
+                std::time::Duration::from_millis(150),
+            );
+        }
+    });
     window_capture_escape(move || {
         if selected.get_untracked().is_none() {
             return false;
@@ -154,16 +197,21 @@ pub(super) fn LibraryScreen(
             {move || error.get().map(|message| view! { <div class="library-error" role="alert">{message}</div> })}
             <div class="library-list">
                 {move || {
-                    let needle = query.get().trim().to_lowercase();
+                    let searching = !query.get().trim().is_empty();
                     let selected_filter = filter.get();
-                    let visible = items.get().into_iter().filter(|item| {
-                        (selected_filter == "all" || item.kind == selected_filter)
-                            && (needle.is_empty()
-                                || item.title.to_lowercase().contains(&needle)
-                                || item.code.to_lowercase().contains(&needle)
-                                || item.source_project_name.to_lowercase().contains(&needle)
-                                || item.source_session_title.to_lowercase().contains(&needle))
-                    }).collect::<Vec<_>>();
+                    let visible = if searching {
+                        search_results.get().unwrap_or_default()
+                    } else {
+                        items.with(|items| {
+                            items
+                                .iter()
+                                .filter(|item| {
+                                    selected_filter == "all" || item.kind == selected_filter
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>()
+                        })
+                    };
                     if visible.is_empty() {
                         return view! {
                             <div class="library-empty">
@@ -178,7 +226,7 @@ pub(super) fn LibraryScreen(
                         let source_project = item.source_project_id.clone();
                         let source_session = item.source_session_id.clone();
                         let is_figure = item.kind == "figure";
-                        let excerpt = item.code.lines().take(4).collect::<Vec<_>>().join("\n");
+                        let excerpt = item.code_preview.lines().take(4).collect::<Vec<_>>().join("\n");
                         view! {
                             <article class="library-card" data-library-kind=item.kind.clone()>
                                 <button type="button" class="library-card-main"
@@ -257,7 +305,7 @@ pub(super) fn LibraryScreen(
                                     <div class="library-error">{t(locale.get_untracked(), "library.read_failed")}</div>
                                 }).into_view()
                             } else if item.kind == "text" {
-                                view! { <div class="library-text">{item.code.clone()}</div> }.into_view()
+                                view! { <div class="library-text">{item.code.to_string()}</div> }.into_view()
                             } else {
                                 view! { <CodeVersionPanel locale=locale item=item.clone()
                                     on_insert=on_insert can_insert=can_insert /> }.into_view()
@@ -302,7 +350,7 @@ fn CodeVersionPanel(
         version_number: 1,
         parent_version_id: None,
         language: item.language.clone(),
-        code: item.code.clone(),
+        code: item.code.to_string(),
         origin: "original".into(),
         created_at: item.created_at,
     };
@@ -449,9 +497,29 @@ fn CodeVersionPanel(
     }
 }
 
-pub(super) fn refresh_library(items: RwSignal<Vec<LibraryItem>>) {
+pub(super) fn refresh_library(items: RwSignal<Vec<LibraryItemSummary>>) {
     spawn_local(async move {
         let value = invoke("list_library_items", JsValue::UNDEFINED).await;
+        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<LibraryItemSummary>>(value) {
+            items.set(list);
+        }
+    });
+}
+
+pub(super) fn refresh_session_library(
+    items: RwSignal<Vec<LibraryItem>>,
+    active_session: ReadSignal<Option<String>>,
+) {
+    let Some(session_id) = active_session.get_untracked() else {
+        items.set(Vec::new());
+        return;
+    };
+    spawn_local(async move {
+        let args = to_value(&serde_json::json!({ "sessionId": session_id })).unwrap();
+        let value = invoke("list_session_library_items", args).await;
+        if active_session.get_untracked().as_deref() != Some(session_id.as_str()) {
+            return;
+        }
         if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<LibraryItem>>(value) {
             items.set(list);
         }

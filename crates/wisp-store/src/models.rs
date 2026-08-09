@@ -1064,6 +1064,30 @@ pub struct RunRecord {
     pub env_snapshot_json: String,
 }
 
+/// Polling/list projection for the WebView. Large command, output, remote
+/// handle, and environment payloads stay behind `get_run_detail`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunSummary {
+    pub id: String,
+    pub frame_id: Option<String>,
+    pub context_id: String,
+    pub title: String,
+    pub kind: String,
+    pub status: RunStatus,
+    pub created_at: i64,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub exit_code: Option<i64>,
+    pub remote_workdir: Option<String>,
+    pub timeout_secs: Option<i64>,
+    pub last_polled_at: Option<i64>,
+    pub last_poll_error: Option<String>,
+    pub progress_json: String,
+    /// Bounded head/tail sample plus byte lengths; changes make visible run
+    /// monitors refetch the one full record they display.
+    pub output_fingerprint: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunProgress {
     pub phase: String,
@@ -1360,6 +1384,28 @@ pub(crate) fn run_from_row(row: SqliteRow) -> Result<RunRecord> {
         last_poll_error: row.try_get("last_poll_error")?,
         progress_json: row.try_get("progress_json")?,
         env_snapshot_json: row.try_get("env_snapshot_json")?,
+    })
+}
+
+pub(crate) fn run_summary_from_row(row: SqliteRow) -> Result<RunSummary> {
+    let status: String = row.try_get("status")?;
+    Ok(RunSummary {
+        id: row.try_get("id")?,
+        frame_id: row.try_get("frame_id")?,
+        context_id: row.try_get("context_id")?,
+        title: row.try_get("title")?,
+        kind: row.try_get("kind")?,
+        status: RunStatus::from_storage(&status)?,
+        created_at: row.try_get("created_at")?,
+        started_at: row.try_get("started_at")?,
+        ended_at: row.try_get("ended_at")?,
+        exit_code: row.try_get("exit_code")?,
+        remote_workdir: row.try_get("remote_workdir")?,
+        timeout_secs: row.try_get("timeout_secs")?,
+        last_polled_at: row.try_get("last_polled_at")?,
+        last_poll_error: row.try_get("last_poll_error")?,
+        progress_json: row.try_get("progress_json")?,
+        output_fingerprint: row.try_get("output_fingerprint")?,
     })
 }
 

@@ -44,10 +44,10 @@ pub(crate) fn refresh_runtimes(into: RwSignal<Vec<RuntimeInfo>>) {
     });
 }
 
-pub(crate) fn refresh_runs(into: RwSignal<Vec<RunRecord>>, locale: RwSignal<Locale>) {
+pub(crate) fn refresh_runs(into: RwSignal<Vec<RunSummary>>, locale: RwSignal<Locale>) {
     spawn_local(async move {
         let v = invoke("list_runs", JsValue::UNDEFINED).await;
-        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<RunRecord>>(v) {
+        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<RunSummary>>(v) {
             let initialized = RUN_REFRESH_INITIALIZED.with(Cell::get);
             let stopped_runs = list
                 .iter()
@@ -1345,22 +1345,87 @@ mod run_artifact_link_tests {
     }
 }
 
-pub(crate) fn run_title(run: &RunRecord) -> String {
+pub(crate) fn run_title(run: &RunSummary) -> String {
     if !run.title.trim().is_empty() {
         run.title.clone()
     } else {
-        run.command.clone().unwrap_or_else(|| run.id.clone())
+        run.id.clone()
     }
 }
 
-pub(crate) fn run_progress(run: &RunRecord) -> Option<RunProgress> {
+pub(crate) fn run_progress(run: &RunSummary) -> Option<RunProgress> {
     serde_json::from_str(&run.progress_json).ok()
 }
 
-pub(crate) fn method_search_progress(run: &RunRecord) -> Option<MethodSearchProgressView> {
+pub(crate) fn method_search_progress(run: &RunSummary) -> Option<MethodSearchProgressView> {
     (run.kind == "method_search")
         .then(|| serde_json::from_str(&run.progress_json).ok())
         .flatten()
+}
+
+pub(crate) fn run_output_preview(run: &RunRecord) -> String {
+    // Tails are stored raw; fold `\r` progress-bar frames before slicing lines
+    // so a single overwritten line cannot dominate the preview.
+    let stdout = run.stdout_tail.as_deref().map(fold_carriage_returns);
+    let stderr = run.stderr_tail.as_deref().map(fold_carriage_returns);
+    let mut output = match (&stdout, &stderr) {
+        (Some(stdout), Some(stderr)) if !stdout.is_empty() && !stderr.is_empty() => {
+            format!("{stdout}\n[stderr]\n{stderr}")
+        }
+        (Some(stdout), _) => stdout.clone(),
+        (_, Some(stderr)) => stderr.clone(),
+        _ => String::new(),
+    };
+    let lines = output.lines().collect::<Vec<_>>();
+    if lines.len() > 8 {
+        output = lines[lines.len() - 8..].join("\n");
+    }
+    output
+}
+
+#[component]
+fn RunDetailDisclosure(run_id: String, locale: RwSignal<Locale>) -> impl IntoView {
+    let open = create_rw_signal(false);
+    let detail = create_rw_signal(None::<RunRecord>);
+    let loading = create_rw_signal(false);
+    let toggle_id = run_id.clone();
+    view! {
+        <details class="run-output" open=move || open.get()>
+            <summary on:click=move |event| {
+                event.prevent_default();
+                let next = !open.get_untracked();
+                open.set(next);
+                if !next || detail.get_untracked().is_some() || loading.get_untracked() {
+                    return;
+                }
+                loading.set(true);
+                let run_id = toggle_id.clone();
+                spawn_local(async move {
+                    let args = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+                    if let Ok(value) = invoke_checked("get_run_detail", args).await {
+                        if let Ok(record) = serde_wasm_bindgen::from_value::<RunRecord>(value) {
+                            detail.set(Some(record));
+                        }
+                    }
+                    loading.set(false);
+                });
+            }>{move || t(locale.get(), "runs.output")}</summary>
+            {move || loading.get().then(|| view! {
+                <div class="control-empty">{t(locale.get(), "loading")}</div>
+            })}
+            {move || detail.get().map(|run| {
+                let output = run_output_preview(&run);
+                view! {
+                    {run.command.filter(|command| !command.trim().is_empty()).map(|command| view! {
+                        <div class="run-command">{command}</div>
+                    })}
+                    {(!output.is_empty()).then(|| view! {
+                        <pre data-run-output-for=run.id>{output}</pre>
+                    })}
+                }
+            })}
+        </details>
+    }
 }
 
 const TRANSFER_SETTLED_LINGER_SECONDS: i64 = 3;
@@ -1816,7 +1881,7 @@ pub(crate) fn ContextDetailsOverlay(
     runtime_environment_position: RwSignal<(i32, i32)>,
     contexts: RwSignal<Vec<ExecutionContext>>,
     runtimes: RwSignal<Vec<RuntimeInfo>>,
-    runs: RwSignal<Vec<RunRecord>>,
+    runs: RwSignal<Vec<RunSummary>>,
     research_graph: RwSignal<ResearchGraph>,
     modal_artifact: RwSignal<Option<ModalArtifact>>,
     active_project: RwSignal<Option<ProjectInfo>>,
@@ -1968,9 +2033,13 @@ pub(crate) fn ContextDetailsOverlay(
                             let section_context_id = body_context_id.clone();
                             view! {
                                 {move || {
-                                    let rows = runs.get().into_iter()
+                                    let rows = runs.with(|records| {
+                                        records
+                                            .iter()
                                         .filter(|run| run.context_id == section_context_id)
-                                        .collect::<Vec<_>>();
+                                            .cloned()
+                                            .collect::<Vec<_>>()
+                                    });
                                     view! {
                                         <section class="control-section context-modal-section" data-context-id=section_context_id.clone()>
                                             <div class="control-section-head">
@@ -2011,16 +2080,7 @@ pub(crate) fn ContextDetailsOverlay(
                                                 .flatten();
                                             let method_progress = method_search_progress(&run);
                                             let method_run_id = run.id.clone();
-                                            let stdout_tail =
-                                                fold_carriage_returns(run.stdout_tail.as_deref().unwrap_or_default());
-                                            let stderr_tail =
-                                                fold_carriage_returns(run.stderr_tail.as_deref().unwrap_or_default());
-                                            let output = match (stdout_tail.is_empty(), stderr_tail.is_empty()) {
-                                                (false, false) => format!("{stdout_tail}\n\n[stderr]\n{stderr_tail}"),
-                                                (false, true) => stdout_tail,
-                                                (true, false) => format!("[stderr]\n{stderr_tail}"),
-                                                (true, true) => String::new(),
-                                            };
+                                            let detail_run_id = run.id.clone();
                                             let meta = match run.exit_code {
                                                 Some(code) => format!("{} · {} · exit {code}", run.context_id, run.kind),
                                                 None => format!("{} · {}", run.context_id, run.kind),
@@ -2083,9 +2143,6 @@ pub(crate) fn ContextDetailsOverlay(
                                                             modal_artifact=modal_artifact
                                                         />
                                                     })}
-                                                    {run.command.clone().filter(|command| !command.trim().is_empty()).map(|command| view! {
-                                                        <div class="run-command">{command}</div>
-                                                    })}
                                                     {remote_workdir.map(|workdir| view! {
                                                         <div class="run-remote">
                                                             <span>{t(locale.get(), "runs.remote_workdir")}</span>
@@ -2095,12 +2152,7 @@ pub(crate) fn ContextDetailsOverlay(
                                                     {poll_error.filter(|error| !error.trim().is_empty()).map(|error| view! {
                                                         <div class="context-error">{error}</div>
                                                     })}
-                                                    {(!output.is_empty()).then(|| view! {
-                                                        <details class="run-output">
-                                                            <summary>{t(locale.get(), "runs.output")}</summary>
-                                                            <pre data-run-output-for=run.id.clone()>{output}</pre>
-                                                        </details>
-                                                    })}
+                                                    <RunDetailDisclosure run_id=detail_run_id locale=locale />
                                                     {(!produced.is_empty()).then(|| view! {
                                                         <div class="run-artifacts">
                                                             <span class="run-artifacts-label">{t(locale.get(), "runs.artifacts")}</span>

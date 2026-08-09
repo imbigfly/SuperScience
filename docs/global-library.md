@@ -12,6 +12,10 @@ projects in the local Wisp installation.
 - Open **Library** from the Projects screen or a project sidebar. Items can be
   searched, filtered, removed, or traced back to their source project/session.
 
+The global Library list transfers bounded code previews rather than every saved
+source blob. Searches still cover the complete stored source in SQLite, while
+Notebook and Highlights load full source only for the active session.
+
 A saved item's code is versioned: the starred snapshot is the immutable v1, and
 each edit appends a new version (`library_item_versions`) instead of rewriting
 it. This applies to `code` items and to a figure's generating code; text

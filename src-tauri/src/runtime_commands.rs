@@ -226,14 +226,38 @@ pub(super) async fn restart_runtime(
 pub(super) async fn list_runs(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
-) -> Result<Vec<wisp_store::RunRecord>, String> {
+) -> Result<Vec<wisp_store::RunSummary>, String> {
     let (_, scope) =
         exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     state
         .store
-        .list_runs_in_scope(&scope)
+        .list_run_summaries_in_scope(&scope)
         .await
         .map_err(|e| format!("{e}"))
+}
+
+#[tauri::command]
+pub(super) async fn get_run_detail(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+) -> Result<wisp_store::RunRecord, String> {
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    if !state
+        .store
+        .run_visible_in_scope(&run_id, &scope)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Run is not visible in the active state scope".into());
+    }
+    state
+        .store
+        .get_run(&run_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Run not found".into())
 }
 
 #[tauri::command]

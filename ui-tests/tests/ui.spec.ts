@@ -4360,7 +4360,7 @@ test("completed SSH transfer cards leave the composer tray promptly", async ({ p
   await expect(card).toBeHidden({ timeout: 5_000 });
 });
 
-test("monitor_run renders a live Run card inline without get_run polling", async ({ page }) => {
+test("monitor_run renders a live Run card from summary polls and on-demand detail", async ({ page }) => {
   await enterApp(page);
   await page.evaluate(() => {
     const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
@@ -4385,7 +4385,10 @@ test("monitor_run renders a live Run card inline without get_run polling", async
   await expect(card).toContainText("Running");
   await expect(card).toContainText("Elapsed 1h");
   await expect(card).toContainText("8 of 16 steps complete (50%)");
-  await expect(page.locator(".rz")).toContainText("Attach the existing Run monitor.");
+  const reasoning = page.locator(".rz");
+  await expect(reasoning).toContainText("thinking");
+  await reasoning.locator("summary").click();
+  await expect(reasoning).toContainText("Attach the existing Run monitor.");
   await expect(page.locator('.step-name:text-is("monitor_run")')).toHaveCount(0);
 
   await page.evaluate(() => {
@@ -4523,12 +4526,15 @@ test("reasoning details stays open while more thinking streams in", async ({ pag
   await expect(rz).toBeVisible();
   await rz.locator("summary").click();
   await expect(rz).toHaveAttribute("open", "open");
+  await rz.evaluate((element) => {
+    (element as any).__stableProbe = true;
+  });
 
-  // The next streaming delta rebuilds the fingerprint-keyed row; the open
-  // state must survive the rebuild.
+  // The next streaming delta updates the body without replacing the live row.
   await expect(rz).toContainText("More reasoning arrives.");
   await expect(rz).toHaveAttribute("open", "open");
   await expect(rz).toContainText("First thought.");
+  expect(await rz.evaluate((element) => (element as any).__stableProbe === true)).toBe(true);
 });
 
 test("active session Runs appear automatically with elapsed time and heartbeat (#593)", async ({ page }) => {
@@ -8748,6 +8754,14 @@ test("an SVG star saves a Notebook cell in the global library", async ({ page })
   await expect(page.getByTestId("library-screen")).toBeVisible();
   await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("zcat counts.txt.gz");
   await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("wisp-science / Current analysis");
+
+  // Library search runs against SQLite so full saved source remains searchable
+  // even though the global list only carries bounded previews.
+  await page.getByRole("searchbox", { name: "Search library" }).fill("counts.txt.gz");
+  await expect.poll(() => lastInvokeArgs(page, "search_library_items")).toMatchObject({
+    query: "counts.txt.gz",
+  });
+  await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("zcat counts.txt.gz");
 });
 
 test("the command palette opens the global library", async ({ page }) => {
