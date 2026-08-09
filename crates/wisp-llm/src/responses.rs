@@ -297,6 +297,7 @@ impl Provider for OpenAiResponsesProvider {
 
     async fn complete(&self, messages: &[Message], tools: &[ToolSchema]) -> Result<Completion> {
         let val = self.request(self.build_body(messages, tools)).await?;
+        ensure_completed_response(&val)?;
         Ok(parse_completion(&val))
     }
 
@@ -315,6 +316,18 @@ impl Provider for OpenAiResponsesProvider {
         }
         sink.on_usage(comp.usage.clone());
         Ok(comp)
+    }
+}
+
+/// A non-streaming Responses request can return HTTP 200 with a terminal
+/// `incomplete`, `failed`, or `cancelled` status and partial output. Only
+/// `completed` is safe to commit as a successful agent iteration. Status-less
+/// responses remain accepted for compatible relays that implement the older
+/// subset of this wire format.
+fn ensure_completed_response(value: &Value) -> Result<()> {
+    match value.get("status").and_then(Value::as_str) {
+        None | Some("completed") => Ok(()),
+        Some(_) => Err(LlmError::Incomplete),
     }
 }
 
@@ -477,6 +490,23 @@ mod tests {
         assert_eq!(comp.tool_calls[0].function.name, "openalex");
         assert_eq!(comp.usage.input_tokens, 3);
         assert_eq!(comp.usage.output_tokens, 5);
+    }
+
+    #[test]
+    fn rejects_partial_terminal_responses() {
+        for status in ["incomplete", "failed", "cancelled", "in_progress"] {
+            let value = json!({
+                "status": status,
+                "output_text": "partial report",
+                "incomplete_details": {"reason": "upstream_error"}
+            });
+            assert!(matches!(
+                ensure_completed_response(&value),
+                Err(LlmError::Incomplete)
+            ));
+        }
+        assert!(ensure_completed_response(&json!({"status": "completed"})).is_ok());
+        assert!(ensure_completed_response(&json!({"output_text": "relay response"})).is_ok());
     }
 
     #[test]

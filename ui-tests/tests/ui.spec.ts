@@ -268,6 +268,21 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await expect(page.locator(".copy-toast")).toHaveText("Copied");
 });
 
+test("tool-only turn endings do not generate follow-up questions", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("TOOLONLYDONE finish the report");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByRole("button", { name: "Processed" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await page.waitForTimeout(100);
+  await expect(page.getByTestId("follow-up-questions")).toHaveCount(0);
+  expect(await page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? [])
+      .filter((call: any) => call.cmd === "generate_follow_up_questions").length,
+  )).toBe(0);
+});
+
 test("manual review blocks sending and shows a playful progress animation", async ({ page }) => {
   await page.addInitScript(() => {
     (window as any).__reviewDelayMs = 800;

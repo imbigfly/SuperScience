@@ -3814,6 +3814,18 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (String(msg).includes("POSTSTARTFAIL")) {
               throw new Error("[turn-started] execution failed after turn/start");
             }
+            if (String(msg).includes("TOOLONLYDONE")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "I will record the decision first." });
+                emit("agent", { kind: "ToolCall", frame_id: fid, name: "research_graph", preview: "record_decision" });
+                emit("agent", { kind: "ToolResult", frame_id: fid, name: "research_graph", ok: true, content: '{"node_id":"decision-1"}' });
+                // Regression fixture: an old/buggy backend mislabeled the
+                // provider cut after this tool as a successful turn.
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
             if (String(msg).includes("MONITORRUN")) {
               return await new Promise<string>((resolve) => {
                 monitorRunFrameId = fid;
