@@ -1,6 +1,7 @@
 use super::Store;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::{Row, Sqlite, Transaction};
 
 pub const MAINLINE_SCOPE_KEY: &str = "mainline";
@@ -44,7 +45,7 @@ impl StateScope {
         }
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.project_id().trim().is_empty() {
             anyhow::bail!("State scope project id is required");
         }
@@ -207,6 +208,17 @@ pub struct ArtifactHead {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExplorationEffect {
+    pub id: String,
+    pub exploration_id: String,
+    pub effect_kind: String,
+    pub recoverability: String,
+    pub target_summary: String,
+    pub metadata_json: String,
+    pub created_at: i64,
+}
+
 impl Store {
     pub async fn create_workspace_snapshot(
         &self,
@@ -253,6 +265,30 @@ impl Store {
         Ok(())
     }
 
+    pub async fn get_context_archive(
+        &self,
+        archive_id: &str,
+    ) -> Result<Option<ContextArchiveRecord>> {
+        let row = sqlx::query(
+            "SELECT id,project_id,frame_id,storage_path,checksum,created_at \
+             FROM context_archives WHERE id=?",
+        )
+        .bind(archive_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(ContextArchiveRecord {
+                id: row.try_get("id")?,
+                project_id: row.try_get("project_id")?,
+                frame_id: row.try_get("frame_id")?,
+                storage_path: row.try_get("storage_path")?,
+                checksum: row.try_get("checksum")?,
+                created_at: row.try_get("created_at")?,
+            })
+        })
+        .transpose()
+    }
+
     pub async fn create_exploration_family(&self, family: &ExplorationFamily) -> Result<()> {
         validate_id("Exploration family", &family.id)?;
         validate_id("Exploration family project", &family.project_id)?;
@@ -290,6 +326,291 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         row.map(exploration_family_from_row).transpose()
+    }
+
+    pub async fn exploration_family_for_mainline(
+        &self,
+        project_id: &str,
+        frame_id: &str,
+    ) -> Result<Option<ExplorationFamily>> {
+        let row = sqlx::query(
+            "SELECT id,project_id,root_frame_id,mainline_frame_id,generation,created_at,updated_at \
+             FROM exploration_families WHERE project_id=? AND mainline_frame_id=?",
+        )
+        .bind(project_id)
+        .bind(frame_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(exploration_family_from_row).transpose()
+    }
+
+    pub async fn get_workspace_snapshot_record(
+        &self,
+        snapshot_id: &str,
+    ) -> Result<Option<WorkspaceSnapshotRecord>> {
+        let row = sqlx::query(
+            "SELECT id,project_id,manifest_json,manifest_sha256,created_at \
+             FROM workspace_snapshots WHERE id=?",
+        )
+        .bind(snapshot_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(WorkspaceSnapshotRecord {
+                id: row.try_get("id")?,
+                project_id: row.try_get("project_id")?,
+                manifest_json: row.try_get("manifest_json")?,
+                manifest_sha256: row.try_get("manifest_sha256")?,
+                created_at: row.try_get("created_at")?,
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn frame_state_scope(&self, frame_id: &str) -> Result<Option<StateScope>> {
+        let row: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT project_id,exploration_id FROM frames WHERE id=?")
+                .bind(frame_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(
+            row.map(|(project_id, exploration_id)| match exploration_id {
+                Some(exploration_id) => StateScope::exploration(project_id, exploration_id),
+                None => StateScope::mainline(project_id),
+            }),
+        )
+    }
+
+    pub async fn frame_message_head(&self, frame_id: &str) -> Result<i64> {
+        Ok(
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq),0) FROM messages WHERE frame_id=?")
+                .bind(frame_id)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    pub async fn frame_ui_event_head(&self, frame_id: &str) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq),0) FROM session_ui_events WHERE frame_id=?",
+        )
+        .bind(frame_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn clone_exploration_frame(
+        &self,
+        source_frame_id: &str,
+        target_frame_id: &str,
+        message_head_seq: i64,
+        ui_event_head_seq: i64,
+    ) -> Result<()> {
+        validate_id("Exploration source frame", source_frame_id)?;
+        validate_id("Exploration target frame", target_frame_id)?;
+        if message_head_seq <= 0 || ui_event_head_seq < 0 {
+            anyhow::bail!("Exploration clone boundary is invalid");
+        }
+        let mut tx = self.begin_write().await?;
+        let source = sqlx::query(
+            "SELECT project_id,agent_name,status,model,input_tokens,output_tokens,completed_at,title \
+             FROM frames WHERE id=? AND parent_frame_id=id",
+        )
+        .bind(source_frame_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Exploration source conversation was not found"))?;
+        let actual_head: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq),0) FROM messages WHERE frame_id=?")
+                .bind(source_frame_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let actual_ui_head: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq),0) FROM session_ui_events WHERE frame_id=?",
+        )
+        .bind(source_frame_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if actual_head < message_head_seq || actual_ui_head < ui_event_head_seq {
+            anyhow::bail!("Exploration checkpoint history is no longer available");
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query(
+            "INSERT INTO frames(\
+               id,parent_frame_id,root_frame_id,agent_name,status,project_id,branched_from,model,\
+               input_tokens,output_tokens,created_at,updated_at,completed_at,title\
+             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(target_frame_id)
+        .bind(target_frame_id)
+        .bind(target_frame_id)
+        .bind(source.try_get::<String, _>("agent_name")?)
+        .bind(source.try_get::<String, _>("status")?)
+        .bind(source.try_get::<String, _>("project_id")?)
+        .bind(source_frame_id)
+        .bind(source.try_get::<Option<String>, _>("model")?)
+        .bind(source.try_get::<Option<i64>, _>("input_tokens")?)
+        .bind(source.try_get::<Option<i64>, _>("output_tokens")?)
+        .bind(now)
+        .bind(now)
+        .bind(source.try_get::<Option<i64>, _>("completed_at")?)
+        .bind(source.try_get::<Option<String>, _>("title")?)
+        .execute(&mut *tx)
+        .await?;
+
+        let messages = sqlx::query(
+            "SELECT seq,role,content,tool_calls,tool_call_id,tool_name,reasoning,ts,model_name \
+             FROM messages WHERE frame_id=? AND seq<=? ORDER BY seq",
+        )
+        .bind(source_frame_id)
+        .bind(message_head_seq)
+        .fetch_all(&mut *tx)
+        .await?;
+        for message in messages {
+            sqlx::query(
+                "INSERT INTO messages(\
+                   id,frame_id,seq,role,content,tool_calls,tool_call_id,tool_name,reasoning,ts,model_name\
+                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(target_frame_id)
+            .bind(message.try_get::<i64, _>("seq")?)
+            .bind(message.try_get::<String, _>("role")?)
+            .bind(message.try_get::<Option<String>, _>("content")?)
+            .bind(message.try_get::<Option<String>, _>("tool_calls")?)
+            .bind(message.try_get::<Option<String>, _>("tool_call_id")?)
+            .bind(message.try_get::<Option<String>, _>("tool_name")?)
+            .bind(message.try_get::<Option<String>, _>("reasoning")?)
+            .bind(message.try_get::<i64, _>("ts")?)
+            .bind(message.try_get::<Option<String>, _>("model_name")?)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query(
+            "INSERT INTO session_reviews(id,frame_id,message_seq,report_json,created_at,updated_at) \
+             SELECT lower(hex(randomblob(16))),?,message_seq,report_json,created_at,updated_at \
+             FROM session_reviews WHERE frame_id=? AND message_seq<=?",
+        )
+        .bind(target_frame_id)
+        .bind(source_frame_id)
+        .bind(message_head_seq)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO session_ui_events(frame_id,seq,event_json) \
+             SELECT ?,seq,json_set(event_json,'$.frame_id',?) FROM session_ui_events \
+             WHERE frame_id=? AND seq<=? ORDER BY seq",
+        )
+        .bind(target_frame_id)
+        .bind(target_frame_id)
+        .bind(source_frame_id)
+        .bind(ui_event_head_seq)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO message_resource_links(\
+               id,frame_id,message_seq,ordinal,original_reference,artifact_id,artifact_version_id,\
+               display_name,resource_kind,mime_type,status,error,created_artifact,created_version,created_at\
+             ) SELECT lower(hex(randomblob(16))),?,message_seq,ordinal,original_reference,\
+                      artifact_id,artifact_version_id,display_name,resource_kind,mime_type,status,error,0,0,created_at \
+               FROM message_resource_links WHERE frame_id=? AND message_seq<=?",
+        )
+        .bind(target_frame_id)
+        .bind(source_frame_id)
+        .bind(message_head_seq)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO session_execution_contexts(frame_id,context_id,created_at) \
+             SELECT ?,context_id,created_at FROM session_execution_contexts WHERE frame_id=?",
+        )
+        .bind(target_frame_id)
+        .bind(source_frame_id)
+        .execute(&mut *tx)
+        .await?;
+        for prefix in [
+            "frame_specialist:",
+            "frame_delegation_enabled:",
+            "frame_plan_mode:",
+            "frame_agent_completion:",
+        ] {
+            let source_key = format!("{prefix}{source_frame_id}");
+            let target_key = format!("{prefix}{target_frame_id}");
+            sqlx::query(
+                "INSERT INTO settings(key,value) SELECT ?,value FROM settings WHERE key=? \
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            )
+            .bind(target_key)
+            .bind(source_key)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Convert legacy absolute compaction paths only inside known compaction
+    /// markers on a freshly cloned frame. The corresponding `.wisp/history`
+    /// files came from the checkpoint workspace snapshot, so the logical URI
+    /// resolves against whichever WorkingProject later opens the clone.
+    pub async fn rewrite_cloned_context_archive_references(
+        &self,
+        frame_id: &str,
+        source_root: &std::path::Path,
+    ) -> Result<u64> {
+        validate_id("Exploration frame", frame_id)?;
+        let native_prefix = source_root
+            .join(".wisp")
+            .join("history")
+            .to_string_lossy()
+            .trim_end_matches(['/', '\\'])
+            .to_string()
+            + std::path::MAIN_SEPARATOR_STR;
+        let slash_prefix = format!(
+            "{}/",
+            source_root
+                .to_string_lossy()
+                .trim_end_matches(['/', '\\'])
+                .replace('\\', "/")
+        ) + ".wisp/history/";
+        let rows = sqlx::query("SELECT id,content FROM messages WHERE frame_id=?")
+            .bind(frame_id)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut rewritten = 0;
+        let mut tx = self.begin_write().await?;
+        for row in rows {
+            let id: String = row.try_get("id")?;
+            let encoded: String = row.try_get("content")?;
+            let Ok(mut content) = serde_json::from_str::<wisp_llm::Content>(&encoded) else {
+                continue;
+            };
+            let wisp_llm::Content::Text(text) = &mut content else {
+                continue;
+            };
+            if !(text.starts_with("[compacted;")
+                || text.starts_with("[context summary checkpoint]"))
+            {
+                continue;
+            }
+            let updated = text
+                .replace(&native_prefix, "wisp-history:")
+                .replace(&slash_prefix, "wisp-history:");
+            if updated == *text {
+                continue;
+            }
+            *text = updated;
+            sqlx::query("UPDATE messages SET content=? WHERE id=? AND frame_id=?")
+                .bind(serde_json::to_string(&content)?)
+                .bind(id)
+                .bind(frame_id)
+                .execute(&mut *tx)
+                .await?;
+            rewritten += 1;
+        }
+        tx.commit().await?;
+        Ok(rewritten)
     }
 
     pub async fn compare_and_swap_exploration_mainline(
@@ -514,6 +835,17 @@ impl Store {
         rows.into_iter().map(exploration_from_row).collect()
     }
 
+    pub async fn project_has_private_explorations(&self, project_id: &str) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM explorations exploration \
+             JOIN exploration_checkpoints checkpoint ON checkpoint.id=exploration.checkpoint_id \
+             WHERE checkpoint.project_id=? AND exploration.status IN ('creating','active','archived','promoting'))",
+        )
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     pub async fn transition_exploration(
         &self,
         exploration_id: &str,
@@ -670,6 +1002,73 @@ impl Store {
         Ok(())
     }
 
+    pub async fn capture_exploration_baseline_entities(
+        &self,
+        checkpoint_id: &str,
+    ) -> Result<Vec<ExplorationBaselineEntity>> {
+        let project_id: String =
+            sqlx::query_scalar("SELECT project_id FROM exploration_checkpoints WHERE id=?")
+                .bind(checkpoint_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Exploration checkpoint not found"))?;
+        let mut entities = Vec::new();
+        for (kind, query) in [
+            (
+                "run",
+                "SELECT id,status,title,COALESCE(ended_at,created_at) AS version \
+                 FROM runs WHERE project_id=? AND exploration_id IS NULL \
+                   AND status NOT IN ('submitted','running','cancelling') ORDER BY id",
+            ),
+            (
+                "research_node",
+                "SELECT id,kind || ':' || title AS status,metadata_json AS title,updated_at AS version \
+                 FROM research_nodes WHERE project_id=? AND exploration_id IS NULL ORDER BY id",
+            ),
+            (
+                "research_edge",
+                "SELECT id,relation AS status,source_id || ':' || target_id || ':' || metadata_json AS title,created_at AS version \
+                 FROM research_edges WHERE project_id=? AND exploration_id IS NULL ORDER BY id",
+            ),
+            (
+                "external_resource",
+                "SELECT id,visibility AS status,kind || ':' || uri AS title,updated_at AS version \
+                 FROM external_resources WHERE project_id=? AND exploration_id IS NULL ORDER BY id",
+            ),
+        ] {
+            for row in sqlx::query(query)
+                .bind(&project_id)
+                .fetch_all(&self.pool)
+                .await?
+            {
+                let entity_id: String = row.try_get("id")?;
+                let status: String = row.try_get("status")?;
+                let title: String = row.try_get("title")?;
+                let version: i64 = row.try_get("version")?;
+                let fingerprint = hex::encode(Sha256::digest(
+                    serde_json::to_vec(&serde_json::json!({
+                        "kind": kind,
+                        "id": &entity_id,
+                        "status": &status,
+                        "title": &title,
+                        "version": version,
+                    }))?,
+                ));
+                entities.push(ExplorationBaselineEntity {
+                    checkpoint_id: checkpoint_id.to_string(),
+                    entity_kind: kind.to_string(),
+                    entity_id,
+                    version_id: Some(version.to_string()),
+                    fingerprint,
+                });
+            }
+        }
+        for entity in &entities {
+            self.record_exploration_baseline_entity(entity).await?;
+        }
+        Ok(entities)
+    }
+
     pub async fn record_exploration_baseline_artifact_head(
         &self,
         head: &ExplorationBaselineArtifactHead,
@@ -770,6 +1169,32 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(artifact_head_from_row).collect()
+    }
+
+    pub async fn list_exploration_effects(
+        &self,
+        exploration_id: &str,
+    ) -> Result<Vec<ExplorationEffect>> {
+        let rows = sqlx::query(
+            "SELECT id,exploration_id,effect_kind,recoverability,target_summary,metadata_json,created_at \
+             FROM exploration_effects WHERE exploration_id=? ORDER BY created_at,id",
+        )
+        .bind(exploration_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ExplorationEffect {
+                    id: row.try_get("id")?,
+                    exploration_id: row.try_get("exploration_id")?,
+                    effect_kind: row.try_get("effect_kind")?,
+                    recoverability: row.try_get("recoverability")?,
+                    target_summary: row.try_get("target_summary")?,
+                    metadata_json: row.try_get("metadata_json")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect()
     }
 }
 

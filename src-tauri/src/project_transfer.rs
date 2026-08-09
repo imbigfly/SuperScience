@@ -1,4 +1,7 @@
-use super::{build_project_summary, workspace_manifest, workspace_scan, AppState, ProjectSummary};
+use super::{
+    build_project_summary, exploration_commands, workspace_manifest, workspace_scan, AppState,
+    ProjectSummary,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -781,6 +784,12 @@ pub(super) async fn export_project(
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
+    exploration_commands::reject_private_exploration_project_mutation(
+        &state.store,
+        &id,
+        "Project export",
+    )
+    .await?;
     let reporter = TransferReporter::new(app.clone(), &window, "export");
     reporter.report("selecting_export_destination", 0, None, 0, None, None);
     let _project_activity = state.begin_project_activity(&id)?;
@@ -883,6 +892,14 @@ pub(super) async fn import_project(
     state: State<'_, AppState>,
     window: WebviewWindow,
 ) -> Result<Option<ProjectSummary>, String> {
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    if matches!(scope, wisp_store::StateScope::Exploration { .. }) {
+        return Err(
+            "exploration_project_mutation_blocked: Project import is unavailable inside an active exploration."
+                .into(),
+        );
+    }
     let reporter = TransferReporter::new(app.clone(), &window, "import");
     reporter.report("selecting_archive", 0, None, 0, None, None);
     let Some(archive_path) = pick_archive(&app).await? else {

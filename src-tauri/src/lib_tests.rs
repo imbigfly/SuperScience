@@ -932,7 +932,7 @@ async fn composer_references_resolve_non_reader_context() {
             language: "r".into(),
         },
     ];
-    let injected = resolve_composer_references(&store, &refs, "target", &skills)
+    let injected = resolve_composer_references(&store, &refs, "target", &root_a, &skills)
         .await
         .unwrap()
         .join("\n");
@@ -949,6 +949,7 @@ async fn composer_references_resolve_non_reader_context() {
             id: "ssh:missing".into()
         }],
         "target",
+        &root_a,
         &skills,
     )
     .await

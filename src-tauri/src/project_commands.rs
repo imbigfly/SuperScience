@@ -7,10 +7,11 @@ pub(super) async fn get_research_graph(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
 ) -> Result<wisp_store::ResearchGraph, String> {
-    let ap = state.active(window.label());
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     state
         .store
-        .research_graph(&ap.id)
+        .research_graph_in_scope(&scope)
         .await
         .map_err(|e| e.to_string())
 }
@@ -332,6 +333,12 @@ pub(super) async fn delete_project(
     id: String,
     delete_data: Option<bool>,
 ) -> Result<(), String> {
+    exploration_commands::reject_private_exploration_project_mutation(
+        &state.store,
+        &id,
+        "Project deletion",
+    )
+    .await?;
     let _project_activity = state.begin_project_activity(&id)?;
     let workspace_delete_target = if delete_data.unwrap_or(false) {
         let (_, workspace_dir) = state
@@ -492,6 +499,12 @@ pub(super) async fn update_project(
         return Err("Project name is required".into());
     }
     let ap = state.active(window.label());
+    exploration_commands::reject_private_exploration_project_mutation(
+        &state.store,
+        &ap.id,
+        "Project settings changes",
+    )
+    .await?;
     state
         .store
         .update_project(&ap.id, name.trim(), description.trim())

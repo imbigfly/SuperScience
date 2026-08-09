@@ -283,7 +283,7 @@ impl Store {
         let row: Option<(String, String)> = sqlx::query_as(
             "SELECT m.frame_id, f.project_id \
              FROM messages m JOIN frames f ON f.id=m.frame_id \
-             WHERE m.role='user' AND f.parent_frame_id=f.id \
+             WHERE m.role='user' AND f.parent_frame_id=f.id AND f.exploration_id IS NULL \
              ORDER BY m.ts DESC, m.rowid DESC LIMIT 1",
         )
         .fetch_optional(&self.pool)
@@ -317,6 +317,7 @@ impl Store {
                 (SELECT COALESCE(MAX(ts), f.updated_at) FROM messages m WHERE m.frame_id = f.id) > f.seen_at AS unseen \
              FROM frames f \
              WHERE f.parent_frame_id = f.id \
+               AND f.exploration_id IS NULL \
                AND f.project_id NOT LIKE 'scratch:%' \
                AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role='user') \
              ORDER BY activity_at DESC, f.rowid DESC LIMIT ?",
@@ -428,9 +429,9 @@ impl Store {
         let now = chrono::Utc::now().timestamp();
         let inserted = sqlx::query(
             "INSERT INTO frames(\
-                id,parent_frame_id,root_frame_id,agent_name,status,project_id,model,\
+                id,parent_frame_id,root_frame_id,agent_name,status,project_id,model,exploration_id,\
                 input_tokens,output_tokens,created_at,updated_at,completed_at\
-             ) SELECT ?,id,COALESCE(root_frame_id,id),?,'running',project_id,?,0,0,?,?,NULL \
+             ) SELECT ?,id,COALESCE(root_frame_id,id),?,'running',project_id,?,exploration_id,0,0,?,?,NULL \
              FROM frames WHERE id=? AND project_id=?",
         )
         .bind(id)
@@ -1047,6 +1048,7 @@ impl Store {
                     (SELECT content FROM messages m WHERE m.frame_id = f.id AND m.role = 'user' ORDER BY m.seq ASC LIMIT 1) AS first_user \
                 FROM frames f \
                 WHERE f.project_id = ? AND f.parent_frame_id = f.id \
+                  AND f.exploration_id IS NULL \
                   AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user') \
              ) sessions \
              WHERE (? IS NULL OR activity_at < ? OR (activity_at = ? AND id < ?)) \
@@ -1089,6 +1091,7 @@ impl Store {
                 (SELECT content FROM messages m WHERE m.frame_id = f.id AND m.role = 'user' ORDER BY m.seq ASC LIMIT 1) AS first_user \
              FROM frames f \
              WHERE f.project_id = ? AND f.parent_frame_id = f.id AND COALESCE(f.pinned, 0) = 1 \
+               AND f.exploration_id IS NULL \
                AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user') \
              ORDER BY activity_at DESC, f.id DESC",
         )
@@ -1492,6 +1495,7 @@ impl Store {
                     (SELECT COALESCE(MAX(ts), f.updated_at) FROM messages m WHERE m.frame_id=f.id) > f.seen_at AS unseen \
              FROM frames f JOIN projects p ON p.id=f.project_id \
              WHERE f.parent_frame_id=f.id \
+               AND f.exploration_id IS NULL \
                AND f.project_id NOT LIKE 'scratch:%' \
                AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id=f.id AND mm.role='user') \
                AND (? IS NULL OR f.project_id=?) \

@@ -3754,6 +3754,7 @@ async fn run_manager_roundtrip_and_lifecycle() {
     let tmp = std::env::temp_dir().join(format!("wisp_store_runs_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
     store
         .upsert_execution_context(&ExecutionContext::new("local", "Local").unwrap())
         .await

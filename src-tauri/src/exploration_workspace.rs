@@ -162,6 +162,7 @@ impl PersistentExplorationWorkspace {
             excluded_relative_prefixes: vec![
                 ".git".into(),
                 ".wisp/explorations".into(),
+                ".wisp/history".into(),
                 REFERENCES_MANIFEST.into(),
             ],
             max_entries: self.max_entries,

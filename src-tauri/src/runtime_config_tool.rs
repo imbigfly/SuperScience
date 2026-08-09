@@ -10,6 +10,7 @@ pub struct SetRuntimeInterpreterTool {
     store: Store,
     runtime_manager: RuntimeManager,
     project_id: String,
+    scope_key: String,
 }
 
 #[derive(Deserialize)]
@@ -29,6 +30,21 @@ impl SetRuntimeInterpreterTool {
             store,
             runtime_manager,
             project_id: project_id.into(),
+            scope_key: wisp_runtime::MAINLINE_RUNTIME_SCOPE.into(),
+        }
+    }
+
+    pub fn new_in_scope(
+        store: Store,
+        runtime_manager: RuntimeManager,
+        project_id: impl Into<String>,
+        scope_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            store,
+            runtime_manager,
+            project_id: project_id.into(),
+            scope_key: scope_key.into(),
         }
     }
 }
@@ -89,6 +105,11 @@ impl Tool for SetRuntimeInterpreterTool {
     }
 
     async fn run(&self, args: &serde_json::Value, env: &dyn ToolEnv) -> ToolResult {
+        if self.scope_key != wisp_runtime::MAINLINE_RUNTIME_SCOPE {
+            return ToolResult::fail(
+                "exploration_project_mutation_blocked: runtime interpreter settings cannot be changed inside an exploration",
+            );
+        }
         let args: SetRuntimeInterpreterArgs = match serde_json::from_value(args.clone()) {
             Ok(args) => args,
             Err(error) => {
@@ -118,6 +139,7 @@ impl Tool for SetRuntimeInterpreterTool {
         let (language, label) = language_names(args.language);
         let key = RuntimeKey {
             project_id: self.project_id.clone(),
+            scope_key: self.scope_key.clone(),
             context_id: context_id.to_string(),
             language: args.language,
         };

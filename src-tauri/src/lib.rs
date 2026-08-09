@@ -37,8 +37,7 @@ mod desktop_lifecycle;
 mod device_bridge;
 mod device_hub;
 mod dynamic_workflow;
-// Stage 2 provides the backend before Stage 3 wires it into Tauri commands.
-#[allow(dead_code)]
+mod exploration_commands;
 mod exploration_workspace;
 mod file_browser;
 mod harvest;
@@ -4107,6 +4106,7 @@ async fn wire_runtimes_and_mcp(
     registry: &mut wisp_tools::Registry,
     runtime_manager: &wisp_runtime::RuntimeManager,
     project_id: &str,
+    scope_key: &str,
     frame_id: &str,
     app_data: &std::path::Path,
     store: &Store,
@@ -4118,11 +4118,14 @@ async fn wire_runtimes_and_mcp(
     if runtime_allow.is_none() {
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
-                Box::new(runtime_config_tool::SetRuntimeInterpreterTool::new(
-                    store.clone(),
-                    runtime_manager.clone(),
-                    project_id,
-                )),
+                Box::new(
+                    runtime_config_tool::SetRuntimeInterpreterTool::new_in_scope(
+                        store.clone(),
+                        runtime_manager.clone(),
+                        project_id,
+                        scope_key,
+                    ),
+                ),
                 store.clone(),
                 frame_id,
             ),
@@ -4156,9 +4159,10 @@ async fn wire_runtimes_and_mcp(
     if runtime_granted("python") && worker_path.is_file() {
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
-                Box::new(wisp_runtime::ReplTool::new(
+                Box::new(wisp_runtime::ReplTool::new_in_scope(
                     runtime_manager.clone(),
                     project_id,
+                    scope_key,
                 )),
                 store.clone(),
                 frame_id,
@@ -4176,9 +4180,10 @@ async fn wire_runtimes_and_mcp(
     if runtime_granted("r") && r_worker_path.is_file() {
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
-                Box::new(wisp_runtime::RTool::new(
+                Box::new(wisp_runtime::RTool::new_in_scope(
                     runtime_manager.clone(),
                     project_id,
+                    scope_key,
                 )),
                 store.clone(),
                 frame_id,
@@ -4522,9 +4527,15 @@ fn acp_bridge_launch(
 async fn resolve_composer_references(
     store: &Store,
     refs: &[ComposerReferenceArg],
-    _target_frame_id: &str,
+    target_frame_id: &str,
+    working_root: &Path,
     skills: &SkillIndex,
 ) -> Result<Vec<String>, String> {
+    let scope = store
+        .frame_state_scope(target_frame_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Target conversation not found.".to_string())?;
     let mut seen = HashSet::new();
     let mut artifact_lines = Vec::new();
     let mut skill_blocks = Vec::new();
@@ -4546,21 +4557,40 @@ async fn resolve_composer_references(
                 if !seen.insert(format!("artifact:{id}")) {
                     continue;
                 }
-                let artifact = store
+                let mut artifact = store
                     .get_artifact_detail(id)
                     .await
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("Attached artifact '{id}' no longer exists."))?;
-                let real = wisp_tools::safety::validate_file_path(
-                    Path::new(&artifact.project_root),
-                    &artifact.path,
-                )
-                .map_err(|_| {
-                    format!(
-                        "Attached artifact '{}' is no longer readable.",
-                        artifact.name
-                    )
-                })?;
+                if !store
+                    .artifact_visible_in_scope(id, &scope)
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err(format!(
+                        "Attached artifact '{id}' is unavailable in the active state."
+                    ));
+                }
+                artifact.path = store
+                    .artifact_path_in_scope(id, &scope)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        format!("Attached artifact '{id}' is unavailable in the active state.")
+                    })?;
+                let artifact_root = if matches!(&scope, wisp_store::StateScope::Exploration { .. })
+                {
+                    working_root
+                } else {
+                    Path::new(&artifact.project_root)
+                };
+                let real = wisp_tools::safety::validate_file_path(artifact_root, &artifact.path)
+                    .map_err(|_| {
+                        format!(
+                            "Attached artifact '{}' is no longer readable.",
+                            artifact.name
+                        )
+                    })?;
                 if !real.is_file() {
                     return Err(format!(
                         "Attached artifact '{}' is no longer readable.",
@@ -4825,22 +4855,17 @@ async fn send_message_inner(
         return Err("message is empty".into());
     }
     let mut ap = state.active(window_label);
+    let mut explicit_scope = None;
     // A session belongs to one project for life, but the per-window active slot
     // can drift while it keeps running (another project opened in this window,
     // the "main" fallback, an agent rebuild). For explicit session ids, always
     // run the turn in the owner project — never error out on a mismatch or,
     // worse, run tools in a stranger's workspace (#182, #194).
     if let Some(id) = session_id.as_deref().filter(|id| !id.is_empty()) {
-        let owner = state
-            .store
-            .frame_project_id(id)
-            .await
-            .map_err(|error| error.to_string())?;
-        if let Some(owner_id) = owner.filter(|owner_id| owner_id != &ap.id) {
-            ap = project_commands::load_active_project(&state, &owner_id)
-                .await?
-                .0;
-        }
+        let (working_project, scope) =
+            exploration_commands::working_project_for_frame(state, id).await?;
+        ap = working_project;
+        explicit_scope = Some(scope);
     }
     let _project_activity = state.begin_project_activity(&ap.id)?;
     let saved_binding = match session_id.as_deref().filter(|id| !id.is_empty()) {
@@ -4856,6 +4881,15 @@ async fn send_message_inner(
         .is_some_and(|id| !id.trim().is_empty())
         || saved_binding.is_some()
     {
+        if matches!(
+            explicit_scope.as_ref(),
+            Some(wisp_store::StateScope::Exploration { .. })
+        ) {
+            return Err(
+                "exploration_acp_unsupported: ACP conversations cannot run inside an exploration in the MVP."
+                    .into(),
+            );
+        }
         // ACP agents own their conversation context, so neither mid-turn
         // guidance injection nor context rollback is possible over the
         // protocol; `guide`/`replace` degrade to the plain queued turn here.
@@ -4894,7 +4928,7 @@ async fn send_message_inner(
         let refs = references.as_deref().unwrap_or_default();
         let skills = active_skill_index(&state.store, &ap).await;
         let mut injected_context =
-            resolve_composer_references(&state.store, refs, &frame_id, &skills).await?;
+            resolve_composer_references(&state.store, refs, &frame_id, &ap.root, &skills).await?;
         if let Some(context) = runtime.mcp_app_context_injection() {
             injected_context.push(context);
         }
@@ -5040,6 +5074,11 @@ async fn send_message_inner(
         }
         None => create_session_frame(&state.store, &ap.id).await?,
     };
+    let frame_scope = match explicit_scope {
+        Some(scope) => scope,
+        None => wisp_store::StateScope::mainline(ap.id.clone()),
+    };
+    exploration_commands::require_writable_exploration(&state.store, &frame_scope).await?;
     if user_routed_turn {
         state.set_notification_window(&frame_id, window_label);
     }
@@ -5253,27 +5292,27 @@ async fn send_message_inner(
             ap.id.clone(),
             Some(frame_id.clone()),
         )));
-        agent.add_tool(Box::new(run_context::GetRunTool::new(
+        agent.add_tool(Box::new(run_context::GetRunTool::new_in_scope(
             state.store.clone(),
-            ap.id.clone(),
+            frame_scope.clone(),
         )));
-        agent.add_tool(Box::new(run_context::MonitorRunTool::new(
+        agent.add_tool(Box::new(run_context::MonitorRunTool::new_in_scope(
             state.store.clone(),
-            ap.id.clone(),
+            frame_scope.clone(),
         )));
-        agent.add_tool(Box::new(run_context::CancelRunTool::new(
+        agent.add_tool(Box::new(run_context::CancelRunTool::new_in_scope(
             state.store.clone(),
             state.run_manager.clone(),
-            ap.id.clone(),
+            frame_scope.clone(),
         )));
         agent.add_tool(Box::new(method_search::PrepareMethodSearchTool::new(
             state.store.clone(),
             ap.id.clone(),
             frame_id.clone(),
         )));
-        agent.add_tool(Box::new(research_graph::ResearchGraphTool::new(
+        agent.add_tool(Box::new(research_graph::ResearchGraphTool::new_in_scope(
             state.store.clone(),
-            ap.id.clone(),
+            frame_scope.clone(),
         )));
         agent.add_tool(Box::new(quick_actions::ExplainWorkflowTool::new(
             state.store.clone(),
@@ -5356,6 +5395,7 @@ async fn send_message_inner(
             &mut agent.tools,
             &state.runtime_manager,
             &ap.id,
+            frame_scope.scope_key(),
             &frame_id,
             &state.app_data,
             &state.store,
@@ -5476,6 +5516,11 @@ async fn send_message_inner(
         .map(|delivery| delivery.id)
         .collect::<Vec<_>>();
     agent.ctx.clear_runtime_injections();
+    if let Some(injection) =
+        exploration_commands::exploration_runtime_injection(&ap.root, &frame_scope)?
+    {
+        agent.ctx.inject_user(injection);
+    }
     if !resume {
         if let Some(context) = rt.mcp_app_context_injection() {
             agent.ctx.inject_user(context);
@@ -5487,7 +5532,7 @@ async fn send_message_inner(
         }
         let skills = active_skill_index(&state.store, &ap).await;
         for injection in
-            resolve_composer_references(&state.store, &refs, &frame_id, &skills).await?
+            resolve_composer_references(&state.store, &refs, &frame_id, &ap.root, &skills).await?
         {
             agent.ctx.inject_user(injection);
         }
@@ -7525,6 +7570,12 @@ pub fn run() {
             scratch_commands::start_scratch_chat,
             scratch_commands::close_scratch_chat,
             session_commands::branch_session,
+            exploration_commands::create_exploration_checkpoint,
+            exploration_commands::create_exploration,
+            exploration_commands::list_explorations,
+            exploration_commands::open_exploration,
+            exploration_commands::archive_exploration,
+            exploration_commands::restore_exploration,
             session_commands::list_sessions_page,
             runtime_commands::list_execution_contexts,
             runtime_commands::list_runtimes,

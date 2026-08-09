@@ -1,6 +1,6 @@
 use super::{
     artifact_version_from_row, ArtifactDependency, ArtifactVersion, ExternalResource, LineageBasis,
-    LineageConfidence, RunCodeSnapshot, RunInput, RunOutput, Store,
+    LineageConfidence, RunCodeSnapshot, RunInput, RunOutput, StateScope, Store,
 };
 use anyhow::Result;
 use sqlx::Row;
@@ -23,25 +23,85 @@ impl Store {
         {
             anyhow::bail!("Unresolved Run input cannot have exact confidence");
         }
-        let valid: bool = sqlx::query_scalar(
-            "SELECT EXISTS(\
-               SELECT 1 FROM runs r \
-               WHERE r.id=? \
-                 AND (? IS NULL OR EXISTS(\
-                   SELECT 1 FROM artifact_versions v JOIN artifacts a ON a.id=v.artifact_id \
-                   WHERE v.id=? AND a.project_id=r.project_id)) \
-                 AND (? IS NULL OR EXISTS(\
-                   SELECT 1 FROM external_resources e \
-                   WHERE e.id=? AND e.project_id=r.project_id))\
-             )",
-        )
-        .bind(&input.run_id)
-        .bind(input.artifact_version_id.as_deref())
-        .bind(input.artifact_version_id.as_deref())
-        .bind(input.external_resource_id.as_deref())
-        .bind(input.external_resource_id.as_deref())
-        .fetch_one(&self.pool)
-        .await?;
+        let run_scope: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT project_id,exploration_id FROM runs WHERE id=?")
+                .bind(&input.run_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some((project_id, exploration_id)) = run_scope else {
+            anyhow::bail!("Run input requires an existing Run");
+        };
+        let artifact_valid = match input.artifact_version_id.as_deref() {
+            None => true,
+            Some(version_id) => match exploration_id.as_deref() {
+                None => {
+                    sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM artifact_versions version \
+                     JOIN artifacts artifact ON artifact.id=version.artifact_id \
+                     WHERE version.id=? AND artifact.project_id=? \
+                       AND artifact.exploration_id IS NULL)",
+                    )
+                    .bind(version_id)
+                    .bind(&project_id)
+                    .fetch_one(&self.pool)
+                    .await?
+                }
+                Some(exploration_id) => {
+                    sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM artifact_versions version \
+                     JOIN artifacts artifact ON artifact.id=version.artifact_id \
+                     WHERE version.id=? AND artifact.project_id=? \
+                       AND (artifact.exploration_id=? OR (artifact.exploration_id IS NULL \
+                         AND EXISTS(SELECT 1 FROM explorations exploration \
+                           JOIN exploration_baseline_artifact_heads baseline \
+                             ON baseline.checkpoint_id=exploration.checkpoint_id \
+                           WHERE exploration.id=? \
+                             AND baseline.artifact_version_id=version.id))))",
+                    )
+                    .bind(version_id)
+                    .bind(&project_id)
+                    .bind(exploration_id)
+                    .bind(exploration_id)
+                    .fetch_one(&self.pool)
+                    .await?
+                }
+            },
+        };
+        let external_valid = match input.external_resource_id.as_deref() {
+            None => true,
+            Some(resource_id) => match exploration_id.as_deref() {
+                None => {
+                    sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM external_resources \
+                     WHERE id=? AND project_id=? AND exploration_id IS NULL)",
+                    )
+                    .bind(resource_id)
+                    .bind(&project_id)
+                    .fetch_one(&self.pool)
+                    .await?
+                }
+                Some(exploration_id) => {
+                    sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM external_resources resource \
+                     WHERE resource.id=? AND resource.project_id=? \
+                       AND (resource.exploration_id=? OR (resource.exploration_id IS NULL \
+                         AND EXISTS(SELECT 1 FROM explorations exploration \
+                           JOIN exploration_baseline_entities baseline \
+                             ON baseline.checkpoint_id=exploration.checkpoint_id \
+                           WHERE exploration.id=? \
+                             AND baseline.entity_kind='external_resource' \
+                             AND baseline.entity_id=resource.id))))",
+                    )
+                    .bind(resource_id)
+                    .bind(&project_id)
+                    .bind(exploration_id)
+                    .bind(exploration_id)
+                    .fetch_one(&self.pool)
+                    .await?
+                }
+            },
+        };
+        let valid = artifact_valid && external_valid;
         if !valid {
             anyhow::bail!("Run input source must belong to the Run project");
         }
@@ -407,6 +467,15 @@ impl Store {
     }
 
     pub async fn save_external_resource(&self, resource: &ExternalResource) -> Result<()> {
+        self.save_external_resource_in_scope(resource, &StateScope::mainline(&resource.project_id))
+            .await
+    }
+
+    pub async fn save_external_resource_in_scope(
+        &self,
+        resource: &ExternalResource,
+        scope: &StateScope,
+    ) -> Result<()> {
         if resource.id.trim().is_empty()
             || resource.project_id.trim().is_empty()
             || resource.kind.trim().is_empty()
@@ -423,6 +492,13 @@ impl Store {
         }) {
             anyhow::bail!("External resource checksum must be a SHA-256 hex digest");
         }
+        if scope.project_id() != resource.project_id {
+            anyhow::bail!("External resource scope does not belong to its project");
+        }
+        let exploration_id = match scope {
+            StateScope::Mainline { .. } => None,
+            StateScope::Exploration { exploration_id, .. } => Some(exploration_id.as_str()),
+        };
         let project_exists: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM projects WHERE id=?)")
                 .bind(&resource.project_id)
@@ -431,22 +507,25 @@ impl Store {
         if !project_exists {
             anyhow::bail!("External resource requires an existing project");
         }
-        let existing_project: Option<String> =
-            sqlx::query_scalar("SELECT project_id FROM external_resources WHERE id=?")
+        let existing_scope: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT project_id,exploration_id FROM external_resources WHERE id=?")
                 .bind(&resource.id)
                 .fetch_optional(&self.pool)
                 .await?;
-        if existing_project
-            .as_deref()
-            .is_some_and(|project_id| project_id != resource.project_id)
+        if existing_scope
+            .as_ref()
+            .is_some_and(|(project_id, existing)| {
+                project_id != &resource.project_id || existing.as_deref() != exploration_id
+            })
         {
-            anyhow::bail!("External resource cannot move between projects");
+            anyhow::bail!("External resource cannot move between state scopes");
         }
+        let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT INTO external_resources(\
                id,project_id,kind,uri,version,checksum,size_bytes,license,visibility,\
-               access_instructions,accessed_at,created_at,updated_at\
-             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) \
+               access_instructions,accessed_at,created_at,updated_at,exploration_id\
+             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
              ON CONFLICT(id) DO UPDATE SET \
                kind=excluded.kind,uri=excluded.uri,version=excluded.version,\
                checksum=excluded.checksum,size_bytes=excluded.size_bytes,\
@@ -467,8 +546,11 @@ impl Store {
         .bind(resource.accessed_at)
         .bind(resource.created_at)
         .bind(resource.updated_at)
-        .execute(&self.pool)
+        .bind(exploration_id)
+        .execute(&mut *tx)
         .await?;
+        self.bump_state_generation_in_tx(&mut tx, scope).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -476,9 +558,60 @@ impl Store {
         let row = sqlx::query(
             "SELECT id,project_id,kind,uri,version,checksum,size_bytes,license,visibility,\
                     access_instructions,accessed_at,created_at,updated_at \
-             FROM external_resources WHERE id=?",
+             FROM external_resources WHERE id=? AND exploration_id IS NULL",
         )
         .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(ExternalResource {
+                id: row.try_get("id")?,
+                project_id: row.try_get("project_id")?,
+                kind: row.try_get("kind")?,
+                uri: row.try_get("uri")?,
+                version: row.try_get("version")?,
+                checksum: row.try_get("checksum")?,
+                size_bytes: row.try_get("size_bytes")?,
+                license: row.try_get("license")?,
+                visibility: row.try_get("visibility")?,
+                access_instructions: row.try_get("access_instructions")?,
+                accessed_at: row.try_get("accessed_at")?,
+                created_at: row.try_get("created_at")?,
+                updated_at: row.try_get("updated_at")?,
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn get_external_resource_in_scope(
+        &self,
+        id: &str,
+        scope: &StateScope,
+    ) -> Result<Option<ExternalResource>> {
+        let StateScope::Exploration {
+            project_id,
+            exploration_id,
+        } = scope
+        else {
+            return self.get_external_resource(id).await;
+        };
+        let row = sqlx::query(
+            "SELECT resource.id,resource.project_id,resource.kind,resource.uri,resource.version,\
+                    resource.checksum,resource.size_bytes,resource.license,resource.visibility,\
+                    resource.access_instructions,resource.accessed_at,resource.created_at,\
+                    resource.updated_at FROM external_resources resource \
+             WHERE resource.id=? AND resource.project_id=? \
+               AND (resource.exploration_id=? OR (resource.exploration_id IS NULL AND EXISTS(\
+                 SELECT 1 FROM explorations exploration \
+                 JOIN exploration_baseline_entities baseline \
+                   ON baseline.checkpoint_id=exploration.checkpoint_id \
+                 WHERE exploration.id=? AND baseline.entity_kind='external_resource' \
+                   AND baseline.entity_id=resource.id)))",
+        )
+        .bind(id)
+        .bind(project_id)
+        .bind(exploration_id)
+        .bind(exploration_id)
         .fetch_optional(&self.pool)
         .await?;
         row.map(|row| {

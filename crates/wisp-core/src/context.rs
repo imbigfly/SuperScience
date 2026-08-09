@@ -1347,6 +1347,28 @@ impl ContextManager {
         archive_path: &Path,
         fixed_tokens: usize,
     ) -> Result<(usize, usize), String> {
+        self.compact_with_reserve_reference(
+            provider,
+            archive_path,
+            fixed_tokens,
+            &archive_path.display().to_string(),
+        )
+        .await
+    }
+
+    /// Compact to a physical path while putting a stable logical reference in
+    /// tombstones and summaries. Hosts use `wisp-history:<id>` so an archive
+    /// can move with its WorkingProject without rewriting model context.
+    pub async fn compact_with_reserve_reference(
+        &mut self,
+        provider: &dyn Provider,
+        archive_path: &Path,
+        fixed_tokens: usize,
+        archive_reference: &str,
+    ) -> Result<(usize, usize), String> {
+        if archive_reference.trim().is_empty() {
+            return Err("compact archive reference cannot be empty".into());
+        }
         self.invalidate_last_request();
         let before = self.request_tokens_with_reserve(fixed_tokens);
         self.save(archive_path);
@@ -1360,11 +1382,11 @@ impl ContextManager {
         }
         let tombstone = format!(
             "{TOMBSTONE_PREFIX} full content archived at {} — retrieve only narrow ranges with read/grep; do not load the whole archive back into context]",
-            archive_path.display()
+            archive_reference
         );
         let archive_note = format!(
             "[The pre-compact conversation history is archived at {} — retrieve only narrow ranges with read/grep; do not load the whole archive back into context.]",
-            archive_path.display()
+            archive_reference
         );
         let original_messages = self.messages.clone();
         let target = self.compaction_target();

@@ -42,12 +42,12 @@ pub use agent_workflows::{
     AgentDelegationRootLimits, AgentWorkflow, AgentWorkflowStatus, AgentWorkflowStep,
     MAX_ROOT_AGENT_DEPTH, MAX_ROOT_AGENT_TASKS,
 };
-pub use artifacts::logical_artifact_id;
+pub use artifacts::{logical_artifact_id, scoped_logical_artifact_id};
 pub use ask_user_requests::AskUserPoll;
 pub use explorations::{
     ArtifactHead, ContextArchiveRecord, Exploration, ExplorationBaselineArtifactHead,
-    ExplorationBaselineEntity, ExplorationCheckpoint, ExplorationFamily, ExplorationStatus,
-    StateScope, WorkspaceSnapshotRecord, MAINLINE_SCOPE_KEY,
+    ExplorationBaselineEntity, ExplorationCheckpoint, ExplorationEffect, ExplorationFamily,
+    ExplorationStatus, StateScope, WorkspaceSnapshotRecord, MAINLINE_SCOPE_KEY,
 };
 pub use external_session_cache::ExternalSessionCacheRecord;
 pub use library::{

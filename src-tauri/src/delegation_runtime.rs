@@ -2663,6 +2663,11 @@ impl AgentDelegator for NativeDelegator {
             )
             .await?;
         sync_child_execution_contexts(&self.store, Some(&parent_frame_id), &child_frame_id).await?;
+        let child_scope = self
+            .store
+            .frame_state_scope(&child_frame_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("delegated conversation scope is missing"))?;
         self.provenance
             .lock()
             .await
@@ -2732,14 +2737,14 @@ impl AgentDelegator for NativeDelegator {
                 child_frame_id.clone(),
             ),
         ));
-        tools.add(Box::new(crate::run_context::GetRunTool::new(
+        tools.add(Box::new(crate::run_context::GetRunTool::new_in_scope(
             self.store.clone(),
-            self.project.id.clone(),
+            child_scope.clone(),
         )));
-        tools.add(Box::new(crate::run_context::CancelRunTool::new(
+        tools.add(Box::new(crate::run_context::CancelRunTool::new_in_scope(
             self.store.clone(),
             self.run_manager.clone(),
-            self.project.id.clone(),
+            child_scope.clone(),
         )));
         tools.add(Box::new(
             crate::method_search::PrepareMethodSearchTool::new(
@@ -2758,6 +2763,7 @@ impl AgentDelegator for NativeDelegator {
             &mut tools,
             &self.runtime_manager,
             &runtime_project_id,
+            child_scope.scope_key(),
             &child_frame_id,
             &self.app_data,
             &self.store,
@@ -3222,6 +3228,14 @@ impl AgentDelegator for AcpDelegator {
             .await?
             .and_then(|workflow| workflow.frame_id)
             .ok_or_else(|| anyhow::anyhow!("Agent workflow is not bound to a conversation"))?;
+        if matches!(
+            self.store.frame_state_scope(&parent_frame_id).await?,
+            Some(wisp_store::StateScope::Exploration { .. })
+        ) {
+            anyhow::bail!(
+                "exploration_acp_unsupported: ACP delegation cannot run inside an exploration in the MVP"
+            );
+        }
         if reusable.is_none() {
             self.store
                 .create_child_frame(
