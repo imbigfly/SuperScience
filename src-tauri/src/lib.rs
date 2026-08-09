@@ -37,6 +37,9 @@ mod desktop_lifecycle;
 mod device_bridge;
 mod device_hub;
 mod dynamic_workflow;
+// Stage 2 provides the backend before Stage 3 wires it into Tauri commands.
+#[allow(dead_code)]
+mod exploration_workspace;
 mod file_browser;
 mod harvest;
 mod image_generation_tool;
@@ -87,6 +90,7 @@ mod ssh_master;
 mod terminal_sessions;
 mod turn_undo;
 mod workspace_manifest;
+mod workspace_scan;
 mod wsl_contexts;
 
 use artifact_commands::{register_artifact, upload_file};

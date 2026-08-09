@@ -1,4 +1,4 @@
-use super::{build_project_summary, workspace_manifest, AppState, ProjectSummary};
+use super::{build_project_summary, workspace_manifest, workspace_scan, AppState, ProjectSummary};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -192,50 +192,11 @@ pub(super) fn directory_component(raw: &str) -> String {
     }
 }
 
-fn portable_relative(root: &Path, path: &Path) -> Result<String, String> {
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| "workspace entry escaped the project root".to_string())?;
-    let mut parts = Vec::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(value) => parts.push(value.to_str().ok_or_else(|| {
-                "project paths must be valid Unicode to move between operating systems".to_string()
-            })?),
-            _ => return Err("workspace contains a non-portable path".into()),
-        }
-    }
-    Ok(parts.join("/"))
-}
-
-#[cfg(unix)]
-fn file_mode(metadata: &std::fs::Metadata) -> Option<u32> {
-    use std::os::unix::fs::PermissionsExt;
-    Some(metadata.permissions().mode() & 0o777)
-}
-
-#[cfg(not(unix))]
-fn file_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
-    None
-}
-
-fn same_path(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
-}
-
-const MAX_WORKSPACE_ENTRIES: usize = 100_000;
-
 pub(super) fn collect_workspace(
     root: &Path,
     excluded: &Path,
 ) -> Result<CollectedWorkspace, String> {
-    collect_workspace_capped(root, excluded, MAX_WORKSPACE_ENTRIES)
+    collect_workspace_capped(root, excluded, workspace_scan::MAX_WORKSPACE_ENTRIES)
 }
 
 fn collect_workspace_capped(
@@ -243,70 +204,39 @@ fn collect_workspace_capped(
     excluded: &Path,
     max_entries: usize,
 ) -> Result<CollectedWorkspace, String> {
-    fn children(
-        directory: &Path,
-        visited: &mut usize,
-        max_entries: usize,
-    ) -> Result<Vec<std::fs::DirEntry>, String> {
-        let mut children = Vec::new();
-        for child in std::fs::read_dir(directory)
-            .map_err(|error| format!("cannot read {}: {error}", directory.display()))?
-        {
-            if *visited >= max_entries {
-                return Err(format!(
-                    "workspace contains more than {max_entries} entries"
-                ));
-            }
-            *visited += 1;
-            children.push(
-                child.map_err(|error| format!("cannot read {}: {error}", directory.display()))?,
-            );
-        }
-        children.sort_by_key(|entry| entry.file_name());
-        Ok(children)
-    }
-
-    if !root.is_dir() {
-        return Err(format!(
-            "project directory does not exist: {}",
-            root.display()
-        ));
-    }
     let mut collected = CollectedWorkspace::default();
-    let mut visited = 0usize;
-    let mut pending = children(root, &mut visited, max_entries)?;
-    pending.reverse();
-    while let Some(child) = pending.pop() {
-        let path = child.path();
-        if same_path(&path, excluded) {
-            continue;
-        }
-        let metadata = std::fs::symlink_metadata(&path)
-            .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
-        let relative = portable_relative(root, &path)?;
-        if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
-            collected.skipped_paths.push(relative);
-            continue;
-        }
-        if metadata.is_dir() {
-            collected.entries.push(WorkspaceEntry {
-                source: path.clone(),
-                archive_path: relative,
-                kind: WorkspaceEntryKind::Directory,
-                size: 0,
-                mode: file_mode(&metadata),
-            });
-            let mut nested = children(&path, &mut visited, max_entries)?;
-            nested.reverse();
-            pending.extend(nested);
-        } else {
-            collected.entries.push(WorkspaceEntry {
-                source: path,
-                archive_path: relative,
-                kind: WorkspaceEntryKind::File,
-                size: metadata.len(),
-                mode: file_mode(&metadata),
-            });
+    let nodes = workspace_scan::scan_workspace(
+        root,
+        &workspace_scan::WorkspaceScanOptions {
+            excluded_roots: vec![excluded.to_path_buf()],
+            max_entries,
+            ..workspace_scan::WorkspaceScanOptions::default()
+        },
+    )?;
+    for node in nodes {
+        match node.kind {
+            workspace_scan::WorkspaceNodeKind::Directory => {
+                collected.entries.push(WorkspaceEntry {
+                    source: node.path,
+                    archive_path: node.relative_path,
+                    kind: WorkspaceEntryKind::Directory,
+                    size: 0,
+                    mode: node.mode,
+                });
+            }
+            workspace_scan::WorkspaceNodeKind::File => {
+                collected.entries.push(WorkspaceEntry {
+                    source: node.path,
+                    archive_path: node.relative_path,
+                    kind: WorkspaceEntryKind::File,
+                    size: node.size_bytes,
+                    mode: node.mode,
+                });
+            }
+            workspace_scan::WorkspaceNodeKind::Symlink
+            | workspace_scan::WorkspaceNodeKind::Other => {
+                collected.skipped_paths.push(node.relative_path);
+            }
         }
     }
     Ok(collected)
