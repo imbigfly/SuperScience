@@ -146,20 +146,15 @@ pub(crate) struct MessageResource {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
 #[serde(tag = "kind")]
 pub(crate) enum AgentEvent {
     User {
         frame_id: String,
         text: String,
     },
-    MessageBoundary {
-        frame_id: String,
-        seq: i64,
-    },
+    MessageBoundary {},
     Resources {
         frame_id: String,
-        seq: i64,
         resources: Vec<MessageResource>,
     },
     Text {
@@ -192,7 +187,6 @@ pub(crate) enum AgentEvent {
     },
     Usage {
         frame_id: String,
-        round: u64,
         input: u64,
         output: u64,
         #[serde(default)]
@@ -212,17 +206,13 @@ pub(crate) enum AgentEvent {
     },
     CompactionStarted {
         frame_id: String,
-        strategy: String,
     },
     ContextWarning {
         frame_id: String,
         ctx_tokens: usize,
         max_context: usize,
     },
-    Diff {
-        frame_id: String,
-        path: String,
-    },
+    Diff {},
     FileChanged {
         frame_id: String,
         path: String,
@@ -231,11 +221,7 @@ pub(crate) enum AgentEvent {
         frame_id: String,
         chunk: String,
     },
-    Done {
-        frame_id: String,
-        #[serde(default)]
-        stop_reason: Option<String>,
-    },
+    Done { frame_id: String },
     Error {
         frame_id: String,
         message: String,
@@ -406,8 +392,6 @@ pub(crate) struct SideChatEvidence {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SideChatResponse {
     pub(crate) answer: String,
-    #[allow(dead_code)]
-    pub(crate) session_id: Option<String>,
     pub(crate) snapshot_version: i64,
     #[serde(default)]
     pub(crate) evidence: Vec<SideChatEvidence>,
@@ -2010,7 +1994,6 @@ pub(crate) struct ExplorationPromotionResult {
 #[derive(Deserialize, Clone, PartialEq)]
 pub(crate) struct ExternalSessionInfo {
     pub(crate) path: String,
-    #[allow(dead_code)]
     pub(crate) session_id: String,
     pub(crate) title: String,
     pub(crate) cwd: String,
@@ -2269,13 +2252,9 @@ pub(crate) struct FileSearchHit {
 pub(crate) struct ScratchChatInfo {
     #[serde(rename = "sessionId")]
     pub(crate) session_id: String,
-    #[serde(rename = "projectId")]
-    #[allow(dead_code)]
-    pub(crate) project_id: String,
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
 pub(crate) struct ProjectInfo {
     #[serde(default)]
     pub(crate) id: String,
@@ -2284,7 +2263,6 @@ pub(crate) struct ProjectInfo {
     pub(crate) skill_count: usize,
     pub(crate) mcp_server_count: usize,
     pub(crate) memory_file_count: usize,
-    pub(crate) has_api_key: bool,
 }
 
 #[derive(Clone, Deserialize, PartialEq)]
@@ -2293,7 +2271,6 @@ pub(crate) struct ProjectSummary {
     pub(crate) name: String,
     #[serde(default)]
     pub(crate) description: String,
-    #[allow(dead_code)]
     #[serde(default)]
     pub(crate) workspace_dir: String,
     #[serde(default)]
@@ -2316,9 +2293,6 @@ pub(crate) struct ProjectSummary {
 /// project's `.wisp/WISP.md`, injected into every seeded system prompt.
 #[derive(Clone, Deserialize, Default)]
 pub(crate) struct ProjectSettings {
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub(crate) id: String,
     #[serde(default)]
     pub(crate) name: String,
     #[serde(default)]
@@ -2526,12 +2500,6 @@ pub(crate) enum ConnTransport {
         command: String,
         #[serde(default)]
         args: Vec<String>,
-        #[allow(dead_code)]
-        #[serde(default)]
-        env: Vec<(String, String)>,
-        #[allow(dead_code)]
-        #[serde(default)]
-        cwd: Option<String>,
     },
     Http {
         url: String,
@@ -2557,9 +2525,6 @@ pub(crate) struct ConnectorTool {
     pub(crate) mode: String,
     #[serde(default)]
     pub(crate) description: String,
-    #[allow(dead_code)]
-    #[serde(default, rename = "inputSchema")]
-    pub(crate) input_schema: serde_json::Value,
 }
 #[derive(Clone, serde::Deserialize)]
 pub(crate) struct ConnectorInfo {
@@ -2652,8 +2617,6 @@ pub(crate) struct BootstrapStatus {
     pub(crate) mcp_catalog: usize,
     pub(crate) uv_ok: bool,
     pub(crate) node_ok: bool,
-    #[allow(dead_code)]
-    pub(crate) npm_ok: bool,
     pub(crate) sci_ok: bool,
     pub(crate) pixi_ok: bool,
     pub(crate) app_version: String,
@@ -2708,10 +2671,8 @@ pub(crate) struct CapabilitySourceCounts {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
 pub(crate) struct OnboardingState {
     pub(crate) show: bool,
-    pub(crate) has_api_key: bool,
 }
 
 /// Mirrors `wisp_store::ResearchNode`. `kind` stays a plain string because the
@@ -3295,18 +3256,14 @@ pub(crate) struct AgentWorkflow {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
 pub(crate) struct ExecutionContext {
     pub(crate) id: String,
     pub(crate) kind: String,
     pub(crate) label: String,
     pub(crate) config_json: String,
     pub(crate) capabilities_json: String,
-    pub(crate) last_probe_at: Option<i64>,
     pub(crate) last_probe_status: Option<String>,
     pub(crate) last_probe_error: Option<String>,
-    pub(crate) created_at: i64,
-    pub(crate) updated_at: i64,
 }
 
 #[derive(Clone, Default)]
@@ -3370,11 +3327,8 @@ mod runtime_interpreter_form_tests {
             label: "Local".into(),
             config_json: config_json.into(),
             capabilities_json: capabilities_json.into(),
-            last_probe_at: None,
             last_probe_status: None,
             last_probe_error: None,
-            created_at: 0,
-            updated_at: 0,
         }
     }
 
@@ -3675,8 +3629,6 @@ pub(crate) struct ArtifactProvenance {
     pub(crate) code: String,
     pub(crate) language: String,
     pub(crate) output: String,
-    #[allow(dead_code)]
-    pub(crate) exit_status: String,
     #[serde(default)]
     pub(crate) inputs: Vec<ProvInput>,
     pub(crate) env: Option<ProvEnv>,
@@ -3690,8 +3642,6 @@ pub(crate) struct ProvInput {
 
 #[derive(Clone, Deserialize)]
 pub(crate) struct ProvEnv {
-    #[allow(dead_code)]
-    pub(crate) name: Option<String>,
     #[serde(default)]
     pub(crate) packages: Vec<ProvPkg>,
 }

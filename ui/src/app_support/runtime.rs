@@ -295,11 +295,8 @@ mod runtime_slot_tests {
             label: "Test".into(),
             config_json: "{}".into(),
             capabilities_json: capabilities_json.into(),
-            last_probe_at: None,
             last_probe_status: probe_status.map(str::to_string),
             last_probe_error: None,
-            created_at: 0,
-            updated_at: 0,
         }
     }
 

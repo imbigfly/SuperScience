@@ -1954,10 +1954,7 @@ fn App() -> impl IntoView {
                 set_pet_activity(&frame_id, "running");
                 queue(frame_id, PendingDelta::Stdout(chunk));
             }
-            AgentEvent::Done {
-                frame_id,
-                stop_reason: _,
-            } => {
+            AgentEvent::Done { frame_id } => {
                 finish_compaction(&frame_id);
                 flush_now();
                 conversation_outlines_cb.update(|outlines| {
