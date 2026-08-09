@@ -846,11 +846,7 @@ mod tests {
         .await
         .expect("targeted cancellation should stop the Native Agent promptly");
 
-        assert!(run
-            .unwrap()
-            .result
-            .unwrap_err()
-            .contains("stopped by user"));
+        assert!(run.unwrap().result.unwrap_err().contains("stopped by user"));
         drop(store);
         std::fs::remove_dir_all(base).ok();
     }
