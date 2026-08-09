@@ -187,7 +187,6 @@ pub(super) fn Sidebar(
                     title=move || if demo_mode.get() { t(locale.get(), "projects.example").to_string() } else { project_info.get().map(|p| p.name.clone()).unwrap_or_else(|| t(locale.get(), "projects.opening").into()) }
                     on:click=move |ev| toggle_proj_menu.call(ev)>
                     <span class="proj-name">{move || if demo_mode.get() { t(locale.get(), "projects.example").to_string() } else { project_info.get().map(|p| p.name.clone()).unwrap_or_else(|| t(locale.get(), "projects.opening").into()) }}</span>
-                    <span class="caret">"▾"</span>
                 </button>
                 <button class="icon-btn" title=move || t(locale.get(), "sidebar.collapse") on:click=move |_| show_sidebar.set(false)>{compose_icon("chevron-left")}</button>
             </div>

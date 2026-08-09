@@ -4,6 +4,10 @@ By default, opening a workspace restores its most recently active conversation.
 Opening a specific conversation from Recent sessions or search still takes
 priority.
 
+Choose another workspace from the sidebar workspace menu to switch the current
+window in place. A separate window is opened only by an action explicitly
+labelled **Open in new window**.
+
 To open workspaces on a blank conversation instead, turn off **Resume the last
 conversation when opening a workspace** in **Settings → General**. Starting a
 new conversation manually is always available from the sidebar. A newly
