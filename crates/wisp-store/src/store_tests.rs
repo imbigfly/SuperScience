@@ -486,24 +486,6 @@ async fn agent_workflow_and_steps_roundtrip() {
         vec![step.clone()]
     );
 
-    workflow.name = "review-v2".into();
-    step.position = 1;
-    assert!(store
-        .replace_agent_workflow_plan(&workflow, &[step.clone()], 1)
-        .await
-        .unwrap());
-    let updated_workflow = store.get_agent_workflow("wf").await.unwrap().unwrap();
-    assert_eq!(updated_workflow.name, "review-v2");
-    assert_eq!(updated_workflow.version, 2);
-    assert_eq!(
-        store
-            .get_agent_workflow_step("step-1")
-            .await
-            .unwrap()
-            .unwrap()
-            .position,
-        1
-    );
     assert!(store.delete_agent_workflow("wf").await.unwrap());
     assert!(store.get_agent_workflow("wf").await.unwrap().is_none());
     assert!(store
@@ -515,7 +497,7 @@ async fn agent_workflow_and_steps_roundtrip() {
 }
 
 #[tokio::test]
-async fn agent_workflow_plan_edit_and_approval_are_versioned() {
+async fn agent_workflow_plan_approval_is_versioned() {
     let tmp = std::env::temp_dir().join(format!("wisp_agent_plan_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
@@ -530,38 +512,15 @@ async fn agent_workflow_plan_edit_and_approval_are_versioned() {
             .unwrap();
     step.spec_json = r#"{"capabilities":["code_run"]}"#.into();
     store
-        .create_agent_workflow_plan(&workflow, &[step.clone()])
+        .create_agent_workflow_plan(&workflow, &[step])
         .await
         .unwrap();
-
-    workflow.name = "Edited delegated analysis".into();
-    workflow.plan_json = r#"{"mode":"manual","max_parallel":1}"#.into();
-    workflow.max_parallel = 1;
-    assert!(store
-        .replace_agent_workflow_plan(&workflow, &[step], 1)
-        .await
-        .unwrap());
-    assert!(!store
-        .replace_agent_workflow_plan(&workflow, &[], 1)
-        .await
-        .unwrap());
-    let edited = store.get_agent_workflow("wf").await.unwrap().unwrap();
-    let steps = store.list_agent_workflow_steps("wf").await.unwrap();
-    assert_eq!(edited.version, 2);
-    assert_eq!(edited.max_parallel, 1);
-    assert_eq!(steps.len(), 1);
-    assert!(store.approve_agent_workflow_plan("wf", 2).await.unwrap());
-    assert!(!store.approve_agent_workflow_plan("wf", 2).await.unwrap());
+    assert!(store.approve_agent_workflow_plan("wf", 1).await.unwrap());
+    assert!(!store.approve_agent_workflow_plan("wf", 1).await.unwrap());
     let approved = store.get_agent_workflow("wf").await.unwrap().unwrap();
     assert_eq!(approved.status, AgentWorkflowStatus::Approved);
-    assert_eq!(approved.version, 3);
+    assert_eq!(approved.version, 2);
     assert!(approved.approved_at.is_some());
-    let mut reverted = approved.clone();
-    reverted.status = AgentWorkflowStatus::Draft;
-    assert!(!store
-        .replace_agent_workflow_plan(&reverted, &steps, 3)
-        .await
-        .unwrap());
     assert!(store.delete_agent_workflow("wf").await.unwrap());
     store.pool.close().await;
     let _ = std::fs::remove_file(tmp);

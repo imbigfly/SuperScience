@@ -402,58 +402,6 @@ pub(crate) async fn create_dynamic_agent_workflow_draft(
 }
 
 #[tauri::command]
-pub(crate) async fn create_dynamic_agent_workflow(
-    state: State<'_, crate::AppState>,
-    window: tauri::WebviewWindow,
-    proposal: dynamic_workflow::DynamicAgentWorkflowProposal,
-) -> Result<AgentWorkflowSnapshot, dynamic_workflow::DynamicWorkflowCommandError> {
-    let project = state.active(window.label());
-    let frame_id = state.active_frame(window.label()).ok_or_else(|| {
-        dynamic_workflow::DynamicWorkflowCommandError::new(
-            "conversation_required",
-            "Open a conversation before creating an Agent workflow.",
-        )
-    })?;
-    let auto_safe = proposal.approval_policy == dynamic_workflow::AgentApprovalPolicy::AutoSafe;
-    let policy = dynamic_delegation_policy_for_project(
-        &state.store,
-        &project,
-        Some(&frame_id),
-        &state.app_data,
-    )
-    .await
-    .map_err(|error| {
-        dynamic_workflow::DynamicWorkflowCommandError::new("policy_unavailable", error)
-    })?;
-    let mut snapshot = create_dynamic_agent_workflow_draft(
-        &state.store,
-        &project.id,
-        &project.root,
-        frame_id,
-        proposal,
-        &(policy.registry.clone(), policy.host.clone()),
-        Some(&policy.resources),
-    )
-    .await
-    .map_err(|error| {
-        dynamic_workflow::DynamicWorkflowCommandError::new("invalid_proposal", error)
-    })?;
-    if auto_safe && !snapshot.workflow.requires_confirmation {
-        snapshot = approve_created_automatic_workflow(&state.store, snapshot)
-            .await
-            .map_err(|error| {
-                dynamic_workflow::DynamicWorkflowCommandError::new("approval_failed", error)
-            })?;
-        spawn_agent_workflow(&state, project, snapshot.workflow.id.clone())
-            .await
-            .map_err(|error| {
-                dynamic_workflow::DynamicWorkflowCommandError::new("execution_failed", error)
-            })?;
-    }
-    Ok(snapshot)
-}
-
-#[tauri::command]
 pub(crate) async fn get_dynamic_agent_options(
     state: State<'_, crate::AppState>,
     window: tauri::WebviewWindow,
@@ -481,157 +429,6 @@ pub(crate) async fn get_dynamic_agent_options(
         }
     }
     Ok(options)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn revise_dynamic_agent_workflow_draft(
-    store: &Store,
-    project_id: &str,
-    project_root: &std::path::Path,
-    workflow_id: &str,
-    proposal: dynamic_workflow::DynamicAgentWorkflowProposal,
-    expected_version: i64,
-    policy: &(CapabilityRegistry, DelegationHostPolicy),
-    resources: Option<&crate::delegation_resources::ScientificResourceCatalog>,
-) -> Result<AgentWorkflowSnapshot, dynamic_workflow::DynamicWorkflowCommandError> {
-    let current = project_workflow(store, project_id, workflow_id)
-        .await
-        .map_err(|error| dynamic_workflow::DynamicWorkflowCommandError::new("not_found", error))?;
-    require_workflow_delegation(store, &current)
-        .await
-        .map_err(|error| {
-            dynamic_workflow::DynamicWorkflowCommandError::new("delegation_disabled", error)
-        })?;
-    if current.status != AgentWorkflowStatus::Draft {
-        return Err(dynamic_workflow::DynamicWorkflowCommandError::new(
-            "immutable_plan",
-            "Only draft Agent plans can be revised.",
-        ));
-    }
-    if current.version != expected_version {
-        return Err(dynamic_workflow::DynamicWorkflowCommandError::conflict(
-            workflow_id,
-            expected_version,
-            current.version,
-        ));
-    }
-    let plan = dynamic_workflow::resolve_proposal(
-        store,
-        workflow_id.into(),
-        proposal,
-        &policy.0,
-        &policy.1,
-        resources,
-    )
-    .await
-    .map_err(|error| {
-        dynamic_workflow::DynamicWorkflowCommandError::new("invalid_proposal", error)
-    })?;
-    policy
-        .0
-        .validate_resolved_plan(&plan, &policy.1)
-        .map_err(|error| {
-            dynamic_workflow::DynamicWorkflowCommandError::new(
-                "authorization_failed",
-                error.to_string(),
-            )
-        })?;
-    let (mut workflow, steps) =
-        workflow_records(&plan, project_id, project_root, current.frame_id.clone()).map_err(
-            |error| dynamic_workflow::DynamicWorkflowCommandError::new("invalid_plan", error),
-        )?;
-    workflow.description = "Dynamic Agent workflow".into();
-    workflow.created_at = current.created_at;
-    workflow.version = current.version;
-    if !store
-        .replace_agent_workflow_plan(&workflow, &steps, expected_version)
-        .await
-        .map_err(|error| {
-            dynamic_workflow::DynamicWorkflowCommandError::new(
-                "persistence_failed",
-                error.to_string(),
-            )
-        })?
-    {
-        let actual_version = store
-            .get_agent_workflow(workflow_id)
-            .await
-            .ok()
-            .flatten()
-            .map_or(-1, |workflow| workflow.version);
-        return Err(dynamic_workflow::DynamicWorkflowCommandError::conflict(
-            workflow_id,
-            expected_version,
-            actual_version,
-        ));
-    }
-    let updated = store
-        .get_agent_workflow(workflow_id)
-        .await
-        .map_err(|error| {
-            dynamic_workflow::DynamicWorkflowCommandError::new(
-                "persistence_failed",
-                error.to_string(),
-            )
-        })?
-        .ok_or_else(|| {
-            dynamic_workflow::DynamicWorkflowCommandError::new(
-                "not_found",
-                "Agent workflow disappeared after revision.",
-            )
-        })?;
-    load_workflow_snapshot(store, updated)
-        .await
-        .map_err(|error| {
-            dynamic_workflow::DynamicWorkflowCommandError::new("snapshot_failed", error)
-        })
-}
-
-#[tauri::command]
-pub(crate) async fn revise_dynamic_agent_workflow(
-    state: State<'_, crate::AppState>,
-    window: tauri::WebviewWindow,
-    workflow_id: String,
-    proposal: dynamic_workflow::DynamicAgentWorkflowProposal,
-    expected_version: i64,
-) -> Result<AgentWorkflowSnapshot, dynamic_workflow::DynamicWorkflowCommandError> {
-    let project = state.active(window.label());
-    let auto_safe = proposal.approval_policy == dynamic_workflow::AgentApprovalPolicy::AutoSafe;
-    let frame_id = state.active_frame(window.label());
-    let policy = dynamic_delegation_policy_for_project(
-        &state.store,
-        &project,
-        frame_id.as_deref(),
-        &state.app_data,
-    )
-    .await
-    .map_err(|error| {
-        dynamic_workflow::DynamicWorkflowCommandError::new("policy_unavailable", error)
-    })?;
-    let mut snapshot = revise_dynamic_agent_workflow_draft(
-        &state.store,
-        &project.id,
-        &project.root,
-        &workflow_id,
-        proposal,
-        expected_version,
-        &(policy.registry.clone(), policy.host.clone()),
-        Some(&policy.resources),
-    )
-    .await?;
-    if auto_safe && !snapshot.workflow.requires_confirmation {
-        snapshot = approve_created_automatic_workflow(&state.store, snapshot)
-            .await
-            .map_err(|error| {
-                dynamic_workflow::DynamicWorkflowCommandError::new("approval_failed", error)
-            })?;
-        spawn_agent_workflow(&state, project, workflow_id)
-            .await
-            .map_err(|error| {
-                dynamic_workflow::DynamicWorkflowCommandError::new("execution_failed", error)
-            })?;
-    }
-    Ok(snapshot)
 }
 
 fn workflow_records(
@@ -4677,8 +4474,7 @@ fn bounded_json(value: &Value, limit: usize) -> String {
 mod tests {
     use super::*;
     use crate::dynamic_workflow::{
-        AgentApprovalPolicy, AgentExecutorSelection, DynamicAgentTaskProposal,
-        DynamicAgentWorkflowProposal,
+        AgentApprovalPolicy, DynamicAgentTaskProposal, DynamicAgentWorkflowProposal,
     };
     use std::{process::Command, sync::atomic::AtomicUsize};
     use wisp_core::{
@@ -5748,162 +5544,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dynamic_draft_revision_is_atomic_and_revalidates_dependencies() {
-        let (store, root) = dynamic_fixture().await;
-        let policy = test_dynamic_policy();
-        let created = create_dynamic_agent_workflow_draft(
-            &store,
-            "p",
-            &root,
-            "f".into(),
-            dynamic_proposal(vec![
-                dynamic_task("first", &[]),
-                dynamic_task("second", &["first"]),
-            ]),
-            &policy,
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(created.workflow.version, 1);
-        assert!(created.steps.iter().all(|step| step.template_id.is_empty()));
-        assert_eq!(created.approval_policy, AgentApprovalPolicy::ReviewAll);
-        let dynamic = &created.dynamic;
-        assert_eq!(dynamic.tasks[1].depends_on, ["first"]);
-        assert_eq!(dynamic.approval_policy, AgentApprovalPolicy::ReviewAll);
-
-        let mut without_dependency = dynamic.editable_proposal.clone();
-        without_dependency.tasks[1].depends_on.clear();
-        let revised = revise_dynamic_agent_workflow_draft(
-            &store,
-            "p",
-            &root,
-            &created.workflow.id,
-            without_dependency,
-            1,
-            &policy,
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(revised.workflow.version, 2);
-        assert!(revised.dynamic.tasks[1].depends_on.is_empty());
-
-        let stale = revise_dynamic_agent_workflow_draft(
-            &store,
-            "p",
-            &root,
-            &created.workflow.id,
-            revised.dynamic.editable_proposal.clone(),
-            1,
-            &policy,
-            None,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(stale.code, "version_conflict");
-        assert_eq!(
-            stale.version_conflict.unwrap(),
-            dynamic_workflow::AgentWorkflowVersionConflict {
-                workflow_id: created.workflow.id.clone(),
-                expected_version: 1,
-                actual_version: 2,
-            }
-        );
-
-        let mut cycle = revised.dynamic.editable_proposal;
-        cycle.tasks[0].depends_on = vec!["second".into()];
-        cycle.tasks[1].depends_on = vec!["first".into()];
-        let rejected = revise_dynamic_agent_workflow_draft(
-            &store,
-            "p",
-            &root,
-            &created.workflow.id,
-            cycle,
-            2,
-            &policy,
-            None,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(rejected.code, "invalid_proposal");
-        assert!(rejected.message.contains("cycle"));
-        assert_eq!(
-            store
-                .get_agent_workflow(&created.workflow.id)
-                .await
-                .unwrap()
-                .unwrap()
-                .version,
-            2
-        );
-
-        drop(store);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn dynamic_revision_recalculates_executor_and_capability_approval_reasons() {
-        let (store, root) = dynamic_fixture().await;
-        let policy = test_dynamic_policy();
-        let created = create_dynamic_agent_workflow_draft(
-            &store,
-            "p",
-            &root,
-            "f".into(),
-            dynamic_proposal(vec![dynamic_task("edit", &[])]),
-            &policy,
-            None,
-        )
-        .await
-        .unwrap();
-        assert!(created.dynamic.approval_reasons.is_empty());
-
-        let mut proposal = created.dynamic.editable_proposal.clone();
-        proposal.tasks[0].capabilities = vec!["project_write".into()];
-        proposal.tasks[0].executor = Some(AgentExecutorSelection {
-            kind: "acp".into(),
-            profile_id: Some("acp-test".into()),
-        });
-        proposal.tasks[0].budget = Some(dynamic_workflow::AgentBudgetProposal {
-            max_tokens: Some(4_000),
-            ..Default::default()
-        });
-        let revised = revise_dynamic_agent_workflow_draft(
-            &store,
-            "p",
-            &root,
-            &created.workflow.id,
-            proposal,
-            created.workflow.version,
-            &policy,
-            None,
-        )
-        .await
-        .unwrap();
-        let dynamic = revised.dynamic;
-        let messages = dynamic
-            .approval_reasons
-            .iter()
-            .map(|reason| reason.message.as_str())
-            .collect::<Vec<_>>();
-        assert!(messages
-            .iter()
-            .any(|reason| reason.contains("modify project")));
-        assert!(!messages.iter().any(|reason| reason.contains("external")));
-        assert!(messages
-            .iter()
-            .any(|reason| reason.contains("ACP executor")));
-        assert_eq!(dynamic.tasks[0].executor.kind, "acp");
-        assert_eq!(dynamic.tasks[0].executor.model_id, None);
-        assert!(dynamic.tasks[0].can_write);
-        assert_eq!(dynamic.tasks[0].budget.max_tokens, Some(4_000));
-
-        drop(store);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
     async fn custom_specialist_model_prompt_and_code_grant_reach_one_native_child() {
         let (store, root) = dynamic_fixture().await;
         let (registry, mut host) = test_dynamic_policy();
@@ -6110,7 +5750,6 @@ mod tests {
         )
         .await
         .unwrap();
-        let editable = created.dynamic.editable_proposal.clone();
         assert!(store
             .approve_agent_workflow_plan(&created.workflow.id, created.workflow.version)
             .await
@@ -6137,20 +5776,6 @@ mod tests {
         };
         assert_eq!(snapshot.id, specialist_id);
         assert_eq!(snapshot.instructions, "Original immutable instructions");
-        let immutable = revise_dynamic_agent_workflow_draft(
-            &store,
-            "p",
-            &root,
-            &created.workflow.id,
-            editable,
-            stored.version,
-            &policy,
-            None,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(immutable.code, "immutable_plan");
-
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }

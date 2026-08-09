@@ -538,19 +538,6 @@ impl ExplorationPromotionService {
 }
 
 #[tauri::command]
-pub(crate) async fn preview_exploration_diff(
-    state: State<'_, AppState>,
-    exploration_id: String,
-) -> Result<ExplorationDiff, String> {
-    Ok(
-        ExplorationPromotionService::new(state.store.clone(), state.app_data.clone())
-            .preview(&exploration_id)
-            .await?
-            .diff,
-    )
-}
-
-#[tauri::command]
 pub(crate) async fn preview_exploration_promotion(
     state: State<'_, AppState>,
     exploration_id: String,
