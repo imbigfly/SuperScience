@@ -561,10 +561,19 @@ mod start_user_turn_tests {
                 started_at_ms: None,
                 duration_ms: Some(4),
             },
+            ChatItem::FileChanged("results/new.csv".into()),
+            ChatItem::Tool {
+                name: "write".into(),
+                ok: Some(true),
+                input: String::new(),
+                output: String::new(),
+                started_at_ms: None,
+                duration_ms: Some(2),
+            },
             assistant("final answer"),
         ];
 
-        assert_eq!(completed_activity_end(&items, 1, false), Some(4));
+        assert_eq!(completed_activity_end(&items, 1, false), Some(6));
         assert_eq!(completed_activity_end(&items, 1, true), None);
     }
 
@@ -732,7 +741,12 @@ pub(crate) fn is_commentary_at(items: &[ChatItem], index: usize) -> bool {
     }
     items[index + 1..]
         .iter()
-        .find(|item| !matches!(item, ChatItem::Reasoning(_) | ChatItem::Usage { .. }))
+        .find(|item| {
+            !matches!(
+                item,
+                ChatItem::Reasoning(_) | ChatItem::Usage { .. } | ChatItem::FileChanged(_)
+            )
+        })
         .is_some_and(is_tool_activity)
 }
 
@@ -768,6 +782,7 @@ pub(crate) fn completed_activity_end(
     while end < turn_end {
         if is_turn_activity_at(items, end)
             || matches!(&items[end], ChatItem::Assistant { text, .. } if text.trim().is_empty())
+            || matches!(&items[end], ChatItem::FileChanged(_))
         {
             end += 1;
         } else {

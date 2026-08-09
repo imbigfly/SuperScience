@@ -229,11 +229,9 @@ mod tauri_args_tests {
 
     #[test]
     fn collect_artifacts_normalizes_image_pdf_shorthand() {
-        let items = vec![ChatItem::Assistant {
-            text: "`figures/panel_I_heatmap_4genes_median.png/.pdf`".into(),
-            model: None,
-            resources: Vec::new(),
-        }];
+        let items = vec![ChatItem::FileChanged(
+            "figures/panel_I_heatmap_4genes_median.png/.pdf".into(),
+        )];
         let arts = collect_artifacts(&items, Locale::En, &mut ProtoCache::new());
         let a = arts
             .iter()

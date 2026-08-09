@@ -1508,6 +1508,20 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                     }
                 }
             }
+            AgentEvent::FileChanged { path, .. } => items.push(UiItem {
+                role: "file_changed".into(),
+                text: path.clone(),
+                tool_name: None,
+                ok: None,
+                duration_ms: None,
+                input: None,
+                model_name: None,
+                call_id: None,
+                kind: None,
+                status: None,
+                locations: None,
+                resources: Vec::new(),
+            }),
             AgentEvent::MessageBoundary { seq, .. } => {
                 boundaries.insert(*seq, items.len());
             }
@@ -2591,11 +2605,24 @@ fn should_persist_ui_event(event: &AgentEvent) -> bool {
             | AgentEvent::Reasoning { .. }
             | AgentEvent::ToolCall { .. }
             | AgentEvent::ToolResult { .. }
+            | AgentEvent::FileChanged { .. }
             | AgentEvent::ToolPresentation { .. }
             | AgentEvent::Stdout { .. }
             | AgentEvent::Usage { .. }
             | AgentEvent::Compaction { .. }
     )
+}
+
+fn provenance_ui_file_changes(rec: &wisp_core::ProvenanceRecord) -> &[String] {
+    // write/edit/generate_image already emit ToolEvent::FileChanged at the
+    // moment their bytes land. Python, R, and shell writes are learned only
+    // from the post-tool workspace diff, so forward that structured evidence
+    // without duplicating the direct-tool events.
+    if matches!(rec.tool.as_str(), "python" | "r" | "shell") {
+        &rec.files_written
+    } else {
+        &[]
+    }
 }
 
 impl Output for TauriOutput {
@@ -2806,6 +2833,9 @@ impl Output for TauriOutput {
         });
     }
     fn provenance(&self, rec: &wisp_core::ProvenanceRecord) {
+        for path in provenance_ui_file_changes(rec) {
+            self.file_changed(path);
+        }
         if let Some(tx) = &self.prov {
             let _ = tx.send(rec.clone());
         }

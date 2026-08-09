@@ -100,6 +100,9 @@ desktop app or a headless CLI.
 
 - Conversations persist to SQLite; restart and the full history is back. One
   click **undoes** a turn's file edits with a preview of what will be restored.
+- Inline **Generated** artifacts come only from structured file-write events;
+  directory listings, reads, searches, and prose that merely mention a path
+  are not presented as newly generated files.
 - `@` attaches artifacts, files, execution contexts, and language runtimes;
   `#` reaches saved sessions through a cited, read-only **Reader** specialist;
   `/` applies a skill to the next turn.

@@ -2169,7 +2169,12 @@ fn App() -> impl IntoView {
             // from a tagged enum breaks deserialization of the events the
             // backend still sends.
             AgentEvent::Diff { .. } => {}
-            AgentEvent::FileChanged { path, .. } => {
+            AgentEvent::FileChanged { frame_id, path } => {
+                route_items(active_cb, items_cb, transcripts_cb, &frame_id, |items| {
+                    let index = process_item_insert_index(items);
+                    items.insert(index, ChatItem::FileChanged(path.clone()));
+                });
+                refresh_transcript_projections(&frame_id);
                 let root = project_info_cb.get_untracked().map(|project| project.root);
                 center_file_revisions_cb.update(|revisions| {
                     for key in file_change_refresh_keys(&path, root.as_deref()) {
