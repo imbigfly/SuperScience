@@ -75,6 +75,14 @@ pub struct SessionTranscriptPage {
     pub latest_seq: i64,
 }
 
+/// Maximum stdout characters returned for one tool activity group when a
+/// transcript page is replayed. The Tauri/UI layer applies its byte ceiling as
+/// a second guard; this database-side cap prevents legacy event logs from
+/// being materialized in full before that guard can run.
+pub(crate) const SESSION_UI_STDOUT_REPLAY_MAX_CHARS: usize = 64 * 1024;
+const RECENT_TURN_PREVIEW_MAX_CHARS: usize = 20_000;
+pub(crate) const RECENT_TURN_TOOL_PREVIEW_MAX_CHARS: usize = 4_000;
+
 /// Delete every database row owned by a conversation. Legacy databases do not
 /// consistently enable SQLite foreign keys, so the cascade must be explicit.
 /// Runs are project-level records and survive, but their stale frame reference
@@ -623,6 +631,65 @@ impl Store {
             .collect())
     }
 
+    /// Load only the newest complete user turns as bounded text previews,
+    /// without UI events, reviews, resources, reasoning, image data, or full
+    /// tool-call arguments. This is for secondary model calls (for example
+    /// follow-up suggestions), not transcript rendering or agent recovery.
+    pub async fn load_recent_turn_preview_messages(
+        &self,
+        frame_id: &str,
+        turn_limit: usize,
+    ) -> Result<Vec<Message>> {
+        let rows = sqlx::query(
+            "WITH recent_user_turns AS (\
+                 SELECT seq FROM messages \
+                 WHERE frame_id=? AND role='user' AND tool_name IS NULL \
+                 ORDER BY seq DESC LIMIT ?\
+             ), start_seq AS (SELECT MIN(seq) AS seq FROM recent_user_turns) \
+             SELECT seq,role,json_quote(substr(\
+                 CASE json_type(content) \
+                     WHEN 'text' THEN json_extract(content,'$') \
+                     WHEN 'array' THEN COALESCE((\
+                         SELECT group_concat(json_extract(part.value,'$.text'),'\n') \
+                         FROM json_each(content) AS part \
+                         WHERE json_extract(part.value,'$.type')='text'\
+                     ),'') ELSE '' END,1,\
+                 CASE WHEN role='tool' AND COALESCE(tool_name,'') NOT IN \
+                     ('attempt_completion','propose_plan','ask_user') THEN ? ELSE ? END\
+             )) AS content,NULL AS tool_calls,tool_call_id,tool_name,NULL AS reasoning,ts,model_name \
+             FROM messages WHERE frame_id=? \
+             AND seq>=COALESCE((SELECT seq FROM start_seq), 0) ORDER BY seq ASC",
+        )
+        .bind(frame_id)
+        .bind(turn_limit.max(1) as i64)
+        .bind(RECENT_TURN_TOOL_PREVIEW_MAX_CHARS as i64)
+        .bind(RECENT_TURN_PREVIEW_MAX_CHARS as i64)
+        .bind(frame_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut messages = Vec::with_capacity(rows.len());
+        for row in rows {
+            let role: String = row.try_get("role")?;
+            let content_json: String = row.try_get("content")?;
+            let content: wisp_llm::Content =
+                serde_json::from_str(&content_json).unwrap_or(wisp_llm::Content::text(""));
+            let tool_calls_json: Option<String> = row.try_get("tool_calls")?;
+            messages.push(Message {
+                role: parse_role(&role),
+                content,
+                tool_calls: tool_calls_json
+                    .and_then(|value| serde_json::from_str(&value).ok())
+                    .unwrap_or_default(),
+                tool_call_id: row.try_get("tool_call_id")?,
+                tool_name: row.try_get("tool_name")?,
+                reasoning: row.try_get("reasoning")?,
+                ts: row.try_get("ts")?,
+                model_name: row.try_get("model_name")?,
+            });
+        }
+        Ok(messages)
+    }
+
     /// Load the durable user-authored turns used by the conversation outline,
     /// including when each question was sent and its final assistant reply.
     pub async fn load_session_user_messages(
@@ -813,13 +880,32 @@ impl Store {
             i64::MAX
         };
         let event_rows = sqlx::query(
-            "SELECT event_json FROM session_ui_events WHERE frame_id=? AND seq>? AND seq<=? \
-             AND json_extract(event_json,'$.kind')<>'ToolPresentation' \
-             ORDER BY seq",
+            "WITH page_events AS (\
+                 SELECT seq,event_json,json_extract(event_json,'$.kind') AS kind \
+                 FROM session_ui_events WHERE frame_id=? AND seq>? AND seq<=? \
+                 AND json_extract(event_json,'$.kind')<>'ToolPresentation'\
+             ), grouped_events AS (\
+                 SELECT *,SUM(CASE WHEN kind IN ('ToolCall','User') THEN 1 ELSE 0 END) \
+                     OVER (ORDER BY seq) AS stdout_group \
+                 FROM page_events\
+             ), budgeted_events AS (\
+                 SELECT *,COALESCE(SUM(CASE WHEN kind='Stdout' \
+                         THEN length(json_extract(event_json,'$.chunk')) ELSE 0 END) \
+                     OVER (PARTITION BY stdout_group ORDER BY seq \
+                           ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0) AS stdout_before \
+                 FROM grouped_events\
+             ) \
+             SELECT CASE WHEN kind='Stdout' THEN json_set(\
+                         event_json,'$.chunk',substr(json_extract(event_json,'$.chunk'),1,? - stdout_before)\
+                     ) ELSE event_json END AS event_json \
+             FROM budgeted_events \
+             WHERE kind<>'Stdout' OR stdout_before<? ORDER BY seq",
         )
         .bind(frame_id)
         .bind(start_event_seq)
         .bind(end_event_seq)
+        .bind(SESSION_UI_STDOUT_REPLAY_MAX_CHARS as i64)
+        .bind(SESSION_UI_STDOUT_REPLAY_MAX_CHARS as i64)
         .fetch_all(&self.pool)
         .await?;
         let ui_events = event_rows

@@ -44,9 +44,9 @@ pub(crate) fn split_segments(text: &str) -> Vec<Seg> {
 /// `assemble_artifacts`, so this half is cacheable per item and streaming only
 /// re-extracts the tail message instead of rescanning the whole transcript.
 pub(crate) enum ProtoArtifact {
-    Table(TableData),
-    Csv(TableData),
-    Fasta(String),
+    Table(Rc<TableData>),
+    Csv(Rc<TableData>),
+    Fasta(Rc<str>),
     Latex(String),
     File { path: String, kind: &'static str },
 }
@@ -80,7 +80,7 @@ pub(crate) struct ArtifactScan {
 pub(crate) fn extract_markdown_protos(out: &mut Vec<ProtoArtifact>, s: &str) {
     for seg in split_segments(s) {
         if let Seg::Table(t) = seg {
-            out.push(ProtoArtifact::Table(t));
+            out.push(ProtoArtifact::Table(Rc::new(t)));
         }
     }
     for (lang, body) in fenced_blocks(s) {
@@ -89,10 +89,10 @@ pub(crate) fn extract_markdown_protos(out: &mut Vec<ProtoArtifact>, s: &str) {
             if let Some(header) = lines.first() {
                 let headers = parse_csv_line(header);
                 let rows = lines[1..].iter().map(|line| parse_csv_line(line)).collect();
-                out.push(ProtoArtifact::Csv(TableData { headers, rows }));
+                out.push(ProtoArtifact::Csv(Rc::new(TableData { headers, rows })));
             }
         } else if lang == "fasta" || lang == "fa" {
-            out.push(ProtoArtifact::Fasta(body));
+            out.push(ProtoArtifact::Fasta(Rc::from(body)));
         }
     }
     let lines: Vec<&str> = s.lines().collect();
@@ -710,6 +710,33 @@ mod artifact_scan_tests {
 
     fn fresh(items: &[ChatItem], locale: Locale) -> Vec<Artifact> {
         collect_artifacts(items, locale, &mut ProtoCache::new())
+    }
+
+    #[test]
+    fn cached_table_payload_is_shared_across_artifact_projections() {
+        let item = ChatItem::Assistant {
+            text: "| sample | value |\n| --- | --- |\n| a | 1 |".into(),
+            model: None,
+            resources: Vec::new(),
+        };
+        let protos = Rc::new(extract_protos(&item));
+        let proto_table = match &protos[0] {
+            ProtoArtifact::Table(table) => table,
+            _ => panic!("expected a table proto"),
+        };
+        let artifacts = assemble_artifacts(&[Rc::clone(&protos)], Locale::En);
+        let artifact_table = match &artifacts[0].data {
+            PreviewData::Table(table) => table,
+            _ => panic!("expected a table artifact"),
+        };
+        assert!(Rc::ptr_eq(proto_table, artifact_table));
+
+        let current = current_artifacts(&artifacts, &[], "", &HashSet::new());
+        let current_table = match &current[0].data {
+            PreviewData::Table(table) => table,
+            _ => panic!("expected a current table artifact"),
+        };
+        assert!(Rc::ptr_eq(artifact_table, current_table));
     }
 
     /// #307 made .R/.py previewable, which must not also turn every source path

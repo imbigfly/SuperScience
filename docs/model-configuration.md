@@ -2,8 +2,16 @@
 
 In General settings, **Suggest follow-up questions** is enabled by default.
 After a completed reply, Wisp uses that conversation's current model to offer
-three optional next questions. The suggestion panel can be hidden per reply,
+three optional next questions. That secondary call reads only the four most
+recent user turns, so completing a long, tool-heavy conversation does not load
+and duplicate its full history. The suggestion panel can be hidden per reply,
 or the setting can be turned off to skip the extra model call entirely.
+
+The desktop transcript also treats ordinary tool output as a preview: tool
+results are limited to 4,000 characters and streamed terminal output to 64 KiB
+(with carriage-return progress updates folded in place). Complete answer, plan,
+and question cards are not clipped. The durable model transcript is unchanged;
+these limits apply to the WebView presentation and its replay data.
 
 wisp-science calls remote LLM APIs through model profiles. Desktop users
 configure these in **Settings -> Models**. Each row is a model profile with its

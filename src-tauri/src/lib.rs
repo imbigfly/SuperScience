@@ -814,6 +814,10 @@ struct SessionInfo {
 
 const SESSION_HISTORY_PAGE_SIZE: usize = 100;
 const SESSION_TRANSCRIPT_PAGE_TURNS: usize = 20;
+/// Follow-up suggestions only need the conversational tail. Reading the full
+/// history here used to duplicate every saved tool dump immediately after a
+/// turn completed, exactly when the WebView was settling its projections.
+const FOLLOW_UP_TRANSCRIPT_TURNS: usize = 4;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct SessionCursor {
@@ -1038,7 +1042,7 @@ fn messages_to_items(msgs: &[wisp_llm::Message]) -> Vec<UiItem> {
                 "monitor_run" | "wisp_monitor_run" => args.get("run_id").and_then(|v| v.as_str()),
                 _ => None,
             }?;
-            Some((call.id.as_str(), input.to_owned()))
+            Some((call.id.as_str(), bounded_ui_tool_input(input)))
         })
         .collect();
     let mut out = vec![];
@@ -1177,7 +1181,7 @@ fn messages_to_items(msgs: &[wisp_llm::Message]) -> Vec<UiItem> {
                 {
                     out.push(UiItem {
                         role: "acp_tool".into(),
-                        text: envelope.content,
+                        text: bounded_ui_text(&envelope.content, UI_TOOL_RESULT_MAX_CHARS),
                         tool_name: Some(envelope.title),
                         ok: Some(matches!(envelope.status.as_str(), "completed" | "failed")),
                         duration_ms: None,
@@ -1192,7 +1196,7 @@ fn messages_to_items(msgs: &[wisp_llm::Message]) -> Vec<UiItem> {
                 } else {
                     out.push(UiItem {
                         role: "tool".into(),
-                        text,
+                        text: bounded_ui_tool_result(m.tool_name.as_deref().unwrap_or(""), &text),
                         tool_name: m.tool_name.clone(),
                         ok: Some(true),
                         duration_ms: None,
@@ -1214,6 +1218,89 @@ fn messages_to_items(msgs: &[wisp_llm::Message]) -> Vec<UiItem> {
         }
     }
     out
+}
+
+/// Tool cards need their complete JSON bodies, but ordinary tool output is a
+/// transcript preview. Keep that preview bounded on every path (live events,
+/// modern replay, and the message-only fallback used by legacy sessions).
+const UI_TOOL_RESULT_MAX_CHARS: usize = 4_000;
+const UI_TOOL_INPUT_MAX_CHARS: usize = 64 * 1024;
+const UI_OUTPUT_TRUNCATED_MARKER: &str = "\n… output truncated …";
+
+fn bounded_ui_text(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut bounded: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_none() {
+        return bounded;
+    }
+    let marker_chars = UI_OUTPUT_TRUNCATED_MARKER.chars().count();
+    for _ in 0..marker_chars.min(max_chars) {
+        bounded.pop();
+    }
+    bounded.push_str(UI_OUTPUT_TRUNCATED_MARKER);
+    bounded
+}
+
+fn bounded_ui_tool_input(value: &str) -> String {
+    bounded_ui_text(value, UI_TOOL_INPUT_MAX_CHARS)
+}
+
+fn bounded_ui_tool_result(name: &str, value: &str) -> String {
+    if matches!(
+        name,
+        "attempt_completion" | wisp_tools::plan::PROPOSE_PLAN | wisp_tools::ask_user::ASK_USER
+    ) {
+        value.to_string()
+    } else {
+        bounded_ui_text(value, UI_TOOL_RESULT_MAX_CHARS)
+    }
+}
+
+/// Replay uses the same terminal semantics and memory ceiling as live stdout.
+/// This is intentionally byte-based because it bounds the actual IPC/String
+/// allocation while preserving UTF-8 boundaries.
+const UI_STREAM_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+
+fn push_bounded_terminal_chunk(output: &mut String, chunk: &str) {
+    let mut rest = chunk;
+    if output.ends_with('\r') && !rest.is_empty() {
+        output.pop();
+        if let Some(stripped) = rest.strip_prefix('\n') {
+            output.push('\n');
+            rest = stripped;
+        } else {
+            truncate_ui_terminal_line(output);
+        }
+    }
+    while let Some(pos) = rest.find('\r') {
+        output.push_str(&rest[..pos]);
+        let after = &rest[pos + 1..];
+        if after.is_empty() {
+            output.push('\r');
+            rest = after;
+            break;
+        }
+        if let Some(stripped) = after.strip_prefix('\n') {
+            output.push('\n');
+            rest = stripped;
+        } else {
+            truncate_ui_terminal_line(output);
+            rest = after;
+        }
+    }
+    output.push_str(rest);
+    if output.len() > UI_STREAM_OUTPUT_MAX_BYTES {
+        let mut cut = output.len() - UI_STREAM_OUTPUT_MAX_BYTES;
+        while !output.is_char_boundary(cut) {
+            cut += 1;
+        }
+        output.drain(..cut);
+    }
+}
+
+fn truncate_ui_terminal_line(output: &mut String) {
+    let line_start = output.rfind('\n').map_or(0, |index| index + 1);
+    output.truncate(line_start);
 }
 
 fn background_completion_ok(raw: &str) -> Option<bool> {
@@ -1339,7 +1426,7 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                 tool_name: Some(name.clone()),
                 ok: None,
                 duration_ms: None,
-                input: Some(preview.clone()),
+                input: Some(bounded_ui_tool_input(preview)),
                 model_name: None,
                 call_id: None,
                 kind: None,
@@ -1393,7 +1480,7 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                         && item.ok.is_none()
                 }) {
                     item.ok = Some(*ok);
-                    item.text = content.clone();
+                    item.text = bounded_ui_tool_result(name, content);
                     item.duration_ms = (*duration_ms > 0).then_some(*duration_ms);
                 }
                 if name == "attempt_completion" && *ok && !content.trim().is_empty() {
@@ -1431,11 +1518,13 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
             }
             AgentEvent::Stdout { chunk, .. } => {
                 if let Some(item) = items.iter_mut().rev().find(|item| item.role == "tool") {
-                    item.text.push_str(chunk);
+                    push_bounded_terminal_chunk(&mut item.text, chunk);
                 } else {
+                    let mut text = String::new();
+                    push_bounded_terminal_chunk(&mut text, chunk);
                     items.push(UiItem {
                         role: "tool".into(),
-                        text: chunk.clone(),
+                        text,
                         tool_name: Some("stdout".into()),
                         ok: None,
                         duration_ms: None,
@@ -1497,6 +1586,36 @@ fn usage_item(
 const MAX_PENDING_UI_EVENT_BYTES: usize = 64 * 1024;
 const UI_EVENT_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Keep future session event logs bounded as well as their replay. Completed
+/// tools have a separate `ToolResult` preview, so persisted stdout is only the
+/// recoverable in-progress tail and never needs to grow without limit.
+fn limit_persisted_ui_event(mut event: AgentEvent, stdout_bytes: &mut usize) -> Option<AgentEvent> {
+    match &mut event {
+        AgentEvent::ToolCall { .. } | AgentEvent::ToolResult { .. } | AgentEvent::User { .. } => {
+            *stdout_bytes = 0;
+        }
+        AgentEvent::Stdout { chunk, .. } => {
+            let remaining = UI_STREAM_OUTPUT_MAX_BYTES.saturating_sub(*stdout_bytes);
+            if remaining == 0 {
+                return None;
+            }
+            if chunk.len() > remaining {
+                let mut end = remaining;
+                while end > 0 && !chunk.is_char_boundary(end) {
+                    end -= 1;
+                }
+                chunk.truncate(end);
+            }
+            if chunk.is_empty() {
+                return None;
+            }
+            *stdout_bytes += chunk.len();
+        }
+        _ => {}
+    }
+    Some(event)
+}
+
 fn merge_pending_ui_event(
     pending: &mut Option<AgentEvent>,
     event: AgentEvent,
@@ -1542,6 +1661,7 @@ async fn persist_ui_events(
     flush_interval: std::time::Duration,
 ) {
     let mut pending = None;
+    let mut persisted_stdout_bytes = 0usize;
     let mut ticker = tokio::time::interval(flush_interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     ticker.tick().await;
@@ -1549,8 +1669,10 @@ async fn persist_ui_events(
         tokio::select! {
             event = rx.recv() => match event {
                 Some(event) => {
-                    if let Some(event) = merge_pending_ui_event(&mut pending, event) {
-                        append_ui_event(&store, &frame_id, &mut seq, event).await;
+                    if let Some(event) = limit_persisted_ui_event(event, &mut persisted_stdout_bytes) {
+                        if let Some(event) = merge_pending_ui_event(&mut pending, event) {
+                            append_ui_event(&store, &frame_id, &mut seq, event).await;
+                        }
                     }
                 }
                 None => break,
@@ -2493,26 +2615,15 @@ impl Output for TauriOutput {
         self.emit(AgentEvent::ToolCall {
             frame_id: self.frame_id.clone(),
             name: name.into(),
-            preview: preview.into(),
+            preview: bounded_ui_tool_input(preview),
         });
     }
     fn tool_result(&self, name: &str, ok: bool, content: &str, duration_ms: u64) {
-        // ponytail: some tool results ARE the card the UI renders, not a preview
-        // of one — attempt_completion is the final answer bubble, propose_plan
-        // and ask_user are card JSON bodies. A clip would truncate them into junk.
-        let clipped: String = if matches!(
-            name,
-            "attempt_completion" | wisp_tools::plan::PROPOSE_PLAN | wisp_tools::ask_user::ASK_USER
-        ) {
-            content.to_string()
-        } else {
-            content.chars().take(4000).collect()
-        };
         self.emit(AgentEvent::ToolResult {
             frame_id: self.frame_id.clone(),
             name: name.into(),
             ok,
-            content: clipped,
+            content: bounded_ui_tool_result(name, content),
             duration_ms,
         });
     }
@@ -6509,7 +6620,7 @@ async fn generate_follow_up_questions(
     }
     let messages = state
         .store
-        .load_messages(&session_id)
+        .load_recent_turn_preview_messages(&session_id, FOLLOW_UP_TRANSCRIPT_TURNS)
         .await
         .map_err(|error| error.to_string())?;
     let specialist = specialists::session_specialist(&state.store, &session_id).await;

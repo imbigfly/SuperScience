@@ -10,6 +10,7 @@
 use crate::i18n::Locale;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub(crate) struct ContextUsage {
@@ -2023,13 +2024,13 @@ pub(crate) struct TableData {
 #[derive(Clone, PartialEq)]
 #[allow(dead_code)]
 pub(crate) enum PreviewData {
-    Table(TableData),
+    Table(Rc<TableData>),
     Text(String),
     Markdown(String),
     Latex { tex: String, display: bool },
     File { path: String, kind: String },
     Smiles(String),
-    Fasta(String),
+    Fasta(Rc<str>),
 }
 
 #[derive(Clone, PartialEq)]
