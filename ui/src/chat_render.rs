@@ -275,16 +275,18 @@ pub(crate) fn steps_title(
     locale: Locale,
     completed_turn: bool,
     live: bool,
+    model_wait_message: Option<&str>,
     n_tools: usize,
     elapsed: Option<&str>,
 ) -> String {
-    match (completed_turn, live, n_tools, elapsed) {
-        (true, _, _, _) => t(locale, "chat.activity_done").to_string(),
-        (_, true, _, _) => t(locale, "chat.steps_running").to_string(),
-        (_, _, 1, None) => t(locale, "chat.steps_1").to_string(),
-        (_, _, 1, Some(d)) => tf(locale, "chat.steps_1_time", &[("t", d)]),
-        (_, _, n, None) => tf(locale, "chat.steps_n", &[("n", &n.to_string())]),
-        (_, _, n, Some(d)) => tf(
+    match (completed_turn, live, model_wait_message, n_tools, elapsed) {
+        (true, _, _, _, _) => t(locale, "chat.activity_done").to_string(),
+        (_, true, Some(message), _, _) => message.to_string(),
+        (_, true, None, _, _) => t(locale, "chat.steps_running").to_string(),
+        (_, _, _, 1, None) => t(locale, "chat.steps_1").to_string(),
+        (_, _, _, 1, Some(d)) => tf(locale, "chat.steps_1_time", &[("t", d)]),
+        (_, _, _, n, None) => tf(locale, "chat.steps_n", &[("n", &n.to_string())]),
+        (_, _, _, n, Some(d)) => tf(
             locale,
             "chat.steps_n_time",
             &[("n", &n.to_string()), ("t", d)],
@@ -298,13 +300,13 @@ mod steps_title_tests {
 
     #[test]
     fn folds_the_run_duration_into_settled_step_counts() {
-        assert_eq!(steps_title(Locale::En, false, false, 1, None), "Ran 1 step");
+        assert_eq!(steps_title(Locale::En, false, false, None, 1, None), "Ran 1 step");
         assert_eq!(
-            steps_title(Locale::En, false, false, 1, Some("2s")),
+            steps_title(Locale::En, false, false, None, 1, Some("2s")),
             "Ran 1 step · 2s"
         );
         assert_eq!(
-            steps_title(Locale::Zh, false, false, 3, Some("1.4s")),
+            steps_title(Locale::Zh, false, false, None, 3, Some("1.4s")),
             "已执行 3 步 · 1.4s"
         );
     }
@@ -312,12 +314,24 @@ mod steps_title_tests {
     #[test]
     fn running_and_done_headers_ignore_the_duration() {
         assert_eq!(
-            steps_title(Locale::En, false, true, 3, Some("2s")),
+            steps_title(Locale::En, false, true, None, 3, Some("2s")),
             "Working…"
         );
         assert_eq!(
-            steps_title(Locale::En, true, false, 3, Some("2s")),
-            steps_title(Locale::En, true, false, 3, None)
+            steps_title(Locale::En, true, false, None, 3, Some("2s")),
+            steps_title(Locale::En, true, false, None, 3, None)
+        );
+    }
+
+    #[test]
+    fn explains_when_a_completed_tool_is_waiting_on_the_model() {
+        assert_eq!(
+            steps_title(Locale::En, false, true, Some("The model is consulting its neurons…"), 1, None),
+            "The model is consulting its neurons…"
+        );
+        assert_eq!(
+            steps_title(Locale::Zh, false, true, Some("模型正在和神经元开会…"), 1, None),
+            "模型正在和神经元开会…"
         );
     }
 }
@@ -333,7 +347,7 @@ pub(crate) fn render_steps_group(
 ) -> impl IntoView {
     let locale = use_locale();
     let now = now_ms();
-    let (n_tools, tool_total_ms, now_line) = source.with_untracked(|items| {
+    let (n_tools, tool_total_ms, now_line, waiting_for_model) = source.with_untracked(|items| {
         let selected = || indices.iter().filter_map(|index| items.get(*index));
         let n_tools = selected()
             .filter(|item| matches!(item, ChatItem::Tool { .. } | ChatItem::AcpTool { .. }))
@@ -362,7 +376,17 @@ pub(crate) fn render_steps_group(
                     .find_map(step_now_line)
             })
             .flatten();
-        (n_tools, total_ms, now_line)
+        let waiting_for_model = live
+            && indices.iter().rev().filter_map(|index| items.get(*index)).find(|item| {
+                !matches!(item, ChatItem::Usage { .. } | ChatItem::Compaction { .. })
+            }).is_some_and(|item| match item {
+                ChatItem::Tool { ok: Some(_), .. } => true,
+                ChatItem::AcpTool { status, .. } => {
+                    status != "pending" && status != "in_progress"
+                }
+                _ => false,
+            });
+        (n_tools, total_ms, now_line, waiting_for_model)
     });
     let total_ms =
         turn_duration_ms.unwrap_or_else(|| if completed_turn { 0 } else { tool_total_ms });
@@ -375,11 +399,22 @@ pub(crate) fn render_steps_group(
         .then(|| total_label.clone())
         .flatten();
     let meta_label = inline_time.is_none().then_some(total_label).flatten();
+    let model_wait_variant =
+        group_id.bytes().fold(0usize, |sum, byte| sum + byte as usize) % 4;
     let title = move || {
+        let model_wait_message = waiting_for_model.then(|| {
+            t(locale.get(), match model_wait_variant {
+                0 => "chat.model_wait_1",
+                1 => "chat.model_wait_2",
+                2 => "chat.model_wait_3",
+                _ => "chat.model_wait_4",
+            })
+        });
         steps_title(
             locale.get(),
             completed_turn,
             live,
+            model_wait_message.as_deref(),
             n_tools,
             inline_time.as_deref(),
         )
