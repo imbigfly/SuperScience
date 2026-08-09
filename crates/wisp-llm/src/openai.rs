@@ -483,6 +483,16 @@ impl Provider for OpenAiProvider {
                     let Ok(val) = serde_json::from_str::<Value>(line) else {
                         continue;
                     };
+                    // Some OpenAI-compatible relays keep the HTTP/SSE response
+                    // at 200 after the upstream connection has failed, then
+                    // encode the failure as a normal `data:` payload and may
+                    // still append `[DONE]`. Treating `[DONE]` alone as success
+                    // in that case commits a partial answer and ends the turn.
+                    if val.get("error").is_some()
+                        || val.get("type").and_then(Value::as_str) == Some("error")
+                    {
+                        return Err(LlmError::Incomplete);
+                    }
                     // The final usage chunk carries an empty `choices` array, so
                     // parse usage before the choice guard would `continue` past it.
                     // Non-null so the per-chunk `"usage": null` fields don't wipe it.
@@ -725,6 +735,27 @@ mod tests {
             requests.await.unwrap(),
             ["/chat/completions", "/v1/chat/completions"]
         );
+    }
+
+    #[tokio::test]
+    async fn stream_rejects_in_band_error_even_when_relay_appends_done() {
+        let (base_url, requests) = serve_responses(vec![(
+            "200 OK",
+            "text/event-stream",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\ndata: {\"error\":{\"message\":\"upstream connection reset\"}}\n\ndata: [DONE]\n\n",
+        )])
+        .await;
+        let provider = local_provider(&base_url);
+        let mut sink = RecordingSink::default();
+
+        let error = provider
+            .stream(&[Message::user("finish the report")], &[], &mut sink)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, LlmError::Incomplete));
+        assert_eq!(sink.text, ["partial"]);
+        assert_eq!(requests.await.unwrap(), ["/chat/completions"]);
     }
 
     #[tokio::test]

@@ -1988,7 +1988,18 @@ fn App() -> impl IntoView {
                     stopping_session.set(None);
                 }
                 refresh_session_history();
-                if settings.get_untracked().follow_up_questions {
+                let has_final_answer = if active_cb.get_untracked().as_deref()
+                    == Some(frame_id.as_str())
+                {
+                    items_cb.with_untracked(|items| latest_turn_has_final_answer(items))
+                } else {
+                    transcripts_cb.with_untracked(|transcripts| {
+                        transcripts
+                            .get(&frame_id)
+                            .is_some_and(|items| latest_turn_has_final_answer(items))
+                    })
+                };
+                if settings.get_untracked().follow_up_questions && has_final_answer {
                     let generation = follow_up_generation.try_update(|generations| {
                         let generation = generations.entry(frame_id.clone()).or_default();
                         *generation += 1;

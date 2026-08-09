@@ -372,6 +372,13 @@ impl Provider for AnthropicProvider {
                 let Ok(val) = serde_json::from_str::<Value>(&data) else {
                     continue;
                 };
+                // Anthropic emits transport/provider failures as `event: error`
+                // inside an otherwise successful SSE response. Relays may also
+                // omit the event name and leave only `{type:"error"}`. Neither
+                // is a completed model turn, even if a terminal frame follows.
+                if anthropic_stream_event_is_error(&etype, &val) {
+                    return Err(LlmError::Incomplete);
+                }
                 match etype.as_str() {
                     "message_start" => {
                         if let Some(u) = val.pointer("/message/usage").or_else(|| val.get("usage"))
@@ -513,6 +520,12 @@ fn parse_sse_event(event: &str) -> (String, String) {
         }
     }
     (etype, data)
+}
+
+fn anthropic_stream_event_is_error(event_type: &str, value: &Value) -> bool {
+    event_type == "error"
+        || value.get("type").and_then(Value::as_str) == Some("error")
+        || value.get("error").is_some()
 }
 
 #[cfg(test)]
@@ -688,5 +701,21 @@ mod tests {
         assert_eq!(usage.input_tokens, 5500);
         assert_eq!(usage.cached_input_tokens, 5000);
         assert_eq!(usage.output_tokens, 42);
+    }
+
+    #[test]
+    fn identifies_named_and_relayed_stream_errors() {
+        assert!(anthropic_stream_event_is_error(
+            "error",
+            &json!({"type": "error", "error": {"message": "connection reset"}})
+        ));
+        assert!(anthropic_stream_event_is_error(
+            "",
+            &json!({"type": "error", "message": "upstream failed"})
+        ));
+        assert!(!anthropic_stream_event_is_error(
+            "message_stop",
+            &json!({"type": "message_stop"})
+        ));
     }
 }
