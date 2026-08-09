@@ -29,6 +29,23 @@ pub struct LibraryItem {
     pub created_at: i64,
 }
 
+/// Lightweight row for Library lists and star state. Full code/text stays out
+/// of the WebView until the active session or an opened detail asks for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LibraryItemSummary {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub language: Option<String>,
+    pub code_preview: String,
+    pub source_project_id: String,
+    pub source_project_name: String,
+    pub source_session_id: String,
+    pub source_session_title: String,
+    pub source_path: Option<String>,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct LibraryItemDetail {
     pub item: LibraryItem,
@@ -212,6 +229,56 @@ impl LibraryStore {
              source_project_name,source_session_id,source_session_title,source_path,created_at \
              FROM library_items ORDER BY created_at DESC,rowid DESC",
         )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_item).collect()
+    }
+
+    pub async fn list_summaries(&self) -> Result<Vec<LibraryItemSummary>> {
+        let rows = sqlx::query(
+            "SELECT id,kind,title,language,substr(code,1,512) AS code_preview,\
+             source_project_id,source_project_name,source_session_id,source_session_title,\
+             source_path,created_at FROM library_items ORDER BY created_at DESC,rowid DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_summary).collect()
+    }
+
+    pub async fn search_summaries(
+        &self,
+        query: &str,
+        kind: Option<&str>,
+    ) -> Result<Vec<LibraryItemSummary>> {
+        let kind = kind.filter(|kind| matches!(*kind, "code" | "figure" | "text"));
+        let rows = sqlx::query(
+            "SELECT id,kind,title,language,substr(code,1,512) AS code_preview,\
+             source_project_id,source_project_name,source_session_id,source_session_title,\
+             source_path,created_at FROM library_items \
+             WHERE (? IS NULL OR kind=?) AND (\
+               instr(lower(title),lower(?))>0 OR instr(lower(code),lower(?))>0 OR \
+               instr(lower(source_project_name),lower(?))>0 OR \
+               instr(lower(source_session_title),lower(?))>0) \
+             ORDER BY created_at DESC,rowid DESC",
+        )
+        .bind(kind)
+        .bind(kind)
+        .bind(query)
+        .bind(query)
+        .bind(query)
+        .bind(query)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_summary).collect()
+    }
+
+    pub async fn list_for_session(&self, session_id: &str) -> Result<Vec<LibraryItem>> {
+        let rows = sqlx::query(
+            "SELECT id,kind,title,language,code,content_type,source_project_id,\
+             source_project_name,source_session_id,source_session_title,source_path,created_at \
+             FROM library_items WHERE source_session_id=? ORDER BY created_at DESC,rowid DESC",
+        )
+        .bind(session_id)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(row_to_item).collect()
@@ -401,6 +468,22 @@ fn row_to_item(row: SqliteRow) -> Result<LibraryItem> {
     })
 }
 
+fn row_to_summary(row: SqliteRow) -> Result<LibraryItemSummary> {
+    Ok(LibraryItemSummary {
+        id: row.try_get("id")?,
+        kind: row.try_get("kind")?,
+        title: row.try_get("title")?,
+        language: row.try_get("language")?,
+        code_preview: row.try_get("code_preview")?,
+        source_project_id: row.try_get("source_project_id")?,
+        source_project_name: row.try_get("source_project_name")?,
+        source_session_id: row.try_get("source_session_id")?,
+        source_session_title: row.try_get("source_session_title")?,
+        source_path: row.try_get("source_path")?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
 fn row_to_detail(row: SqliteRow) -> Result<LibraryItemDetail> {
     let content = row.try_get("content_blob")?;
     Ok(LibraryItemDetail {
@@ -481,6 +564,33 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(first.id, as_code.id);
+    }
+
+    #[tokio::test]
+    async fn list_rows_are_bounded_but_session_and_search_keep_full_semantics() {
+        let store = store().await;
+        let marker = "only-at-the-end";
+        let code = format!("{}{}", "x".repeat(2_000), marker);
+        let item = store
+            .insert(NewLibraryItem {
+                title: "large cell".into(),
+                code: code.clone(),
+                ..new_item("code")
+            })
+            .await
+            .unwrap();
+
+        let summaries = store.list_summaries().await.unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].code_preview.len() <= 512);
+        assert!(!summaries[0].code_preview.contains(marker));
+
+        let matches = store.search_summaries(marker, Some("code")).await.unwrap();
+        assert_eq!(matches[0].id, item.id);
+        assert_eq!(
+            store.list_for_session("session-1").await.unwrap()[0].code,
+            code
+        );
     }
 
     #[tokio::test]

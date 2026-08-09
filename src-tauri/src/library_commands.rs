@@ -4,7 +4,7 @@ use base64::Engine;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::State;
-use wisp_store::{LibraryItem, LibraryItemVersion, NewLibraryItem};
+use wisp_store::{LibraryItem, LibraryItemSummary, LibraryItemVersion, NewLibraryItem};
 
 const MAX_FIGURE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_CODE_BYTES: usize = 2 * 1024 * 1024;
@@ -19,8 +19,37 @@ pub(super) struct LibraryItemDetail {
 #[tauri::command]
 pub(super) async fn list_library_items(
     state: State<'_, AppState>,
+) -> Result<Vec<LibraryItemSummary>, String> {
+    state
+        .library
+        .list_summaries()
+        .await
+        .map_err(|e| format!("{e}"))
+}
+
+#[tauri::command]
+pub(super) async fn search_library_items(
+    state: State<'_, AppState>,
+    query: String,
+    kind: Option<String>,
+) -> Result<Vec<LibraryItemSummary>, String> {
+    state
+        .library
+        .search_summaries(query.trim(), kind.as_deref())
+        .await
+        .map_err(|e| format!("{e}"))
+}
+
+#[tauri::command]
+pub(super) async fn list_session_library_items(
+    state: State<'_, AppState>,
+    session_id: String,
 ) -> Result<Vec<LibraryItem>, String> {
-    state.library.list().await.map_err(|e| format!("{e}"))
+    state
+        .library
+        .list_for_session(&session_id)
+        .await
+        .map_err(|e| format!("{e}"))
 }
 
 #[tauri::command]

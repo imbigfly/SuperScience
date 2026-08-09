@@ -3858,6 +3858,39 @@ async fn run_manager_roundtrip_and_lifecycle() {
 }
 
 #[tokio::test]
+async fn run_poll_summaries_omit_large_detail_payloads() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_run_summaries_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    let mut run = RunRecord::new("large", "p", "local", "Large", "command");
+    run.command = Some(format!("SECRET_COMMAND{}", "c".repeat(32 * 1024)));
+    run.stdout_tail = Some("x".repeat(64 * 1024));
+    run.stderr_tail = Some("y".repeat(64 * 1024));
+    run.env_snapshot_json = format!(r#"{{"SECRET_ENV":"{}"}}"#, "e".repeat(32 * 1024));
+    store.create_run(&run).await.unwrap();
+
+    let summaries = store
+        .list_run_summaries_in_scope(&StateScope::mainline("p"))
+        .await
+        .unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].id, "large");
+    let json = serde_json::to_string(&summaries).unwrap();
+    assert!(!json.contains("SECRET_COMMAND"));
+    assert!(!json.contains("SECRET_ENV"));
+    assert!(
+        json.len() < 5_000,
+        "summary payload was {} bytes",
+        json.len()
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
 async fn run_can_cancel_then_time_out() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_store_run_cancel_timeout_{}.sqlite",

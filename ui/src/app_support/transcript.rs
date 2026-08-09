@@ -1,5 +1,113 @@
 use super::*;
 
+const MAX_IDLE_TRANSCRIPT_CACHE: usize = 8;
+
+fn trim_idle_transcript_cache(
+    cache: &mut HashMap<String, Vec<ChatItem>>,
+    running: &HashSet<String>,
+    protected: Option<&str>,
+) {
+    let idle_count = cache.keys().filter(|id| !running.contains(*id)).count();
+    let idle = cache
+        .keys()
+        .filter(|id| !running.contains(*id) && protected != Some(id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let remove = idle_count.saturating_sub(MAX_IDLE_TRANSCRIPT_CACHE);
+    // ponytail: arbitrary idle eviction is enough because SQLite is the source
+    // of truth; add LRU ordering only if reload latency becomes measurable.
+    for id in idle.into_iter().take(remove) {
+        cache.remove(&id);
+    }
+}
+
+/// Replace the visible transcript in one signal write, moving the old rows
+/// into the inactive-session cache and taking cached target rows by ownership.
+pub(crate) fn replace_visible_transcript(
+    current_id: Option<String>,
+    target_id: Option<&str>,
+    fallback: Vec<ChatItem>,
+    items: RwSignal<Vec<ChatItem>>,
+    transcripts: RwSignal<HashMap<String, Vec<ChatItem>>>,
+    running: RwSignal<HashSet<String>>,
+) {
+    if target_id.is_some() && current_id.as_deref() == target_id {
+        return;
+    }
+    let next = transcripts
+        .try_update(|cache| {
+            target_id
+                .and_then(|id| cache.remove(id))
+                .unwrap_or(fallback)
+        })
+        .unwrap_or_default();
+    let previous = items
+        .try_update(|visible| std::mem::replace(visible, next))
+        .unwrap_or_default();
+    let running = running.get_untracked();
+    transcripts.update(|cache| {
+        if let Some(current_id) = current_id.as_ref() {
+            cache.insert(current_id.clone(), previous);
+        }
+        trim_idle_transcript_cache(cache, &running, current_id.as_deref());
+    });
+}
+
+#[cfg(test)]
+mod transcript_cache_tests {
+    use super::{
+        replace_visible_transcript, trim_idle_transcript_cache, MAX_IDLE_TRANSCRIPT_CACHE,
+    };
+    use crate::dto::ChatItem;
+    use leptos::{create_runtime, create_rw_signal, SignalGetUntracked};
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn trims_only_idle_transcripts() {
+        let running = HashSet::from(["running".to_string()]);
+        let mut cache =
+            HashMap::from([("running".to_string(), vec![ChatItem::User("live".into())])]);
+        for index in 0..MAX_IDLE_TRANSCRIPT_CACHE + 3 {
+            cache.insert(format!("idle-{index}"), Vec::new());
+        }
+        trim_idle_transcript_cache(&mut cache, &running, None);
+        assert!(cache.contains_key("running"));
+        assert_eq!(cache.len(), MAX_IDLE_TRANSCRIPT_CACHE + 1);
+    }
+
+    #[test]
+    fn moves_rows_between_visible_and_cached_owners() {
+        let runtime = create_runtime();
+        let items = create_rw_signal(vec![ChatItem::User("session-a".into())]);
+        let transcripts = create_rw_signal(HashMap::from([(
+            "b".to_string(),
+            vec![ChatItem::User("session-b".into())],
+        )]));
+        let running = create_rw_signal(HashSet::new());
+
+        replace_visible_transcript(
+            Some("a".into()),
+            Some("b"),
+            Vec::new(),
+            items,
+            transcripts,
+            running,
+        );
+
+        assert!(matches!(
+            items.get_untracked().as_slice(),
+            [ChatItem::User(text)] if text == "session-b"
+        ));
+        let cache = transcripts.get_untracked();
+        assert!(!cache.contains_key("b"));
+        assert!(matches!(
+            cache.get("a").map(Vec::as_slice),
+            Some([ChatItem::User(text)]) if text == "session-a"
+        ));
+        runtime.dispose();
+    }
+}
+
 /// Map the reviewer's `[msg:N]` index to the live UI row. Usage, reviewer
 /// handoffs, approvals, and review cards are UI-only and must not shift it.
 pub(crate) fn review_message_ui_index(items: &[ChatItem], message_index: usize) -> Option<usize> {

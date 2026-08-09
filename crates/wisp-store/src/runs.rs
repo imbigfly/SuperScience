@@ -1,6 +1,7 @@
 use super::{
     artifact_node_id, canonical_json, canonical_json_sha256, run_from_row, run_node_id,
-    ResearchEdge, ResearchNode, ResearchNodeKind, RunRecord, RunStatus, StateScope, Store,
+    run_summary_from_row, ResearchEdge, ResearchNode, ResearchNodeKind, RunRecord, RunStatus,
+    RunSummary, StateScope, Store,
 };
 use anyhow::Result;
 use sha2::{Digest, Sha256};
@@ -275,6 +276,52 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(run_from_row).collect()
+    }
+
+    pub async fn list_run_summaries_in_scope(&self, scope: &StateScope) -> Result<Vec<RunSummary>> {
+        let columns = "run.id,run.frame_id,run.context_id,run.title,run.kind,run.status,\
+            run.created_at,run.started_at,run.ended_at,run.exit_code,run.remote_workdir,\
+            run.timeout_secs,run.last_polled_at,substr(run.last_poll_error,1,2048) AS last_poll_error,\
+            run.progress_json,printf('%d:%s:%s|%d:%s:%s',\
+              length(CAST(coalesce(run.stdout_tail,'') AS BLOB)),substr(coalesce(run.stdout_tail,''),1,64),\
+              substr(coalesce(run.stdout_tail,''),-128),\
+              length(CAST(coalesce(run.stderr_tail,'') AS BLOB)),\
+              substr(coalesce(run.stderr_tail,''),1,64),substr(coalesce(run.stderr_tail,''),-128)) \
+              AS output_fingerprint";
+        let rows = match scope {
+            StateScope::Mainline { project_id } => {
+                let sql = format!(
+                    "SELECT {columns} FROM runs run WHERE run.project_id=? \
+                     AND run.exploration_id IS NULL ORDER BY run.created_at DESC,run.id DESC"
+                );
+                sqlx::query(&sql)
+                    .bind(project_id)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            StateScope::Exploration {
+                project_id,
+                exploration_id,
+            } => {
+                let sql = format!(
+                    "SELECT {columns} FROM runs run WHERE run.project_id=? \
+                     AND (run.exploration_id=? OR (run.exploration_id IS NULL AND EXISTS(\
+                       SELECT 1 FROM explorations exploration \
+                       JOIN exploration_baseline_entities baseline \
+                         ON baseline.checkpoint_id=exploration.checkpoint_id \
+                       WHERE exploration.id=? AND baseline.entity_kind='run' \
+                         AND baseline.entity_id=run.id))) \
+                     ORDER BY run.created_at DESC,run.id DESC"
+                );
+                sqlx::query(&sql)
+                    .bind(project_id)
+                    .bind(exploration_id)
+                    .bind(exploration_id)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+        };
+        rows.into_iter().map(run_summary_from_row).collect()
     }
 
     pub async fn list_runs_owned_by_exploration(

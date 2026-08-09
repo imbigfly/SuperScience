@@ -47,6 +47,28 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { id: "manifest_esr1_04_downstream", title: "Based on the upstream Counts data from GSE153250, perform transcriptome" },
     { id: "manifest_esr1_05_hypotheses", title: "Based on the Counts data from our study, along with the differential e" },
   ];
+  const runSummary = (run: any) => {
+    const stdout = String(run.stdout_tail ?? "");
+    const stderr = String(run.stderr_tail ?? "");
+    return {
+      id: run.id,
+      frame_id: run.frame_id ?? null,
+      context_id: run.context_id,
+      title: run.title,
+      kind: run.kind,
+      status: run.status,
+      created_at: run.created_at,
+      started_at: run.started_at ?? null,
+      ended_at: run.ended_at ?? null,
+      exit_code: run.exit_code ?? null,
+      remote_workdir: run.remote_workdir ?? null,
+      timeout_secs: run.timeout_secs ?? null,
+      last_polled_at: run.last_polled_at ?? null,
+      last_poll_error: run.last_poll_error ?? null,
+      progress_json: run.progress_json ?? "{}",
+      output_fingerprint: `${stdout.length}:${stdout.slice(0, 64)}:${stdout.slice(-128)}|${stderr.length}:${stderr.slice(0, 64)}:${stderr.slice(-128)}`,
+    };
+  };
   const demoRunJson = JSON.stringify({
     id: "demo-run-001",
     frame_id: null,
@@ -1242,6 +1264,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { id: "art-markdown", name: "analysis-report.md", kind: "text/markdown", path: "analysis-report.md", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "wisp-science", session_id: "s-current", session_title: "Current analysis", origin: "output" },
   ];
   let libraryItems: any[] = [];
+  const librarySummary = ({ base64: _base64, code, ...item }: any) => ({
+    ...item,
+    code_preview: String(code ?? "").slice(0, 512),
+  });
   const libraryVersions: Record<string, any[]> = {};
   const researchGraph = {
     nodes: [
@@ -1539,7 +1565,24 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return publicationWorkspace();
           }
           case "list_library_items":
-            return libraryItems.map(({ base64: _base64, ...item }) => item);
+            return libraryItems.map(librarySummary);
+          case "list_session_library_items":
+            return libraryItems
+              .filter((item) => item.source_session_id === String(arg("sessionId") ?? ""))
+              .map(({ base64: _base64, ...item }) => item);
+          case "search_library_items": {
+            const query = String(arg("query") ?? "").toLocaleLowerCase();
+            const kind = arg("kind");
+            return libraryItems
+              .filter((item) => !kind || item.kind === kind)
+              .filter((item) => [
+                item.title,
+                item.code,
+                item.source_project_name,
+                item.source_session_title,
+              ].some((value) => String(value ?? "").toLocaleLowerCase().includes(query)))
+              .map(librarySummary);
+          }
           case "star_library_code": {
             const sessionId = String(arg("sessionId") ?? "");
             const language = String(arg("language") ?? "");
@@ -2814,7 +2857,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "close_terminal":
             return null;
           case "list_runs":
-            return runs;
+            return runs.map(runSummary);
+          case "get_run_detail": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run) throw new Error("Run not found");
+            return run;
+          }
           case "get_method_search_run":
             return mockMethodSearchDetails();
           case "start_method_search": {

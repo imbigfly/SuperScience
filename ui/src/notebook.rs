@@ -164,8 +164,10 @@ pub(super) fn NotebookView(
                 let star_source = cell.source.to_string();
                 let starred = create_memo(move |_| {
                     active_session.get().is_some_and(|session| {
-                        library_items.get().iter().any(|item| {
-                            item.matches_code(&session, &star_language, &star_source)
+                        library_items.with(|items| {
+                            items.iter().any(|item| {
+                                item.matches_code(&session, &star_language, &star_source)
+                            })
                         })
                     })
                 });
@@ -200,8 +202,17 @@ pub(super) fn NotebookView(
                                 aria-pressed=move || starred.get().to_string()
                                 on:click=move |_| {
                                     let Some(session_id) = active_session.get_untracked() else { return; };
-                                    let existing = library_items.get_untracked().into_iter().find(|item| {
-                                        item.matches_code(&session_id, &click_language, &click_source)
+                                    let existing = library_items.with_untracked(|items| {
+                                        items
+                                            .iter()
+                                            .find(|item| {
+                                                item.matches_code(
+                                                    &session_id,
+                                                    &click_language,
+                                                    &click_source,
+                                                )
+                                            })
+                                            .cloned()
                                     });
                                     let language = click_language.clone();
                                     let code = click_source.clone();
