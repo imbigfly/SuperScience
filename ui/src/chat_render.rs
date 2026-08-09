@@ -975,6 +975,7 @@ pub(crate) fn RunMonitorCard(
     tool_output: String,
 ) -> impl IntoView {
     let locale = use_locale();
+    let dismissed = create_rw_signal(false);
     let fallback = serde_json::from_str::<RunRecord>(&tool_output).ok();
     let lookup_id = run_id.clone();
     let selected_id = run_id.clone();
@@ -997,6 +998,9 @@ pub(crate) fn RunMonitorCard(
     let env_open = create_rw_signal(false);
     view! {
         {move || {
+            if dismissed.get() {
+                return view! {}.into_view();
+            }
             let run = selected_run.get();
             let Some(run) = run else {
                 let failed = tool_ok == Some(false);
@@ -1025,6 +1029,10 @@ pub(crate) fn RunMonitorCard(
             let status = run.status.clone();
             let status_class = format!("run-status {status}");
             let active = matches!(status.as_str(), "submitted" | "running" | "cancelling");
+            let dismissible = matches!(
+                status.as_str(),
+                "succeeded" | "failed" | "cancelled" | "timed_out" | "lost"
+            );
             let cancellable = matches!(status.as_str(), "submitted" | "running" | "cancelling");
             let force_cancel = status == "cancelling";
             let cancel_label = if force_cancel {
@@ -1102,6 +1110,16 @@ pub(crate) fn RunMonitorCard(
                                             let _ = invoke("cancel_run", arg).await;
                                         });
                                     }>{compose_icon("close")}</button>
+                            }
+                        })}
+                        {dismissible.then(|| {
+                            let tip = t(locale.get(), "runs.dismiss");
+                            view! {
+                                <button type="button" class="icon-btn run-monitor-dismiss"
+                                    title=tip.clone()
+                                    aria-label=tip
+                                    on:click=move |_| dismissed.set(true)
+                                >{compose_icon("close")}</button>
                             }
                         })}
                     </div>

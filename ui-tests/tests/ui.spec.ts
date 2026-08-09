@@ -4389,6 +4389,9 @@ test("monitor_run renders a live Run card inline without get_run polling", async
     runId: "run-local-002",
   });
   await expect(card).toContainText("Cancelled");
+  await card.getByRole("button", { name: "Dismiss completed run card" }).click();
+  await expect(card).toHaveCount(0);
+  await expect(page.locator(".run-monitor-wrap")).toBeHidden();
 });
 
 test("run monitor output stays pinned to the tail across poll rebuilds (#654)", async ({ page }) => {
@@ -4541,6 +4544,8 @@ test("active session Runs appear automatically with elapsed time and heartbeat (
   await expect(automatic).toContainText("Elapsed 1m");
   await expect(automatic).toContainText("Heartbeat");
   await expect(automatic).toContainText("2 of 3 stages complete");
+  await expect(automatic.getByRole("button", { name: "Dismiss completed run card" }))
+    .toHaveCount(0);
 
   await composer(page).fill("MDLIST later turn");
   await page.getByRole("button", { name: "Send" }).click();
@@ -4552,6 +4557,20 @@ test("active session Runs appear automatically with elapsed time and heartbeat (
     return !!card && !!laterTurn
       && !!(card.compareDocumentPosition(laterTurn) & Node.DOCUMENT_POSITION_FOLLOWING);
   })).toBe(true);
+
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      status: "succeeded",
+      ended_at: Math.floor(Date.now() / 1000),
+      exit_code: 0,
+    });
+  });
+  const dismiss = automatic.getByRole("button", { name: "Dismiss completed run card" });
+  await expect(dismiss).toBeVisible({ timeout: 7_000 });
+  await dismiss.click();
+  await expect(automatic.getByTestId("run-monitor-card")).toHaveCount(0);
+  await expect(automatic).toBeHidden();
 });
 
 test("active Run elapsed time advances without waiting for a backend refresh (#663)", async ({ page }) => {
