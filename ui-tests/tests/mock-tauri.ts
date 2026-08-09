@@ -1910,8 +1910,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             activeMockFrame = row.exploration.frame_id;
             return { ...row.exploration };
           }
-          case "preview_exploration_diff":
-            return mockExplorationPreview(String(arg("explorationId"))).diff;
           case "preview_exploration_promotion":
             return mockExplorationPreview(String(arg("explorationId")));
           case "archive_exploration":
@@ -2377,38 +2375,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return roots.size > 0
               ? mockAgentWorkflows.filter((item) => roots.has(item.workflow.root_workflow_id))
               : mockAgentWorkflows.filter((item) => item.workflow.frame_id === sessionId);
-          }
-          case "create_dynamic_agent_workflow": {
-            if (!(sessionDelegationEnabled[lastDelegationSessionId] ?? false)) {
-              throw new Error("Sub-Agent delegation is off for this conversation.");
-            }
-            const snapshot = dynamicWorkflowSnapshot(plain(arg("proposal")));
-            mockAgentWorkflows = [snapshot, ...mockAgentWorkflows];
-            if (snapshot.approval_policy === "auto_safe" && !snapshot.workflow.requires_confirmation) {
-              snapshot.workflow.status = "approved";
-              snapshot.workflow.version += 1;
-              void executeMockDynamicWorkflow(snapshot);
-            }
-            return snapshot;
-          }
-          case "revise_dynamic_agent_workflow": {
-            const snapshot = mockAgentWorkflows.find((item) => item.workflow.id === arg("workflowId"));
-            if (!snapshot) throw new Error("Agent workflow does not exist");
-            if (!snapshot.delegation_enabled) throw new Error("Sub-Agent delegation is off for this conversation.");
-            if (Number(arg("expectedVersion")) !== snapshot.workflow.version) {
-              throw { code: "version_conflict", message: "The draft changed; refresh and try again.", version_conflict: null };
-            }
-            const replacement = dynamicWorkflowSnapshot(plain(arg("proposal")), snapshot.workflow.id);
-            replacement.workflow.frame_id = snapshot.workflow.frame_id;
-            replacement.workflow.version = snapshot.workflow.version + 1;
-            replacement.delegation_enabled = snapshot.delegation_enabled;
-            Object.assign(snapshot, replacement);
-            if (snapshot.approval_policy === "auto_safe" && !snapshot.workflow.requires_confirmation) {
-              snapshot.workflow.status = "approved";
-              snapshot.workflow.version += 1;
-              void executeMockDynamicWorkflow(snapshot);
-            }
-            return snapshot;
           }
           case "approve_agent_workflow": {
             const snapshot = mockAgentWorkflows.find((item) => item.workflow.id === arg("workflowId"));
@@ -3709,7 +3675,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "dismiss_onboarding":
             return null;
-          case "stop_session":
           case "stop_agent":
             if ((window as any).__failStopAgent) {
               throw new Error("stop command unavailable");

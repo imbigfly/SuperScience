@@ -2212,14 +2212,10 @@ pub(crate) struct TableData {
 }
 
 #[derive(Clone, PartialEq)]
-#[allow(dead_code)]
 pub(crate) enum PreviewData {
     Table(Rc<TableData>),
-    Text(String),
-    Markdown(String),
     Latex { tex: String, display: bool },
     File { path: String, kind: String },
-    Smiles(String),
     Fasta(Rc<str>),
 }
 

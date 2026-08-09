@@ -1006,18 +1006,6 @@ pub(crate) async fn create_exploration(
 }
 
 #[tauri::command]
-pub(crate) async fn list_explorations(
-    state: State<'_, AppState>,
-    source_frame_id: String,
-) -> Result<Vec<Exploration>, String> {
-    state
-        .store
-        .list_explorations(&source_frame_id)
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 pub(crate) async fn list_project_explorations(
     state: State<'_, AppState>,
     window: WebviewWindow,

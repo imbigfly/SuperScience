@@ -676,51 +676,6 @@ impl super::Store {
         Ok(())
     }
 
-    pub async fn replace_agent_workflow_plan(
-        &self,
-        workflow: &AgentWorkflow,
-        steps: &[AgentWorkflowStep],
-        expected_version: i64,
-    ) -> Result<bool> {
-        workflow.validate()?;
-        if workflow.status != AgentWorkflowStatus::Draft {
-            anyhow::bail!("only draft agent workflow plans can be edited");
-        }
-        validate_plan_steps(&workflow.id, steps)?;
-        let now = chrono::Utc::now().timestamp();
-        let mut tx = self.begin_write().await?;
-        let updated = sqlx::query(
-            "UPDATE agent_workflows SET frame_id=?,name=?,description=?,goal=?,mode=?,max_parallel=?,requires_confirmation=?,plan_json=?,version=version+1,enabled=?,updated_at=? WHERE id=? AND version=? AND status='draft'",
-        )
-        .bind(workflow.frame_id.as_deref())
-        .bind(&workflow.name)
-        .bind(&workflow.description)
-        .bind(&workflow.goal)
-        .bind(&workflow.mode)
-        .bind(workflow.max_parallel)
-        .bind(workflow.requires_confirmation as i64)
-        .bind(&workflow.plan_json)
-        .bind(workflow.enabled as i64)
-        .bind(now)
-        .bind(&workflow.id)
-        .bind(expected_version)
-        .execute(&mut *tx)
-        .await?;
-        if updated.rows_affected() != 1 {
-            tx.rollback().await?;
-            return Ok(false);
-        }
-        sqlx::query("DELETE FROM agent_workflow_steps WHERE workflow_id=?")
-            .bind(&workflow.id)
-            .execute(&mut *tx)
-            .await?;
-        for step in steps {
-            insert_step(&mut tx, step).await?;
-        }
-        tx.commit().await?;
-        Ok(true)
-    }
-
     /// Replace only the resolved snapshot of a failed root workflow while
     /// retaining its attempts, then put it back into the approved state.
     pub async fn replace_agent_workflow_plan_for_retry(
