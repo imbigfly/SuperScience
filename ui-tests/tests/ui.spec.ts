@@ -2323,7 +2323,7 @@ test("transcript selections add to the main composer without closing the right p
   await expect(panel).toBeVisible();
 });
 
-test("a selection Quick Action launches a parallel literature workflow", async ({ page }) => {
+test("literature research prepares a skill-backed turn in the current conversation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("STEPSDEMO");
   await page.getByRole("button", { name: "Send" }).click();
@@ -2335,18 +2335,26 @@ test("a selection Quick Action launches a parallel literature workflow", async (
   await expect(action).toBeVisible();
   await action.click();
 
-  await expect.poll(() => lastInvokeArgs(page, "run_quick_action")).toMatchObject({
-    actionId: "literature_research",
-    input: { selection: selected },
-  });
+  await expect.poll(() => lastInvokeArgs(page, "run_quick_action")).toBeNull();
   await expect(page.locator(".selection-popup")).toHaveCount(0);
-  await expect(page.locator(".rightpane")).toBeVisible();
-  await expect(page.locator(".rightpane .agent-workflow-name"))
-    .toHaveText("Review the literature evidence for a selected passage");
-  await expect(page.locator(".msg.user")).toContainText("Run Quick Action");
+  await expect(page.getByText("Added Research literature to this conversation"))
+    .toBeVisible();
+  await expect(composer(page)).toHaveValue(/Research the quoted passage/);
+  await expect(page.locator(".composer-reference-chips .skill"))
+    .toContainText("literature-review");
+  await expect(page.locator(".composer-reference-chips .quote"))
+    .toContainText(selected.slice(0, 30));
+
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    sessionId: expect.any(String),
+    message: expect.stringContaining(selected.slice(0, 30)),
+    references: [{ kind: "skill", name: "literature-review" }],
+  });
+  await expect(page.locator(".msg.user").last()).toContainText("Research the quoted passage");
 });
 
-test("selection Quick Actions are also available from the right-click menu", async ({ page }) => {
+test("literature research from the right-click menu also stays in the composer", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("STEPSDEMO");
   await page.getByRole("button", { name: "Send" }).click();
@@ -2356,11 +2364,13 @@ test("selection Quick Actions are also available from the right-click menu", asy
   const menu = page.locator(".ctx-menu");
   await menu.getByRole("button", { name: "Research literature" }).click();
 
-  await expect.poll(() => lastInvokeArgs(page, "run_quick_action")).toMatchObject({
-    actionId: "literature_research",
-    input: { selection: selected },
-  });
+  await expect.poll(() => lastInvokeArgs(page, "run_quick_action")).toBeNull();
   await expect(page.locator(".ctx-menu")).toHaveCount(0);
+  await expect(composer(page)).toHaveValue(/Research the quoted passage/);
+  await expect(page.locator(".composer-reference-chips .skill"))
+    .toContainText("literature-review");
+  await expect(page.locator(".composer-reference-chips .quote"))
+    .toContainText(selected.slice(0, 30));
 });
 
 test("Quick Actions opens its bound graph in the standalone Workflow Studio", async ({ page }) => {

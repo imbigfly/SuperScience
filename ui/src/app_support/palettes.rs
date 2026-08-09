@@ -1,5 +1,8 @@
 use super::*;
 
+pub(crate) const LITERATURE_RESEARCH_ACTION_ID: &str = "literature_research";
+pub(crate) const LITERATURE_REVIEW_SKILL: &str = "literature-review";
+
 /// Apply a transcript mutation to the right session: the live `items` view when
 /// `fid` is the active session, otherwise the background cache keyed by `fid`.
 /// This is what lets a second conversation stream while the user views another.
@@ -18,10 +21,74 @@ pub(crate) fn route_items(
 }
 
 pub(crate) fn quick_action_label(locale: Locale, action: &QuickAction) -> String {
-    if action.id == "literature_research" && action.name == "Research literature" {
+    if action.id == LITERATURE_RESEARCH_ACTION_ID && action.name == "Research literature" {
         t(locale, "selection.research_literature").into()
     } else {
         action.name.clone()
+    }
+}
+
+/// The built-in literature action stays in the current conversation so its
+/// progress and result share the conversation's durable transcript. Custom
+/// Quick Actions continue to instantiate their bound Workflow.
+pub(crate) fn quick_action_uses_current_conversation(action: &QuickAction) -> bool {
+    action.builtin && action.id == LITERATURE_RESEARCH_ACTION_ID
+}
+
+pub(crate) fn append_composer_prompt(current: &str, prompt: &str) -> String {
+    let prompt = prompt.trim();
+    let current_text = current.trim();
+    if current_text.is_empty() {
+        prompt.to_string()
+    } else if prompt.is_empty() || current_text.ends_with(prompt) {
+        current.to_string()
+    } else {
+        format!("{}\n\n{prompt}", current.trim_end())
+    }
+}
+
+#[cfg(test)]
+mod quick_action_routing_tests {
+    use super::*;
+
+    fn action(id: &str, builtin: bool) -> QuickAction {
+        QuickAction {
+            id: id.into(),
+            name: "Action".into(),
+            description: String::new(),
+            icon: "search".into(),
+            context: "selection".into(),
+            workflow_template_id: "workflow".into(),
+            enabled: true,
+            sort_order: 0,
+            builtin,
+        }
+    }
+
+    #[test]
+    fn only_builtin_literature_research_stays_in_current_conversation() {
+        assert!(quick_action_uses_current_conversation(&action(
+            LITERATURE_RESEARCH_ACTION_ID,
+            true,
+        )));
+        assert!(!quick_action_uses_current_conversation(&action(
+            LITERATURE_RESEARCH_ACTION_ID,
+            false,
+        )));
+        assert!(!quick_action_uses_current_conversation(&action("custom", true)));
+    }
+
+    #[test]
+    fn composer_prompt_preserves_an_existing_draft() {
+        assert_eq!(append_composer_prompt("", "Research this"), "Research this");
+        assert_eq!(
+            append_composer_prompt("Keep this context", "Research this"),
+            "Keep this context\n\nResearch this"
+        );
+        assert_eq!(
+            append_composer_prompt("Keep this context\n\nResearch this", "Research this"),
+            "Keep this context\n\nResearch this"
+        );
     }
 }
 

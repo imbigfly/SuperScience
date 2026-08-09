@@ -568,7 +568,7 @@ fn builtin_literature_action() -> QuickAction {
         id: LITERATURE_ACTION_ID.into(),
         name: "Research literature".into(),
         description:
-            "Search supporting and challenging evidence in parallel, then synthesize the results."
+            "Prepare the selected passage for a literature-review turn in the current conversation."
                 .into(),
         icon: "search".into(),
         context: QuickActionContext::Selection,

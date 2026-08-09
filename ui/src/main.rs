@@ -5765,6 +5765,48 @@ fn App() -> impl IntoView {
                 selection_popup.set(None);
                 ctx_menu.set(None);
                 clear_selection();
+                let action = quick_actions
+                    .get_untracked()
+                    .into_iter()
+                    .find(|action| action.id == action_id);
+                if let Some(action) = action
+                    .as_ref()
+                    .filter(|action| quick_action_uses_current_conversation(action))
+                {
+                    composer_quotes.update(|quotes| {
+                        let quote =
+                            ComposerQuote::from_selection(selection.clone(), source_path.clone());
+                        if !quotes.contains(&quote) {
+                            quotes.push(quote);
+                        }
+                    });
+                    composer_references.update(|references| {
+                        let skill = ComposerReferenceChip::Skill {
+                            name: LITERATURE_REVIEW_SKILL.into(),
+                        };
+                        if !references
+                            .iter()
+                            .any(|reference| reference.key() == skill.key())
+                        {
+                            references.push(skill);
+                        }
+                    });
+                    let prompt = t(
+                        locale.get_untracked(),
+                        "quick_action.literature_composer_prompt",
+                    );
+                    input.update(|current| {
+                        *current = append_composer_prompt(current, &prompt);
+                    });
+                    let name = quick_action_label(locale.get_untracked(), action);
+                    status.set(tf(
+                        locale.get_untracked(),
+                        "quick_action.prepared",
+                        &[("name", &name)],
+                    ));
+                    focus_composer();
+                    return;
+                }
                 let load_session = load_session.clone();
                 spawn_local(async move {
                     let args = to_value(&serde_json::json!({
