@@ -13,8 +13,8 @@ use std::sync::Arc;
 use tauri::{State, WebviewWindow};
 use wisp_store::{
     ContextArchiveRecord, Exploration, ExplorationBaselineArtifactHead, ExplorationCheckpoint,
-    ExplorationFamily, ExplorationStatus, StateScope, Store, WorkspaceSnapshotRecord,
-    MAINLINE_SCOPE_KEY,
+    ExplorationFamily, ExplorationStatus, ExplorationSummary, StateScope, Store,
+    WorkspaceSnapshotRecord, MAINLINE_SCOPE_KEY,
 };
 
 const ERR_SOURCE_BUSY: &str = "exploration_source_busy";
@@ -744,6 +744,19 @@ pub(crate) async fn list_explorations(
     state
         .store
         .list_explorations(&source_frame_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn list_project_explorations(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+) -> Result<Vec<ExplorationSummary>, String> {
+    let project = state.active(window.label());
+    state
+        .store
+        .list_project_explorations(&project.id)
         .await
         .map_err(|error| error.to_string())
 }

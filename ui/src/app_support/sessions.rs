@@ -112,6 +112,15 @@ pub(crate) fn refresh_folders(folders: RwSignal<Vec<FolderInfo>>) {
     });
 }
 
+pub(crate) fn refresh_explorations(explorations: RwSignal<Vec<ExplorationSummary>>) {
+    spawn_local(async move {
+        let value = invoke("list_project_explorations", JsValue::UNDEFINED).await;
+        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ExplorationSummary>>(value) {
+            explorations.set(list);
+        }
+    });
+}
+
 /// Split the sidebar list into top-level sessions plus, per session id, the
 /// branches forked from it — the sidebar draws those nested underneath (#531).
 ///

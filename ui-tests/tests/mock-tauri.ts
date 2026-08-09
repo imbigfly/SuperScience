@@ -123,8 +123,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockOAuthPending = query.get("mockOAuthPending") === "1";
   const mockOnboarding = query.get("mockOnboarding") === "1";
   const mockSyncUnconfigured = query.get("mockSyncUnconfigured") === "1";
+  const mockExplorationFlow = query.get("mockExplorations") === "1";
   let mockLocale = query.get("mockLocale") === "zh" ? "zh" : "en";
-  const mockSessions: any[] = mockPlanFlow
+  const mockSessions: any[] = mockExplorationFlow
+    ? [{ id: "exploration-mainline", title: "Mainline analysis", ts: 2100, running: false }]
+    : mockPlanFlow
     ? [{ id: "s1", title: "Plan mode regression", ts: 2000, running: false }]
     : mockPublication
       ? [{ id: "publication-session", title: "Publication evidence", ts: 2000, running: false }]
@@ -151,7 +154,73 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 running: query.get("mockBackgroundApproval") === "1",
               },
             ]
-          : [];
+      : [];
+  let activeMockFrame = mockExplorationFlow ? "exploration-mainline" : "";
+  let mockMainlineAdvanced = query.get("mockMainlineAdvanced") === "1";
+  const makeMockExploration = (id: string, frameId: string, name: string, createdAt: number) => ({
+    id,
+    checkpoint_id: "checkpoint-shared",
+    frame_id: frameId,
+    name,
+    status: "active",
+    workspace_dir: `/mock/app-data/explorations/default/${id}/workspace`,
+    workspace_backend: "copy",
+    scope_generation: 1,
+    warnings_json: "[]",
+    created_at: createdAt,
+    updated_at: createdAt,
+    promoted_at: null,
+    archived_at: null,
+    discarded_at: null,
+  });
+  let mockExplorations: any[] = mockExplorationFlow
+    ? [
+        { exploration: makeMockExploration("exploration-a", "exploration-frame-a", "Exploration A", 2001), source_frame_id: "exploration-mainline", isolation_summary_json: '{"partial":false}' },
+        { exploration: makeMockExploration("exploration-b", "exploration-frame-b", "Exploration B", 2002), source_frame_id: "exploration-mainline", isolation_summary_json: '{"partial":true}' },
+      ]
+    : [];
+  const explorationTranscript = (frameId: string) => {
+    const suffix = frameId === "exploration-mainline" ? "Mainline result" : frameId.endsWith("-a") ? "Exploration A result" : frameId.endsWith("-b") ? "Exploration B result" : "New exploration result";
+    return {
+      items: [
+        { role: "user", text: "Analyze the candidate method", tool_name: null, ok: null },
+        { role: "assistant", text: suffix, tool_name: null, ok: null },
+      ],
+      next_before_seq: null,
+      user_offset: 0,
+    };
+  };
+  const mockExplorationPreview = (id: string) => {
+    const row = mockExplorations.find((item) => item.exploration.id === id);
+    if (!row) throw new Error("Exploration not found");
+    const blocked = mockMainlineAdvanced || (row.source_frame_id !== "exploration-mainline" && row.exploration.status === "active");
+    return {
+      exploration: { ...row.exploration },
+      diff: {
+        explorationId: id,
+        files: [{ path: `${id}/analysis.py`, kind: "modified", before: null, after: null }],
+        artifacts: [{ logicalKey: `${id}/result`, beforeArtifactId: null, beforeVersionId: null, afterArtifactId: `${id}-artifact`, afterVersionId: `${id}-version` }],
+        runs: [{
+          id: `${id}-run`, frame_id: row.exploration.frame_id, context_id: "local", title: "Exploration validation", kind: "local", status: "succeeded", command: "python analysis.py", created_at: 2003, started_at: 2003, ended_at: 2004, exit_code: 0, stdout_tail: "ok", stderr_tail: "", remote_workdir: null, timeout_secs: null, last_polled_at: 2004, last_poll_error: null, progress_json: "{}", env_snapshot_json: "{}",
+        }],
+        decisions: [{ id: `${id}-decision`, kind: "decision", title: "Use candidate method", ref_id: null, metadata_json: "{}" }],
+        researchEdges: [],
+        externalResources: [{ id: `${id}-resource`, kind: "dataset", uri: "s3://example/reference", version: "1", checksum: "abc" }],
+        externalEffects: [{ id: `${id}-effect`, effect_kind: "remote_run", recoverability: "not_recoverable", target_summary: "remote validation job", metadata_json: "{}", created_at: 2004 }],
+      },
+      mainlineChanges: {
+        files: blocked ? [{ path: "mainline-notes.md", kind: "modified", before: null, after: null }] : [],
+        artifactKeys: [], entityKeys: [], sourceMessageHead: blocked ? 5 : 4, sourceUiEventHead: 0, stateGeneration: blocked ? 2 : 1,
+      },
+      eligibility: {
+        eligible: !blocked && row.exploration.status === "active",
+        code: blocked ? "MainlineAdvanced" : null,
+        reasons: blocked ? [{ code: "MainlineAdvanced", message: "The mainline no longer matches this exploration checkpoint." }] : [],
+        expectedGuardHash: `guard-${id}`,
+      },
+    };
+  };
+  (window as any).__setMockMainlineAdvanced = (value: boolean) => { mockMainlineAdvanced = Boolean(value); };
   const mockCodexSessions = [
     { path: "/mock/.codex/sessions/2026/07/01/rollout-a.jsonl", session_id: "codex-a", title: "Fix the renderer crash", cwd: "/mock/project", message_count: 12, last_active_at: 1751340000, state: "new" },
     { path: "/mock/.codex/sessions/2026/07/02/rollout-b.jsonl", session_id: "codex-b", title: "Refactor session store", cwd: "/mock/other", message_count: 5, last_active_at: 1751426400, state: "imported" },
@@ -1579,6 +1648,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "load_demo":
             return demo;
           case "load_session":
+            if (mockExplorationFlow && String(arg("id") ?? "").startsWith("exploration-")) {
+              activeMockFrame = String(arg("id"));
+              return explorationTranscript(activeMockFrame);
+            }
             if (quickActionSessions[String(arg("id") ?? "")]) {
               return {
                 items: [{
@@ -1779,6 +1852,68 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               next_cursor: hasMore && last ? { id: last.id, ts: last.ts } : null,
               running_ids: mockSessions.filter((item) => item.running).map((item) => item.id),
             };
+          }
+          case "list_project_explorations":
+            return mockExplorations.map((item) => ({
+              ...item,
+              exploration: { ...item.exploration },
+            }));
+          case "create_exploration_checkpoint":
+            return {
+              id: "checkpoint-shared",
+              source_frame_id: String(arg("sourceFrameId") ?? "exploration-mainline"),
+              isolation_summary_json: '{"partial":false}',
+            };
+          case "create_exploration": {
+            const index = mockExplorations.length + 1;
+            const id = `exploration-created-${index}`;
+            const frameId = `exploration-frame-created-${index}`;
+            const exploration = makeMockExploration(id, frameId, String(arg("name") ?? `Exploration ${index}`), 2100 + index);
+            mockExplorations.push({
+              exploration,
+              source_frame_id: mockSessions[0]?.id ?? "exploration-mainline",
+              isolation_summary_json: '{"partial":false}',
+            });
+            activeMockFrame = frameId;
+            return { ...exploration };
+          }
+          case "open_exploration": {
+            const row = mockExplorations.find((item) => item.exploration.id === arg("explorationId"));
+            if (!row) throw new Error("Exploration not found");
+            activeMockFrame = row.exploration.frame_id;
+            return { ...row.exploration };
+          }
+          case "preview_exploration_diff":
+            return mockExplorationPreview(String(arg("explorationId"))).diff;
+          case "preview_exploration_promotion":
+            return mockExplorationPreview(String(arg("explorationId")));
+          case "archive_exploration":
+          case "restore_exploration": {
+            const row = mockExplorations.find((item) => item.exploration.id === arg("explorationId"));
+            if (!row) throw new Error("Exploration not found");
+            row.exploration.status = cmd === "archive_exploration" ? "archived" : "active";
+            row.exploration.updated_at += 1;
+            return { ...row.exploration };
+          }
+          case "promote_exploration": {
+            const id = String(arg("explorationId"));
+            const preview = mockExplorationPreview(id);
+            if (!preview.eligibility.eligible) throw new Error("MainlineAdvanced: the mainline no longer matches this exploration checkpoint");
+            const row = mockExplorations.find((item) => item.exploration.id === id)!;
+            row.exploration.status = "promoted";
+            row.exploration.promoted_at = 2200;
+            const adoptedFrame = row.exploration.frame_id;
+            mockSessions.splice(0, mockSessions.length, { id: adoptedFrame, title: row.exploration.name, ts: 2200, running: false });
+            for (const item of mockExplorations) item.source_frame_id = adoptedFrame;
+            activeMockFrame = adoptedFrame;
+            return { exploration: { ...row.exploration }, promotionId: `promotion-${id}`, adoptedFrameId: adoptedFrame };
+          }
+          case "discard_exploration": {
+            const row = mockExplorations.find((item) => item.exploration.id === arg("explorationId"));
+            if (!row) throw new Error("Exploration not found");
+            row.exploration.status = "discarded";
+            row.exploration.discarded_at = 2300;
+            return { ...row.exploration };
           }
           case "list_codex_sessions":
             return mockCodexSessions.map((item) => ({ ...item }));

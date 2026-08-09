@@ -6025,6 +6025,10 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
         "explore"
     );
     assert_eq!(store.list_explorations("main").await.unwrap().len(), 1);
+    let summaries = store.list_project_explorations("p").await.unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].source_frame_id, "main");
+    assert_eq!(summaries[0].isolation_summary_json, r#"{"level":"full"}"#);
     let frame_scope: Option<String> =
         sqlx::query_scalar("SELECT exploration_id FROM frames WHERE id='branch'")
             .fetch_one(&store.pool)
@@ -6105,6 +6109,11 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
         .unwrap();
     assert_eq!(family.mainline_frame_id, "branch");
     assert_eq!(family.generation, 1);
+    assert_eq!(
+        store.list_project_explorations("p").await.unwrap()[0].source_frame_id,
+        "branch",
+        "sidebar grouping follows the family's adopted mainline frame"
+    );
     assert!(!store
         .compare_and_swap_exploration_mainline("family", "main", 0, "branch")
         .await

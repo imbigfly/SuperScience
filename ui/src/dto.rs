@@ -1816,6 +1816,140 @@ pub(crate) struct SessionInfo {
     pub(crate) pinned: bool,
 }
 
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Exploration {
+    pub(crate) id: String,
+    pub(crate) checkpoint_id: String,
+    pub(crate) frame_id: String,
+    pub(crate) name: String,
+    pub(crate) status: String,
+    pub(crate) workspace_dir: String,
+    pub(crate) workspace_backend: String,
+    pub(crate) scope_generation: i64,
+    pub(crate) warnings_json: String,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: i64,
+    pub(crate) promoted_at: Option<i64>,
+    pub(crate) archived_at: Option<i64>,
+    pub(crate) discarded_at: Option<i64>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExplorationSummary {
+    pub(crate) exploration: Exploration,
+    pub(crate) source_frame_id: String,
+    pub(crate) isolation_summary_json: String,
+}
+
+impl ExplorationSummary {
+    pub(crate) fn isolation_is_full(&self) -> bool {
+        serde_json::from_str::<serde_json::Value>(&self.isolation_summary_json)
+            .ok()
+            .and_then(|value| value.get("partial").and_then(serde_json::Value::as_bool))
+            != Some(true)
+            && serde_json::from_str::<Vec<serde_json::Value>>(
+                &self.exploration.warnings_json,
+            )
+            .map_or(true, |warnings| warnings.is_empty())
+    }
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExplorationFileDelta {
+    pub(crate) path: String,
+    pub(crate) kind: String,
+    #[serde(default)]
+    pub(crate) before: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(crate) after: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExplorationArtifactDelta {
+    pub(crate) logical_key: String,
+    pub(crate) before_artifact_id: Option<String>,
+    pub(crate) before_version_id: Option<String>,
+    pub(crate) after_artifact_id: String,
+    pub(crate) after_version_id: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExplorationExternalResource {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) uri: String,
+    pub(crate) version: Option<String>,
+    pub(crate) checksum: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExplorationEffect {
+    pub(crate) id: String,
+    pub(crate) effect_kind: String,
+    pub(crate) recoverability: String,
+    pub(crate) target_summary: String,
+    pub(crate) metadata_json: String,
+    pub(crate) created_at: i64,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExplorationDiff {
+    pub(crate) exploration_id: String,
+    pub(crate) files: Vec<ExplorationFileDelta>,
+    pub(crate) artifacts: Vec<ExplorationArtifactDelta>,
+    pub(crate) runs: Vec<RunRecord>,
+    pub(crate) decisions: Vec<ResearchNode>,
+    pub(crate) research_edges: Vec<ResearchEdge>,
+    pub(crate) external_resources: Vec<ExplorationExternalResource>,
+    pub(crate) external_effects: Vec<ExplorationEffect>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExplorationMainlineChanges {
+    pub(crate) files: Vec<ExplorationFileDelta>,
+    pub(crate) artifact_keys: Vec<String>,
+    pub(crate) entity_keys: Vec<String>,
+    pub(crate) source_message_head: i64,
+    pub(crate) source_ui_event_head: i64,
+    pub(crate) state_generation: i64,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromotionBlocker {
+    pub(crate) code: String,
+    pub(crate) message: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromotionEligibility {
+    pub(crate) eligible: bool,
+    pub(crate) code: Option<String>,
+    pub(crate) reasons: Vec<PromotionBlocker>,
+    pub(crate) expected_guard_hash: String,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExplorationPromotionPreview {
+    pub(crate) exploration: Exploration,
+    pub(crate) diff: ExplorationDiff,
+    pub(crate) mainline_changes: ExplorationMainlineChanges,
+    pub(crate) eligibility: PromotionEligibility,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExplorationPromotionResult {
+    pub(crate) exploration: Exploration,
+    pub(crate) promotion_id: String,
+    pub(crate) adopted_frame_id: String,
+}
+
 /// One Codex CLI or Claude Code conversation offered by the import modal.
 /// `state` is "new" | "imported" | "updatable".
 #[derive(Deserialize, Clone, PartialEq)]

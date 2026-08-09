@@ -1125,9 +1125,11 @@ pub(crate) fn render_item(
     compact_assistant: bool,
     can_modify: bool,
     can_undo: Signal<bool>,
+    can_explore: Signal<bool>,
     on_edit: impl Fn(usize) + Clone + 'static,
     on_branch: impl Fn(usize) + Clone + 'static,
     on_undo: Callback<usize>,
+    on_explore: Callback<()>,
     session_id: String,
     on_review: Callback<String>,
     on_approval: Callback<(String, bool, Option<String>, String)>,
@@ -1211,6 +1213,8 @@ pub(crate) fn render_item(
                 on_review=Callback::new(move |_| on_review.call(session_id.clone()))
                 can_undo=can_undo
                 on_undo=on_undo
+                can_explore=can_explore
+                on_explore=on_explore
             />
         }.into_view(),
         ChatItem::Tool { name, .. } if name == "attempt_completion" => view! {}.into_view(),

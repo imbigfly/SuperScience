@@ -668,6 +668,8 @@ pub(crate) fn AssistantMessage(
     on_review: Callback<()>,
     can_undo: Signal<bool>,
     on_undo: Callback<usize>,
+    can_explore: Signal<bool>,
+    on_explore: Callback<()>,
 ) -> impl IntoView {
     let locale = use_locale();
     let arts_for_html = artifacts.clone();
@@ -822,6 +824,19 @@ pub(crate) fn AssistantMessage(
                 </div>
             })}
             <div class="msg-actions">
+                {move || can_explore.get().then(|| view! {
+                    <button
+                        type="button"
+                        class="msg-icon-btn msg-explore-btn"
+                        data-testid="start-exploration"
+                        title=move || t(locale.get(), "exploration.start")
+                        aria-label=move || t(locale.get(), "exploration.start")
+                        on:click=move |_| on_explore.call(())
+                    >
+                        {compose_icon("branch")}
+                        <span>{move || t(locale.get(), "exploration.start")}</span>
+                    </button>
+                })}
                 <button
                     type="button"
                     class="msg-icon-btn msg-review-btn"

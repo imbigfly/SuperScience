@@ -96,6 +96,21 @@ pub(crate) mod tauri_args {
         }
         payload
     }
+    pub fn exploration_checkpoint(source_frame_id: &str) -> Value {
+        json!({ "sourceFrameId": source_frame_id })
+    }
+    pub fn create_exploration(checkpoint_id: &str, name: &str) -> Value {
+        json!({ "checkpointId": checkpoint_id, "name": name })
+    }
+    pub fn exploration(exploration_id: &str) -> Value {
+        json!({ "explorationId": exploration_id })
+    }
+    pub fn promote_exploration(exploration_id: &str, expected_guard_hash: &str) -> Value {
+        json!({
+            "explorationId": exploration_id,
+            "expectedGuardHash": expected_guard_hash,
+        })
+    }
     pub fn rewind_session(session_id: &Option<String>, user_index: usize) -> Value {
         json!({ "sessionId": session_id, "userIndex": user_index })
     }
@@ -170,6 +185,17 @@ mod tauri_args_tests {
         assert_eq!(v["userIndex"], 2);
         assert!(v.get("session_id").is_none());
         assert!(v.get("user_index").is_none());
+
+        let v = tauri_args::exploration_checkpoint("frame-1");
+        assert_eq!(v["sourceFrameId"], "frame-1");
+        let v = tauri_args::create_exploration("checkpoint-1", "Try A");
+        assert_eq!(v["checkpointId"], "checkpoint-1");
+        assert_eq!(v["name"], "Try A");
+        let v = tauri_args::exploration("exploration-1");
+        assert_eq!(v["explorationId"], "exploration-1");
+        let v = tauri_args::promote_exploration("exploration-1", "guard-1");
+        assert_eq!(v["explorationId"], "exploration-1");
+        assert_eq!(v["expectedGuardHash"], "guard-1");
 
         let v = tauri_args::rewind_session(&sid, 3);
         assert_eq!(v["sessionId"], "frame-1");

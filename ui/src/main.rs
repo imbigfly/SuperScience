@@ -55,6 +55,7 @@ use research::{refresh_research_graph, ResearchGraphModal};
 use serde_wasm_bindgen::{from_value, to_value};
 use session_modals::{
     EditConfirmOverlay, EditConfirmOverlayState, FileEntryOverlay, FileEntryOverlayState,
+    ExplorationOverlay, ExplorationOverlayState, ExplorationOverlayView,
     FolderModalOverlay, FolderModalOverlayState, ModelSwitchConfirmOverlay,
     ModelSwitchConfirmOverlayState, ProjSettingsOverlay, ProjSettingsOverlayState,
     RenameSessionOverlay, RenameSessionOverlayState, SessionTransferOverlay,
@@ -286,6 +287,14 @@ fn App() -> impl IntoView {
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
     let active_session = create_rw_signal::<Option<String>>(None);
     let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
+    let explorations = create_rw_signal::<Vec<ExplorationSummary>>(vec![]);
+    let exploration_overlay = create_rw_signal::<Option<ExplorationOverlay>>(None);
+    let exploration_name = create_rw_signal(String::new());
+    let exploration_preview = create_rw_signal::<Option<ExplorationPromotionPreview>>(None);
+    let exploration_busy = create_rw_signal(false);
+    let exploration_error = create_rw_signal::<Option<String>>(None);
+    let mainline_continue_confirm = create_rw_signal(false);
+    let mainline_continue_once = create_rw_signal(false);
     let session_has_items = create_memo(move |_| items.with(|rows| !rows.is_empty()));
     let conversation_outline = create_memo(move |_| {
         let Some(id) = active_session.get() else {
@@ -684,6 +693,14 @@ fn App() -> impl IntoView {
 
     refresh_session_history();
     refresh_folders(folders);
+    refresh_explorations(explorations);
+    create_effect(move |_| {
+        let Some(project) = project_info.get() else {
+            return;
+        };
+        let _ = project.id;
+        refresh_explorations(explorations);
+    });
 
     // `busy` is "the active session is currently streaming" — derived from the
     // per-session `running` set so it stays correct when the user switches
@@ -2593,6 +2610,20 @@ fn App() -> impl IntoView {
         {
             return;
         }
+        let active = active_session.get();
+        let continuing_guarded_mainline = action == ComposerSendAction::Normal
+            && active.as_ref().is_some_and(|frame_id| {
+                explorations.with_untracked(|rows| {
+                    rows.iter().any(|row| {
+                        row.source_frame_id == *frame_id && row.exploration.status == "active"
+                    })
+                })
+            });
+        if continuing_guarded_mainline && !mainline_continue_once.get_untracked() {
+            mainline_continue_confirm.set(true);
+            return;
+        }
+        mainline_continue_once.set(false);
         // Any prior send-failed hint (e.g. the max_tokens truncation notice) is
         // stale once a new turn is committed; the Ok path never cleared it, so it
         // lingered forever. Clear it here so continuing the conversation dismisses it.
@@ -2601,7 +2632,6 @@ fn App() -> impl IntoView {
             status.set("ACP protocol v1 does not support branching a bound session.".into());
             return;
         }
-        let active = active_session.get();
         let branch = action == ComposerSendAction::BranchNew;
         let queued = !branch && active.as_ref().is_some_and(|id| running.get().contains(id));
         // Queue (#433): a plain send into a busy session parks behind the
@@ -4686,6 +4716,224 @@ fn App() -> impl IntoView {
             }
         });
     });
+    let open_exploration = {
+        let load_session = load_session.clone();
+        Callback::new(move |exploration: Exploration| {
+            let id = exploration.id.clone();
+            let frame_id = exploration.frame_id.clone();
+            let load_session = load_session.clone();
+            spawn_local(async move {
+                let args = to_value(&tauri_args::exploration(&id)).unwrap();
+                match invoke_checked("open_exploration", args).await {
+                    Ok(_) => load_session.call(frame_id),
+                    Err(error) => status.set(localize_backend(
+                        locale.get_untracked(),
+                        &js_error_text(error),
+                    )),
+                }
+            });
+        })
+    };
+    let open_exploration_preview = Callback::new(move |exploration_id: String| {
+        exploration_overlay.set(Some(ExplorationOverlay::Preview {
+            exploration_id: exploration_id.clone(),
+        }));
+        exploration_preview.set(None);
+        exploration_error.set(None);
+        exploration_busy.set(true);
+        spawn_local(async move {
+            let args = to_value(&tauri_args::exploration(&exploration_id)).unwrap();
+            match invoke_checked("preview_exploration_promotion", args).await {
+                Ok(value) => match from_value::<ExplorationPromotionPreview>(value) {
+                    Ok(value) => exploration_preview.set(Some(value)),
+                    Err(error) => exploration_error.set(Some(error.to_string())),
+                },
+                Err(error) => exploration_error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(error),
+                ))),
+            }
+            exploration_busy.set(false);
+        });
+    });
+    let start_exploration_from_head = Callback::new(move |_: ()| {
+        let Some(source_frame_id) = active_session.get_untracked() else {
+            return;
+        };
+        let number = explorations.with_untracked(|rows| {
+            rows.iter()
+                .filter(|row| row.source_frame_id == source_frame_id)
+                .count()
+                + 1
+        });
+        exploration_name.set(tf(
+            locale.get_untracked(),
+            "exploration.default_name",
+            &[("n", &number.to_string())],
+        ));
+        exploration_preview.set(None);
+        exploration_error.set(None);
+        exploration_overlay.set(Some(ExplorationOverlay::Start { source_frame_id }));
+    });
+    let create_exploration_from_overlay = {
+        let load_session = load_session.clone();
+        Callback::new(move |(source_frame_id, name): (String, String)| {
+            if exploration_busy.get_untracked() {
+                return;
+            }
+            exploration_busy.set(true);
+            exploration_error.set(None);
+            let load_session = load_session.clone();
+            spawn_local(async move {
+                let checkpoint_args =
+                    to_value(&tauri_args::exploration_checkpoint(&source_frame_id)).unwrap();
+                let checkpoint = match invoke_checked(
+                    "create_exploration_checkpoint",
+                    checkpoint_args,
+                )
+                .await
+                {
+                    Ok(value) => from_value::<serde_json::Value>(value)
+                        .ok()
+                        .and_then(|value| value.get("id").and_then(|id| id.as_str()).map(str::to_string)),
+                    Err(error) => {
+                        exploration_error.set(Some(localize_backend(
+                            locale.get_untracked(),
+                            &js_error_text(error),
+                        )));
+                        None
+                    }
+                };
+                let Some(checkpoint_id) = checkpoint else {
+                    exploration_busy.set(false);
+                    return;
+                };
+                let args = to_value(&tauri_args::create_exploration(&checkpoint_id, &name)).unwrap();
+                match invoke_checked("create_exploration", args).await {
+                    Ok(value) => match from_value::<Exploration>(value) {
+                        Ok(exploration) => {
+                            exploration_overlay.set(None);
+                            exploration_name.set(String::new());
+                            refresh_explorations(explorations);
+                            refresh_session_history();
+                            load_session.call(exploration.frame_id);
+                        }
+                        Err(error) => exploration_error.set(Some(error.to_string())),
+                    },
+                    Err(error) => exploration_error.set(Some(localize_backend(
+                        locale.get_untracked(),
+                        &js_error_text(error),
+                    ))),
+                }
+                exploration_busy.set(false);
+            });
+        })
+    };
+    let promote_exploration_from_overlay = {
+        let load_session = load_session.clone();
+        Callback::new(move |(exploration_id, guard): (String, String)| {
+            exploration_busy.set(true);
+            exploration_error.set(None);
+            let load_session = load_session.clone();
+            spawn_local(async move {
+                let args =
+                    to_value(&tauri_args::promote_exploration(&exploration_id, &guard)).unwrap();
+                match invoke_checked("promote_exploration", args).await {
+                    Ok(value) => match from_value::<ExplorationPromotionResult>(value) {
+                        Ok(result) => {
+                            exploration_overlay.set(None);
+                            exploration_preview.set(None);
+                            refresh_explorations(explorations);
+                            refresh_session_history();
+                            load_session.call(result.adopted_frame_id);
+                        }
+                        Err(error) => exploration_error.set(Some(error.to_string())),
+                    },
+                    Err(error) => {
+                        exploration_error.set(Some(localize_backend(
+                            locale.get_untracked(),
+                            &js_error_text(error),
+                        )));
+                        let args = to_value(&tauri_args::exploration(&exploration_id)).unwrap();
+                        if let Ok(value) = invoke_checked("preview_exploration_promotion", args).await {
+                            if let Ok(value) = from_value::<ExplorationPromotionPreview>(value) {
+                                exploration_preview.set(Some(value));
+                            }
+                        }
+                    }
+                }
+                exploration_busy.set(false);
+            });
+        })
+    };
+    let change_exploration_status =
+        move |command: &'static str, exploration_id: String| {
+            exploration_busy.set(true);
+            exploration_error.set(None);
+            spawn_local(async move {
+                let args = to_value(&tauri_args::exploration(&exploration_id)).unwrap();
+                match invoke_checked(command, args).await {
+                    Ok(value) => match from_value::<Exploration>(value) {
+                        Ok(updated) => {
+                            exploration_preview.update(|preview| {
+                                if let Some(preview) = preview {
+                                    preview.exploration = updated;
+                                }
+                            });
+                            refresh_explorations(explorations);
+                        }
+                        Err(error) => exploration_error.set(Some(error.to_string())),
+                    },
+                    Err(error) => exploration_error.set(Some(localize_backend(
+                        locale.get_untracked(),
+                        &js_error_text(error),
+                    ))),
+                }
+                exploration_busy.set(false);
+            });
+        };
+    let archive_exploration_from_overlay =
+        Callback::new(move |id: String| change_exploration_status("archive_exploration", id));
+    let restore_exploration_from_overlay =
+        Callback::new(move |id: String| change_exploration_status("restore_exploration", id));
+    let discard_exploration_from_overlay = {
+        let load_session = load_session.clone();
+        Callback::new(move |exploration_id: String| {
+            exploration_busy.set(true);
+            exploration_error.set(None);
+            let source_frame_id = explorations.with_untracked(|rows| {
+                rows.iter()
+                    .find(|row| row.exploration.id == exploration_id)
+                    .map(|row| row.source_frame_id.clone())
+            });
+            let discarded_frame_id = explorations.with_untracked(|rows| {
+                rows.iter()
+                    .find(|row| row.exploration.id == exploration_id)
+                    .map(|row| row.exploration.frame_id.clone())
+            });
+            let load_session = load_session.clone();
+            spawn_local(async move {
+                let args = to_value(&tauri_args::exploration(&exploration_id)).unwrap();
+                match invoke_checked("discard_exploration", args).await {
+                    Ok(_) => {
+                        exploration_overlay.set(None);
+                        exploration_preview.set(None);
+                        refresh_explorations(explorations);
+                        if active_session.get_untracked() == discarded_frame_id {
+                            if let Some(source_frame_id) = source_frame_id {
+                                load_session.call(source_frame_id);
+                            }
+                        }
+                    }
+                    Err(error) => exploration_error.set(Some(localize_backend(
+                        locale.get_untracked(),
+                        &js_error_text(error),
+                    ))),
+                }
+                exploration_busy.set(false);
+            });
+        })
+    };
     let load_earlier_messages = Callback::new(move |_: ()| {
         let Some(id) = active_session.get_untracked() else {
             return;
@@ -6391,6 +6639,21 @@ fn App() -> impl IntoView {
             return;
         }
 
+        if exploration_overlay.get().is_some() {
+            ev.prevent_default();
+            if !exploration_busy.get() {
+                exploration_overlay.set(None);
+                exploration_preview.set(None);
+                exploration_error.set(None);
+            }
+            return;
+        }
+        if mainline_continue_confirm.get() {
+            ev.prevent_default();
+            mainline_continue_confirm.set(false);
+            return;
+        }
+
         // Overlays that can appear over the projects landing (must run before
         // the show_projects early-return below).
         if show_add_host.get() {
@@ -7720,6 +7983,7 @@ fn App() -> impl IntoView {
             state=SidebarState {
                 locale, show_sidebar, sidebar_w, show_proj_menu, show_projects, demo_mode, project_info, proj_list,
                 sessions, folders, drag_session, drop_target, active_session, running,
+                explorations,
                 attention: approval_pending,
                 rename_session_input, rename_session_target, collapsed_folders, folder_modal_input,
                 folder_modal, demos, session_history_cursor, session_history_loading,
@@ -7745,6 +8009,7 @@ fn App() -> impl IntoView {
             open_library=Callback::new(move |_| show_library.set(true))
             load_demo=Callback::new(load_demo)
             load_session=load_session
+            open_exploration=open_exploration
             load_older_sessions=Callback::new(move |_| load_older_sessions(
                 sessions,
                 pending_turns,
@@ -8382,6 +8647,68 @@ fn App() -> impl IntoView {
                     }
                 }>
                 <div class="thread" id=CHAT_THREAD_ID>
+                    {move || active_session.get().and_then(|frame_id| {
+                        let rows = explorations.get();
+                        if let Some(summary) = rows.iter().find(|row| {
+                            row.exploration.frame_id == frame_id
+                                && matches!(
+                                    row.exploration.status.as_str(),
+                                    "creating" | "active" | "archived" | "promoting"
+                                )
+                        }).cloned() {
+                            let isolation_key = if summary.isolation_is_full() {
+                                "exploration.isolation_full"
+                            } else {
+                                "exploration.isolation_partial"
+                            };
+                            let exploration = summary.exploration;
+                            let id_for_diff = exploration.id.clone();
+                            let id_for_promote = exploration.id.clone();
+                            let id_for_archive = exploration.id.clone();
+                            let id_for_restore = exploration.id.clone();
+                            let id_for_discard = exploration.id.clone();
+                            let status_key = if exploration.status == "archived" {
+                                "exploration.status_archived"
+                            } else {
+                                "exploration.status_active"
+                            };
+                            Some(view! {
+                                <section class="exploration-banner branch" data-testid="exploration-banner">
+                                    <div class="exploration-banner-copy">
+                                        <span class="exploration-banner-eyebrow">{t(locale.get(), "exploration.banner_label")}</span>
+                                        <strong>{exploration.name}</strong>
+                                        <span>{format!("{} · {} · {}", t(locale.get(), status_key), t(locale.get(), isolation_key), t(locale.get(), "exploration.external_warning_short"))}</span>
+                                    </div>
+                                    <div class="exploration-banner-actions">
+                                        <button type="button" on:click=move |_| open_exploration_preview.call(id_for_diff.clone())>{t(locale.get(), "exploration.view_diff")}</button>
+                                        <button type="button" class="primary" disabled=exploration.status != "active"
+                                            on:click=move |_| open_exploration_preview.call(id_for_promote.clone())>{t(locale.get(), "exploration.promote")}</button>
+                                        {if exploration.status == "archived" {
+                                            view! { <button type="button" on:click=move |_| restore_exploration_from_overlay.call(id_for_restore.clone())>{t(locale.get(), "exploration.restore")}</button> }.into_view()
+                                        } else {
+                                            view! { <button type="button" on:click=move |_| archive_exploration_from_overlay.call(id_for_archive.clone())>{t(locale.get(), "exploration.archive")}</button> }.into_view()
+                                        }}
+                                        <button type="button" class="danger-text"
+                                            on:click=move |_| open_exploration_preview.call(id_for_discard.clone())>{t(locale.get(), "exploration.discard")}</button>
+                                    </div>
+                                </section>
+                            }.into_view())
+                        } else {
+                            let active_count = rows.iter().filter(|row| {
+                                row.source_frame_id == frame_id && row.exploration.status == "active"
+                            }).count();
+                            (active_count > 0).then(|| view! {
+                                <section class="exploration-banner mainline" data-testid="mainline-exploration-banner">
+                                    <div class="exploration-banner-copy">
+                                        <span class="exploration-banner-eyebrow">{t(locale.get(), "exploration.mainline_label")}</span>
+                                        <strong>{tf(locale.get(), "exploration.mainline_count", &[("n", &active_count.to_string())])}</strong>
+                                        <span>{t(locale.get(), "exploration.mainline_warning")}</span>
+                                    </div>
+                                    <button type="button" on:click=move |_| start_exploration_from_head.call(())>{t(locale.get(), "exploration.start_another")}</button>
+                                </section>
+                            }.into_view())
+                        }
+                    })}
                     {move || active_session.get().and_then(|id| {
                         transcript_pages.get().get(&id).copied().and_then(|page| {
                             let (_, window_start, _) = items.with(|rows| {
@@ -8690,6 +9017,32 @@ fn App() -> impl IntoView {
                                     let can_undo = Signal::derive(move || {
                                         !compact_assistant && undo_assistant_index.get() == Some(i)
                                     });
+                                    let can_explore = Signal::derive(move || {
+                                        if compact_assistant
+                                            || busy.get()
+                                            || active_acp_agent_id.get().is_some()
+                                        {
+                                            return false;
+                                        }
+                                        let is_latest_completed = items.with(|rows| {
+                                            rows.iter().rposition(|item| {
+                                                matches!(item, ChatItem::Assistant { text, .. } if !text.trim().is_empty())
+                                            }) == Some(i)
+                                        });
+                                        if !is_latest_completed {
+                                            return false;
+                                        }
+                                        let Some(frame_id) = active_session.get() else {
+                                            return false;
+                                        };
+                                        !explorations.with(|rows| rows.iter().any(|row| {
+                                            row.exploration.frame_id == frame_id
+                                                && matches!(
+                                                    row.exploration.status.as_str(),
+                                                    "creating" | "active" | "archived" | "promoting"
+                                                )
+                                        }))
+                                    });
                                     view! {
                                         <div class=class
                                             class:outline-target=move || user_index.is_some_and(|index| {
@@ -8709,7 +9062,7 @@ fn App() -> impl IntoView {
                                             } else {
                                                 render_item(
                                                     i, &item, timestamp, &arts, on_artifact_select, on_file_link,
-                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, edit_message, branch_message, undo_message, session_id,
+                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, can_explore, edit_message, branch_message, undo_message, start_exploration_from_head, session_id,
                                                     request_session_review, respond_confirm, on_resume, on_queue,
                                                     step_disclosure_state,
                                                     plan_mode_active, plan_compat, on_plan_decision,
@@ -11842,6 +12195,39 @@ fn App() -> impl IntoView {
             <div class="drag-overlay drag-overlay-row"
                 on:mousemove=on_terminal_resize_move
                 on:mouseup=move |_| terminal_dragging.set(false)></div>
+        })}
+
+        <ExplorationOverlayView
+            state=ExplorationOverlayState {
+                locale,
+                overlay: exploration_overlay,
+                name: exploration_name,
+                preview: exploration_preview,
+                busy: exploration_busy,
+                error: exploration_error,
+            }
+            on_start=create_exploration_from_overlay
+            on_promote=promote_exploration_from_overlay
+            on_archive=archive_exploration_from_overlay
+            on_restore=restore_exploration_from_overlay
+            on_discard=discard_exploration_from_overlay
+        />
+
+        {move || mainline_continue_confirm.get().then(|| view! {
+            <div class="overlay exploration-confirm-overlay" data-testid="mainline-continue-confirm">
+                <div class="modal confirm-modal exploration-confirm-modal" role="alertdialog" aria-modal="true">
+                    <h2>{t(locale.get(), "exploration.continue_title")}</h2>
+                    <div class="hint">{t(locale.get(), "exploration.continue_body")}</div>
+                    <div class="row">
+                        <button type="button" on:click=move |_| mainline_continue_confirm.set(false)>{t(locale.get(), "settings.cancel")}</button>
+                        <button type="button" class="primary danger" on:click=move |_| {
+                            mainline_continue_confirm.set(false);
+                            mainline_continue_once.set(true);
+                            send.call(ComposerSendAction::Normal);
+                        }>{t(locale.get(), "exploration.continue_action")}</button>
+                    </div>
+                </div>
+            </div>
         })}
 
         <SessionTransferOverlay

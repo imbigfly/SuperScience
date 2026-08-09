@@ -5,6 +5,7 @@ use crate::bindings::invoke_checked;
 use crate::dto::*;
 use crate::i18n::{t, tf, Locale};
 use crate::text::{dom_value, event_target_checked, event_target_value, parent_path};
+use crate::window_capture_escape;
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 use wasm_bindgen::JsCast;
@@ -634,6 +635,386 @@ pub(crate) fn ProjSettingsOverlay(
                     </div>
                 </div>
             </div>
+        })}
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ExplorationOverlay {
+    Start { source_frame_id: String },
+    Preview { exploration_id: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExplorationDiffTab {
+    Files,
+    Artifacts,
+    Runs,
+    Decisions,
+    ExternalEffects,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ExplorationConfirm {
+    Promote {
+        exploration_id: String,
+        expected_guard_hash: String,
+    },
+    Discard { exploration_id: String },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ExplorationOverlayState {
+    pub(crate) locale: RwSignal<Locale>,
+    pub(crate) overlay: RwSignal<Option<ExplorationOverlay>>,
+    pub(crate) name: RwSignal<String>,
+    pub(crate) preview: RwSignal<Option<ExplorationPromotionPreview>>,
+    pub(crate) busy: RwSignal<bool>,
+    pub(crate) error: RwSignal<Option<String>>,
+}
+
+fn exploration_status(locale: Locale, status: &str) -> String {
+    let key = match status {
+        "creating" => "exploration.status_creating",
+        "active" => "exploration.status_active",
+        "archived" => "exploration.status_archived",
+        "promoting" => "exploration.status_promoting",
+        "promoted" => "exploration.status_promoted",
+        "discarded" => "exploration.status_discarded",
+        _ => "exploration.status_failed",
+    };
+    t(locale, key)
+}
+
+fn exploration_empty(locale: Locale) -> View {
+    view! { <div class="exploration-diff-empty">{t(locale, "exploration.diff_empty")}</div> }
+        .into_view()
+}
+
+fn exploration_diff_body(
+    locale: Locale,
+    tab: ExplorationDiffTab,
+    preview: &ExplorationPromotionPreview,
+) -> View {
+    match tab {
+        ExplorationDiffTab::Files => {
+            let branch_rows = preview
+                .diff
+                .files
+                .iter()
+                .map(|file| {
+                    view! {
+                        <div class="exploration-diff-row">
+                            <span class=format!("exploration-delta-kind {}", file.kind)>{file.kind.clone()}</span>
+                            <code>{file.path.clone()}</code>
+                        </div>
+                    }
+                })
+                .collect_view();
+            let mainline_rows = preview
+                .mainline_changes
+                .files
+                .iter()
+                .map(|file| {
+                    view! {
+                        <div class="exploration-diff-row mainline">
+                            <span class=format!("exploration-delta-kind {}", file.kind)>{file.kind.clone()}</span>
+                            <code>{file.path.clone()}</code>
+                        </div>
+                    }
+                })
+                .collect_view();
+            view! {
+                <section class="exploration-diff-section">
+                    <h3>{t(locale, "exploration.diff_branch_changes")}</h3>
+                    {if preview.diff.files.is_empty() { exploration_empty(locale) } else { branch_rows.into_view() }}
+                </section>
+                {(!preview.mainline_changes.files.is_empty()).then(|| view! {
+                    <section class="exploration-diff-section conflict">
+                        <h3>{t(locale, "exploration.diff_mainline_changes")}</h3>
+                        {mainline_rows}
+                    </section>
+                })}
+            }
+            .into_view()
+        }
+        ExplorationDiffTab::Artifacts => {
+            if preview.diff.artifacts.is_empty() {
+                return exploration_empty(locale);
+            }
+            preview
+                .diff
+                .artifacts
+                .iter()
+                .map(|artifact| {
+                    view! {
+                        <div class="exploration-diff-row stacked">
+                            <strong>{artifact.logical_key.clone()}</strong>
+                            <code>{artifact.after_version_id.clone()}</code>
+                        </div>
+                    }
+                })
+                .collect_view()
+                .into_view()
+        }
+        ExplorationDiffTab::Runs => {
+            if preview.diff.runs.is_empty() {
+                return exploration_empty(locale);
+            }
+            preview
+                .diff
+                .runs
+                .iter()
+                .map(|run| {
+                    view! {
+                        <div class="exploration-diff-row stacked">
+                            <strong>{run.title.clone()}</strong>
+                            <span>{run.status.clone()}</span>
+                        </div>
+                    }
+                })
+                .collect_view()
+                .into_view()
+        }
+        ExplorationDiffTab::Decisions => {
+            if preview.diff.decisions.is_empty() && preview.diff.research_edges.is_empty() {
+                return exploration_empty(locale);
+            }
+            let decisions = preview
+                .diff
+                .decisions
+                .iter()
+                .map(|decision| {
+                    view! {
+                        <div class="exploration-diff-row stacked">
+                            <strong>{decision.title.clone()}</strong>
+                            <span>{decision.kind.clone()}</span>
+                        </div>
+                    }
+                })
+                .collect_view();
+            let edges = preview
+                .diff
+                .research_edges
+                .iter()
+                .map(|edge| {
+                    view! {
+                        <div class="exploration-diff-row stacked">
+                            <strong>{edge.relation.clone()}</strong>
+                            <code>{format!("{} → {}", edge.source_id, edge.target_id)}</code>
+                        </div>
+                    }
+                })
+                .collect_view();
+            view! { {decisions}{edges} }.into_view()
+        }
+        ExplorationDiffTab::ExternalEffects => {
+            if preview.diff.external_effects.is_empty()
+                && preview.diff.external_resources.is_empty()
+            {
+                return exploration_empty(locale);
+            }
+            let effects = preview
+                .diff
+                .external_effects
+                .iter()
+                .map(|effect| {
+                    view! {
+                        <div class="exploration-diff-row stacked external">
+                            <strong>{effect.target_summary.clone()}</strong>
+                            <span>{format!("{} · {}", effect.effect_kind, effect.recoverability)}</span>
+                        </div>
+                    }
+                })
+                .collect_view();
+            let resources = preview
+                .diff
+                .external_resources
+                .iter()
+                .map(|resource| {
+                    view! {
+                        <div class="exploration-diff-row stacked">
+                            <strong>{resource.kind.clone()}</strong>
+                            <code>{resource.uri.clone()}</code>
+                        </div>
+                    }
+                })
+                .collect_view();
+            view! { {effects}{resources} }.into_view()
+        }
+    }
+}
+
+#[component]
+pub(crate) fn ExplorationOverlayView(
+    state: ExplorationOverlayState,
+    on_start: Callback<(String, String)>,
+    on_promote: Callback<(String, String)>,
+    on_archive: Callback<String>,
+    on_restore: Callback<String>,
+    on_discard: Callback<String>,
+) -> impl IntoView {
+    let ExplorationOverlayState {
+        locale,
+        overlay,
+        name,
+        preview,
+        busy,
+        error,
+    } = state;
+    let tab = create_rw_signal(ExplorationDiffTab::Files);
+    let confirm = create_rw_signal::<Option<ExplorationConfirm>>(None);
+    window_capture_escape(move || {
+        if confirm.get_untracked().is_none() {
+            return false;
+        }
+        confirm.set(None);
+        true
+    });
+
+    view! {
+        {move || overlay.get().map(|mode| match mode {
+            ExplorationOverlay::Start { source_frame_id } => {
+                let source_for_start = source_frame_id.clone();
+                view! {
+                    <div class="overlay exploration-overlay" data-testid="exploration-start-overlay">
+                        <div class="modal exploration-start-modal" role="dialog" aria-modal="true">
+                            <div class="ps-head">
+                                <h2>{t(locale.get(), "exploration.start_title")}</h2>
+                                <button type="button" class="ps-close" disabled=move || busy.get()
+                                    aria-label=move || t(locale.get(), "settings.cancel")
+                                    on:click=move |_| overlay.set(None)>{compose_icon("close")}</button>
+                            </div>
+                            <p class="exploration-modal-copy">{t(locale.get(), "exploration.start_hint")}</p>
+                            <label>
+                                {t(locale.get(), "exploration.name")}
+                                <input data-testid="exploration-name" prop:value=move || name.get()
+                                    disabled=move || busy.get()
+                                    on:input=move |event| name.set(event_target_value(&event)) />
+                            </label>
+                            {move || error.get().map(|message| view! {
+                                <div class="exploration-error" role="alert">{message}</div>
+                            })}
+                            <div class="row">
+                                <button type="button" disabled=move || busy.get()
+                                    on:click=move |_| overlay.set(None)>{move || t(locale.get(), "settings.cancel")}</button>
+                                <button type="button" class="primary" data-testid="exploration-create"
+                                    disabled=move || busy.get() || name.get().trim().is_empty()
+                                    on:click=move |_| on_start.call((source_for_start.clone(), name.get_untracked()))>
+                                    {move || if busy.get() { t(locale.get(), "loading") } else { t(locale.get(), "exploration.create") }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_view()
+            }
+            ExplorationOverlay::Preview { exploration_id } => {
+                let current = preview.get();
+                let id_for_archive = exploration_id.clone();
+                let id_for_restore = exploration_id.clone();
+                let id_for_discard = exploration_id.clone();
+                view! {
+                    <div class="overlay exploration-overlay" data-testid="exploration-diff-overlay">
+                        <div class="modal exploration-diff-modal" role="dialog" aria-modal="true">
+                            <div class="ps-head">
+                                <div>
+                                    <h2>{current.as_ref().map(|value| value.exploration.name.clone()).unwrap_or_else(|| t(locale.get(), "exploration.diff_title"))}</h2>
+                                    {current.as_ref().map(|value| view! {
+                                        <span class="exploration-modal-status">{exploration_status(locale.get(), &value.exploration.status)}</span>
+                                    })}
+                                </div>
+                                <button type="button" class="ps-close" disabled=move || busy.get()
+                                    aria-label=move || t(locale.get(), "settings.cancel")
+                                    on:click=move |_| overlay.set(None)>{compose_icon("close")}</button>
+                            </div>
+                            {move || error.get().map(|message| view! {
+                                <div class="exploration-error" role="alert">{message}</div>
+                            })}
+                            {if let Some(current) = current {
+                                let eligible = current.eligibility.eligible;
+                                let status = current.exploration.status.clone();
+                                let promote_id = current.exploration.id.clone();
+                                let promote_guard = current.eligibility.expected_guard_hash.clone();
+                                let blockers = current.eligibility.reasons.clone();
+                                view! {
+                                    {(!eligible).then(|| view! {
+                                        <div class="exploration-eligibility blocked" data-testid="exploration-promotion-blocked">
+                                            <strong>{t(locale.get(), "exploration.cannot_promote")}</strong>
+                                            {blockers.into_iter().map(|reason| view! {
+                                                <span data-blocker-code=reason.code>{reason.message}</span>
+                                            }).collect_view()}
+                                        </div>
+                                    })}
+                                    <div class="exploration-tabs" role="tablist">
+                                        {[
+                                            (ExplorationDiffTab::Files, "exploration.tab_files", current.diff.files.len()),
+                                            (ExplorationDiffTab::Artifacts, "exploration.tab_artifacts", current.diff.artifacts.len()),
+                                            (ExplorationDiffTab::Runs, "exploration.tab_runs", current.diff.runs.len()),
+                                            (ExplorationDiffTab::Decisions, "exploration.tab_decisions", current.diff.decisions.len() + current.diff.research_edges.len()),
+                                            (ExplorationDiffTab::ExternalEffects, "exploration.tab_effects", current.diff.external_effects.len() + current.diff.external_resources.len()),
+                                        ].into_iter().map(|(value, key, count)| view! {
+                                            <button type="button" role="tab" class:active=move || tab.get() == value
+                                                aria-selected=move || (tab.get() == value).to_string()
+                                                on:click=move |_| tab.set(value)>{format!("{} {count}", t(locale.get(), key))}</button>
+                                        }).collect_view()}
+                                    </div>
+                                    <div class="exploration-diff-body" data-testid="exploration-diff-body"
+                                        data-exploration-id=current.diff.exploration_id.clone()>
+                                        {move || exploration_diff_body(locale.get(), tab.get(), &current)}
+                                    </div>
+                                    <div class="row exploration-actions">
+                                        {if status == "archived" {
+                                            view! { <button type="button" disabled=move || busy.get()
+                                                on:click=move |_| on_restore.call(id_for_restore.clone())>{move || t(locale.get(), "exploration.restore")}</button> }.into_view()
+                                        } else if status == "active" {
+                                            view! { <button type="button" disabled=move || busy.get()
+                                                on:click=move |_| on_archive.call(id_for_archive.clone())>{move || t(locale.get(), "exploration.archive")}</button> }.into_view()
+                                        } else { view! {}.into_view() }}
+                                        {matches!(status.as_str(), "active" | "archived").then(|| view! {
+                                            <button type="button" class="danger-text" disabled=move || busy.get()
+                                                on:click=move |_| confirm.set(Some(ExplorationConfirm::Discard { exploration_id: id_for_discard.clone() }))>
+                                                {move || t(locale.get(), "exploration.discard")}
+                                            </button>
+                                        })}
+                                        <span class="spacer"></span>
+                                        <button type="button" class="primary" data-testid="exploration-promote"
+                                            disabled=move || busy.get() || !eligible || status != "active"
+                                            on:click=move |_| confirm.set(Some(ExplorationConfirm::Promote {
+                                                exploration_id: promote_id.clone(),
+                                                expected_guard_hash: promote_guard.clone(),
+                                            }))>{move || t(locale.get(), "exploration.promote")}</button>
+                                    </div>
+                                }.into_view()
+                            } else {
+                                view! { <div class="exploration-loading">{move || t(locale.get(), "loading")}</div> }.into_view()
+                            }}
+                        </div>
+                    </div>
+                }.into_view()
+            }
+        })}
+        {move || confirm.get().map(|choice| {
+            let choice_for_confirm = choice.clone();
+            let promote = matches!(choice, ExplorationConfirm::Promote { .. });
+            view! {
+                <div class="overlay exploration-confirm-overlay" data-testid="exploration-confirm-overlay">
+                    <div class="modal confirm-modal exploration-confirm-modal" role="alertdialog" aria-modal="true">
+                        <h2>{t(locale.get(), if promote { "exploration.promote_confirm_title" } else { "exploration.discard_confirm_title" })}</h2>
+                        <div class="hint">{t(locale.get(), if promote { "exploration.promote_confirm_body" } else { "exploration.discard_confirm_body" })}</div>
+                        <div class="row">
+                            <button type="button" on:click=move |_| confirm.set(None)>{move || t(locale.get(), "settings.cancel")}</button>
+                            <button type="button" class="primary" class:danger=!promote data-testid="exploration-confirm-action"
+                                on:click=move |_| {
+                                    confirm.set(None);
+                                    match choice_for_confirm.clone() {
+                                        ExplorationConfirm::Promote { exploration_id, expected_guard_hash } => on_promote.call((exploration_id, expected_guard_hash)),
+                                        ExplorationConfirm::Discard { exploration_id } => on_discard.call(exploration_id),
+                                    }
+                                }>{t(locale.get(), if promote { "exploration.promote" } else { "exploration.discard" })}</button>
+                        </div>
+                    </div>
+                </div>
+            }
         })}
     }
 }

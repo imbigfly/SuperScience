@@ -7587,6 +7587,7 @@ pub fn run() {
             exploration_commands::create_exploration_checkpoint,
             exploration_commands::create_exploration,
             exploration_commands::list_explorations,
+            exploration_commands::list_project_explorations,
             exploration_commands::open_exploration,
             exploration_commands::archive_exploration,
             exploration_commands::restore_exploration,

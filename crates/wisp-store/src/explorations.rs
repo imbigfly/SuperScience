@@ -180,6 +180,16 @@ pub struct Exploration {
     pub discarded_at: Option<i64>,
 }
 
+/// Sidebar-oriented exploration metadata. `source_frame_id` follows the
+/// family's current mainline pointer, so sibling explorations remain grouped
+/// after one branch is promoted and becomes the new mainline frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExplorationSummary {
+    pub exploration: Exploration,
+    pub source_frame_id: String,
+    pub isolation_summary_json: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExplorationBaselineEntity {
     pub checkpoint_id: String,
@@ -882,6 +892,37 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(exploration_from_row).collect()
+    }
+
+    pub async fn list_project_explorations(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ExplorationSummary>> {
+        let rows = sqlx::query(
+            "SELECT e.id,e.checkpoint_id,e.frame_id,e.name,e.status,e.workspace_dir,\
+                    e.workspace_backend,e.scope_generation,e.warnings_json,e.created_at,e.updated_at,\
+                    e.promoted_at,e.archived_at,e.discarded_at,\
+                    family.mainline_frame_id AS source_frame_id,\
+                    checkpoint.isolation_summary_json AS isolation_summary_json \
+             FROM explorations e \
+             JOIN exploration_checkpoints checkpoint ON checkpoint.id=e.checkpoint_id \
+             JOIN exploration_families family ON family.id=checkpoint.family_id \
+             WHERE checkpoint.project_id=? ORDER BY e.created_at,e.id",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let source_frame_id = row.try_get("source_frame_id")?;
+                let isolation_summary_json = row.try_get("isolation_summary_json")?;
+                Ok(ExplorationSummary {
+                    exploration: exploration_from_row(row)?,
+                    source_frame_id,
+                    isolation_summary_json,
+                })
+            })
+            .collect()
     }
 
     pub async fn project_has_private_explorations(&self, project_id: &str) -> Result<bool> {
