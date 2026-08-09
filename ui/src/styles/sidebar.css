@@ -174,6 +174,25 @@ button.side-item.ses.selecting { padding-right: 10px; }
 /* Awaiting user approval/confirmation (#327) — outranks running. */
 .side-item.ses.attention .dot { background: var(--warn); animation: tool-pulse 1s ease-in-out infinite; }
 .ses-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.side-exploration-group {
+  display: grid; gap: 2px; margin: 2px 0 5px 14px; padding: 5px 0 2px 9px;
+  border-left: 1px solid color-mix(in srgb, var(--clay) 42%, var(--border));
+}
+.side-exploration-group-title {
+  padding: 0 7px 3px; color: var(--text-faint); font-size: 9.5px;
+  font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+}
+.side-exploration {
+  display: flex; min-width: 0; width: 100%; align-items: center; gap: 7px;
+  padding: 6px 8px; border: 1px solid transparent; border-radius: var(--radius-xs);
+  background: transparent; color: var(--text-muted); font: inherit; text-align: left; cursor: pointer;
+}
+.side-exploration:hover { background: var(--surface-hover); color: var(--text); }
+.side-exploration.active { border-color: var(--border-active); background: var(--clay-soft); color: var(--text); }
+.exploration-branch-mark { flex: 0 0 auto; color: var(--clay); font: 12px/1 var(--font-mono); }
+.side-exploration-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.side-exploration-title { overflow: hidden; font-size: 12px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
+.side-exploration-meta { overflow: hidden; color: var(--text-faint); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .side-hint { font-size: 12px; color: var(--text-faint); padding: 6px 10px; }
 .side-load-more { width: 100%; margin-top: 6px; padding: 7px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
 .side-load-more:hover { background: var(--surface-hover); color: var(--text); }
@@ -307,6 +326,10 @@ button.side-item.ses.selecting { padding-right: 10px; }
   .sidebar .side-folder-sessions { padding-left: 0; }
   .sidebar .side-folder-sessions .side-item { padding-left: 8px; }
   .sidebar .side-branch-kids { margin-left: 0; padding-left: 4px; }
+  .sidebar .side-exploration-group { margin-left: 0; padding-left: 4px; }
+  .sidebar .side-exploration-group-title,
+  .sidebar .side-exploration-copy { display: none; }
+  .sidebar .side-exploration { justify-content: center; padding: 8px; }
   .sidebar .side-foot { padding-top: 8px; }
   .sidebar .nav { gap: 4px; }
 }

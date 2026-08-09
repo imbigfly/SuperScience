@@ -83,6 +83,16 @@ async fn register_artifact_at(
     content_type: Option<String>,
     origin: &'static str,
 ) -> Result<ArtifactInfo, String> {
+    let scope = match state.active_frame(label) {
+        Some(frame_id) => state
+            .store
+            .frame_state_scope(&frame_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Artifact conversation no longer exists".to_string())?,
+        None => wisp_store::StateScope::mainline(ap.id.clone()),
+    };
+    crate::exploration_commands::require_writable_exploration(&state.store, &scope).await?;
     let real = existing_artifact_path(&ap.root, &path)?;
     let snapshot_source = {
         let source = std::path::PathBuf::from(&path);
@@ -105,7 +115,7 @@ async fn register_artifact_at(
         .to_string_lossy()
         .replace('\\', "/");
     let logical_key = format!("path:{source_path}");
-    let id = wisp_store::logical_artifact_id(&ap.id, &logical_key);
+    let id = wisp_store::scoped_logical_artifact_id(&ap.id, scope.scope_key(), &logical_key);
     let captured = crate::snapshot_store::capture_file(
         &ap.root,
         &snapshot_source,
@@ -158,7 +168,10 @@ pub(super) async fn upload_file(
 ) -> Result<ArtifactInfo, String> {
     let name = sanitize_upload_name(&filename)?;
     let bytes = decode_upload_data(&data_base64)?;
-    let ap = state.active(window.label());
+    let (ap, scope) =
+        crate::exploration_commands::working_project_for_active_frame(&state, window.label())
+            .await?;
+    crate::exploration_commands::require_writable_exploration(&state.store, &scope).await?;
     let _project_activity = state.begin_project_activity(&ap.id)?;
     let upload_dir = ap.root.join("uploads");
     tokio::fs::create_dir_all(&upload_dir)
@@ -182,7 +195,10 @@ pub(super) async fn register_artifact(
     path: String,
     content_type: Option<String>,
 ) -> Result<ArtifactInfo, String> {
-    let ap = state.active(window.label());
+    let (ap, scope) =
+        crate::exploration_commands::working_project_for_active_frame(&state, window.label())
+            .await?;
+    crate::exploration_commands::require_writable_exploration(&state.store, &scope).await?;
     let _project_activity = state.begin_project_activity(&ap.id)?;
     register_artifact_at(&state, window.label(), &ap, path, content_type, "artifact").await
 }
@@ -271,22 +287,47 @@ pub(super) async fn search_artifacts(
     project_id: Option<String>,
     all_projects: Option<bool>,
 ) -> Result<Vec<ArtifactInfo>, String> {
-    let ap = state.active(window.label());
-    let project_id = if all_projects.unwrap_or(false) {
-        None
-    } else {
-        project_id.as_deref().or(Some(ap.id.as_str()))
+    let (ap, scope) =
+        crate::exploration_commands::working_project_for_active_frame(&state, window.label())
+            .await?;
+    let rows = match &scope {
+        wisp_store::StateScope::Exploration { exploration_id, .. } => {
+            if all_projects.unwrap_or(false) || project_id.as_deref().is_some_and(|id| id != ap.id)
+            {
+                return Err(
+                    "exploration_scope_violation: cross-project Artifact search is disabled inside an exploration."
+                        .into(),
+                );
+            }
+            state
+                .store
+                .search_exploration_artifacts(
+                    &ap.id,
+                    exploration_id,
+                    query.as_deref().unwrap_or(""),
+                    limit.unwrap_or(12),
+                )
+                .await
+                .map_err(|e| format!("{e}"))?
+        }
+        wisp_store::StateScope::Mainline { .. } => {
+            let project_id = if all_projects.unwrap_or(false) {
+                None
+            } else {
+                project_id.as_deref().or(Some(ap.id.as_str()))
+            };
+            state
+                .store
+                .search_artifacts(
+                    project_id,
+                    query.as_deref().unwrap_or(""),
+                    limit.unwrap_or(12),
+                    None,
+                )
+                .await
+                .map_err(|e| format!("{e}"))?
+        }
     };
-    let rows = state
-        .store
-        .search_artifacts(
-            project_id,
-            query.as_deref().unwrap_or(""),
-            limit.unwrap_or(12),
-            None,
-        )
-        .await
-        .map_err(|e| format!("{e}"))?;
     Ok(rows
         .into_iter()
         .map(|a| ArtifactInfo {
@@ -329,15 +370,37 @@ pub(super) fn missing_files(
 #[tauri::command]
 pub(super) async fn read_artifact(
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     id: String,
 ) -> Result<FileContent, String> {
-    let row = state
+    let (working_project, scope) =
+        crate::exploration_commands::working_project_for_active_frame(&state, window.label())
+            .await?;
+    if !state
+        .store
+        .artifact_visible_in_scope(&id, &scope)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err(format!("artifact '{id}' not found in the active state"));
+    }
+    let mut row = state
         .store
         .get_artifact_detail(&id)
         .await
         .map_err(|e| format!("{e}"))?
         .ok_or_else(|| format!("artifact '{id}' not found"))?;
-    let root = PathBuf::from(row.project_root);
+    row.path = state
+        .store
+        .artifact_path_in_scope(&id, &scope)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("artifact '{id}' not found in the active state"))?;
+    let root = if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+        working_project.root
+    } else {
+        PathBuf::from(row.project_root)
+    };
     tokio::task::spawn_blocking(move || read_file_at(&root, row.path, None))
         .await
         .map_err(|e| format!("{e}"))?
@@ -346,16 +409,38 @@ pub(super) async fn read_artifact(
 #[tauri::command]
 pub(super) async fn read_artifact_bytes(
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     id: String,
     max_bytes: Option<u64>,
 ) -> Result<Response, String> {
-    let row = state
+    let (working_project, scope) =
+        crate::exploration_commands::working_project_for_active_frame(&state, window.label())
+            .await?;
+    if !state
+        .store
+        .artifact_visible_in_scope(&id, &scope)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err(format!("artifact '{id}' not found in the active state"));
+    }
+    let mut row = state
         .store
         .get_artifact_detail(&id)
         .await
         .map_err(|e| format!("{e}"))?
         .ok_or_else(|| format!("artifact '{id}' not found"))?;
-    let root = PathBuf::from(row.project_root);
+    row.path = state
+        .store
+        .artifact_path_in_scope(&id, &scope)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("artifact '{id}' not found in the active state"))?;
+    let root = if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+        working_project.root
+    } else {
+        PathBuf::from(row.project_root)
+    };
     let bytes =
         tokio::task::spawn_blocking(move || read_file_bytes_at(&root, &row.path, max_bytes))
             .await
@@ -368,6 +453,7 @@ pub(super) async fn read_artifact_bytes(
 #[tauri::command]
 pub(super) async fn read_artifact_version(
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     version_id: String,
 ) -> Result<FileContent, String> {
     let version = state
@@ -376,13 +462,30 @@ pub(super) async fn read_artifact_version(
         .await
         .map_err(|e| format!("{e}"))?
         .ok_or_else(|| format!("artifact version '{version_id}' not found"))?;
+    let (working_project, scope) =
+        crate::exploration_commands::working_project_for_active_frame(&state, window.label())
+            .await?;
+    if !state
+        .store
+        .artifact_visible_in_scope(&version.artifact_id, &scope)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err(format!(
+            "artifact version '{version_id}' not found in the active state"
+        ));
+    }
     let artifact = state
         .store
         .get_artifact_detail(&version.artifact_id)
         .await
         .map_err(|e| format!("{e}"))?
         .ok_or_else(|| format!("artifact '{}' not found", version.artifact_id))?;
-    let root = PathBuf::from(artifact.project_root);
+    let root = if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+        working_project.root
+    } else {
+        PathBuf::from(artifact.project_root)
+    };
     tokio::task::spawn_blocking(move || read_file_at(&root, version.storage_path, None))
         .await
         .map_err(|e| format!("{e}"))?
@@ -391,6 +494,7 @@ pub(super) async fn read_artifact_version(
 #[tauri::command]
 pub(super) async fn read_artifact_version_bytes(
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     version_id: String,
     max_bytes: Option<u64>,
 ) -> Result<Response, String> {
@@ -400,13 +504,30 @@ pub(super) async fn read_artifact_version_bytes(
         .await
         .map_err(|e| format!("{e}"))?
         .ok_or_else(|| format!("artifact version '{version_id}' not found"))?;
+    let (working_project, scope) =
+        crate::exploration_commands::working_project_for_active_frame(&state, window.label())
+            .await?;
+    if !state
+        .store
+        .artifact_visible_in_scope(&version.artifact_id, &scope)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err(format!(
+            "artifact version '{version_id}' not found in the active state"
+        ));
+    }
     let artifact = state
         .store
         .get_artifact_detail(&version.artifact_id)
         .await
         .map_err(|e| format!("{e}"))?
         .ok_or_else(|| format!("artifact '{}' not found", version.artifact_id))?;
-    let root = PathBuf::from(artifact.project_root);
+    let root = if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+        working_project.root
+    } else {
+        PathBuf::from(artifact.project_root)
+    };
     let bytes = tokio::task::spawn_blocking(move || {
         read_file_bytes_at(&root, &version.storage_path, max_bytes)
     })

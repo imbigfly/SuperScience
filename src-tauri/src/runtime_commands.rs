@@ -14,21 +14,55 @@ pub(super) async fn list_execution_contexts(
 }
 
 #[tauri::command]
-pub(super) fn list_runtimes(state: State<'_, AppState>) -> Vec<wisp_runtime::RuntimeInfo> {
-    state.runtime_manager.list()
+pub(super) async fn list_runtimes(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<wisp_runtime::RuntimeInfo>, String> {
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    Ok(state
+        .runtime_manager
+        .list()
+        .into_iter()
+        .filter(|runtime| match &scope {
+            wisp_store::StateScope::Mainline { .. } => {
+                runtime.key.scope_key == wisp_runtime::MAINLINE_RUNTIME_SCOPE
+            }
+            wisp_store::StateScope::Exploration {
+                project_id,
+                exploration_id,
+            } => runtime.key.project_id == *project_id && runtime.key.scope_key == *exploration_id,
+        })
+        .collect())
 }
 
 #[tauri::command]
 pub(super) async fn inspect_runtime(
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     project_id: String,
     context_id: String,
     language: wisp_runtime::RuntimeLanguage,
 ) -> Result<wisp_runtime::RuntimeObjectList, String> {
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    if matches!(&scope, wisp_store::StateScope::Exploration { .. })
+        && scope.project_id() != project_id
+    {
+        return Err(
+            "exploration_scope_violation: cross-project runtime inspection is disabled".into(),
+        );
+    }
+    let scope_key = if scope.project_id() == project_id {
+        scope.scope_key()
+    } else {
+        wisp_runtime::MAINLINE_RUNTIME_SCOPE
+    };
     state
         .runtime_manager
         .inspect(&wisp_runtime::RuntimeKey {
             project_id,
+            scope_key: scope_key.into(),
             context_id,
             language,
         })
@@ -58,9 +92,11 @@ pub(super) async fn execute_runtime(
             wisp_runtime::MAX_CODE_BYTES
         ));
     }
-    let project = state.active(window.label());
+    let (project, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     let key = wisp_runtime::RuntimeKey {
         project_id: project.id,
+        scope_key: scope.scope_key().to_string(),
         context_id,
         language,
     };
@@ -90,12 +126,14 @@ pub(super) async fn start_runtime(
     context_id: String,
     language: wisp_runtime::RuntimeLanguage,
 ) -> Result<wisp_runtime::RuntimeInfo, String> {
-    let project = state.active(window.label());
+    let (project, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     state
         .runtime_manager
         .start(
             wisp_runtime::RuntimeKey {
                 project_id: project.id,
+                scope_key: scope.scope_key().to_string(),
                 context_id,
                 language,
             },
@@ -108,14 +146,30 @@ pub(super) async fn start_runtime(
 #[tauri::command]
 pub(super) async fn stop_runtime(
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     project_id: String,
     context_id: String,
     language: wisp_runtime::RuntimeLanguage,
 ) -> Result<Option<wisp_runtime::RuntimeInfo>, String> {
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    if matches!(&scope, wisp_store::StateScope::Exploration { .. })
+        && scope.project_id() != project_id
+    {
+        return Err(
+            "exploration_scope_violation: cross-project runtime control is disabled".into(),
+        );
+    }
+    let scope_key = if scope.project_id() == project_id {
+        scope.scope_key()
+    } else {
+        wisp_runtime::MAINLINE_RUNTIME_SCOPE
+    };
     Ok(state
         .runtime_manager
         .stop(&wisp_runtime::RuntimeKey {
             project_id,
+            scope_key: scope_key.to_string(),
             context_id,
             language,
         })
@@ -125,22 +179,40 @@ pub(super) async fn stop_runtime(
 #[tauri::command]
 pub(super) async fn restart_runtime(
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     project_id: String,
     context_id: String,
     language: wisp_runtime::RuntimeLanguage,
 ) -> Result<wisp_runtime::RuntimeInfo, String> {
-    let (_, workspace) = state
-        .store
-        .get_project(&project_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("Project not found: {project_id}"))?;
-    let root = ensure_writable(PathBuf::from(workspace), &state.app_data);
+    let (working, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    if matches!(&scope, wisp_store::StateScope::Exploration { .. })
+        && scope.project_id() != project_id
+    {
+        return Err(
+            "exploration_scope_violation: cross-project runtime control is disabled".into(),
+        );
+    }
+    let (root, scope_key) = if working.id == project_id {
+        (working.root, scope.scope_key().to_string())
+    } else {
+        let (_, workspace) = state
+            .store
+            .get_project(&project_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Project not found: {project_id}"))?;
+        (
+            ensure_writable(PathBuf::from(workspace), &state.app_data),
+            wisp_runtime::MAINLINE_RUNTIME_SCOPE.into(),
+        )
+    };
     state
         .runtime_manager
         .restart(
             wisp_runtime::RuntimeKey {
                 project_id,
+                scope_key,
                 context_id,
                 language,
             },
@@ -155,10 +227,11 @@ pub(super) async fn list_runs(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
 ) -> Result<Vec<wisp_store::RunRecord>, String> {
-    let ap = state.active(window.label());
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     state
         .store
-        .list_runs_by_project(&ap.id)
+        .list_runs_in_scope(&scope)
         .await
         .map_err(|e| format!("{e}"))
 }
@@ -169,7 +242,8 @@ pub(super) async fn cancel_run(
     window: tauri::WebviewWindow,
     run_id: String,
 ) -> Result<wisp_store::RunRecord, String> {
-    let ap = state.active(window.label());
+    let (ap, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     let run = state
         .store
         .get_run(&run_id)
@@ -178,6 +252,16 @@ pub(super) async fn cancel_run(
         .ok_or_else(|| "Run not found".to_string())?;
     if run.project_id != ap.id {
         return Err("Run does not belong to the active project".into());
+    }
+    if state
+        .store
+        .run_state_scope(&run_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        != Some(&scope)
+    {
+        return Err("Run is not visible in the active state scope".into());
     }
     let _project_activity = state.begin_project_activity(&ap.id)?;
     state.run_manager.cancel(&state.store, &run_id).await?;

@@ -12,12 +12,14 @@ mod artifacts;
 mod ask_user_requests;
 mod codex_imports;
 mod execution_contexts;
+mod explorations;
 mod external_session_cache;
 mod library;
 mod lineage;
 mod method_search;
 mod models;
 mod plugins;
+mod project_state_revisions;
 mod project_sync;
 mod project_transfer;
 mod projects;
@@ -41,8 +43,14 @@ pub use agent_workflows::{
     AgentDelegationRootLimits, AgentWorkflow, AgentWorkflowStatus, AgentWorkflowStep,
     MAX_ROOT_AGENT_DEPTH, MAX_ROOT_AGENT_TASKS,
 };
-pub use artifacts::logical_artifact_id;
+pub use artifacts::{logical_artifact_id, scoped_logical_artifact_id};
 pub use ask_user_requests::AskUserPoll;
+pub use explorations::{
+    ArtifactHead, ContextArchiveRecord, Exploration, ExplorationBaselineArtifactHead,
+    ExplorationBaselineEntity, ExplorationCheckpoint, ExplorationEffect, ExplorationFamily,
+    ExplorationPromotion, ExplorationPromotionStatus, ExplorationStatus, ExplorationSummary,
+    StateScope, WorkspaceSnapshotRecord, MAINLINE_SCOPE_KEY,
+};
 pub use external_session_cache::ExternalSessionCacheRecord;
 pub use library::{
     LibraryItem, LibraryItemDetail, LibraryItemVersion, LibraryStore, NewLibraryItem,
@@ -52,6 +60,7 @@ pub use method_search::{
     MethodStrategyStat,
 };
 pub use models::*;
+pub use project_state_revisions::{ProjectStateRevision, ProjectStateRevisionSummary};
 pub use project_sync::ProjectSyncState;
 pub use project_transfer::ProjectTransferStats;
 pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
@@ -123,6 +132,12 @@ const METHOD_SEARCH_MIGRATION: &str = "0034_method_search";
 const METHOD_SEARCH_MIGRATION_SQL: &str = include_str!("../migrations/0034_method_search.sql");
 const METHOD_SEARCH_CONTROL_MIGRATION: &str = "0035_method_search_control";
 const SESSION_IMPORTS_MIGRATION: &str = "0036_session_imports";
+const EXPLORATION_BRANCHES_MIGRATION: &str = "0037_exploration_branches";
+const EXPLORATION_BRANCHES_MIGRATION_SQL: &str =
+    include_str!("../migrations/0037_exploration_branches.sql");
+const PROJECT_STATE_REVISIONS_MIGRATION: &str = "0038_project_state_revisions";
+const PROJECT_STATE_REVISIONS_MIGRATION_SQL: &str =
+    include_str!("../migrations/0038_project_state_revisions.sql");
 
 #[derive(Clone)]
 pub struct Store {
@@ -509,6 +524,73 @@ impl Store {
             .await?;
             Self::record_migration(pool, SESSION_IMPORTS_MIGRATION).await?;
         }
+        if !Self::migration_applied(pool, EXPLORATION_BRANCHES_MIGRATION).await? {
+            Self::apply_exploration_branches(pool).await?;
+            Self::record_migration(pool, EXPLORATION_BRANCHES_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, PROJECT_STATE_REVISIONS_MIGRATION).await? {
+            Self::execute_sql_script(pool, PROJECT_STATE_REVISIONS_MIGRATION_SQL).await?;
+            Self::record_migration(pool, PROJECT_STATE_REVISIONS_MIGRATION).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_exploration_branches(pool: &SqlitePool) -> Result<()> {
+        for table in [
+            "frames",
+            "artifacts",
+            "runs",
+            "research_nodes",
+            "research_edges",
+            "external_resources",
+        ] {
+            Self::add_columns_if_missing(pool, table, &[("exploration_id", "TEXT")]).await?;
+        }
+        Self::execute_sql_script(pool, EXPLORATION_BRANCHES_MIGRATION_SQL).await?;
+
+        let artifacts_exist: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifacts')",
+        )
+        .fetch_one(pool)
+        .await?;
+        if artifacts_exist {
+            sqlx::query("DROP INDEX IF EXISTS ux_artifacts_project_logical_key")
+                .execute(pool)
+                .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS ix_artifacts_project_logical_key \
+                 ON artifacts(project_id,logical_key) WHERE logical_key IS NOT NULL",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO artifact_heads(\
+                   project_id,scope_key,logical_key,artifact_id,artifact_version_id,updated_at\
+                 ) SELECT project_id,?1,logical_key,id,latest_version_id,created_at \
+                   FROM artifacts WHERE logical_key IS NOT NULL AND latest_version_id IS NOT NULL \
+                 ON CONFLICT(project_id,scope_key,logical_key) DO UPDATE SET \
+                   artifact_id=excluded.artifact_id, \
+                   artifact_version_id=excluded.artifact_version_id, \
+                   updated_at=excluded.updated_at",
+            )
+            .bind(MAINLINE_SCOPE_KEY)
+            .execute(pool)
+            .await?;
+        }
+        let projects_exist: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects')",
+        )
+        .fetch_one(pool)
+        .await?;
+        if projects_exist {
+            sqlx::query(
+                "INSERT OR IGNORE INTO project_state_counters(project_id,mainline_generation,updated_at) \
+                 SELECT id,0,? FROM projects",
+            )
+            .bind(chrono::Utc::now().timestamp())
+            .execute(pool)
+            .await?;
+        }
         Ok(())
     }
 
@@ -563,7 +645,12 @@ impl Store {
         )
         .fetch_one(pool)
         .await?;
-        if artifacts_exist {
+        let artifact_heads_exist: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifact_heads')",
+        )
+        .fetch_one(pool)
+        .await?;
+        if artifacts_exist && !artifact_heads_exist {
             sqlx::query(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_artifacts_project_logical_key \
                  ON artifacts(project_id,logical_key) WHERE logical_key IS NOT NULL",

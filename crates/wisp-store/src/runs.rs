@@ -1,6 +1,6 @@
 use super::{
     artifact_node_id, canonical_json, canonical_json_sha256, run_from_row, run_node_id,
-    ResearchEdge, ResearchNode, ResearchNodeKind, RunRecord, RunStatus, Store,
+    ResearchEdge, ResearchNode, ResearchNodeKind, RunRecord, RunStatus, StateScope, Store,
 };
 use anyhow::Result;
 use sha2::{Digest, Sha256};
@@ -9,12 +9,22 @@ impl Store {
     pub async fn project_has_active_runs(&self, project_id: &str) -> Result<bool> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM runs WHERE project_id=? \
-             AND status IN ('submitted','running','cancelling')",
+             AND exploration_id IS NULL AND status IN ('submitted','running','cancelling')",
         )
         .bind(project_id)
         .fetch_one(&self.pool)
         .await?;
         Ok(count > 0)
+    }
+
+    pub async fn exploration_has_active_runs(&self, exploration_id: &str) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE exploration_id=? \
+             AND status IN ('submitted','running','cancelling'))",
+        )
+        .bind(exploration_id)
+        .fetch_one(&self.pool)
+        .await?)
     }
 
     pub async fn create_run(&self, run: &RunRecord) -> Result<()> {
@@ -27,13 +37,35 @@ impl Store {
             .map(canonical_json)
             .unwrap_or_else(|| "[]".into());
         let mut tx = self.begin_write().await?;
+        let exploration_id = if let Some(frame_id) = run.frame_id.as_deref() {
+            let frame_scope: Option<(String, Option<String>)> =
+                sqlx::query_as("SELECT project_id,exploration_id FROM frames WHERE id=?")
+                    .bind(frame_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            let Some((frame_project, exploration_id)) = frame_scope else {
+                anyhow::bail!("Run frame does not exist");
+            };
+            if frame_project != run.project_id {
+                anyhow::bail!("Run frame must belong to the Run project");
+            }
+            exploration_id
+        } else {
+            None
+        };
+        let scope = match exploration_id.as_deref() {
+            Some(exploration_id) => {
+                StateScope::exploration(&run.project_id, exploration_id.to_string())
+            }
+            None => StateScope::mainline(&run.project_id),
+        };
         sqlx::query(
             "INSERT INTO runs(\
                 id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
                 input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
                 stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
-                last_polled_at,last_poll_error,progress_json,env_snapshot_json\
-             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                last_polled_at,last_poll_error,progress_json,env_snapshot_json,exploration_id\
+             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&run.id)
         .bind(&run.project_id)
@@ -59,6 +91,7 @@ impl Store {
         .bind(run.last_poll_error.as_deref())
         .bind(&run.progress_json)
         .bind(&run.env_snapshot_json)
+        .bind(exploration_id.as_deref())
         .execute(&mut *tx)
         .await?;
         let command = run.command.as_deref().unwrap_or_default();
@@ -102,6 +135,28 @@ impl Store {
             .bind(environment_hash)
             .execute(&mut *tx)
             .await?;
+        if let Some(exploration_id) = exploration_id.as_deref() {
+            let recoverability = if run.context_id == "local" {
+                "local_reversible"
+            } else {
+                "external_irreversible"
+            };
+            sqlx::query(
+                "INSERT INTO exploration_effects(\
+                   id,exploration_id,effect_kind,recoverability,target_summary,metadata_json,created_at\
+                 ) VALUES(?,?,?,?,?,?,?)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(exploration_id)
+            .bind("run")
+            .bind(recoverability)
+            .bind(&run.context_id)
+            .bind(serde_json::json!({ "run_id": &run.id }).to_string())
+            .bind(run.created_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        self.bump_state_generation_in_tx(&mut tx, &scope).await?;
         tx.commit().await?;
         let mut node = ResearchNode::new(
             run_node_id(&run.id),
@@ -110,7 +165,7 @@ impl Store {
             &run.title,
         )?;
         node.ref_id = Some(run.id.clone());
-        self.save_research_node(&node).await?;
+        self.save_research_node_in_scope(&node, &scope).await?;
         Ok(())
     }
 
@@ -128,15 +183,112 @@ impl Store {
         row.map(run_from_row).transpose()
     }
 
+    pub async fn run_state_scope(&self, id: &str) -> Result<Option<StateScope>> {
+        let row: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT project_id,exploration_id FROM runs WHERE id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(
+            row.map(|(project_id, exploration_id)| match exploration_id {
+                Some(exploration_id) => StateScope::exploration(project_id, exploration_id),
+                None => StateScope::mainline(project_id),
+            }),
+        )
+    }
+
+    pub async fn run_visible_in_scope(&self, id: &str, scope: &StateScope) -> Result<bool> {
+        scope.validate()?;
+        Ok(match scope {
+            StateScope::Mainline { project_id } => {
+                sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM runs \
+                 WHERE id=? AND project_id=? AND exploration_id IS NULL)",
+                )
+                .bind(id)
+                .bind(project_id)
+                .fetch_one(&self.pool)
+                .await?
+            }
+            StateScope::Exploration {
+                project_id,
+                exploration_id,
+            } => {
+                sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM runs run WHERE run.id=? AND run.project_id=? \
+                 AND (run.exploration_id=? OR (run.exploration_id IS NULL AND EXISTS(\
+                   SELECT 1 FROM explorations exploration \
+                   JOIN exploration_baseline_entities baseline \
+                     ON baseline.checkpoint_id=exploration.checkpoint_id \
+                   WHERE exploration.id=? AND baseline.entity_kind='run' \
+                     AND baseline.entity_id=run.id))))",
+                )
+                .bind(id)
+                .bind(project_id)
+                .bind(exploration_id)
+                .bind(exploration_id)
+                .fetch_one(&self.pool)
+                .await?
+            }
+        })
+    }
+
     pub async fn list_runs_by_project(&self, project_id: &str) -> Result<Vec<RunRecord>> {
         let rows = sqlx::query(
             "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
                     input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
                     stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
                     last_polled_at,last_poll_error,progress_json,env_snapshot_json \
-             FROM runs WHERE project_id=? ORDER BY created_at DESC, id DESC",
+             FROM runs WHERE project_id=? AND exploration_id IS NULL \
+             ORDER BY created_at DESC, id DESC",
         )
         .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(run_from_row).collect()
+    }
+
+    pub async fn list_runs_in_scope(&self, scope: &StateScope) -> Result<Vec<RunRecord>> {
+        let StateScope::Exploration {
+            project_id,
+            exploration_id,
+        } = scope
+        else {
+            return self.list_runs_by_project(scope.project_id()).await;
+        };
+        let rows = sqlx::query(
+            "SELECT run.id,run.project_id,run.frame_id,run.context_id,run.title,run.kind,run.status,\
+                    run.command,run.script_path,run.input_refs_json,run.output_specs_json,run.created_at,\
+                    run.started_at,run.ended_at,run.exit_code,run.stdout_tail,run.stderr_tail,\
+                    run.remote_workdir,run.remote_handle_json,run.timeout_secs,run.last_polled_at,\
+                    run.last_poll_error,run.progress_json,run.env_snapshot_json FROM runs run \
+             WHERE run.project_id=? AND (run.exploration_id=? OR (run.exploration_id IS NULL \
+               AND EXISTS(SELECT 1 FROM explorations exploration \
+                 JOIN exploration_baseline_entities baseline \
+                   ON baseline.checkpoint_id=exploration.checkpoint_id \
+                 WHERE exploration.id=? AND baseline.entity_kind='run' \
+                   AND baseline.entity_id=run.id))) ORDER BY run.created_at DESC,run.id DESC",
+        )
+        .bind(project_id)
+        .bind(exploration_id)
+        .bind(exploration_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(run_from_row).collect()
+    }
+
+    pub async fn list_runs_owned_by_exploration(
+        &self,
+        exploration_id: &str,
+    ) -> Result<Vec<RunRecord>> {
+        let rows = sqlx::query(
+            "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
+                    input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
+                    stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json \
+             FROM runs WHERE exploration_id=? ORDER BY created_at,id",
+        )
+        .bind(exploration_id)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(run_from_row).collect()

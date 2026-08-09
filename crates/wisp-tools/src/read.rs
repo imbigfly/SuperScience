@@ -272,4 +272,38 @@ mod tests {
         assert!(!ReadTool.run(&json!({"path":outside}), &env).await.success);
         std::fs::remove_dir_all(container).ok();
     }
+
+    #[tokio::test]
+    async fn logical_history_references_resolve_inside_the_working_project() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp_read_history_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let history = root.join(".wisp/history");
+        std::fs::create_dir_all(&history).unwrap();
+        std::fs::write(history.join("archive-1.json"), "archived context").unwrap();
+
+        let result = ReadTool
+            .run(
+                &json!({ "path": "wisp-history:archive-1" }),
+                &TestEnv(root.clone()),
+            )
+            .await;
+        assert!(result.success, "{}", result.content);
+        assert!(result.content.contains("archived context"));
+        assert!(
+            !ReadTool
+                .run(
+                    &json!({ "path": "wisp-history:../outside" }),
+                    &TestEnv(root.clone()),
+                )
+                .await
+                .success
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
 }

@@ -13,6 +13,6 @@ pub use kernel::{KernelClient, KernelReady, KernelResp, MAX_CODE_BYTES, PROTOCOL
 pub use manager::{
     LaunchedRuntime, RuntimeEvent, RuntimeExecution, RuntimeInfo, RuntimeKernel, RuntimeKey,
     RuntimeLanguage, RuntimeLauncher, RuntimeManager, RuntimeMetadata, RuntimeObject,
-    RuntimeObjectList, RuntimeOutput, RuntimeStatus, LOCAL_CONTEXT_ID,
+    RuntimeObjectList, RuntimeOutput, RuntimeStatus, LOCAL_CONTEXT_ID, MAINLINE_RUNTIME_SCOPE,
 };
 pub use tool::{format_response, RTool, ReplTool};

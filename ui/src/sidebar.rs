@@ -10,7 +10,7 @@ use crate::text::dom_value;
 use crate::window_capture_escape;
 use leptos::*;
 use serde_wasm_bindgen::to_value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy)]
 pub(super) struct SidebarState {
@@ -23,6 +23,7 @@ pub(super) struct SidebarState {
     pub(super) project_info: RwSignal<Option<ProjectInfo>>,
     pub(super) proj_list: RwSignal<Vec<ProjectSummary>>,
     pub(super) sessions: RwSignal<Vec<SessionInfo>>,
+    pub(super) explorations: RwSignal<Vec<ExplorationSummary>>,
     pub(super) folders: RwSignal<Vec<FolderInfo>>,
     pub(super) drag_session: RwSignal<Option<String>>,
     pub(super) drop_target: RwSignal<Option<String>>,
@@ -56,6 +57,7 @@ pub(super) fn Sidebar(
     open_library: Callback<web_sys::MouseEvent>,
     load_demo: Callback<DemoInfo>,
     load_session: Callback<String>,
+    open_exploration: Callback<Exploration>,
     load_older_sessions: Callback<()>,
     move_sessions_to: Callback<(Vec<String>, Option<String>)>,
     delete_sessions: Callback<Vec<String>>,
@@ -77,6 +79,7 @@ pub(super) fn Sidebar(
         project_info,
         proj_list,
         sessions,
+        explorations,
         folders,
         drag_session,
         drop_target,
@@ -425,6 +428,7 @@ pub(super) fn Sidebar(
                         }).collect_view();
                     }
                     let loaded_sessions = sessions.get();
+                    let exploration_rows = explorations.get();
                     let search_query = session_search_query.get();
                     let searching = session_search_open.get() && !search_query.trim().is_empty();
                     let mut list = if searching {
@@ -581,17 +585,72 @@ pub(super) fn Sidebar(
                             </div>
                         }.into_view()
                     };
+                    let exploration_groups = exploration_rows.into_iter().fold(
+                        HashMap::<String, Vec<ExplorationSummary>>::new(),
+                        |mut groups, row| {
+                            groups.entry(row.source_frame_id.clone()).or_default().push(row);
+                            groups
+                        },
+                    );
+                    let exploration_item = move |summary: &ExplorationSummary| {
+                        let exploration = summary.exploration.clone();
+                        let exploration_for_open = exploration.clone();
+                        let frame_id = exploration.frame_id.clone();
+                        let title = exploration.name.clone();
+                        let status_key = match exploration.status.as_str() {
+                            "active" => "exploration.status_active",
+                            "archived" => "exploration.status_archived",
+                            "promoted" => "exploration.status_promoted",
+                            "discarded" => "exploration.status_discarded",
+                            "promoting" => "exploration.status_promoting",
+                            "creating" => "exploration.status_creating",
+                            _ => "exploration.status_failed",
+                        };
+                        let isolation_key = if summary.isolation_is_full() {
+                            "exploration.isolation_full"
+                        } else {
+                            "exploration.isolation_partial"
+                        };
+                        let open = open_exploration.clone();
+                        view! {
+                            <button type="button" class="side-exploration"
+                                class:active=move || active_session.get().as_deref() == Some(frame_id.as_str())
+                                data-exploration-id=exploration.id.clone()
+                                data-exploration-status=exploration.status.clone()
+                                title=title.clone()
+                                on:click=move |_| open.call(exploration_for_open.clone())>
+                                <span class="exploration-branch-mark" aria-hidden="true">"↳"</span>
+                                <span class="side-exploration-copy">
+                                    <span class="side-exploration-title">{title}</span>
+                                    <span class="side-exploration-meta">
+                                        <span>{t(loc, status_key)}</span>
+                                        <span>" · "</span>
+                                        <span>{t(loc, isolation_key)}</span>
+                                    </span>
+                                </span>
+                            </button>
+                        }.into_view()
+                    };
                     let make = move |s: &SessionInfo| {
                         let kids = branch_kids.get(&s.id).cloned().unwrap_or_default();
-                        if kids.is_empty() {
+                        let exploration_kids = exploration_groups.get(&s.id).cloned().unwrap_or_default();
+                        if kids.is_empty() && exploration_kids.is_empty() {
                             return item(s);
                         }
                         view! {
                             <div class="side-branch-group">
                                 {item(s)}
-                                <div class="side-branch-kids">
-                                    {kids.iter().map(&item).collect_view()}
-                                </div>
+                                {(!exploration_kids.is_empty()).then(|| view! {
+                                    <div class="side-exploration-group" data-testid="sidebar-explorations">
+                                        <div class="side-exploration-group-title">{t(loc, "exploration.group")}</div>
+                                        {exploration_kids.iter().map(&exploration_item).collect_view()}
+                                    </div>
+                                })}
+                                {(!kids.is_empty()).then(|| view! {
+                                    <div class="side-branch-kids">
+                                        {kids.iter().map(&item).collect_view()}
+                                    </div>
+                                })}
                             </div>
                         }.into_view()
                     };

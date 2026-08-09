@@ -178,6 +178,56 @@
   border-radius: var(--radius-xs); background: var(--bg-input); color: var(--text-muted);
   font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; user-select: text;
 }
+
+.exploration-overlay { z-index: 125; }
+.exploration-confirm-overlay { z-index: 135; }
+.exploration-start-modal { max-width: 520px; }
+.exploration-modal-copy { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.55; }
+.exploration-error {
+  padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--err) 35%, transparent);
+  border-radius: var(--radius-xs); background: color-mix(in srgb, var(--err) 8%, transparent);
+  color: var(--err); font-size: 12px; line-height: 1.5; white-space: pre-wrap;
+}
+.exploration-diff-modal { width: min(920px, 100%); max-width: 920px; height: min(720px, calc(100vh - 40px)); overflow: hidden; }
+.exploration-diff-modal .ps-head > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.exploration-modal-status { color: var(--text-faint); font-size: 11px; }
+.exploration-eligibility {
+  display: flex; flex-direction: column; gap: 3px; padding: 9px 11px;
+  border-radius: var(--radius-xs); font-size: 12px; line-height: 1.45;
+}
+.exploration-eligibility.blocked { border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--border)); background: color-mix(in srgb, var(--warn) 8%, transparent); color: var(--text-muted); }
+.exploration-eligibility strong { color: var(--warn); }
+.exploration-tabs { display: flex; flex: 0 0 auto; gap: 3px; overflow-x: auto; padding-bottom: 2px; }
+.exploration-tabs button {
+  flex: 0 0 auto; padding: 6px 9px; border: 1px solid transparent; border-radius: var(--radius-xs);
+  background: transparent; color: var(--text-muted); font: inherit; font-size: 11px; cursor: pointer;
+}
+.exploration-tabs button:hover { background: var(--surface-hover); color: var(--text); }
+.exploration-tabs button.active { border-color: var(--border-active); background: var(--clay-soft); color: var(--text); }
+.exploration-diff-body { min-height: 0; flex: 1 1 auto; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-sunken); padding: 8px; }
+.exploration-diff-section { display: grid; gap: 4px; }
+.exploration-diff-section + .exploration-diff-section { margin-top: 12px; }
+.exploration-diff-section h3 { margin: 2px 4px 5px; color: var(--text-faint); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.exploration-diff-section.conflict h3 { color: var(--warn); }
+.exploration-diff-row { display: flex; min-width: 0; align-items: center; gap: 9px; padding: 8px 9px; border-radius: var(--radius-xs); background: var(--bg-elev); font-size: 12px; }
+.exploration-diff-row + .exploration-diff-row { margin-top: 3px; }
+.exploration-diff-row.stacked { align-items: flex-start; flex-direction: column; gap: 2px; }
+.exploration-diff-row code { min-width: 0; overflow-wrap: anywhere; color: var(--text-muted); font: 11px/1.45 var(--font-mono); user-select: text; }
+.exploration-diff-row span { color: var(--text-faint); }
+.exploration-delta-kind { min-width: 52px; color: var(--text-faint); font: 9.5px/1 var(--font-mono); text-transform: uppercase; }
+.exploration-delta-kind.added { color: var(--ok); }
+.exploration-delta-kind.modified { color: var(--warn); }
+.exploration-delta-kind.deleted { color: var(--err); }
+.exploration-diff-empty, .exploration-loading { display: grid; min-height: 120px; place-items: center; color: var(--text-faint); font-size: 12px; }
+.exploration-actions { align-items: center; }
+.exploration-actions .spacer { flex: 1 1 auto; }
+.exploration-actions .danger-text { color: var(--err); }
+.exploration-confirm-modal { max-width: 540px; }
+@media (max-width: 640px) {
+  .exploration-diff-modal { padding: 16px; }
+  .exploration-actions { flex-wrap: wrap; }
+  .exploration-actions .spacer { display: none; }
+}
 .turn-undo-modal { max-width: 560px; }
 .turn-undo-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
 .turn-undo-body, .turn-undo-empty { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.55; }

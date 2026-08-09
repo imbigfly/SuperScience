@@ -108,6 +108,27 @@ pub trait ToolEnv: Send + Sync {
         false
     }
     fn resolve_read_path(&self, path: &str, allow_directory: bool) -> Result<PathBuf, String> {
+        if let Some(id) = path.strip_prefix("wisp-history:") {
+            let stem = id.strip_suffix(".json").unwrap_or(id);
+            if stem.is_empty()
+                || stem.len() > 128
+                || !stem
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                return Err("invalid wisp-history reference".into());
+            }
+            let filename = if id.ends_with(".json") {
+                id.to_string()
+            } else {
+                format!("{id}.json")
+            };
+            return Ok(self
+                .project_root()
+                .join(".wisp")
+                .join("history")
+                .join(filename));
+        }
         if !self.restrict_read_paths_to_project() {
             return Ok(PathBuf::from(path));
         }

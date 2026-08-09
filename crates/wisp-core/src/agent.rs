@@ -41,12 +41,14 @@ const STUCK_LOOP_MESSAGE: &str = "检测到智能体连续多次发出完全相�
 /// (bytes; 0 disables).
 const DEFAULT_STREAM_RESULT_BUDGET: usize = 16 * 1024;
 
-fn auto_compact_archive_path(root: &Path) -> PathBuf {
-    root.join(".wisp").join("history").join(format!(
-        "session-auto-{}-{}.json",
-        chrono::Utc::now().timestamp_millis(),
-        uuid::Uuid::new_v4().simple()
-    ))
+fn context_archive(root: &Path) -> (PathBuf, String) {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    (
+        root.join(".wisp")
+            .join("history")
+            .join(format!("{id}.json")),
+        format!("wisp-history:{id}"),
+    )
 }
 
 /// Head/tail-truncate a tool's text result to the ingestion budget. The full
@@ -285,10 +287,15 @@ async fn agent_loop_inner(
         // on disk before folding old turns, so automatic recovery has the same
         // retrievability contract as manual `/compact`.
         if ctx.needs_auto_compact_with_reserve(fixed_request_tokens) {
-            let archive = auto_compact_archive_path(root);
+            let (archive, archive_reference) = context_archive(root);
             output.compaction_started("auto");
             match ctx
-                .compact_with_reserve(provider, &archive, fixed_request_tokens)
+                .compact_with_reserve_reference(
+                    provider,
+                    &archive,
+                    fixed_request_tokens,
+                    &archive_reference,
+                )
                 .await
             {
                 Ok((before, after)) => output.compaction(before, after, "auto"),
@@ -312,10 +319,15 @@ async fn agent_loop_inner(
                 Err(LlmError::Incomplete) => anyhow::bail!(STREAM_CUT_MESSAGE),
                 Err(error) if error.is_context_overflow() && !overflow_recovery_used => {
                     overflow_recovery_used = true;
-                    let archive = auto_compact_archive_path(root);
+                    let (archive, archive_reference) = context_archive(root);
                     output.compaction_started("overflow");
                     match ctx
-                        .compact_with_reserve(provider, &archive, fixed_request_tokens)
+                        .compact_with_reserve_reference(
+                            provider,
+                            &archive,
+                            fixed_request_tokens,
+                            &archive_reference,
+                        )
                         .await
                     {
                         Ok((before, after)) => output.compaction(before, after, "overflow"),
@@ -1205,6 +1217,10 @@ mod tests {
             .unwrap();
         assert_eq!(archives.len(), 1, "automatic compaction must archive once");
         assert!(archives[0].path().is_file());
+        assert!(ctx
+            .messages
+            .iter()
+            .any(|message| message.content.as_text().contains("wisp-history:")));
 
         let _ = std::fs::remove_dir_all(root);
     }

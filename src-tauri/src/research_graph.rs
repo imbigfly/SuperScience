@@ -3,12 +3,19 @@ use wisp_tools::{Tool, ToolEnv, ToolResult};
 
 pub struct ResearchGraphTool {
     store: wisp_store::Store,
-    project_id: String,
+    scope: wisp_store::StateScope,
 }
 
 impl ResearchGraphTool {
     pub fn new(store: wisp_store::Store, project_id: String) -> Self {
-        Self { store, project_id }
+        Self {
+            store,
+            scope: wisp_store::StateScope::mainline(project_id),
+        }
+    }
+
+    pub fn new_in_scope(store: wisp_store::Store, scope: wisp_store::StateScope) -> Self {
+        Self { store, scope }
     }
 }
 
@@ -63,7 +70,7 @@ impl Tool for ResearchGraphTool {
         };
         let mut node = match wisp_store::ResearchNode::new(
             uuid::Uuid::new_v4().to_string(),
-            &self.project_id,
+            self.scope.project_id(),
             kind,
             title,
         ) {
@@ -81,7 +88,11 @@ impl Tool for ResearchGraphTool {
                 .unwrap_or_else(|| serde_json::json!({})),
         )
         .unwrap_or_else(|_| "{}".into());
-        match self.store.save_research_node(&node).await {
+        match self
+            .store
+            .save_research_node_in_scope(&node, &self.scope)
+            .await
+        {
             Ok(()) => ToolResult::ok(serde_json::json!({ "node_id": node.id }).to_string()),
             Err(error) => ToolResult::fail(format!("research_graph error: {error}")),
         }
@@ -101,7 +112,7 @@ impl ResearchGraphTool {
         };
         let mut edge = match wisp_store::ResearchEdge::new(
             uuid::Uuid::new_v4().to_string(),
-            &self.project_id,
+            self.scope.project_id(),
             source_id,
             target_id,
             relation,
@@ -116,7 +127,11 @@ impl ResearchGraphTool {
                 .unwrap_or_else(|| serde_json::json!({})),
         )
         .unwrap_or_else(|_| "{}".into());
-        match self.store.save_research_edge(&edge).await {
+        match self
+            .store
+            .save_research_edge_in_scope(&edge, &self.scope)
+            .await
+        {
             Ok(()) => ToolResult::ok(serde_json::json!({ "edge_id": edge.id }).to_string()),
             Err(error) => ToolResult::fail(format!("research_graph error: {error}")),
         }

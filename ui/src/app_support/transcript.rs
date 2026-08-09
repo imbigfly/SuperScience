@@ -125,6 +125,18 @@ pub(crate) fn user_turn_index(items: &[ChatItem], ui_index: usize) -> Option<usi
     )
 }
 
+/// Return the stable user-turn index owning any row in that turn. Unlike
+/// `user_turn_index`, this intentionally maps assistant/tool rows back to the
+/// most recent user row so turn-boundary actions can live on the reply.
+pub(crate) fn owning_user_turn_index(items: &[ChatItem], ui_index: usize) -> Option<usize> {
+    items
+        .iter()
+        .take(ui_index + 1)
+        .filter(|item| matches!(item, ChatItem::User(_) | ChatItem::QueuedUser { .. }))
+        .count()
+        .checked_sub(1)
+}
+
 pub(crate) fn transcript_item_timestamp(
     items: &[ChatItem],
     ui_index: usize,
@@ -292,7 +304,7 @@ mod transcript_render_window_tests {
 mod conversation_outline_tests {
     use super::{
         conversation_outline_target_is_loaded, merge_conversation_outline,
-        transcript_item_timestamp, turn_duration_ms, user_turn_index,
+        owning_user_turn_index, transcript_item_timestamp, turn_duration_ms, user_turn_index,
     };
     use crate::dto::{ChatItem, SessionOutlineItem};
 
@@ -356,6 +368,8 @@ mod conversation_outline_tests {
             Some(210)
         );
         assert_eq!(user_turn_index(&items, 2), Some(1));
+        assert_eq!(owning_user_turn_index(&items, 1), Some(0));
+        assert_eq!(owning_user_turn_index(&items, 2), Some(1));
         assert!(conversation_outline_target_is_loaded(&items, 1, 2));
         assert!(!conversation_outline_target_is_loaded(&items, 1, 0));
     }

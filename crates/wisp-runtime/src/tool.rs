@@ -11,11 +11,13 @@ use wisp_tools::{Tool, ToolEnv, ToolEvent, ToolResult};
 pub struct ReplTool {
     manager: RuntimeManager,
     project_id: String,
+    scope_key: String,
 }
 
 pub struct RTool {
     manager: RuntimeManager,
     project_id: String,
+    scope_key: String,
 }
 
 const PYTHON_TOOL_DESCRIPTION: &str = "Execute Python code in a persistent REPL. Variables, imports, and loaded data persist per project and execution context. Return values of expressions are printed. Paths are interpreted inside the selected context. Use this for analysis, data loading, plotting, and computation when required packages already exist. Do not use this as a package installer; if dependencies are missing, set up a project-local pixi environment or use local-env-setup first.";
@@ -26,6 +28,19 @@ impl ReplTool {
         Self {
             manager,
             project_id: project_id.into(),
+            scope_key: crate::MAINLINE_RUNTIME_SCOPE.into(),
+        }
+    }
+
+    pub fn new_in_scope(
+        manager: RuntimeManager,
+        project_id: impl Into<String>,
+        scope_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            manager,
+            project_id: project_id.into(),
+            scope_key: scope_key.into(),
         }
     }
 }
@@ -35,6 +50,19 @@ impl RTool {
         Self {
             manager,
             project_id: project_id.into(),
+            scope_key: crate::MAINLINE_RUNTIME_SCOPE.into(),
+        }
+    }
+
+    pub fn new_in_scope(
+        manager: RuntimeManager,
+        project_id: impl Into<String>,
+        scope_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            manager,
+            project_id: project_id.into(),
+            scope_key: scope_key.into(),
         }
     }
 }
@@ -178,7 +206,7 @@ impl Tool for ReplTool {
         };
         run_runtime(
             &self.manager,
-            RuntimeKey::python(&self.project_id, context_id),
+            RuntimeKey::python_in_scope(&self.project_id, &self.scope_key, context_id),
             code,
             "python",
             env,
@@ -228,7 +256,7 @@ impl Tool for RTool {
         };
         run_runtime(
             &self.manager,
-            RuntimeKey::r(&self.project_id, context_id),
+            RuntimeKey::r_in_scope(&self.project_id, &self.scope_key, context_id),
             code,
             "r",
             env,

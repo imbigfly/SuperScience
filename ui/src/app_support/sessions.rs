@@ -112,6 +112,43 @@ pub(crate) fn refresh_folders(folders: RwSignal<Vec<FolderInfo>>) {
     });
 }
 
+pub(crate) fn refresh_explorations(explorations: RwSignal<Vec<ExplorationSummary>>) {
+    spawn_local(async move {
+        let value = invoke("list_project_explorations", JsValue::UNDEFINED).await;
+        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ExplorationSummary>>(value) {
+            explorations.set(list);
+        }
+    });
+}
+
+pub(crate) fn refresh_project_state_revisions(
+    revisions: RwSignal<Vec<ProjectStateRevision>>,
+    active_session: RwSignal<Option<String>>,
+    frame_id: String,
+    turn_start: usize,
+    turn_end: usize,
+) {
+    spawn_local(async move {
+        let args = to_value(&serde_json::json!({
+            "frameId": frame_id.clone(),
+            "turnStart": turn_start,
+            "turnEnd": turn_end,
+        }))
+        .unwrap();
+        let value = invoke("list_project_state_revisions", args).await;
+        let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectStateRevision>>(value) else {
+            return;
+        };
+        if active_session.get_untracked().as_deref() == Some(frame_id.as_str()) {
+            revisions.update(|current| {
+                current.extend(list);
+                current.sort_by_key(|revision| revision.turn_index);
+                current.dedup_by_key(|revision| revision.turn_index);
+            });
+        }
+    });
+}
+
 /// Split the sidebar list into top-level sessions plus, per session id, the
 /// branches forked from it — the sidebar draws those nested underneath (#531).
 ///
