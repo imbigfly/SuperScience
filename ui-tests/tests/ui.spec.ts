@@ -6754,6 +6754,29 @@ test("streaming assistant keeps formatted Markdown with a lightweight live tail"
   await expect(page.locator(".msg.assistant .body.streaming")).toHaveCount(0);
 });
 
+test("step commentary renders full Markdown before the overall turn finishes", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("STEPMARKDOWN");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const live = page.locator(".msg.assistant .streaming-markdown");
+  await expect(live.getByRole("heading", { name: "Live analysis" })).toBeVisible();
+  await expect(live.locator("strong")).toHaveText("Significant result");
+  await expect(live.locator("li")).toHaveCount(2);
+  await expect(live.locator("table")).toContainText("ESR1");
+  await expect(live.locator("code")).toHaveText("normalized_counts.csv");
+
+  // The following tool seals the commentary but the turn deliberately stays
+  // pending. Its progress row must retain rendered Markdown rather than
+  // falling back to source text until Done.
+  const settledStep = page.locator(".msg.assistant.commentary .compact-markdown");
+  await expect(settledStep.getByRole("heading", { name: "Live analysis" })).toBeVisible();
+  await expect(settledStep.locator("strong")).toHaveText("Significant result");
+  await expect(settledStep.locator("li")).toHaveCount(2);
+  await expect(settledStep.locator("table")).toContainText("ESR1");
+  await expect(settledStep.locator("code")).toHaveText("normalized_counts.csv");
+});
+
 test("chat keeps the user's reading position when streaming finishes (#670)", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("SCROLLTEST");

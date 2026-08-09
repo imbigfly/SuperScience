@@ -524,11 +524,17 @@ fn render_step_row(
                             Some(ChatItem::Assistant { text, .. }) => text.clone(),
                             _ => String::new(),
                         });
-                        if live {
-                            view! { <div class="step-progress-body body streaming">{text}</div> }.into_view()
+                        // A progress message is sealed as soon as the following
+                        // reasoning/tool event arrives. Render that completed
+                        // step as Markdown immediately even while the overall
+                        // turn is still live, so Markdown constructs do not
+                        // remain source text until `Done`.
+                        let class = if live {
+                            "step-progress-body body md streaming"
                         } else {
-                            view! { <div class="step-progress-body body md" inner_html=md_to_html(&text)></div> }.into_view()
-                        }
+                            "step-progress-body body md"
+                        };
+                        view! { <div class=class inner_html=md_to_html(&text)></div> }.into_view()
                     })}
                 </div>
             }
@@ -1233,11 +1239,19 @@ pub(crate) fn render_item(
                 </div>
             }.into_view()
         }
-        ChatItem::Assistant { text, .. } if compact_assistant => view! {
-            <div class="assistant-wrap">
-                <div class="body streaming">{text.clone()}</div>
-            </div>
-        }.into_view(),
+        ChatItem::Assistant { text, .. } if compact_assistant => {
+            let html = enrich_md_html(md_to_html(text), &[], &[], locale.get());
+            view! {
+                <div class="assistant-wrap">
+                    <div class="body md compact-markdown"
+                        inner_html=html
+                        on:click=move |ev: web_sys::MouseEvent| {
+                            handle_md_click(&ev, &[], &[], &on_artifact, &on_file)
+                        }
+                    ></div>
+                </div>
+            }.into_view()
+        }
         ChatItem::Assistant { text, model, resources } => view! {
             <AssistantMessage
                 text=text.clone()

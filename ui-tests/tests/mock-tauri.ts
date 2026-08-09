@@ -4169,6 +4169,39 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             // Interleaved commentary, reasoning, and tool calls exercise the
             // transcript's three-layer activity flow.
+            if (String(arg("message") ?? "").includes("STEPMARKDOWN")) {
+              return await new Promise<string>((resolve) => {
+                setTimeout(() => {
+                  emit("agent", { kind: "User", frame_id: fid, text: msg });
+                  emit("agent", {
+                    kind: "Text",
+                    frame_id: fid,
+                    delta: [
+                      "### Live analysis",
+                      "",
+                      "**Significant result**",
+                      "",
+                      "- first finding",
+                      "- second finding",
+                      "",
+                      "| Gene | Score |",
+                      "| --- | ---: |",
+                      "| ESR1 | 0.98 |",
+                      "",
+                      "`normalized_counts.csv`",
+                    ].join("\n"),
+                  });
+                  setTimeout(() => {
+                    emit("agent", { kind: "ToolCall", frame_id: fid, name: "shell", preview: "continue analysis" });
+                    setTimeout(() => {
+                      emit("agent", { kind: "ToolResult", frame_id: fid, name: "shell", ok: true, content: "done" });
+                      emit("agent", { kind: "Done", frame_id: fid });
+                      resolve(fid);
+                    }, 5_000);
+                  }, 1_000);
+                }, 30);
+              });
+            }
             if (String(arg("message") ?? "").includes("STEPSDEMO")) {
               return await new Promise<string>((resolve) => {
                 setTimeout(() => {
