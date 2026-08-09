@@ -850,7 +850,7 @@ mod tests {
             .unwrap()
             .result
             .unwrap_err()
-            .contains("stream cancelled"));
+            .contains("stopped by user"));
         drop(store);
         std::fs::remove_dir_all(base).ok();
     }

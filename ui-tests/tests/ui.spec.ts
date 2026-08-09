@@ -1177,6 +1177,22 @@ test("ACP cancellation is scoped to the active bound frame", async ({ page }) =>
   await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
 });
 
+test("failed stop command restores the Stop control instead of staying in Stopping", async ({ page }) => {
+  await enterApp(page);
+  await newSessionButton(page).click();
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /Test ACP Agent/ }).click();
+  await composer(page).fill("ACP LONG");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+  await page.evaluate(() => { (window as any).__failStopAgent = true; });
+
+  await page.getByRole("button", { name: "Stop" }).click();
+
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+  await expect(page.locator(".copy-toast-warning")).toContainText("Could not stop the task");
+});
+
 test("pre-start send failures roll back optimistic rows and restore the draft", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("PRESTARTFAIL retry this draft");
