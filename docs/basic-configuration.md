@@ -1,0 +1,471 @@
+# Wisp Science 基础配置教程
+
+本教程面向第一次使用 Wisp Science 的用户，覆盖模型、服务器、浏览器、Skill、MCP、ACP、凭据、插件、飞书/微信、项目迁移和命令行。界面截图来自 macOS 版；Windows 版菜单位置基本一致，快捷键中的 `Cmd` 请换成 `Ctrl`。
+
+> 建议顺序：先配置模型，再按需要配置服务器、浏览器、Skill/MCP、ACP 和远程接入。API Key、App Secret、OAuth Token 等敏感信息应只填写在 Wisp 的凭据字段中，不要写进提示词、项目文件或截图。
+
+## 目录
+
+1. [配置模型](#1-配置模型)
+2. [配置服务器](#2-配置服务器)
+3. [配置浏览器控制](#3-配置浏览器控制)
+4. [手动指定 Skill 和 MCP](#4-手动指定-skill-和-mcp)
+5. [导入 Claude Code / Codex 会话](#5-导入-claude-code--codex-会话)
+6. [导入 Skill 和配置 MCP](#6-导入-skill-和配置-mcp)
+7. [配置 ACP](#7-配置-acp)
+8. [配置凭据](#8-配置凭据)
+9. [配置插件（MCP App）](#9-配置插件mcp-app)
+10. [配置飞书和微信](#10-配置飞书和微信)
+11. [导出和导入项目](#11-导出和导入项目)
+12. [使用命令行](#12-使用命令行)
+
+## 1. 配置模型
+
+打开任意项目，进入 **设置 → 模型**。这里的 **Models** 是 Wisp 内置 Agent 使用的 HTTP API 模型；外部 Codex、Claude Code 等进程应配置到旁边的 **ACP Agents**，不要把 ACP 启动命令填进 HTTP 模型表单。
+
+![模型配置列表](assets/basic-configuration/01-models-overview.png)
+
+### 快速配置
+
+如果使用 Kimi、GLM、DeepSeek、Kimi Coding 或 GLM Coding，可以点击页面上的快速配置按钮，再按服务商实际信息补全模型 ID 和 API Key。
+
+### 自定义 HTTP 模型
+
+点击 **添加模型**，依次填写：
+
+1. **提供商**：选择 OpenAI 兼容、OpenAI Responses API 或 Anthropic。
+2. **API 地址**：填写服务商提供的基础地址。通常不要手动追加 `/v1`、`/chat/completions`、`/responses` 或 `/v1/messages`，Wisp 会按提供商补全路径。
+3. **显示名称（别名）**：只影响 Wisp 中的显示，例如 `Lab DeepSeek`。
+4. **模型 ID**：必须与 API 实际接受的模型名一致。
+5. **最大输出 tokens / 上下文窗口 tokens**：优先采用服务商公开上限；识别到的模型会自动带出推荐值。
+6. **推理强度**：只有模型和网关支持时才设置；不确定时保留默认。
+7. **图片能力**：视觉模型勾选“支持图片输入”；如需作为全局图片观察模型，再勾选“用于图片分析”。图片生成目前使用单独的模型角色。
+8. **API 密钥**：密钥保存在操作系统密钥环中，不写入项目 SQLite。
+
+![添加 HTTP 模型](assets/basic-configuration/02-add-http-model.png)
+
+点击 **验证**，成功后再 **保存**。回到会话，在发送按钮左侧的模型选择器中选择该模型。已有消息的会话切换模型时会要求确认；默认模型只影响新会话。
+
+常见问题：
+
+- `401/403`：检查 API Key、账户权限和服务商区域。
+- `404`：通常是 API 基础地址或模型 ID 错误；不要盲目追加接口路径。
+- 上下文溢出：在会话里执行 `/compact`，或在 **设置 → 常规** 开启自动压缩长会话。
+- 图片无法读取：确认至少有一个支持视觉输入并被指定为图片分析模型的 HTTP profile。
+
+字段和模型路由的完整说明见[模型配置](model-configuration.md)。
+
+## 2. 配置服务器
+
+服务器在 **设置 → 环境** 中管理。也可以打开会话右侧的 **环境** 面板，再点击 **前往设置管理环境**。
+
+### 添加 SSH 主机
+
+点击 **添加 SSH 主机**，填写：
+
+1. **名称（别名）**：会话和工具中看到的名称，例如 `gpu-lab`。
+2. **主机地址（HostName）**、**用户**和**端口**。
+3. **认证方式**：优先使用“密钥 / agent”。
+4. **密钥文件**：只填写本机私钥路径，例如 `~/.ssh/id_ed25519`。Wisp 不会把私钥内容复制进 SQLite。
+5. **给 Agent 的说明**：可记录调度器、分区、module、conda 等使用约定。
+
+![添加 SSH 主机](assets/basic-configuration/12-add-ssh-host.png)
+
+先点击 **测试连接**，通过后再添加。回到环境列表后执行 **探测环境**，让 Wisp 记录操作系统、CPU 架构、GPU、Python、R 和 SLURM 等能力；如远端解释器不在默认 PATH，再使用 **配置运行时解释器**。
+
+如果已经维护 `~/.ssh/config`，可以使用 **一键导入 ~/.ssh/config 全部主机**。导入后仍建议逐台探测，确认别名、端口、用户和 IdentityFile 能正常工作。
+
+### 在会话中使用服务器
+
+打开右侧 **环境** 面板，在“附加服务器”中选择已配置主机。附加后，Agent 才能把该执行环境用于当前会话。长任务应通过结构化 Run 提交，不要让 Agent 用自由形式的 `ssh`、`scp` 或 `rsync -e ssh` 绕过环境注册和审计。
+
+> 项目导出不会携带 SSH 配置和密钥。换电脑后需要重新配置并探测服务器。
+
+## 3. 配置浏览器控制
+
+Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启动临时 Playwright/Selenium 浏览器，因此会保留现有登录状态、Cookie、扩展和浏览器指纹。
+
+### 安装浏览器桥接扩展
+
+1. 在 Wisp 会话中输入“配置浏览器控制”。Agent 会调用只读的 `browser_setup`，返回当前连接状态和这台机器上的准确扩展目录。
+2. 在要控制的 Chrome 用户资料中打开 `chrome://extensions`。
+3. 打开右上角 **开发者模式**。
+4. 点击 **加载未打包的扩展程序**，选择 `browser_setup` 返回的 `browser-extension/` 文件夹本身，不要选择里面的单个文件或 ZIP。
+5. 打开扩展弹窗，确认显示 **Connected to Wisp**。
+
+![Chrome 加载未打包扩展](assets/basic-configuration/18-browser-extension.png)
+
+扩展会在 Wisp 运行时连接 `ws://127.0.0.1:18765`。Wisp 与其他兼容工具可能使用同一个默认端口，因此同一时间只运行一个浏览器桥接服务。
+
+### 验证
+
+保持一个普通 `http://` 或 `https://` 页面打开，然后在 Wisp 中请求：
+
+```text
+列出我当前 Chrome 中的网页标签，只读取标题和 URL，不要点击页面。
+```
+
+如果能列出标签页，说明桥接成功。浏览器工具通常仍会出现审批卡；只有当前会话明确开启“完全权限”时才会自动批准。
+
+### 限制与安全
+
+- `chrome://settings`、`chrome://extensions` 等内部页面不能由桥接脚本控制。
+- CAPTCHA 或“确认你是真人”页面必须由用户手动完成，Wisp 不会尝试绕过。
+- 原生“打开/保存”对话框和 Chrome 下载气泡不属于网页 DOM，不能由网页桥接控制。
+- 对无人值守下载，可手动关闭浏览器的“下载前询问每个文件的保存位置”；多文件自动下载只应对可信站点单独授权。
+
+完整安全边界见[真实浏览器自动化](real-browser-automation.md)。
+
+## 4. 手动指定 Skill 和 MCP
+
+### 为下一轮手动指定 Skill
+
+在消息输入框输入 `/`，打开“技能与工作流”选择器；继续输入名称可以筛选，然后用方向键和 Enter，或直接点击目标 Skill。
+
+![在输入框中手动选择 Skill](assets/basic-configuration/17-manual-skill.png)
+
+选中的 Skill 会附加到下一条消息。它只约束这一轮，不会永久改写项目配置。普通 Wisp 会话和 ACP 会话都支持 `/` 引用。
+
+示例：
+
+```text
+/literature-review 请检索并核对这个主题近五年的综述，所有结论都给出真实来源。
+```
+
+### 为任务指定 MCP
+
+当前版本没有逐轮的“MCP 下拉选择器”。MCP 是否可用由当前项目的 **设置 → 连接** 和已启用插件决定。需要强制范围时，在提示词里写清服务、数据库或工具边界，例如：
+
+```text
+这次只使用 PubMed MCP 检索，不要使用模型记忆补论文。先发现与“plant single-cell transcriptomics”有关的工具，再调用匹配工具，最后给出 PMID。
+```
+
+内置 Agent 会先通过 `search_mcp_tools` 发现工具，再通过 `use_mcp_tool` 调用。不要猜工具名；按数据库或目标描述能力即可。要完全停用某个 MCP，请在 **设置 → 连接** 关闭它，并新建会话或等待空闲 Agent 重建。
+
+## 5. 导入 Claude Code / Codex 会话
+
+Wisp 可以把独立 Codex CLI 或 Claude Code 的 JSONL 会话导入当前项目，不需要复制粘贴。
+
+### 导入 Codex CLI
+
+打开 **编辑 → 导入 Codex 会话**，或按 `Cmd/Ctrl+P` 搜索同名命令。默认扫描本机的 `~/.codex/sessions`。
+
+![导入 Codex 会话](assets/basic-configuration/13-import-codex.png)
+
+### 导入 Claude Code
+
+打开 **编辑 → 导入 Claude Code 会话**。默认扫描本机的 `~/.claude/projects`。
+
+![导入 Claude Code 会话](assets/basic-configuration/14-import-claude-code.png)
+
+两种导入器的操作相同：
+
+1. 在 **来源** 中选择本地、已注册的 WSL 或已配置的 SSH 主机。
+2. 点击一条会话查看有界预览，确认工作目录、消息数和时间。
+3. 点击单条 **导入**，或使用 **全部导入**。
+4. 导入完成后，Wisp 会创建或复用 `codex` / `claude` 会话分组。
+
+导入是幂等的：源会话后续新增内容时，列表会显示“更新”；再次导入会快进已有会话，但不会覆盖已经在 Wisp 内继续过的会话。Codex 的 AGENTS.md 包装、环境包装、推理和工具协议行会被过滤；Claude Code 的元数据行会被过滤，文本、工具调用和工具结果会保留。
+
+> 导入的是会话内容，不会导入 Codex/Claude 的登录凭据、模型配置、MCP 配置或进程状态。
+
+## 6. 导入 Skill 和配置 MCP
+
+### 导入 Skill
+
+进入 **设置 → 技能**，展开 **添加技能**：
+
+- **添加 SKILL.md 或 ZIP**：ZIP 可以直接包含 `SKILL.md`，也可以只包一层 Skill 目录。
+- **添加文件夹**：选择包含 `SKILL.md` 的完整 Skill 文件夹。
+
+![导入 Skill](assets/basic-configuration/09-skills-import.png)
+
+“添加技能”安装或更新的是全局 Skill。只属于当前项目的 Skill 可放入：
+
+```text
+<project>/.wisp/skills/<skill-name>/SKILL.md
+```
+
+然后点击 **重新加载技能**。同名 Skill 按 bundled、project、global、额外路径、plugin 的既定优先级解析；插件提供的 Skill 应在插件页管理，不要重复导入。
+
+更多发现范围和覆盖规则见[Skills](skills.md)。
+
+### 配置本地 MCP
+
+进入 **设置 → 连接 → 添加连接**，将类型设为 **本地命令**，填写名称、可执行命令和参数，再点击 **测试**。
+
+![添加本地 MCP 连接](assets/basic-configuration/10-add-mcp-connection.png)
+
+命令应指向可执行文件，不要把整段 shell 管道塞进字段。环境变量形式的 API Key 应先放入 **设置 → 凭据**；新启动的本地 MCP 进程会继承这些值。
+
+### 配置远程 MCP
+
+在添加连接页把类型切换为 **远程 URL**，填写服务地址和认证方式。以 Notion 为例：
+
+```text
+https://mcp.notion.com/mcp
+```
+
+选择 OAuth 后，点击 **测试**或**保存**会在浏览器中打开授权页。OAuth Token 保存在操作系统密钥环中；删除连接会清除对应凭据。连接配置改动对新会话生效。
+
+## 7. 配置 ACP
+
+ACP（Agent Client Protocol）用于运行已经安装在本机的外部 Agent。它与 HTTP 模型配置相互独立，并且当前只支持本地 stdio。
+
+### 前置条件
+
+1. 安装 Node.js。
+2. 安装并登录底层 Agent，例如 Codex 或 Claude Code。
+3. 安装对应的 ACP adapter。不要直接把 `codex`、`claude` 或 `claude -p` 当成 ACP 命令。
+
+可用 adapter 示例：
+
+```bash
+npx -y @agentclientprotocol/codex-acp --version
+npx -y @agentclientprotocol/claude-agent-acp --version
+```
+
+### 在 Wisp 中添加
+
+进入 **设置 → 模型 → ACP Agents**，点击 **添加 ACP Agent**。
+
+![ACP Agent 列表](assets/basic-configuration/03-acp-agents.png)
+
+表单字段：
+
+- **Label**：选择器中的名称。
+- **Command**：只填可执行文件，例如 `npx`；Windows 通常使用 `npx.cmd` 或绝对路径。
+- **Arguments**：每个参数单独一行。
+
+![添加 ACP Agent](assets/basic-configuration/04-add-acp-agent.png)
+
+Codex ACP 示例：
+
+```text
+Label: Codex ACP
+Command: npx
+Arguments:
+-y
+@agentclientprotocol/codex-acp
+```
+
+Claude ACP 示例：
+
+```text
+Label: Claude ACP
+Command: npx
+Arguments:
+-y
+@agentclientprotocol/claude-agent-acp
+```
+
+保存后点击 **测试连接**。成功表示 Wisp 已启动进程并完成 ACP `initialize`；若 adapter 返回登录方式，按提示完成认证。之后在空会话的模型选择器中选择该 ACP Agent。已有消息的普通会话切换到 ACP 时，Wisp 会保留草稿并创建新的空 ACP 会话。
+
+> ACP 进程拥有当前 Wisp 用户的本机权限。只配置可信 adapter；命令或参数改变后，原会话的进程指纹不再匹配，应新建会话。
+
+完整示例和排错见[ACP Agents](acp-agents.md)。
+
+## 8. 配置凭据
+
+进入 **设置 → 凭据**。内置服务和自定义凭据都保存在操作系统钥匙串/凭据库中，不写入项目 SQLite。
+
+![凭据管理](assets/basic-configuration/05-credentials.png)
+
+### 内置凭据
+
+OpenAlex、InfiniSynapse、SCIMaster、NCBI 等条目带有用途说明和官方获取入口。填写后点击页面底部 **保存**。已经保存的字段通常显示“已配置”；留空会保持原值，不会把密钥明文回显。
+
+### 自定义凭据
+
+在“添加凭据”中填写：
+
+1. **服务名称**：便于识别。
+2. **环境变量**：Skill 或 MCP 实际读取的变量名，例如 `METASO_API_KEY`。
+3. **凭据值**：API Key 或 Token。
+
+自定义凭据只会注入新启动的本地 Python 和 MCP 进程，不会自动复制到 WSL/SSH 主机。远端环境需要在远端单独安全配置。模型 API Key 建议直接在对应模型 profile 中保存。
+
+## 9. 配置插件（MCP App）
+
+Wisp 插件可以把 Skill、本地 stdio MCP 服务和 MCP App 打包为一个安装单元。插件全局安装、按项目启用。
+
+进入 **设置 → 插件**，点击 **安装插件**：
+
+- 本地 ZIP：选择文件后检查路径和可选 SHA-256，再确认安装。
+- HTTPS 发布资产：必须提供发布方公布的 SHA-256。
+
+安装只校验和解压，不会执行 `npm install`、`postinstall` 或 shell 脚本。安装完成后，展开 **详情**，检查它提供的 Skill、MCP 命令、校验状态和运行环境。
+
+![插件提供的 Skill 和 MCP 服务](assets/basic-configuration/11-plugin-mcp-details.png)
+
+启用插件后，点击 **在新会话中使用**。插件的 MCP 进程会在新 Agent 会话构建时启动；插件 Skill 会显示在技能页，但启停和删除仍由插件卡片管理。
+
+当工具返回 MCP App 时，Wisp 会在中间区域打开应用标签页，并保留与聊天的分屏。MCP App 可以把最多 64 KiB 的文本/结构化选择状态加入下一轮模型上下文；关闭 App 会清除该状态。
+
+> 本地 MCP 进程不是完整的操作系统沙箱，它拥有当前用户的文件权限。只启用来源和校验和可信的插件。
+
+打包格式和安全边界见[功能插件](feature-plugins.md)。
+
+## 10. 配置飞书和微信
+
+进入 **设置 → 远程接入**。飞书、微信和设备桥默认关闭，彼此使用独立凭据和安全边界。
+
+![远程接入总览](assets/basic-configuration/06-remote-access.png)
+
+### 飞书 / Lark
+
+推荐点击飞书机器人条目后使用 **扫码创建应用**：选择中国版飞书或 Lark 国际版，用对应客户端扫码，并在打开的页面中完成企业自建应用配置。
+
+已有应用也可以手动配置：
+
+1. 勾选或取消 **使用 Lark 国际版**。
+2. 填写 App ID 和 App Secret。
+3. 在飞书开放平台启用机器人能力。
+4. 事件订阅选择 **长连接**，订阅 `im.message.receive_v1`。
+5. 开通消息收发和获取机器人信息所需权限。
+6. 保存后返回远程接入页并启用机器人。
+
+![飞书机器人配置](assets/basic-configuration/07-feishu-setup.png)
+
+App Secret 只保存在操作系统凭据库中。私聊消息直接处理；群聊中需要 @ 机器人。若 CardKit 权限不足，Wisp 会退化为普通文本回复。
+
+### 微信 iLink
+
+打开微信机器人（iLink），点击 **扫码绑定**，用要作为 owner 的微信账号确认。
+
+![微信 iLink 配置](assets/basic-configuration/08-wechat-setup.png)
+
+当前只处理 owner 的一对一消息，群消息会被忽略。Token 保存在系统凭据库中；服务器返回会话过期时，通道会自动停用，需要重新扫码。
+
+### 常用 Slash Command
+
+- `/status`：查看当前项目和共享会话。
+- `/project`：列出或切换项目。
+- `/session`：列出或切换会话。
+- `/new`：在当前项目准备新会话。
+- `/stop`：停止当前共享会话正在运行的一轮。
+- `/help`：显示帮助。
+
+桌面、飞书和微信共享“最后收到用户消息的会话”。工具审批仍显示在桌面端；无人值守任务遇到审批时会等待。完整说明见[IM Channels](channels.md)。
+
+## 11. 导出和导入项目
+
+项目 ZIP 适合离线迁移、归档备份和跨 Windows/macOS 搬迁。
+
+### 导出
+
+先等待项目中的 Agent turn、ACP turn、运行时写入和 Run 全部结束。然后使用任一路径：
+
+- 打开项目，选择 **文件 → 导出当前项目**。
+- 回到项目页，点击项目卡片右侧的下载箭头。
+
+![项目卡片上的导出按钮](assets/basic-configuration/16-project-export.png)
+
+Wisp 会生成 `wisp-project-<name>.zip`，并在完成清单校验后才发布最终文件。进度窗口仍在运行时，不要复制临时或尚为空的 ZIP。
+
+### 导入
+
+在项目页点击顶部 **导入项目**，选择导出的 ZIP，再选择一个新的本地父目录。Wisp 会创建项目目录、校验清单，然后打开导入后的项目。
+
+![项目页的导入入口](assets/basic-configuration/15-project-import.png)
+
+项目包包含工作区普通文件，以及项目拥有的会话、产物、Run、计划、溯源和研究图谱记录。以下机器本地状态不会导出：
+
+- API Key 和其他系统密钥环凭据。
+- 全局设置和模型 profile。
+- SSH/WSL 执行环境配置。
+- 可恢复的 ACP 进程/会话绑定。
+
+仍被记录为活动状态的任务在目标机器上会标记为 `lost`，不会自动恢复。同一设备重复导入相同项目 ID 会被拒绝，不会静默合并。详细路径规则见[项目导出与导入](project-transfer.md)。经常在多台设备间切换时，使用[手动加密同步](project-sync.zh-CN.md)。
+
+## 12. 使用命令行
+
+Wisp CLI 以当前目录作为项目根目录。源码仓库中使用 `cargo run -p wisp-cli`；构建或安装后可直接调用 `wisp-science`。
+
+### 配置模型环境变量
+
+macOS / Linux：
+
+```bash
+export WISP_PROVIDER="openai"            # openai / openai_responses / anthropic
+export WISP_API_URL="https://api.deepseek.com"
+export WISP_MODEL="deepseek-v4-pro"
+export WISP_API_KEY="<your-provider-key>"
+```
+
+Windows PowerShell：
+
+```powershell
+$env:WISP_PROVIDER = "openai"
+$env:WISP_API_URL  = "https://api.deepseek.com"
+$env:WISP_MODEL    = "deepseek-v4-pro"
+$env:WISP_API_KEY  = "<your-provider-key>"
+```
+
+不要把真实 Key 写进脚本或提交到 Git。桌面端的系统密钥环配置不会自动成为 CLI 环境变量。
+
+### 交互模式
+
+```bash
+cargo run -p wisp-cli
+# 或已安装后：
+wisp-science
+```
+
+交互命令：
+
+- `/q`、`/quit`：退出。
+- `/n`、`/new`：开始新会话，旧会话先备份。
+- `/c`、`/compact`：归档完整历史后压缩上下文。
+- `/h`、`/help`：显示帮助。
+
+### 单次任务与 JSONL
+
+```bash
+cargo run -p wisp-cli -- run "总结这个项目中的文件"
+cargo run -p wisp-cli -- run --output jsonl "总结这个项目中的文件"
+```
+
+`console` 适合人读；`jsonl` 每行输出一个结构化事件，适合脚本、CI 或日志收集。
+
+### 回归评测
+
+```bash
+cargo run -p wisp-cli -- eval --save baseline.json
+cargo run -p wisp-cli -- eval --compare baseline.json --save current.json
+```
+
+### CLI 中加载 Skill 和 MCP
+
+```bash
+export WISP_SKILLS_PATH="/path/to/extra-skills"
+export WISP_MCP_COMMAND="npx -y your-mcp-server"
+# 或启动一个内置 bio-tools 包：
+export WISP_MCP_PKG="mcp_pubmed"
+```
+
+`WISP_SKILLS_PATH` 在 Windows 可使用 `;` 分隔，在 macOS/Linux 可使用 `:` 分隔。`WISP_MCP_COMMAND` 是 CLI 启动任意 stdio MCP 的完整命令行；桌面端请改用 **设置 → 连接**。
+
+帮助输出：
+
+```text
+Usage:
+  wisp-science
+  wisp-science run [--output console|jsonl] <prompt>
+  wisp-science eval [--save report.json] [--compare baseline.json]
+  wisp-science dev
+
+With no command, wisp-science starts the interactive terminal.
+```
+
+## 完成后的检查清单
+
+- 模型通过“验证”，并能在新会话完成一条普通问答。
+- SSH 主机通过“测试连接”和“探测环境”，需要时已配置 Python/R 解释器。
+- Chrome 扩展弹窗显示 “Connected to Wisp”。
+- Skill 在 `/` 选择器中可见；MCP 在“设置 → 连接”中已启用且测试通过。
+- ACP adapter 完成“测试连接”，并能在空会话中被选择。
+- 凭据字段只显示“已配置”，项目文件中没有明文 Key。
+- 飞书/微信使用 `/status` 能看到正确项目和会话。
+- 导出的项目 ZIP 已等待进度完成，并在另一位置完成过一次导入演练。
+- CLI 的 `--help`、交互模式和一条 `run` 命令均可执行。
