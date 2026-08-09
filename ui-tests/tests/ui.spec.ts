@@ -1489,6 +1489,22 @@ test("composer picker follows manual caret insertions and ignores pasted text", 
   await enterApp(page);
   const composerInput = composer(page);
 
+  // Windows Chinese IMEs can commit punctuation through the composition path
+  // without exposing the committed character as InputEvent.data (#733).
+  await composerInput.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.focus();
+    textarea.value = "#";
+    textarea.setSelectionRange(1, 1);
+    textarea.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertCompositionText",
+    }));
+  });
+  await expect(page.locator(".mention-menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await composerInput.fill("");
+
   await composerInput.fill("已有文字");
   await composerInput.evaluate((element) => {
     const textarea = element as HTMLTextAreaElement;
