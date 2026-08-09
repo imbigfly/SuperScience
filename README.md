@@ -275,6 +275,7 @@ do without an API key.
 
 | Topic | Guide |
 |-------|-------|
+| Proposed case studies (Chinese) | [docs/case-studies.zh-CN.md](docs/case-studies.zh-CN.md) |
 | Model profiles & providers | [docs/model-configuration.md](docs/model-configuration.md) |
 | External coding agents (ACP) | [docs/acp-agents.md](docs/acp-agents.md) |
 | Multi-agent workflows | [docs/agent-delegation.md](docs/agent-delegation.md) |

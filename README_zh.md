@@ -234,6 +234,7 @@ Agent 先用 `search_mcp_tools` 发现匹配的工具，再通过 `use_mcp_tool`
 
 | 主题 | 指南 |
 |------|------|
+| Case Study 选题库 | [docs/case-studies.zh-CN.md](docs/case-studies.zh-CN.md) |
 | 基础配置图文教程 | [docs/basic-configuration.md](docs/basic-configuration.md) |
 | 模型配置与提供商 | [docs/model-configuration.md](docs/model-configuration.md) |
 | 外部编码 Agent（ACP） | [docs/acp-agents.md](docs/acp-agents.md) |
