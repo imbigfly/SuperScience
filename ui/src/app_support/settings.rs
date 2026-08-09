@@ -96,8 +96,8 @@ pub(crate) mod tauri_args {
         }
         payload
     }
-    pub fn exploration_checkpoint(source_frame_id: &str) -> Value {
-        json!({ "sourceFrameId": source_frame_id })
+    pub fn exploration_checkpoint(source_frame_id: &str, turn_index: Option<usize>) -> Value {
+        json!({ "sourceFrameId": source_frame_id, "turnIndex": turn_index })
     }
     pub fn create_exploration(checkpoint_id: &str, name: &str) -> Value {
         json!({ "checkpointId": checkpoint_id, "name": name })
@@ -186,8 +186,9 @@ mod tauri_args_tests {
         assert!(v.get("session_id").is_none());
         assert!(v.get("user_index").is_none());
 
-        let v = tauri_args::exploration_checkpoint("frame-1");
+        let v = tauri_args::exploration_checkpoint("frame-1", Some(2));
         assert_eq!(v["sourceFrameId"], "frame-1");
+        assert_eq!(v["turnIndex"], 2);
         let v = tauri_args::create_exploration("checkpoint-1", "Try A");
         assert_eq!(v["checkpointId"], "checkpoint-1");
         assert_eq!(v["name"], "Try A");

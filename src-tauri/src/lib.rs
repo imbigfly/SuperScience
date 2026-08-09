@@ -57,6 +57,7 @@ mod plan_mode;
 mod plugins;
 mod project_commands;
 mod project_reader;
+mod project_state_revisions;
 mod project_sync;
 mod project_transfer;
 mod publication_capsule;
@@ -5852,6 +5853,23 @@ async fn send_message_inner(
     // After the persist flush so the seen snapshot covers the final messages.
     mark_seen_if_viewed(&state, &frame_id).await;
 
+    if result.is_ok() {
+        if let Err(error) = project_state_revisions::record_completed_mainline_turn(
+            &state.store,
+            &state.app_data,
+            &ap.id,
+            &frame_id,
+            &ap.root,
+        )
+        .await
+        {
+            // Revision capture is durability metadata. A failed snapshot must
+            // not turn an otherwise successful model response into an error;
+            // the UI will mark that historical turn unavailable instead.
+            tracing::warn!("project state revision capture failed: {error}");
+        }
+    }
+
     match result {
         Ok(_) => {
             emit_agent_event(
@@ -7588,6 +7606,7 @@ pub fn run() {
             exploration_commands::create_exploration,
             exploration_commands::list_explorations,
             exploration_commands::list_project_explorations,
+            exploration_commands::list_project_state_revisions,
             exploration_commands::open_exploration,
             exploration_commands::archive_exploration,
             exploration_commands::restore_exploration,

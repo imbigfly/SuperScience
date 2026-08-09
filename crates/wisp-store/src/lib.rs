@@ -19,6 +19,7 @@ mod lineage;
 mod method_search;
 mod models;
 mod plugins;
+mod project_state_revisions;
 mod project_sync;
 mod project_transfer;
 mod projects;
@@ -59,6 +60,7 @@ pub use method_search::{
     MethodStrategyStat,
 };
 pub use models::*;
+pub use project_state_revisions::{ProjectStateRevision, ProjectStateRevisionSummary};
 pub use project_sync::ProjectSyncState;
 pub use project_transfer::ProjectTransferStats;
 pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
@@ -133,6 +135,9 @@ const SESSION_IMPORTS_MIGRATION: &str = "0036_session_imports";
 const EXPLORATION_BRANCHES_MIGRATION: &str = "0037_exploration_branches";
 const EXPLORATION_BRANCHES_MIGRATION_SQL: &str =
     include_str!("../migrations/0037_exploration_branches.sql");
+const PROJECT_STATE_REVISIONS_MIGRATION: &str = "0038_project_state_revisions";
+const PROJECT_STATE_REVISIONS_MIGRATION_SQL: &str =
+    include_str!("../migrations/0038_project_state_revisions.sql");
 
 #[derive(Clone)]
 pub struct Store {
@@ -522,6 +527,10 @@ impl Store {
         if !Self::migration_applied(pool, EXPLORATION_BRANCHES_MIGRATION).await? {
             Self::apply_exploration_branches(pool).await?;
             Self::record_migration(pool, EXPLORATION_BRANCHES_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, PROJECT_STATE_REVISIONS_MIGRATION).await? {
+            Self::execute_sql_script(pool, PROJECT_STATE_REVISIONS_MIGRATION_SQL).await?;
+            Self::record_migration(pool, PROJECT_STATE_REVISIONS_MIGRATION).await?;
         }
         Ok(())
     }

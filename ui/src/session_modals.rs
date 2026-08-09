@@ -641,7 +641,10 @@ pub(crate) fn ProjSettingsOverlay(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ExplorationOverlay {
-    Start { source_frame_id: String },
+    Start {
+        source_frame_id: String,
+        turn_index: usize,
+    },
     Preview { exploration_id: String },
 }
 
@@ -848,7 +851,7 @@ fn exploration_diff_body(
 #[component]
 pub(crate) fn ExplorationOverlayView(
     state: ExplorationOverlayState,
-    on_start: Callback<(String, String)>,
+    on_start: Callback<(String, usize, String)>,
     on_promote: Callback<(String, String)>,
     on_archive: Callback<String>,
     on_restore: Callback<String>,
@@ -874,7 +877,10 @@ pub(crate) fn ExplorationOverlayView(
 
     view! {
         {move || overlay.get().map(|mode| match mode {
-            ExplorationOverlay::Start { source_frame_id } => {
+            ExplorationOverlay::Start {
+                source_frame_id,
+                turn_index,
+            } => {
                 let source_for_start = source_frame_id.clone();
                 view! {
                     <div class="overlay exploration-overlay" data-testid="exploration-start-overlay">
@@ -900,7 +906,7 @@ pub(crate) fn ExplorationOverlayView(
                                     on:click=move |_| overlay.set(None)>{move || t(locale.get(), "settings.cancel")}</button>
                                 <button type="button" class="primary" data-testid="exploration-create"
                                     disabled=move || busy.get() || name.get().trim().is_empty()
-                                    on:click=move |_| on_start.call((source_for_start.clone(), name.get_untracked()))>
+                                    on:click=move |_| on_start.call((source_for_start.clone(), turn_index, name.get_untracked()))>
                                     {move || if busy.get() { t(locale.get(), "loading") } else { t(locale.get(), "exploration.create") }}
                                 </button>
                             </div>

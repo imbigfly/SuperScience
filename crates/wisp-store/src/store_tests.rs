@@ -2691,6 +2691,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             METHOD_SEARCH_CONTROL_MIGRATION.to_string(),
             SESSION_IMPORTS_MIGRATION.to_string(),
             EXPLORATION_BRANCHES_MIGRATION.to_string(),
+            PROJECT_STATE_REVISIONS_MIGRATION.to_string(),
         ]
     );
 
@@ -6448,6 +6449,122 @@ async fn exploration_checkpoint_rejects_stale_mainline_state() {
 }
 
 #[tokio::test]
+async fn project_state_revisions_are_immutable_and_compaction_safe() {
+    let (store, tmp) = exploration_store_fixture("state-revisions").await;
+    for (snapshot_id, archive_id, checksum) in [
+        ("revision-snapshot-1", "revision-archive-1", "a"),
+        ("revision-snapshot-2", "revision-archive-2", "b"),
+    ] {
+        store
+            .create_workspace_snapshot(&WorkspaceSnapshotRecord {
+                id: snapshot_id.into(),
+                project_id: "p".into(),
+                manifest_json: "{}".into(),
+                manifest_sha256: checksum.repeat(64),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .create_context_archive(&ContextArchiveRecord {
+                id: archive_id.into(),
+                project_id: "p".into(),
+                frame_id: "main".into(),
+                storage_path: format!("exploration-contexts/{archive_id}.json"),
+                checksum: checksum.repeat(64),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+    }
+    let first = ProjectStateRevision {
+        id: "revision-1".into(),
+        project_id: "p".into(),
+        frame_id: "main".into(),
+        // The first revision after an upgrade may start after legacy turns.
+        turn_index: 5,
+        message_seq: 2,
+        ui_event_seq: 10,
+        parent_revision_id: None,
+        workspace_snapshot_id: "revision-snapshot-1".into(),
+        workspace_manifest_sha256: "a".repeat(64),
+        workspace_delta_json: r#"{"kind":"full","entries":[]}"#.into(),
+        artifact_heads_json: "[]".into(),
+        entities_json: "[]".into(),
+        run_ids_json: "[]".into(),
+        decision_ids_json: "[]".into(),
+        external_effects_json: "[]".into(),
+        context_archive_id: "revision-archive-1".into(),
+        state_generation: 0,
+        is_full: true,
+        created_at: 1,
+    };
+    assert!(store.create_project_state_revision(&first).await.unwrap());
+    assert!(!store.create_project_state_revision(&first).await.unwrap());
+
+    let mut second = first.clone();
+    second.id = "revision-2".into();
+    second.turn_index = 6;
+    // Compaction can reuse a low model message sequence; turn_index remains
+    // the unique stable boundary.
+    second.message_seq = 2;
+    second.ui_event_seq = 12;
+    second.parent_revision_id = Some(first.id.clone());
+    second.workspace_snapshot_id = "revision-snapshot-2".into();
+    second.workspace_manifest_sha256 = "b".repeat(64);
+    second.context_archive_id = "revision-archive-2".into();
+    second.is_full = false;
+    second.created_at = 2;
+    assert!(store.create_project_state_revision(&second).await.unwrap());
+    assert_eq!(
+        store
+            .project_state_revision_for_boundary("main", 2, "revision-snapshot-2")
+            .await
+            .unwrap()
+            .unwrap()
+            .turn_index,
+        6
+    );
+    assert_eq!(
+        store.list_project_state_revisions("main").await.unwrap(),
+        vec![first, second]
+    );
+    assert_eq!(
+        store
+            .list_project_state_revision_summaries("main", 6, 6)
+            .await
+            .unwrap(),
+        vec![ProjectStateRevisionSummary {
+            frame_id: "main".into(),
+            turn_index: 6,
+        }]
+    );
+    assert!(store
+        .list_project_state_revision_summaries("main", 0, 201)
+        .await
+        .is_err());
+
+    store.pool.close().await;
+    let reopened = Store::open(&tmp).await.unwrap();
+    assert_eq!(
+        reopened
+            .list_project_state_revisions("main")
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    reopened.truncate_messages("main", 0).await.unwrap();
+    assert!(reopened
+        .list_project_state_revisions("main")
+        .await
+        .unwrap()
+        .is_empty());
+    reopened.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
 async fn exploration_migration_repairs_partial_legacy_state() {
     let (store, tmp) = exploration_store_fixture("migration").await;
     let version = store
@@ -6460,6 +6577,7 @@ async fn exploration_migration_repairs_partial_legacy_state() {
         .await
         .unwrap();
     for table in [
+        "project_state_revisions",
         "exploration_promotions",
         "exploration_effects",
         "exploration_baseline_artifact_heads",
@@ -6506,10 +6624,16 @@ async fn exploration_migration_repairs_partial_legacy_state() {
         .execute(&store.pool)
         .await
         .unwrap();
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+        .bind(PROJECT_STATE_REVISIONS_MIGRATION)
+        .execute(&store.pool)
+        .await
+        .unwrap();
     store.pool.close().await;
 
     let repaired = Store::open(&tmp).await.unwrap();
     for table in [
+        "project_state_revisions",
         "exploration_families",
         "exploration_checkpoints",
         "explorations",

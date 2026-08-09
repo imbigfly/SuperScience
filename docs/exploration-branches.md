@@ -5,11 +5,13 @@ Explorations let you test a scientific direction without changing the project ma
 ## Start and use an exploration
 
 1. Finish a turn on a native Wisp conversation.
-2. Choose **Start exploration** on the latest assistant response, name it, and create it.
+2. Choose **Start exploration** on any completed assistant response that has an immutable project-state revision, name it, and create it.
 3. Use the exploration normally. Its banner shows the isolation level and provides **View diff**, **Set as mainline**, **Archive**, and **Discard** actions.
 4. Switch between the mainline and sibling explorations from the exploration group under the source conversation in the sidebar.
 
-The first release creates checkpoints only from the latest completed mainline turn. Historical-turn checkpoints require project-state revisions and are tracked as a follow-up. ACP conversations cannot be explored yet because ACP v1 has no server-side fork operation.
+Wisp records an immutable `ProjectStateRevision` after each successful native mainline turn. A revision freezes the workspace snapshot, conversation archive, Artifact heads, Runs, Decisions, external-resource summary, and stable visual turn index. Workspace blobs are content-addressed, while periodic full manifests and intervening deltas keep revision metadata bounded. This also captures files changed by an external editor before the turn finishes.
+
+History created before this feature cannot be reconstructed reliably. Its **Start exploration** action remains visible but disabled; the latest completed turn is still available as a current-state fallback. Context compaction does not change revision turn indices or archived transcripts. ACP conversations cannot be explored yet because ACP v1 has no server-side fork operation.
 
 ## Set an exploration as mainline
 

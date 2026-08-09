@@ -672,6 +672,36 @@ impl Store {
         Ok(rewritten)
     }
 
+    /// Replace the model transcript copied into a not-yet-registered
+    /// exploration frame with the immutable checkpoint archive. This is used
+    /// when compaction has rewritten the source frame's `messages` rows after
+    /// the selected turn, while its visual UI events remain available.
+    pub async fn replace_exploration_clone_history(
+        &self,
+        frame_id: &str,
+        messages: &[wisp_llm::Message],
+    ) -> Result<()> {
+        validate_id("Exploration frame", frame_id)?;
+        if messages.is_empty() {
+            anyhow::bail!("Exploration checkpoint transcript is empty");
+        }
+        let clone_ready: Option<i64> = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM frames WHERE id=? AND exploration_id IS NULL \
+             AND branched_from IS NOT NULL",
+        )
+        .bind(frame_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if clone_ready != Some(1) {
+            anyhow::bail!("Exploration frame is not a fresh clone");
+        }
+        sqlx::query("DELETE FROM session_reviews WHERE frame_id=?")
+            .bind(frame_id)
+            .execute(&self.pool)
+            .await?;
+        self.replace_messages(frame_id, messages).await
+    }
+
     pub async fn compare_and_swap_exploration_mainline(
         &self,
         family_id: &str,
@@ -725,14 +755,29 @@ impl Store {
                 .bind(&checkpoint.source_frame_id)
                 .fetch_one(&self.pool)
                 .await?;
-        if checkpoint.source_message_seq != checkpoint.source_frame_head_seq
-            || checkpoint.source_frame_head_seq != actual_head
-        {
-            anyhow::bail!("Exploration checkpoint must target the current persisted message head");
+        if checkpoint.source_message_seq != checkpoint.source_frame_head_seq {
+            anyhow::bail!("Exploration checkpoint message boundaries disagree");
         }
-        let generation = self
-            .project_state_generation(&checkpoint.project_id)
-            .await?;
+        let historical_generation: Option<i64> = sqlx::query_scalar(
+            "SELECT state_generation FROM project_state_revisions \
+             WHERE project_id=? AND frame_id=? AND message_seq=? AND workspace_snapshot_id=?",
+        )
+        .bind(&checkpoint.project_id)
+        .bind(&checkpoint.source_frame_id)
+        .bind(checkpoint.source_message_seq)
+        .bind(&checkpoint.workspace_snapshot_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if checkpoint.source_frame_head_seq != actual_head && historical_generation.is_none() {
+            anyhow::bail!("Exploration checkpoint history has no matching project state revision");
+        }
+        let generation = match historical_generation {
+            Some(generation) => generation,
+            None => {
+                self.project_state_generation(&checkpoint.project_id)
+                    .await?
+            }
+        };
         if generation != checkpoint.source_state_generation {
             anyhow::bail!("Project mainline state changed before checkpoint creation");
         }

@@ -603,6 +603,18 @@ async fn truncate_message_rows(
     .bind(keep)
     .execute(&mut **tx)
     .await?;
+    let retained_turns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM session_ui_events WHERE frame_id=? \
+         AND json_extract(event_json,'$.kind')='User'",
+    )
+    .bind(frame_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    sqlx::query("DELETE FROM project_state_revisions WHERE frame_id=? AND turn_index>=?")
+        .bind(frame_id)
+        .bind(retained_turns)
+        .execute(&mut **tx)
+        .await?;
     sqlx::query("DELETE FROM session_reviews WHERE frame_id = ? AND message_seq > ?")
         .bind(frame_id)
         .bind(keep)

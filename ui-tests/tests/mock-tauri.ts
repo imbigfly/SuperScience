@@ -124,6 +124,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockOnboarding = query.get("mockOnboarding") === "1";
   const mockSyncUnconfigured = query.get("mockSyncUnconfigured") === "1";
   const mockExplorationFlow = query.get("mockExplorations") === "1";
+  const mockHistoricalExploration = query.get("mockHistoricalExploration") === "1";
   let mockLocale = query.get("mockLocale") === "zh" ? "zh" : "en";
   const mockSessions: any[] = mockExplorationFlow
     ? [{ id: "exploration-mainline", title: "Mainline analysis", ts: 2100, running: false }]
@@ -181,6 +182,20 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     : [];
   const explorationTranscript = (frameId: string) => {
     const suffix = frameId === "exploration-mainline" ? "Mainline result" : frameId.endsWith("-a") ? "Exploration A result" : frameId.endsWith("-b") ? "Exploration B result" : "New exploration result";
+    if (mockHistoricalExploration && frameId === "exploration-mainline") {
+      return {
+        items: [
+          { role: "user", text: "First method", tool_name: null, ok: null },
+          { role: "assistant", text: "First result", tool_name: null, ok: null },
+          { role: "user", text: "Legacy method", tool_name: null, ok: null },
+          { role: "assistant", text: "Legacy result", tool_name: null, ok: null },
+          { role: "user", text: "Latest method", tool_name: null, ok: null },
+          { role: "assistant", text: suffix, tool_name: null, ok: null },
+        ],
+        next_before_seq: null,
+        user_offset: 0,
+      };
+    }
     return {
       items: [
         { role: "user", text: "Analyze the candidate method", tool_name: null, ok: null },
@@ -1858,7 +1873,19 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               ...item,
               exploration: { ...item.exploration },
             }));
+          case "list_project_state_revisions":
+            if (String(arg("frameId")) !== "exploration-mainline") return [];
+            return mockHistoricalExploration
+              ? [
+                  { frame_id: "exploration-mainline", turn_index: 0 },
+                  { frame_id: "exploration-mainline", turn_index: 2 },
+                ]
+              : [{ frame_id: "exploration-mainline", turn_index: 0 }];
           case "create_exploration_checkpoint":
+            ((window as any).__explorationCheckpointCalls ??= []).push({
+              sourceFrameId: arg("sourceFrameId"),
+              turnIndex: arg("turnIndex"),
+            });
             return {
               id: "checkpoint-shared",
               source_frame_id: String(arg("sourceFrameId") ?? "exploration-mainline"),

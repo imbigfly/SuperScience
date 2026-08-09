@@ -288,6 +288,7 @@ fn App() -> impl IntoView {
     let active_session = create_rw_signal::<Option<String>>(None);
     let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
     let explorations = create_rw_signal::<Vec<ExplorationSummary>>(vec![]);
+    let project_state_revisions = create_rw_signal::<Vec<ProjectStateRevision>>(vec![]);
     let exploration_overlay = create_rw_signal::<Option<ExplorationOverlay>>(None);
     let exploration_name = create_rw_signal(String::new());
     let exploration_preview = create_rw_signal::<Option<ExplorationPromotionPreview>>(None);
@@ -700,6 +701,35 @@ fn App() -> impl IntoView {
         };
         let _ = project.id;
         refresh_explorations(explorations);
+    });
+    create_effect(move |_| {
+        let _ = transcript_projection_epoch.get();
+        let Some(frame_id) = active_session.get() else {
+            project_state_revisions.set(Vec::new());
+            return;
+        };
+        let turn_start = transcript_pages
+            .with(|pages| pages.get(&frame_id).copied())
+            .map_or(0, |page| page.user_offset);
+        let turn_count = items.with(|rows| {
+            rows.iter()
+                .filter(|item| matches!(item, ChatItem::User(_)))
+                .count()
+        });
+        project_state_revisions.set(Vec::new());
+        let Some(turn_end) = turn_count
+            .checked_sub(1)
+            .and_then(|count| turn_start.checked_add(count))
+        else {
+            return;
+        };
+        refresh_project_state_revisions(
+            project_state_revisions,
+            active_session,
+            frame_id,
+            turn_start,
+            turn_end,
+        );
     });
 
     // `busy` is "the active session is currently streaming" — derived from the
@@ -4756,7 +4786,7 @@ fn App() -> impl IntoView {
             exploration_busy.set(false);
         });
     });
-    let start_exploration_from_head = Callback::new(move |_: ()| {
+    let start_exploration_from_head = Callback::new(move |turn_index: usize| {
         let Some(source_frame_id) = active_session.get_untracked() else {
             return;
         };
@@ -4773,11 +4803,14 @@ fn App() -> impl IntoView {
         ));
         exploration_preview.set(None);
         exploration_error.set(None);
-        exploration_overlay.set(Some(ExplorationOverlay::Start { source_frame_id }));
+        exploration_overlay.set(Some(ExplorationOverlay::Start {
+            source_frame_id,
+            turn_index,
+        }));
     });
     let create_exploration_from_overlay = {
         let load_session = load_session.clone();
-        Callback::new(move |(source_frame_id, name): (String, String)| {
+        Callback::new(move |(source_frame_id, turn_index, name): (String, usize, String)| {
             if exploration_busy.get_untracked() {
                 return;
             }
@@ -4786,7 +4819,11 @@ fn App() -> impl IntoView {
             let load_session = load_session.clone();
             spawn_local(async move {
                 let checkpoint_args =
-                    to_value(&tauri_args::exploration_checkpoint(&source_frame_id)).unwrap();
+                    to_value(&tauri_args::exploration_checkpoint(
+                        &source_frame_id,
+                        Some(turn_index),
+                    ))
+                    .unwrap();
                 let checkpoint = match invoke_checked(
                     "create_exploration_checkpoint",
                     checkpoint_args,
@@ -8697,6 +8734,14 @@ fn App() -> impl IntoView {
                             let active_count = rows.iter().filter(|row| {
                                 row.source_frame_id == frame_id && row.exploration.status == "active"
                             }).count();
+                            let latest_turn_index = items.with(|rows| {
+                                rows.iter()
+                                    .filter(|item| matches!(item, ChatItem::User(_)))
+                                    .count()
+                                    .saturating_sub(1)
+                            }) + transcript_pages
+                                .with(|pages| pages.get(&frame_id).copied())
+                                .map_or(0, |page| page.user_offset);
                             (active_count > 0).then(|| view! {
                                 <section class="exploration-banner mainline" data-testid="mainline-exploration-banner">
                                     <div class="exploration-banner-copy">
@@ -8704,7 +8749,7 @@ fn App() -> impl IntoView {
                                         <strong>{tf(locale.get(), "exploration.mainline_count", &[("n", &active_count.to_string())])}</strong>
                                         <span>{t(locale.get(), "exploration.mainline_warning")}</span>
                                     </div>
-                                    <button type="button" on:click=move |_| start_exploration_from_head.call(())>{t(locale.get(), "exploration.start_another")}</button>
+                                    <button type="button" on:click=move |_| start_exploration_from_head.call(latest_turn_index)>{t(locale.get(), "exploration.start_another")}</button>
                                 </section>
                             }.into_view())
                         }
@@ -9012,16 +9057,40 @@ fn App() -> impl IntoView {
                                                     })
                                                     .map_or(0, |page| page.user_offset)
                                         });
+                                    let explore_turn_index = items
+                                        .with_untracked(|rows| owning_user_turn_index(rows, i))
+                                        .map(|index| {
+                                            index
+                                                + transcript_pages
+                                                    .with_untracked(|pages| {
+                                                        pages.get(&session_id).copied()
+                                                    })
+                                                    .map_or(0, |page| page.user_offset)
+                                        });
                                     let data_user_index =
                                         user_index.map(|index| index.to_string());
                                     let can_undo = Signal::derive(move || {
                                         !compact_assistant && undo_assistant_index.get() == Some(i)
                                     });
-                                    let can_explore = Signal::derive(move || {
+                                    let show_explore = Signal::derive(move || {
                                         if compact_assistant
-                                            || busy.get()
                                             || active_acp_agent_id.get().is_some()
+                                            || explore_turn_index.is_none()
                                         {
+                                            return false;
+                                        }
+                                        let Some(frame_id) = active_session.get() else {
+                                            return false;
+                                        };
+                                        !explorations.with(|rows| {
+                                            rows.iter().any(|row| {
+                                                row.exploration.frame_id == frame_id
+                                                    && row.exploration.status != "promoted"
+                                            })
+                                        })
+                                    });
+                                    let can_explore = Signal::derive(move || {
+                                        if !show_explore.get() || busy.get() {
                                             return false;
                                         }
                                         let is_latest_completed = items.with(|rows| {
@@ -9029,19 +9098,14 @@ fn App() -> impl IntoView {
                                                 matches!(item, ChatItem::Assistant { text, .. } if !text.trim().is_empty())
                                             }) == Some(i)
                                         });
-                                        if !is_latest_completed {
-                                            return false;
-                                        }
-                                        let Some(frame_id) = active_session.get() else {
-                                            return false;
-                                        };
-                                        !explorations.with(|rows| rows.iter().any(|row| {
-                                            row.exploration.frame_id == frame_id
-                                                && matches!(
-                                                    row.exploration.status.as_str(),
-                                                    "creating" | "active" | "archived" | "promoting"
-                                                )
-                                        }))
+                                        is_latest_completed
+                                            || explore_turn_index.is_some_and(|index| {
+                                                project_state_revisions.with(|revisions| {
+                                                    revisions.iter().any(|revision| {
+                                                        revision.turn_index == index as i64
+                                                    })
+                                                })
+                                            })
                                     });
                                     view! {
                                         <div class=class
@@ -9062,7 +9126,7 @@ fn App() -> impl IntoView {
                                             } else {
                                                 render_item(
                                                     i, &item, timestamp, &arts, on_artifact_select, on_file_link,
-                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, can_explore, edit_message, branch_message, undo_message, start_exploration_from_head, session_id,
+                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, show_explore, can_explore, edit_message, branch_message, undo_message, explore_turn_index.unwrap_or_default(), start_exploration_from_head, session_id,
                                                     request_session_review, respond_confirm, on_resume, on_queue,
                                                     step_disclosure_state,
                                                     plan_mode_active, plan_compat, on_plan_decision,

@@ -6,15 +6,16 @@ use crate::exploration_workspace::{
     ExplorationWorkspaceBackend, PersistentExplorationWorkspace, WorkspaceSnapshot,
 };
 use crate::{load_skill_index, ActiveProject, AppState, MemoryManager};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{State, WebviewWindow};
 use wisp_store::{
-    ContextArchiveRecord, Exploration, ExplorationBaselineArtifactHead, ExplorationCheckpoint,
-    ExplorationFamily, ExplorationStatus, ExplorationSummary, StateScope, Store,
-    WorkspaceSnapshotRecord, MAINLINE_SCOPE_KEY,
+    ArtifactHead, ContextArchiveRecord, Exploration, ExplorationBaselineArtifactHead,
+    ExplorationBaselineEntity, ExplorationCheckpoint, ExplorationFamily, ExplorationStatus,
+    ExplorationSummary, ProjectStateRevisionSummary, StateScope, Store, WorkspaceSnapshotRecord,
+    AGENT_WORKFLOW_COMPLETION_TOOL, MAINLINE_SCOPE_KEY,
 };
 
 const ERR_SOURCE_BUSY: &str = "exploration_source_busy";
@@ -34,6 +35,25 @@ pub(crate) struct ExplorationService {
     app_data: PathBuf,
 }
 
+struct CheckpointSource {
+    message_head: i64,
+    ui_event_head: i64,
+    state_generation: i64,
+    snapshot: WorkspaceSnapshot,
+    context_archive_id: String,
+    artifact_heads: Vec<ArtifactHead>,
+    entities: Vec<ExplorationBaselineEntity>,
+    messages: Vec<wisp_llm::Message>,
+}
+
+#[derive(Deserialize)]
+struct ContextArchivePayload {
+    schema_version: u32,
+    frame_id: String,
+    message_head: i64,
+    messages: Vec<wisp_llm::Message>,
+}
+
 impl ExplorationService {
     pub(crate) fn new(store: Store, app_data: PathBuf) -> Self {
         Self { store, app_data }
@@ -43,10 +63,21 @@ impl ExplorationService {
         PersistentExplorationWorkspace::new(self.app_data.clone())
     }
 
+    #[cfg(test)]
     pub(crate) async fn create_checkpoint(
         &self,
         project_id: &str,
         source_frame_id: &str,
+    ) -> Result<ExplorationCheckpoint, String> {
+        self.create_checkpoint_at(project_id, source_frame_id, None)
+            .await
+    }
+
+    pub(crate) async fn create_checkpoint_at(
+        &self,
+        project_id: &str,
+        source_frame_id: &str,
+        turn_index: Option<i64>,
     ) -> Result<ExplorationCheckpoint, String> {
         let scope = self
             .store
@@ -83,13 +114,13 @@ impl ExplorationService {
                 "finish or cancel active mainline Runs before checkpointing",
             ));
         }
-        let messages = self
+        let current_messages = self
             .store
             .load_messages(source_frame_id)
             .await
             .map_err(|error| error.to_string())?;
-        if messages.is_empty()
-            || !messages.last().is_some_and(|message| {
+        if current_messages.is_empty()
+            || !current_messages.last().is_some_and(|message| {
                 message.role == wisp_llm::Role::Assistant && message.tool_calls.is_empty()
             })
         {
@@ -98,16 +129,56 @@ impl ExplorationService {
                 "the source must end at a completed assistant turn",
             ));
         }
-        let message_head = self
+        let current_message_head = self
             .store
             .frame_message_head(source_frame_id)
             .await
             .map_err(|error| error.to_string())?;
-        let ui_event_head = self
+        let current_ui_event_head = self
             .store
             .frame_ui_event_head(source_frame_id)
             .await
             .map_err(|error| error.to_string())?;
+        let visual_turn_count = self
+            .store
+            .frame_visual_user_turn_count(source_frame_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let fallback_turn_count = current_messages
+            .iter()
+            .filter(|message| {
+                message.role == wisp_llm::Role::User
+                    && message.tool_name.as_deref() != Some(AGENT_WORKFLOW_COMPLETION_TOOL)
+                    && !message.content.as_text().trim().is_empty()
+            })
+            .count() as i64;
+        let current_turn_index = visual_turn_count
+            .max(fallback_turn_count)
+            .checked_sub(1)
+            .ok_or_else(|| {
+                coded_error(
+                    ERR_HISTORY_UNAVAILABLE,
+                    "the source has no stable completed turn boundary",
+                )
+            })?;
+        let selected_turn_index = turn_index.unwrap_or(current_turn_index);
+        if selected_turn_index < 0 || selected_turn_index > current_turn_index {
+            return Err(coded_error(
+                ERR_HISTORY_UNAVAILABLE,
+                "the selected turn is outside the available conversation history",
+            ));
+        }
+        let revision = self
+            .store
+            .project_state_revision_for_turn(source_frame_id, selected_turn_index)
+            .await
+            .map_err(|error| error.to_string())?;
+        if selected_turn_index != current_turn_index && revision.is_none() {
+            return Err(coded_error(
+                ERR_HISTORY_UNAVAILABLE,
+                "this turn predates immutable project-state history; start from the latest turn instead",
+            ));
+        }
         let (_, workspace_dir) = self
             .store
             .get_project(project_id)
@@ -146,83 +217,154 @@ impl ExplorationService {
                 }
             }
         };
-        let state_generation = self
-            .store
-            .project_state_generation(project_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        let snapshot = self.workspace_backend().checkpoint(&project_root).await?;
-        let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
-        self.store
-            .create_workspace_snapshot(&WorkspaceSnapshotRecord {
-                id: snapshot.id.clone(),
-                project_id: project_id.to_string(),
-                manifest_json: snapshot_json,
-                manifest_sha256: snapshot.manifest_sha256.clone(),
-                created_at: snapshot.created_at,
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-
-        let archive_id = uuid::Uuid::new_v4().to_string();
-        let archive_relative =
-            PathBuf::from("exploration-contexts").join(format!("{archive_id}.json"));
-        let archive_path = self.app_data.join(&archive_relative);
-        write_context_archive(
-            &self.app_data,
-            &archive_path,
-            source_frame_id,
-            message_head,
-            &messages,
-        )?;
-        let archive_bytes = std::fs::read(&archive_path).map_err(|error| error.to_string())?;
-        let archive_checksum = hex::encode(Sha256::digest(&archive_bytes));
-        self.store
-            .create_context_archive(&ContextArchiveRecord {
-                id: archive_id.clone(),
-                project_id: project_id.to_string(),
-                frame_id: source_frame_id.to_string(),
-                storage_path: archive_relative.to_string_lossy().replace('\\', "/"),
-                checksum: archive_checksum,
-                created_at: now,
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-
-        let artifact_heads = self
-            .store
-            .list_artifact_heads(project_id, MAINLINE_SCOPE_KEY)
-            .await
-            .map_err(|error| error.to_string())?;
-        let entity_hash = hash_json(&artifact_heads)?;
+        let source = if let Some(revision) = revision {
+            if revision.project_id != project_id {
+                return Err(coded_error(
+                    ERR_HISTORY_UNAVAILABLE,
+                    "project-state revision belongs to another project",
+                ));
+            }
+            let snapshot_record = self
+                .store
+                .get_workspace_snapshot_record(&revision.workspace_snapshot_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    coded_error(ERR_HISTORY_UNAVAILABLE, "workspace revision is missing")
+                })?;
+            let snapshot = self
+                .workspace_backend()
+                .load_snapshot(&revision.workspace_snapshot_id)?;
+            if snapshot_record.project_id != project_id
+                || snapshot_record.manifest_sha256 != revision.workspace_manifest_sha256
+                || snapshot.manifest_sha256 != revision.workspace_manifest_sha256
+            {
+                return Err(coded_error(
+                    ERR_HISTORY_UNAVAILABLE,
+                    "workspace revision failed integrity verification",
+                ));
+            }
+            let messages = read_context_archive_messages(
+                &self.store,
+                &self.app_data,
+                &revision.context_archive_id,
+                source_frame_id,
+                revision.message_seq,
+            )
+            .await?;
+            CheckpointSource {
+                message_head: revision.message_seq,
+                ui_event_head: revision.ui_event_seq,
+                state_generation: revision.state_generation,
+                snapshot,
+                context_archive_id: revision.context_archive_id,
+                artifact_heads: serde_json::from_str(&revision.artifact_heads_json)
+                    .map_err(|error| error.to_string())?,
+                entities: serde_json::from_str(&revision.entities_json)
+                    .map_err(|error| error.to_string())?,
+                messages,
+            }
+        } else {
+            let state_generation = self
+                .store
+                .project_state_generation(project_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let snapshot = self.workspace_backend().checkpoint(&project_root).await?;
+            self.store
+                .create_workspace_snapshot(&WorkspaceSnapshotRecord {
+                    id: snapshot.id.clone(),
+                    project_id: project_id.to_string(),
+                    manifest_json: serde_json::to_string(&snapshot)
+                        .map_err(|error| error.to_string())?,
+                    manifest_sha256: snapshot.manifest_sha256.clone(),
+                    created_at: snapshot.created_at,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            let archive_id = uuid::Uuid::new_v4().to_string();
+            let archive_relative =
+                PathBuf::from("exploration-contexts").join(format!("{archive_id}.json"));
+            let archive_path = self.app_data.join(&archive_relative);
+            write_context_archive(
+                &self.app_data,
+                &archive_path,
+                source_frame_id,
+                current_message_head,
+                &current_messages,
+            )?;
+            let archive_bytes = std::fs::read(&archive_path).map_err(|error| error.to_string())?;
+            self.store
+                .create_context_archive(&ContextArchiveRecord {
+                    id: archive_id.clone(),
+                    project_id: project_id.to_string(),
+                    frame_id: source_frame_id.to_string(),
+                    storage_path: archive_relative.to_string_lossy().replace('\\', "/"),
+                    checksum: hex::encode(Sha256::digest(&archive_bytes)),
+                    created_at: now,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            CheckpointSource {
+                message_head: current_message_head,
+                ui_event_head: current_ui_event_head,
+                state_generation,
+                snapshot,
+                context_archive_id: archive_id,
+                artifact_heads: self
+                    .store
+                    .list_artifact_heads(project_id, MAINLINE_SCOPE_KEY)
+                    .await
+                    .map_err(|error| error.to_string())?,
+                entities: self
+                    .store
+                    .snapshot_mainline_entities(project_id)
+                    .await
+                    .map_err(|error| error.to_string())?,
+                messages: current_messages,
+            }
+        };
+        if !source.messages.last().is_some_and(|message| {
+            message.role == wisp_llm::Role::Assistant && message.tool_calls.is_empty()
+        }) {
+            return Err(coded_error(
+                ERR_SOURCE_INCOMPLETE,
+                "the selected revision does not end at a completed assistant turn",
+            ));
+        }
+        let entity_hash = hash_json(&serde_json::json!({
+            "artifact_heads": &source.artifact_heads,
+            "entities": &source.entities,
+        }))?;
         let guard_hash = hash_json(&serde_json::json!({
             "family_id": family.id,
             "family_generation": family.generation,
             "mainline_frame_id": family.mainline_frame_id,
             "source_frame_id": source_frame_id,
-            "source_message_head": message_head,
-            "state_generation": state_generation,
-            "workspace_manifest": snapshot.manifest_sha256,
-            "artifact_heads": artifact_heads,
+            "source_message_head": source.message_head,
+            "state_generation": source.state_generation,
+            "workspace_manifest": source.snapshot.manifest_sha256,
+            "artifact_heads": &source.artifact_heads,
+            "entities": &source.entities,
         }))?;
         let checkpoint = ExplorationCheckpoint {
             id: uuid::Uuid::new_v4().to_string(),
             family_id: family.id,
             project_id: project_id.to_string(),
             source_frame_id: source_frame_id.to_string(),
-            source_message_seq: message_head,
-            source_frame_head_seq: message_head,
-            source_ui_event_seq: ui_event_head,
+            source_message_seq: source.message_head,
+            source_frame_head_seq: source.message_head,
+            source_ui_event_seq: source.ui_event_head,
             source_family_generation: family.generation,
-            source_state_generation: state_generation,
-            workspace_snapshot_id: snapshot.id,
-            context_archive_id: archive_id,
+            source_state_generation: source.state_generation,
+            workspace_snapshot_id: source.snapshot.id.clone(),
+            context_archive_id: source.context_archive_id,
             guard_hash,
             entity_hash,
             isolation_summary_json: serde_json::json!({
-                "warnings": snapshot.warnings,
-                "entry_count": snapshot.entries.len(),
-                "fully_isolated": snapshot.entries.iter().all(|entry| entry.recoverable),
+                "warnings": source.snapshot.warnings,
+                "entry_count": source.snapshot.entries.len(),
+                "fully_isolated": source.snapshot.entries.iter().all(|entry| entry.recoverable),
             })
             .to_string(),
             created_at: now,
@@ -231,7 +373,7 @@ impl ExplorationService {
             .create_exploration_checkpoint(&checkpoint)
             .await
             .map_err(|error| error.to_string())?;
-        for head in artifact_heads {
+        for head in source.artifact_heads {
             self.store
                 .record_exploration_baseline_artifact_head(&ExplorationBaselineArtifactHead {
                     checkpoint_id: checkpoint.id.clone(),
@@ -246,10 +388,13 @@ impl ExplorationService {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        self.store
-            .capture_exploration_baseline_entities(&checkpoint.id)
-            .await
-            .map_err(|error| error.to_string())?;
+        for mut entity in source.entities {
+            entity.checkpoint_id = checkpoint.id.clone();
+            self.store
+                .record_exploration_baseline_entity(&entity)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         Ok(checkpoint)
     }
 
@@ -322,18 +467,72 @@ impl ExplorationService {
             let _ = backend.dispose(&workspace).await;
             return Err(coded_error(ERR_HISTORY_UNAVAILABLE, error));
         }
+        let revision = self
+            .store
+            .project_state_revision_for_boundary(
+                &checkpoint.source_frame_id,
+                checkpoint.source_message_seq,
+                &checkpoint.workspace_snapshot_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let (clone_message_head, archived_messages) = if let Some(revision) = revision.as_ref() {
+            let archived_messages = read_context_archive_messages(
+                &self.store,
+                &self.app_data,
+                &revision.context_archive_id,
+                &checkpoint.source_frame_id,
+                revision.message_seq,
+            )
+            .await?;
+            let current = self
+                .store
+                .load_messages_with_seq(&checkpoint.source_frame_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let current_head = current.last().map_or(0, |(seq, _)| *seq);
+            let current_prefix = current
+                .iter()
+                .take_while(|(seq, _)| *seq <= checkpoint.source_message_seq)
+                .map(|(_, message)| message.clone())
+                .collect::<Vec<_>>();
+            let prefix_matches = serde_json::to_vec(&current_prefix)
+                .map_err(|error| error.to_string())?
+                == serde_json::to_vec(&archived_messages).map_err(|error| error.to_string())?;
+            if current_head >= checkpoint.source_message_seq && prefix_matches {
+                (checkpoint.source_message_seq, None)
+            } else {
+                (current_head, Some(archived_messages))
+            }
+        } else {
+            (checkpoint.source_message_seq, None)
+        };
         if let Err(error) = self
             .store
             .clone_exploration_frame(
                 &checkpoint.source_frame_id,
                 &frame_id,
-                checkpoint.source_message_seq,
+                clone_message_head,
                 checkpoint.source_ui_event_seq,
             )
             .await
         {
             let _ = backend.dispose(&workspace).await;
             return Err(coded_error(ERR_HISTORY_UNAVAILABLE, error.to_string()));
+        }
+        if let Some(archived_messages) = archived_messages {
+            if let Err(error) = self
+                .store
+                .replace_exploration_clone_history(&frame_id, &archived_messages)
+                .await
+            {
+                let _ = self
+                    .store
+                    .delete_session(&frame_id, &checkpoint.project_id)
+                    .await;
+                let _ = backend.dispose(&workspace).await;
+                return Err(coded_error(ERR_HISTORY_UNAVAILABLE, error.to_string()));
+            }
         }
         if let Err(error) = self
             .store
@@ -408,7 +607,7 @@ fn hash_json(value: &impl Serialize) -> Result<String, String> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
-fn write_context_archive(
+pub(crate) fn write_context_archive(
     app_data: &Path,
     destination: &Path,
     frame_id: &str,
@@ -436,6 +635,50 @@ fn write_context_archive(
     let temporary = root.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
     std::fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
     std::fs::rename(&temporary, destination).map_err(|error| error.to_string())
+}
+
+async fn read_context_archive_messages(
+    store: &Store,
+    app_data: &Path,
+    archive_id: &str,
+    expected_frame_id: &str,
+    expected_message_head: i64,
+) -> Result<Vec<wisp_llm::Message>, String> {
+    let archive = store
+        .get_context_archive(archive_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "checkpoint context archive is missing".to_string())?;
+    if archive.frame_id != expected_frame_id {
+        return Err("checkpoint context archive belongs to another conversation".into());
+    }
+    let relative = Path::new(&archive.storage_path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err("checkpoint context archive has an unsafe storage path".into());
+    }
+    let source = app_data.join(relative);
+    let metadata = std::fs::symlink_metadata(&source).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("checkpoint context archive is not a regular file".into());
+    }
+    let bytes = std::fs::read(source).map_err(|error| error.to_string())?;
+    if hex::encode(Sha256::digest(&bytes)) != archive.checksum {
+        return Err("checkpoint context archive failed integrity verification".into());
+    }
+    let payload: ContextArchivePayload =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    if payload.schema_version != 1
+        || payload.frame_id != expected_frame_id
+        || payload.message_head != expected_message_head
+        || payload.messages.is_empty()
+    {
+        return Err("checkpoint context archive boundary does not match its revision".into());
+    }
+    Ok(payload.messages)
 }
 
 async fn materialize_checkpoint_context_archive(
@@ -679,6 +922,7 @@ pub(crate) async fn create_exploration_checkpoint(
     state: State<'_, AppState>,
     window: WebviewWindow,
     source_frame_id: String,
+    turn_index: Option<i64>,
 ) -> Result<ExplorationCheckpoint, String> {
     let owner = state
         .store
@@ -698,8 +942,33 @@ pub(crate) async fn create_exploration_checkpoint(
     }
     let _activity = state.begin_project_activity(&active.id)?;
     ExplorationService::new(state.store.clone(), state.app_data.clone())
-        .create_checkpoint(&active.id, &source_frame_id)
+        .create_checkpoint_at(&active.id, &source_frame_id, turn_index)
         .await
+}
+
+#[tauri::command]
+pub(crate) async fn list_project_state_revisions(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    frame_id: String,
+    turn_start: i64,
+    turn_end: i64,
+) -> Result<Vec<ProjectStateRevisionSummary>, String> {
+    let scope = state
+        .store
+        .frame_state_scope(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| coded_error(ERR_HISTORY_UNAVAILABLE, "conversation not found"))?;
+    let active = state.active(window.label());
+    if scope.project_id() != active.id || !matches!(scope, StateScope::Mainline { .. }) {
+        return Ok(Vec::new());
+    }
+    state
+        .store
+        .list_project_state_revision_summaries(&frame_id, turn_start, turn_end)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -915,6 +1184,14 @@ mod tests {
             .append_message("main", 2, &wisp_llm::Message::assistant("answer"))
             .await
             .unwrap();
+        store
+            .append_session_ui_event(
+                "main",
+                1,
+                r#"{"kind":"User","frame_id":"main","text":"question"}"#,
+            )
+            .await
+            .unwrap();
         (ExplorationService::new(store, app_data), base, project)
     }
 
@@ -993,11 +1270,21 @@ mod tests {
             .store
             .append_session_ui_event(
                 "main",
-                1,
+                2,
                 r#"{"kind":"Text","frame_id":"main","delta":"answer"}"#,
             )
             .await
             .unwrap();
+        crate::project_state_revisions::record_completed_mainline_turn(
+            &service.store,
+            &service.app_data,
+            "p",
+            "main",
+            &project,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let checkpoint = service.create_checkpoint("p", "main").await.unwrap();
         let first = service
             .create_exploration(&checkpoint.id, "First")

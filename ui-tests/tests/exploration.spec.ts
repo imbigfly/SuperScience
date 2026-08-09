@@ -68,6 +68,26 @@ test("latest completed turn creates an isolated exploration and mainline continu
   await expect(page.locator("#composer-input")).toHaveValue("Continue the mainline analysis");
 });
 
+test("historical completed turns use immutable revisions and legacy history stays unavailable", async ({ page }) => {
+  await page.goto("/?mockExplorations=1&mockHistoricalExploration=1");
+  await page.locator(".proj-card-main").first().click();
+  await page.locator('[data-session-id="exploration-mainline"]').click();
+
+  const actions = page.getByTestId("start-exploration");
+  await expect(actions).toHaveCount(3);
+  await expect(actions.nth(0)).toBeEnabled();
+  await expect(actions.nth(1)).toBeDisabled();
+  await expect(actions.nth(1)).toHaveAttribute("title", /no immutable project-state revision/i);
+  await expect(actions.nth(2)).toBeEnabled();
+
+  await actions.nth(0).click();
+  await page.getByTestId("exploration-name").fill("From first turn");
+  await page.getByTestId("exploration-create").click();
+  await expect.poll(async () => page.evaluate(() => (window as any).__explorationCheckpointCalls)).toEqual([
+    { sourceFrameId: "exploration-mainline", turnIndex: 0 },
+  ]);
+});
+
 test("promotion adopts one exploration, blocks its sibling, and discard leaves mainline intact", async ({ page }) => {
   await enterExplorationProject(page);
   const group = page.getByTestId("sidebar-explorations");
