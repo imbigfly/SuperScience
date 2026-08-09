@@ -7257,24 +7257,17 @@ fn App() -> impl IntoView {
     spawn_local(async move {
         let _ = listen_current_window("open-session", &open_session_js).await;
     });
-    // Cross-project opens from inside a workspace go to the target project's
-    // own window (#423). The landing (and a window with no project yet) keeps
-    // repointing the current window — it's the "enter a project here" surface.
+    // Cross-project conversation opens may still target the project's own
+    // window (#423). Choosing a workspace itself always repoints this window.
     let opens_in_project_window = move |project_id: &str| -> bool {
         !show_projects.get_untracked()
             && matches!(project_info.get_untracked(), Some(p) if p.id != project_id)
     };
-    // Switch the active project inline (same guarded flow as the Projects screen).
+    // Workspace pickers always switch the active project in this window. New
+    // windows remain available only through actions explicitly labelled as such.
     let switch_project = {
         let open_project_transition = open_project_transition;
         Callback::new(move |id: String| {
-            if opens_in_project_window(&id) {
-                spawn_local(async move {
-                    let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
-                    let _ = invoke("open_project_window", arg).await;
-                });
-                return;
-            }
             open_project_transition.call((id, None));
         })
     };

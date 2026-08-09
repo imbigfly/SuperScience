@@ -7680,6 +7680,19 @@ test("project switcher does not show a stale fallback name while opening", async
   await expect(page.locator(".proj-name")).toHaveText("wisp-science");
 });
 
+test("project switcher has no caret and switches workspace in the current window", async ({ page }) => {
+  await enterApp(page);
+  const switcher = page.locator(".proj-switch");
+  await expect(switcher.locator(".caret")).toHaveCount(0);
+
+  await switcher.click();
+  await page.locator(".proj-menu").getByRole("button", { name: "Other project" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "open_project")).toMatchObject({ id: "other" });
+  await expect.poll(() => lastInvokeArgs(page, "open_project_window")).toBeNull();
+  await expect(page.locator(".proj-name")).toHaveText("Other project");
+});
+
 test("opening a workspace resumes its most recent conversation by default", async ({ page }) => {
   await page.goto("/?mockLongSession=1");
   await page.locator(".proj-card-main").first().click();
