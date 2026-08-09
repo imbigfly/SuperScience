@@ -9218,13 +9218,13 @@ fn App() -> impl IntoView {
                                 };
                                 let v = textarea.value();
                                 let input_type = input_event.input_type();
-                                let data = input_event.data();
                                 let prior_mode = picker_mode.get_untracked();
                                 let prior_range = picker_token_range.get_untracked();
                                 let manual_edit = matches!(
                                     input_type.as_str(),
                                     "insertText"
                                         | "insertCompositionText"
+                                        | "insertFromComposition"
                                         | "deleteCompositionText"
                                         | "deleteContentBackward"
                                         | "deleteContentForward"
@@ -9237,15 +9237,13 @@ fn App() -> impl IntoView {
                                 match active {
                                     Some((start, end, mode, query))
                                         if manual_edit
-                                            && (prior_mode == Some(mode)
-                                                && prior_range.is_some_and(|(prior_start, _)| prior_start == start)
-                                                || input_type == "insertText"
-                                                    && query.is_empty()
-                                                    && data.as_deref() == Some(match mode {
-                                                        ComposerPickerMode::Artifact => "@",
-                                                        ComposerPickerMode::Session => "#",
-                                                        ComposerPickerMode::Skill => "/",
-                                                    })) =>
+                                            && composer_picker_accepts_edit(
+                                                &input_type,
+                                                (prior_mode == Some(mode)).then_some(mode),
+                                                prior_range.map(|(prior_start, _)| prior_start),
+                                                start,
+                                                query.is_empty(),
+                                            ) =>
                                     {
                                         picker_token_range.set(Some((start, end)));
                                         picker_query.set(query);
