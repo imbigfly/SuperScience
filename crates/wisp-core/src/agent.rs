@@ -18,6 +18,8 @@ use wisp_llm::{
 use wisp_tools::{ImageData, Registry, ToolControl, ToolEnv};
 
 const RETRY_DELAYS: [u64; 5] = [2_000, 10_000, 30_000, 60_000, 120_000];
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const STOPPED_BY_USER: &str = "stopped by user";
 const TRUNCATED_OUTPUT_MESSAGE: &str = "模型输出在达到 max_tokens 上限时被截断，任务可能尚未完成——请在设置中调高该模型的 max_tokens，或直接继续对话让我接着做。(output truncated at max_tokens)";
 const STREAM_CUT_MESSAGE: &str = "模型响应流在中途被断开（未收到结束标记），已生成的部分内容不完整、不会计入上下文。常见原因：网络不稳定、代理/中转站切断连接，或同一 API key 的并发请求达到上限（例如多个会话同时使用同一模型）。可重发消息重试；需要并行会话时建议错开请求或使用不同的 API key。(stream cut mid-response, #437)";
 const EMPTY_RESPONSE_MESSAGE: &str = "模型完成了本轮推理，但没有返回可显示的文本或工具调用。对话上下文和已完成的工具结果均已保留；请点击“继续执行”重新生成最终回复。若长对话中反复出现，请先发送 /compact 压缩上下文。(model returned no visible response)";
@@ -627,21 +629,66 @@ async fn stream_with_retry(
     let mut last = None;
     for attempt in 0..=RETRY_DELAYS.len() {
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
-            return Err(LlmError::Config("stopped by user".into()));
+            return Err(cancelled_stream_error());
         }
-        match provider.stream(messages, schemas, sink).await {
+        match stream_or_cancel(provider, messages, schemas, sink, cancel).await {
             Ok(c) => return Ok(c),
             Err(e) => {
+                if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                    return Err(cancelled_stream_error());
+                }
                 if !is_retriable(&e) || attempt == RETRY_DELAYS.len() {
                     return Err(e);
                 }
                 tracing::warn!("LLM stream failed (attempt {}), retrying: {e}", attempt + 1);
                 last = Some(e);
-                tokio::time::sleep(Duration::from_millis(RETRY_DELAYS[attempt])).await;
+                retry_delay_or_cancel(Duration::from_millis(RETRY_DELAYS[attempt]), cancel).await?;
             }
         }
     }
     Err(last.expect("retry loop always returns or breaks"))
+}
+
+fn cancelled_stream_error() -> LlmError {
+    LlmError::Config(STOPPED_BY_USER.into())
+}
+
+async fn wait_for_cancel(cancel: &AtomicBool) {
+    while !cancel.load(Ordering::Relaxed) {
+        tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+    }
+}
+
+async fn stream_or_cancel(
+    provider: &dyn Provider,
+    messages: &[Message],
+    schemas: &[ToolSchema],
+    sink: &mut StreamSinkAdapter<'_>,
+    cancel: Option<&AtomicBool>,
+) -> Result<Completion, LlmError> {
+    let Some(cancel) = cancel else {
+        return provider.stream(messages, schemas, sink).await;
+    };
+    let stream = provider.stream(messages, schemas, sink);
+    tokio::pin!(stream);
+    tokio::select! {
+        result = &mut stream => result,
+        _ = wait_for_cancel(cancel) => Err(cancelled_stream_error()),
+    }
+}
+
+async fn retry_delay_or_cancel(
+    delay: Duration,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), LlmError> {
+    let Some(cancel) = cancel else {
+        tokio::time::sleep(delay).await;
+        return Ok(());
+    };
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => Ok(()),
+        _ = wait_for_cancel(cancel) => Err(cancelled_stream_error()),
+    }
 }
 
 fn is_truncated(finish_reason: Option<&str>) -> bool {
@@ -776,6 +823,77 @@ mod tests {
     struct OverflowRecoverProvider {
         stream_calls: AtomicUsize,
         complete_calls: AtomicUsize,
+    }
+
+    struct BlockingStreamProvider {
+        started: tokio::sync::Notify,
+    }
+
+    struct RetriableStreamProvider {
+        started: tokio::sync::Notify,
+        stream_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for BlockingStreamProvider {
+        fn name(&self) -> &str {
+            "blocking"
+        }
+
+        fn model(&self) -> &str {
+            "blocking"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            Err(LlmError::Config("complete is not used".into()))
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            self.started.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[async_trait]
+    impl Provider for RetriableStreamProvider {
+        fn name(&self) -> &str {
+            "retriable"
+        }
+
+        fn model(&self) -> &str {
+            "retriable"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            Err(LlmError::Config("complete is not used".into()))
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            self.started.notify_one();
+            Err(LlmError::Api {
+                status: 503,
+                body: "overloaded".into(),
+            })
+        }
     }
 
     #[async_trait]
@@ -913,6 +1031,63 @@ mod tests {
                 .pop_front()
                 .ok_or_else(|| LlmError::Incomplete)
         }
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_a_provider_waiting_for_stream_data() {
+        let provider = BlockingStreamProvider {
+            started: tokio::sync::Notify::new(),
+        };
+        let output = NullOutput;
+        let cancel = AtomicBool::new(false);
+        let mut sink = StreamSinkAdapter::with_cancel(&output, &cancel);
+
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                stream_with_retry(&provider, &[], &[], &mut sink, Some(&cancel)),
+                async {
+                    provider.started.notified().await;
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            )
+        })
+        .await
+        .expect("cancellation should bound a stalled provider stream");
+
+        assert!(matches!(
+            result,
+            Err(LlmError::Config(message)) if message == STOPPED_BY_USER
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_provider_retry_backoff() {
+        let provider = RetriableStreamProvider {
+            started: tokio::sync::Notify::new(),
+            stream_calls: AtomicUsize::new(0),
+        };
+        let output = NullOutput;
+        let cancel = AtomicBool::new(false);
+        let mut sink = StreamSinkAdapter::with_cancel(&output, &cancel);
+
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                stream_with_retry(&provider, &[], &[], &mut sink, Some(&cancel)),
+                async {
+                    provider.started.notified().await;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            )
+        })
+        .await
+        .expect("cancellation should interrupt retry sleep");
+
+        assert!(matches!(
+            result,
+            Err(LlmError::Config(message)) if message == STOPPED_BY_USER
+        ));
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
     }
 
     #[async_trait]

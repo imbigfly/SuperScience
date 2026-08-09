@@ -2549,11 +2549,24 @@ fn App() -> impl IntoView {
             return;
         }
         // Stop only the active session's turn; background conversations keep running.
-        let sid = active_session.get();
-        stopping_session.set(sid.clone());
+        let Some(sid) = active_session.get() else {
+            return;
+        };
+        stopping_session.set(Some(sid.clone()));
         spawn_local(async move {
-            let arg = to_value(&tauri_args::stop_agent(&sid)).unwrap();
-            let _ = invoke("stop_agent", arg).await;
+            let arg = to_value(&tauri_args::stop_agent(&Some(sid.clone()))).unwrap();
+            if let Err(error) = invoke_checked("stop_agent", arg).await {
+                if stopping_session.get_untracked().as_deref() == Some(sid.as_str()) {
+                    stopping_session.set(None);
+                    let loc = locale.get_untracked();
+                    let detail = localize_backend(loc, &js_error_text(error));
+                    show_warning_toast(&tf(
+                        loc,
+                        "composer.stop_failed",
+                        &[("msg", detail.as_str())],
+                    ));
+                }
+            }
         });
     };
 
