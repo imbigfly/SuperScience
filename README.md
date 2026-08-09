@@ -76,7 +76,8 @@ desktop app or a headless CLI.
 - Local, WSL, and SSH/GPU **execution contexts** with one-connection hardware
   and runtime probing; each context keeps its own interpreter paths.
 - Structured **Runs** for long jobs: preflight checks, per-second heartbeats,
-  and bounded log tails persisted with an environment snapshot.
+  bounded log tails persisted with an environment snapshot, and dismissible
+  completed cards that leave the Run record and outputs intact.
 - Secrets live in the OS keyring, never in SQLite. Free-form `ssh`/`scp` is
   replaced by registered, probed hosts; a failed connection opens a
   connectivity gate instead of silently retrying.
