@@ -2965,7 +2965,7 @@ test("uploaded file shows up in the artifacts panel after send", async ({ page }
   await expect.poll(() => lastInvokeArgs(page, "download_file")).toMatchObject({ path: "uploads/counts.csv" });
 });
 
-test("Generated artifacts require FileChanged evidence instead of mentioned paths", async ({ page }) => {
+test("Generated artifacts survive follow-up tool commentary and ignore mentioned paths", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("ARTIFACTATTRIBUTION");
   await page.getByRole("button", { name: "Send" }).click();
@@ -2975,7 +2975,7 @@ test("Generated artifacts require FileChanged evidence instead of mentioned path
   });
   await expect(reply).toBeVisible({ timeout: 10_000 });
   await expect(reply.locator(".message-artifacts-label")).toHaveText("Generated · 1");
-  await expect(reply.locator('.message-artifact-card[data-artifact-name="new.csv"]')).toBeVisible();
+  await expect(reply.locator('.message-artifact-card[data-artifact-name="new.png"]')).toBeVisible();
   await expect(reply.locator('.message-artifact-card[data-artifact-name="old.csv"]')).toHaveCount(0);
   await expect(reply.locator('.message-artifact-card[data-artifact-name="old.png"]')).toHaveCount(0);
   await expect(reply.locator('.message-artifact-card[data-artifact-name="old-report.md"]')).toHaveCount(0);
