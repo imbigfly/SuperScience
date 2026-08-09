@@ -425,7 +425,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   let mockQuickActions = [{
     id: "literature_research",
     name: "Research literature",
-    description: "Search supporting and challenging evidence in parallel, then synthesize the results.",
+    description: "Prepare the selected passage for a literature-review turn in the current conversation.",
     icon: "search",
     context: "selection",
     workflow_template_id: "literature_evidence_review",
