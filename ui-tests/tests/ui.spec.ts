@@ -4228,6 +4228,58 @@ test("active SSH transfer shows a live progress card and can be cancelled", asyn
   });
 });
 
+test("completed SSH transfer cards leave the composer tray promptly", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      frame_id: "s-complete",
+      context_id: "ssh:gpu-server",
+      title: "Download result.csv",
+      kind: "file_transfer",
+      status: "running",
+      ended_at: null,
+      exit_code: null,
+      progress_json: JSON.stringify({
+        phase: "downloading",
+        direction: "download",
+        completed_bytes: 512,
+        total_bytes: 1024,
+        files_completed: 0,
+        files_total: 1,
+        current_file: "result.csv",
+        bytes_per_second: 1024,
+        eta_seconds: 1,
+        updated_at: Math.floor(Date.now() / 1000),
+      }),
+    });
+  });
+  await page.getByTestId("recent-session-card").nth(1).click();
+  await expect(newSessionButton(page)).toBeVisible();
+
+  const card = page.locator('.transfer-card[data-run-id="run-local-002"]');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("Downloading");
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      status: "succeeded",
+      ended_at: Math.floor(Date.now() / 1000),
+      exit_code: 0,
+      progress_json: JSON.stringify({
+        ...JSON.parse(run.progress_json),
+        phase: "downloaded",
+        completed_bytes: 1024,
+        files_completed: 1,
+        eta_seconds: null,
+        updated_at: Math.floor(Date.now() / 1000),
+      }),
+    });
+  });
+  await expect(card).toContainText("Download complete");
+  await expect(card).toBeHidden({ timeout: 5_000 });
+});
+
 test("monitor_run renders a live Run card inline without get_run polling", async ({ page }) => {
   await enterApp(page);
   await page.evaluate(() => {

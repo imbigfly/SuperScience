@@ -1366,10 +1366,52 @@ pub(crate) fn method_search_progress(run: &RunRecord) -> Option<MethodSearchProg
         .flatten()
 }
 
-pub(crate) fn transfer_progress_visible(progress: &RunProgress, run_status: &str) -> bool {
+const TRANSFER_SETTLED_LINGER_SECONDS: i64 = 3;
+
+pub(crate) fn transfer_progress_visible(
+    progress: &RunProgress,
+    run_status: &str,
+    now: i64,
+) -> bool {
     (matches!(run_status, "submitted" | "running" | "cancelling")
         && matches!(progress.phase.as_str(), "uploading" | "downloading"))
-        || (js_sys::Date::now() as i64 / 1000 - progress.updated_at).abs() <= 10
+        || (now - progress.updated_at).abs() <= TRANSFER_SETTLED_LINGER_SECONDS
+}
+
+#[cfg(test)]
+mod transfer_progress_tests {
+    use super::*;
+
+    fn progress(phase: &str, updated_at: i64) -> RunProgress {
+        RunProgress {
+            phase: phase.into(),
+            direction: "download".into(),
+            completed_bytes: 1,
+            total_bytes: 1,
+            files_completed: 1,
+            files_total: 1,
+            current_file: None,
+            bytes_per_second: None,
+            eta_seconds: None,
+            updated_at,
+        }
+    }
+
+    #[test]
+    fn active_transfer_stays_visible_even_when_its_progress_timestamp_is_stale() {
+        assert!(transfer_progress_visible(
+            &progress("downloading", 10),
+            "running",
+            100,
+        ));
+    }
+
+    #[test]
+    fn settled_transfer_expires_after_the_short_confirmation_window() {
+        let transfer = progress("downloaded", 100);
+        assert!(transfer_progress_visible(&transfer, "succeeded", 103));
+        assert!(!transfer_progress_visible(&transfer, "succeeded", 104));
+    }
 }
 
 fn transfer_bytes(bytes: u64) -> String {

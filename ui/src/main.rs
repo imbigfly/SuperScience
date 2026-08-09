@@ -8948,13 +8948,18 @@ fn App() -> impl IntoView {
             </div>
 
             {move || active_session.get().and_then(|session_id| {
+                // Finished transfers linger briefly for confirmation. Reading
+                // the shared clock makes this tray recompute after run polling
+                // stops, so settled cards cannot remain over the conversation.
+                let now = run_clock.get();
                 let transfers = run_records
                     .get()
                     .into_iter()
                     .filter(|run| run.frame_id.as_deref() == Some(session_id.as_str()))
                     .filter_map(|run| {
                         let progress = run_progress(&run)?;
-                        transfer_progress_visible(&progress, &run.status).then_some((run, progress))
+                        transfer_progress_visible(&progress, &run.status, now)
+                            .then_some((run, progress))
                     })
                     .collect::<Vec<_>>();
                 (!transfers.is_empty()).then(|| view! {
