@@ -281,6 +281,43 @@ fn usage_model_gradient(slices: &[UsageModelSlice]) -> String {
     format!("conic-gradient({segments})")
 }
 
+#[derive(Clone)]
+struct UsageToolRankRow {
+    kind: String,
+    name: String,
+    calls: i64,
+    color: &'static str,
+}
+
+fn usage_tool_rank_rows(rows: &[ToolCallUsage], other: &str) -> Vec<UsageToolRankRow> {
+    let mut totals = rows
+        .iter()
+        .filter(|row| row.calls > 0 && (row.kind == "skill" || row.kind == "mcp"))
+        .map(|row| (row.kind.clone(), row.name.clone(), row.calls))
+        .collect::<Vec<_>>();
+    totals.sort_by(|left, right| {
+        right
+            .2
+            .cmp(&left.2)
+            .then_with(|| left.0.cmp(&right.0))
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    if totals.len() > 10 {
+        let remainder = totals.drain(9..).map(|(_, _, calls)| calls).sum();
+        totals.push(("other".into(), other.to_string(), remainder));
+    }
+    totals
+        .into_iter()
+        .enumerate()
+        .map(|(index, (kind, name, calls))| UsageToolRankRow {
+            kind,
+            name,
+            calls,
+            color: USAGE_MODEL_COLORS[index % USAGE_MODEL_COLORS.len()],
+        })
+        .collect()
+}
+
 fn usage_summary_view(loc: Locale, totals: (i64, i64, i64, i64)) -> impl IntoView {
     let tokens = |value: i64| crate::fmt_tokens(value.max(0) as u64);
     view! {
@@ -350,6 +387,38 @@ mod usage_dashboard_tests {
         assert_eq!(slices.last().unwrap().label, "Other");
         assert_eq!(slices.last().unwrap().tokens, 3);
         assert!(usage_model_gradient(&slices).starts_with("conic-gradient("));
+    }
+
+    #[test]
+    fn tool_rank_keeps_skill_and_mcp_and_caps_tail() {
+        let mut rows = vec![
+            ToolCallUsage {
+                kind: "skill".into(),
+                name: "bear-support".into(),
+                calls: 5,
+            },
+            ToolCallUsage {
+                kind: "mcp".into(),
+                name: "pubmed_search".into(),
+                calls: 3,
+            },
+            ToolCallUsage {
+                kind: "shell".into(),
+                name: "shell".into(),
+                calls: 9,
+            },
+        ];
+        rows.extend((1..=10).map(|index| ToolCallUsage {
+            kind: "mcp".into(),
+            name: format!("tool-{index}"),
+            calls: 1,
+        }));
+        let ranked = usage_tool_rank_rows(&rows, "Other");
+        assert_eq!(ranked.len(), 10);
+        assert_eq!(ranked[0].name, "bear-support");
+        assert_eq!(ranked[0].kind, "skill");
+        assert_eq!(ranked.last().unwrap().name, "Other");
+        assert_eq!(ranked.last().unwrap().calls, 3);
     }
 }
 
@@ -1867,6 +1936,18 @@ pub(super) fn SettingsView(
                                         .map(|slice| slice.tokens)
                                         .sum::<i64>();
                                     let model_gradient = usage_model_gradient(&model_slices);
+                                    let tool_rows = usage_tool_rank_rows(
+                                        &overview.tools,
+                                        &t(loc, "settings.usage.other_tools"),
+                                    );
+                                    let tool_total =
+                                        tool_rows.iter().map(|row| row.calls).sum::<i64>();
+                                    let tool_max = tool_rows
+                                        .iter()
+                                        .map(|row| row.calls)
+                                        .max()
+                                        .unwrap_or(0)
+                                        .max(1);
                                     view! {
                                         <p class="settings-field-hint">{t(loc, "settings.usage.hint")}</p>
                                         {usage_summary_view(loc, totals)}
@@ -1923,6 +2004,7 @@ pub(super) fn SettingsView(
                                             </div>
                                         </section>
                                         <div class="usage-overview-grid">
+                                            <div class="usage-left-stack">
                                             <section class="usage-card usage-model-card" data-testid="usage-model-share">
                                                 <div class="usage-card-head">
                                                     <div>
@@ -1962,6 +2044,57 @@ pub(super) fn SettingsView(
                                                     }.into_view()
                                                 }}
                                             </section>
+                                            <section class="usage-card usage-tool-rank-card" data-testid="usage-tool-rank">
+                                                <div class="usage-card-head">
+                                                    <div>
+                                                        <h3>{t(loc, "settings.usage.tool_rank")}</h3>
+                                                        <p>{t(loc, "settings.usage.tool_rank_hint")}</p>
+                                                    </div>
+                                                </div>
+                                                {if tool_rows.is_empty() {
+                                                    view! {
+                                                        <p class="settings-field-hint">{t(loc, "settings.usage.tools_empty")}</p>
+                                                    }.into_view()
+                                                } else {
+                                                    view! {
+                                                        <div class="usage-tool-rank-list">
+                                                            {tool_rows.into_iter().enumerate().map(|(index, row)| {
+                                                                let pct = row.calls as f64
+                                                                    / tool_total.max(1) as f64
+                                                                    * 100.0;
+                                                                let width = row.calls as f64
+                                                                    / tool_max as f64
+                                                                    * 100.0;
+                                                                let badge = match row.kind.as_str() {
+                                                                    "skill" => t(loc, "settings.usage.tool_kind_skill"),
+                                                                    "mcp" => t(loc, "settings.usage.tool_kind_mcp"),
+                                                                    _ => t(loc, "settings.usage.other_tools"),
+                                                                };
+                                                                view! {
+                                                                    <div class="usage-tool-rank-row" data-testid="usage-tool-rank-row">
+                                                                        <span class="usage-tool-rank-index">{index + 1}</span>
+                                                                        <span class=format!("usage-tool-rank-badge kind-{}", row.kind)>{badge}</span>
+                                                                        <div class="usage-tool-rank-main">
+                                                                            <div class="usage-tool-rank-meta">
+                                                                                <span title=row.name.clone()>{row.name}</span>
+                                                                                <strong>{format!("{pct:.1}%")}</strong>
+                                                                                <small>{row.calls}</small>
+                                                                            </div>
+                                                                            <div class="usage-tool-rank-track" aria-hidden="true">
+                                                                                <i style=format!(
+                                                                                    "width:{width:.1}%;background:{}",
+                                                                                    row.color
+                                                                                )></i>
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                }
+                                                            }).collect_view()}
+                                                        </div>
+                                                    }.into_view()
+                                                }}
+                                            </section>
+                                            </div>
                                             <section class="usage-card usage-workspaces-card">
                                                 <div class="usage-card-head">
                                                     <div>

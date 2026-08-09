@@ -1,5 +1,5 @@
 use super::{
-    build_project_summary,
+    build_project_summary, exploration_commands,
     project_transfer::{
         collect_workspace, directory_component, pick_import_parent, unique_destination,
         WorkspaceEntryKind,
@@ -1333,6 +1333,12 @@ pub(super) async fn sync_project(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<ProjectSyncResult, String> {
+    exploration_commands::reject_private_exploration_project_mutation(
+        &state.store,
+        &id,
+        "Project synchronization",
+    )
+    .await?;
     let _quiet = begin_quiet_sync(&state, &id).await?;
     let old_frame_ids = state
         .store
@@ -1404,6 +1410,12 @@ pub(super) async fn resolve_project_sync(
     if !matches!(strategy.as_str(), "local" | "remote") {
         return Err("Sync conflict strategy must be local or remote.".into());
     }
+    exploration_commands::reject_private_exploration_project_mutation(
+        &state.store,
+        &id,
+        "Project synchronization conflict resolution",
+    )
+    .await?;
     let _quiet = begin_quiet_sync(&state, &id).await?;
     let old_frame_ids = state
         .store

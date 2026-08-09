@@ -10,6 +10,7 @@ pub struct SetRuntimeInterpreterTool {
     store: Store,
     runtime_manager: RuntimeManager,
     project_id: String,
+    scope_key: String,
 }
 
 #[derive(Deserialize)]
@@ -20,15 +21,17 @@ struct SetRuntimeInterpreterArgs {
 }
 
 impl SetRuntimeInterpreterTool {
-    pub fn new(
+    pub fn new_in_scope(
         store: Store,
         runtime_manager: RuntimeManager,
         project_id: impl Into<String>,
+        scope_key: impl Into<String>,
     ) -> Self {
         Self {
             store,
             runtime_manager,
             project_id: project_id.into(),
+            scope_key: scope_key.into(),
         }
     }
 }
@@ -89,6 +92,11 @@ impl Tool for SetRuntimeInterpreterTool {
     }
 
     async fn run(&self, args: &serde_json::Value, env: &dyn ToolEnv) -> ToolResult {
+        if self.scope_key != superscience_runtime::MAINLINE_RUNTIME_SCOPE {
+            return ToolResult::fail(
+                "exploration_project_mutation_blocked: runtime interpreter settings cannot be changed inside an exploration",
+            );
+        }
         let args: SetRuntimeInterpreterArgs = match serde_json::from_value(args.clone()) {
             Ok(args) => args,
             Err(error) => {
@@ -118,6 +126,7 @@ impl Tool for SetRuntimeInterpreterTool {
         let (language, label) = language_names(args.language);
         let key = RuntimeKey {
             project_id: self.project_id.clone(),
+            scope_key: self.scope_key.clone(),
             context_id: context_id.to_string(),
             language: args.language,
         };
@@ -190,7 +199,12 @@ mod tests {
         })
         .to_string();
         store.upsert_execution_context(&context).await.unwrap();
-        let tool = SetRuntimeInterpreterTool::new(store.clone(), manager(), "project-1");
+        let tool = SetRuntimeInterpreterTool::new_in_scope(
+            store.clone(),
+            manager(),
+            "project-1",
+            superscience_runtime::MAINLINE_RUNTIME_SCOPE,
+        );
 
         let result = tool
             .run(
@@ -227,7 +241,12 @@ mod tests {
         let context = superscience_store::ExecutionContext::new("local", "Local").unwrap();
         let original = context.config_json.clone();
         store.upsert_execution_context(&context).await.unwrap();
-        let tool = SetRuntimeInterpreterTool::new(store.clone(), manager(), "project-1");
+        let tool = SetRuntimeInterpreterTool::new_in_scope(
+            store.clone(),
+            manager(),
+            "project-1",
+            superscience_runtime::MAINLINE_RUNTIME_SCOPE,
+        );
 
         let result = tool
             .run(
@@ -254,7 +273,12 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&db).await.unwrap();
-        let tool = SetRuntimeInterpreterTool::new(store, manager(), "project-1");
+        let tool = SetRuntimeInterpreterTool::new_in_scope(
+            store,
+            manager(),
+            "project-1",
+            superscience_runtime::MAINLINE_RUNTIME_SCOPE,
+        );
         assert_eq!(tool.name(), "set_runtime_interpreter");
         assert_eq!(
             tool.preview(&serde_json::json!({

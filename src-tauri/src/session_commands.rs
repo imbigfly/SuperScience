@@ -10,11 +10,15 @@ pub(super) async fn new_session(
     // Create a fresh frame and hand its id to the UI up front, so the UI can
     // route streamed events to the right transcript *before* the first delta
     // arrives. Does NOT cancel any running turn — parallel conversations keep
-    // running. Empty frames are filtered out of the sidebar until they get a
-    // user message.
-    let ap = state.active(window.label());
+    // running. Persisted history still ignores empty frames; the UI keeps the
+    // currently active draft visible until its first user turn is stored.
+    let active = state.active(window.label());
+    let ap = project_commands::load_active_project(&state, &active.id)
+        .await?
+        .0;
     let _project_activity = state.begin_project_activity(&ap.id)?;
     let id = create_session_frame(&state.store, &ap.id).await?;
+    state.set_active(window.label(), ap);
     state.set_active_frame(window.label(), Some(id.clone()));
     Ok(id)
 }
@@ -27,8 +31,26 @@ pub(super) async fn branch_session(
     title: Option<String>,
     user_index: Option<usize>,
 ) -> Result<String, String> {
-    let ap = state.active(window.label());
+    let active = state.active(window.label());
+    let ap = project_commands::load_active_project(&state, &active.id)
+        .await?
+        .0;
     let _project_activity = state.begin_project_activity(&ap.id)?;
+    if let Some(source) = session_id.as_deref().filter(|s| !s.is_empty()) {
+        if matches!(
+            state
+                .store
+                .frame_state_scope(source)
+                .await
+                .map_err(|error| error.to_string())?,
+            Some(superscience_store::StateScope::Exploration { .. })
+        ) {
+            return Err(
+                "Legacy conversation branches cannot escape an exploration; create another exploration from its checkpoint instead."
+                    .into(),
+            );
+        }
+    }
     let id = create_session_frame(&state.store, &ap.id).await?;
     if let Some(source) = session_id.as_deref().filter(|s| !s.is_empty()) {
         // Display-only lineage so the sidebar can nest this branch under its source.
@@ -58,6 +80,7 @@ pub(super) async fn branch_session(
     if let Some(t) = branch_title(title.as_deref()) {
         let _ = state.store.rename_session(&id, &ap.id, &t).await;
     }
+    state.set_active(window.label(), ap);
     state.set_active_frame(window.label(), Some(id.clone()));
     Ok(id)
 }
@@ -251,6 +274,19 @@ pub(super) async fn transfer_session_to_project(
     if owner.as_deref() != Some(source.id.as_str()) {
         return Err("Session does not belong to the active project.".into());
     }
+    if matches!(
+        state
+            .store
+            .frame_state_scope(&id)
+            .await
+            .map_err(|error| error.to_string())?,
+        Some(superscience_store::StateScope::Exploration { .. })
+    ) {
+        return Err(
+            "exploration_scope_violation: exploration conversations cannot be transferred to another project."
+                .into(),
+        );
+    }
     let remove_source = match mode.as_str() {
         "copy" => false,
         "move" => true,
@@ -330,6 +366,19 @@ pub(super) async fn delete_session(
         .map_err(|error| error.to_string())?;
     if owner.as_deref() != Some(ap.id.as_str()) {
         return Err("Session does not belong to the active project.".into());
+    }
+    if matches!(
+        state
+            .store
+            .frame_state_scope(&id)
+            .await
+            .map_err(|error| error.to_string())?,
+        Some(superscience_store::StateScope::Exploration { .. })
+    ) {
+        return Err(
+            "exploration_scope_violation: discard the exploration instead of deleting its conversation."
+                .into(),
+        );
     }
     let runtime = state.sessions.lock().await.get(&id).cloned();
     if let Some(rt) = runtime.as_ref() {
@@ -718,6 +767,8 @@ pub(super) async fn load_session(
         Vec::new()
     };
     if before_seq.is_none() {
+        let (project, _) = exploration_commands::working_project_for_frame(&state, &id).await?;
+        state.set_active(window.label(), project);
         state.set_active_frame(window.label(), Some(id.clone()));
         let _ = state.store.mark_frame_seen(&id).await;
         if let Some(rt) = state.sessions.lock().await.get(&id).cloned() {
@@ -748,6 +799,8 @@ pub(super) async fn set_viewed_session(
     window: tauri::WebviewWindow,
     id: String,
 ) -> Result<(), String> {
+    let (project, _) = exploration_commands::working_project_for_frame(&state, &id).await?;
+    state.set_active(window.label(), project);
     state.set_active_frame(window.label(), Some(id.clone()));
     let _ = state.store.mark_frame_seen(&id).await;
     Ok(())

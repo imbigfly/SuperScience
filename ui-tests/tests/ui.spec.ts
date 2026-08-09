@@ -372,6 +372,11 @@ test("Usage groups workspaces, charts activity and models, and paginates session
     /conic-gradient/,
   );
 
+  const toolRank = page.getByTestId("usage-tool-rank");
+  await expect(toolRank.getByText("bear-support", { exact: true })).toBeVisible();
+  await expect(toolRank.getByText("pubmed_search", { exact: true })).toBeVisible();
+  await expect(toolRank.getByTestId("usage-tool-rank-row")).toHaveCount(3);
+
   const workspaces = page.getByTestId("usage-workspace-row");
   await expect(workspaces).toHaveCount(2);
   await workspaces.first().click();
@@ -664,9 +669,10 @@ test("switching to a text-only model confirms historical images will be ignored"
   const modal = page.getByTestId("model-switch-confirm");
   await expect(modal).toContainText("does not accept image input");
   await expect(modal).toContainText("saved conversation and existing text replies stay unchanged");
+  await expect(modal.getByTestId("model-switch-dont-ask")).toHaveCSS("flex-direction", "row");
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
 
-  await modal.getByRole("button", { name: "Ignore old images and switch" }).click();
+  await modal.getByRole("button", { name: "Ignore & switch" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "default" });
   await expect(page.locator(".model-picker-label")).toHaveText("deepseek-v4-pro");
 });
@@ -1161,6 +1167,22 @@ test("ACP cancellation is scoped to the active bound frame", async ({ page }) =>
   await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
 });
 
+test("failed stop command restores the Stop control instead of staying in Stopping", async ({ page }) => {
+  await enterApp(page);
+  await newSessionButton(page).click();
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /Test ACP Agent/ }).click();
+  await composer(page).fill("ACP LONG");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+  await page.evaluate(() => { (window as any).__failStopAgent = true; });
+
+  await page.getByRole("button", { name: "Stop" }).click();
+
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+  await expect(page.locator(".copy-toast-warning")).toContainText("Could not stop the task");
+});
+
 test("pre-start send failures roll back optimistic rows and restore the draft", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("PRESTARTFAIL retry this draft");
@@ -1456,6 +1478,22 @@ test("composer @ # and / add typed context references", async ({ page }) => {
 test("composer picker follows manual caret insertions and ignores pasted text", async ({ page }) => {
   await enterApp(page);
   const composerInput = composer(page);
+
+  // Windows Chinese IMEs can commit punctuation through the composition path
+  // without exposing the committed character as InputEvent.data (#733).
+  await composerInput.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.focus();
+    textarea.value = "#";
+    textarea.setSelectionRange(1, 1);
+    textarea.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertCompositionText",
+    }));
+  });
+  await expect(page.locator(".mention-menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await composerInput.fill("");
 
   await composerInput.fill("已有文字");
   await composerInput.evaluate((element) => {
@@ -1838,6 +1876,21 @@ test("new session focuses the composer", async ({ page }) => {
   await expect(composer(page)).toBeFocused();
 });
 
+test("new session appears in the sidebar before its first message", async ({ page }) => {
+  await enterApp(page);
+  const sessions = page.locator(".side-item.ses");
+  const countBefore = await sessions.count();
+  const sendsBefore = (await invokeArgsList(page, "send_message")).length;
+
+  await newSessionButton(page).click();
+
+  await expect(sessions).toHaveCount(countBefore + 1);
+  const newSession = sessions.filter({ hasText: "Untitled session" }).first();
+  await expect(newSession).toBeVisible();
+  await expect(newSession).toHaveClass(/active/);
+  expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
+});
+
 test("rename session modal autofocuses so Ctrl+A selects the title", async ({ page }) => {
   await page.addInitScript(parallelMock);
   await page.goto("/");
@@ -2152,6 +2205,11 @@ test("side chat answers in a temporary side panel and can switch model", async (
   await expect(panel).toBeVisible();
   await expect(panel.locator(".sidechat-in-pane")).toBeVisible();
   await expect(panel.getByText("Side answer: what did the main thread miss?")).toBeVisible();
+  const evidence = panel.getByTestId("sidechat-evidence");
+  await expect(evidence).toContainText("1 conversation sources · snapshot 12");
+  await evidence.locator("summary").click();
+  await expect(evidence).toContainText("[S1] · Turn 2 · assistant · event 7");
+  await expect(evidence).toContainText("The main thread recorded this evidence.");
   await expect(panel).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   const closeBox = await panel.getByRole("button", { name: "Close tab" }).first().boundingBox();
   const panelBox = await panel.boundingBox();
@@ -2177,6 +2235,23 @@ test("side chat answers in a temporary side panel and can switch model", async (
   await expect.poll(() => lastInvokeArgs(page, "side_chat")).toMatchObject({
     question: "acp side question", acpAgentId: "acp-test",
   });
+});
+
+test("side chat reports when the frozen conversation has no evidence", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("NO_EVIDENCE_TEST");
+  await page.getByRole("button", { name: "Message options" }).click();
+  await page.getByRole("button", { name: "Side chat" }).click();
+
+  const panel = page.locator(".rightpane");
+  await expect(panel.getByText(
+    "The current conversation does not contain enough evidence to answer that.",
+  )).toBeVisible();
+  await expect(panel.getByTestId("sidechat-evidence")).toHaveCount(0);
+  await expect.poll(async () => {
+    const args = await lastInvokeArgs(page, "send_message");
+    return args?.message ?? null;
+  }).toBeNull();
 });
 
 test("side chat stays at the latest message after sending and switching tabs", async ({ page }) => {
@@ -2238,7 +2313,7 @@ test("transcript selections add to the main composer without closing the right p
   await expect(panel).toBeVisible();
 });
 
-test("a selection Quick Action launches a parallel literature workflow", async ({ page }) => {
+test("literature research prepares a skill-backed turn in the current conversation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("STEPSDEMO");
   await page.getByRole("button", { name: "Send" }).click();
@@ -2250,18 +2325,26 @@ test("a selection Quick Action launches a parallel literature workflow", async (
   await expect(action).toBeVisible();
   await action.click();
 
-  await expect.poll(() => lastInvokeArgs(page, "run_quick_action")).toMatchObject({
-    actionId: "literature_research",
-    input: { selection: selected },
-  });
+  await expect.poll(() => lastInvokeArgs(page, "run_quick_action")).toBeNull();
   await expect(page.locator(".selection-popup")).toHaveCount(0);
-  await expect(page.locator(".rightpane")).toBeVisible();
-  await expect(page.locator(".rightpane .agent-workflow-name"))
-    .toHaveText("Review the literature evidence for a selected passage");
-  await expect(page.locator(".msg.user")).toContainText("Run Quick Action");
+  await expect(page.getByText("Added Research literature to this conversation"))
+    .toBeVisible();
+  await expect(composer(page)).toHaveValue(/Research the quoted passage/);
+  await expect(page.locator(".composer-reference-chips .skill"))
+    .toContainText("literature-review");
+  await expect(page.locator(".composer-reference-chips .quote"))
+    .toContainText(selected.slice(0, 30));
+
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    sessionId: expect.any(String),
+    message: expect.stringContaining(selected.slice(0, 30)),
+    references: [{ kind: "skill", name: "literature-review" }],
+  });
+  await expect(page.locator(".msg.user").last()).toContainText("Research the quoted passage");
 });
 
-test("selection Quick Actions are also available from the right-click menu", async ({ page }) => {
+test("literature research from the right-click menu also stays in the composer", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("STEPSDEMO");
   await page.getByRole("button", { name: "Send" }).click();
@@ -2271,11 +2354,13 @@ test("selection Quick Actions are also available from the right-click menu", asy
   const menu = page.locator(".ctx-menu");
   await menu.getByRole("button", { name: "Research literature" }).click();
 
-  await expect.poll(() => lastInvokeArgs(page, "run_quick_action")).toMatchObject({
-    actionId: "literature_research",
-    input: { selection: selected },
-  });
+  await expect.poll(() => lastInvokeArgs(page, "run_quick_action")).toBeNull();
   await expect(page.locator(".ctx-menu")).toHaveCount(0);
+  await expect(composer(page)).toHaveValue(/Research the quoted passage/);
+  await expect(page.locator(".composer-reference-chips .skill"))
+    .toContainText("literature-review");
+  await expect(page.locator(".composer-reference-chips .quote"))
+    .toContainText(selected.slice(0, 30));
 });
 
 test("Quick Actions opens its bound graph in the standalone Workflow Studio", async ({ page }) => {
@@ -2878,6 +2963,22 @@ test("uploaded file shows up in the artifacts panel after send", async ({ page }
   await tile.click({ button: "right" });
   await page.locator(".ctx-menu").getByRole("button", { name: "Download" }).click();
   await expect.poll(() => lastInvokeArgs(page, "download_file")).toMatchObject({ path: "uploads/counts.csv" });
+});
+
+test("Generated artifacts survive follow-up tool commentary and ignore mentioned paths", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("ARTIFACTATTRIBUTION");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const reply = page.locator(".msg.assistant", {
+    hasText: "I inspected old.csv and created the requested output.",
+  });
+  await expect(reply).toBeVisible({ timeout: 10_000 });
+  await expect(reply.locator(".message-artifacts-label")).toHaveText("Generated · 1");
+  await expect(reply.locator('.message-artifact-card[data-artifact-name="new.png"]')).toBeVisible();
+  await expect(reply.locator('.message-artifact-card[data-artifact-name="old.csv"]')).toHaveCount(0);
+  await expect(reply.locator('.message-artifact-card[data-artifact-name="old.png"]')).toHaveCount(0);
+  await expect(reply.locator('.message-artifact-card[data-artifact-name="old-report.md"]')).toHaveCount(0);
 });
 
 test("artifact category headers collapse and expand their tiles", async ({ page }) => {
@@ -4197,7 +4298,59 @@ test("active SSH transfer shows a live progress card and can be cancelled", asyn
   });
 });
 
-test("monitor_run renders a live Run card inline without get_run polling", async ({ page }) => {
+test("completed SSH transfer cards leave the composer tray promptly", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      frame_id: "s-complete",
+      context_id: "ssh:gpu-server",
+      title: "Download result.csv",
+      kind: "file_transfer",
+      status: "running",
+      ended_at: null,
+      exit_code: null,
+      progress_json: JSON.stringify({
+        phase: "downloading",
+        direction: "download",
+        completed_bytes: 512,
+        total_bytes: 1024,
+        files_completed: 0,
+        files_total: 1,
+        current_file: "result.csv",
+        bytes_per_second: 1024,
+        eta_seconds: 1,
+        updated_at: Math.floor(Date.now() / 1000),
+      }),
+    });
+  });
+  await page.getByTestId("recent-session-card").nth(1).click();
+  await expect(newSessionButton(page)).toBeVisible();
+
+  const card = page.locator('.transfer-card[data-run-id="run-local-002"]');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("Downloading");
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      status: "succeeded",
+      ended_at: Math.floor(Date.now() / 1000),
+      exit_code: 0,
+      progress_json: JSON.stringify({
+        ...JSON.parse(run.progress_json),
+        phase: "downloaded",
+        completed_bytes: 1024,
+        files_completed: 1,
+        eta_seconds: null,
+        updated_at: Math.floor(Date.now() / 1000),
+      }),
+    });
+  });
+  await expect(card).toContainText("Download complete");
+  await expect(card).toBeHidden({ timeout: 5_000 });
+});
+
+test("monitor_run renders a live Run card from summary polls and on-demand detail", async ({ page }) => {
   await enterApp(page);
   await page.evaluate(() => {
     const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
@@ -4222,7 +4375,10 @@ test("monitor_run renders a live Run card inline without get_run polling", async
   await expect(card).toContainText("Running");
   await expect(card).toContainText("Elapsed 1h");
   await expect(card).toContainText("8 of 16 steps complete (50%)");
-  await expect(page.locator(".rz")).toContainText("Attach the existing Run monitor.");
+  const reasoning = page.locator(".rz");
+  await expect(reasoning).toContainText("thinking");
+  await reasoning.locator("summary").click();
+  await expect(reasoning).toContainText("Attach the existing Run monitor.");
   await expect(page.locator('.step-name:text-is("monitor_run")')).toHaveCount(0);
 
   await page.evaluate(() => {
@@ -4236,6 +4392,9 @@ test("monitor_run renders a live Run card inline without get_run polling", async
     runId: "run-local-002",
   });
   await expect(card).toContainText("Cancelled");
+  await card.getByRole("button", { name: "Dismiss completed run card" }).click();
+  await expect(card).toHaveCount(0);
+  await expect(page.locator(".run-monitor-wrap")).toBeHidden();
 });
 
 test("run monitor output stays pinned to the tail across poll rebuilds (#654)", async ({ page }) => {
@@ -4357,12 +4516,15 @@ test("reasoning details stays open while more thinking streams in", async ({ pag
   await expect(rz).toBeVisible();
   await rz.locator("summary").click();
   await expect(rz).toHaveAttribute("open", "open");
+  await rz.evaluate((element) => {
+    (element as any).__stableProbe = true;
+  });
 
-  // The next streaming delta rebuilds the fingerprint-keyed row; the open
-  // state must survive the rebuild.
+  // The next streaming delta updates the body without replacing the live row.
   await expect(rz).toContainText("More reasoning arrives.");
   await expect(rz).toHaveAttribute("open", "open");
   await expect(rz).toContainText("First thought.");
+  expect(await rz.evaluate((element) => (element as any).__stableProbe === true)).toBe(true);
 });
 
 test("active session Runs appear automatically with elapsed time and heartbeat (#593)", async ({ page }) => {
@@ -4388,6 +4550,8 @@ test("active session Runs appear automatically with elapsed time and heartbeat (
   await expect(automatic).toContainText("Elapsed 1m");
   await expect(automatic).toContainText("Heartbeat");
   await expect(automatic).toContainText("2 of 3 stages complete");
+  await expect(automatic.getByRole("button", { name: "Dismiss completed run card" }))
+    .toHaveCount(0);
 
   await composer(page).fill("MDLIST later turn");
   await page.getByRole("button", { name: "Send" }).click();
@@ -4399,6 +4563,20 @@ test("active session Runs appear automatically with elapsed time and heartbeat (
     return !!card && !!laterTurn
       && !!(card.compareDocumentPosition(laterTurn) & Node.DOCUMENT_POSITION_FOLLOWING);
   })).toBe(true);
+
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      status: "succeeded",
+      ended_at: Math.floor(Date.now() / 1000),
+      exit_code: 0,
+    });
+  });
+  const dismiss = automatic.getByRole("button", { name: "Dismiss completed run card" });
+  await expect(dismiss).toBeVisible({ timeout: 7_000 });
+  await dismiss.click();
+  await expect(automatic.getByTestId("run-monitor-card")).toHaveCount(0);
+  await expect(automatic).toBeHidden();
 });
 
 test("active Run elapsed time advances without waiting for a backend refresh (#663)", async ({ page }) => {
@@ -6623,6 +6801,29 @@ test("streaming assistant keeps formatted Markdown with a lightweight live tail"
   await expect(page.locator(".msg.assistant .body.streaming")).toHaveCount(0);
 });
 
+test("step commentary renders full Markdown before the overall turn finishes", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("STEPMARKDOWN");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const live = page.locator(".msg.assistant .streaming-markdown");
+  await expect(live.getByRole("heading", { name: "Live analysis" })).toBeVisible();
+  await expect(live.locator("strong")).toHaveText("Significant result");
+  await expect(live.locator("li")).toHaveCount(2);
+  await expect(live.locator("table")).toContainText("ESR1");
+  await expect(live.locator("code")).toHaveText("normalized_counts.csv");
+
+  // The following tool seals the commentary but the turn deliberately stays
+  // pending. Its progress row must retain rendered Markdown rather than
+  // falling back to source text until Done.
+  const settledStep = page.locator(".msg.assistant.commentary .compact-markdown");
+  await expect(settledStep.getByRole("heading", { name: "Live analysis" })).toBeVisible();
+  await expect(settledStep.locator("strong")).toHaveText("Significant result");
+  await expect(settledStep.locator("li")).toHaveCount(2);
+  await expect(settledStep.locator("table")).toContainText("ESR1");
+  await expect(settledStep.locator("code")).toHaveText("normalized_counts.csv");
+});
+
 test("chat keeps the user's reading position when streaming finishes (#670)", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("SCROLLTEST");
@@ -6734,6 +6935,40 @@ test("session history loads older pages with a stable cursor", async ({ page }) 
   await expect.poll(() => lastInvokeArgs(page, "list_sessions_page")).toMatchObject({
     cursor: { id: "session-100", ts: 1901 },
   });
+});
+
+test("sidebar search finds sessions beyond the loaded history page and restores the list", async ({ page }) => {
+  await page.goto("/?mockManySessions=1");
+  await page.locator(".proj-card-main").first().click();
+
+  const sidebar = page.locator(".sidebar");
+  await sidebar.getByRole("button", { name: "Search sessions" }).click();
+  const search = sidebar.getByRole("searchbox", { name: "Search sessions" });
+  await expect(search).toBeFocused();
+
+  await search.fill("101");
+  await expect(sidebar.getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toHaveCount(0);
+  await expect(sidebar.getByRole("button", { name: "Load earlier sessions" })).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "search_sessions")).toMatchObject({
+    query: "101",
+    limit: 100,
+    projectId: "default",
+  });
+
+  await search.fill("missing conversation");
+  await expect(sidebar.getByRole("status")).toHaveText("No matching sessions.");
+  await sidebar.getByRole("button", { name: "Clear session search" }).click();
+  await expect(search).toHaveValue("");
+  await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "Load earlier sessions" })).toBeVisible();
+
+  await search.fill("101");
+  await expect(sidebar.getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(search).toHaveCount(0);
+  await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "Paged session 101", exact: true })).toHaveCount(0);
 });
 
 test("home search opens artifacts, sessions, and settings", async ({ page }) => {
@@ -7470,6 +7705,19 @@ test("project switcher does not show a stale fallback name while opening", async
   await expect(page.locator(".proj-name")).toHaveText("superscience");
 });
 
+test("project switcher has no caret and switches workspace in the current window", async ({ page }) => {
+  await enterApp(page);
+  const switcher = page.locator(".proj-switch");
+  await expect(switcher.locator(".caret")).toHaveCount(0);
+
+  await switcher.click();
+  await page.locator(".proj-menu").getByRole("button", { name: "Other project" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "open_project")).toMatchObject({ id: "other" });
+  await expect.poll(() => lastInvokeArgs(page, "open_project_window")).toBeNull();
+  await expect(page.locator(".proj-name")).toHaveText("Other project");
+});
+
 test("opening a workspace resumes its most recent conversation by default", async ({ page }) => {
   await page.goto("/?mockLongSession=1");
   await page.locator(".proj-card-main").first().click();
@@ -7945,7 +8193,7 @@ test("a second conversation can run in parallel without interleaving transcripts
   await expect(page.getByText("echo:alpha")).toHaveCount(0);
 
   // A is still running → its sidebar entry shows the running indicator.
-  await expect(page.locator(".side-item.ses.running")).toBeVisible();
+  await expect(page.locator(".side-item.ses.running", { hasText: "alpha" })).toBeVisible();
 
   // Switch back to A: the cached (live) transcript renders, B's does not.
   await page.locator(".side-item.ses", { hasText: "alpha" }).click();
@@ -8496,6 +8744,14 @@ test("an SVG star saves a Notebook cell in the global library", async ({ page })
   await expect(page.getByTestId("library-screen")).toBeVisible();
   await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("zcat counts.txt.gz");
   await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("superscience / Current analysis");
+
+  // Library search runs against SQLite so full saved source remains searchable
+  // even though the global list only carries bounded previews.
+  await page.getByRole("searchbox", { name: "Search library" }).fill("counts.txt.gz");
+  await expect.poll(() => lastInvokeArgs(page, "search_library_items")).toMatchObject({
+    query: "counts.txt.gz",
+  });
+  await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("zcat counts.txt.gz");
 });
 
 test("the command palette opens the global library", async ({ page }) => {

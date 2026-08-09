@@ -71,7 +71,8 @@ own machines.
 - Local, WSL, and SSH/GPU **execution contexts** with one-connection hardware
   and runtime probing; each context keeps its own interpreter paths.
 - Structured **Runs** for long jobs: preflight checks, per-second heartbeats,
-  and bounded log tails persisted with an environment snapshot.
+  bounded log tails persisted with an environment snapshot, and dismissible
+  completed cards that leave the Run record and outputs intact.
 - Secrets live in the OS keyring, never in SQLite. Free-form `ssh`/`scp` is
   replaced by registered, probed hosts; a failed connection opens a
   connectivity gate instead of silently retrying.
@@ -95,11 +96,16 @@ own machines.
 
 - Conversations persist to SQLite; restart and the full history is back. One
   click **undoes** a turn's file edits with a preview of what will be restored.
+- Inline **Generated** artifacts come only from structured file-write events;
+  directory listings, reads, searches, and prose that merely mention a path
+  are not presented as newly generated files.
 - `@` attaches artifacts, files, execution contexts, and language runtimes;
   `#` reaches saved sessions through a cited, read-only **Reader** specialist;
   `/` applies a skill to the next turn.
-- Ctrl+K / Ctrl+P palettes (including quick UI/code font sizing), side chat, conversation folders, a global library
-  of cells and figures, and in-app update checks.
+- Ctrl+K / Ctrl+P palettes (including quick UI/code font sizing), conversation
+  folders, a global library of cells and figures, and in-app update checks.
+  Side chat searches a frozen snapshot of the current conversation's full
+  visible history and exposes the message excerpts used for each answer.
 - Manual Reviewer checks keep sending paused and show live review progress until
   the independent audit finishes.
 - **Feedback** opens a blank conversation immediately and attaches non-sensitive
@@ -265,6 +271,7 @@ do without an API key.
 
 | Topic | Guide |
 |-------|-------|
+| Proposed case studies (Chinese) | [docs/case-studies.zh-CN.md](docs/case-studies.zh-CN.md) |
 | Model profiles & providers | [docs/model-configuration.md](docs/model-configuration.md) |
 | External coding agents (ACP) | [docs/acp-agents.md](docs/acp-agents.md) |
 | Multi-agent workflows | [docs/agent-delegation.md](docs/agent-delegation.md) |

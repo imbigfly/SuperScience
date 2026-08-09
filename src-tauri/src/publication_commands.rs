@@ -306,6 +306,21 @@ async fn lineage_summary(
     })
 }
 
+async fn publication_mainline_project(
+    state: &AppState,
+    window_label: &str,
+) -> Result<crate::ActiveProject, String> {
+    let (project, scope) =
+        crate::exploration_commands::working_project_for_active_frame(state, window_label).await?;
+    if matches!(scope, superscience_store::StateScope::Exploration { .. }) {
+        return Err(
+            "exploration_project_mutation_blocked: Publication Workspace is unavailable inside an exploration."
+                .into(),
+        );
+    }
+    Ok(project)
+}
+
 async fn publication_workspace(
     store: &Store,
     project_id: &str,
@@ -528,7 +543,7 @@ pub(super) async fn get_publication_workspace(
     publication_id: Option<String>,
     revision_id: Option<String>,
 ) -> Result<PublicationWorkspace, String> {
-    let project = state.active(window.label());
+    let project = publication_mainline_project(&state, window.label()).await?;
     publication_workspace(
         &state.store,
         &project.id,
@@ -545,7 +560,7 @@ pub(super) async fn create_publication_workspace(
     window: tauri::WebviewWindow,
     input: CreatePublicationInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = state.active(window.label());
+    let project = publication_mainline_project(&state, window.label()).await?;
     let revision = create_publication(&state.store, &project.id, &input)
         .await
         .map_err(|error| error.to_string())?;
@@ -560,7 +575,7 @@ pub(super) async fn save_publication_item(
     window: tauri::WebviewWindow,
     input: SavePublicationItemInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = state.active(window.label());
+    let project = publication_mainline_project(&state, window.label()).await?;
     if revision_project(&state.store, &input.revision_id)
         .await
         .map_err(|error| error.to_string())?
@@ -598,7 +613,7 @@ pub(super) async fn bind_publication_evidence(
     window: tauri::WebviewWindow,
     input: BindPublicationEvidenceInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = state.active(window.label());
+    let project = publication_mainline_project(&state, window.label()).await?;
     bind_evidence(&state.store, &project.id, &input)
         .await
         .map_err(|error| error.to_string())?;
@@ -613,7 +628,7 @@ pub(super) async fn update_publication_evidence_binding(
     window: tauri::WebviewWindow,
     input: UpdateEvidenceBindingInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = state.active(window.label());
+    let project = publication_mainline_project(&state, window.label()).await?;
     let binding = state
         .store
         .get_evidence_binding(&input.binding_id)
@@ -648,7 +663,7 @@ pub(super) async fn clone_publication_revision(
     revision_id: String,
     label: String,
 ) -> Result<PublicationWorkspace, String> {
-    let project = state.active(window.label());
+    let project = publication_mainline_project(&state, window.label()).await?;
     if revision_project(&state.store, &revision_id)
         .await
         .map_err(|error| error.to_string())?
@@ -672,7 +687,7 @@ pub(super) async fn save_publication_waiver(
     window: tauri::WebviewWindow,
     input: SavePublicationWaiverInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = state.active(window.label());
+    let project = publication_mainline_project(&state, window.label()).await?;
     if revision_project(&state.store, &input.revision_id)
         .await
         .map_err(|error| error.to_string())?
@@ -703,7 +718,7 @@ pub(super) async fn verify_publication_revision(
     window: tauri::WebviewWindow,
     input: VerifyPublicationRevisionInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = state.active(window.label());
+    let project = publication_mainline_project(&state, window.label()).await?;
     if revision_project(&state.store, &input.revision_id)
         .await
         .map_err(|error| error.to_string())?

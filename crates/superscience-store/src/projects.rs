@@ -64,8 +64,10 @@ impl Store {
                     p.created_at AS created_at, p.updated_at AS updated_at, \
                     COALESCE(p.description,'') AS description, \
                     (SELECT COUNT(*) FROM frames f WHERE f.project_id = p.id AND f.parent_frame_id = f.id \
+                       AND f.exploration_id IS NULL \
                        AND EXISTS (SELECT 1 FROM messages m WHERE m.frame_id = f.id AND m.role='user')) AS sessions, \
-                    (SELECT COUNT(*) FROM artifacts a WHERE a.project_id = p.id) AS artifacts \
+                    (SELECT COUNT(*) FROM artifacts a WHERE a.project_id = p.id \
+                       AND a.exploration_id IS NULL) AS artifacts \
              FROM projects p \
              WHERE p.id NOT LIKE 'scratch:%' \
              ORDER BY p.updated_at DESC, p.rowid DESC",

@@ -50,3 +50,11 @@ test("DOCX and PPTX import one pinned shared JSZip chunk", () => {
   expect(readRepositoryFile("ui/vendor-src/docx-preview.mjs")).toContain(sharedImport);
   expect(readRepositoryFile("ui/vendor-src/pptx-preview.mjs")).toContain(sharedImport);
 });
+
+test("GitHub Pages finishes its artifact job before deployment", () => {
+  const workflow = readRepositoryFile(".github/workflows/pages.yml");
+
+  expect(workflow).toContain("  build:\n    runs-on: ubuntu-latest");
+  expect(workflow).toContain("  deploy:\n    needs: build");
+  expect(workflow).toContain("          include-hidden-files: true");
+});

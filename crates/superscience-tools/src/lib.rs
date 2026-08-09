@@ -52,6 +52,7 @@ const BUILT_IN_SCHEMA_NAMES: &[&str] = &[
     "attempt_completion",
     "list_skill_catalog",
     "search_skills",
+    "search_models",
     "use_skill",
     "search_memory",
     "append_memory",
@@ -89,6 +90,7 @@ pub const PLAN_MODE_READ_ONLY: &[&str] = &[
     // superscience-core / superscience-skills
     "search_memory",
     "search_skills",
+    "search_models",
     "use_skill",
     // Desktop host tools that only read or retrieve
     "web_scan",

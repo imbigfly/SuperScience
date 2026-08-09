@@ -17,9 +17,9 @@ enum NotebookOrigin {
 
 #[derive(Clone, PartialEq)]
 pub(super) struct NotebookProto {
-    language: String,
-    source: String,
-    output: String,
+    language: Rc<str>,
+    source: Rc<str>,
+    output: Rc<str>,
     ok: Option<bool>,
     origin: NotebookOrigin,
 }
@@ -27,9 +27,9 @@ pub(super) struct NotebookProto {
 #[derive(Clone, PartialEq)]
 pub(super) struct NotebookCell {
     index: usize,
-    language: String,
-    source: String,
-    output: String,
+    language: Rc<str>,
+    source: Rc<str>,
+    output: Rc<str>,
     ok: Option<bool>,
     origin: NotebookOrigin,
 }
@@ -42,13 +42,13 @@ fn item_notebook_protos(item: &ChatItem) -> Vec<NotebookProto> {
             .into_iter()
             .filter(|(language, _)| !matches!(language.as_str(), "csv" | "tsv" | "fasta" | "fa"))
             .map(|(language, source)| NotebookProto {
-                language: if language.is_empty() {
-                    "text".into()
+                language: Rc::from(if language.is_empty() {
+                    "text".to_string()
                 } else {
                     language
-                },
-                source,
-                output: String::new(),
+                }),
+                source: Rc::from(source),
+                output: Rc::from(""),
                 ok: None,
                 origin: NotebookOrigin::Assistant,
             })
@@ -71,13 +71,13 @@ fn item_notebook_protos(item: &ChatItem) -> Vec<NotebookProto> {
                 input.clone()
             };
             vec![NotebookProto {
-                language: match name.as_str() {
-                    "python" => "python".into(),
-                    "r" => "r".into(),
-                    _ => "bash".into(),
-                },
-                source,
-                output: output.clone(),
+                language: Rc::from(match name.as_str() {
+                    "python" => "python",
+                    "r" => "r",
+                    _ => "bash",
+                }),
+                source: Rc::from(source),
+                output: Rc::from(output.as_str()),
                 ok: *ok,
                 origin: if matches!(name.as_str(), "python" | "r") {
                     NotebookOrigin::Repl
@@ -110,25 +110,25 @@ pub(super) fn collect_notebook_cells(
 
     // A code fence that is subsequently executed is one cell, not two. Keep
     // every actual execution so intentionally repeated REPL calls remain visible.
-    let executed: HashSet<String> = per_item
+    let executed: HashSet<&str> = per_item
         .iter()
         .flat_map(|protos| protos.iter())
         .filter(|proto| proto.origin != NotebookOrigin::Assistant)
-        .map(|proto| proto.source.trim().to_string())
+        .map(|proto| proto.source.trim())
         .collect();
 
     per_item
-        .into_iter()
-        .flat_map(|protos| protos.iter().cloned().collect::<Vec<_>>())
+        .iter()
+        .flat_map(|protos| protos.iter())
         .filter(|proto| {
             proto.origin != NotebookOrigin::Assistant || !executed.contains(proto.source.trim())
         })
         .enumerate()
         .map(|(index, proto)| NotebookCell {
             index,
-            language: proto.language,
-            source: proto.source,
-            output: proto.output,
+            language: Rc::clone(&proto.language),
+            source: Rc::clone(&proto.source),
+            output: Rc::clone(&proto.output),
             ok: proto.ok,
             origin: proto.origin,
         })
@@ -157,22 +157,24 @@ pub(super) fn NotebookView(
     view! {
         <div class="notebook-cells">
             {cells.into_iter().map(|cell| {
-                let copy = cell.source.clone();
-                let language = cell.language.clone();
-                let source = cell.source.clone();
-                let star_language = cell.language.clone();
-                let star_source = cell.source.clone();
+                let copy = cell.source.to_string();
+                let language = cell.language.to_string();
+                let source = cell.source.to_string();
+                let star_language = cell.language.to_string();
+                let star_source = cell.source.to_string();
                 let starred = create_memo(move |_| {
                     active_session.get().is_some_and(|session| {
-                        library_items.get().iter().any(|item| {
-                            item.matches_code(&session, &star_language, &star_source)
+                        library_items.with(|items| {
+                            items.iter().any(|item| {
+                                item.matches_code(&session, &star_language, &star_source)
+                            })
                         })
                     })
                 });
-                let click_language = cell.language.clone();
-                let click_source = cell.source.clone();
+                let click_language = cell.language.to_string();
+                let click_source = cell.source.to_string();
                 let has_output = !cell.output.is_empty();
-                let output = cell.output.clone();
+                let output = cell.output.to_string();
                 let output_open = cell.ok == Some(false);
                 let runtime = match cell.origin {
                     NotebookOrigin::Assistant => t(locale, "notebook.assistant"),
@@ -200,8 +202,17 @@ pub(super) fn NotebookView(
                                 aria-pressed=move || starred.get().to_string()
                                 on:click=move |_| {
                                     let Some(session_id) = active_session.get_untracked() else { return; };
-                                    let existing = library_items.get_untracked().into_iter().find(|item| {
-                                        item.matches_code(&session_id, &click_language, &click_source)
+                                    let existing = library_items.with_untracked(|items| {
+                                        items
+                                            .iter()
+                                            .find(|item| {
+                                                item.matches_code(
+                                                    &session_id,
+                                                    &click_language,
+                                                    &click_source,
+                                                )
+                                            })
+                                            .cloned()
                                     });
                                     let language = click_language.clone();
                                     let code = click_source.clone();
@@ -272,11 +283,21 @@ mod tests {
             },
         ];
 
-        let cells = collect_notebook_cells(&items, &mut NotebookCache::new());
+        let mut cache = NotebookCache::new();
+        let cells = collect_notebook_cells(&items, &mut cache);
         assert_eq!(cells.len(), 2);
-        assert_eq!(cells[0].language, "rust");
-        assert_eq!(cells[1].language, "python");
-        assert_eq!(cells[1].output, "1");
+        assert_eq!(cells[0].language.as_ref(), "rust");
+        assert_eq!(cells[1].language.as_ref(), "python");
+        assert_eq!(cells[1].output.as_ref(), "1");
+        let executed_proto = cache
+            .values()
+            .flat_map(|protos| protos.iter())
+            .find(|proto| {
+                proto.origin != NotebookOrigin::Assistant && proto.source.as_ref() == "print(1)"
+            })
+            .unwrap();
+        assert!(Rc::ptr_eq(&cells[1].source, &executed_proto.source));
+        assert!(Rc::ptr_eq(&cells[1].output, &executed_proto.output));
     }
 
     #[test]
@@ -291,7 +312,7 @@ mod tests {
         }];
         let cells = collect_notebook_cells(&items, &mut NotebookCache::new());
         assert_eq!(cells.len(), 1);
-        assert_eq!(cells[0].language, "r");
-        assert_eq!(cells[0].source, "summary(dataset)");
+        assert_eq!(cells[0].language.as_ref(), "r");
+        assert_eq!(cells[0].source.as_ref(), "summary(dataset)");
     }
 }

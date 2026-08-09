@@ -44,9 +44,9 @@ pub(crate) fn split_segments(text: &str) -> Vec<Seg> {
 /// `assemble_artifacts`, so this half is cacheable per item and streaming only
 /// re-extracts the tail message instead of rescanning the whole transcript.
 pub(crate) enum ProtoArtifact {
-    Table(TableData),
-    Csv(TableData),
-    Fasta(String),
+    Table(Rc<TableData>),
+    Csv(Rc<TableData>),
+    Fasta(Rc<str>),
     Latex(String),
     File { path: String, kind: &'static str },
 }
@@ -80,7 +80,7 @@ pub(crate) struct ArtifactScan {
 pub(crate) fn extract_markdown_protos(out: &mut Vec<ProtoArtifact>, s: &str) {
     for seg in split_segments(s) {
         if let Seg::Table(t) = seg {
-            out.push(ProtoArtifact::Table(t));
+            out.push(ProtoArtifact::Table(Rc::new(t)));
         }
     }
     for (lang, body) in fenced_blocks(s) {
@@ -89,10 +89,10 @@ pub(crate) fn extract_markdown_protos(out: &mut Vec<ProtoArtifact>, s: &str) {
             if let Some(header) = lines.first() {
                 let headers = parse_csv_line(header);
                 let rows = lines[1..].iter().map(|line| parse_csv_line(line)).collect();
-                out.push(ProtoArtifact::Csv(TableData { headers, rows }));
+                out.push(ProtoArtifact::Csv(Rc::new(TableData { headers, rows })));
             }
         } else if lang == "fasta" || lang == "fa" {
-            out.push(ProtoArtifact::Fasta(body));
+            out.push(ProtoArtifact::Fasta(Rc::from(body)));
         }
     }
     let lines: Vec<&str> = s.lines().collect();
@@ -122,12 +122,6 @@ pub(crate) fn extract_markdown_protos(out: &mut Vec<ProtoArtifact>, s: &str) {
         }
         i += 1;
     }
-    for word in s.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']')
-    {
-        if let Some(p) = file_proto(word) {
-            out.push(p);
-        }
-    }
 }
 
 /// Extraction half of the artifact scan: pure function of one item's content.
@@ -143,27 +137,14 @@ pub(crate) fn extract_protos(it: &ChatItem) -> Vec<ProtoArtifact> {
             }
         }
         ChatItem::Assistant { text: s, .. } => extract_markdown_protos(&mut out, s),
-        ChatItem::Tool {
-            name,
-            input,
-            output,
-            ..
-        } => {
+        ChatItem::Tool { name, output, .. } => {
             if name == "attempt_completion" && !output.is_empty() {
                 extract_markdown_protos(&mut out, output);
-            } else {
-                let text = if output.is_empty() {
-                    input.as_str()
-                } else {
-                    output.as_str()
-                };
-                for word in
-                    text.split(|c: char| c.is_whitespace() || c == '\n' || c == '"' || c == '\'')
-                {
-                    if let Some(p) = file_proto(word) {
-                        out.push(p);
-                    }
-                }
+            }
+        }
+        ChatItem::FileChanged(path) => {
+            if let Some(proto) = file_proto(path) {
+                out.push(proto);
             }
         }
         _ => {}
@@ -591,16 +572,26 @@ pub(crate) fn collect_artifacts(
     *cache = next;
     let mut artifacts = assemble_artifacts(&per_item, locale);
     for artifact in &mut artifacts {
-        if matches!(items.get(artifact.source_item), Some(ChatItem::Tool { .. })) {
-            if let Some(next_assistant) = items
+        if matches!(
+            items.get(artifact.source_item),
+            Some(ChatItem::FileChanged(_))
+        ) {
+            let next_final_assistant = items
                 .iter()
                 .enumerate()
                 .skip(artifact.source_item + 1)
-                .find_map(|(index, item)| {
-                    matches!(item, ChatItem::Assistant { .. }).then_some(index)
+                .find_map(|(index, item)| match item {
+                    ChatItem::Assistant { text, .. }
+                        if !text.trim().is_empty() && !is_commentary_at(items, index) =>
+                    {
+                        Some(Some(index))
+                    }
+                    ChatItem::User(_) => Some(None),
+                    _ => None,
                 })
-            {
-                artifact.source_item = next_assistant;
+                .flatten();
+            if let Some(next_final_assistant) = next_final_assistant {
+                artifact.source_item = next_final_assistant;
             }
         }
     }
@@ -712,6 +703,33 @@ mod artifact_scan_tests {
         collect_artifacts(items, locale, &mut ProtoCache::new())
     }
 
+    #[test]
+    fn cached_table_payload_is_shared_across_artifact_projections() {
+        let item = ChatItem::Assistant {
+            text: "| sample | value |\n| --- | --- |\n| a | 1 |".into(),
+            model: None,
+            resources: Vec::new(),
+        };
+        let protos = Rc::new(extract_protos(&item));
+        let proto_table = match &protos[0] {
+            ProtoArtifact::Table(table) => table,
+            _ => panic!("expected a table proto"),
+        };
+        let artifacts = assemble_artifacts(&[Rc::clone(&protos)], Locale::En);
+        let artifact_table = match &artifacts[0].data {
+            PreviewData::Table(table) => table,
+            _ => panic!("expected a table artifact"),
+        };
+        assert!(Rc::ptr_eq(proto_table, artifact_table));
+
+        let current = current_artifacts(&artifacts, &[], "", &HashSet::new());
+        let current_table = match &current[0].data {
+            PreviewData::Table(table) => table,
+            _ => panic!("expected a current table artifact"),
+        };
+        assert!(Rc::ptr_eq(artifact_table, current_table));
+    }
+
     /// #307 made .R/.py previewable, which must not also turn every source path
     /// this scan walks past (tracebacks, import lists) into an artifact chip.
     #[test]
@@ -763,21 +781,24 @@ mod artifact_scan_tests {
             started_at_ms: None,
             duration_ms: Some(1),
         });
+        items.push(ChatItem::FileChanged("out/result.csv".into()));
         let a2 = collect_artifacts(&items, Locale::En, &mut cache);
         assert!(a2 == fresh(&items, Locale::En));
-        assert_eq!(a2.len(), 4); // code moves to Notebook; result.csv remains an artifact
+        assert_eq!(a2.len(), 4); // code moves to Notebook; the structured write is an artifact
     }
 
     #[test]
     fn overwritten_file_belongs_to_its_latest_message() {
         let items = vec![
+            ChatItem::FileChanged("result.csv".into()),
             ChatItem::Assistant {
-                text: "Created `result.csv`".into(),
+                text: "Created the result.".into(),
                 model: None,
                 resources: Vec::new(),
             },
+            ChatItem::FileChanged("result.csv".into()),
             ChatItem::Assistant {
-                text: "Updated `result.csv`".into(),
+                text: "Updated the result.".into(),
                 model: None,
                 resources: Vec::new(),
             },
@@ -785,22 +806,23 @@ mod artifact_scan_tests {
         let artifacts = fresh(&items, Locale::En);
         assert_eq!(artifacts.len(), 2);
         assert!(artifacts[0].superseded);
-        assert_eq!(artifacts[0].source_item, 0);
+        assert_eq!(artifacts[0].source_item, 1);
         assert!(!artifacts[1].superseded);
-        assert_eq!(artifacts[1].source_item, 1);
+        assert_eq!(artifacts[1].source_item, 3);
     }
 
     #[test]
-    fn tool_output_belongs_to_the_following_reply() {
+    fn structured_file_write_belongs_to_the_following_reply() {
         let items = vec![
             ChatItem::Tool {
                 name: "write".into(),
                 ok: Some(true),
                 input: String::new(),
-                output: "wrote result.csv".into(),
+                output: "write completed".into(),
                 started_at_ms: None,
                 duration_ms: None,
             },
+            ChatItem::FileChanged("result.csv".into()),
             ChatItem::Assistant {
                 text: "Done.".into(),
                 model: None,
@@ -809,33 +831,102 @@ mod artifact_scan_tests {
         ];
         let artifacts = fresh(&items, Locale::En);
         assert_eq!(artifacts.len(), 1);
-        assert_eq!(artifacts[0].source_item, 1);
+        assert_eq!(artifacts[0].source_item, 2);
+    }
+
+    #[test]
+    fn structured_file_writes_skip_tool_call_commentary_for_the_final_reply() {
+        let items = vec![
+            ChatItem::Tool {
+                name: "python".into(),
+                ok: Some(true),
+                input: "save comparison images".into(),
+                output: "five images written".into(),
+                started_at_ms: None,
+                duration_ms: None,
+            },
+            ChatItem::FileChanged("evidence/one.png".into()),
+            ChatItem::FileChanged("evidence/two.png".into()),
+            ChatItem::FileChanged("evidence/three.png".into()),
+            ChatItem::FileChanged("evidence/four.png".into()),
+            ChatItem::FileChanged("evidence/five.png".into()),
+            ChatItem::Assistant {
+                text: "I will inspect the comparison images first.".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+            ChatItem::Tool {
+                name: "view_image".into(),
+                ok: Some(true),
+                input: "evidence/one.png".into(),
+                output: "image is legible".into(),
+                started_at_ms: None,
+                duration_ms: None,
+            },
+            ChatItem::Assistant {
+                text: "The five comparison images are ready.".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+        ];
+
+        assert!(is_commentary_at(&items, 6));
+        let artifacts = fresh(&items, Locale::En);
+        assert_eq!(artifacts.len(), 5);
+        assert!(artifacts.iter().all(|artifact| artifact.source_item == 8));
+    }
+
+    #[test]
+    fn paths_mentioned_by_tools_or_assistant_are_not_generated() {
+        for name in ["shell", "read", "search", "grep"] {
+            let items = vec![
+                ChatItem::Tool {
+                    name: name.into(),
+                    ok: Some(true),
+                    input: "inspect old-input.csv".into(),
+                    output: "old.csv\nplots/old.png\nnotes/report.md".into(),
+                    started_at_ms: None,
+                    duration_ms: None,
+                },
+                ChatItem::Assistant {
+                    text: "I inspected `old.csv`; no new file was created.".into(),
+                    model: None,
+                    resources: Vec::new(),
+                },
+            ];
+            assert!(
+                fresh(&items, Locale::En).is_empty(),
+                "{name} output must not imply a file write"
+            );
+        }
+    }
+
+    #[test]
+    fn file_write_does_not_cross_the_next_user_turn() {
+        let items = vec![
+            ChatItem::FileChanged("result.csv".into()),
+            ChatItem::User("summarize a different PDF".into()),
+            ChatItem::Assistant {
+                text: "This answer is unrelated.".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+        ];
+        let artifacts = fresh(&items, Locale::En);
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].source_item, 0);
     }
 
     #[test]
     fn artifact_panel_deduplicates_message_versions_and_path_forms() {
         let items = vec![
-            ChatItem::Tool {
-                name: "write".into(),
-                ok: Some(true),
-                input: String::new(),
-                output: "wrote sample_statistics.png".into(),
-                started_at_ms: None,
-                duration_ms: None,
-            },
+            ChatItem::FileChanged("sample_statistics.png".into()),
             ChatItem::Assistant {
                 text: "Created `sample_statistics.png`".into(),
                 model: None,
                 resources: Vec::new(),
             },
-            ChatItem::Tool {
-                name: "write".into(),
-                ok: Some(true),
-                input: String::new(),
-                output: r"wrote E:\cross-species-root\sample_statistics.png".into(),
-                started_at_ms: None,
-                duration_ms: None,
-            },
+            ChatItem::FileChanged(r"E:\cross-species-root\sample_statistics.png".into()),
             ChatItem::Assistant {
                 text: r"Updated `E:\cross-species-root\sample_statistics.png`".into(),
                 model: None,
@@ -843,7 +934,7 @@ mod artifact_scan_tests {
             },
         ];
         let all = fresh(&items, Locale::En);
-        assert_eq!(all.len(), 4);
+        assert_eq!(all.len(), 2);
 
         let current = current_artifacts(&all, &[], r"E:\cross-species-root", &HashSet::new());
         assert_eq!(current.len(), 1);

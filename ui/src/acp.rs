@@ -221,6 +221,7 @@ pub(crate) fn turn_activity_after_user(rows: &[ChatItem], user_index: usize) -> 
             ChatItem::Assistant { text, .. } => !text.trim().is_empty(),
             ChatItem::Reasoning(_)
             | ChatItem::Tool { .. }
+            | ChatItem::FileChanged(_)
             | ChatItem::AcpTool { .. }
             | ChatItem::ApprovalPending { .. }
             | ChatItem::AcpPermission { .. }

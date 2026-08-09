@@ -587,6 +587,28 @@ pub(crate) fn active_composer_trigger(
     Some((at, end, mode, query.to_string()))
 }
 
+/// Whether an input edit should keep or open the picker for the active token.
+///
+/// Windows IMEs may report punctuation such as `@` and `#` as composition
+/// input, with `InputEvent.data` absent or different from the committed text.
+/// The textarea value and caret have already established which trigger was
+/// entered, so opening must depend on the insertion kind rather than `data`.
+pub(crate) fn composer_picker_accepts_edit(
+    input_type: &str,
+    prior_mode: Option<ComposerPickerMode>,
+    prior_start: Option<usize>,
+    start: usize,
+    query_is_empty: bool,
+) -> bool {
+    let continues_token = prior_mode.is_some() && prior_start == Some(start);
+    let inserts_trigger = query_is_empty
+        && matches!(
+            input_type,
+            "insertText" | "insertCompositionText" | "insertFromComposition"
+        );
+    continues_token || inserts_trigger
+}
+
 pub(crate) fn scroll_picker_item(selector: &str, index: usize) {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -601,7 +623,9 @@ pub(crate) fn scroll_picker_item(selector: &str, index: usize) {
 
 #[cfg(test)]
 mod mention_tests {
-    use super::{active_composer_trigger, ComposerPickerMode};
+    use super::{
+        active_composer_trigger, composer_picker_accepts_edit, ComposerPickerMode,
+    };
 
     #[test]
     fn detects_trigger_at_the_caret() {
@@ -645,6 +669,48 @@ mod mention_tests {
             active_composer_trigger(text, text.encode_utf16().count()),
             None
         );
+    }
+
+    #[test]
+    fn opens_picker_for_direct_and_ime_trigger_input() {
+        for input_type in [
+            "insertText",
+            "insertCompositionText",
+            "insertFromComposition",
+        ] {
+            assert!(composer_picker_accepts_edit(
+                input_type,
+                None,
+                None,
+                3,
+                true
+            ));
+        }
+        assert!(!composer_picker_accepts_edit(
+            "deleteContentBackward",
+            None,
+            None,
+            3,
+            true
+        ));
+    }
+
+    #[test]
+    fn keeps_picker_open_while_editing_its_active_token() {
+        assert!(composer_picker_accepts_edit(
+            "deleteContentBackward",
+            Some(ComposerPickerMode::Artifact),
+            Some(3),
+            3,
+            false
+        ));
+        assert!(!composer_picker_accepts_edit(
+            "insertText",
+            Some(ComposerPickerMode::Artifact),
+            Some(1),
+            3,
+            false
+        ));
     }
 }
 

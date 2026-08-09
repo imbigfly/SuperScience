@@ -81,10 +81,13 @@ Science 强调真实科研实践发生在你自己的机器上。
 
 - 会话持久化到 SQLite，重启后完整恢复；一键**撤销**某一轮对文件的修改，
   撤销前先预览将恢复或移除的文件。
+- 消息下方的 **Generated** 产物只来自结构化文件写入事件；目录列表、读取、
+  搜索结果或正文中仅仅提到的路径，不会被标成新生成文件。
 - `@` 附加产物、文件、执行环境和语言运行时；`#` 通过只读、带引用的
   **Reader** 专员检索已保存的会话；`/` 让下一轮使用指定 skill。
-- Ctrl+K / Ctrl+P 命令面板、侧边对话、会话文件夹、跨项目的代码与图表
-  全局库，以及应用内更新检查。
+- Ctrl+K / Ctrl+P 命令面板、会话文件夹、跨项目的代码与图表全局库，以及应用内
+  更新检查。侧边问答会检索当前会话完整可见历史的冻结快照，并展示每次回答所依据的
+  消息原文片段。
 - **反馈**会立即打开空白新对话，并在用户发送第一条消息时自动附加版本、平台、
   模型与启动耗时等非敏感诊断信息；用户输入前不会调用模型。
 - [加密手动同步](docs/project-sync.zh-CN.md)与一键[项目迁移](docs/project-transfer.md)
@@ -225,6 +228,8 @@ Agent 先用 `search_mcp_tools` 发现匹配的工具，再通过 `use_mcp_tool`
 
 | 主题 | 指南 |
 |------|------|
+| Case Study 选题库 | [docs/case-studies.zh-CN.md](docs/case-studies.zh-CN.md) |
+| 基础配置图文教程 | [docs/basic-configuration.md](docs/basic-configuration.md) |
 | 模型配置与提供商 | [docs/model-configuration.md](docs/model-configuration.md) |
 | 外部编码 Agent（ACP） | [docs/acp-agents.md](docs/acp-agents.md) |
 | 多 Agent 工作流 | [docs/agent-delegation.md](docs/agent-delegation.md) |

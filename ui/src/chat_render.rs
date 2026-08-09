@@ -1,19 +1,22 @@
 use crate::acp::PlanDecision;
 use crate::app_support::*;
-use crate::bindings::{invoke, invoke_checked};
+use crate::bindings::{invoke, invoke_checked, schedule_run_output_follow};
 use crate::dto::*;
 use crate::i18n::{self, t, tf, use_locale, Locale};
 use crate::research;
 use crate::text::{event_target_value, format_duration_ms, md_to_html, tool_card_label};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// True for items whose `render_item` produces an empty view, so the thread
 /// loop can drop their wrapper `<div>` and avoid a dangling `.thread` gap (#19).
 pub(crate) fn renders_nothing(item: &ChatItem) -> bool {
     matches!(item, ChatItem::Assistant { text, .. } if text.trim().is_empty())
         || matches!(item, ChatItem::Tool { name, .. } if name == "attempt_completion")
+        || matches!(item, ChatItem::FileChanged(_))
 }
 
 pub(crate) fn class_for(item: &ChatItem) -> &'static str {
@@ -28,6 +31,7 @@ pub(crate) fn class_for(item: &ChatItem) -> &'static str {
             "tool-wrap image-generation-wrap"
         }
         ChatItem::Tool { .. } => "tool-wrap",
+        ChatItem::FileChanged(_) => "artifact-write-marker",
         ChatItem::ApprovalPending { .. } => "tool-wrap approval-wrap-row",
         ChatItem::AcpPermission { .. } => "tool-wrap approval-wrap-row",
         ChatItem::AcpTool { .. } => "tool-wrap",
@@ -229,6 +233,7 @@ pub(crate) enum ThreadRow {
         commentary: bool,
         compact_assistant: bool,
         streaming_assistant: bool,
+        streaming_reasoning: bool,
     },
     Steps {
         indices: Vec<usize>,
@@ -240,6 +245,65 @@ pub(crate) enum ThreadRow {
         ui_indices: String,
         duration_ms: Option<u64>,
     },
+}
+
+const STREAMING_REASONING_MAX_BYTES: usize = 64 * 1024;
+
+fn streaming_reasoning_text(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut start = text.len().saturating_sub(max_bytes);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…\n{}", &text[start..])
+}
+
+/// Keep the live reasoning row mounted while its source string grows. Closed
+/// details do not subscribe to or materialize the body; an opened live view is
+/// bounded so repeated signal flushes cannot copy an ever-growing string.
+#[component]
+pub(crate) fn StreamingReasoningMessage(
+    items: RwSignal<Vec<ChatItem>>,
+    source_item: usize,
+    session_id: String,
+    disclosure_state: RwSignal<HashMap<String, bool>>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let open_id = format!("{session_id}:reasoning:{source_item}");
+    let toggle_id = open_id.clone();
+    let open_key = open_id.clone();
+    let open = create_memo(move |_| disclosure_open(disclosure_state, &open_key, false));
+    view! {
+        <details class="rz" open=move || open.get()>
+            <summary on:click=move |event| {
+                event.prevent_default();
+                toggle_disclosure(disclosure_state, &toggle_id, false);
+            }>{move || t(locale.get(), "chat.thinking")}</summary>
+            {move || open.get().then(|| {
+                let text = items.with(|rows| match rows.get(source_item) {
+                    Some(ChatItem::Reasoning(text)) => {
+                        streaming_reasoning_text(text, STREAMING_REASONING_MAX_BYTES)
+                    }
+                    _ => String::new(),
+                });
+                view! { <div class="body">{text}</div> }
+            })}
+        </details>
+    }
+}
+
+#[cfg(test)]
+mod streaming_reasoning_tests {
+    use super::streaming_reasoning_text;
+
+    #[test]
+    fn keeps_short_text_and_bounds_utf8_tail() {
+        assert_eq!(streaming_reasoning_text("短文", 16), "短文");
+        let preview = streaming_reasoning_text("甲乙丙丁", 7);
+        assert_eq!(preview, "…\n丙丁");
+    }
 }
 
 /// Compact, foldable summary of consecutive tool calls. Collapsed by default;
@@ -275,16 +339,18 @@ pub(crate) fn steps_title(
     locale: Locale,
     completed_turn: bool,
     live: bool,
+    model_wait_message: Option<&str>,
     n_tools: usize,
     elapsed: Option<&str>,
 ) -> String {
-    match (completed_turn, live, n_tools, elapsed) {
-        (true, _, _, _) => t(locale, "chat.activity_done").to_string(),
-        (_, true, _, _) => t(locale, "chat.steps_running").to_string(),
-        (_, _, 1, None) => t(locale, "chat.steps_1").to_string(),
-        (_, _, 1, Some(d)) => tf(locale, "chat.steps_1_time", &[("t", d)]),
-        (_, _, n, None) => tf(locale, "chat.steps_n", &[("n", &n.to_string())]),
-        (_, _, n, Some(d)) => tf(
+    match (completed_turn, live, model_wait_message, n_tools, elapsed) {
+        (true, _, _, _, _) => t(locale, "chat.activity_done").to_string(),
+        (_, true, Some(message), _, _) => message.to_string(),
+        (_, true, None, _, _) => t(locale, "chat.steps_running").to_string(),
+        (_, _, _, 1, None) => t(locale, "chat.steps_1").to_string(),
+        (_, _, _, 1, Some(d)) => tf(locale, "chat.steps_1_time", &[("t", d)]),
+        (_, _, _, n, None) => tf(locale, "chat.steps_n", &[("n", &n.to_string())]),
+        (_, _, _, n, Some(d)) => tf(
             locale,
             "chat.steps_n_time",
             &[("n", &n.to_string()), ("t", d)],
@@ -298,13 +364,13 @@ mod steps_title_tests {
 
     #[test]
     fn folds_the_run_duration_into_settled_step_counts() {
-        assert_eq!(steps_title(Locale::En, false, false, 1, None), "Ran 1 step");
+        assert_eq!(steps_title(Locale::En, false, false, None, 1, None), "Ran 1 step");
         assert_eq!(
-            steps_title(Locale::En, false, false, 1, Some("2s")),
+            steps_title(Locale::En, false, false, None, 1, Some("2s")),
             "Ran 1 step · 2s"
         );
         assert_eq!(
-            steps_title(Locale::Zh, false, false, 3, Some("1.4s")),
+            steps_title(Locale::Zh, false, false, None, 3, Some("1.4s")),
             "已执行 3 步 · 1.4s"
         );
     }
@@ -312,12 +378,24 @@ mod steps_title_tests {
     #[test]
     fn running_and_done_headers_ignore_the_duration() {
         assert_eq!(
-            steps_title(Locale::En, false, true, 3, Some("2s")),
+            steps_title(Locale::En, false, true, None, 3, Some("2s")),
             "Working…"
         );
         assert_eq!(
-            steps_title(Locale::En, true, false, 3, Some("2s")),
-            steps_title(Locale::En, true, false, 3, None)
+            steps_title(Locale::En, true, false, None, 3, Some("2s")),
+            steps_title(Locale::En, true, false, None, 3, None)
+        );
+    }
+
+    #[test]
+    fn explains_when_a_completed_tool_is_waiting_on_the_model() {
+        assert_eq!(
+            steps_title(Locale::En, false, true, Some("The model is consulting its neurons…"), 1, None),
+            "The model is consulting its neurons…"
+        );
+        assert_eq!(
+            steps_title(Locale::Zh, false, true, Some("模型正在和神经元开会…"), 1, None),
+            "模型正在和神经元开会…"
         );
     }
 }
@@ -333,7 +411,7 @@ pub(crate) fn render_steps_group(
 ) -> impl IntoView {
     let locale = use_locale();
     let now = now_ms();
-    let (n_tools, tool_total_ms, now_line) = source.with_untracked(|items| {
+    let (n_tools, tool_total_ms, now_line, waiting_for_model) = source.with_untracked(|items| {
         let selected = || indices.iter().filter_map(|index| items.get(*index));
         let n_tools = selected()
             .filter(|item| matches!(item, ChatItem::Tool { .. } | ChatItem::AcpTool { .. }))
@@ -362,7 +440,17 @@ pub(crate) fn render_steps_group(
                     .find_map(step_now_line)
             })
             .flatten();
-        (n_tools, total_ms, now_line)
+        let waiting_for_model = live
+            && indices.iter().rev().filter_map(|index| items.get(*index)).find(|item| {
+                !matches!(item, ChatItem::Usage { .. } | ChatItem::Compaction { .. })
+            }).is_some_and(|item| match item {
+                ChatItem::Tool { ok: Some(_), .. } => true,
+                ChatItem::AcpTool { status, .. } => {
+                    status != "pending" && status != "in_progress"
+                }
+                _ => false,
+            });
+        (n_tools, total_ms, now_line, waiting_for_model)
     });
     let total_ms =
         turn_duration_ms.unwrap_or_else(|| if completed_turn { 0 } else { tool_total_ms });
@@ -375,11 +463,22 @@ pub(crate) fn render_steps_group(
         .then(|| total_label.clone())
         .flatten();
     let meta_label = inline_time.is_none().then_some(total_label).flatten();
+    let model_wait_variant =
+        group_id.bytes().fold(0usize, |sum, byte| sum + byte as usize) % 4;
     let title = move || {
+        let model_wait_message = waiting_for_model.then(|| {
+            t(locale.get(), match model_wait_variant {
+                0 => "chat.model_wait_1",
+                1 => "chat.model_wait_2",
+                2 => "chat.model_wait_3",
+                _ => "chat.model_wait_4",
+            })
+        });
         steps_title(
             locale.get(),
             completed_turn,
             live,
+            model_wait_message.as_deref(),
             n_tools,
             inline_time.as_deref(),
         )
@@ -487,11 +586,17 @@ fn render_step_row(
                             Some(ChatItem::Assistant { text, .. }) => text.clone(),
                             _ => String::new(),
                         });
-                        if live {
-                            view! { <div class="step-progress-body body streaming">{text}</div> }.into_view()
+                        // A progress message is sealed as soon as the following
+                        // reasoning/tool event arrives. Render that completed
+                        // step as Markdown immediately even while the overall
+                        // turn is still live, so Markdown constructs do not
+                        // remain source text until `Done`.
+                        let class = if live {
+                            "step-progress-body body md streaming"
                         } else {
-                            view! { <div class="step-progress-body body md" inner_html=md_to_html(&text)></div> }.into_view()
-                        }
+                            "step-progress-body body md"
+                        };
+                        view! { <div class=class inner_html=md_to_html(&text)></div> }.into_view()
                     })}
                 </div>
             }
@@ -786,26 +891,6 @@ pub(crate) fn acp_tool_step_body(content: &str, locations: &str) -> String {
     parts.join("\n")
 }
 
-pub(crate) fn run_output_preview(run: &RunRecord) -> String {
-    // Tails are stored raw; fold `\r` progress-bar frames before slicing lines
-    // so a single overwritten line cannot dominate the preview.
-    let stdout = run.stdout_tail.as_deref().map(fold_carriage_returns);
-    let stderr = run.stderr_tail.as_deref().map(fold_carriage_returns);
-    let mut output = match (&stdout, &stderr) {
-        (Some(stdout), Some(stderr)) if !stdout.is_empty() && !stderr.is_empty() => {
-            format!("{stdout}\n[stderr]\n{stderr}")
-        }
-        (Some(stdout), _) => stdout.clone(),
-        (_, Some(stderr)) => stderr.clone(),
-        _ => String::new(),
-    };
-    let lines = output.lines().collect::<Vec<_>>();
-    if lines.len() > 8 {
-        output = lines[lines.len() - 8..].join("\n");
-    }
-    output
-}
-
 #[component]
 pub(crate) fn ProvenancePane(
     items: RwSignal<Vec<ChatItem>>,
@@ -926,16 +1011,18 @@ fn run_monitor_meta(
 #[component]
 pub(crate) fn RunMonitorCard(
     run_id: String,
-    runs: RwSignal<Vec<RunRecord>>,
+    runs: RwSignal<Vec<RunSummary>>,
     clock: ReadSignal<i64>,
     tool_ok: Option<bool>,
     tool_output: String,
 ) -> impl IntoView {
     let locale = use_locale();
+    let dismissed = create_rw_signal(false);
     let fallback = serde_json::from_str::<RunRecord>(&tool_output).ok();
+    let detail = create_rw_signal(fallback.clone());
     let lookup_id = run_id.clone();
     let selected_id = run_id.clone();
-    let fallback_for_selection = fallback.clone();
+    let fallback_for_selection = fallback.as_ref().map(RunSummary::from);
     // Polls touch the shared run vector, but this memo only publishes when this
     // card's record changes. Unrelated run updates therefore leave its DOM and
     // disclosure state alone.
@@ -948,12 +1035,48 @@ pub(crate) fn RunMonitorCard(
         })
         .or_else(|| fallback_for_selection.clone())
     });
+    let detail_epoch = Rc::new(Cell::new(0_u64));
+    create_effect({
+        let detail_epoch = Rc::clone(&detail_epoch);
+        move |_| {
+            let Some(summary) = selected_run.get() else {
+                return;
+            };
+            let epoch = detail_epoch.get().wrapping_add(1);
+            detail_epoch.set(epoch);
+            let detail_epoch = Rc::clone(&detail_epoch);
+            spawn_local(async move {
+                let args = to_value(&serde_json::json!({ "runId": &summary.id })).unwrap();
+                let Ok(value) = invoke_checked("get_run_detail", args).await else {
+                    return;
+                };
+                let Ok(record) = serde_wasm_bindgen::from_value::<RunRecord>(value) else {
+                    return;
+                };
+                // A Run may settle between the summary poll and this detail
+                // read. Wait for the next summary instead of briefly rendering
+                // a newer lifecycle inside an older card and remounting it on
+                // the following poll.
+                let same_lifecycle = record.status == summary.status
+                    && record.ended_at == summary.ended_at
+                    && record.exit_code == summary.exit_code;
+                let changed = detail.with_untracked(|current| current.as_ref() != Some(&record));
+                if detail_epoch.get() == epoch && same_lifecycle && changed {
+                    detail.set(Some(record));
+                    schedule_run_output_follow();
+                }
+            });
+        }
+    });
     // Outside the card closure on purpose: the run list refresh re-renders the
     // body every few seconds, which would snap a native `<details>` shut while
     // the user is reading it.
     let env_open = create_rw_signal(false);
     view! {
         {move || {
+            if dismissed.get() {
+                return view! {}.into_view();
+            }
             let run = selected_run.get();
             let Some(run) = run else {
                 let failed = tool_ok == Some(false);
@@ -982,6 +1105,10 @@ pub(crate) fn RunMonitorCard(
             let status = run.status.clone();
             let status_class = format!("run-status {status}");
             let active = matches!(status.as_str(), "submitted" | "running" | "cancelling");
+            let dismissible = matches!(
+                status.as_str(),
+                "succeeded" | "failed" | "cancelled" | "timed_out" | "lost"
+            );
             let cancellable = matches!(status.as_str(), "submitted" | "running" | "cancelling");
             let force_cancel = status == "cancelling";
             let cancel_label = if force_cancel {
@@ -997,14 +1124,24 @@ pub(crate) fn RunMonitorCard(
             let timeout_secs = run.timeout_secs;
             let settled_now = js_sys::Date::now() as i64 / 1000;
             let progress = run_progress(&run);
-            let output = run_output_preview(&run);
-            let command = run.command.clone().filter(|value| !value.trim().is_empty());
-            let remote_workdir = run.remote_workdir.clone();
+            let detail = detail.get();
+            let output = detail.as_ref().map(run_output_preview).unwrap_or_default();
+            let command = detail
+                .as_ref()
+                .and_then(|record| record.command.clone())
+                .filter(|value| !value.trim().is_empty());
+            let remote_workdir = detail
+                .as_ref()
+                .and_then(|record| record.remote_workdir.clone())
+                .or_else(|| run.remote_workdir.clone());
             let poll_error = run.last_poll_error.clone().filter(|value| !value.trim().is_empty());
             // ponytail: flat `key: value` rows only — nested `config`/`capabilities`
             // render as compact JSON, not a tree. Unparseable or empty snapshots
             // (old rows, transfer runs) yield no pairs, so the block disappears.
-            let env_pairs = research::metadata_pairs(&run.env_snapshot_json);
+            let env_pairs = detail
+                .as_ref()
+                .map(|record| research::metadata_pairs(&record.env_snapshot_json))
+                .unwrap_or_default();
             let cancel_id = run.id.clone();
             let output_id = run.id.clone();
             view! {
@@ -1059,6 +1196,16 @@ pub(crate) fn RunMonitorCard(
                                             let _ = invoke("cancel_run", arg).await;
                                         });
                                     }>{compose_icon("close")}</button>
+                            }
+                        })}
+                        {dismissible.then(|| {
+                            let tip = t(locale.get(), "runs.dismiss");
+                            view! {
+                                <button type="button" class="icon-btn run-monitor-dismiss"
+                                    title=tip.clone()
+                                    aria-label=tip
+                                    on:click=move |_| dismissed.set(true)
+                                >{compose_icon("close")}</button>
                             }
                         })}
                     </div>
@@ -1119,15 +1266,19 @@ pub(crate) fn render_item(
     artifacts: &[Artifact],
     on_artifact: Callback<usize>,
     on_file: Callback<ModalArtifact>,
-    runs: RwSignal<Vec<RunRecord>>,
+    runs: RwSignal<Vec<RunSummary>>,
     run_clock: ReadSignal<i64>,
     busy: ReadSignal<bool>,
     compact_assistant: bool,
     can_modify: bool,
     can_undo: Signal<bool>,
+    show_explore: Signal<bool>,
+    can_explore: Signal<bool>,
     on_edit: impl Fn(usize) + Clone + 'static,
     on_branch: impl Fn(usize) + Clone + 'static,
     on_undo: Callback<usize>,
+    explore_turn_index: usize,
+    on_explore: Callback<usize>,
     session_id: String,
     on_review: Callback<String>,
     on_approval: Callback<(String, bool, Option<String>, String)>,
@@ -1192,11 +1343,19 @@ pub(crate) fn render_item(
                 </div>
             }.into_view()
         }
-        ChatItem::Assistant { text, .. } if compact_assistant => view! {
-            <div class="assistant-wrap">
-                <div class="body streaming">{text.clone()}</div>
-            </div>
-        }.into_view(),
+        ChatItem::Assistant { text, .. } if compact_assistant => {
+            let html = enrich_md_html(md_to_html(text), &[], &[], locale.get());
+            view! {
+                <div class="assistant-wrap">
+                    <div class="body md compact-markdown"
+                        inner_html=html
+                        on:click=move |ev: web_sys::MouseEvent| {
+                            handle_md_click(&ev, &[], &[], &on_artifact, &on_file)
+                        }
+                    ></div>
+                </div>
+            }.into_view()
+        }
         ChatItem::Assistant { text, model, resources } => view! {
             <AssistantMessage
                 text=text.clone()
@@ -1211,9 +1370,14 @@ pub(crate) fn render_item(
                 on_review=Callback::new(move |_| on_review.call(session_id.clone()))
                 can_undo=can_undo
                 on_undo=on_undo
+                show_explore=show_explore
+                can_explore=can_explore
+                explore_turn_index=explore_turn_index
+                on_explore=on_explore
             />
         }.into_view(),
         ChatItem::Tool { name, .. } if name == "attempt_completion" => view! {}.into_view(),
+        ChatItem::FileChanged(_) => view! {}.into_view(),
         ChatItem::Tool { name, ok, input, output, .. } if is_run_monitor_tool(name) => view! {
             <RunMonitorCard
                 run_id=input.trim().to_string()

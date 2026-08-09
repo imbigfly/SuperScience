@@ -34,6 +34,11 @@ download, it renames the staged item to the requested path. Existing
 destinations are rejected and partial downloads are removed after failure,
 cancellation, or timeout.
 
+The composer tray shows transfer progress while work is active. A completed,
+failed, or cancelled transfer remains there for three seconds so its final
+state can be confirmed, then dismisses automatically without covering the
+conversation.
+
 ## Upload from the local machine
 
 Set `source_context_id` to `local`, provide an exact existing absolute local

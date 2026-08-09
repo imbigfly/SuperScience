@@ -5,14 +5,37 @@ pub(crate) fn refresh_sessions(
     pending: RwSignal<HashMap<String, usize>>,
     running: RwSignal<HashSet<String>>,
     next_cursor: RwSignal<Option<SessionCursor>>,
+    active_session: RwSignal<Option<String>>,
 ) {
     next_cursor.set(None);
     spawn_local(async move {
         let args = to_value(&serde_json::json!({ "cursor": null })).unwrap();
         let v = invoke("list_sessions_page", args).await;
-        if let Ok(page) = serde_wasm_bindgen::from_value::<SessionPage>(v) {
+        if let Ok(mut page) = serde_wasm_bindgen::from_value::<SessionPage>(v) {
             let set = pending.with_untracked(|m| rebuilt_running_set(&page.running_ids, m));
             running.set(set);
+            let active = active_session.get_untracked();
+            let active_is_listed = active.as_ref().is_none_or(|id| {
+                page.items
+                    .iter()
+                    .any(|session| session.id.as_str() == id.as_str())
+            });
+            if !active_is_listed {
+                let id = active.expect("an unlisted active session has an id");
+                let draft = sessions
+                    .with_untracked(|current| {
+                        current.iter().find(|session| session.id == id).cloned()
+                    })
+                    .unwrap_or(SessionInfo {
+                        id,
+                        title: String::new(),
+                        ts: js_sys::Date::now() as i64,
+                        folder_id: None,
+                        branched_from: None,
+                        pinned: false,
+                    });
+                page.items.insert(0, draft);
+            }
             sessions.set(page.items);
             next_cursor.set(page.next_cursor);
         }
@@ -85,6 +108,43 @@ pub(crate) fn refresh_folders(folders: RwSignal<Vec<FolderInfo>>) {
         let v = invoke("list_folders", JsValue::UNDEFINED).await;
         if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<FolderInfo>>(v) {
             folders.set(list);
+        }
+    });
+}
+
+pub(crate) fn refresh_explorations(explorations: RwSignal<Vec<ExplorationSummary>>) {
+    spawn_local(async move {
+        let value = invoke("list_project_explorations", JsValue::UNDEFINED).await;
+        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ExplorationSummary>>(value) {
+            explorations.set(list);
+        }
+    });
+}
+
+pub(crate) fn refresh_project_state_revisions(
+    revisions: RwSignal<Vec<ProjectStateRevision>>,
+    active_session: RwSignal<Option<String>>,
+    frame_id: String,
+    turn_start: usize,
+    turn_end: usize,
+) {
+    spawn_local(async move {
+        let args = to_value(&serde_json::json!({
+            "frameId": frame_id.clone(),
+            "turnStart": turn_start,
+            "turnEnd": turn_end,
+        }))
+        .unwrap();
+        let value = invoke("list_project_state_revisions", args).await;
+        let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectStateRevision>>(value) else {
+            return;
+        };
+        if active_session.get_untracked().as_deref() == Some(frame_id.as_str()) {
+            revisions.update(|current| {
+                current.extend(list);
+                current.sort_by_key(|revision| revision.turn_index);
+                current.dedup_by_key(|revision| revision.turn_index);
+            });
         }
     });
 }

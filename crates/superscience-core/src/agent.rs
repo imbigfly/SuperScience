@@ -18,6 +18,8 @@ use superscience_llm::{
 use superscience_tools::{ImageData, Registry, ToolControl, ToolEnv};
 
 const RETRY_DELAYS: [u64; 5] = [2_000, 10_000, 30_000, 60_000, 120_000];
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const STOPPED_BY_USER: &str = "stopped by user";
 const TRUNCATED_OUTPUT_MESSAGE: &str = "模型输出在达到 max_tokens 上限时被截断，任务可能尚未完成——请在设置中调高该模型的 max_tokens，或直接继续对话让我接着做。(output truncated at max_tokens)";
 const STREAM_CUT_MESSAGE: &str = "模型响应流在中途被断开（未收到结束标记），已生成的部分内容不完整、不会计入上下文。常见原因：网络不稳定、代理/中转站切断连接，或同一 API key 的并发请求达到上限（例如多个会话同时使用同一模型）。可重发消息重试；需要并行会话时建议错开请求或使用不同的 API key。(stream cut mid-response, #437)";
 const EMPTY_RESPONSE_MESSAGE: &str = "模型完成了本轮推理，但没有返回可显示的文本或工具调用。对话上下文和已完成的工具结果均已保留；请点击“继续执行”重新生成最终回复。若长对话中反复出现，请先发送 /compact 压缩上下文。(model returned no visible response)";
@@ -35,22 +37,25 @@ const STUCK_LOOP_MESSAGE: &str = "检测到智能体连续多次发出完全相�
 /// while the main model gets a bounded head/tail excerpt. This also covers
 /// read/grep/browser/MCP tools whose own safety cap can exceed a model window.
 /// Total byte budget (head + tail) for one tool result in the model context.
-/// ~16 KiB ≈ 4K estimated tokens. Override with WISP_TOOL_RESULT_BUDGET
-/// (bytes; 0 disables).
+/// ~16 KiB ≈ 4K estimated tokens. Override with SUPERSCIENCE_TOOL_RESULT_BUDGET
+/// (or legacy WISP_TOOL_RESULT_BUDGET; bytes; 0 disables).
 const DEFAULT_STREAM_RESULT_BUDGET: usize = 16 * 1024;
 
-fn auto_compact_archive_path(root: &Path) -> PathBuf {
-    root.join(".superscience").join("history").join(format!(
-        "session-auto-{}-{}.json",
-        chrono::Utc::now().timestamp_millis(),
-        uuid::Uuid::new_v4().simple()
-    ))
+fn context_archive(root: &Path) -> (PathBuf, String) {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    (
+        root.join(".superscience")
+            .join("history")
+            .join(format!("{id}.json")),
+        format!("superscience-history:{id}"),
+    )
 }
 
 /// Head/tail-truncate a tool's text result to the ingestion budget. The full
 /// text is written under `.superscience/tool-output/` so the model can read/grep it back.
 fn budget_tool_result(root: &Path, tool_name: &str, content: Content) -> Content {
-    let budget = std::env::var("WISP_TOOL_RESULT_BUDGET")
+    let budget = std::env::var("SUPERSCIENCE_TOOL_RESULT_BUDGET")
+        .or_else(|_| std::env::var("WISP_TOOL_RESULT_BUDGET"))
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(DEFAULT_STREAM_RESULT_BUDGET);
@@ -283,10 +288,15 @@ async fn agent_loop_inner(
         // on disk before folding old turns, so automatic recovery has the same
         // retrievability contract as manual `/compact`.
         if ctx.needs_auto_compact_with_reserve(fixed_request_tokens) {
-            let archive = auto_compact_archive_path(root);
+            let (archive, archive_reference) = context_archive(root);
             output.compaction_started("auto");
             match ctx
-                .compact_with_reserve(provider, &archive, fixed_request_tokens)
+                .compact_with_reserve_reference(
+                    provider,
+                    &archive,
+                    fixed_request_tokens,
+                    &archive_reference,
+                )
                 .await
             {
                 Ok((before, after)) => output.compaction(before, after, "auto"),
@@ -310,10 +320,15 @@ async fn agent_loop_inner(
                 Err(LlmError::Incomplete) => anyhow::bail!(STREAM_CUT_MESSAGE),
                 Err(error) if error.is_context_overflow() && !overflow_recovery_used => {
                     overflow_recovery_used = true;
-                    let archive = auto_compact_archive_path(root);
+                    let (archive, archive_reference) = context_archive(root);
                     output.compaction_started("overflow");
                     match ctx
-                        .compact_with_reserve(provider, &archive, fixed_request_tokens)
+                        .compact_with_reserve_reference(
+                            provider,
+                            &archive,
+                            fixed_request_tokens,
+                            &archive_reference,
+                        )
                         .await
                     {
                         Ok((before, after)) => output.compaction(before, after, "overflow"),
@@ -627,21 +642,66 @@ async fn stream_with_retry(
     let mut last = None;
     for attempt in 0..=RETRY_DELAYS.len() {
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
-            return Err(LlmError::Config("stopped by user".into()));
+            return Err(cancelled_stream_error());
         }
-        match provider.stream(messages, schemas, sink).await {
+        match stream_or_cancel(provider, messages, schemas, sink, cancel).await {
             Ok(c) => return Ok(c),
             Err(e) => {
+                if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                    return Err(cancelled_stream_error());
+                }
                 if !is_retriable(&e) || attempt == RETRY_DELAYS.len() {
                     return Err(e);
                 }
                 tracing::warn!("LLM stream failed (attempt {}), retrying: {e}", attempt + 1);
                 last = Some(e);
-                tokio::time::sleep(Duration::from_millis(RETRY_DELAYS[attempt])).await;
+                retry_delay_or_cancel(Duration::from_millis(RETRY_DELAYS[attempt]), cancel).await?;
             }
         }
     }
     Err(last.expect("retry loop always returns or breaks"))
+}
+
+fn cancelled_stream_error() -> LlmError {
+    LlmError::Config(STOPPED_BY_USER.into())
+}
+
+async fn wait_for_cancel(cancel: &AtomicBool) {
+    while !cancel.load(Ordering::Relaxed) {
+        tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+    }
+}
+
+async fn stream_or_cancel(
+    provider: &dyn Provider,
+    messages: &[Message],
+    schemas: &[ToolSchema],
+    sink: &mut StreamSinkAdapter<'_>,
+    cancel: Option<&AtomicBool>,
+) -> Result<Completion, LlmError> {
+    let Some(cancel) = cancel else {
+        return provider.stream(messages, schemas, sink).await;
+    };
+    let stream = provider.stream(messages, schemas, sink);
+    tokio::pin!(stream);
+    tokio::select! {
+        result = &mut stream => result,
+        _ = wait_for_cancel(cancel) => Err(cancelled_stream_error()),
+    }
+}
+
+async fn retry_delay_or_cancel(
+    delay: Duration,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), LlmError> {
+    let Some(cancel) = cancel else {
+        tokio::time::sleep(delay).await;
+        return Ok(());
+    };
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => Ok(()),
+        _ = wait_for_cancel(cancel) => Err(cancelled_stream_error()),
+    }
 }
 
 fn is_truncated(finish_reason: Option<&str>) -> bool {
@@ -776,6 +836,77 @@ mod tests {
     struct OverflowRecoverProvider {
         stream_calls: AtomicUsize,
         complete_calls: AtomicUsize,
+    }
+
+    struct BlockingStreamProvider {
+        started: tokio::sync::Notify,
+    }
+
+    struct RetriableStreamProvider {
+        started: tokio::sync::Notify,
+        stream_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for BlockingStreamProvider {
+        fn name(&self) -> &str {
+            "blocking"
+        }
+
+        fn model(&self) -> &str {
+            "blocking"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> superscience_llm::Result<Completion> {
+            Err(LlmError::Config("complete is not used".into()))
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
+            self.started.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[async_trait]
+    impl Provider for RetriableStreamProvider {
+        fn name(&self) -> &str {
+            "retriable"
+        }
+
+        fn model(&self) -> &str {
+            "retriable"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> superscience_llm::Result<Completion> {
+            Err(LlmError::Config("complete is not used".into()))
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            self.started.notify_one();
+            Err(LlmError::Api {
+                status: 503,
+                body: "overloaded".into(),
+            })
+        }
     }
 
     #[async_trait]
@@ -915,6 +1046,63 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn cancellation_interrupts_a_provider_waiting_for_stream_data() {
+        let provider = BlockingStreamProvider {
+            started: tokio::sync::Notify::new(),
+        };
+        let output = NullOutput;
+        let cancel = AtomicBool::new(false);
+        let mut sink = StreamSinkAdapter::with_cancel(&output, &cancel);
+
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                stream_with_retry(&provider, &[], &[], &mut sink, Some(&cancel)),
+                async {
+                    provider.started.notified().await;
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            )
+        })
+        .await
+        .expect("cancellation should bound a stalled provider stream");
+
+        assert!(matches!(
+            result,
+            Err(LlmError::Config(message)) if message == STOPPED_BY_USER
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_provider_retry_backoff() {
+        let provider = RetriableStreamProvider {
+            started: tokio::sync::Notify::new(),
+            stream_calls: AtomicUsize::new(0),
+        };
+        let output = NullOutput;
+        let cancel = AtomicBool::new(false);
+        let mut sink = StreamSinkAdapter::with_cancel(&output, &cancel);
+
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                stream_with_retry(&provider, &[], &[], &mut sink, Some(&cancel)),
+                async {
+                    provider.started.notified().await;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            )
+        })
+        .await
+        .expect("cancellation should interrupt retry sleep");
+
+        assert!(matches!(
+            result,
+            Err(LlmError::Config(message)) if message == STOPPED_BY_USER
+        ));
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+    }
+
     #[async_trait]
     impl Provider for SequenceProvider {
         fn name(&self) -> &str {
@@ -1030,6 +1218,10 @@ mod tests {
             .unwrap();
         assert_eq!(archives.len(), 1, "automatic compaction must archive once");
         assert!(archives[0].path().is_file());
+        assert!(ctx
+            .messages
+            .iter()
+            .any(|message| message.content.as_text().contains("superscience-history:")));
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -124,6 +124,117 @@ impl Tool for ExplainWorkflowTool {
     }
 }
 
+/// Search configured model profiles by capability keyword (e.g. "vision",
+/// "reasoning") or browse all with "*". Returns each model's id, label,
+/// provider, supports_vision, max_tokens, context_window, and active status
+/// so the Agent can pick the right model for a task and pass its id to
+/// `create_workflow` via `params.model_id`.
+pub(crate) struct SearchModelsTool {
+    store: Store,
+}
+
+impl SearchModelsTool {
+    pub(crate) fn new(store: Store) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for SearchModelsTool {
+    fn name(&self) -> &str {
+        "search_models"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "search_models",
+            "Search configured chat model profiles by capability keyword (e.g. 'vision', 'reasoning') or browse all with '*'. Returns each model's id, label, provider, supports_vision flag, max_tokens, context_window, and active status. Use the returned model id as params.model_id when calling create_workflow to bind a specific model to a Workflow node.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Capability keyword ('vision', 'reasoning', etc.), model label fragment, or '*' to browse all configured models"
+                    }
+                },
+                "required": ["query"]
+            }),
+        )
+    }
+
+    fn preview(&self, args: &Value) -> String {
+        args.get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn read_only(&self) -> bool {
+        true
+    }
+
+    async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
+        let Some(query) = args
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+        else {
+            return ToolResult::fail("missing required argument 'query'");
+        };
+        let profiles = crate::models::delegation_profiles(&self.store).await;
+        let query_lower = query.to_lowercase();
+        let browse = query == "*";
+        let mut results = Vec::new();
+        for profile in &profiles {
+            let label_lower = profile.label.to_lowercase();
+            let provider_lower = profile.provider.to_lowercase();
+            let model_lower = profile.model.to_lowercase();
+            let score = if browse {
+                1
+            } else if query_lower == "vision" {
+                if profile.supports_vision {
+                    100
+                } else {
+                    0
+                }
+            } else {
+                let mut s = 0;
+                if label_lower.contains(&query_lower)
+                    || model_lower.contains(&query_lower)
+                    || provider_lower.contains(&query_lower)
+                {
+                    s += 10;
+                }
+                if profile.supports_vision && "vision".contains(&query_lower) {
+                    s += 20;
+                }
+                s
+            };
+            if score > 0 {
+                results.push(json!({
+                    "id": profile.id,
+                    "label": profile.label,
+                    "provider": profile.provider,
+                    "model": profile.model,
+                    "supports_vision": profile.supports_vision,
+                    "max_tokens": profile.max_tokens,
+                    "context_window": profile.context_window,
+                    "active": profile.active,
+                    "has_api_key": profile.has_api_key,
+                }));
+            }
+        }
+        ToolResult::ok(
+            serde_json::to_string_pretty(&json!({
+                "results": results,
+                "next": "Pass the desired model's id to create_workflow via params.model_id to bind it to the Workflow node.",
+            }))
+            .unwrap_or_default(),
+        )
+    }
+}
+
 /// Convert an installed Skill into a registered, reusable Workflow template.
 ///
 /// A Skill carries no machine-readable task graph, so the generated template is
@@ -196,6 +307,10 @@ impl Tool for CreateWorkflowTool {
                             "output_schema": {
                                 "type": "object",
                                 "description": "JSON object schema describing the task output"
+                            },
+                            "model_id": {
+                                "type": "string",
+                                "description": "Model profile id to bind to this Workflow node, as returned by search_models. Use this when the task needs a specific model ability (e.g. a vision-capable model for image understanding). Defaults to the session's active model."
                             }
                         }
                     }
@@ -409,9 +524,12 @@ fn apply_workflow_params(
                 }
                 proposal.tasks[0].output_schema = Some(value.clone());
             }
+            "model_id" => {
+                proposal.tasks[0].model_id = Some(required_string(value, "model_id")?);
+            }
             other => {
                 return Err(format!(
-                    "unknown params key '{other}'; supported keys: goal, context, instruction, capabilities, approval_policy, output_schema"
+                    "unknown params key '{other}'; supported keys: goal, context, instruction, capabilities, approval_policy, output_schema, model_id"
                 ));
             }
         }
@@ -450,7 +568,7 @@ fn builtin_literature_action() -> QuickAction {
         id: LITERATURE_ACTION_ID.into(),
         name: "Research literature".into(),
         description:
-            "Search supporting and challenging evidence in parallel, then synthesize the results."
+            "Prepare the selected passage for a literature-review turn in the current conversation."
                 .into(),
         icon: "search".into(),
         context: QuickActionContext::Selection,

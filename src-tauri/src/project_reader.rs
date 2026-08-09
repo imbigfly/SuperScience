@@ -117,6 +117,18 @@ pub async fn read_references(
     if project_ids.is_empty() && explicit_session_ids.is_empty() {
         return Ok(None);
     }
+    if matches!(
+        store
+            .frame_state_scope(target_frame_id)
+            .await
+            .map_err(|error| error.to_string())?,
+        Some(superscience_store::StateScope::Exploration { .. })
+    ) {
+        return Err(
+            "exploration_scope_violation: saved-session Reader references are disabled inside an exploration because they are not part of the frozen checkpoint view."
+                .into(),
+        );
+    }
     let target_project = store
         .frame_project_id(target_frame_id)
         .await

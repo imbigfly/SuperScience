@@ -15,7 +15,7 @@
 .side-back .gi { width: 16px; height: 16px; opacity: .85; }
 .side-back:hover .gi { opacity: 1; }
 
-/* --- Project switcher pill (name + caret, opens dropdown) --- */
+/* --- Project switcher pill (name opens dropdown) --- */
 .proj-switch {
   flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px;
   text-align: left; background: transparent; border: 1px solid transparent;
@@ -25,7 +25,6 @@
 }
 .proj-switch:hover, .proj-switch.active { background: var(--bg-elev); }
 .proj-switch .proj-name { font-weight: 600; font-size: 14px; letter-spacing: -0.015em; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.proj-switch .caret { color: var(--text-faint); font-size: 10px; flex: 0 0 auto; }
 
 /* --- Project switcher dropdown --- */
 .proj-menu-backdrop { position: fixed; inset: 0; z-index: 40; }

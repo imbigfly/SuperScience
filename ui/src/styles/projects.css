@@ -37,7 +37,6 @@ body:has(.window-titlebar) .projects-screen { top: 38px; }
   background: center / contain no-repeat url("logo.png");
 }
 .projects-title { font-family: var(--font-serif); font-size: var(--text-display); line-height: 1.1; color: var(--text); letter-spacing: -0.02em; }
-.projects-title .beta { font-size: var(--text-sm); color: var(--text-faint); display: block; margin-top: 2px; font-family: var(--font-ui); letter-spacing: 0; }
 .projects-actions { display: flex; align-items: center; gap: var(--space-2); flex: 0 0 auto; }
 .project-open-error { width: min(100%, 1200px); margin: -16px 0 20px; padding: 10px 13px;
   border: 1px solid color-mix(in srgb, var(--err) 32%, var(--border)); border-radius: var(--radius-sm);

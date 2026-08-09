@@ -832,26 +832,6 @@ pub(crate) async fn prepare_method_search_with_evaluator(
     })
 }
 
-#[tauri::command]
-pub(crate) async fn prepare_method_search(
-    state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
-    request: PrepareMethodSearchRequest,
-) -> Result<PreparedMethodSearch, String> {
-    let project = state.active(window.label());
-    let _activity = state.begin_project_activity(&project.id)?;
-    let frame_id = crate::ensure_active_frame(state.inner(), window.label(), &project).await?;
-    prepare_method_search_with_evaluator(
-        &state.store,
-        &project.id,
-        &project.root,
-        &frame_id,
-        request,
-        &LocalPythonMethodSearchEvaluator,
-    )
-    .await
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MethodSearchRunDetails {

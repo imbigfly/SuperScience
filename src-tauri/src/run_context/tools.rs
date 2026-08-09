@@ -131,14 +131,40 @@ impl Tool for RunInContextTool {
             ));
         }
         if !env.danger_auto_approve() {
-            if let Some(danger) = superscience_tools::safety::check_command_safety(&request.command)
-            {
-                let msg = format!(
-                    "Dangerous command detected in run_in_context ({}): {}",
-                    danger.label(),
-                    request.command
-                );
-                if !env.confirm(&msg).await {
+            let danger = superscience_tools::safety::check_command_safety(&request.command);
+            let exploration_external = if request.context_id != "local" {
+                match self.frame_id.as_deref() {
+                    Some(frame_id) => match self.store.frame_state_scope(frame_id).await {
+                        Ok(Some(superscience_store::StateScope::Exploration { .. })) => true,
+                        Ok(_) => false,
+                        Err(error) => {
+                            return ToolResult::fail(format!(
+                                "run_in_context could not resolve the conversation scope: {error}"
+                            ))
+                            .stop_batch();
+                        }
+                    },
+                    None => false,
+                }
+            } else {
+                false
+            };
+            if danger.is_some() || exploration_external {
+                let mut warnings = Vec::new();
+                if exploration_external {
+                    warnings.push(format!(
+                        "This exploration will execute on external context '{}'; remote files, jobs, and services cannot be rolled back when the exploration is discarded.",
+                        request.context_id
+                    ));
+                }
+                if let Some(danger) = danger {
+                    warnings.push(format!(
+                        "Dangerous command detected ({}): {}",
+                        danger.label(),
+                        request.command
+                    ));
+                }
+                if !env.confirm(&warnings.join("\n")).await {
                     return ToolResult::fail("error: User denied action").stop_batch();
                 }
             }
@@ -247,12 +273,19 @@ fn preflight_blocked_result(report: &RunPreflightReport, requires_confirmation: 
 
 pub struct GetRunTool {
     store: superscience_store::Store,
-    project_id: String,
+    scope: superscience_store::StateScope,
 }
 
 impl GetRunTool {
     pub fn new(store: superscience_store::Store, project_id: String) -> Self {
-        Self { store, project_id }
+        Self {
+            store,
+            scope: superscience_store::StateScope::mainline(project_id),
+        }
+    }
+
+    pub fn new_in_scope(store: superscience_store::Store, scope: superscience_store::StateScope) -> Self {
+        Self { store, scope }
     }
 }
 
@@ -285,8 +318,13 @@ impl Tool for GetRunTool {
         let Some(run_id) = args.get("run_id").and_then(|value| value.as_str()) else {
             return ToolResult::fail("get_run requires run_id");
         };
+        match self.store.run_visible_in_scope(run_id, &self.scope).await {
+            Ok(true) => {}
+            Ok(false) => return ToolResult::fail("Run does not belong to this state scope"),
+            Err(error) => return ToolResult::fail(format!("get_run error: {error}")),
+        }
         match self.store.get_run(run_id).await {
-            Ok(Some(run)) if run.project_id == self.project_id => {
+            Ok(Some(run)) => {
                 let active = !run.status.is_terminal();
                 let mut value = serde_json::to_value(run).unwrap_or_default();
                 if active {
@@ -297,7 +335,6 @@ impl Tool for GetRunTool {
                 }
                 ToolResult::ok(value.to_string())
             }
-            Ok(Some(_)) => ToolResult::fail("Run does not belong to this project"),
             Ok(None) => ToolResult::fail("Run not found"),
             Err(error) => ToolResult::fail(format!("get_run error: {error}")),
         }
@@ -306,12 +343,19 @@ impl Tool for GetRunTool {
 
 pub struct MonitorRunTool {
     store: superscience_store::Store,
-    project_id: String,
+    scope: superscience_store::StateScope,
 }
 
 impl MonitorRunTool {
     pub fn new(store: superscience_store::Store, project_id: String) -> Self {
-        Self { store, project_id }
+        Self {
+            store,
+            scope: superscience_store::StateScope::mainline(project_id),
+        }
+    }
+
+    pub fn new_in_scope(store: superscience_store::Store, scope: superscience_store::StateScope) -> Self {
+        Self { store, scope }
     }
 }
 
@@ -344,10 +388,9 @@ impl Tool for MonitorRunTool {
         let Some(run_id) = args.get("run_id").and_then(|value| value.as_str()) else {
             return ToolResult::fail("monitor_run requires run_id");
         };
-        match self.store.get_run(run_id).await {
-            Ok(Some(run)) if run.project_id == self.project_id => {}
-            Ok(Some(_)) => return ToolResult::fail("Run does not belong to this project"),
-            Ok(None) => return ToolResult::fail("Run not found"),
+        match self.store.run_visible_in_scope(run_id, &self.scope).await {
+            Ok(true) => {}
+            Ok(false) => return ToolResult::fail("Run does not belong to this state scope"),
             Err(error) => return ToolResult::fail(format!("monitor_run error: {error}")),
         }
         match wait_for_terminal(&self.store, run_id, env).await {
@@ -400,7 +443,7 @@ fn run_wait_result(run: superscience_store::RunRecord, detached: bool) -> ToolRe
 pub struct CancelRunTool {
     store: superscience_store::Store,
     manager: RunManager,
-    project_id: String,
+    scope: superscience_store::StateScope,
 }
 
 impl CancelRunTool {
@@ -408,7 +451,19 @@ impl CancelRunTool {
         Self {
             store,
             manager,
-            project_id,
+            scope: superscience_store::StateScope::mainline(project_id),
+        }
+    }
+
+    pub fn new_in_scope(
+        store: superscience_store::Store,
+        manager: RunManager,
+        scope: superscience_store::StateScope,
+    ) -> Self {
+        Self {
+            store,
+            manager,
+            scope,
         }
     }
 }
@@ -442,9 +497,9 @@ impl Tool for CancelRunTool {
         let Some(run_id) = args.get("run_id").and_then(|value| value.as_str()) else {
             return ToolResult::fail("cancel_run requires run_id");
         };
-        match self.store.get_run(run_id).await {
-            Ok(Some(run)) if run.project_id == self.project_id => {}
-            Ok(Some(_)) => return ToolResult::fail("Run does not belong to this project"),
+        match self.store.run_state_scope(run_id).await {
+            Ok(Some(scope)) if scope == self.scope => {}
+            Ok(Some(_)) => return ToolResult::fail("Run does not belong to this state scope"),
             Ok(None) => return ToolResult::fail("Run not found"),
             Err(error) => return ToolResult::fail(format!("cancel_run error: {error}")),
         }

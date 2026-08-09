@@ -4,8 +4,21 @@ use std::{cell::Cell, rc::Rc};
 
 const STREAMING_MARKDOWN_TAIL_THRESHOLD_BYTES: usize = 8_000;
 
-pub(crate) fn streaming_markdown_commit_interval_ms(text_len: usize) -> u64 {
-    if text_len >= 32_000 {
+pub(crate) fn streaming_markdown_commit_interval_ms(
+    text_len: usize,
+    recent_parse_cost_ms: Option<f64>,
+) -> u64 {
+    if let Some(cost_ms) = recent_parse_cost_ms.filter(|cost| cost.is_finite()) {
+        // Keep Markdown parsing below roughly one sixth of the main-thread
+        // budget. The live plain-text tail still advances on every delta flush.
+        return (cost_ms.max(0.0) * 6.0).ceil().clamp(50.0, 1_200.0) as u64;
+    }
+
+    // Cold-start fallback before the first measured parse. Length is only a
+    // guard here: structure and device speed decide the steady-state cadence.
+    if text_len >= 128_000 {
+        600
+    } else if text_len >= 32_000 {
         300
     } else if text_len >= STREAMING_MARKDOWN_TAIL_THRESHOLD_BYTES {
         150
@@ -35,10 +48,12 @@ pub(crate) fn StreamingAssistantMessage(
     let rendered_text = create_rw_signal(assistant_text_at(items, source_item));
     let commit_handle = Rc::new(Cell::new(None::<TimeoutHandle>));
     let active = Rc::new(Cell::new(true));
+    let recent_parse_cost_ms = Rc::new(Cell::new(None::<f64>));
 
     create_render_effect({
         let commit_handle = Rc::clone(&commit_handle);
         let active = Rc::clone(&active);
+        let recent_parse_cost_ms = Rc::clone(&recent_parse_cost_ms);
         move |_| {
             let (changed, text_len) = items.with(|rows| match rows.get(source_item) {
                 Some(ChatItem::Assistant { text, .. }) => (
@@ -51,8 +66,9 @@ pub(crate) fn StreamingAssistantMessage(
                 return;
             }
 
-            let delay =
-                std::time::Duration::from_millis(streaming_markdown_commit_interval_ms(text_len));
+            let delay = std::time::Duration::from_millis(
+                streaming_markdown_commit_interval_ms(text_len, recent_parse_cost_ms.get()),
+            );
             let callback_handle = Rc::clone(&commit_handle);
             let callback_active = Rc::clone(&active);
             match leptos::set_timeout_with_handle(
@@ -84,8 +100,18 @@ pub(crate) fn StreamingAssistantMessage(
         }
     });
 
-    let html = create_memo(move |_| {
-        enrich_md_html(md_to_html(&rendered_text.get()), &[], &[], locale.get())
+    let html = create_memo({
+        let recent_parse_cost_ms = Rc::clone(&recent_parse_cost_ms);
+        move |_| {
+            let started_at = js_sys::Date::now();
+            let html = enrich_md_html(md_to_html(&rendered_text.get()), &[], &[], locale.get());
+            let elapsed = (js_sys::Date::now() - started_at).max(0.0);
+            let smoothed = recent_parse_cost_ms
+                .get()
+                .map_or(elapsed, |previous| previous * 0.7 + elapsed * 0.3);
+            recent_parse_cost_ms.set(Some(smoothed));
+            html
+        }
     });
     let pending_text = create_memo(move |_| {
         let rendered = rendered_text.get();
@@ -101,11 +127,12 @@ pub(crate) fn StreamingAssistantMessage(
         })
     });
     let hid = unique_dom_id("stream-md");
-    let hid_for_effect = hid.clone();
-    create_render_effect(move |_| {
-        let _ = html.get();
-        schedule_highlight(hid_for_effect.clone());
-    });
+    // `inner_html` replaces the whole parsed prefix on every commit. Running
+    // highlight.js and KaTeX here would therefore rescan and mutate an
+    // increasingly large, short-lived DOM tree each time. The settled
+    // `AssistantMessage` performs that post-processing once when the stream
+    // completes; during streaming the Markdown structure and cheap text tail
+    // remain live without paying the syntax-decoration cost repeatedly.
 
     view! {
         <div class="assistant-wrap">
@@ -668,6 +695,10 @@ pub(crate) fn AssistantMessage(
     on_review: Callback<()>,
     can_undo: Signal<bool>,
     on_undo: Callback<usize>,
+    show_explore: Signal<bool>,
+    can_explore: Signal<bool>,
+    explore_turn_index: usize,
+    on_explore: Callback<usize>,
 ) -> impl IntoView {
     let locale = use_locale();
     let arts_for_html = artifacts.clone();
@@ -822,6 +853,27 @@ pub(crate) fn AssistantMessage(
                 </div>
             })}
             <div class="msg-actions">
+                {move || show_explore.get().then(|| view! {
+                    <button
+                        type="button"
+                        class="msg-icon-btn msg-explore-btn"
+                        data-testid="start-exploration"
+                        disabled=move || !can_explore.get()
+                        title=move || t(
+                            locale.get(),
+                            if can_explore.get() {
+                                "exploration.start"
+                            } else {
+                                "exploration.history_unavailable"
+                            },
+                        )
+                        aria-label=move || t(locale.get(), "exploration.start")
+                        on:click=move |_| on_explore.call(explore_turn_index)
+                    >
+                        {compose_icon("branch")}
+                        <span>{move || t(locale.get(), "exploration.start")}</span>
+                    </button>
+                })}
                 <button
                     type="button"
                     class="msg-icon-btn msg-review-btn"
@@ -1199,11 +1251,18 @@ mod streaming_markdown_tests {
     use super::streaming_markdown_commit_interval_ms;
 
     #[test]
-    fn parsing_budget_slows_as_the_live_answer_grows() {
-        assert_eq!(streaming_markdown_commit_interval_ms(7_999), 50);
-        assert_eq!(streaming_markdown_commit_interval_ms(8_000), 150);
-        assert_eq!(streaming_markdown_commit_interval_ms(31_999), 150);
-        assert_eq!(streaming_markdown_commit_interval_ms(32_000), 300);
+    fn parsing_budget_uses_measured_cost_after_a_length_guarded_cold_start() {
+        assert_eq!(streaming_markdown_commit_interval_ms(7_999, None), 50);
+        assert_eq!(streaming_markdown_commit_interval_ms(8_000, None), 150);
+        assert_eq!(streaming_markdown_commit_interval_ms(32_000, None), 300);
+        assert_eq!(streaming_markdown_commit_interval_ms(128_000, None), 600);
+
+        // Once measured, actual work rather than answer length controls the
+        // cadence: cheap large Markdown remains fluid; expensive small
+        // Markdown yields more main-thread time.
+        assert_eq!(streaming_markdown_commit_interval_ms(512_000, Some(4.0)), 50);
+        assert_eq!(streaming_markdown_commit_interval_ms(1_000, Some(40.0)), 240);
+        assert_eq!(streaming_markdown_commit_interval_ms(1_000, Some(400.0)), 1_200);
     }
 }
 

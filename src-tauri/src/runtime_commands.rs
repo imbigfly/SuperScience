@@ -14,21 +14,55 @@ pub(super) async fn list_execution_contexts(
 }
 
 #[tauri::command]
-pub(super) fn list_runtimes(state: State<'_, AppState>) -> Vec<superscience_runtime::RuntimeInfo> {
-    state.runtime_manager.list()
+pub(super) async fn list_runtimes(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<superscience_runtime::RuntimeInfo>, String> {
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    Ok(state
+        .runtime_manager
+        .list()
+        .into_iter()
+        .filter(|runtime| match &scope {
+            superscience_store::StateScope::Mainline { .. } => {
+                runtime.key.scope_key == superscience_runtime::MAINLINE_RUNTIME_SCOPE
+            }
+            superscience_store::StateScope::Exploration {
+                project_id,
+                exploration_id,
+            } => runtime.key.project_id == *project_id && runtime.key.scope_key == *exploration_id,
+        })
+        .collect())
 }
 
 #[tauri::command]
 pub(super) async fn inspect_runtime(
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     project_id: String,
     context_id: String,
     language: superscience_runtime::RuntimeLanguage,
 ) -> Result<superscience_runtime::RuntimeObjectList, String> {
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    if matches!(&scope, superscience_store::StateScope::Exploration { .. })
+        && scope.project_id() != project_id
+    {
+        return Err(
+            "exploration_scope_violation: cross-project runtime inspection is disabled".into(),
+        );
+    }
+    let scope_key = if scope.project_id() == project_id {
+        scope.scope_key()
+    } else {
+        superscience_runtime::MAINLINE_RUNTIME_SCOPE
+    };
     state
         .runtime_manager
         .inspect(&superscience_runtime::RuntimeKey {
             project_id,
+            scope_key: scope_key.into(),
             context_id,
             language,
         })
@@ -58,9 +92,11 @@ pub(super) async fn execute_runtime(
             superscience_runtime::MAX_CODE_BYTES
         ));
     }
-    let project = state.active(window.label());
+    let (project, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     let key = superscience_runtime::RuntimeKey {
         project_id: project.id,
+        scope_key: scope.scope_key().to_string(),
         context_id,
         language,
     };
@@ -90,12 +126,14 @@ pub(super) async fn start_runtime(
     context_id: String,
     language: superscience_runtime::RuntimeLanguage,
 ) -> Result<superscience_runtime::RuntimeInfo, String> {
-    let project = state.active(window.label());
+    let (project, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     state
         .runtime_manager
         .start(
             superscience_runtime::RuntimeKey {
                 project_id: project.id,
+                scope_key: scope.scope_key().to_string(),
                 context_id,
                 language,
             },
@@ -108,14 +146,30 @@ pub(super) async fn start_runtime(
 #[tauri::command]
 pub(super) async fn stop_runtime(
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     project_id: String,
     context_id: String,
     language: superscience_runtime::RuntimeLanguage,
 ) -> Result<Option<superscience_runtime::RuntimeInfo>, String> {
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    if matches!(&scope, superscience_store::StateScope::Exploration { .. })
+        && scope.project_id() != project_id
+    {
+        return Err(
+            "exploration_scope_violation: cross-project runtime control is disabled".into(),
+        );
+    }
+    let scope_key = if scope.project_id() == project_id {
+        scope.scope_key()
+    } else {
+        superscience_runtime::MAINLINE_RUNTIME_SCOPE
+    };
     Ok(state
         .runtime_manager
         .stop(&superscience_runtime::RuntimeKey {
             project_id,
+            scope_key: scope_key.to_string(),
             context_id,
             language,
         })
@@ -125,22 +179,40 @@ pub(super) async fn stop_runtime(
 #[tauri::command]
 pub(super) async fn restart_runtime(
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     project_id: String,
     context_id: String,
     language: superscience_runtime::RuntimeLanguage,
 ) -> Result<superscience_runtime::RuntimeInfo, String> {
-    let (_, workspace) = state
-        .store
-        .get_project(&project_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("Project not found: {project_id}"))?;
-    let root = ensure_writable(PathBuf::from(workspace), &state.app_data);
+    let (working, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    if matches!(&scope, superscience_store::StateScope::Exploration { .. })
+        && scope.project_id() != project_id
+    {
+        return Err(
+            "exploration_scope_violation: cross-project runtime control is disabled".into(),
+        );
+    }
+    let (root, scope_key) = if working.id == project_id {
+        (working.root, scope.scope_key().to_string())
+    } else {
+        let (_, workspace) = state
+            .store
+            .get_project(&project_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Project not found: {project_id}"))?;
+        (
+            ensure_writable(PathBuf::from(workspace), &state.app_data),
+            superscience_runtime::MAINLINE_RUNTIME_SCOPE.into(),
+        )
+    };
     state
         .runtime_manager
         .restart(
             superscience_runtime::RuntimeKey {
                 project_id,
+                scope_key,
                 context_id,
                 language,
             },
@@ -154,13 +226,38 @@ pub(super) async fn restart_runtime(
 pub(super) async fn list_runs(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
-) -> Result<Vec<superscience_store::RunRecord>, String> {
-    let ap = state.active(window.label());
+) -> Result<Vec<superscience_store::RunSummary>, String> {
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     state
         .store
-        .list_runs_by_project(&ap.id)
+        .list_run_summaries_in_scope(&scope)
         .await
         .map_err(|e| format!("{e}"))
+}
+
+#[tauri::command]
+pub(super) async fn get_run_detail(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+) -> Result<superscience_store::RunRecord, String> {
+    let (_, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    if !state
+        .store
+        .run_visible_in_scope(&run_id, &scope)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Run is not visible in the active state scope".into());
+    }
+    state
+        .store
+        .get_run(&run_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Run not found".into())
 }
 
 #[tauri::command]
@@ -169,7 +266,8 @@ pub(super) async fn cancel_run(
     window: tauri::WebviewWindow,
     run_id: String,
 ) -> Result<superscience_store::RunRecord, String> {
-    let ap = state.active(window.label());
+    let (ap, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     let run = state
         .store
         .get_run(&run_id)
@@ -178,6 +276,16 @@ pub(super) async fn cancel_run(
         .ok_or_else(|| "Run not found".to_string())?;
     if run.project_id != ap.id {
         return Err("Run does not belong to the active project".into());
+    }
+    if state
+        .store
+        .run_state_scope(&run_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        != Some(&scope)
+    {
+        return Err("Run is not visible in the active state scope".into());
     }
     let _project_activity = state.begin_project_activity(&ap.id)?;
     state.run_manager.cancel(&state.store, &run_id).await?;

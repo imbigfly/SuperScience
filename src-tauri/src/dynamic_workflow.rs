@@ -341,48 +341,6 @@ pub(crate) struct DynamicAgentWorkflowSummary {
     pub(crate) approval_reasons: Vec<AgentApprovalReasonSummary>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct AgentWorkflowVersionConflict {
-    pub(crate) workflow_id: String,
-    pub(crate) expected_version: i64,
-    pub(crate) actual_version: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct DynamicWorkflowCommandError {
-    pub(crate) code: String,
-    pub(crate) message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) version_conflict: Option<AgentWorkflowVersionConflict>,
-}
-
-impl DynamicWorkflowCommandError {
-    pub(crate) fn new(code: &str, message: impl Into<String>) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-            version_conflict: None,
-        }
-    }
-
-    pub(crate) fn conflict(
-        workflow_id: impl Into<String>,
-        expected_version: i64,
-        actual_version: i64,
-    ) -> Self {
-        let workflow_id = workflow_id.into();
-        Self {
-            code: "version_conflict".into(),
-            message: "Agent plan changed in another window; refresh and try again.".into(),
-            version_conflict: Some(AgentWorkflowVersionConflict {
-                workflow_id,
-                expected_version,
-                actual_version,
-            }),
-        }
-    }
-}
-
 pub(crate) async fn resolve_proposal(
     store: &Store,
     workflow_id: String,

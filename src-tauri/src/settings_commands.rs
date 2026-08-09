@@ -18,6 +18,7 @@ pub(super) struct TokenUsageOverview {
     workspaces: Vec<superscience_store::ProjectTokenUsage>,
     days: Vec<superscience_store::TokenUsageDay>,
     models: Vec<superscience_store::ModelTokenUsage>,
+    tools: Vec<superscience_store::ToolCallUsage>,
 }
 
 async fn validate_provider_config(
@@ -939,10 +940,16 @@ pub(super) async fn get_token_usage(
         .token_usage_by_model()
         .await
         .map_err(|error| error.to_string())?;
+    let tools = state
+        .store
+        .tool_call_usage_ranking()
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(TokenUsageOverview {
         workspaces,
         days,
         models,
+        tools,
     })
 }
 

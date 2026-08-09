@@ -3,12 +3,12 @@ use superscience_tools::{Tool, ToolEnv, ToolResult};
 
 pub struct ResearchGraphTool {
     store: superscience_store::Store,
-    project_id: String,
+    scope: superscience_store::StateScope,
 }
 
 impl ResearchGraphTool {
-    pub fn new(store: superscience_store::Store, project_id: String) -> Self {
-        Self { store, project_id }
+    pub fn new_in_scope(store: superscience_store::Store, scope: superscience_store::StateScope) -> Self {
+        Self { store, scope }
     }
 }
 
@@ -63,7 +63,7 @@ impl Tool for ResearchGraphTool {
         };
         let mut node = match superscience_store::ResearchNode::new(
             uuid::Uuid::new_v4().to_string(),
-            &self.project_id,
+            self.scope.project_id(),
             kind,
             title,
         ) {
@@ -81,7 +81,11 @@ impl Tool for ResearchGraphTool {
                 .unwrap_or_else(|| serde_json::json!({})),
         )
         .unwrap_or_else(|_| "{}".into());
-        match self.store.save_research_node(&node).await {
+        match self
+            .store
+            .save_research_node_in_scope(&node, &self.scope)
+            .await
+        {
             Ok(()) => ToolResult::ok(serde_json::json!({ "node_id": node.id }).to_string()),
             Err(error) => ToolResult::fail(format!("research_graph error: {error}")),
         }
@@ -101,7 +105,7 @@ impl ResearchGraphTool {
         };
         let mut edge = match superscience_store::ResearchEdge::new(
             uuid::Uuid::new_v4().to_string(),
-            &self.project_id,
+            self.scope.project_id(),
             source_id,
             target_id,
             relation,
@@ -116,7 +120,11 @@ impl ResearchGraphTool {
                 .unwrap_or_else(|| serde_json::json!({})),
         )
         .unwrap_or_else(|_| "{}".into());
-        match self.store.save_research_edge(&edge).await {
+        match self
+            .store
+            .save_research_edge_in_scope(&edge, &self.scope)
+            .await
+        {
             Ok(()) => ToolResult::ok(serde_json::json!({ "edge_id": edge.id }).to_string()),
             Err(error) => ToolResult::fail(format!("research_graph error: {error}")),
         }
@@ -162,7 +170,10 @@ mod tests {
             .create_project("project", "Project", "")
             .await
             .unwrap();
-        let tool = ResearchGraphTool::new(store.clone(), "project".into());
+        let tool = ResearchGraphTool::new_in_scope(
+            store.clone(),
+            superscience_store::StateScope::mainline("project"),
+        );
         let env = NoEnv(std::env::temp_dir());
 
         let data = tool

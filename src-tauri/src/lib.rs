@@ -37,6 +37,9 @@ mod desktop_lifecycle;
 mod device_bridge;
 mod device_hub;
 mod dynamic_workflow;
+mod exploration_commands;
+mod exploration_promotion;
+mod exploration_workspace;
 mod file_browser;
 mod harvest;
 mod image_generation_tool;
@@ -54,6 +57,7 @@ mod plan_mode;
 mod plugins;
 mod project_commands;
 mod project_reader;
+mod project_state_revisions;
 mod project_sync;
 mod project_transfer;
 mod publication_capsule;
@@ -76,6 +80,7 @@ mod session_context_tool;
 mod session_export;
 mod session_import;
 mod settings_commands;
+mod side_chat;
 mod skill_commands;
 mod skill_portfolio;
 mod snapshot_store;
@@ -87,6 +92,7 @@ mod ssh_master;
 mod terminal_sessions;
 mod turn_undo;
 mod workspace_manifest;
+mod workspace_scan;
 mod wsl_contexts;
 
 use artifact_commands::{register_artifact, upload_file};
@@ -814,6 +820,10 @@ struct SessionInfo {
 
 const SESSION_HISTORY_PAGE_SIZE: usize = 100;
 const SESSION_TRANSCRIPT_PAGE_TURNS: usize = 20;
+/// Follow-up suggestions only need the conversational tail. Reading the full
+/// history here used to duplicate every saved tool dump immediately after a
+/// turn completed, exactly when the WebView was settling its projections.
+const FOLLOW_UP_TRANSCRIPT_TURNS: usize = 4;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct SessionCursor {
@@ -1038,7 +1048,7 @@ fn messages_to_items(msgs: &[superscience_llm::Message]) -> Vec<UiItem> {
                 "monitor_run" | "superscience_monitor_run" => args.get("run_id").and_then(|v| v.as_str()),
                 _ => None,
             }?;
-            Some((call.id.as_str(), input.to_owned()))
+            Some((call.id.as_str(), bounded_ui_tool_input(input)))
         })
         .collect();
     let mut out = vec![];
@@ -1177,7 +1187,7 @@ fn messages_to_items(msgs: &[superscience_llm::Message]) -> Vec<UiItem> {
                 {
                     out.push(UiItem {
                         role: "acp_tool".into(),
-                        text: envelope.content,
+                        text: bounded_ui_text(&envelope.content, UI_TOOL_RESULT_MAX_CHARS),
                         tool_name: Some(envelope.title),
                         ok: Some(matches!(envelope.status.as_str(), "completed" | "failed")),
                         duration_ms: None,
@@ -1192,7 +1202,7 @@ fn messages_to_items(msgs: &[superscience_llm::Message]) -> Vec<UiItem> {
                 } else {
                     out.push(UiItem {
                         role: "tool".into(),
-                        text,
+                        text: bounded_ui_tool_result(m.tool_name.as_deref().unwrap_or(""), &text),
                         tool_name: m.tool_name.clone(),
                         ok: Some(true),
                         duration_ms: None,
@@ -1214,6 +1224,89 @@ fn messages_to_items(msgs: &[superscience_llm::Message]) -> Vec<UiItem> {
         }
     }
     out
+}
+
+/// Tool cards need their complete JSON bodies, but ordinary tool output is a
+/// transcript preview. Keep that preview bounded on every path (live events,
+/// modern replay, and the message-only fallback used by legacy sessions).
+const UI_TOOL_RESULT_MAX_CHARS: usize = 4_000;
+const UI_TOOL_INPUT_MAX_CHARS: usize = 64 * 1024;
+const UI_OUTPUT_TRUNCATED_MARKER: &str = "\n… output truncated …";
+
+fn bounded_ui_text(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut bounded: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_none() {
+        return bounded;
+    }
+    let marker_chars = UI_OUTPUT_TRUNCATED_MARKER.chars().count();
+    for _ in 0..marker_chars.min(max_chars) {
+        bounded.pop();
+    }
+    bounded.push_str(UI_OUTPUT_TRUNCATED_MARKER);
+    bounded
+}
+
+fn bounded_ui_tool_input(value: &str) -> String {
+    bounded_ui_text(value, UI_TOOL_INPUT_MAX_CHARS)
+}
+
+fn bounded_ui_tool_result(name: &str, value: &str) -> String {
+    if matches!(
+        name,
+        "attempt_completion" | superscience_tools::plan::PROPOSE_PLAN | superscience_tools::ask_user::ASK_USER
+    ) {
+        value.to_string()
+    } else {
+        bounded_ui_text(value, UI_TOOL_RESULT_MAX_CHARS)
+    }
+}
+
+/// Replay uses the same terminal semantics and memory ceiling as live stdout.
+/// This is intentionally byte-based because it bounds the actual IPC/String
+/// allocation while preserving UTF-8 boundaries.
+const UI_STREAM_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+
+fn push_bounded_terminal_chunk(output: &mut String, chunk: &str) {
+    let mut rest = chunk;
+    if output.ends_with('\r') && !rest.is_empty() {
+        output.pop();
+        if let Some(stripped) = rest.strip_prefix('\n') {
+            output.push('\n');
+            rest = stripped;
+        } else {
+            truncate_ui_terminal_line(output);
+        }
+    }
+    while let Some(pos) = rest.find('\r') {
+        output.push_str(&rest[..pos]);
+        let after = &rest[pos + 1..];
+        if after.is_empty() {
+            output.push('\r');
+            rest = after;
+            break;
+        }
+        if let Some(stripped) = after.strip_prefix('\n') {
+            output.push('\n');
+            rest = stripped;
+        } else {
+            truncate_ui_terminal_line(output);
+            rest = after;
+        }
+    }
+    output.push_str(rest);
+    if output.len() > UI_STREAM_OUTPUT_MAX_BYTES {
+        let mut cut = output.len() - UI_STREAM_OUTPUT_MAX_BYTES;
+        while !output.is_char_boundary(cut) {
+            cut += 1;
+        }
+        output.drain(..cut);
+    }
+}
+
+fn truncate_ui_terminal_line(output: &mut String) {
+    let line_start = output.rfind('\n').map_or(0, |index| index + 1);
+    output.truncate(line_start);
 }
 
 fn background_completion_ok(raw: &str) -> Option<bool> {
@@ -1339,7 +1432,7 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                 tool_name: Some(name.clone()),
                 ok: None,
                 duration_ms: None,
-                input: Some(preview.clone()),
+                input: Some(bounded_ui_tool_input(preview)),
                 model_name: None,
                 call_id: None,
                 kind: None,
@@ -1393,7 +1486,7 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                         && item.ok.is_none()
                 }) {
                     item.ok = Some(*ok);
-                    item.text = content.clone();
+                    item.text = bounded_ui_tool_result(name, content);
                     item.duration_ms = (*duration_ms > 0).then_some(*duration_ms);
                 }
                 if name == "attempt_completion" && *ok && !content.trim().is_empty() {
@@ -1421,6 +1514,20 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                     }
                 }
             }
+            AgentEvent::FileChanged { path, .. } => items.push(UiItem {
+                role: "file_changed".into(),
+                text: path.clone(),
+                tool_name: None,
+                ok: None,
+                duration_ms: None,
+                input: None,
+                model_name: None,
+                call_id: None,
+                kind: None,
+                status: None,
+                locations: None,
+                resources: Vec::new(),
+            }),
             AgentEvent::MessageBoundary { seq, .. } => {
                 boundaries.insert(*seq, items.len());
             }
@@ -1431,11 +1538,13 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
             }
             AgentEvent::Stdout { chunk, .. } => {
                 if let Some(item) = items.iter_mut().rev().find(|item| item.role == "tool") {
-                    item.text.push_str(chunk);
+                    push_bounded_terminal_chunk(&mut item.text, chunk);
                 } else {
+                    let mut text = String::new();
+                    push_bounded_terminal_chunk(&mut text, chunk);
                     items.push(UiItem {
                         role: "tool".into(),
-                        text: chunk.clone(),
+                        text,
                         tool_name: Some("stdout".into()),
                         ok: None,
                         duration_ms: None,
@@ -1497,6 +1606,36 @@ fn usage_item(
 const MAX_PENDING_UI_EVENT_BYTES: usize = 64 * 1024;
 const UI_EVENT_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Keep future session event logs bounded as well as their replay. Completed
+/// tools have a separate `ToolResult` preview, so persisted stdout is only the
+/// recoverable in-progress tail and never needs to grow without limit.
+fn limit_persisted_ui_event(mut event: AgentEvent, stdout_bytes: &mut usize) -> Option<AgentEvent> {
+    match &mut event {
+        AgentEvent::ToolCall { .. } | AgentEvent::ToolResult { .. } | AgentEvent::User { .. } => {
+            *stdout_bytes = 0;
+        }
+        AgentEvent::Stdout { chunk, .. } => {
+            let remaining = UI_STREAM_OUTPUT_MAX_BYTES.saturating_sub(*stdout_bytes);
+            if remaining == 0 {
+                return None;
+            }
+            if chunk.len() > remaining {
+                let mut end = remaining;
+                while end > 0 && !chunk.is_char_boundary(end) {
+                    end -= 1;
+                }
+                chunk.truncate(end);
+            }
+            if chunk.is_empty() {
+                return None;
+            }
+            *stdout_bytes += chunk.len();
+        }
+        _ => {}
+    }
+    Some(event)
+}
+
 fn merge_pending_ui_event(
     pending: &mut Option<AgentEvent>,
     event: AgentEvent,
@@ -1542,6 +1681,7 @@ async fn persist_ui_events(
     flush_interval: std::time::Duration,
 ) {
     let mut pending = None;
+    let mut persisted_stdout_bytes = 0usize;
     let mut ticker = tokio::time::interval(flush_interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     ticker.tick().await;
@@ -1549,8 +1689,10 @@ async fn persist_ui_events(
         tokio::select! {
             event = rx.recv() => match event {
                 Some(event) => {
-                    if let Some(event) = merge_pending_ui_event(&mut pending, event) {
-                        append_ui_event(&store, &frame_id, &mut seq, event).await;
+                    if let Some(event) = limit_persisted_ui_event(event, &mut persisted_stdout_bytes) {
+                        if let Some(event) = merge_pending_ui_event(&mut pending, event) {
+                            append_ui_event(&store, &frame_id, &mut seq, event).await;
+                        }
                     }
                 }
                 None => break,
@@ -2087,6 +2229,14 @@ impl AppState {
             .try_read_owned()
             .map_err(|_| "This project is being synchronized. Try again when sync finishes.".into())
     }
+    fn begin_project_exclusive_activity(
+        &self,
+        project_id: &str,
+    ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, String> {
+        self.project_activity(project_id)
+            .try_write_owned()
+            .map_err(|_| "ProjectBusy: another project operation is still active".into())
+    }
     /// Snapshot a window's active project. Falls back to the "main" window's
     /// project (always initialized at startup) for un-scoped or early calls.
     fn active(&self, label: &str) -> ActiveProject {
@@ -2469,11 +2619,24 @@ fn should_persist_ui_event(event: &AgentEvent) -> bool {
             | AgentEvent::Reasoning { .. }
             | AgentEvent::ToolCall { .. }
             | AgentEvent::ToolResult { .. }
+            | AgentEvent::FileChanged { .. }
             | AgentEvent::ToolPresentation { .. }
             | AgentEvent::Stdout { .. }
             | AgentEvent::Usage { .. }
             | AgentEvent::Compaction { .. }
     )
+}
+
+fn provenance_ui_file_changes(rec: &superscience_core::ProvenanceRecord) -> &[String] {
+    // write/edit/generate_image already emit ToolEvent::FileChanged at the
+    // moment their bytes land. Python, R, and shell writes are learned only
+    // from the post-tool workspace diff, so forward that structured evidence
+    // without duplicating the direct-tool events.
+    if matches!(rec.tool.as_str(), "python" | "r" | "shell") {
+        &rec.files_written
+    } else {
+        &[]
+    }
 }
 
 impl Output for TauriOutput {
@@ -2493,26 +2656,15 @@ impl Output for TauriOutput {
         self.emit(AgentEvent::ToolCall {
             frame_id: self.frame_id.clone(),
             name: name.into(),
-            preview: preview.into(),
+            preview: bounded_ui_tool_input(preview),
         });
     }
     fn tool_result(&self, name: &str, ok: bool, content: &str, duration_ms: u64) {
-        // ponytail: some tool results ARE the card the UI renders, not a preview
-        // of one — attempt_completion is the final answer bubble, propose_plan
-        // and ask_user are card JSON bodies. A clip would truncate them into junk.
-        let clipped: String = if matches!(
-            name,
-            "attempt_completion" | superscience_tools::plan::PROPOSE_PLAN | superscience_tools::ask_user::ASK_USER
-        ) {
-            content.to_string()
-        } else {
-            content.chars().take(4000).collect()
-        };
         self.emit(AgentEvent::ToolResult {
             frame_id: self.frame_id.clone(),
             name: name.into(),
             ok,
-            content: clipped,
+            content: bounded_ui_tool_result(name, content),
             duration_ms,
         });
     }
@@ -2690,6 +2842,9 @@ impl Output for TauriOutput {
         });
     }
     fn provenance(&self, rec: &superscience_core::ProvenanceRecord) {
+        for path in provenance_ui_file_changes(rec) {
+            self.file_changed(path);
+        }
         if let Some(tx) = &self.prov {
             let _ = tx.send(rec.clone());
         }
@@ -3961,6 +4116,7 @@ async fn wire_runtimes_and_mcp(
     registry: &mut superscience_tools::Registry,
     runtime_manager: &superscience_runtime::RuntimeManager,
     project_id: &str,
+    scope_key: &str,
     frame_id: &str,
     app_data: &std::path::Path,
     store: &Store,
@@ -3972,11 +4128,14 @@ async fn wire_runtimes_and_mcp(
     if runtime_allow.is_none() {
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
-                Box::new(runtime_config_tool::SetRuntimeInterpreterTool::new(
-                    store.clone(),
-                    runtime_manager.clone(),
-                    project_id,
-                )),
+                Box::new(
+                    runtime_config_tool::SetRuntimeInterpreterTool::new_in_scope(
+                        store.clone(),
+                        runtime_manager.clone(),
+                        project_id,
+                        scope_key,
+                    ),
+                ),
                 store.clone(),
                 frame_id,
             ),
@@ -4010,9 +4169,10 @@ async fn wire_runtimes_and_mcp(
     if runtime_granted("python") && worker_path.is_file() {
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
-                Box::new(superscience_runtime::ReplTool::new(
+                Box::new(superscience_runtime::ReplTool::new_in_scope(
                     runtime_manager.clone(),
                     project_id,
+                    scope_key,
                 )),
                 store.clone(),
                 frame_id,
@@ -4030,9 +4190,10 @@ async fn wire_runtimes_and_mcp(
     if runtime_granted("r") && r_worker_path.is_file() {
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
-                Box::new(superscience_runtime::RTool::new(
+                Box::new(superscience_runtime::RTool::new_in_scope(
                     runtime_manager.clone(),
                     project_id,
+                    scope_key,
                 )),
                 store.clone(),
                 frame_id,
@@ -4375,9 +4536,15 @@ fn acp_bridge_launch(
 async fn resolve_composer_references(
     store: &Store,
     refs: &[ComposerReferenceArg],
-    _target_frame_id: &str,
+    target_frame_id: &str,
+    working_root: &Path,
     skills: &SkillIndex,
 ) -> Result<Vec<String>, String> {
+    let scope = store
+        .frame_state_scope(target_frame_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Target conversation not found.".to_string())?;
     let mut seen = HashSet::new();
     let mut artifact_lines = Vec::new();
     let mut skill_blocks = Vec::new();
@@ -4399,21 +4566,40 @@ async fn resolve_composer_references(
                 if !seen.insert(format!("artifact:{id}")) {
                     continue;
                 }
-                let artifact = store
+                let mut artifact = store
                     .get_artifact_detail(id)
                     .await
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("Attached artifact '{id}' no longer exists."))?;
-                let real = superscience_tools::safety::validate_file_path(
-                    Path::new(&artifact.project_root),
-                    &artifact.path,
-                )
-                .map_err(|_| {
-                    format!(
-                        "Attached artifact '{}' is no longer readable.",
-                        artifact.name
-                    )
-                })?;
+                if !store
+                    .artifact_visible_in_scope(id, &scope)
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err(format!(
+                        "Attached artifact '{id}' is unavailable in the active state."
+                    ));
+                }
+                artifact.path = store
+                    .artifact_path_in_scope(id, &scope)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        format!("Attached artifact '{id}' is unavailable in the active state.")
+                    })?;
+                let artifact_root = if matches!(&scope, superscience_store::StateScope::Exploration { .. })
+                {
+                    working_root
+                } else {
+                    Path::new(&artifact.project_root)
+                };
+                let real = superscience_tools::safety::validate_file_path(artifact_root, &artifact.path)
+                    .map_err(|_| {
+                        format!(
+                            "Attached artifact '{}' is no longer readable.",
+                            artifact.name
+                        )
+                    })?;
                 if !real.is_file() {
                     return Err(format!(
                         "Attached artifact '{}' is no longer readable.",
@@ -4678,22 +4864,17 @@ async fn send_message_inner(
         return Err("message is empty".into());
     }
     let mut ap = state.active(window_label);
+    let mut explicit_scope = None;
     // A session belongs to one project for life, but the per-window active slot
     // can drift while it keeps running (another project opened in this window,
     // the "main" fallback, an agent rebuild). For explicit session ids, always
     // run the turn in the owner project — never error out on a mismatch or,
     // worse, run tools in a stranger's workspace (#182, #194).
     if let Some(id) = session_id.as_deref().filter(|id| !id.is_empty()) {
-        let owner = state
-            .store
-            .frame_project_id(id)
-            .await
-            .map_err(|error| error.to_string())?;
-        if let Some(owner_id) = owner.filter(|owner_id| owner_id != &ap.id) {
-            ap = project_commands::load_active_project(&state, &owner_id)
-                .await?
-                .0;
-        }
+        let (working_project, scope) =
+            exploration_commands::working_project_for_frame(state, id).await?;
+        ap = working_project;
+        explicit_scope = Some(scope);
     }
     let _project_activity = state.begin_project_activity(&ap.id)?;
     let saved_binding = match session_id.as_deref().filter(|id| !id.is_empty()) {
@@ -4709,6 +4890,15 @@ async fn send_message_inner(
         .is_some_and(|id| !id.trim().is_empty())
         || saved_binding.is_some()
     {
+        if matches!(
+            explicit_scope.as_ref(),
+            Some(superscience_store::StateScope::Exploration { .. })
+        ) {
+            return Err(
+                "exploration_acp_unsupported: ACP conversations cannot run inside an exploration in the MVP."
+                    .into(),
+            );
+        }
         // ACP agents own their conversation context, so neither mid-turn
         // guidance injection nor context rollback is possible over the
         // protocol; `guide`/`replace` degrade to the plain queued turn here.
@@ -4747,7 +4937,7 @@ async fn send_message_inner(
         let refs = references.as_deref().unwrap_or_default();
         let skills = active_skill_index(&state.store, &ap).await;
         let mut injected_context =
-            resolve_composer_references(&state.store, refs, &frame_id, &skills).await?;
+            resolve_composer_references(&state.store, refs, &frame_id, &ap.root, &skills).await?;
         if let Some(context) = runtime.mcp_app_context_injection() {
             injected_context.push(context);
         }
@@ -4893,6 +5083,11 @@ async fn send_message_inner(
         }
         None => create_session_frame(&state.store, &ap.id).await?,
     };
+    let frame_scope = match explicit_scope {
+        Some(scope) => scope,
+        None => superscience_store::StateScope::mainline(ap.id.clone()),
+    };
+    exploration_commands::require_writable_exploration(&state.store, &frame_scope).await?;
     if user_routed_turn {
         state.set_notification_window(&frame_id, window_label);
     }
@@ -5106,29 +5301,32 @@ async fn send_message_inner(
             ap.id.clone(),
             Some(frame_id.clone()),
         )));
-        agent.add_tool(Box::new(run_context::GetRunTool::new(
+        agent.add_tool(Box::new(run_context::GetRunTool::new_in_scope(
             state.store.clone(),
-            ap.id.clone(),
+            frame_scope.clone(),
         )));
-        agent.add_tool(Box::new(run_context::MonitorRunTool::new(
+        agent.add_tool(Box::new(run_context::MonitorRunTool::new_in_scope(
             state.store.clone(),
-            ap.id.clone(),
+            frame_scope.clone(),
         )));
-        agent.add_tool(Box::new(run_context::CancelRunTool::new(
+        agent.add_tool(Box::new(run_context::CancelRunTool::new_in_scope(
             state.store.clone(),
             state.run_manager.clone(),
-            ap.id.clone(),
+            frame_scope.clone(),
         )));
         agent.add_tool(Box::new(method_search::PrepareMethodSearchTool::new(
             state.store.clone(),
             ap.id.clone(),
             frame_id.clone(),
         )));
-        agent.add_tool(Box::new(research_graph::ResearchGraphTool::new(
+        agent.add_tool(Box::new(research_graph::ResearchGraphTool::new_in_scope(
             state.store.clone(),
-            ap.id.clone(),
+            frame_scope.clone(),
         )));
         agent.add_tool(Box::new(quick_actions::ExplainWorkflowTool::new(
+            state.store.clone(),
+        )));
+        agent.add_tool(Box::new(quick_actions::SearchModelsTool::new(
             state.store.clone(),
         )));
         agent.add_tool(Box::new(quick_actions::CreateWorkflowTool::new(
@@ -5206,6 +5404,7 @@ async fn send_message_inner(
             &mut agent.tools,
             &state.runtime_manager,
             &ap.id,
+            frame_scope.scope_key(),
             &frame_id,
             &state.app_data,
             &state.store,
@@ -5326,6 +5525,11 @@ async fn send_message_inner(
         .map(|delivery| delivery.id)
         .collect::<Vec<_>>();
     agent.ctx.clear_runtime_injections();
+    if let Some(injection) =
+        exploration_commands::exploration_runtime_injection(&ap.root, &frame_scope)?
+    {
+        agent.ctx.inject_user(injection);
+    }
     if !resume {
         if let Some(context) = rt.mcp_app_context_injection() {
             agent.ctx.inject_user(context);
@@ -5337,7 +5541,7 @@ async fn send_message_inner(
         }
         let skills = active_skill_index(&state.store, &ap).await;
         for injection in
-            resolve_composer_references(&state.store, &refs, &frame_id, &skills).await?
+            resolve_composer_references(&state.store, &refs, &frame_id, &ap.root, &skills).await?
         {
             agent.ctx.inject_user(injection);
         }
@@ -5647,6 +5851,23 @@ async fn send_message_inner(
     drop(guard);
     // After the persist flush so the seen snapshot covers the final messages.
     mark_seen_if_viewed(&state, &frame_id).await;
+
+    if result.is_ok() {
+        if let Err(error) = project_state_revisions::record_completed_mainline_turn(
+            &state.store,
+            &state.app_data,
+            &ap.id,
+            &frame_id,
+            &ap.root,
+        )
+        .await
+        {
+            // Revision capture is durability metadata. A failed snapshot must
+            // not turn an otherwise successful model response into an error;
+            // the UI will mark that historical turn unavailable instead.
+            tracing::warn!("project state revision capture failed: {error}");
+        }
+    }
 
     match result {
         Ok(_) => {
@@ -6474,7 +6695,7 @@ async fn generate_follow_up_questions(
     }
     let messages = state
         .store
-        .load_messages(&session_id)
+        .load_recent_turn_preview_messages(&session_id, FOLLOW_UP_TRANSCRIPT_TURNS)
         .await
         .map_err(|error| error.to_string())?;
     let specialist = specialists::session_specialist(&state.store, &session_id).await;
@@ -6513,18 +6734,6 @@ fn branch_title(raw: Option<&str>) -> Option<String> {
     Some(format!("Branch: {short}"))
 }
 
-fn side_chat_prompt(transcript: &str, question: &str) -> String {
-    let transcript = if transcript.trim().is_empty() {
-        "(No saved transcript yet.)"
-    } else {
-        transcript.trim()
-    };
-    format!(
-        "Current conversation transcript:\n{transcript}\n\nSide question:\n{}\n\nAnswer the side question directly. Do not continue the main task unless the user explicitly asks.",
-        question.trim()
-    )
-}
-
 #[tauri::command]
 async fn side_chat(
     state: State<'_, AppState>,
@@ -6532,7 +6741,7 @@ async fn side_chat(
     session_id: Option<String>,
     question: String,
     acp_agent_id: Option<String>,
-) -> Result<String, String> {
+) -> Result<side_chat::SideChatResponse, String> {
     let question = question.trim();
     if question.is_empty() {
         return Err("question is empty".into());
@@ -6552,44 +6761,77 @@ async fn side_chat(
         None => state.active(window.label()).id,
     };
     let _project_activity = state.begin_project_activity(&project_id)?;
-    let msgs = match frame_id.as_deref() {
-        Some(id) => state
-            .store
-            .load_messages(id)
-            .await
-            .map_err(|e| format!("{e}"))?,
-        None => Vec::new(),
+    let Some(ref frame_id) = frame_id else {
+        return Ok(side_chat::SideChatResponse {
+            answer: String::new(),
+            session_id: None,
+            snapshot_version: 0,
+            evidence: Vec::new(),
+            no_evidence: true,
+        });
     };
-    let transcript = review::serialize_transcript(&msgs);
-    let prompt = side_chat_prompt(&transcript, question);
+    let snapshot = state
+        .store
+        .load_session_ui_event_snapshot(frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut history = side_chat::history_from_events(&snapshot.events)?;
+    let mut snapshot_version = snapshot.through_event_seq;
+    if history.is_empty() {
+        let messages = state
+            .store
+            .load_messages_with_seq(frame_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        snapshot_version = messages.last().map(|(seq, _)| *seq).unwrap_or_default();
+        history = side_chat::history_from_messages(&messages);
+    }
+    let evidence = side_chat::retrieve_evidence(question, &history);
+    if evidence.is_empty() {
+        return Ok(side_chat::SideChatResponse {
+            answer: String::new(),
+            session_id: Some(frame_id.clone()),
+            snapshot_version,
+            evidence,
+            no_evidence: true,
+        });
+    }
+    let prompt = side_chat::answer_prompt(frame_id, snapshot_version, question, &evidence);
     // ACP side chat: one-shot, read-only answer from the selected ACP Agent,
     // running in the active project root. Never touches the main thread.
-    if let Some(agent_id) = acp_agent_id.as_deref().filter(|id| !id.is_empty()) {
+    let answer = if let Some(agent_id) = acp_agent_id.as_deref().filter(|id| !id.is_empty()) {
         let cwd = state.active(window.label()).root;
-        return acp::acp_side_chat_once(&state, &cwd, agent_id, &prompt).await;
-    }
-    let (provider, api_url, model, api_key) = load_settings(&state.store).await;
-    let (max_tokens, reasoning_effort) = models::active_llm_advanced(&state.store).await;
-    let cfg = build_provider_config(
-        &provider,
-        &api_url,
-        &api_key,
-        &model,
-        max_tokens,
-        &reasoning_effort,
-    )?;
-    let llm = superscience_llm::build(cfg);
-    let completion = llm
-        .complete(
+        acp::acp_side_chat_once(&state, &cwd, agent_id, &prompt).await?
+    } else {
+        let (provider, api_url, model, api_key) = load_settings(&state.store).await;
+        let (max_tokens, reasoning_effort) = models::active_llm_advanced(&state.store).await;
+        let cfg = build_provider_config(
+            &provider,
+            &api_url,
+            &api_key,
+            &model,
+            max_tokens,
+            &reasoning_effort,
+        )?;
+        let llm = superscience_llm::build(cfg);
+        llm.complete(
             &[
-                Message::system("You are a temporary side-chat assistant. Use the supplied transcript as read-only context."),
+                Message::system(side_chat::SYSTEM_PROMPT),
                 Message::user(prompt),
             ],
             &[],
         )
         .await
-        .map_err(|e| format!("{e}"))?;
-    Ok(completion.content)
+        .map_err(|e| format!("{e}"))?
+        .content
+    };
+    Ok(side_chat::SideChatResponse {
+        answer,
+        session_id: Some(frame_id.clone()),
+        snapshot_version,
+        evidence,
+        no_evidence: false,
+    })
 }
 
 fn mcp_lib_dir(_root: &std::path::Path) -> Option<PathBuf> {
@@ -7085,6 +7327,11 @@ pub fn run() {
             let store = startup.record("store", || {
                 tauri::async_runtime::block_on(Store::open(&db_path)).expect("open store")
             });
+            startup.record("exploration_recovery", || {
+                tauri::async_runtime::block_on(
+                    exploration_promotion::recover_incomplete_promotions(&store, &app_data),
+                )
+            });
             let orphan_scratch = startup.record("scratch_scan", || {
                 tauri::async_runtime::block_on(scratch_commands::collect_orphan_scratch_projects(
                     &store, &app_data,
@@ -7333,8 +7580,6 @@ pub fn run() {
             plan_mode::set_session_plan_mode,
             delegation_completion::get_session_agent_completion,
             delegation_completion::set_session_agent_completion,
-            delegation_runtime::create_dynamic_agent_workflow,
-            delegation_runtime::revise_dynamic_agent_workflow,
             delegation_runtime::get_dynamic_agent_options,
             delegation_runtime::get_agent_workflow_result,
             delegation_runtime::approve_agent_workflow,
@@ -7342,7 +7587,6 @@ pub fn run() {
             delegation_runtime::cancel_agent_workflow,
             delegation_runtime::discard_agent_workflow,
             delegation_runtime::retry_agent_workflow,
-            method_search::prepare_method_search,
             method_search::get_method_search_run,
             method_search::pause_method_search,
             method_search::start_method_search,
@@ -7380,6 +7624,16 @@ pub fn run() {
             scratch_commands::start_scratch_chat,
             scratch_commands::close_scratch_chat,
             session_commands::branch_session,
+            exploration_commands::create_exploration_checkpoint,
+            exploration_commands::create_exploration,
+            exploration_commands::list_project_explorations,
+            exploration_commands::list_project_state_revisions,
+            exploration_commands::open_exploration,
+            exploration_commands::archive_exploration,
+            exploration_commands::restore_exploration,
+            exploration_promotion::preview_exploration_promotion,
+            exploration_promotion::promote_exploration,
+            exploration_promotion::discard_exploration,
             session_commands::list_sessions_page,
             runtime_commands::list_execution_contexts,
             runtime_commands::list_runtimes,
@@ -7389,6 +7643,7 @@ pub fn run() {
             runtime_commands::stop_runtime,
             runtime_commands::restart_runtime,
             runtime_commands::list_runs,
+            runtime_commands::get_run_detail,
             runtime_commands::cancel_run,
             project_commands::get_research_graph,
             session_commands::delete_session,
@@ -7405,8 +7660,6 @@ pub fn run() {
             app_commands::pick_directory,
             app_commands::pick_executable_file,
             app_commands::download_file,
-            app_commands::export_text_file,
-            app_commands::import_json_file,
             export_session,
             import_session_archive,
             debug_request::export_debug_request,
@@ -7511,6 +7764,8 @@ pub fn run() {
             register_artifact,
             get_artifact_provenance,
             library_commands::list_library_items,
+            library_commands::search_library_items,
+            library_commands::list_session_library_items,
             library_commands::star_library_code,
             library_commands::star_library_text,
             library_commands::star_library_figure,

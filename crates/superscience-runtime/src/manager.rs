@@ -14,6 +14,7 @@ use std::{
 use tokio::sync::{mpsc, oneshot, watch};
 
 pub const LOCAL_CONTEXT_ID: &str = "local";
+pub const MAINLINE_RUNTIME_SCOPE: &str = "mainline";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +27,8 @@ pub enum RuntimeLanguage {
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeKey {
     pub project_id: String,
+    #[serde(default = "default_runtime_scope")]
+    pub scope_key: String,
     pub context_id: String,
     pub language: RuntimeLanguage,
 }
@@ -34,6 +37,20 @@ impl RuntimeKey {
     pub fn python(project_id: impl Into<String>, context_id: impl Into<String>) -> Self {
         Self {
             project_id: project_id.into(),
+            scope_key: MAINLINE_RUNTIME_SCOPE.into(),
+            context_id: context_id.into(),
+            language: RuntimeLanguage::Python,
+        }
+    }
+
+    pub fn python_in_scope(
+        project_id: impl Into<String>,
+        scope_key: impl Into<String>,
+        context_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            project_id: project_id.into(),
+            scope_key: scope_key.into(),
             context_id: context_id.into(),
             language: RuntimeLanguage::Python,
         }
@@ -46,10 +63,28 @@ impl RuntimeKey {
     pub fn r(project_id: impl Into<String>, context_id: impl Into<String>) -> Self {
         Self {
             project_id: project_id.into(),
+            scope_key: MAINLINE_RUNTIME_SCOPE.into(),
             context_id: context_id.into(),
             language: RuntimeLanguage::R,
         }
     }
+
+    pub fn r_in_scope(
+        project_id: impl Into<String>,
+        scope_key: impl Into<String>,
+        context_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            project_id: project_id.into(),
+            scope_key: scope_key.into(),
+            context_id: context_id.into(),
+            language: RuntimeLanguage::R,
+        }
+    }
+}
+
+fn default_runtime_scope() -> String {
+    MAINLINE_RUNTIME_SCOPE.into()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,6 +386,7 @@ impl RuntimeManager {
             a.key
                 .project_id
                 .cmp(&b.key.project_id)
+                .then_with(|| a.key.scope_key.cmp(&b.key.scope_key))
                 .then_with(|| a.key.context_id.cmp(&b.key.context_id))
                 .then_with(|| a.key.language.cmp(&b.key.language))
         });
@@ -387,6 +423,34 @@ impl RuntimeManager {
                 .sessions
                 .iter()
                 .filter(|(key, _)| key.project_id == project_id)
+                .map(|(key, session)| (key.clone(), session.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (_, session) in &sessions {
+            session.request_stop();
+        }
+        for (_, session) in &sessions {
+            session.wait_dead().await;
+        }
+        let mut registry = self.registry();
+        for (key, session) in sessions {
+            if registry
+                .sessions
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
+            {
+                registry.sessions.remove(&key);
+            }
+        }
+    }
+
+    pub async fn stop_scope(&self, project_id: &str, scope_key: &str) {
+        let sessions = {
+            let registry = self.registry();
+            registry
+                .sessions
+                .iter()
+                .filter(|(key, _)| key.project_id == project_id && key.scope_key == scope_key)
                 .map(|(key, session)| (key.clone(), session.clone()))
                 .collect::<Vec<_>>()
         };
@@ -943,6 +1007,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mainline_and_exploration_runtime_state_is_independent() {
+        let launcher = FakeLauncher::default();
+        let manager = manager(&launcher);
+        let mainline = RuntimeKey::local_python("project-a");
+        let exploration =
+            RuntimeKey::python_in_scope("project-a", "exploration-a", LOCAL_CONTEXT_ID);
+        let cwd = PathBuf::from("project-a");
+
+        finished(manager.execute(&mainline, &cwd, "set:3").await.unwrap())
+            .await
+            .unwrap();
+        finished(manager.execute(&exploration, &cwd, "set:7").await.unwrap())
+            .await
+            .unwrap();
+
+        let mainline_value = finished(manager.execute(&mainline, &cwd, "get").await.unwrap())
+            .await
+            .unwrap();
+        let exploration_value = finished(manager.execute(&exploration, &cwd, "get").await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(mainline_value.stdout, "3");
+        assert_eq!(exploration_value.stdout, "7");
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+        manager.shutdown_all().await;
+    }
+
+    #[tokio::test]
     async fn fake_python_and_r_workers_keep_independent_persistent_state() {
         let launcher = FakeLauncher::default();
         let manager = manager(&launcher);
@@ -1124,6 +1216,32 @@ mod tests {
         assert_eq!(remaining[0].key, key_b);
         manager.shutdown_all().await;
         assert_eq!(launcher.shutdowns.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn stopping_a_scope_keeps_sibling_runtime_state() {
+        let launcher = FakeLauncher::default();
+        let manager = manager(&launcher);
+        let mainline = RuntimeKey::local_python("project-a");
+        let selected = RuntimeKey::python_in_scope("project-a", "exploration-a", LOCAL_CONTEXT_ID);
+        let sibling = RuntimeKey::python_in_scope("project-a", "exploration-b", LOCAL_CONTEXT_ID);
+        for key in [&mainline, &selected, &sibling] {
+            manager
+                .start(key.clone(), PathBuf::from(&key.scope_key))
+                .await
+                .unwrap();
+        }
+
+        manager.stop_scope("project-a", "exploration-a").await;
+        let remaining = manager
+            .list()
+            .into_iter()
+            .map(|runtime| runtime.key)
+            .collect::<Vec<_>>();
+        assert!(remaining.contains(&mainline));
+        assert!(remaining.contains(&sibling));
+        assert!(!remaining.contains(&selected));
+        manager.shutdown_all().await;
     }
 
     #[tokio::test]

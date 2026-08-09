@@ -10,6 +10,7 @@
 use crate::i18n::Locale;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub(crate) struct ContextUsage {
@@ -145,20 +146,15 @@ pub(crate) struct MessageResource {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
 #[serde(tag = "kind")]
 pub(crate) enum AgentEvent {
     User {
         frame_id: String,
         text: String,
     },
-    MessageBoundary {
-        frame_id: String,
-        seq: i64,
-    },
+    MessageBoundary {},
     Resources {
         frame_id: String,
-        seq: i64,
         resources: Vec<MessageResource>,
     },
     Text {
@@ -191,7 +187,6 @@ pub(crate) enum AgentEvent {
     },
     Usage {
         frame_id: String,
-        round: u64,
         input: u64,
         output: u64,
         #[serde(default)]
@@ -211,17 +206,13 @@ pub(crate) enum AgentEvent {
     },
     CompactionStarted {
         frame_id: String,
-        strategy: String,
     },
     ContextWarning {
         frame_id: String,
         ctx_tokens: usize,
         max_context: usize,
     },
-    Diff {
-        frame_id: String,
-        path: String,
-    },
+    Diff {},
     FileChanged {
         frame_id: String,
         path: String,
@@ -230,11 +221,7 @@ pub(crate) enum AgentEvent {
         frame_id: String,
         chunk: String,
     },
-    Done {
-        frame_id: String,
-        #[serde(default)]
-        stop_reason: Option<String>,
-    },
+    Done { frame_id: String },
     Error {
         frame_id: String,
         message: String,
@@ -334,6 +321,10 @@ pub(crate) enum ChatItem {
         /// Elapsed ms from tool call card to result.
         duration_ms: Option<u64>,
     },
+    /// Structured evidence that the active tool wrote a workspace file.
+    /// Kept as a hidden transcript row so artifact attribution survives the
+    /// persisted AgentEvent replay without scraping paths from tool output.
+    FileChanged(String),
     /// Inline tool-approval card (replaces the old centered modal).
     ApprovalPending {
         tool: String,
@@ -380,6 +371,45 @@ pub(crate) enum ChatItem {
     Review(ReviewReport),
     Plan(PlanCard),
     Question(QuestionCard),
+}
+
+#[derive(Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SideChatEvidence {
+    pub(crate) source_id: String,
+    #[serde(default)]
+    pub(crate) event_seq: Option<i64>,
+    #[serde(default)]
+    pub(crate) message_seq: Option<i64>,
+    pub(crate) turn: usize,
+    pub(crate) role: String,
+    pub(crate) excerpt: String,
+    #[serde(default)]
+    pub(crate) relevance: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SideChatResponse {
+    pub(crate) answer: String,
+    pub(crate) snapshot_version: i64,
+    #[serde(default)]
+    pub(crate) evidence: Vec<SideChatEvidence>,
+    #[serde(default)]
+    pub(crate) no_evidence: bool,
+}
+
+#[derive(Clone)]
+pub(crate) enum SideChatItem {
+    User(String),
+    Assistant {
+        text: String,
+        model: Option<String>,
+        evidence: Vec<SideChatEvidence>,
+        snapshot_version: i64,
+        no_evidence: bool,
+        error: bool,
+    },
 }
 
 #[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -471,6 +501,10 @@ impl ChatItem {
                 (4u8, name, ok, duration_ms).hash(&mut h);
                 hash_text_sampled(&mut h, input);
                 hash_text_sampled(&mut h, output);
+            }
+            Self::FileChanged(path) => {
+                14u8.hash(&mut h);
+                hash_text_sampled(&mut h, path);
             }
             Self::ApprovalPending {
                 tool,
@@ -1153,7 +1187,7 @@ pub(crate) struct LibraryItem {
     pub(crate) title: String,
     pub(crate) language: Option<String>,
     #[serde(default)]
-    pub(crate) code: String,
+    pub(crate) code: Rc<str>,
     pub(crate) content_type: Option<String>,
     pub(crate) source_project_id: String,
     pub(crate) source_project_name: String,
@@ -1168,9 +1202,29 @@ impl LibraryItem {
         self.kind == "code"
             && self.source_session_id == session
             && self.language.as_deref().unwrap_or_default() == language
-            && self.code == code
+            && self.code.as_ref() == code
     }
+}
 
+/// Bounded Library list row. Full code/text is fetched only for the active
+/// session or an opened detail.
+#[derive(Deserialize, Clone, PartialEq)]
+pub(crate) struct LibraryItemSummary {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) title: String,
+    pub(crate) language: Option<String>,
+    #[serde(default)]
+    pub(crate) code_preview: String,
+    pub(crate) source_project_id: String,
+    pub(crate) source_project_name: String,
+    pub(crate) source_session_id: String,
+    pub(crate) source_session_title: String,
+    pub(crate) source_path: Option<String>,
+    pub(crate) created_at: i64,
+}
+
+impl LibraryItemSummary {
     pub(crate) fn matches_figure(&self, session: &str, path: &str) -> bool {
         self.kind == "figure"
             && self.source_session_id == session
@@ -1351,6 +1405,13 @@ pub(crate) struct ModelTokenUsage {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct ToolCallUsage {
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    pub(crate) calls: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct TokenUsageOverview {
     #[serde(default)]
     pub(crate) workspaces: Vec<ProjectTokenUsage>,
@@ -1358,6 +1419,8 @@ pub(crate) struct TokenUsageOverview {
     pub(crate) days: Vec<TokenUsageDay>,
     #[serde(default)]
     pub(crate) models: Vec<ModelTokenUsage>,
+    #[serde(default)]
+    pub(crate) tools: Vec<ToolCallUsage>,
 }
 
 /// Mirrors `SshTrustEdge` in src-tauri/src/run_context/transfer.rs — align
@@ -1806,12 +1869,151 @@ pub(crate) struct SessionInfo {
     pub(crate) pinned: bool,
 }
 
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Exploration {
+    pub(crate) id: String,
+    pub(crate) checkpoint_id: String,
+    pub(crate) frame_id: String,
+    pub(crate) name: String,
+    pub(crate) status: String,
+    pub(crate) workspace_dir: String,
+    pub(crate) workspace_backend: String,
+    pub(crate) scope_generation: i64,
+    pub(crate) warnings_json: String,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: i64,
+    pub(crate) promoted_at: Option<i64>,
+    pub(crate) archived_at: Option<i64>,
+    pub(crate) discarded_at: Option<i64>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExplorationSummary {
+    pub(crate) exploration: Exploration,
+    pub(crate) source_frame_id: String,
+    pub(crate) isolation_summary_json: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectStateRevision {
+    pub(crate) frame_id: String,
+    pub(crate) turn_index: i64,
+}
+
+impl ExplorationSummary {
+    pub(crate) fn isolation_is_full(&self) -> bool {
+        serde_json::from_str::<serde_json::Value>(&self.isolation_summary_json)
+            .ok()
+            .and_then(|value| value.get("partial").and_then(serde_json::Value::as_bool))
+            != Some(true)
+            && serde_json::from_str::<Vec<serde_json::Value>>(
+                &self.exploration.warnings_json,
+            )
+            .map_or(true, |warnings| warnings.is_empty())
+    }
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExplorationFileDelta {
+    pub(crate) path: String,
+    pub(crate) kind: String,
+    #[serde(default)]
+    pub(crate) before: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(crate) after: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExplorationArtifactDelta {
+    pub(crate) logical_key: String,
+    pub(crate) before_artifact_id: Option<String>,
+    pub(crate) before_version_id: Option<String>,
+    pub(crate) after_artifact_id: String,
+    pub(crate) after_version_id: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExplorationExternalResource {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) uri: String,
+    pub(crate) version: Option<String>,
+    pub(crate) checksum: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExplorationEffect {
+    pub(crate) id: String,
+    pub(crate) effect_kind: String,
+    pub(crate) recoverability: String,
+    pub(crate) target_summary: String,
+    pub(crate) metadata_json: String,
+    pub(crate) created_at: i64,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExplorationDiff {
+    pub(crate) exploration_id: String,
+    pub(crate) files: Vec<ExplorationFileDelta>,
+    pub(crate) artifacts: Vec<ExplorationArtifactDelta>,
+    pub(crate) runs: Vec<RunRecord>,
+    pub(crate) decisions: Vec<ResearchNode>,
+    pub(crate) research_edges: Vec<ResearchEdge>,
+    pub(crate) external_resources: Vec<ExplorationExternalResource>,
+    pub(crate) external_effects: Vec<ExplorationEffect>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExplorationMainlineChanges {
+    pub(crate) files: Vec<ExplorationFileDelta>,
+    pub(crate) artifact_keys: Vec<String>,
+    pub(crate) entity_keys: Vec<String>,
+    pub(crate) source_message_head: i64,
+    pub(crate) source_ui_event_head: i64,
+    pub(crate) state_generation: i64,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromotionBlocker {
+    pub(crate) code: String,
+    pub(crate) message: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromotionEligibility {
+    pub(crate) eligible: bool,
+    pub(crate) code: Option<String>,
+    pub(crate) reasons: Vec<PromotionBlocker>,
+    pub(crate) expected_guard_hash: String,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExplorationPromotionPreview {
+    pub(crate) exploration: Exploration,
+    pub(crate) diff: ExplorationDiff,
+    pub(crate) mainline_changes: ExplorationMainlineChanges,
+    pub(crate) eligibility: PromotionEligibility,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExplorationPromotionResult {
+    pub(crate) exploration: Exploration,
+    pub(crate) promotion_id: String,
+    pub(crate) adopted_frame_id: String,
+}
+
 /// One Codex CLI or Claude Code conversation offered by the import modal.
 /// `state` is "new" | "imported" | "updatable".
 #[derive(Deserialize, Clone, PartialEq)]
 pub(crate) struct ExternalSessionInfo {
     pub(crate) path: String,
-    #[allow(dead_code)]
     pub(crate) session_id: String,
     pub(crate) title: String,
     pub(crate) cwd: String,
@@ -1961,6 +2163,7 @@ impl LoadedItem {
                 started_at_ms: None,
                 duration_ms: self.duration_ms,
             },
+            "file_changed" => ChatItem::FileChanged(self.text),
             "usage" => {
                 let v: serde_json::Value = serde_json::from_str(&self.text).unwrap_or_default();
                 let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
@@ -2012,15 +2215,11 @@ pub(crate) struct TableData {
 }
 
 #[derive(Clone, PartialEq)]
-#[allow(dead_code)]
 pub(crate) enum PreviewData {
-    Table(TableData),
-    Text(String),
-    Markdown(String),
+    Table(Rc<TableData>),
     Latex { tex: String, display: bool },
     File { path: String, kind: String },
-    Smiles(String),
-    Fasta(String),
+    Fasta(Rc<str>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -2073,13 +2272,9 @@ pub(crate) struct FileSearchHit {
 pub(crate) struct ScratchChatInfo {
     #[serde(rename = "sessionId")]
     pub(crate) session_id: String,
-    #[serde(rename = "projectId")]
-    #[allow(dead_code)]
-    pub(crate) project_id: String,
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
 pub(crate) struct ProjectInfo {
     #[serde(default)]
     pub(crate) id: String,
@@ -2088,7 +2283,6 @@ pub(crate) struct ProjectInfo {
     pub(crate) skill_count: usize,
     pub(crate) mcp_server_count: usize,
     pub(crate) memory_file_count: usize,
-    pub(crate) has_api_key: bool,
 }
 
 #[derive(Clone, Deserialize, PartialEq)]
@@ -2097,7 +2291,6 @@ pub(crate) struct ProjectSummary {
     pub(crate) name: String,
     #[serde(default)]
     pub(crate) description: String,
-    #[allow(dead_code)]
     #[serde(default)]
     pub(crate) workspace_dir: String,
     #[serde(default)]
@@ -2120,9 +2313,6 @@ pub(crate) struct ProjectSummary {
 /// project's `.superscience/SUPERSCIENCE.md`, injected into every seeded system prompt.
 #[derive(Clone, Deserialize, Default)]
 pub(crate) struct ProjectSettings {
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub(crate) id: String,
     #[serde(default)]
     pub(crate) name: String,
     #[serde(default)]
@@ -2330,12 +2520,6 @@ pub(crate) enum ConnTransport {
         command: String,
         #[serde(default)]
         args: Vec<String>,
-        #[allow(dead_code)]
-        #[serde(default)]
-        env: Vec<(String, String)>,
-        #[allow(dead_code)]
-        #[serde(default)]
-        cwd: Option<String>,
     },
     Http {
         url: String,
@@ -2361,9 +2545,6 @@ pub(crate) struct ConnectorTool {
     pub(crate) mode: String,
     #[serde(default)]
     pub(crate) description: String,
-    #[allow(dead_code)]
-    #[serde(default, rename = "inputSchema")]
-    pub(crate) input_schema: serde_json::Value,
 }
 #[derive(Clone, serde::Deserialize)]
 pub(crate) struct ConnectorInfo {
@@ -2456,8 +2637,6 @@ pub(crate) struct BootstrapStatus {
     pub(crate) mcp_catalog: usize,
     pub(crate) uv_ok: bool,
     pub(crate) node_ok: bool,
-    #[allow(dead_code)]
-    pub(crate) npm_ok: bool,
     pub(crate) sci_ok: bool,
     pub(crate) pixi_ok: bool,
     pub(crate) app_version: String,
@@ -2512,10 +2691,8 @@ pub(crate) struct CapabilitySourceCounts {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
 pub(crate) struct OnboardingState {
     pub(crate) show: bool,
-    pub(crate) has_api_key: bool,
 }
 
 /// Mirrors `superscience_store::ResearchNode`. `kind` stays a plain string because the
@@ -3099,18 +3276,14 @@ pub(crate) struct AgentWorkflow {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
 pub(crate) struct ExecutionContext {
     pub(crate) id: String,
     pub(crate) kind: String,
     pub(crate) label: String,
     pub(crate) config_json: String,
     pub(crate) capabilities_json: String,
-    pub(crate) last_probe_at: Option<i64>,
     pub(crate) last_probe_status: Option<String>,
     pub(crate) last_probe_error: Option<String>,
-    pub(crate) created_at: i64,
-    pub(crate) updated_at: i64,
 }
 
 #[derive(Clone, Default)]
@@ -3174,11 +3347,8 @@ mod runtime_interpreter_form_tests {
             label: "Local".into(),
             config_json: config_json.into(),
             capabilities_json: capabilities_json.into(),
-            last_probe_at: None,
             last_probe_status: None,
             last_probe_error: None,
-            created_at: 0,
-            updated_at: 0,
         }
     }
 
@@ -3315,6 +3485,53 @@ pub(crate) struct RunRecord {
     #[serde(default)]
     pub(crate) progress_json: String,
     pub(crate) env_snapshot_json: String,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub(crate) struct RunSummary {
+    pub(crate) id: String,
+    pub(crate) frame_id: Option<String>,
+    pub(crate) context_id: String,
+    pub(crate) title: String,
+    pub(crate) kind: String,
+    pub(crate) status: String,
+    pub(crate) created_at: i64,
+    pub(crate) started_at: Option<i64>,
+    pub(crate) ended_at: Option<i64>,
+    pub(crate) exit_code: Option<i64>,
+    #[serde(rename = "remote_workdir", alias = "remoteWorkdir")]
+    pub(crate) remote_workdir: Option<String>,
+    pub(crate) timeout_secs: Option<i64>,
+    pub(crate) last_polled_at: Option<i64>,
+    #[serde(rename = "last_poll_error", alias = "lastPollError")]
+    pub(crate) last_poll_error: Option<String>,
+    #[serde(default)]
+    pub(crate) progress_json: String,
+    #[serde(default)]
+    pub(crate) output_fingerprint: String,
+}
+
+impl From<&RunRecord> for RunSummary {
+    fn from(run: &RunRecord) -> Self {
+        Self {
+            id: run.id.clone(),
+            frame_id: run.frame_id.clone(),
+            context_id: run.context_id.clone(),
+            title: run.title.clone(),
+            kind: run.kind.clone(),
+            status: run.status.clone(),
+            created_at: run.created_at,
+            started_at: run.started_at,
+            ended_at: run.ended_at,
+            exit_code: run.exit_code,
+            remote_workdir: run.remote_workdir.clone(),
+            timeout_secs: run.timeout_secs,
+            last_polled_at: run.last_polled_at,
+            last_poll_error: run.last_poll_error.clone(),
+            progress_json: run.progress_json.clone(),
+            output_fingerprint: String::new(),
+        }
+    }
 }
 
 #[derive(Deserialize, Clone)]
@@ -3479,8 +3696,6 @@ pub(crate) struct ArtifactProvenance {
     pub(crate) code: String,
     pub(crate) language: String,
     pub(crate) output: String,
-    #[allow(dead_code)]
-    pub(crate) exit_status: String,
     #[serde(default)]
     pub(crate) inputs: Vec<ProvInput>,
     pub(crate) env: Option<ProvEnv>,
@@ -3494,8 +3709,6 @@ pub(crate) struct ProvInput {
 
 #[derive(Clone, Deserialize)]
 pub(crate) struct ProvEnv {
-    #[allow(dead_code)]
-    pub(crate) name: Option<String>,
     #[serde(default)]
     pub(crate) packages: Vec<ProvPkg>,
 }

@@ -55,6 +55,15 @@ pub struct ModelTokenUsage {
     pub tokens: i64,
 }
 
+/// One ranked SKILL or MCP tool from persisted `ToolCall` transcript events.
+#[derive(serde::Serialize)]
+pub struct ToolCallUsage {
+    /// `"skill"` for `use_skill`, `"mcp"` for `mcp:*` tools.
+    pub kind: String,
+    pub name: String,
+    pub calls: i64,
+}
+
 /// One bounded, turn-aligned slice of a saved conversation.
 pub struct SessionTranscriptPage {
     pub messages: Vec<(i64, Message)>,
@@ -65,6 +74,24 @@ pub struct SessionTranscriptPage {
     pub user_offset: usize,
     pub latest_seq: i64,
 }
+
+/// One immutable read boundary over the append-only visual transcript.
+///
+/// `through_event_seq` is the newest completed message boundary visible when
+/// the snapshot was taken. Readers must not load events beyond it: the main
+/// conversation may keep streaming while a secondary read-only answer runs.
+pub struct SessionUiEventSnapshot {
+    pub through_event_seq: i64,
+    pub events: Vec<(i64, String)>,
+}
+
+/// Maximum stdout characters returned for one tool activity group when a
+/// transcript page is replayed. The Tauri/UI layer applies its byte ceiling as
+/// a second guard; this database-side cap prevents legacy event logs from
+/// being materialized in full before that guard can run.
+pub(crate) const SESSION_UI_STDOUT_REPLAY_MAX_CHARS: usize = 64 * 1024;
+const RECENT_TURN_PREVIEW_MAX_CHARS: usize = 20_000;
+pub(crate) const RECENT_TURN_TOOL_PREVIEW_MAX_CHARS: usize = 4_000;
 
 /// Delete every database row owned by a conversation. Legacy databases do not
 /// consistently enable SQLite foreign keys, so the cascade must be explicit.
@@ -266,7 +293,7 @@ impl Store {
         let row: Option<(String, String)> = sqlx::query_as(
             "SELECT m.frame_id, f.project_id \
              FROM messages m JOIN frames f ON f.id=m.frame_id \
-             WHERE m.role='user' AND f.parent_frame_id=f.id \
+             WHERE m.role='user' AND f.parent_frame_id=f.id AND f.exploration_id IS NULL \
              ORDER BY m.ts DESC, m.rowid DESC LIMIT 1",
         )
         .fetch_optional(&self.pool)
@@ -300,6 +327,7 @@ impl Store {
                 (SELECT COALESCE(MAX(ts), f.updated_at) FROM messages m WHERE m.frame_id = f.id) > f.seen_at AS unseen \
              FROM frames f \
              WHERE f.parent_frame_id = f.id \
+               AND f.exploration_id IS NULL \
                AND f.project_id NOT LIKE 'scratch:%' \
                AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role='user') \
              ORDER BY activity_at DESC, f.rowid DESC LIMIT ?",
@@ -411,9 +439,9 @@ impl Store {
         let now = chrono::Utc::now().timestamp();
         let inserted = sqlx::query(
             "INSERT INTO frames(\
-                id,parent_frame_id,root_frame_id,agent_name,status,project_id,model,\
+                id,parent_frame_id,root_frame_id,agent_name,status,project_id,model,exploration_id,\
                 input_tokens,output_tokens,created_at,updated_at,completed_at\
-             ) SELECT ?,id,COALESCE(root_frame_id,id),?,'running',project_id,?,0,0,?,?,NULL \
+             ) SELECT ?,id,COALESCE(root_frame_id,id),?,'running',project_id,?,exploration_id,0,0,?,?,NULL \
              FROM frames WHERE id=? AND project_id=?",
         )
         .bind(id)
@@ -585,6 +613,18 @@ async fn truncate_message_rows(
     .bind(keep)
     .execute(&mut **tx)
     .await?;
+    let retained_turns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM session_ui_events WHERE frame_id=? \
+         AND json_extract(event_json,'$.kind')='User'",
+    )
+    .bind(frame_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    sqlx::query("DELETE FROM project_state_revisions WHERE frame_id=? AND turn_index>=?")
+        .bind(frame_id)
+        .bind(retained_turns)
+        .execute(&mut **tx)
+        .await?;
     sqlx::query("DELETE FROM session_reviews WHERE frame_id = ? AND message_seq > ?")
         .bind(frame_id)
         .bind(keep)
@@ -612,6 +652,65 @@ impl Store {
             .into_iter()
             .map(|(_, message)| message)
             .collect())
+    }
+
+    /// Load only the newest complete user turns as bounded text previews,
+    /// without UI events, reviews, resources, reasoning, image data, or full
+    /// tool-call arguments. This is for secondary model calls (for example
+    /// follow-up suggestions), not transcript rendering or agent recovery.
+    pub async fn load_recent_turn_preview_messages(
+        &self,
+        frame_id: &str,
+        turn_limit: usize,
+    ) -> Result<Vec<Message>> {
+        let rows = sqlx::query(
+            "WITH recent_user_turns AS (\
+                 SELECT seq FROM messages \
+                 WHERE frame_id=? AND role='user' AND tool_name IS NULL \
+                 ORDER BY seq DESC LIMIT ?\
+             ), start_seq AS (SELECT MIN(seq) AS seq FROM recent_user_turns) \
+             SELECT seq,role,json_quote(substr(\
+                 CASE json_type(content) \
+                     WHEN 'text' THEN json_extract(content,'$') \
+                     WHEN 'array' THEN COALESCE((\
+                         SELECT group_concat(json_extract(part.value,'$.text'),'\n') \
+                         FROM json_each(content) AS part \
+                         WHERE json_extract(part.value,'$.type')='text'\
+                     ),'') ELSE '' END,1,\
+                 CASE WHEN role='tool' AND COALESCE(tool_name,'') NOT IN \
+                     ('attempt_completion','propose_plan','ask_user') THEN ? ELSE ? END\
+             )) AS content,NULL AS tool_calls,tool_call_id,tool_name,NULL AS reasoning,ts,model_name \
+             FROM messages WHERE frame_id=? \
+             AND seq>=COALESCE((SELECT seq FROM start_seq), 0) ORDER BY seq ASC",
+        )
+        .bind(frame_id)
+        .bind(turn_limit.max(1) as i64)
+        .bind(RECENT_TURN_TOOL_PREVIEW_MAX_CHARS as i64)
+        .bind(RECENT_TURN_PREVIEW_MAX_CHARS as i64)
+        .bind(frame_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut messages = Vec::with_capacity(rows.len());
+        for row in rows {
+            let role: String = row.try_get("role")?;
+            let content_json: String = row.try_get("content")?;
+            let content: superscience_llm::Content =
+                serde_json::from_str(&content_json).unwrap_or(superscience_llm::Content::text(""));
+            let tool_calls_json: Option<String> = row.try_get("tool_calls")?;
+            messages.push(Message {
+                role: parse_role(&role),
+                content,
+                tool_calls: tool_calls_json
+                    .and_then(|value| serde_json::from_str(&value).ok())
+                    .unwrap_or_default(),
+                tool_call_id: row.try_get("tool_call_id")?,
+                tool_name: row.try_get("tool_name")?,
+                reasoning: row.try_get("reasoning")?,
+                ts: row.try_get("ts")?,
+                model_name: row.try_get("model_name")?,
+            });
+        }
+        Ok(messages)
     }
 
     /// Load the durable user-authored turns used by the conversation outline,
@@ -804,13 +903,32 @@ impl Store {
             i64::MAX
         };
         let event_rows = sqlx::query(
-            "SELECT event_json FROM session_ui_events WHERE frame_id=? AND seq>? AND seq<=? \
-             AND json_extract(event_json,'$.kind')<>'ToolPresentation' \
-             ORDER BY seq",
+            "WITH page_events AS (\
+                 SELECT seq,event_json,json_extract(event_json,'$.kind') AS kind \
+                 FROM session_ui_events WHERE frame_id=? AND seq>? AND seq<=? \
+                 AND json_extract(event_json,'$.kind')<>'ToolPresentation'\
+             ), grouped_events AS (\
+                 SELECT *,SUM(CASE WHEN kind IN ('ToolCall','User') THEN 1 ELSE 0 END) \
+                     OVER (ORDER BY seq) AS stdout_group \
+                 FROM page_events\
+             ), budgeted_events AS (\
+                 SELECT *,COALESCE(SUM(CASE WHEN kind='Stdout' \
+                         THEN length(json_extract(event_json,'$.chunk')) ELSE 0 END) \
+                     OVER (PARTITION BY stdout_group ORDER BY seq \
+                           ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0) AS stdout_before \
+                 FROM grouped_events\
+             ) \
+             SELECT CASE WHEN kind='Stdout' THEN json_set(\
+                         event_json,'$.chunk',substr(json_extract(event_json,'$.chunk'),1,? - stdout_before)\
+                     ) ELSE event_json END AS event_json \
+             FROM budgeted_events \
+             WHERE kind<>'Stdout' OR stdout_before<? ORDER BY seq",
         )
         .bind(frame_id)
         .bind(start_event_seq)
         .bind(end_event_seq)
+        .bind(SESSION_UI_STDOUT_REPLAY_MAX_CHARS as i64)
+        .bind(SESSION_UI_STDOUT_REPLAY_MAX_CHARS as i64)
         .fetch_all(&self.pool)
         .await?;
         let ui_events = event_rows
@@ -898,6 +1016,39 @@ impl Store {
             .collect()
     }
 
+    /// Freeze and load the complete visual transcript through its newest
+    /// completed model-message boundary. Unlike `messages`, this event log is
+    /// not rewritten by context compaction, so it remains suitable for
+    /// evidence retrieval over the conversation the user can still see.
+    pub async fn load_session_ui_event_snapshot(
+        &self,
+        frame_id: &str,
+    ) -> Result<SessionUiEventSnapshot> {
+        let through_event_seq: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq),0) FROM session_ui_events WHERE frame_id=? \
+             AND json_extract(event_json,'$.kind')='MessageBoundary'",
+        )
+        .bind(frame_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let rows = sqlx::query(
+            "SELECT seq,event_json FROM session_ui_events \
+             WHERE frame_id=? AND seq<=? ORDER BY seq",
+        )
+        .bind(frame_id)
+        .bind(through_event_seq)
+        .fetch_all(&self.pool)
+        .await?;
+        let events = rows
+            .into_iter()
+            .map(|row| Ok((row.try_get("seq")?, row.try_get("event_json")?)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(SessionUiEventSnapshot {
+            through_event_seq,
+            events,
+        })
+    }
+
     pub async fn load_latest_session_ui_event(
         &self,
         frame_id: &str,
@@ -952,6 +1103,7 @@ impl Store {
                     (SELECT content FROM messages m WHERE m.frame_id = f.id AND m.role = 'user' ORDER BY m.seq ASC LIMIT 1) AS first_user \
                 FROM frames f \
                 WHERE f.project_id = ? AND f.parent_frame_id = f.id \
+                  AND f.exploration_id IS NULL \
                   AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user') \
              ) sessions \
              WHERE (? IS NULL OR activity_at < ? OR (activity_at = ? AND id < ?)) \
@@ -994,6 +1146,7 @@ impl Store {
                 (SELECT content FROM messages m WHERE m.frame_id = f.id AND m.role = 'user' ORDER BY m.seq ASC LIMIT 1) AS first_user \
              FROM frames f \
              WHERE f.project_id = ? AND f.parent_frame_id = f.id AND COALESCE(f.pinned, 0) = 1 \
+               AND f.exploration_id IS NULL \
                AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user') \
              ORDER BY activity_at DESC, f.id DESC",
         )
@@ -1397,6 +1550,7 @@ impl Store {
                     (SELECT COALESCE(MAX(ts), f.updated_at) FROM messages m WHERE m.frame_id=f.id) > f.seen_at AS unseen \
              FROM frames f JOIN projects p ON p.id=f.project_id \
              WHERE f.parent_frame_id=f.id \
+               AND f.exploration_id IS NULL \
                AND f.project_id NOT LIKE 'scratch:%' \
                AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id=f.id AND mm.role='user') \
                AND (? IS NULL OR f.project_id=?) \
@@ -1552,6 +1706,58 @@ impl Store {
                 Ok(ModelTokenUsage {
                     model: row.try_get("model_key")?,
                     tokens: row.try_get("tokens")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Ranked SKILL (`use_skill`) and MCP (`mcp:*`) tool-call counts from
+    /// persisted transcript events. Skill identity comes from the call preview
+    /// (the skill name); skipped-batch placeholders are ignored.
+    pub async fn tool_call_usage_ranking(&self) -> Result<Vec<ToolCallUsage>> {
+        let rows = sqlx::query(
+            "SELECT kind, name, COUNT(*) AS calls FROM (\
+                SELECT CASE \
+                        WHEN json_extract(e.event_json,'$.name') = 'use_skill' THEN 'skill' \
+                        ELSE 'mcp' \
+                    END AS kind, \
+                    CASE \
+                        WHEN json_extract(e.event_json,'$.name') = 'use_skill' THEN \
+                            COALESCE(\
+                                NULLIF(TRIM(json_extract(e.event_json,'$.preview')),''),\
+                                'unknown'\
+                            ) \
+                        ELSE COALESCE(\
+                            NULLIF(SUBSTR(json_extract(e.event_json,'$.name'),5),''),\
+                            'unknown'\
+                        ) \
+                    END AS name \
+                FROM session_ui_events e \
+                JOIN frames f ON f.id=e.frame_id \
+                JOIN frames r ON r.id=COALESCE(f.root_frame_id,f.id) \
+                JOIN projects p ON p.id=r.project_id \
+                WHERE p.id NOT LIKE 'scratch:%' \
+                  AND e.event_json LIKE '{\"kind\":\"ToolCall\"%' \
+                  AND (\
+                        json_extract(e.event_json,'$.name') LIKE 'mcp:%' \
+                        OR (\
+                            json_extract(e.event_json,'$.name') = 'use_skill' \
+                            AND COALESCE(json_extract(e.event_json,'$.preview'),'') \
+                                NOT LIKE 'Skipped%' \
+                        )\
+                  )\
+             ) ranked \
+             GROUP BY kind, name \
+             ORDER BY calls DESC, kind, name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ToolCallUsage {
+                    kind: row.try_get("kind")?,
+                    name: row.try_get("name")?,
+                    calls: row.try_get("calls")?,
                 })
             })
             .collect()

@@ -692,6 +692,7 @@ button.run-status:hover { filter:brightness(0.96); }
 .dynamic-agent-none { color: var(--text-faint); font-size: 10.5px; }
 .dynamic-agent-task > label { display: grid; gap: 4px; margin-top: 8px; }
 .dynamic-agent-advanced { margin-top: 8px; }
+.dynamic-agent-advanced-hint { margin: 6px 0 0; color: var(--text-faint); font-size: 10.5px; line-height: 1.4; }
 .dynamic-agent-advanced-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
 .dynamic-agent-inline-check { display: flex !important; flex-direction: row !important; align-items: center; grid-column: 1 / -1; }
 .dynamic-agent-inline-check input { width: auto !important; }

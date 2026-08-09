@@ -120,6 +120,7 @@ If a named workflow is disabled or unavailable, follow the same principles direc
             "## Skills Selection Guidelines\n\n\
 {count} {availability} currently configured, enabled, and searchable for this project/session. Their catalog and bodies are not preloaded.\n\n\
 - When a task may match an installed workflow, call `search_skills` with concise task or domain keywords.\n\
+- When a task needs a specific model ability (e.g. image understanding), call `search_models` with a capability keyword like `vision` to find a suitable model, then pass its id to `create_workflow` via `params.model_id`.\n\
 - When the user asks how many Skills are configured, enabled, effective, shadowed, or broken, use `list_skill_catalog` and read its explicitly named count fields.\n\
 - Treat `current_configured_enabled_count` as authoritative for this Agent snapshot. If the user cites a different UI or remembered count, report the discrepancy; do not accept, relabel, or explain the user's number without supporting inventory data.\n\
 - Then call `use_skill` with the exact returned name before proceeding.\n\

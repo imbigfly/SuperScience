@@ -89,13 +89,7 @@ pub(crate) fn artifact_meta(a: &Artifact, locale: Locale) -> String {
         PreviewData::Fasta(s) => tf(
             locale,
             "artifact.meta.fasta",
-            &[("seqs", &fasta_seq_count(s).max(1).to_string())],
-        ),
-        PreviewData::Smiles(s) => s.chars().take(28).collect(),
-        PreviewData::Text(s) | PreviewData::Markdown(s) => tf(
-            locale,
-            "artifact.meta.text",
-            &[("chars", &s.len().to_string())],
+            &[("seqs", &fasta_seq_count(s.as_ref()).max(1).to_string())],
         ),
     }
 }
@@ -1244,27 +1238,15 @@ pub(crate) fn FilePreview(dom_id: String, path: String, kind: String) -> impl In
 
 pub(crate) fn artifact_preview(a: &Artifact, dom_id: String, locale: Locale) -> impl IntoView {
     match &a.data {
-        PreviewData::Table(t) => table_view(t, locale).into_view(),
-        PreviewData::Text(s) => view! { <pre class="rp-pre">{s.clone()}</pre> }.into_view(),
-        PreviewData::Markdown(s) => {
-            let hid_for_effect = dom_id.clone();
-            create_effect(move |_| schedule_highlight(hid_for_effect.clone()));
-            view! { <div class="md rp-md" id=dom_id inner_html=md_document_to_html(s)></div> }
-                .into_view()
-        }
+        PreviewData::Table(t) => table_view(t.as_ref(), locale).into_view(),
         PreviewData::Latex { tex, display } => {
             let payload = serde_json::json!({ "tex": tex, "display": display }).to_string();
             view! { <HeavyPreview dom_id=dom_id kind="latex".to_string() payload=payload /> }
                 .into_view()
         }
         PreviewData::Fasta(text) => {
-            let payload = serde_json::json!({ "text": text }).to_string();
+            let payload = serde_json::json!({ "text": text.as_ref() }).to_string();
             view! { <HeavyPreview dom_id=dom_id kind="fasta".to_string() payload=payload /> }
-                .into_view()
-        }
-        PreviewData::Smiles(s) => {
-            let payload = serde_json::json!({ "smiles": s }).to_string();
-            view! { <HeavyPreview dom_id=dom_id kind="molecule".to_string() payload=payload /> }
                 .into_view()
         }
         PreviewData::File { path, kind } => view! {
@@ -1380,7 +1362,7 @@ pub(crate) fn ArtifactModal(
     on_open_center: Callback<ModalArtifact>,
     on_open_path: Callback<(String, String)>, // open an input file (path, kind)
     on_rerun: Callback<String>,               // drop a rerun request into the composer (#455)
-    library_items: ReadSignal<Vec<LibraryItem>>,
+    library_items: ReadSignal<Vec<LibraryItemSummary>>,
     on_library_changed: Callback<()>,
 ) -> impl IntoView {
     let locale = use_locale();
@@ -1412,10 +1394,11 @@ pub(crate) fn ArtifactModal(
     let star_session = session.clone();
     let starred = create_memo(move |_| {
         star_session.as_deref().is_some_and(|session| {
-            library_items
-                .get()
-                .iter()
-                .any(|item| item.matches_figure(session, &star_path))
+            library_items.with(|items| {
+                items
+                    .iter()
+                    .any(|item| item.matches_figure(session, &star_path))
+            })
         })
     });
     let click_path = path.clone();
@@ -1454,8 +1437,13 @@ pub(crate) fn ArtifactModal(
                             aria-pressed=move || starred.get().to_string()
                             on:click=move |_| {
                                 let Some(session_id) = click_session.clone() else { return; };
-                                let existing = library_items.get_untracked().into_iter().find(|item| {
-                                    item.matches_figure(&session_id, &click_path)
+                                let existing = library_items.with_untracked(|items| {
+                                    items
+                                        .iter()
+                                        .find(|item| {
+                                            item.matches_figure(&session_id, &click_path)
+                                        })
+                                        .cloned()
                                 });
                                 let path = click_path.clone();
                                 let name = click_name.clone();

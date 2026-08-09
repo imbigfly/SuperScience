@@ -203,16 +203,23 @@ impl Agent {
     /// checkpoint plus a bounded recent tail (see `ContextManager::compact`).
     /// Returns (before, after) estimated tokens and the archive path.
     pub async fn compact(&mut self) -> Result<(usize, usize, PathBuf), String> {
+        let archive_id = uuid::Uuid::new_v4().simple().to_string();
         let archive = self
             .root
             .join(".superscience")
             .join("history")
-            .join(format!("session-{}.json", chrono::Utc::now().timestamp()));
+            .join(format!("{archive_id}.json"));
+        let archive_reference = format!("superscience-history:{archive_id}");
         let schemas = self.tools.schemas();
         let fixed_tokens = ContextManager::estimated_tool_tokens(&schemas);
         let (before, after) = self
             .ctx
-            .compact_with_reserve(self.provider.as_ref(), &archive, fixed_tokens)
+            .compact_with_reserve_reference(
+                self.provider.as_ref(),
+                &archive,
+                fixed_tokens,
+                &archive_reference,
+            )
             .await?;
         Ok((before, after, archive))
     }
