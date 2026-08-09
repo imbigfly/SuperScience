@@ -4,15 +4,16 @@ use super::desktop_lifecycle::{should_activate_workspace_window, should_hide_wor
 use super::session_commands::transcript_page_items;
 use super::{
     begin_queued_cutin, branch_title, client_turn_error, coalesce_live_agent_events,
-    copy_dir_recursive, enable_referenced_contexts, events_to_items, merge_pending_ui_event,
-    message_uses_resource_bindings, messages_to_items, parse_disabled_skills,
-    parse_enabled_skill_names, parse_follow_up_questions, parse_skill_tags, persist_ui_events,
-    receive_confirm_decision, reclaim_unconsumed_cutin, resolve_acp_artifact_references,
-    resolve_composer_references, resolve_reader_references, resolve_review_backend,
-    resolve_workspace, session_runtime_status, should_hide_app_on_macos_close,
-    should_persist_ui_event, side_chat_prompt, user_message_start, AgentEvent,
-    ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem, SessionRuntime,
-    SkillInfo, StartupReport, StartupTimeline, MAX_PENDING_UI_EVENT_BYTES,
+    copy_dir_recursive, enable_referenced_contexts, events_to_items, limit_persisted_ui_event,
+    merge_pending_ui_event, message_uses_resource_bindings, messages_to_items,
+    parse_disabled_skills, parse_enabled_skill_names, parse_follow_up_questions, parse_skill_tags,
+    persist_ui_events, receive_confirm_decision, reclaim_unconsumed_cutin,
+    resolve_acp_artifact_references, resolve_composer_references, resolve_reader_references,
+    resolve_review_backend, resolve_workspace, session_runtime_status,
+    should_hide_app_on_macos_close, should_persist_ui_event, side_chat_prompt, user_message_start,
+    AgentEvent, ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem,
+    SessionRuntime, SkillInfo, StartupReport, StartupTimeline, MAX_PENDING_UI_EVENT_BYTES,
+    UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -375,6 +376,28 @@ fn reloaded_tool_items_keep_notebook_source() {
 }
 
 #[test]
+fn legacy_tool_replay_is_bounded_but_complete_cards_are_not_truncated() {
+    let ordinary = wisp_llm::Message::tool(
+        "call-shell",
+        "shell",
+        "x".repeat(UI_TOOL_RESULT_MAX_CHARS + 500),
+    );
+    let completion_body = "y".repeat(UI_TOOL_RESULT_MAX_CHARS + 500);
+    let completion = wisp_llm::Message::tool(
+        "call-completion",
+        "attempt_completion",
+        completion_body.clone(),
+    );
+
+    let items = messages_to_items(&[ordinary, completion]);
+
+    assert_eq!(items[0].text.chars().count(), UI_TOOL_RESULT_MAX_CHARS);
+    assert!(items[0].text.ends_with("… output truncated …"));
+    assert_eq!(items[1].role, "assistant");
+    assert_eq!(items[1].text, completion_body);
+}
+
+#[test]
 fn reloaded_propose_plan_result_rebuilds_the_plan_card() {
     let plan = wisp_llm::Message::tool(
         "call-plan",
@@ -485,6 +508,79 @@ fn persisted_ui_events_keep_live_step_order_and_boundaries() {
     );
     assert_eq!(items[3].text, "/tmp");
     assert_eq!(boundaries.get(&2), Some(&4));
+}
+
+#[test]
+fn persisted_stdout_replay_folds_progress_and_stays_bounded() {
+    let frame_id = "f".to_string();
+    let events = vec![
+        AgentEvent::ToolCall {
+            frame_id: frame_id.clone(),
+            name: "shell".into(),
+            preview: "run".into(),
+        },
+        AgentEvent::Stdout {
+            frame_id: frame_id.clone(),
+            chunk: "10%\r90%\n".into(),
+        },
+        AgentEvent::Stdout {
+            frame_id,
+            chunk: "x".repeat(UI_STREAM_OUTPUT_MAX_BYTES + 1_000),
+        },
+    ];
+
+    let (items, _) = events_to_items(&events);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].text.len() <= UI_STREAM_OUTPUT_MAX_BYTES);
+    assert!(!items[0].text.contains("10%"));
+    assert!(items[0].text.ends_with('x'));
+}
+
+#[test]
+fn persisted_stdout_budget_caps_each_tool_and_resets_at_boundaries() {
+    let mut bytes = 0usize;
+    let first = limit_persisted_ui_event(
+        AgentEvent::Stdout {
+            frame_id: "f".into(),
+            chunk: "a".repeat(UI_STREAM_OUTPUT_MAX_BYTES - 2),
+        },
+        &mut bytes,
+    )
+    .unwrap();
+    assert!(matches!(first, AgentEvent::Stdout { .. }));
+    let clipped = limit_persisted_ui_event(
+        AgentEvent::Stdout {
+            frame_id: "f".into(),
+            chunk: "界界".into(),
+        },
+        &mut bytes,
+    );
+    assert!(
+        clipped.is_none(),
+        "a partial UTF-8 scalar must not be saved"
+    );
+    assert_eq!(bytes, UI_STREAM_OUTPUT_MAX_BYTES - 2);
+    assert!(limit_persisted_ui_event(
+        AgentEvent::ToolResult {
+            frame_id: "f".into(),
+            name: "shell".into(),
+            ok: true,
+            content: "done".into(),
+            duration_ms: 1,
+        },
+        &mut bytes,
+    )
+    .is_some());
+    assert_eq!(bytes, 0);
+    assert!(limit_persisted_ui_event(
+        AgentEvent::Stdout {
+            frame_id: "f".into(),
+            chunk: "next".into(),
+        },
+        &mut bytes,
+    )
+    .is_some());
+    assert_eq!(bytes, 4);
 }
 
 #[test]

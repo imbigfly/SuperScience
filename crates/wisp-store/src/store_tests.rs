@@ -1792,6 +1792,122 @@ async fn transcript_pages_keep_complete_user_turns_and_matching_events() {
 }
 
 #[tokio::test]
+async fn recent_turn_preview_messages_are_turn_and_content_bounded() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_recent_turns_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    let mut background = Message::user("background completion");
+    background.tool_name = Some(AGENT_WORKFLOW_COMPLETION_TOOL.into());
+    let large_tool = Message::tool(
+        "call-shell",
+        "shell",
+        "z".repeat(super::sessions::RECENT_TURN_TOOL_PREVIEW_MAX_CHARS + 500),
+    );
+    let messages = [
+        Message::system("sys"),
+        Message::user("one"),
+        Message::assistant("answer one"),
+        Message::user("two"),
+        Message::assistant("answer two"),
+        large_tool,
+        background,
+        Message::user("three"),
+        Message::assistant("answer three"),
+    ];
+    for (seq, message) in messages.iter().enumerate() {
+        store
+            .append_message("f", seq as i64, message)
+            .await
+            .unwrap();
+    }
+
+    let recent = store
+        .load_recent_turn_preview_messages("f", 2)
+        .await
+        .unwrap();
+    assert_eq!(recent.first().unwrap().content.as_text(), "two");
+    assert_eq!(recent.last().unwrap().content.as_text(), "answer three");
+    assert!(recent
+        .iter()
+        .any(|message| message.content.as_text() == "background completion"));
+    assert!(recent
+        .iter()
+        .all(|message| message.content.as_text() != "one"));
+    let tool = recent
+        .iter()
+        .find(|message| message.tool_name.as_deref() == Some("shell"))
+        .unwrap();
+    assert_eq!(
+        tool.content.as_text().chars().count(),
+        super::sessions::RECENT_TURN_TOOL_PREVIEW_MAX_CHARS
+    );
+    assert!(recent.iter().all(|message| message.tool_calls.is_empty()));
+    assert!(recent.iter().all(|message| message.reasoning.is_none()));
+
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn transcript_page_caps_legacy_stdout_before_returning_event_json() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_stdout_replay_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .append_message("f", 1, &Message::user("run it"))
+        .await
+        .unwrap();
+    store
+        .append_message("f", 2, &Message::assistant("done"))
+        .await
+        .unwrap();
+    let events = [
+        serde_json::json!({"kind":"ToolCall","frame_id":"f","name":"shell","preview":"run"}),
+        serde_json::json!({"kind":"Stdout","frame_id":"f","chunk":"a".repeat(40_000)}),
+        serde_json::json!({"kind":"Stdout","frame_id":"f","chunk":"b".repeat(40_000)}),
+        serde_json::json!({"kind":"Stdout","frame_id":"f","chunk":"c".repeat(40_000)}),
+        serde_json::json!({"kind":"ToolResult","frame_id":"f","name":"shell","ok":true,"content":"done","duration_ms":1}),
+        serde_json::json!({"kind":"ToolCall","frame_id":"f","name":"shell","preview":"next"}),
+        serde_json::json!({"kind":"Stdout","frame_id":"f","chunk":"next"}),
+        serde_json::json!({"kind":"MessageBoundary","frame_id":"f","seq":2}),
+    ];
+    for (seq, event) in events.iter().enumerate() {
+        store
+            .append_session_ui_event("f", seq as i64 + 1, &event.to_string())
+            .await
+            .unwrap();
+    }
+
+    let page = store
+        .load_session_transcript_page("f", None, 1)
+        .await
+        .unwrap();
+    let stdout = page
+        .ui_events
+        .iter()
+        .filter_map(|event| serde_json::from_str::<serde_json::Value>(event).ok())
+        .filter(|event| event["kind"] == "Stdout")
+        .map(|event| event["chunk"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(stdout.len(), 3, "the fully over-budget chunk is omitted");
+    assert_eq!(stdout[0].len(), 40_000);
+    assert_eq!(
+        stdout[1].len(),
+        super::sessions::SESSION_UI_STDOUT_REPLAY_MAX_CHARS - 40_000
+    );
+    assert_eq!(stdout[2], "next", "a new tool receives a fresh budget");
+
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
 async fn global_composer_search_carries_project_and_session_metadata() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_store_composer_search_{}.sqlite",
