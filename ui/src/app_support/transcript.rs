@@ -13,6 +13,7 @@ pub(crate) fn review_message_ui_index(items: &[ChatItem], message_index: usize) 
             ChatItem::Tool { name, .. } => name != "attempt_completion",
             ChatItem::AcpTool { .. } | ChatItem::Plan(_) | ChatItem::Question(_) => true,
             ChatItem::QueuedUser { .. }
+            | ChatItem::FileChanged(_)
             | ChatItem::ApprovalPending { .. }
             | ChatItem::AcpPermission { .. }
             | ChatItem::Usage { .. }

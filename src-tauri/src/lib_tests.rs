@@ -7,9 +7,9 @@ use super::{
     copy_dir_recursive, enable_referenced_contexts, events_to_items, limit_persisted_ui_event,
     merge_pending_ui_event, message_uses_resource_bindings, messages_to_items,
     parse_disabled_skills, parse_enabled_skill_names, parse_follow_up_questions, parse_skill_tags,
-    persist_ui_events, receive_confirm_decision, reclaim_unconsumed_cutin,
-    resolve_acp_artifact_references, resolve_composer_references, resolve_reader_references,
-    resolve_review_backend, resolve_workspace, session_runtime_status,
+    persist_ui_events, provenance_ui_file_changes, receive_confirm_decision,
+    reclaim_unconsumed_cutin, resolve_acp_artifact_references, resolve_composer_references,
+    resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
     should_hide_app_on_macos_close, should_persist_ui_event, side_chat_prompt, user_message_start,
     AgentEvent, ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem,
     SessionRuntime, SkillInfo, StartupReport, StartupTimeline, MAX_PENDING_UI_EVENT_BYTES,
@@ -534,6 +534,34 @@ fn persisted_stdout_replay_folds_progress_and_stays_bounded() {
     assert!(items[0].text.len() <= UI_STREAM_OUTPUT_MAX_BYTES);
     assert!(!items[0].text.contains("10%"));
     assert!(items[0].text.ends_with('x'));
+}
+
+#[test]
+fn persisted_file_changes_restore_structured_artifact_evidence() {
+    let event = AgentEvent::FileChanged {
+        frame_id: "f".into(),
+        path: "results/new.csv".into(),
+    };
+    assert!(should_persist_ui_event(&event));
+
+    let (items, _) = events_to_items(&[event]);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].role, "file_changed");
+    assert_eq!(items[0].text, "results/new.csv");
+    assert!(items[0].tool_name.is_none());
+}
+
+#[test]
+fn provenance_for_execution_tools_becomes_file_change_evidence_without_direct_tool_duplicates() {
+    let mut record = wisp_core::ProvenanceRecord {
+        tool: "python".into(),
+        files_written: vec!["results/new.csv".into()],
+        ..Default::default()
+    };
+    assert_eq!(provenance_ui_file_changes(&record), ["results/new.csv"]);
+
+    record.tool = "write".into();
+    assert!(provenance_ui_file_changes(&record).is_empty());
 }
 
 #[test]

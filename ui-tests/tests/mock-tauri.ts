@@ -3972,6 +3972,39 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               }, 30);
               return fid;
             }
+            if (String(arg("message") ?? "").includes("ARTIFACTATTRIBUTION")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "ToolCall", frame_id: fid, name: "shell", preview: "Get-ChildItem" });
+                emit("agent", {
+                  kind: "ToolResult",
+                  frame_id: fid,
+                  name: "shell",
+                  ok: true,
+                  content: "old.csv\nplots/old.png\nnotes/old-report.md",
+                });
+                emit("agent", { kind: "ToolCall", frame_id: fid, name: "write", preview: "results/new.csv" });
+                emit("agent", {
+                  kind: "FileChanged",
+                  frame_id: fid,
+                  path: "/mock/root/results/new.csv",
+                });
+                emit("agent", {
+                  kind: "ToolResult",
+                  frame_id: fid,
+                  name: "write",
+                  ok: true,
+                  content: "write completed",
+                });
+                emit("agent", {
+                  kind: "Text",
+                  frame_id: fid,
+                  delta: "I inspected `old.csv` and created the requested output.",
+                });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
             // Interleaved commentary, reasoning, and tool calls exercise the
             // transcript's three-layer activity flow.
             if (String(arg("message") ?? "").includes("STEPSDEMO")) {

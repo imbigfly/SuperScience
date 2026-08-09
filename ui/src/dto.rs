@@ -335,6 +335,10 @@ pub(crate) enum ChatItem {
         /// Elapsed ms from tool call card to result.
         duration_ms: Option<u64>,
     },
+    /// Structured evidence that the active tool wrote a workspace file.
+    /// Kept as a hidden transcript row so artifact attribution survives the
+    /// persisted AgentEvent replay without scraping paths from tool output.
+    FileChanged(String),
     /// Inline tool-approval card (replaces the old centered modal).
     ApprovalPending {
         tool: String,
@@ -472,6 +476,10 @@ impl ChatItem {
                 (4u8, name, ok, duration_ms).hash(&mut h);
                 hash_text_sampled(&mut h, input);
                 hash_text_sampled(&mut h, output);
+            }
+            Self::FileChanged(path) => {
+                14u8.hash(&mut h);
+                hash_text_sampled(&mut h, path);
             }
             Self::ApprovalPending {
                 tool,
@@ -1971,6 +1979,7 @@ impl LoadedItem {
                 started_at_ms: None,
                 duration_ms: self.duration_ms,
             },
+            "file_changed" => ChatItem::FileChanged(self.text),
             "usage" => {
                 let v: serde_json::Value = serde_json::from_str(&self.text).unwrap_or_default();
                 let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);

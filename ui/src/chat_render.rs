@@ -14,6 +14,7 @@ use std::collections::HashMap;
 pub(crate) fn renders_nothing(item: &ChatItem) -> bool {
     matches!(item, ChatItem::Assistant { text, .. } if text.trim().is_empty())
         || matches!(item, ChatItem::Tool { name, .. } if name == "attempt_completion")
+        || matches!(item, ChatItem::FileChanged(_))
 }
 
 pub(crate) fn class_for(item: &ChatItem) -> &'static str {
@@ -28,6 +29,7 @@ pub(crate) fn class_for(item: &ChatItem) -> &'static str {
             "tool-wrap image-generation-wrap"
         }
         ChatItem::Tool { .. } => "tool-wrap",
+        ChatItem::FileChanged(_) => "artifact-write-marker",
         ChatItem::ApprovalPending { .. } => "tool-wrap approval-wrap-row",
         ChatItem::AcpPermission { .. } => "tool-wrap approval-wrap-row",
         ChatItem::AcpTool { .. } => "tool-wrap",
@@ -1249,6 +1251,7 @@ pub(crate) fn render_item(
             />
         }.into_view(),
         ChatItem::Tool { name, .. } if name == "attempt_completion" => view! {}.into_view(),
+        ChatItem::FileChanged(_) => view! {}.into_view(),
         ChatItem::Tool { name, ok, input, output, .. } if is_run_monitor_tool(name) => view! {
             <RunMonitorCard
                 run_id=input.trim().to_string()
