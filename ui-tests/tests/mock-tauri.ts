@@ -4174,11 +4174,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                   ok: true,
                   content: "old.csv\nplots/old.png\nnotes/old-report.md",
                 });
-                emit("agent", { kind: "ToolCall", frame_id: fid, name: "write", preview: "results/new.csv" });
+                emit("agent", { kind: "ToolCall", frame_id: fid, name: "write", preview: "results/new.png" });
                 emit("agent", {
                   kind: "FileChanged",
                   frame_id: fid,
-                  path: "/mock/root/results/new.csv",
+                  path: "/mock/root/results/new.png",
                 });
                 emit("agent", {
                   kind: "ToolResult",
@@ -4186,6 +4186,24 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                   name: "write",
                   ok: true,
                   content: "write completed",
+                });
+                emit("agent", {
+                  kind: "Text",
+                  frame_id: fid,
+                  delta: "I will verify the generated output first.",
+                });
+                emit("agent", {
+                  kind: "ToolCall",
+                  frame_id: fid,
+                  name: "view_image",
+                  preview: "results/new.png",
+                });
+                emit("agent", {
+                  kind: "ToolResult",
+                  frame_id: fid,
+                  name: "view_image",
+                  ok: true,
+                  content: "output verified",
                 });
                 emit("agent", {
                   kind: "Text",

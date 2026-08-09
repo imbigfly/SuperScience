@@ -576,18 +576,22 @@ pub(crate) fn collect_artifacts(
             items.get(artifact.source_item),
             Some(ChatItem::FileChanged(_))
         ) {
-            let next_assistant = items
+            let next_final_assistant = items
                 .iter()
                 .enumerate()
                 .skip(artifact.source_item + 1)
                 .find_map(|(index, item)| match item {
-                    ChatItem::Assistant { .. } => Some(Some(index)),
+                    ChatItem::Assistant { text, .. }
+                        if !text.trim().is_empty() && !is_commentary_at(items, index) =>
+                    {
+                        Some(Some(index))
+                    }
                     ChatItem::User(_) => Some(None),
                     _ => None,
                 })
                 .flatten();
-            if let Some(next_assistant) = next_assistant {
-                artifact.source_item = next_assistant;
+            if let Some(next_final_assistant) = next_final_assistant {
+                artifact.source_item = next_final_assistant;
             }
         }
     }
@@ -828,6 +832,48 @@ mod artifact_scan_tests {
         let artifacts = fresh(&items, Locale::En);
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].source_item, 2);
+    }
+
+    #[test]
+    fn structured_file_writes_skip_tool_call_commentary_for_the_final_reply() {
+        let items = vec![
+            ChatItem::Tool {
+                name: "python".into(),
+                ok: Some(true),
+                input: "save comparison images".into(),
+                output: "five images written".into(),
+                started_at_ms: None,
+                duration_ms: None,
+            },
+            ChatItem::FileChanged("evidence/one.png".into()),
+            ChatItem::FileChanged("evidence/two.png".into()),
+            ChatItem::FileChanged("evidence/three.png".into()),
+            ChatItem::FileChanged("evidence/four.png".into()),
+            ChatItem::FileChanged("evidence/five.png".into()),
+            ChatItem::Assistant {
+                text: "I will inspect the comparison images first.".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+            ChatItem::Tool {
+                name: "view_image".into(),
+                ok: Some(true),
+                input: "evidence/one.png".into(),
+                output: "image is legible".into(),
+                started_at_ms: None,
+                duration_ms: None,
+            },
+            ChatItem::Assistant {
+                text: "The five comparison images are ready.".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+        ];
+
+        assert!(is_commentary_at(&items, 6));
+        let artifacts = fresh(&items, Locale::En);
+        assert_eq!(artifacts.len(), 5);
+        assert!(artifacts.iter().all(|artifact| artifact.source_item == 8));
     }
 
     #[test]
