@@ -76,6 +76,7 @@ mod session_context_tool;
 mod session_export;
 mod session_import;
 mod settings_commands;
+mod side_chat;
 mod skill_commands;
 mod skill_portfolio;
 mod snapshot_store;
@@ -6689,18 +6690,6 @@ fn branch_title(raw: Option<&str>) -> Option<String> {
     Some(format!("Branch: {short}"))
 }
 
-fn side_chat_prompt(transcript: &str, question: &str) -> String {
-    let transcript = if transcript.trim().is_empty() {
-        "(No saved transcript yet.)"
-    } else {
-        transcript.trim()
-    };
-    format!(
-        "Current conversation transcript:\n{transcript}\n\nSide question:\n{}\n\nAnswer the side question directly. Do not continue the main task unless the user explicitly asks.",
-        question.trim()
-    )
-}
-
 #[tauri::command]
 async fn side_chat(
     state: State<'_, AppState>,
@@ -6708,7 +6697,7 @@ async fn side_chat(
     session_id: Option<String>,
     question: String,
     acp_agent_id: Option<String>,
-) -> Result<String, String> {
+) -> Result<side_chat::SideChatResponse, String> {
     let question = question.trim();
     if question.is_empty() {
         return Err("question is empty".into());
@@ -6728,44 +6717,77 @@ async fn side_chat(
         None => state.active(window.label()).id,
     };
     let _project_activity = state.begin_project_activity(&project_id)?;
-    let msgs = match frame_id.as_deref() {
-        Some(id) => state
-            .store
-            .load_messages(id)
-            .await
-            .map_err(|e| format!("{e}"))?,
-        None => Vec::new(),
+    let Some(ref frame_id) = frame_id else {
+        return Ok(side_chat::SideChatResponse {
+            answer: String::new(),
+            session_id: None,
+            snapshot_version: 0,
+            evidence: Vec::new(),
+            no_evidence: true,
+        });
     };
-    let transcript = review::serialize_transcript(&msgs);
-    let prompt = side_chat_prompt(&transcript, question);
+    let snapshot = state
+        .store
+        .load_session_ui_event_snapshot(frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut history = side_chat::history_from_events(&snapshot.events)?;
+    let mut snapshot_version = snapshot.through_event_seq;
+    if history.is_empty() {
+        let messages = state
+            .store
+            .load_messages_with_seq(frame_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        snapshot_version = messages.last().map(|(seq, _)| *seq).unwrap_or_default();
+        history = side_chat::history_from_messages(&messages);
+    }
+    let evidence = side_chat::retrieve_evidence(question, &history);
+    if evidence.is_empty() {
+        return Ok(side_chat::SideChatResponse {
+            answer: String::new(),
+            session_id: Some(frame_id.clone()),
+            snapshot_version,
+            evidence,
+            no_evidence: true,
+        });
+    }
+    let prompt = side_chat::answer_prompt(frame_id, snapshot_version, question, &evidence);
     // ACP side chat: one-shot, read-only answer from the selected ACP Agent,
     // running in the active project root. Never touches the main thread.
-    if let Some(agent_id) = acp_agent_id.as_deref().filter(|id| !id.is_empty()) {
+    let answer = if let Some(agent_id) = acp_agent_id.as_deref().filter(|id| !id.is_empty()) {
         let cwd = state.active(window.label()).root;
-        return acp::acp_side_chat_once(&state, &cwd, agent_id, &prompt).await;
-    }
-    let (provider, api_url, model, api_key) = load_settings(&state.store).await;
-    let (max_tokens, reasoning_effort) = models::active_llm_advanced(&state.store).await;
-    let cfg = build_provider_config(
-        &provider,
-        &api_url,
-        &api_key,
-        &model,
-        max_tokens,
-        &reasoning_effort,
-    )?;
-    let llm = wisp_llm::build(cfg);
-    let completion = llm
-        .complete(
+        acp::acp_side_chat_once(&state, &cwd, agent_id, &prompt).await?
+    } else {
+        let (provider, api_url, model, api_key) = load_settings(&state.store).await;
+        let (max_tokens, reasoning_effort) = models::active_llm_advanced(&state.store).await;
+        let cfg = build_provider_config(
+            &provider,
+            &api_url,
+            &api_key,
+            &model,
+            max_tokens,
+            &reasoning_effort,
+        )?;
+        let llm = wisp_llm::build(cfg);
+        llm.complete(
             &[
-                Message::system("You are a temporary side-chat assistant. Use the supplied transcript as read-only context."),
+                Message::system(side_chat::SYSTEM_PROMPT),
                 Message::user(prompt),
             ],
             &[],
         )
         .await
-        .map_err(|e| format!("{e}"))?;
-    Ok(completion.content)
+        .map_err(|e| format!("{e}"))?
+        .content
+    };
+    Ok(side_chat::SideChatResponse {
+        answer,
+        session_id: Some(frame_id.clone()),
+        snapshot_version,
+        evidence,
+        no_evidence: false,
+    })
 }
 
 fn mcp_lib_dir(_root: &std::path::Path) -> Option<PathBuf> {

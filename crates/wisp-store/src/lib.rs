@@ -58,7 +58,7 @@ pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
 pub use provenance::{canonical_json, canonical_json_sha256};
 pub use sessions::{
     ModelTokenUsage, ProjectTokenUsage, SessionTokenUsage, SessionTokenUsagePage,
-    SessionTranscriptPage, TokenUsageDay, ToolCallUsage,
+    SessionTranscriptPage, SessionUiEventSnapshot, TokenUsageDay, ToolCallUsage,
 };
 
 use anyhow::Result;

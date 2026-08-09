@@ -458,7 +458,7 @@ fn App() -> impl IntoView {
     let queue_seq = create_rw_signal(0u64);
     let side_chat_input = create_rw_signal(String::new());
     let side_chat_quotes = create_rw_signal::<Vec<ComposerQuote>>(vec![]);
-    let side_chat_items = create_rw_signal::<Vec<ChatItem>>(vec![]);
+    let side_chat_items = create_rw_signal::<Vec<SideChatItem>>(vec![]);
     let side_chat_busy = create_rw_signal(false);
     let side_chat_model_menu_open = create_rw_signal(false);
     // Side chat routes through this ACP Agent when set; None = the active model.
@@ -1016,7 +1016,8 @@ fn App() -> impl IntoView {
     // Side chat is per-session, same as the center tabs above: stash the
     // outgoing session's Q&A and restore the incoming session's, so switching
     // sessions no longer leaves the previous session's side chat on screen.
-    let side_chat_by_session = create_rw_signal::<HashMap<String, Vec<ChatItem>>>(HashMap::new());
+    let side_chat_by_session =
+        create_rw_signal::<HashMap<String, Vec<SideChatItem>>>(HashMap::new());
     let previous_side_chat_session = Rc::new(RefCell::new(None::<String>));
     create_effect(move |_| {
         let current_session = active_session.get();
@@ -2874,7 +2875,7 @@ fn App() -> impl IntoView {
             side_chat_input.set(String::new());
             side_chat_quotes.set(vec![]);
         }
-        side_chat_items.update(|v| v.push(ChatItem::User(question.clone())));
+        side_chat_items.update(|v| v.push(SideChatItem::User(question.clone())));
         side_chat_busy.set(true);
         let sid = active_session.get();
         let acp_agent = side_chat_acp_agent.get();
@@ -2895,18 +2896,34 @@ fn App() -> impl IntoView {
             }))
             .unwrap();
             let reply = match invoke_checked("side_chat", arg).await {
-                Ok(v) => ChatItem::Assistant {
-                    text: v.as_string().unwrap_or_default(),
-                    model: model.clone(),
-                    resources: Vec::new(),
+                Ok(value) => match from_value::<SideChatResponse>(value) {
+                    Ok(response) => SideChatItem::Assistant {
+                        text: response.answer,
+                        model: (!response.no_evidence).then_some(model).flatten(),
+                        evidence: response.evidence,
+                        snapshot_version: response.snapshot_version,
+                        no_evidence: response.no_evidence,
+                        error: false,
+                    },
+                    Err(error) => SideChatItem::Assistant {
+                        text: format!("Error: invalid side-chat response: {error}"),
+                        model: None,
+                        evidence: Vec::new(),
+                        snapshot_version: 0,
+                        no_evidence: false,
+                        error: true,
+                    },
                 },
-                Err(err) => ChatItem::Assistant {
+                Err(err) => SideChatItem::Assistant {
                     text: format!(
                         "Error: {}",
                         localize_backend(locale.get(), &js_error_text(err))
                     ),
-                    model: model.clone(),
-                    resources: Vec::new(),
+                    model: None,
+                    evidence: Vec::new(),
+                    snapshot_version: 0,
+                    no_evidence: false,
+                    error: true,
                 },
             };
             // The user may have switched sessions while this was in flight.
@@ -11581,19 +11598,65 @@ fn App() -> impl IntoView {
                                                 view! { <div class="sidechat-empty">{move || t(locale.get(), "sidechat.empty")}</div> }.into_view()
                                             } else {
                                                 rows.into_iter().map(|item| match item {
-                                                    ChatItem::User(text) => view! {
+                                                    SideChatItem::User(text) => view! {
                                                         <div class="sidechat-row user"><div class="sidechat-bubble">{text}</div></div>
                                                     }.into_view(),
-                                                    ChatItem::Assistant { text, model, .. } => {
-                                                        let error = text.starts_with("Error: ");
+                                                    SideChatItem::Assistant {
+                                                        text,
+                                                        model,
+                                                        evidence,
+                                                        snapshot_version,
+                                                        no_evidence,
+                                                        error,
+                                                    } => {
+                                                        let answer = if no_evidence {
+                                                            t(locale.get(), "sidechat.no_evidence").to_string()
+                                                        } else {
+                                                            text
+                                                        };
+                                                        let evidence_count = evidence.len().to_string();
+                                                        let snapshot = snapshot_version.to_string();
                                                         view! {
                                                             <div class="sidechat-row assistant">
                                                                 {model.filter(|_| !error).map(|m| view! { <div class="sidechat-model-label">{m}</div> })}
-                                                                <div class="sidechat-answer" class:error=error inner_html=md_to_html(&text)></div>
+                                                                <div class="sidechat-answer" class:error=error inner_html=md_to_html(&answer)></div>
+                                                                {(!evidence.is_empty()).then(|| view! {
+                                                                    <details class="sidechat-evidence" data-testid="sidechat-evidence">
+                                                                        <summary>{tf(
+                                                                            locale.get(),
+                                                                            "sidechat.evidence_summary",
+                                                                            &[("n", &evidence_count), ("version", &snapshot)],
+                                                                        )}</summary>
+                                                                        <div class="sidechat-evidence-list">
+                                                                            {evidence.into_iter().enumerate().map(|(index, source)| {
+                                                                                let source_number = index + 1;
+                                                                                let turn = source.turn.to_string();
+                                                                                let locator = source.event_seq
+                                                                                    .map(|seq| format!("event {seq}"))
+                                                                                    .or_else(|| source.message_seq.map(|seq| format!("message {seq}")))
+                                                                                    .unwrap_or_else(|| source.source_id.clone());
+                                                                                view! {
+                                                                                    <article class="sidechat-evidence-item"
+                                                                                        data-source-id=source.source_id>
+                                                                                        <div class="sidechat-evidence-meta">
+                                                                                            {format!("[S{source_number}] · {} · {} · {locator}",
+                                                                                                tf(locale.get(), "sidechat.turn", &[("n", &turn)]),
+                                                                                                source.role,
+                                                                                            )}
+                                                                                        </div>
+                                                                                        <blockquote>{source.excerpt}</blockquote>
+                                                                                        {(!source.relevance.is_empty()).then(|| view! {
+                                                                                            <div class="sidechat-evidence-why">{source.relevance}</div>
+                                                                                        })}
+                                                                                    </article>
+                                                                                }
+                                                                            }).collect_view()}
+                                                                        </div>
+                                                                    </details>
+                                                                })}
                                                             </div>
                                                         }.into_view()
                                                     }
-                                                    _ => view! {}.into_view(),
                                                 }).collect_view()
                                             }
                                         }}

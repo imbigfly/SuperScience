@@ -3491,12 +3491,41 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "side_chat": {
             const question = String(arg("question") ?? "");
             if (question === "SIDESCROLLTEST") {
-              return Array.from(
-                { length: 40 },
-                (_, index) => `Side answer line ${index + 1}`,
-              ).join("\n\n");
+              return {
+                answer: Array.from(
+                  { length: 40 },
+                  (_, index) => `Side answer line ${index + 1}`,
+                ).join("\n\n"),
+                sessionId: String(arg("sessionId") ?? ""),
+                snapshotVersion: 12,
+                evidence: [],
+                noEvidence: false,
+              };
             }
-            return `Side answer: ${question}`;
+            if (question === "NO_EVIDENCE_TEST") {
+              return {
+                answer: "",
+                sessionId: String(arg("sessionId") ?? ""),
+                snapshotVersion: 12,
+                evidence: [],
+                noEvidence: true,
+              };
+            }
+            return {
+              answer: `Side answer: ${question} [S1]`,
+              sessionId: String(arg("sessionId") ?? ""),
+              snapshotVersion: 12,
+              evidence: [{
+                sourceId: "event-7",
+                eventSeq: 7,
+                messageSeq: null,
+                turn: 2,
+                role: "assistant",
+                excerpt: "The main thread recorded this evidence.",
+                relevance: "Matched the question",
+              }],
+              noEvidence: false,
+            };
           }
           case "confirm_response": {
             const frameId = String(arg("sessionId") ?? "");

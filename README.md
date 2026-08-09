@@ -106,8 +106,10 @@ desktop app or a headless CLI.
 - `@` attaches artifacts, files, execution contexts, and language runtimes;
   `#` reaches saved sessions through a cited, read-only **Reader** specialist;
   `/` applies a skill to the next turn.
-- Ctrl+K / Ctrl+P palettes (including quick UI/code font sizing), side chat, conversation folders, a global library
-  of cells and figures, and in-app update checks.
+- Ctrl+K / Ctrl+P palettes (including quick UI/code font sizing), conversation
+  folders, a global library of cells and figures, and in-app update checks.
+  Side chat searches a frozen snapshot of the current conversation's full
+  visible history and exposes the message excerpts used for each answer.
 - Manual Reviewer checks keep sending paused and show live review progress until
   the independent audit finishes.
 - **Feedback** opens a blank conversation immediately and attaches non-sensitive
