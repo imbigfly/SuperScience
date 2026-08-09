@@ -6767,6 +6767,40 @@ test("session history loads older pages with a stable cursor", async ({ page }) 
   });
 });
 
+test("sidebar search finds sessions beyond the loaded history page and restores the list", async ({ page }) => {
+  await page.goto("/?mockManySessions=1");
+  await page.locator(".proj-card-main").first().click();
+
+  const sidebar = page.locator(".sidebar");
+  await sidebar.getByRole("button", { name: "Search sessions" }).click();
+  const search = sidebar.getByRole("searchbox", { name: "Search sessions" });
+  await expect(search).toBeFocused();
+
+  await search.fill("101");
+  await expect(sidebar.getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toHaveCount(0);
+  await expect(sidebar.getByRole("button", { name: "Load earlier sessions" })).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "search_sessions")).toMatchObject({
+    query: "101",
+    limit: 100,
+    projectId: "default",
+  });
+
+  await search.fill("missing conversation");
+  await expect(sidebar.getByRole("status")).toHaveText("No matching sessions.");
+  await sidebar.getByRole("button", { name: "Clear session search" }).click();
+  await expect(search).toHaveValue("");
+  await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "Load earlier sessions" })).toBeVisible();
+
+  await search.fill("101");
+  await expect(sidebar.getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(search).toHaveCount(0);
+  await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "Paged session 101", exact: true })).toHaveCount(0);
+});
+
 test("home search opens artifacts, sessions, and settings", async ({ page }) => {
   await page.goto("/");
 

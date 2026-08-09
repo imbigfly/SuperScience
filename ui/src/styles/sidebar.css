@@ -62,9 +62,37 @@
 }
 .side-select-btn:hover, .side-select-btn[aria-pressed="true"] { background: var(--bg-elev); color: var(--text); }
 .side-select-btn:disabled { cursor: default; opacity: .45; }
+.side-session-search-btn,
 .side-sort-btn { width: 26px; height: 26px; color: var(--text-faint); }
+.side-session-search-btn svg,
 .side-sort-btn svg { width: 16px; height: 16px; }
+.side-session-search-btn:hover, .side-session-search-btn.active,
 .side-sort-btn:hover, .side-sort-btn.active { color: var(--text); background: var(--bg-elev); }
+.side-session-search {
+  position: relative; display: flex; align-items: center; margin: 0 8px 6px;
+}
+.side-session-search input {
+  width: 100%; height: 32px; padding: 5px 29px 5px 30px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-input); color: var(--text); font: inherit; font-size: 12.5px;
+  outline: none; appearance: none; -webkit-appearance: none;
+}
+.side-session-search input::-webkit-search-cancel-button { display: none; }
+.side-session-search input::placeholder { color: var(--text-faint); }
+.side-session-search input:focus { border-color: var(--clay); box-shadow: 0 0 0 2px var(--clay-soft); }
+.side-session-search-icon {
+  position: absolute; left: 9px; z-index: 1; display: inline-flex;
+  color: var(--text-faint); pointer-events: none;
+}
+.side-session-search-icon svg { width: 14px; height: 14px; }
+.side-session-search-clear {
+  position: absolute; right: 4px; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-xs);
+  background: transparent; color: var(--text-faint); cursor: pointer;
+}
+.side-session-search-clear:hover { background: var(--bg-elev); color: var(--text); }
+.side-session-search-clear svg { width: 13px; height: 13px; }
+.side-search-hint { padding-top: 9px; }
 .side-sort-backdrop { position: fixed; inset: 0; z-index: 40; }
 .side-sort-menu {
   position: absolute; z-index: 41; top: 34px; right: 8px; min-width: 184px;
@@ -208,6 +236,9 @@ button.side-item.ses.selecting { padding-right: 10px; }
   .sidebar .proj-name,
   .sidebar .caret,
   .sidebar .side-group-title,
+  .sidebar .side-sessions-head,
+  .sidebar .side-session-search,
+  .sidebar .side-bulk-actions,
   .sidebar .side-folder-caret,
   .sidebar .side-folder-name,
   .sidebar .side-folder-count,
