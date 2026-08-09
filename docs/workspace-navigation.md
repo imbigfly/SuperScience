@@ -6,4 +6,6 @@ priority.
 
 To open workspaces on a blank conversation instead, turn off **Resume the last
 conversation when opening a workspace** in **Settings → General**. Starting a
-new conversation manually is always available from the sidebar.
+new conversation manually is always available from the sidebar. A newly
+created conversation appears there immediately as **Untitled session**, even
+before its first message is sent.

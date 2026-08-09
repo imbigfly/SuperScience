@@ -569,8 +569,15 @@ fn App() -> impl IntoView {
     // Session history (left sidebar).
     let session_history_cursor = create_rw_signal::<Option<SessionCursor>>(None);
     let session_history_loading = create_rw_signal(false);
-    let refresh_session_history =
-        move || refresh_sessions(sessions, pending_turns, running, session_history_cursor);
+    let refresh_session_history = move || {
+        refresh_sessions(
+            sessions,
+            pending_turns,
+            running,
+            session_history_cursor,
+            active_session,
+        )
+    };
     let folders = create_rw_signal::<Vec<FolderInfo>>(vec![]);
     let collapsed_folders = create_rw_signal::<HashSet<String>>(HashSet::new());
     let drag_session = create_rw_signal::<Option<String>>(None);
@@ -7393,7 +7400,13 @@ fn App() -> impl IntoView {
                             key,
                             &[("n", &summary.message_count.to_string())],
                         ));
-                        refresh_sessions(sessions, pending_turns, running, session_history_cursor);
+                        refresh_sessions(
+                            sessions,
+                            pending_turns,
+                            running,
+                            session_history_cursor,
+                            active_session,
+                        );
                         refresh_folders(folders);
                         if summary.status != "skipped" && !summary.frame_id.is_empty() {
                             open_project_transition
@@ -7648,6 +7661,7 @@ fn App() -> impl IntoView {
                     pending_turns,
                     running,
                     session_history_cursor,
+                    active_session,
                 );
                 refresh_folders(folders);
             })

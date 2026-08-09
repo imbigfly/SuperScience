@@ -1854,6 +1854,21 @@ test("new session focuses the composer", async ({ page }) => {
   await expect(composer(page)).toBeFocused();
 });
 
+test("new session appears in the sidebar before its first message", async ({ page }) => {
+  await enterApp(page);
+  const sessions = page.locator(".side-item.ses");
+  const countBefore = await sessions.count();
+  const sendsBefore = (await invokeArgsList(page, "send_message")).length;
+
+  await newSessionButton(page).click();
+
+  await expect(sessions).toHaveCount(countBefore + 1);
+  const newSession = sessions.filter({ hasText: "Untitled session" }).first();
+  await expect(newSession).toBeVisible();
+  await expect(newSession).toHaveClass(/active/);
+  expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
+});
+
 test("rename session modal autofocuses so Ctrl+A selects the title", async ({ page }) => {
   await page.addInitScript(parallelMock);
   await page.goto("/");
@@ -7961,7 +7976,7 @@ test("a second conversation can run in parallel without interleaving transcripts
   await expect(page.getByText("echo:alpha")).toHaveCount(0);
 
   // A is still running → its sidebar entry shows the running indicator.
-  await expect(page.locator(".side-item.ses.running")).toBeVisible();
+  await expect(page.locator(".side-item.ses.running", { hasText: "alpha" })).toBeVisible();
 
   // Switch back to A: the cached (live) transcript renders, B's does not.
   await page.locator(".side-item.ses", { hasText: "alpha" }).click();

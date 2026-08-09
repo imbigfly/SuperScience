@@ -5,14 +5,37 @@ pub(crate) fn refresh_sessions(
     pending: RwSignal<HashMap<String, usize>>,
     running: RwSignal<HashSet<String>>,
     next_cursor: RwSignal<Option<SessionCursor>>,
+    active_session: RwSignal<Option<String>>,
 ) {
     next_cursor.set(None);
     spawn_local(async move {
         let args = to_value(&serde_json::json!({ "cursor": null })).unwrap();
         let v = invoke("list_sessions_page", args).await;
-        if let Ok(page) = serde_wasm_bindgen::from_value::<SessionPage>(v) {
+        if let Ok(mut page) = serde_wasm_bindgen::from_value::<SessionPage>(v) {
             let set = pending.with_untracked(|m| rebuilt_running_set(&page.running_ids, m));
             running.set(set);
+            let active = active_session.get_untracked();
+            let active_is_listed = active.as_ref().is_none_or(|id| {
+                page.items
+                    .iter()
+                    .any(|session| session.id.as_str() == id.as_str())
+            });
+            if !active_is_listed {
+                let id = active.expect("an unlisted active session has an id");
+                let draft = sessions
+                    .with_untracked(|current| {
+                        current.iter().find(|session| session.id == id).cloned()
+                    })
+                    .unwrap_or(SessionInfo {
+                        id,
+                        title: String::new(),
+                        ts: js_sys::Date::now() as i64,
+                        folder_id: None,
+                        branched_from: None,
+                        pinned: false,
+                    });
+                page.items.insert(0, draft);
+            }
             sessions.set(page.items);
             next_cursor.set(page.next_cursor);
         }
