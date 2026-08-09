@@ -21,19 +21,6 @@ struct SetRuntimeInterpreterArgs {
 }
 
 impl SetRuntimeInterpreterTool {
-    pub fn new(
-        store: Store,
-        runtime_manager: RuntimeManager,
-        project_id: impl Into<String>,
-    ) -> Self {
-        Self {
-            store,
-            runtime_manager,
-            project_id: project_id.into(),
-            scope_key: wisp_runtime::MAINLINE_RUNTIME_SCOPE.into(),
-        }
-    }
-
     pub fn new_in_scope(
         store: Store,
         runtime_manager: RuntimeManager,
@@ -212,7 +199,12 @@ mod tests {
         })
         .to_string();
         store.upsert_execution_context(&context).await.unwrap();
-        let tool = SetRuntimeInterpreterTool::new(store.clone(), manager(), "project-1");
+        let tool = SetRuntimeInterpreterTool::new_in_scope(
+            store.clone(),
+            manager(),
+            "project-1",
+            wisp_runtime::MAINLINE_RUNTIME_SCOPE,
+        );
 
         let result = tool
             .run(
@@ -249,7 +241,12 @@ mod tests {
         let context = wisp_store::ExecutionContext::new("local", "Local").unwrap();
         let original = context.config_json.clone();
         store.upsert_execution_context(&context).await.unwrap();
-        let tool = SetRuntimeInterpreterTool::new(store.clone(), manager(), "project-1");
+        let tool = SetRuntimeInterpreterTool::new_in_scope(
+            store.clone(),
+            manager(),
+            "project-1",
+            wisp_runtime::MAINLINE_RUNTIME_SCOPE,
+        );
 
         let result = tool
             .run(
@@ -276,7 +273,12 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&db).await.unwrap();
-        let tool = SetRuntimeInterpreterTool::new(store, manager(), "project-1");
+        let tool = SetRuntimeInterpreterTool::new_in_scope(
+            store,
+            manager(),
+            "project-1",
+            wisp_runtime::MAINLINE_RUNTIME_SCOPE,
+        );
         assert_eq!(tool.name(), "set_runtime_interpreter");
         assert_eq!(
             tool.preview(&serde_json::json!({

@@ -970,6 +970,8 @@ mod tests {
     #[tokio::test]
     async fn references_are_explicit_and_internal_paths_are_excluded() {
         let (base, project, app_data) = roots("references");
+        #[cfg(not(unix))]
+        let _ = &app_data;
         std::fs::create_dir_all(project.join(".git")).unwrap();
         std::fs::write(project.join(".git/secret"), b"hidden").unwrap();
         std::fs::write(project.join("large.bin"), b"0123456789").unwrap();

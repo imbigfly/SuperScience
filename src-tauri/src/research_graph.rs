@@ -7,13 +7,6 @@ pub struct ResearchGraphTool {
 }
 
 impl ResearchGraphTool {
-    pub fn new(store: wisp_store::Store, project_id: String) -> Self {
-        Self {
-            store,
-            scope: wisp_store::StateScope::mainline(project_id),
-        }
-    }
-
     pub fn new_in_scope(store: wisp_store::Store, scope: wisp_store::StateScope) -> Self {
         Self { store, scope }
     }
@@ -177,7 +170,10 @@ mod tests {
             .create_project("project", "Project", "")
             .await
             .unwrap();
-        let tool = ResearchGraphTool::new(store.clone(), "project".into());
+        let tool = ResearchGraphTool::new_in_scope(
+            store.clone(),
+            wisp_store::StateScope::mainline("project"),
+        );
         let env = NoEnv(std::env::temp_dir());
 
         let data = tool
