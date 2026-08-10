@@ -961,21 +961,20 @@ test("agent without plan mode renders a read-only compatibility plan", async ({ 
   await expect(card.locator(".plan-card-actions button")).toHaveCount(0);
 });
 
-test("plan action bar dispatches approve, modify, and save-exit correctly", async ({ page }) => {
+test("plan action bar explains revisions and dispatches approve or defer", async ({ page }) => {
   await openMockPlanSession(page, "acp");
   await activateAcpPlanMode(page);
 
   await expect(page.getByTestId("plan-approve")).toBeVisible();
-  await expect(page.getByTestId("plan-modify")).toBeVisible();
+  await expect(page.getByTestId("plan-modify")).toHaveCount(0);
+  await expect(page.getByTestId("plan-revision-hint")).toHaveText(
+    "Not happy with the plan? Send your requested changes in the chat box.",
+  );
   await expect(page.getByTestId("plan-save-exit")).toBeVisible();
-
-  await page.getByTestId("plan-modify").click();
-  await expect(composer(page)).toBeFocused();
-  expect(await invokeArgsList(page, "set_acp_session_mode")).toHaveLength(0);
-  expect(await invokeArgsList(page, "send_message")).toHaveLength(0);
+  await expect(page.getByTestId("plan-save-exit")).toHaveText("Not now");
 
   await page.getByTestId("plan-save-exit").click();
-  await expect(page.locator(".copy-toast")).toContainText("Plan saved; Default mode restored");
+  await expect(page.locator(".copy-toast")).toContainText("Plan not executed; Default mode restored");
   await expect.poll(() => invokeArgsList(page, "set_acp_session_mode")).toEqual([
     expect.objectContaining({ frameId: "s1", modeId: "default" }),
   ]);

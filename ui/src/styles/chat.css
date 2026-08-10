@@ -150,6 +150,7 @@
 .plan-card-body li[data-status="in_progress"] .plan-entry-mark { color: var(--clay-strong); }
 .plan-entry-priority { flex: none; padding: 0 5px; border-radius: 5px; background: color-mix(in srgb, var(--clay) 20%, transparent); color: var(--clay-strong); font-size: 9.5px; font-weight: 700; }
 .plan-card-actions { display: flex; flex-wrap: wrap; gap: 7px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--bg-sunken); }
+.plan-card-hint { flex-basis: 100%; margin: 0; color: var(--text-faint); font-size: 10.5px; }
 .plan-card-actions button { padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg-elev); color: var(--text); font: inherit; font-size: 10.5px; cursor: pointer; }
 /* .primary fill comes from shared button primitives in base.css */
 

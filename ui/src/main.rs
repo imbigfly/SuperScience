@@ -5387,11 +5387,6 @@ fn App() -> impl IntoView {
     // structured approval only if ACP ever gains a plan-decision request.
     let on_plan_decision = Callback::new(move |decision: PlanDecision| {
         let loc = locale.get_untracked();
-        if decision == PlanDecision::Modify {
-            focus_composer();
-            show_toast(&t(loc, "plan.modify_hint"));
-            return;
-        }
         let Some(session_id) = active_session.get_untracked() else {
             return;
         };

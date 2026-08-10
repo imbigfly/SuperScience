@@ -1575,13 +1575,12 @@ pub(crate) fn render_item(
                     </ul>
                     {move || plan_mode_active.get().then(|| view! {
                         <footer class="plan-card-actions">
+                            <p class="plan-card-hint" data-testid="plan-revision-hint">
+                                {move || t(locale.get(), "plan.modify_hint")}
+                            </p>
                             <button type="button" class="primary" data-testid="plan-approve"
                                 on:click=move |_| on_plan_decision.call(PlanDecision::Approve)>
                                 {move || t(locale.get(), "plan.approve")}
-                            </button>
-                            <button type="button" data-testid="plan-modify"
-                                on:click=move |_| on_plan_decision.call(PlanDecision::Modify)>
-                                {move || t(locale.get(), "plan.modify")}
                             </button>
                             <button type="button" data-testid="plan-save-exit"
                                 on:click=move |_| on_plan_decision.call(PlanDecision::SaveExit)>

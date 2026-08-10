@@ -101,12 +101,11 @@ pub(crate) fn plan_mode_pair(state: Option<&serde_json::Value>) -> Option<(Strin
     Some((plan.to_string(), exit.to_string()))
 }
 
-/// What the plan card's action bar was asked to do. All three end plan mode
-/// except `Modify`, which keeps it so the agent re-plans from the composer.
+/// What the plan card's action bar was asked to do. Both actions leave plan
+/// mode; only `Approve` also sends a turn that starts execution.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlanDecision {
     Approve,
-    Modify,
     SaveExit,
 }
 
