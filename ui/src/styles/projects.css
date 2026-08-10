@@ -68,6 +68,9 @@ body:has(.window-titlebar) .projects-screen { top: 38px; }
 button.proj-card { width: 100%; padding: 16px 18px; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
 .proj-card-main { display: flex; flex: 1 1 auto; min-width: 0; padding: 16px 0 16px 18px;
   border: none; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.proj-card-main:disabled, button.proj-card:disabled { cursor: not-allowed; }
+.proj-card.project-exporting { border-color: color-mix(in srgb, var(--clay) 58%, var(--border)); }
+.proj-card.project-exporting:hover { transform: none; box-shadow: var(--shadow-sm); }
 .pc-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; padding-right: 10px; }
 .proj-card:hover { border-color: var(--clay); transform: translate3d(0, -2px, 0); box-shadow: 0 18px 26px -22px rgba(20, 20, 19, 0.42), var(--shadow-sm); }
 .pc-tag { margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600;
@@ -79,6 +82,7 @@ button.proj-card { width: 100%; padding: 16px 18px; color: var(--text); font: in
 .proj-card .pc-meta { color: var(--text-faint); font-size: 13px; }
 .proj-card .pc-when { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; margin-left: auto; }
 .proj-card .pc-sync-state { color: var(--ok); font-size: 11px; font-weight: 600; }
+.proj-card .pc-transfer-lock { flex: 0 0 auto; color: var(--clay); font-size: 11px; font-weight: 650; }
 .proj-card.proj-recent { align-items: center; }
 .proj-card.proj-recent .pc-name-row { margin-top: 0; }
 .pc-dot { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
@@ -94,6 +98,7 @@ button.proj-card { width: 100%; padding: 16px 18px; color: var(--text); font: in
 .proj-card:hover .pc-del, .proj-card:hover .pc-window, .proj-card:hover .pc-export, .proj-card:hover .pc-sync, .proj-card:hover .pc-sync-code, .proj-card:focus-within .pc-del, .proj-card:focus-within .pc-window, .proj-card:focus-within .pc-export, .proj-card:focus-within .pc-sync, .proj-card:focus-within .pc-sync-code { opacity: 1; }
 .proj-card .pc-window:hover, .proj-card .pc-export:hover, .proj-card .pc-sync:hover, .proj-card .pc-sync-code:hover, .proj-card .pc-del:hover { color: var(--clay); }
 .proj-card .pc-sync:disabled { cursor: wait; opacity: .45; }
+.proj-card .pc-del:disabled, .proj-card .pc-window:disabled, .proj-card .pc-export:disabled { cursor: not-allowed; opacity: .35; }
 .projects-sync-notice { position: fixed; right: 24px; bottom: 24px; z-index: 80; max-width: min(440px, calc(100vw - 48px)); padding: 10px 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow); font-size: 13px; }
 .projects-sync-notice.ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
 .project-sync-join-overlay { background: hsl(215 25% 14% / 0.34); backdrop-filter: blur(5px); }

@@ -6749,14 +6749,6 @@ fn App() -> impl IntoView {
         if ev.key() != "Escape" || ev.default_prevented() || ime_composing(ev) {
             return;
         }
-        if let Some(transfer) = project_transfer.get() {
-            if transfer.is_complete() {
-                project_transfer.set(None);
-            }
-            ev.prevent_default();
-            ev.stop_propagation();
-            return;
-        }
         if context_recovery_dialog.get().is_some() {
             ev.prevent_default();
             if !context_recovery_busy.get() {
@@ -6894,6 +6886,13 @@ fn App() -> impl IntoView {
         }
 
         if show_projects.get() {
+            if project_transfer
+                .get()
+                .is_some_and(|transfer| transfer.is_complete() || transfer.is_failed())
+            {
+                ev.prevent_default();
+                project_transfer.set(None);
+            }
             return;
         }
 
@@ -7038,6 +7037,17 @@ fn App() -> impl IntoView {
         if show_right.get() {
             ev.prevent_default();
             show_right.set(false);
+            return;
+        }
+
+        // A finished background transfer is a low-priority, non-modal card.
+        // Let every visible overlay, menu, drag, and pane consume Escape first.
+        if project_transfer
+            .get()
+            .is_some_and(|transfer| transfer.is_complete() || transfer.is_failed())
+        {
+            ev.prevent_default();
+            project_transfer.set(None);
             return;
         }
 
@@ -7187,6 +7197,15 @@ fn App() -> impl IntoView {
         let load_session = load_session.clone();
         let app_shell_entering = app_shell_entering;
         Callback::new(move |(project_id, session_id): (String, Option<String>)| {
+            if project_transfer
+                .get_untracked()
+                .is_some_and(|transfer| transfer.is_exporting_project(&project_id))
+            {
+                let message = t(locale.get_untracked(), "projects.transfer.export_locked");
+                project_open_error.set(Some(message.clone()));
+                status.set(message);
+                return;
+            }
             let request_epoch = transition_epoch.get().wrapping_add(1);
             transition_epoch.set(request_epoch);
             *transition_target.borrow_mut() = Some(project_id.clone());
@@ -7620,6 +7639,13 @@ fn App() -> impl IntoView {
     let palette_open_session = {
         let open_project_transition = open_project_transition;
         Callback::new(move |(project_id, session_id): (String, String)| {
+            if project_transfer
+                .get_untracked()
+                .is_some_and(|transfer| transfer.is_exporting_project(&project_id))
+            {
+                status.set(t(locale.get_untracked(), "projects.transfer.export_locked").into());
+                return;
+            }
             if opens_in_project_window(&project_id) {
                 spawn_local(async move {
                     let arg =
@@ -7635,6 +7661,13 @@ fn App() -> impl IntoView {
     let command_palette_open_project = {
         let open_project_transition = open_project_transition;
         Callback::new(move |(project_id, new_window): (String, bool)| {
+            if project_transfer
+                .get_untracked()
+                .is_some_and(|transfer| transfer.is_exporting_project(&project_id))
+            {
+                status.set(t(locale.get_untracked(), "projects.transfer.export_locked").into());
+                return;
+            }
             if new_window {
                 spawn_local(async move {
                     let arg = to_value(&serde_json::json!({ "id": project_id })).unwrap();
@@ -7649,6 +7682,15 @@ fn App() -> impl IntoView {
         let open_project_transition = open_project_transition;
         Callback::new(
             move |(project_id, session_id, new_window): (String, String, bool)| {
+                if project_transfer
+                    .get_untracked()
+                    .is_some_and(|transfer| transfer.is_exporting_project(&project_id))
+                {
+                    status.set(
+                        t(locale.get_untracked(), "projects.transfer.export_locked").into(),
+                    );
+                    return;
+                }
                 if new_window {
                     spawn_local(async move {
                         let arg = to_value(
@@ -7717,22 +7759,29 @@ fn App() -> impl IntoView {
         if show_projects.get_untracked() || demo_mode.get_untracked() {
             return;
         }
-        if project_transfer.get_untracked().is_some() {
+        if project_transfer
+            .get_untracked()
+            .is_some_and(|transfer| transfer.is_active())
+        {
             return;
         }
         let Some(id) = project_info.get_untracked().map(|project| project.id) else {
             return;
         };
         project_open_error.set(None);
-        project_transfer.set(Some(ProjectTransferProgress::selecting("export")));
+        project_transfer.set(Some(ProjectTransferProgress::selecting(
+            "export",
+            Some(id.clone()),
+        )));
         spawn_local(async move {
-            let args = to_value(&serde_json::json!({ "id": id })).unwrap();
+            let args = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
             match invoke_checked("export_project", args).await {
                 Ok(value) => {
                     if let Ok(Some(path)) = serde_wasm_bindgen::from_value::<Option<String>>(value)
                     {
                         project_transfer.set(Some(ProjectTransferProgress::complete(
                             "export",
+                            Some(id),
                             Some(path),
                         )));
                     } else {
@@ -7740,10 +7789,13 @@ fn App() -> impl IntoView {
                     }
                 }
                 Err(error) => {
-                    project_transfer.set(None);
                     let message = localize_backend(locale.get_untracked(), &js_error_text(error));
                     status.set(message.clone());
-                    project_open_error.set(Some(message));
+                    project_transfer.set(Some(ProjectTransferProgress::failed(
+                        "export",
+                        Some(id),
+                        message,
+                    )));
                 }
             }
         });

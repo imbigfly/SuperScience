@@ -7612,10 +7612,10 @@ test("Windows uses the integrated title bar without covering the project landing
   await expect(exportCurrentProject).toBeEnabled();
   await exportCurrentProject.click();
   await expect.poll(() => lastInvokeArgs(page, "export_project")).toMatchObject({ id: "default" });
-  const transferModal = page.getByTestId("project-transfer-modal");
-  await expect(transferModal).toContainText("Project export complete");
-  await transferModal.getByRole("button", { name: "Done" }).click();
-  await expect(transferModal).toBeHidden();
+  const transferProgress = page.getByTestId("project-transfer-progress");
+  await expect(transferProgress).toContainText("Project export complete");
+  await transferProgress.getByRole("button", { name: "Done" }).click();
+  await expect(transferProgress).toBeHidden();
 
   await page.getByRole("button", { name: "Edit", exact: true }).click();
   await page.getByRole("menuitem", { name: "Import Codex conversations" }).click();
@@ -7827,42 +7827,65 @@ test("new project form enables Create after name and folder are set", async ({ p
   await expect(create).toBeEnabled();
 });
 
-test("project transfer exposes progress, blocks duplicate actions, and confirms completion", async ({ page }) => {
+test("project transfers stay in a lower-right progress card without blocking other projects", async ({ page }) => {
   await page.goto("/");
   await expect.poll(async () => page.evaluate(() =>
     (window as any).__tauriListenerReady?.("project-transfer-progress"),
   )).toBe(true);
-  const projectCard = page.locator(".proj-card:not(.proj-example)").first();
+  const projectCards = page.locator(".proj-card:not(.proj-example)");
+  const projectCard = projectCards.first();
+  const otherProjectCard = projectCards.nth(1);
   const exportProject = projectCard.getByRole("button", { name: "Export project" });
   await expect.poll(() => exportProject.evaluate((el) => Number.parseFloat(getComputedStyle(el).opacity))).toBeGreaterThan(0);
-  await page.evaluate(() => (window as any).__delayNextProjectTransfer("export", 250));
+  await page.evaluate(() => (window as any).__delayNextProjectTransfer("export", 800));
   await exportProject.click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "export_project"),
   )).toBe(true);
-  const transferModal = page.getByTestId("project-transfer-modal");
-  await expect(transferModal).toContainText("Exporting project");
-  await expect(transferModal).toContainText("Compressing workspace files");
-  await expect(transferModal).toContainText("data/example.tsv");
-  await expect(page.getByRole("button", { name: "Import project" })).toBeDisabled();
+  const transferProgress = page.getByTestId("project-transfer-progress");
+  await expect(transferProgress).toContainText("Exporting project");
+  await expect(transferProgress).toContainText("Compressing workspace files");
+  await expect(transferProgress).toContainText("data/example.tsv");
+  await expect(page.locator(".project-transfer-overlay")).toHaveCount(0);
+  await expect.poll(() => transferProgress.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return {
+      position: getComputedStyle(el).position,
+      right: Math.round(innerWidth - rect.right),
+      bottom: Math.round(innerHeight - rect.bottom),
+    };
+  })).toMatchObject({ position: "fixed", right: 20, bottom: 20 });
+  await expect(projectCard.locator(".proj-card-main")).toBeDisabled();
+  await expect(projectCard.locator(".pc-transfer-lock")).toContainText("read-only");
+  await expect(otherProjectCard.locator(".proj-card-main")).toBeEnabled();
+  await otherProjectCard.locator(".proj-card-main").click();
+  await expect(page.locator(".proj-name")).toHaveText("Other project");
+  await expect(transferProgress).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(transferModal).toBeVisible();
-  await expect(transferModal).toContainText("Project export complete");
+  await expect(transferProgress).toBeVisible();
+  await expect(transferProgress).toContainText("Project export complete");
   await page.keyboard.press("Escape");
-  await expect(transferModal).toBeHidden();
+  await expect(transferProgress).toBeHidden();
 
-  await page.evaluate(() => (window as any).__delayNextProjectTransfer("import", 250));
+  await page.goto("/");
+  await expect.poll(async () => page.evaluate(() =>
+    (window as any).__tauriListenerReady?.("project-transfer-progress"),
+  )).toBe(true);
+  await page.evaluate(() => (window as any).__delayNextProjectTransfer("import", 800));
   await page.getByRole("button", { name: "Import project" }).click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "import_project"),
   )).toBe(true);
-  await expect(transferModal).toContainText("Importing project");
-  await expect(transferModal).toContainText("project-named subfolder");
-  await expect(transferModal).toContainText("Extracting workspace files");
-  await expect(transferModal).toContainText("workspace/data/example.tsv");
-  await expect(transferModal).toContainText("Project import complete");
-  await transferModal.getByRole("button", { name: "Done" }).click();
-  await expect(transferModal).toBeHidden();
+  const importProgress = page.getByTestId("project-transfer-progress");
+  await expect(importProgress).toContainText("Importing project");
+  await expect(importProgress).toContainText("Extracting workspace files");
+  await expect(importProgress).toContainText("workspace/data/example.tsv");
+  await page.locator(".proj-card:not(.proj-example)").nth(1).locator(".proj-card-main").click();
+  await expect(page.locator(".proj-name")).toHaveText("Other project");
+  await expect(importProgress).toContainText("Project import complete");
+  await expect(page.locator(".proj-name")).toHaveText("Other project");
+  await importProgress.getByRole("button", { name: "Done" }).click();
+  await expect(importProgress).toBeHidden();
 });
 
 test("projects sync manually, copy a device code, and join on another device", async ({ page }) => {

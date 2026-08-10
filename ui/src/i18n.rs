@@ -1991,6 +1991,10 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "projects.transfer.registering") => Some("Registering the imported project…"),
         (Locale::En, "projects.transfer.export_complete") => Some("Project export complete"),
         (Locale::En, "projects.transfer.import_complete") => Some("Project import complete"),
+        (Locale::En, "projects.transfer.export_failed") => Some("Project export failed"),
+        (Locale::En, "projects.transfer.import_failed") => Some("Project import failed"),
+        (Locale::En, "projects.transfer.export_locked") => Some("This project is read-only while its export is in progress."),
+        (Locale::En, "projects.transfer.export_locked_badge") => Some("Exporting · read-only"),
         (Locale::En, "projects.transfer.files") => Some("{done} / {total} files"),
         (Locale::En, "projects.transfer.done") => Some("Done"),
         (Locale::En, "projects.sync.now") => Some("Sync now"),
@@ -4003,6 +4007,10 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "projects.transfer.registering") => Some("正在登记导入的项目…"),
         (Locale::Zh, "projects.transfer.export_complete") => Some("项目导出完成"),
         (Locale::Zh, "projects.transfer.import_complete") => Some("项目导入完成"),
+        (Locale::Zh, "projects.transfer.export_failed") => Some("项目导出失败"),
+        (Locale::Zh, "projects.transfer.import_failed") => Some("项目导入失败"),
+        (Locale::Zh, "projects.transfer.export_locked") => Some("项目正在导出，完成前暂时只读。"),
+        (Locale::Zh, "projects.transfer.export_locked_badge") => Some("导出中 · 只读"),
         (Locale::Zh, "projects.transfer.files") => Some("{done} / {total} 个文件"),
         (Locale::Zh, "projects.transfer.done") => Some("完成"),
         (Locale::Zh, "projects.sync.now") => Some("立即同步"),
@@ -4173,6 +4181,9 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
             t(locale, "err.project_delete_workspace_empty")
         }
         "Refusing to delete a filesystem root." => t(locale, "err.project_delete_root"),
+        "This project is busy. Try again when the current project operation finishes." => {
+            t(locale, "projects.transfer.export_locked")
+        }
         m if m.starts_with("Project workspace is not a directory: ") => {
             if locale == Locale::Zh {
                 format!(

@@ -79,16 +79,20 @@ pub(crate) struct ContextUsageDetails {
 pub(crate) struct ProjectTransferProgress {
     pub(crate) direction: String,
     pub(crate) stage: String,
+    #[serde(default)]
+    pub(crate) project_id: Option<String>,
     pub(crate) completed_files: u64,
     pub(crate) total_files: Option<u64>,
     pub(crate) completed_bytes: u64,
     pub(crate) total_bytes: Option<u64>,
     #[serde(default)]
     pub(crate) current_path: Option<String>,
+    #[serde(default)]
+    pub(crate) error: Option<String>,
 }
 
 impl ProjectTransferProgress {
-    pub(crate) fn selecting(direction: &str) -> Self {
+    pub(crate) fn selecting(direction: &str, project_id: Option<String>) -> Self {
         Self {
             direction: direction.into(),
             stage: if direction == "export" {
@@ -96,11 +100,13 @@ impl ProjectTransferProgress {
             } else {
                 "selecting_archive".into()
             },
+            project_id,
             completed_files: 0,
             total_files: None,
             completed_bytes: 0,
             total_bytes: None,
             current_path: None,
+            error: None,
         }
     }
 
@@ -108,15 +114,53 @@ impl ProjectTransferProgress {
         self.stage == "complete"
     }
 
-    pub(crate) fn complete(direction: &str, current_path: Option<String>) -> Self {
+    pub(crate) fn is_failed(&self) -> bool {
+        self.stage == "failed"
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        !self.is_complete() && !self.is_failed()
+    }
+
+    pub(crate) fn is_exporting_project(&self, project_id: &str) -> bool {
+        self.is_active()
+            && self.direction == "export"
+            && self.project_id.as_deref() == Some(project_id)
+    }
+
+    pub(crate) fn complete(
+        direction: &str,
+        project_id: Option<String>,
+        current_path: Option<String>,
+    ) -> Self {
         Self {
             direction: direction.into(),
             stage: "complete".into(),
+            project_id,
             completed_files: 0,
             total_files: None,
             completed_bytes: 0,
             total_bytes: None,
             current_path,
+            error: None,
+        }
+    }
+
+    pub(crate) fn failed(
+        direction: &str,
+        project_id: Option<String>,
+        error: String,
+    ) -> Self {
+        Self {
+            direction: direction.into(),
+            stage: "failed".into(),
+            project_id,
+            completed_files: 0,
+            total_files: None,
+            completed_bytes: 0,
+            total_bytes: None,
+            current_path: None,
+            error: Some(error),
         }
     }
 }
