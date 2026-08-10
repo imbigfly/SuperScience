@@ -6,9 +6,11 @@
 //! SHA-256; revision rows only retain immutable manifests and state membership.
 
 use crate::exploration_commands::write_context_archive;
-use crate::exploration_workspace::{ExplorationWorkspaceBackend, PersistentExplorationWorkspace};
+use crate::exploration_workspace::PersistentExplorationWorkspace;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use wisp_store::{
     ContextArchiveRecord, ProjectStateRevision, StateScope, Store, WorkspaceSnapshotRecord,
     MAINLINE_SCOPE_KEY,
@@ -22,6 +24,7 @@ pub(crate) async fn record_completed_mainline_turn(
     project_id: &str,
     frame_id: &str,
     project_root: &Path,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<Option<ProjectStateRevision>, String> {
     let scope = store
         .frame_state_scope(frame_id)
@@ -61,7 +64,27 @@ pub(crate) async fn record_completed_mainline_turn(
     let project_root = dunce::canonicalize(project_root)
         .map_err(|error| format!("cannot resolve project workspace: {error}"))?;
     let backend = PersistentExplorationWorkspace::new(app_data.to_path_buf());
-    let snapshot = backend.checkpoint(&project_root).await?;
+    let parent = store
+        .latest_project_state_revision(frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let is_full = parent.is_none() || turn_index % FULL_REVISION_INTERVAL == 0;
+    let base = match parent.as_ref() {
+        Some(parent) => match backend.load_snapshot(&parent.workspace_snapshot_id) {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) if is_full => {
+                tracing::warn!(
+                    "cannot reuse the previous workspace snapshot for a full revision: {error}"
+                );
+                None
+            }
+            Err(error) => return Err(error),
+        },
+        None => None,
+    };
+    let snapshot = backend
+        .checkpoint_incremental(&project_root, base.as_ref(), cancel)
+        .await?;
     store
         .create_workspace_snapshot(&WorkspaceSnapshotRecord {
             id: snapshot.id.clone(),
@@ -73,11 +96,6 @@ pub(crate) async fn record_completed_mainline_turn(
         .await
         .map_err(|error| error.to_string())?;
 
-    let parent = store
-        .latest_project_state_revision(frame_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    let is_full = parent.is_none() || turn_index % FULL_REVISION_INTERVAL == 0;
     let workspace_delta_json = if is_full {
         serde_json::json!({
             "kind": "full",
@@ -86,13 +104,11 @@ pub(crate) async fn record_completed_mainline_turn(
         })
         .to_string()
     } else {
-        let base = backend.load_snapshot(
-            &parent
-                .as_ref()
-                .expect("non-full revisions have a parent")
-                .workspace_snapshot_id,
+        let delta = PersistentExplorationWorkspace::snapshot_delta(
+            base.as_ref()
+                .expect("non-full revisions loaded their parent snapshot"),
+            &snapshot,
         )?;
-        let delta = backend.diff(&base, &project_root).await?;
         serde_json::json!({ "kind": "delta", "files": delta }).to_string()
     };
 
@@ -273,7 +289,7 @@ mod tests {
 
         append_turn(&store, 0, "first question", "first answer").await;
         std::fs::write(project.join("state.txt"), b"version one").unwrap();
-        let first = record_completed_mainline_turn(&store, &app_data, "p", "main", &project)
+        let first = record_completed_mainline_turn(&store, &app_data, "p", "main", &project, None)
             .await
             .unwrap()
             .unwrap();
@@ -281,14 +297,14 @@ mod tests {
         append_turn(&store, 1, "second question", "second answer").await;
         // This simulates an editor write that did not pass through a Wisp tool.
         std::fs::write(project.join("state.txt"), b"version two from editor").unwrap();
-        let second = record_completed_mainline_turn(&store, &app_data, "p", "main", &project)
+        let second = record_completed_mainline_turn(&store, &app_data, "p", "main", &project, None)
             .await
             .unwrap()
             .unwrap();
 
         append_turn(&store, 2, "third question", "third answer").await;
         std::fs::write(project.join("state.txt"), b"version three").unwrap();
-        let third = record_completed_mainline_turn(&store, &app_data, "p", "main", &project)
+        let third = record_completed_mainline_turn(&store, &app_data, "p", "main", &project, None)
             .await
             .unwrap()
             .unwrap();

@@ -7,10 +7,12 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::workspace_scan::{
     scan_workspace, WorkspaceNode, WorkspaceNodeKind, WorkspaceScanOptions, MAX_WORKSPACE_ENTRIES,
@@ -19,6 +21,8 @@ use crate::workspace_scan::{
 const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 const REFERENCES_MANIFEST: &str = ".wisp/exploration-references.json";
 const DEFAULT_BLOB_LIMIT: u64 = 32 * 1024 * 1024;
+const DEFAULT_BLOB_BUDGET: u64 = 64 * 1024 * 1024;
+const DEFAULT_BLOB_COUNT_LIMIT: usize = 4_096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -117,6 +121,8 @@ pub(crate) trait ExplorationWorkspaceBackend: Send + Sync {
 pub(crate) struct PersistentExplorationWorkspace {
     app_data_root: PathBuf,
     blob_limit: u64,
+    blob_budget: u64,
+    blob_count_limit: usize,
     max_entries: usize,
 }
 
@@ -125,6 +131,8 @@ impl PersistentExplorationWorkspace {
         Self {
             app_data_root,
             blob_limit: DEFAULT_BLOB_LIMIT,
+            blob_budget: DEFAULT_BLOB_BUDGET,
+            blob_count_limit: DEFAULT_BLOB_COUNT_LIMIT,
             max_entries: MAX_WORKSPACE_ENTRIES,
         }
     }
@@ -134,7 +142,25 @@ impl PersistentExplorationWorkspace {
         Self {
             app_data_root,
             blob_limit,
+            blob_budget: u64::MAX,
+            blob_count_limit: usize::MAX,
             max_entries,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_snapshot_limits(
+        app_data_root: PathBuf,
+        blob_limit: u64,
+        blob_budget: u64,
+        blob_count_limit: usize,
+    ) -> Self {
+        Self {
+            app_data_root,
+            blob_limit,
+            blob_budget,
+            blob_count_limit,
+            max_entries: MAX_WORKSPACE_ENTRIES,
         }
     }
 
@@ -157,14 +183,34 @@ impl PersistentExplorationWorkspace {
         Ok(snapshot)
     }
 
-    fn scan_options(&self) -> WorkspaceScanOptions {
+    fn scan_options(&self, cancel: Option<Arc<AtomicBool>>) -> WorkspaceScanOptions {
         WorkspaceScanOptions {
             excluded_relative_prefixes: vec![
-                ".git".into(),
                 ".wisp/explorations".into(),
                 ".wisp/history".into(),
+                ".wisp/artifacts".into(),
+                ".wisp/tool-output".into(),
+                ".wisp/tmp".into(),
+                ".wisp/undo".into(),
                 REFERENCES_MANIFEST.into(),
             ],
+            excluded_directory_names: vec![
+                ".git".into(),
+                ".hg".into(),
+                ".svn".into(),
+                ".pixi".into(),
+                ".venv".into(),
+                "venv".into(),
+                "node_modules".into(),
+                "target".into(),
+                "__pycache__".into(),
+                ".cache".into(),
+                ".mypy_cache".into(),
+                ".pytest_cache".into(),
+                ".ruff_cache".into(),
+            ],
+            use_ignore_files: true,
+            cancel,
             max_entries: self.max_entries,
             ..WorkspaceScanOptions::default()
         }
@@ -185,12 +231,15 @@ impl PersistentExplorationWorkspace {
         secure_directory(&self.app_data_root, &["explorations"])
     }
 
-    fn capture_blob(&self, source: &Path, expected_size: u64) -> Result<String, String> {
-        let blob_root = self.blob_root()?;
-        let temp_root = secure_directory(
-            &self.app_data_root,
-            &["exploration-snapshots", "blobs", "tmp"],
-        )?;
+    fn capture_blob(
+        &self,
+        source: &Path,
+        expected_size: u64,
+        blob_root: &Path,
+        temp_root: &Path,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<String, String> {
+        ensure_not_cancelled(cancel)?;
         let temp_path = temp_root.join(uuid::Uuid::new_v4().to_string());
         let source_before = std::fs::metadata(source).map_err(|error| error.to_string())?;
         if !source_before.is_file() || source_before.len() != expected_size {
@@ -212,6 +261,7 @@ impl PersistentExplorationWorkspace {
             let mut copied = 0u64;
             let mut buffer = [0u8; 128 * 1024];
             loop {
+                ensure_not_cancelled(cancel)?;
                 let read = input.read(&mut buffer).map_err(|error| error.to_string())?;
                 if read == 0 {
                     break;
@@ -236,16 +286,16 @@ impl PersistentExplorationWorkspace {
             }
 
             let checksum = hex::encode(digest.finalize());
-            let prefix = secure_child_directory(&blob_root, &checksum[..2])?;
+            let prefix = secure_child_directory(blob_root, &checksum[..2])?;
             let destination = prefix.join(&checksum);
             if destination.exists() {
-                verify_blob(&destination, &checksum, expected_size)?;
+                verify_blob(&destination, &checksum, expected_size, cancel)?;
                 std::fs::remove_file(&temp_path).map_err(|error| error.to_string())?;
             } else {
                 match std::fs::rename(&temp_path, &destination) {
                     Ok(()) => {}
                     Err(_) if destination.exists() => {
-                        verify_blob(&destination, &checksum, expected_size)?;
+                        verify_blob(&destination, &checksum, expected_size, cancel)?;
                         std::fs::remove_file(&temp_path).map_err(|error| error.to_string())?;
                     }
                     Err(error) => return Err(error.to_string()),
@@ -292,15 +342,79 @@ impl PersistentExplorationWorkspace {
         &self,
         nodes: Vec<WorkspaceNode>,
         capture_blobs: bool,
+        previous: Option<&WorkspaceSnapshot>,
+        cancel: Option<&AtomicBool>,
     ) -> Result<(Vec<WorkspaceSnapshotEntry>, Vec<String>), String> {
         reject_case_collisions(&nodes)?;
+        let previous_entries = previous
+            .map(|snapshot| {
+                snapshot
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.path.as_str(), entry))
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let mut selected_blob_paths = HashSet::new();
+        let mut selected_blob_bytes = 0u64;
+        let mut selected_blob_count = 0usize;
+        let mut blob_candidates = nodes
+            .iter()
+            .filter(|node| {
+                node.kind == WorkspaceNodeKind::File
+                    && node.size_bytes <= self.blob_limit
+                    && !has_windows_reserved_component(&node.relative_path)
+            })
+            .collect::<Vec<_>>();
+        blob_candidates.sort_by(|left, right| {
+            left.size_bytes
+                .cmp(&right.size_bytes)
+                .then_with(|| left.relative_path.cmp(&right.relative_path))
+        });
+        // Keep existing strong entries stable before admitting new files. This
+        // prevents an alphabetically earlier addition from reshuffling the
+        // aggregate snapshot budget on every turn. Within each group, smallest
+        // files go first so an initial snapshot recovers the most files.
+        for preserve_existing in [true, false] {
+            for node in &blob_candidates {
+                if (previous_entries
+                    .get(node.relative_path.as_str())
+                    .is_some_and(|entry| entry.materialization == SnapshotMaterialization::Blob)
+                    != preserve_existing)
+                    || selected_blob_count >= self.blob_count_limit
+                    || selected_blob_bytes
+                        .checked_add(node.size_bytes)
+                        .is_none_or(|size| size > self.blob_budget)
+                {
+                    continue;
+                }
+                selected_blob_paths.insert(node.relative_path.clone());
+                selected_blob_bytes += node.size_bytes;
+                selected_blob_count += 1;
+            }
+        }
+
+        let blob_storage = if capture_blobs {
+            Some((
+                self.blob_root()?,
+                secure_directory(
+                    &self.app_data_root,
+                    &["exploration-snapshots", "blobs", "tmp"],
+                )?,
+            ))
+        } else {
+            None
+        };
         let mut entries = Vec::new();
         let mut warnings = Vec::new();
+        let mut oversized_references = 0usize;
+        let mut budget_references = 0usize;
         for node in nodes {
+            ensure_not_cancelled(cancel)?;
             if node.kind == WorkspaceNodeKind::Directory {
                 continue;
             }
-            let modified_unix_millis = modified_unix_millis(&node.path);
+            let modified_unix_millis = node.modified_unix_millis;
             let executable = node.mode.is_some_and(|mode| mode & 0o111 != 0);
             let entry = if has_windows_reserved_component(&node.relative_path) {
                 warnings.push(format!(
@@ -319,11 +433,30 @@ impl PersistentExplorationWorkspace {
                 }
             } else {
                 match node.kind {
-                    WorkspaceNodeKind::File if node.size_bytes <= self.blob_limit => {
+                    WorkspaceNodeKind::File
+                        if selected_blob_paths.contains(node.relative_path.as_str()) =>
+                    {
                         let checksum = if capture_blobs {
-                            self.capture_blob(&node.path, node.size_bytes)?
+                            match self.reusable_blob_checksum(
+                                previous_entries.get(node.relative_path.as_str()).copied(),
+                                &node,
+                                blob_storage
+                                    .as_ref()
+                                    .expect("blob storage exists when capture is enabled")
+                                    .0
+                                    .as_path(),
+                            )? {
+                                Some(checksum) => checksum,
+                                None => self.capture_blob(
+                                    &node.path,
+                                    node.size_bytes,
+                                    &blob_storage.as_ref().unwrap().0,
+                                    &blob_storage.as_ref().unwrap().1,
+                                    cancel,
+                                )?,
+                            }
                         } else {
-                            hash_file(&node.path, node.size_bytes)?
+                            hash_file(&node.path, node.size_bytes, cancel)?
                         };
                         WorkspaceSnapshotEntry {
                             path: node.relative_path,
@@ -337,10 +470,11 @@ impl PersistentExplorationWorkspace {
                         }
                     }
                     WorkspaceNodeKind::File => {
-                        warnings.push(format!(
-                            "{} exceeds the snapshot limit and remains a weak external reference",
-                            node.relative_path
-                        ));
+                        if node.size_bytes > self.blob_limit {
+                            oversized_references += 1;
+                        } else {
+                            budget_references += 1;
+                        }
                         WorkspaceSnapshotEntry {
                             path: node.relative_path,
                             size_bytes: node.size_bytes,
@@ -392,8 +526,115 @@ impl PersistentExplorationWorkspace {
             };
             entries.push(entry);
         }
+        if oversized_references > 0 {
+            warnings.push(format!(
+                "{oversized_references} files exceed the per-file snapshot limit and remain weak external references"
+            ));
+        }
+        if budget_references > 0 {
+            warnings.push(format!(
+                "{budget_references} files exceed the aggregate snapshot budget and remain weak external references"
+            ));
+        }
         validate_entries(&entries)?;
         Ok((entries, warnings))
+    }
+
+    fn reusable_blob_checksum(
+        &self,
+        previous: Option<&WorkspaceSnapshotEntry>,
+        node: &WorkspaceNode,
+        blob_root: &Path,
+    ) -> Result<Option<String>, String> {
+        let Some(previous) = previous else {
+            return Ok(None);
+        };
+        if previous.materialization != SnapshotMaterialization::Blob
+            || previous.size_bytes != node.size_bytes
+            || previous.modified_unix_millis.is_none()
+            || previous.modified_unix_millis != node.modified_unix_millis
+        {
+            return Ok(None);
+        }
+        let Some(checksum) = previous.checksum.as_deref() else {
+            return Ok(None);
+        };
+        let blob = blob_root.join(&checksum[..2]).join(checksum);
+        match std::fs::symlink_metadata(blob) {
+            Ok(metadata)
+                if !metadata.file_type().is_symlink()
+                    && metadata.is_file()
+                    && metadata.len() == node.size_bytes =>
+            {
+                Ok(Some(checksum.to_string()))
+            }
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    pub(crate) async fn checkpoint_incremental(
+        &self,
+        project_root: &Path,
+        previous: Option<&WorkspaceSnapshot>,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<WorkspaceSnapshot, String> {
+        let backend = self.clone();
+        let project_root = project_root.to_path_buf();
+        let previous = previous.cloned();
+        tokio::task::spawn_blocking(move || {
+            backend.checkpoint_sync(&project_root, previous.as_ref(), cancel)
+        })
+        .await
+        .map_err(|error| format!("workspace checkpoint task failed: {error}"))?
+    }
+
+    fn checkpoint_sync(
+        &self,
+        project_root: &Path,
+        previous: Option<&WorkspaceSnapshot>,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<WorkspaceSnapshot, String> {
+        ensure_not_cancelled(cancel.as_deref())?;
+        let canonical_root = dunce::canonicalize(project_root)
+            .map_err(|error| format!("cannot resolve project root: {error}"))?;
+        let source_root = canonical_root.to_string_lossy().into_owned();
+        let project_key = hex::encode(Sha256::digest(source_root.as_bytes()))[..16].to_string();
+        if let Some(previous) = previous {
+            previous.verify_manifest()?;
+        }
+        let previous = previous.filter(|snapshot| {
+            snapshot.project_key == project_key && snapshot.source_root == source_root
+        });
+        let nodes = scan_workspace(&canonical_root, &self.scan_options(cancel.clone()))?;
+        let (entries, warnings) =
+            self.snapshot_entries(nodes, true, previous, cancel.as_deref())?;
+        ensure_not_cancelled(cancel.as_deref())?;
+        let mut snapshot = WorkspaceSnapshot {
+            schema_version: SNAPSHOT_SCHEMA_VERSION,
+            id: uuid::Uuid::new_v4().to_string(),
+            project_key,
+            source_root,
+            manifest_sha256: String::new(),
+            entries,
+            warnings,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        snapshot.manifest_sha256 = snapshot.calculate_manifest_sha256()?;
+        snapshot.verify_manifest()?;
+        ensure_not_cancelled(cancel.as_deref())?;
+        self.persist_manifest(&snapshot)?;
+        Ok(snapshot)
+    }
+
+    pub(crate) fn snapshot_delta(
+        base: &WorkspaceSnapshot,
+        after: &WorkspaceSnapshot,
+    ) -> Result<Vec<FileDelta>, String> {
+        base.verify_manifest()?;
+        after.verify_manifest()?;
+        Ok(diff_entries(&base.entries, &after.entries, true))
     }
 
     fn materialize_entry(
@@ -409,7 +650,7 @@ impl PersistentExplorationWorkspace {
             .as_deref()
             .ok_or_else(|| format!("snapshot blob {} has no checksum", entry.path))?;
         let blob = self.blob_path(checksum)?;
-        verify_blob(&blob, checksum, entry.size_bytes)?;
+        verify_blob(&blob, checksum, entry.size_bytes, None)?;
         let destination = safe_join(workspace_root, &entry.path)?;
         let parent = destination
             .parent()
@@ -424,27 +665,7 @@ impl PersistentExplorationWorkspace {
 #[async_trait]
 impl ExplorationWorkspaceBackend for PersistentExplorationWorkspace {
     async fn checkpoint(&self, project_root: &Path) -> Result<WorkspaceSnapshot, String> {
-        let canonical_root = dunce::canonicalize(project_root)
-            .map_err(|error| format!("cannot resolve project root: {error}"))?;
-        let nodes = scan_workspace(&canonical_root, &self.scan_options())?;
-        let (entries, warnings) = self.snapshot_entries(nodes, true)?;
-        let project_key = hex::encode(Sha256::digest(canonical_root.to_string_lossy().as_bytes()))
-            [..16]
-            .to_string();
-        let mut snapshot = WorkspaceSnapshot {
-            schema_version: SNAPSHOT_SCHEMA_VERSION,
-            id: uuid::Uuid::new_v4().to_string(),
-            project_key,
-            source_root: canonical_root.to_string_lossy().into_owned(),
-            manifest_sha256: String::new(),
-            entries,
-            warnings,
-            created_at: chrono::Utc::now().timestamp(),
-        };
-        snapshot.manifest_sha256 = snapshot.calculate_manifest_sha256()?;
-        snapshot.verify_manifest()?;
-        self.persist_manifest(&snapshot)?;
-        Ok(snapshot)
+        self.checkpoint_incremental(project_root, None, None).await
     }
 
     async fn materialize(
@@ -509,58 +730,19 @@ impl ExplorationWorkspaceBackend for PersistentExplorationWorkspace {
     }
 
     async fn diff(&self, base: &WorkspaceSnapshot, root: &Path) -> Result<Vec<FileDelta>, String> {
-        base.verify_manifest()?;
-        let canonical_root = dunce::canonicalize(root)
-            .map_err(|error| format!("cannot resolve exploration workspace: {error}"))?;
-        let nodes = scan_workspace(&canonical_root, &self.scan_options())?;
-        let (entries, _) = self.snapshot_entries(nodes, false)?;
-        let before = base
-            .entries
-            .iter()
-            .cloned()
-            .map(|entry| (entry.path.clone(), entry))
-            .collect::<BTreeMap<_, _>>();
-        let after = entries
-            .into_iter()
-            .map(|entry| (entry.path.clone(), entry))
-            .collect::<BTreeMap<_, _>>();
-        let mut paths = before
-            .keys()
-            .chain(after.keys())
-            .cloned()
-            .collect::<Vec<_>>();
-        paths.sort();
-        paths.dedup();
-        let mut deltas = Vec::new();
-        for path in paths {
-            match (before.get(&path), after.get(&path)) {
-                (None, Some(after)) => deltas.push(FileDelta {
-                    path,
-                    kind: FileDeltaKind::Added,
-                    before: None,
-                    after: Some(after.clone()),
-                }),
-                (Some(before), None) if before.materialization == SnapshotMaterialization::Blob => {
-                    deltas.push(FileDelta {
-                        path,
-                        kind: FileDeltaKind::Deleted,
-                        before: Some(before.clone()),
-                        after: None,
-                    })
-                }
-                (Some(_), None) => {}
-                (Some(before), Some(after)) if !entries_equivalent(before, after) => {
-                    deltas.push(FileDelta {
-                        path,
-                        kind: FileDeltaKind::Modified,
-                        before: Some(before.clone()),
-                        after: Some(after.clone()),
-                    })
-                }
-                _ => {}
-            }
-        }
-        Ok(deltas)
+        let backend = self.clone();
+        let base = base.clone();
+        let root = root.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            base.verify_manifest()?;
+            let canonical_root = dunce::canonicalize(root)
+                .map_err(|error| format!("cannot resolve exploration workspace: {error}"))?;
+            let nodes = scan_workspace(&canonical_root, &backend.scan_options(None))?;
+            let (entries, _) = backend.snapshot_entries(nodes, false, Some(&base), None)?;
+            Ok(diff_entries(&base.entries, &entries, false))
+        })
+        .await
+        .map_err(|error| format!("workspace diff task failed: {error}"))?
     }
 
     async fn dispose(&self, workspace: &MaterializedWorkspace) -> Result<(), String> {
@@ -637,6 +819,63 @@ fn entries_equivalent(before: &WorkspaceSnapshotEntry, after: &WorkspaceSnapshot
                 && before.modified_unix_millis == after.modified_unix_millis))
 }
 
+fn diff_entries(
+    before_entries: &[WorkspaceSnapshotEntry],
+    after_entries: &[WorkspaceSnapshotEntry],
+    include_reference_deletions: bool,
+) -> Vec<FileDelta> {
+    let before = before_entries
+        .iter()
+        .cloned()
+        .map(|entry| (entry.path.clone(), entry))
+        .collect::<BTreeMap<_, _>>();
+    let after = after_entries
+        .iter()
+        .cloned()
+        .map(|entry| (entry.path.clone(), entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut paths = before
+        .keys()
+        .chain(after.keys())
+        .cloned()
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    let mut deltas = Vec::new();
+    for path in paths {
+        match (before.get(&path), after.get(&path)) {
+            (None, Some(after)) => deltas.push(FileDelta {
+                path,
+                kind: FileDeltaKind::Added,
+                before: None,
+                after: Some(after.clone()),
+            }),
+            (Some(before), None)
+                if include_reference_deletions
+                    || before.materialization == SnapshotMaterialization::Blob =>
+            {
+                deltas.push(FileDelta {
+                    path,
+                    kind: FileDeltaKind::Deleted,
+                    before: Some(before.clone()),
+                    after: None,
+                })
+            }
+            (Some(_), None) => {}
+            (Some(before), Some(after)) if !entries_equivalent(before, after) => {
+                deltas.push(FileDelta {
+                    path,
+                    kind: FileDeltaKind::Modified,
+                    before: Some(before.clone()),
+                    after: Some(after.clone()),
+                })
+            }
+            _ => {}
+        }
+    }
+    deltas
+}
+
 fn validate_relative_path(path: &str) -> Result<(), String> {
     if path.is_empty() || path.contains('\\') || Path::new(path).is_absolute() {
         return Err(format!("unsafe workspace-relative path: {path}"));
@@ -707,22 +946,25 @@ fn has_windows_reserved_component(path: &str) -> bool {
     })
 }
 
-fn modified_unix_millis(path: &Path) -> Option<u64> {
-    std::fs::symlink_metadata(path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+fn ensure_not_cancelled(cancel: Option<&AtomicBool>) -> Result<(), String> {
+    if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+        Err("workspace snapshot cancelled".into())
+    } else {
+        Ok(())
+    }
 }
 
-fn hash_file(path: &Path, expected_size: u64) -> Result<String, String> {
+fn hash_file(
+    path: &Path,
+    expected_size: u64,
+    cancel: Option<&AtomicBool>,
+) -> Result<String, String> {
     let mut input = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
     let mut digest = Sha256::new();
     let mut size = 0u64;
     let mut buffer = [0u8; 128 * 1024];
     loop {
+        ensure_not_cancelled(cancel)?;
         let read = input.read(&mut buffer).map_err(|error| error.to_string())?;
         if read == 0 {
             break;
@@ -739,12 +981,17 @@ fn hash_file(path: &Path, expected_size: u64) -> Result<String, String> {
     Ok(hex::encode(digest.finalize()))
 }
 
-fn verify_blob(path: &Path, expected_checksum: &str, expected_size: u64) -> Result<(), String> {
+fn verify_blob(
+    path: &Path,
+    expected_checksum: &str,
+    expected_size: u64,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err("workspace snapshot blob is not a regular file".into());
     }
-    let actual = hash_file(path, expected_size)?;
+    let actual = hash_file(path, expected_size, cancel)?;
     if actual != expected_checksum {
         return Err("workspace snapshot blob checksum mismatch or corruption".into());
     }
@@ -972,8 +1219,15 @@ mod tests {
         let (base, project, app_data) = roots("references");
         #[cfg(not(unix))]
         let _ = &app_data;
-        std::fs::create_dir_all(project.join(".git")).unwrap();
-        std::fs::write(project.join(".git/secret"), b"hidden").unwrap();
+        std::fs::create_dir_all(project.join("nested/.git")).unwrap();
+        std::fs::create_dir_all(project.join("nested/.pixi/cache")).unwrap();
+        std::fs::create_dir_all(project.join("private")).unwrap();
+        std::fs::write(project.join("nested/.git/secret"), b"hidden").unwrap();
+        std::fs::write(project.join("nested/.pixi/cache/package"), b"hidden").unwrap();
+        std::fs::write(project.join(".gitignore"), b"ignored.txt\n").unwrap();
+        std::fs::write(project.join(".wispignore"), b"private/\n").unwrap();
+        std::fs::write(project.join("ignored.txt"), b"hidden").unwrap();
+        std::fs::write(project.join("private/secret.txt"), b"hidden").unwrap();
         std::fs::write(project.join("large.bin"), b"0123456789").unwrap();
         std::fs::write(project.join("CON.txt"), b"reserved").unwrap();
         #[cfg(unix)]
@@ -986,7 +1240,15 @@ mod tests {
             assert!(!snapshot
                 .entries
                 .iter()
-                .any(|entry| entry.path.starts_with(".git")));
+                .any(|entry| entry.path.contains(".git/")));
+            assert!(!snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.path.contains(".pixi/")));
+            assert!(!snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.path == "ignored.txt" || entry.path.starts_with("private/")));
             assert_eq!(
                 snapshot
                     .entries
@@ -1085,6 +1347,7 @@ mod tests {
                 kind: WorkspaceNodeKind::File,
                 size_bytes: 1,
                 mode: None,
+                modified_unix_millis: None,
             },
             WorkspaceNode {
                 path: project.join("alpha"),
@@ -1092,6 +1355,7 @@ mod tests {
                 kind: WorkspaceNodeKind::File,
                 size_bytes: 1,
                 mode: None,
+                modified_unix_millis: None,
             },
         ];
         let error = reject_case_collisions(&collision_nodes).unwrap_err();
@@ -1102,6 +1366,98 @@ mod tests {
         let limited = PersistentExplorationWorkspace::with_limits(app_data, 1024, 1);
         let error = limited.checkpoint(&project).await.unwrap_err();
         assert!(error.contains("more than 1 entries"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn aggregate_budget_keeps_snapshot_capture_bounded() {
+        let (base, project, app_data) = roots("budget");
+        std::fs::write(project.join("a.txt"), b"aaaa").unwrap();
+        std::fs::write(project.join("b.txt"), b"bbbb").unwrap();
+        std::fs::write(project.join("c.txt"), b"cccc").unwrap();
+        let backend = PersistentExplorationWorkspace::with_snapshot_limits(app_data, 10, 5, 10);
+        let snapshot = backend.checkpoint(&project).await.unwrap();
+
+        assert_eq!(
+            snapshot
+                .entries
+                .iter()
+                .filter(|entry| entry.materialization == SnapshotMaterialization::Blob)
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.txt"]
+        );
+        assert_eq!(
+            snapshot
+                .entries
+                .iter()
+                .filter(|entry| entry.materialization == SnapshotMaterialization::Reference)
+                .count(),
+            2
+        );
+        assert!(snapshot
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("2 files exceed the aggregate snapshot budget")));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn incremental_checkpoint_keeps_existing_strong_entries_stable() {
+        let (base, project, app_data) = roots("incremental-budget");
+        std::fs::write(project.join("b.txt"), b"bbbb").unwrap();
+        std::fs::write(project.join("c.txt"), b"cccc").unwrap();
+        let backend = PersistentExplorationWorkspace::with_snapshot_limits(app_data, 10, 5, 10);
+        let first = backend.checkpoint(&project).await.unwrap();
+        assert_eq!(
+            first
+                .entries
+                .iter()
+                .find(|entry| entry.path == "b.txt")
+                .unwrap()
+                .materialization,
+            SnapshotMaterialization::Blob
+        );
+
+        // A new path that sorts first must not evict an unchanged strong file.
+        std::fs::write(project.join("a.txt"), b"aa").unwrap();
+        let second = backend
+            .checkpoint_incremental(&project, Some(&first), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            second
+                .entries
+                .iter()
+                .find(|entry| entry.path == "b.txt")
+                .unwrap()
+                .materialization,
+            SnapshotMaterialization::Blob
+        );
+        assert_eq!(
+            second
+                .entries
+                .iter()
+                .find(|entry| entry.path == "a.txt")
+                .unwrap()
+                .materialization,
+            SnapshotMaterialization::Reference
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_observes_cancellation_before_scanning() {
+        let (base, project, app_data) = roots("cancel");
+        std::fs::write(project.join("file.txt"), b"content").unwrap();
+        let backend = PersistentExplorationWorkspace::new(app_data);
+        let cancel = Arc::new(AtomicBool::new(true));
+
+        let error = backend
+            .checkpoint_incremental(&project, None, Some(cancel))
+            .await
+            .unwrap_err();
+        assert!(error.contains("workspace snapshot cancelled"));
         let _ = std::fs::remove_dir_all(base);
     }
 
