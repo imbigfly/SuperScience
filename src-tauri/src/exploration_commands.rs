@@ -1269,6 +1269,7 @@ mod tests {
             "p",
             "main",
             &project,
+            None,
         )
         .await
         .unwrap()

@@ -5894,6 +5894,7 @@ async fn send_message_inner(
             &ap.id,
             &frame_id,
             &ap.root,
+            Some(rt.cancel.clone()),
         )
         .await
         {
