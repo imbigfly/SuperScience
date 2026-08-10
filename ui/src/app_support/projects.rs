@@ -17,6 +17,7 @@ pub(crate) fn ProjectsScreen(
     on_search: Callback<()>,
     on_capability_action: Callback<crate::capabilities_home::CapabilityAction>,
     on_export_project: Callback<(String, String)>,
+    theme_mode: RwSignal<String>,
     project_transfer: RwSignal<Option<ProjectTransferProgress>>,
 ) -> impl IntoView {
     let projects = create_rw_signal(Vec::<ProjectSummary>::new());
@@ -458,7 +459,7 @@ pub(crate) fn ProjectsScreen(
             <div class="projects-head">
                 <div class="projects-brand">
                     <span class="projects-brand-mark" aria-hidden="true"></span>
-                    <div class="projects-title">"天成科研助手"<span class="beta">"Beta"</span></div>
+                    <div class="projects-title">"天成科研助手"</div>
                 </div>
                 <div class="projects-actions">
                     <button type="button" class="projects-icon-btn"
@@ -472,6 +473,33 @@ pub(crate) fn ProjectsScreen(
                         aria-label=move || t(locale.get(), "projects.search")
                         on:click=move |_| on_search.call(())>
                         <span class="gi search"></span>
+                    </button>
+                    <button type="button" class="projects-icon-btn"
+                        data-testid="theme-day-night-toggle"
+                        title=move || {
+                            if theme_is_effectively_dark(&theme_mode.get()) {
+                                t(locale.get(), "appearance.toggle_to_light")
+                            } else {
+                                t(locale.get(), "appearance.toggle_to_dark")
+                            }
+                        }
+                        aria-label=move || {
+                            if theme_is_effectively_dark(&theme_mode.get()) {
+                                t(locale.get(), "appearance.toggle_to_light")
+                            } else {
+                                t(locale.get(), "appearance.toggle_to_dark")
+                            }
+                        }
+                        on:click=move |_| {
+                            theme_mode.set(toggle_day_night_theme(&theme_mode.get_untracked()));
+                        }>
+                        {move || {
+                            if theme_is_effectively_dark(&theme_mode.get()) {
+                                compose_icon("sun").into_view()
+                            } else {
+                                compose_icon("moon").into_view()
+                            }
+                        }}
                     </button>
                     <button type="button" class="projects-icon-btn"
                         title=move || t(locale.get(), "sidebar.settings")

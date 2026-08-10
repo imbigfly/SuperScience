@@ -1832,9 +1832,9 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await expect(input).toHaveAttribute("autocomplete", "off");
   await expect(palette).toContainText("New session");
   await expect(palette.locator(".action-palette-row", { hasText: "New session" })
-    .locator(".action-shortcut")).toHaveText("Ctrl+N");
+    .locator(".action-shortcut")).toHaveText(/^(Ctrl|⌘)N$/);
   await expect(palette.locator(".action-palette-row", { hasText: "Search" })
-    .locator(".action-shortcut")).toHaveText("Ctrl+K");
+    .locator(".action-shortcut")).toHaveText(/^(Ctrl|⌘)K$/);
 
   const rows = palette.locator(".project-search-row");
   await expect(rows.first()).toHaveClass(/active/);
@@ -1875,7 +1875,7 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await page.keyboard.press("Escape");
 
   await page.keyboard.press("Control+p");
-  await input.fill("dark theme");
+  await input.fill("night mode");
   await input.press("Enter");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-theme"))).toBe("dark");
@@ -7665,10 +7665,25 @@ test("projects landing stays centered on wide windows", async ({ page }) => {
   await expect(page.locator(".projects-head")).toBeVisible();
   await expect(page.locator(".projects-brand-mark")).toBeVisible();
   await expect(page.locator(".projects-title")).toContainText("天成科研助手");
+  await expect(page.locator(".projects-title .beta")).toHaveCount(0);
   await expect.poll(async () => page.locator(".projects-head").evaluate((el) => {
     const rect = el.getBoundingClientRect();
     return Math.round(rect.width);
   })).toBeLessThanOrEqual(1200);
+});
+
+test("projects landing theme toggle switches day and night modes", async ({ page }) => {
+  await page.goto("/");
+  const toggle = page.getByTestId("theme-day-night-toggle");
+  await expect(toggle).toBeVisible();
+  await page.evaluate(() => localStorage.setItem("superscience-theme", "light"));
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByTestId("theme-day-night-toggle").click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-theme"))).toBe("dark");
+  await page.getByTestId("theme-day-night-toggle").click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
 
 test("empty session shows the branded chat empty state", async ({ page }) => {

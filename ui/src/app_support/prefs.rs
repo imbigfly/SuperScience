@@ -68,6 +68,21 @@ pub(crate) fn load_theme_mode() -> String {
         .unwrap_or_else(|| "system".into())
 }
 
+/// Whether the UI preference is currently night (dark). `system` is treated as
+/// day for the one-click toggle icon; the first click then locks night mode.
+pub(crate) fn theme_is_effectively_dark(mode: &str) -> bool {
+    mode == "dark"
+}
+
+/// Flip between daytime (light) and nighttime (dark) for one-click switching.
+pub(crate) fn toggle_day_night_theme(mode: &str) -> String {
+    if theme_is_effectively_dark(mode) {
+        "light".into()
+    } else {
+        "dark".into()
+    }
+}
+
 pub(crate) fn apply_theme_mode(mode: &str) {
     let Some(window) = web_sys::window() else {
         return;

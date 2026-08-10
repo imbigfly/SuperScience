@@ -8363,6 +8363,7 @@ fn App() -> impl IntoView {
             open_library=Callback::new(move |_| show_library.set(true))
             on_capability_action=on_capability_action
             open_project_export=open_project_export
+            theme_mode=theme_mode
         />
         <SessionImportModal
             locale=locale
@@ -8603,6 +8604,33 @@ fn App() -> impl IntoView {
                 }}
                 <div class="spacer"></div>
                 <div class="topbar-actions">
+                <button type="button" class="icon-btn"
+                    data-testid="theme-day-night-toggle-topbar"
+                    title=move || {
+                        if theme_is_effectively_dark(&theme_mode.get()) {
+                            t(locale.get(), "appearance.toggle_to_light")
+                        } else {
+                            t(locale.get(), "appearance.toggle_to_dark")
+                        }
+                    }
+                    aria-label=move || {
+                        if theme_is_effectively_dark(&theme_mode.get()) {
+                            t(locale.get(), "appearance.toggle_to_light")
+                        } else {
+                            t(locale.get(), "appearance.toggle_to_dark")
+                        }
+                    }
+                    on:click=move |_| {
+                        theme_mode.set(toggle_day_night_theme(&theme_mode.get_untracked()));
+                    }>
+                    {move || {
+                        if theme_is_effectively_dark(&theme_mode.get()) {
+                            compose_icon("sun").into_view()
+                        } else {
+                            compose_icon("moon").into_view()
+                        }
+                    }}
+                </button>
                 <div class="inbox-wrap">
                     <button class="icon-btn"
                         class:active=move || inbox_open.get()
