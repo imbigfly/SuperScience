@@ -8,7 +8,7 @@
 
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/v/release/xuzhougeng/wisp-science" alt="Release"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/downloads/xuzhougeng/wisp-science/total" alt="Downloads"></a>
-<a href="https://doi.org/10.5281/zenodo.21193742"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
+<a href="https://doi.org/10.5281/zenodo.21869520"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE"><img src="https://img.shields.io/github/license/xuzhougeng/wisp-science" alt="License"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/wisp-science?style=social" alt="Stars"></a>
 <br>
@@ -475,17 +475,17 @@ available under the license published with those releases.
 
 If you use wisp-science in your research, please cite:
 
-[![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.21193742)
+[![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.21869520)
 
 ```bibtex
 @software{xu2026wisp,
-  author    = {Xu, Zhougeng and hoptop},
+  author    = {Xu, Zhou-Geng},
   title     = {wisp-science: A local-first scientific computing agent},
-  version   = {v0.33.0},
+  version   = {v1.0.0},
   year      = {2026},
   publisher = {Zenodo},
-  doi       = {10.5281/zenodo.21193742},
-  url       = {https://doi.org/10.5281/zenodo.21193742}
+  doi       = {10.5281/zenodo.21869520},
+  url       = {https://doi.org/10.5281/zenodo.21869520}
 }
 ```
 
