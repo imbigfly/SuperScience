@@ -1053,6 +1053,13 @@ async fn run_acp_turn_inner(
                 text: message.to_string(),
             },
         );
+        crate::emit_agent_event(
+            app,
+            AgentEvent::MessageBoundary {
+                frame_id: frame_id.to_string(),
+                seq: next_seq - 1,
+            },
+        );
     }
     let prompt = runtime.handle.prompt(runtime.session_id.clone(), content);
     tokio::pin!(prompt);

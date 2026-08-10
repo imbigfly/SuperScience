@@ -196,7 +196,10 @@ pub(crate) enum AgentEvent {
         frame_id: String,
         text: String,
     },
-    MessageBoundary {},
+    MessageBoundary {
+        frame_id: String,
+        seq: i64,
+    },
     Resources {
         frame_id: String,
         resources: Vec<MessageResource>,

@@ -7258,17 +7258,73 @@ test("long transcript rendering keeps a bounded turn window", async ({ page }) =
     )).toBe(loaded + 1);
   }
 
-  await expect(page.locator(".msg.user")).toHaveCount(40);
+  await expect(page.locator(".msg.user")).toHaveCount(20);
   const oldestRow = new RegExp(`Window page ${pageCount - 1} row 0`);
   await expect(page.getByText(oldestRow)).toBeVisible();
-  const newerSteps = Math.ceil(Math.max(0, pageCount * 10 - 40) / 20);
+  const newerSteps = Math.ceil(Math.max(0, pageCount * 10 - 20) / 20);
   for (let step = 0; step < newerSteps; step += 1) {
     await page.getByRole("button", { name: "Show newer messages" }).click();
   }
-  await expect(page.locator(".msg.user")).toHaveCount(40);
+  await expect(page.locator(".msg.user")).toHaveCount(20);
   await expect(page.getByText(/Window page 0 row 0/)).toBeVisible();
   await expect(page.getByText(oldestRow)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Show earlier loaded messages" })).toBeVisible();
+});
+
+test("a continuously open conversation unloads old live rows after a completed turn", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("seed turn");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".msg.assistant")).toContainText("Hello from mock wisp-science.");
+  const sent = await lastInvokeArgs(page, "send_message");
+  const frameId = String(sent?.sessionId ?? "");
+  expect(frameId).not.toBe("");
+
+  await page.evaluate(({ frameId }) => {
+    for (let turn = 0; turn < 41; turn += 1) {
+      (window as any).__tauriEmit("agent", {
+        kind: "User",
+        frame_id: frameId,
+        text: `Live turn ${turn}`,
+      });
+      (window as any).__tauriEmit("agent", {
+        kind: "MessageBoundary",
+        frame_id: frameId,
+        seq: 100 + turn * 2,
+      });
+      (window as any).__tauriEmit("agent", {
+        kind: "Text",
+        frame_id: frameId,
+        delta: `Live answer ${turn}`,
+      });
+    }
+  }, { frameId });
+
+  const thread = page.locator("#chat-thread");
+  const scroller = page.locator("#chat-scroller");
+  await expect(thread.getByText("Live turn 40", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Show earlier loaded messages" })).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+
+  await emitTauriEvent(page, "agent", { kind: "Done", frame_id: frameId });
+
+  await expect(page.locator(".msg.user")).toHaveCount(20);
+  await expect(thread.getByText("Live turn 21", { exact: true })).toBeVisible();
+  await expect(thread.getByText("Live turn 40", { exact: true })).toBeVisible();
+  await expect(thread.getByText("Live turn 0", { exact: true })).toHaveCount(0);
+  const loadEarlier = page.getByRole("button", { name: "Load earlier messages" });
+  await expect(loadEarlier).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+
+  await loadEarlier.click();
+  await expect.poll(() => lastInvokeArgs(page, "load_session")).toMatchObject({
+    id: frameId,
+    beforeSeq: 142,
+  });
 });
 
 test("a multi-megabyte transcript stays interactive while an answer streams", async ({ page }) => {

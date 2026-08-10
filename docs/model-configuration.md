@@ -15,6 +15,12 @@ results are limited to 4,000 characters and streamed terminal output to 64 KiB
 and question cards are not clipped. The durable model transcript is unchanged;
 these limits apply to the WebView presentation and its replay data.
 
+Long conversations use the same bounded tail whether they stay open or are
+reopened. After a live transcript grows past 40 completed user turns, the
+WebView unloads older reactive rows and keeps the latest 20; **Load earlier
+messages** restores the durable history from SQLite. This presentation limit
+does not change model context, exports, artifacts, or the saved transcript.
+
 wisp-science calls remote LLM APIs through model profiles. Desktop users
 configure these in **Settings -> Models**. Each row is a model profile with its
 own display name, provider, API URL, model ID, advanced options, and API key.
