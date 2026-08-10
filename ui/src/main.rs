@@ -11150,6 +11150,9 @@ fn App() -> impl IntoView {
                                             });
                                         }>
                                         <button type="button" class="rp-tab" class:active=is_active
+                                            // Labels ellipsize past 180px (long file names);
+                                            // the tooltip keeps the full name one hover away.
+                                            title=label.clone()
                                             on:click=move |_| {
                                                 right_tab.set(tab);
                                                 match tab {

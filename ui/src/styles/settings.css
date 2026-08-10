@@ -55,7 +55,7 @@ body:has(.settings-page) .projects-screen { display: none; }
 .settings-nav-title {
   padding: 2px 14px 0;
   font-size: 20px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--text);
 }
@@ -67,7 +67,7 @@ body:has(.settings-page) .projects-screen { display: none; }
 .settings-nav-label {
   padding: 0 14px 4px;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: .04em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -91,7 +91,7 @@ body:has(.settings-page) .projects-screen { display: none; }
 .settings-nav button.active {
   background: var(--bg-elev);
   color: var(--text);
-  font-weight: 650;
+  font-weight: 600;
   border-color: var(--border);
   box-shadow: var(--shadow-sm);
 }
@@ -109,7 +109,7 @@ body:has(.settings-page) .projects-screen { display: none; }
   border-bottom: none;
   flex-shrink: 0;
   font-size: 18px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.02em;
 }
 .settings-head {
@@ -168,7 +168,7 @@ body:has(.settings-page) .projects-screen { display: none; }
 .settings-crumb-link:hover { color: var(--text); }
 .settings-crumb-sep { color: var(--text-faint); flex-shrink: 0; }
 .settings-crumb-current {
-  font-weight: 650;
+  font-weight: 600;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -268,7 +268,7 @@ body:has(.settings-page) .projects-screen { display: none; }
 .cred-help-section strong {
   color: var(--text);
   font-size: 11.5px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .cred-setup-note {
   display: flex;
@@ -294,7 +294,7 @@ body:has(.settings-page) .projects-screen { display: none; }
   background: transparent;
   color: var(--clay);
   font: inherit;
-  font-weight: 550;
+  font-weight: 500;
   cursor: pointer;
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, var(--clay) 45%, transparent);
@@ -687,7 +687,7 @@ body:has(.settings-page) .projects-screen { display: none; }
   color: var(--text-muted);
   font: inherit;
   font-size: 11.5px;
-  font-weight: 550;
+  font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
   box-shadow: var(--shadow-sm);
@@ -756,7 +756,7 @@ body:has(.settings-page) .projects-screen { display: none; }
   background: var(--clay-soft);
   color: var(--clay-strong);
   font-size: 10px;
-  font-weight: 650;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -899,7 +899,7 @@ body:has(.settings-page) .projects-screen { display: none; }
   pointer-events: none;
 }
 .workflow-graph-stage-label span {
-  font-weight: 750;
+  font-weight: 700;
   letter-spacing: .04em;
   text-transform: uppercase;
 }
@@ -1041,7 +1041,7 @@ body:has(.settings-page) .projects-screen { display: none; }
   background: color-mix(in srgb, var(--bg-sunken) 88%, var(--bg-elev));
   color: var(--text-muted);
   font-size: 9px;
-  font-weight: 550;
+  font-weight: 500;
   letter-spacing: .01em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1183,7 +1183,7 @@ button.workflow-graph-port.output.active {
 .workflow-graph-incoming > span {
   color: var(--text-faint);
   font-size: 9.5px;
-  font-weight: 650;
+  font-weight: 600;
   text-transform: uppercase;
 }
 .workflow-graph-inspector-head strong {
@@ -1237,7 +1237,7 @@ button.workflow-graph-port.output.active {
 .workflow-graph-incoming code {
   overflow: hidden;
   font-size: 9.5px;
-  font-weight: 550;
+  font-weight: 500;
   text-overflow: ellipsis;
 }
 .workflow-graph-inspector .dynamic-agent-task {
@@ -1471,7 +1471,7 @@ button.workflow-graph-port.output.active {
   border-radius: var(--radius-xs);
   font-family: var(--font-ui);
   font-size: 11.5px;
-  font-weight: 550;
+  font-weight: 500;
   white-space: nowrap;
 }
 .workflow-studio-editor-actions .agents-primary { font-weight: 600; }
@@ -1607,7 +1607,7 @@ button.workflow-graph-port.output.active {
 .plugin-local-source { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .plugin-local-source button { padding: 9px 13px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text); font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; }
 .plugin-local-source button:hover { border-color: var(--text-faint); }
-.plugin-install-fields > button { justify-self: end; padding: 9px 15px; border: 1px solid transparent; border-radius: var(--radius-sm); background: var(--clay); color: var(--on-clay); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; }
+.plugin-install-fields > button { justify-self: end; padding: 9px 15px; border: 1px solid transparent; border-radius: var(--radius-sm); background: var(--clay); color: var(--on-clay); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
 .plugin-install-fields > button:hover:not(:disabled) { background: var(--clay-strong); }
 .plugin-install-fields > button:disabled { opacity: .48; cursor: not-allowed; }
 /* .primary fill comes from shared button primitives in base.css */
@@ -1625,7 +1625,7 @@ button.workflow-graph-port.output.active {
 .plugin-details .plugin-detail-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 12px; margin: 8px 0 0; font-size: 12px; }
 .plugin-details .plugin-detail-grid dt { color: var(--text-faint); }
 .plugin-details .plugin-detail-grid dd { margin: 0; color: var(--text-muted); word-break: break-word; }
-.appearance-theme-section h3 { margin: 0 0 18px; font-size: 16px; font-weight: 650; }
+.appearance-theme-section h3 { margin: 0 0 18px; font-size: 16px; font-weight: 600; }
 .theme-mode-grid { display: grid; grid-template-columns: repeat(3, 244px); gap: 18px; }
 .theme-mode-card {
   display: flex; flex-direction: column; gap: 9px; align-items: stretch; min-width: 0;
@@ -1664,7 +1664,7 @@ button.workflow-graph-port.output.active {
 .pet-settings-pane { gap: 22px; }
 .pet-settings-hero { display: flex; align-items: center; gap: 24px; min-height: 150px; padding: 18px 24px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--clay) 28%, var(--border)); border-radius: var(--radius); background: radial-gradient(circle at 16% 20%, color-mix(in srgb, var(--clay) 16%, transparent), transparent 36%), linear-gradient(135deg, color-mix(in srgb, var(--bg-elev) 90%, var(--clay-soft)), var(--bg-app)); }
 .pet-settings-preview { display: grid; place-items: center; width: 116px; height: 126px; flex: 0 0 auto; border-radius: 24px; background: color-mix(in srgb, var(--bg-sunken) 76%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 75%, transparent); }
-.pet-settings-preview.empty::after { content: "?"; color: var(--text-faint); font-size: 38px; font-weight: 300; }
+.pet-settings-preview.empty::after { content: "?"; color: var(--text-faint); font-size: 38px; font-weight: 400; }
 .pet-settings-sprite { width: 96px; height: 104px; background-repeat: no-repeat; background-size: 800% 1100%; background-position: 0 0; filter: drop-shadow(0 8px 12px rgba(22,20,16,.16)); }
 .pet-settings-copy { min-width: 0; }
 .pet-settings-copy h3 { margin: 0 0 7px; font-size: 21px; letter-spacing: -.025em; }
@@ -1677,7 +1677,7 @@ button.workflow-graph-port.output.active {
 .pet-directory-row .settings-field-hint { font-weight: 400; }
 .appearance-config-head, .appearance-config-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 66px; border-bottom: 1px solid var(--border); }
 .appearance-config-row:last-child { border-bottom: none; }
-.appearance-config-head > strong, .appearance-config-row > strong, .appearance-config-row > div > strong { font-size: 14px; font-weight: 650; }
+.appearance-config-head > strong, .appearance-config-row > strong, .appearance-config-row > div > strong { font-size: 14px; font-weight: 600; }
 .appearance-config-head select { width: 264px; }
 .appearance-config-row > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .appearance-config-row > div > span { color: var(--text-faint); font-size: 12px; }
@@ -1903,7 +1903,7 @@ button.workflow-graph-port.output.active {
 .settings-toolbar > button {
   font: inherit;
   font-size: 12.5px;
-  font-weight: 550;
+  font-weight: 500;
   padding: 7px 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -1944,7 +1944,7 @@ button.workflow-graph-port.output.active {
 .settings-category-tab {
   font: inherit;
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 500;
   color: var(--text-muted);
   white-space: nowrap;
   padding: 7px 12px;
@@ -1967,7 +1967,7 @@ button.workflow-graph-port.output.active {
 .settings-toolbar-end .settings-add-menu { justify-self: end; }
 .settings-filter {
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 500;
   color: var(--text);
   white-space: nowrap;
   padding: 7px 12px;
@@ -1998,7 +1998,7 @@ button.workflow-graph-port.output.active {
   cursor: pointer;
   font: inherit;
   font-size: 13.5px;
-  font-weight: 550;
+  font-weight: 500;
   padding: 8px 14px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -2039,7 +2039,7 @@ button.workflow-graph-port.output.active {
 .appearance-config-row > button {
   font: inherit;
   font-size: 13.5px;
-  font-weight: 550;
+  font-weight: 500;
   padding: 8px 14px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -2074,7 +2074,7 @@ button.workflow-graph-port.output.active {
 .model-preset-btn {
   font: inherit;
   font-size: 12.5px;
-  font-weight: 550;
+  font-weight: 500;
   padding: 4px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 999px;
@@ -2116,7 +2116,7 @@ button.workflow-graph-port.output.active {
   gap: 20px;
 }
 .channel-bind-row > div { min-width: 0; }
-.channel-bind-row strong, .channels-qr strong { color: var(--text); font-size: 13px; font-weight: 620; }
+.channel-bind-row strong, .channels-qr strong { color: var(--text); font-size: 13px; font-weight: 600; }
 .channel-bind-row p, .channels-qr p {
   max-width: 720px;
   margin: 4px 0 0;
@@ -2253,7 +2253,7 @@ button.workflow-graph-port.output.active {
 }
 .settings-list-title {
   font-size: 14px;
-  font-weight: 550;
+  font-weight: 500;
   color: var(--text);
   line-height: 1.35;
 }
@@ -2449,7 +2449,7 @@ button.workflow-graph-port.output.active {
 .memory-clear-btn {
   font: inherit;
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 500;
   padding: 8px 14px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -2677,18 +2677,18 @@ body { font-size: var(--ui-font-size, 14px); }
 .storage-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 .storage-legend-label { flex: 1; min-width: 0; }
 .storage-legend-bytes { color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.storage-legend-total { font-weight: 650; }
+.storage-legend-total { font-weight: 600; }
 .storage-legend-total .storage-legend-bytes { color: var(--text); }
 
 /* Usage section */
 .settings-usage-pane { padding-bottom: 28px; }
 .usage-summary { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 18px; }
 .usage-tile { flex: 1; min-width: 110px; display: flex; flex-direction: column; gap: 3px; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; }
-.usage-tile-value { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.usage-tile-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .usage-tile-label { font-size: 12px; color: var(--text-faint); }
 .usage-card { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elev); }
 .usage-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
-.usage-card-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.usage-card-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .usage-card-head p { margin: 3px 0 0; color: var(--text-faint); font-size: 11.5px; }
 .usage-activity-card { margin-bottom: 14px; }
 .usage-mode-tabs { display: inline-flex; flex: none; padding: 2px; border-radius: var(--radius-xs); background: var(--bg-sunken); }
@@ -2722,7 +2722,7 @@ body { font-size: var(--ui-font-size, 14px); }
 .usage-tool-rank-list { display: flex; flex-direction: column; gap: 10px; }
 .usage-tool-rank-row { display: grid; grid-template-columns: 18px auto minmax(0, 1fr); gap: 8px; align-items: start; }
 .usage-tool-rank-index { color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; line-height: 18px; text-align: right; }
-.usage-tool-rank-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; background: var(--bg-sunken); color: var(--text-muted); font-size: 10px; font-weight: 650; letter-spacing: .02em; line-height: 1; text-transform: uppercase; white-space: nowrap; }
+.usage-tool-rank-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; background: var(--bg-sunken); color: var(--text-muted); font-size: 10px; font-weight: 600; letter-spacing: .02em; line-height: 1; text-transform: uppercase; white-space: nowrap; }
 .usage-tool-rank-badge.kind-skill { color: color-mix(in srgb, var(--clay) 85%, var(--text)); background: color-mix(in srgb, var(--clay) 16%, var(--bg-sunken)); }
 .usage-tool-rank-badge.kind-mcp { color: color-mix(in srgb, #3b82f6 80%, var(--text)); background: color-mix(in srgb, #3b82f6 14%, var(--bg-sunken)); }
 .usage-tool-rank-main { min-width: 0; display: flex; flex-direction: column; gap: 4px; }

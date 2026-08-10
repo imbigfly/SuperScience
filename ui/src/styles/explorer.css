@@ -72,7 +72,7 @@
 .cap-num { font-size: 22px; font-weight: 700; color: var(--clay); }
 .cap-label { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; }
 .cap-section { display: flex; flex-direction: column; gap: 8px; }
-.cap-section h3 { margin: 0; font-size: 13px; font-weight: 650; color: var(--text-muted); }
+.cap-section h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-muted); }
 /* ---------- Skill Manager ---------- */
 .skill-tags-filter button {
   background: var(--bg-input); color: var(--text-muted);

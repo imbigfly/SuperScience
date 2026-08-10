@@ -191,7 +191,7 @@ button.side-item.ses.selecting { padding-right: 10px; }
 .side-exploration.active { border-color: var(--border-active); background: var(--clay-soft); color: var(--text); }
 .exploration-branch-mark { flex: 0 0 auto; color: var(--clay); font: 12px/1 var(--font-mono); }
 .side-exploration-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
-.side-exploration-title { overflow: hidden; font-size: 12px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
+.side-exploration-title { overflow: hidden; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .side-exploration-meta { overflow: hidden; color: var(--text-faint); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .side-hint { font-size: 12px; color: var(--text-faint); padding: 6px 10px; }
 .side-load-more { width: 100%; margin-top: 6px; padding: 7px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
