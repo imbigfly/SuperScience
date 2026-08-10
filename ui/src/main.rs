@@ -83,8 +83,9 @@ const NO_API_KEY_MARK: &str = "No API key set";
 const HOME_SEARCH_PROJECT_LIMIT: usize = 6;
 const HOME_SEARCH_ARTIFACT_LIMIT: usize = 8;
 const HOME_SEARCH_SESSION_LIMIT: usize = 6;
-const TRANSCRIPT_RENDER_TURNS: usize = 40;
+const TRANSCRIPT_RENDER_TURNS: usize = 20;
 const TRANSCRIPT_WINDOW_STEP: usize = 20;
+const TRANSCRIPT_LIVE_TRIM_TURNS: usize = TRANSCRIPT_RENDER_TURNS + TRANSCRIPT_WINDOW_STEP;
 const CENTER_PANE_MIN_WIDTH: f64 = 360.0;
 const RIGHT_PANE_MIN_WIDTH: f64 = 320.0;
 const RIGHT_PANE_MAX_WIDTH: f64 = 900.0;
@@ -1736,7 +1737,24 @@ fn App() -> impl IntoView {
                 });
                 refresh_transcript_projections(&frame_id);
             }
-            AgentEvent::MessageBoundary { .. } => {}
+            AgentEvent::MessageBoundary { frame_id, seq } => {
+                let needs_seq = conversation_outlines_cb.with_untracked(|outlines| {
+                    outlines
+                        .get(&frame_id)
+                        .and_then(|outline| outline.last())
+                        .is_some_and(|entry| entry.seq.is_none())
+                });
+                if needs_seq {
+                    conversation_outlines_cb.update(|outlines| {
+                        if let Some(entry) = outlines
+                            .get_mut(&frame_id)
+                            .and_then(|outline| outline.last_mut())
+                        {
+                            entry.seq = Some(seq);
+                        }
+                    });
+                }
+            }
             AgentEvent::Resources {
                 frame_id,
                 resources,
@@ -1979,10 +1997,43 @@ fn App() -> impl IntoView {
                     }
                 });
                 notify_desktop(&frame_id, "done", "");
+                let outline = conversation_outlines_cb
+                    .with_untracked(|outlines| outlines.get(&frame_id).cloned())
+                    .unwrap_or_default();
+                let mut page = transcript_pages
+                    .with_untracked(|pages| pages.get(&frame_id).copied())
+                    .unwrap_or_default();
+                let mut trimmed = false;
                 route_items(active_cb, items_cb, transcripts_cb, &frame_id, |items| {
                     strip_approval_pending(items);
                     settle_plan_cards(items);
+                    let Some((first_item, dropped_turns)) = transcript_tail_trim_point(
+                        items,
+                        TRANSCRIPT_LIVE_TRIM_TURNS,
+                        TRANSCRIPT_RENDER_TURNS,
+                    ) else {
+                        return;
+                    };
+                    let user_offset = page.user_offset.saturating_add(dropped_turns);
+                    let Some(before_seq) = outline
+                        .iter()
+                        .find(|entry| entry.user_index == user_offset)
+                        .and_then(|entry| entry.seq)
+                    else {
+                        return;
+                    };
+                    items.drain(..first_item);
+                    page.next_before_seq = Some(before_seq);
+                    page.user_offset = user_offset;
+                    page.loading = false;
+                    page.window_user_start = usize::MAX;
+                    trimmed = true;
                 });
+                if trimmed {
+                    transcript_pages.update(|pages| {
+                        pages.insert(frame_id.clone(), page);
+                    });
+                }
                 refresh_transcript_projections(&frame_id);
                 approval_cb.update(|s| {
                     s.remove(&frame_id);
