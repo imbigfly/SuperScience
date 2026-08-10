@@ -1008,6 +1008,8 @@ fn App() -> impl IntoView {
     let file_cwd = create_rw_signal(".".to_string());
     let file_entries = create_rw_signal::<Vec<DirEntry>>(vec![]);
     let file_search_hits = create_rw_signal::<Vec<FileSearchHit>>(vec![]);
+    let selecting_workspace_entries = create_rw_signal(false);
+    let selected_workspace_paths = create_rw_signal::<HashSet<String>>(HashSet::new());
     let remote_file_cwd = create_rw_signal("~".to_string());
     let remote_file_entries = create_rw_signal::<Vec<DirEntry>>(vec![]);
     let remote_file_loading = create_rw_signal(false);
@@ -6615,6 +6617,7 @@ fn App() -> impl IntoView {
                 return;
             }
             if let Some(act) = context_menu::workspace_entry_action(&action, &payload) {
+                selected_workspace_paths.set(HashSet::new());
                 match act {
                     context_menu::WorkspaceEntryAction::Rename { path, is_dir } => {
                         let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
@@ -6708,12 +6711,23 @@ fn App() -> impl IntoView {
         }
         let loc = locale.get();
         let center = center_file.get_untracked();
+        let project_root = project_info.get_untracked().map(|project| project.root);
+        let selected_paths = if selecting_workspace_entries.get_untracked() {
+            selected_workspace_paths
+                .get_untracked()
+                .into_iter()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         if let Some(menu) = context_menu::build(
             &ev,
             loc,
             active_session.get().is_some(),
             center.as_deref(),
             &quick_actions.get_untracked(),
+            project_root.as_deref(),
+            &selected_paths,
         ) {
             if !menu.items.is_empty() {
                 ev.prevent_default();
@@ -7228,6 +7242,8 @@ fn App() -> impl IntoView {
             );
             active_session.set(None);
             collapsed_folders.set(HashSet::new());
+            selecting_workspace_entries.set(false);
+            selected_workspace_paths.set(HashSet::new());
             project_info.set(None);
             app_shell_entering.set(true);
             {
@@ -11593,6 +11609,8 @@ fn App() -> impl IntoView {
                                             prop:value=move || file_source.get()
                                             on:change=move |event| {
                                                 let next = dom_value(&event);
+                                                selecting_workspace_entries.set(false);
+                                                selected_workspace_paths.set(HashSet::new());
                                                 file_source.set(next.clone());
                                                 file_query.set(String::new());
                                                 if next == "local" {
@@ -11631,6 +11649,7 @@ fn App() -> impl IntoView {
                                                     let p_click = p.clone();
                                                     view! {
                                                         <button class="fb-up" on:click=move |_| {
+                                                            selected_workspace_paths.set(HashSet::new());
                                                             file_query.set(String::new());
                                                             file_cwd.set(p_click.clone());
                                                             refresh_dir(file_cwd, file_entries);
@@ -11665,11 +11684,27 @@ fn App() -> impl IntoView {
                                                     {compose_icon("sync")}
                                                     <span>{t(loc, "files.refresh")}</span>
                                                 </button>
+                                                <button type="button"
+                                                    aria-pressed=move || selecting_workspace_entries.get().to_string()
+                                                    on:click=move |_| {
+                                                        let selecting = !selecting_workspace_entries.get_untracked();
+                                                        selecting_workspace_entries.set(selecting);
+                                                        selected_workspace_paths.set(HashSet::new());
+                                                    }>
+                                                    <span>{move || t(locale.get(), if selecting_workspace_entries.get() {
+                                                        "settings.cancel"
+                                                    } else {
+                                                        "files.select_entries"
+                                                    })}</span>
+                                                </button>
                                             </div>
                                             <input class="fb-search" type="text"
                                                 placeholder=move || t(locale.get(), "files.search")
                                                 prop:value=move || file_query.get()
-                                                on:input=move |ev| file_query.set(event_target_value(&ev)) />
+                                                on:input=move |ev| {
+                                                    selected_workspace_paths.set(HashSet::new());
+                                                    file_query.set(event_target_value(&ev));
+                                                } />
                                             <div class="fb-list" class:grid=move || rp_grid.get()>
                                                 {move || {
                                                     let q = file_query.get();
@@ -11688,8 +11723,19 @@ fn App() -> impl IntoView {
                                                             let dir = file_dir_label(&path);
                                                             if hit.is_dir {
                                                                 let path_click = path.clone();
+                                                                let path_selected = path.clone();
+                                                                let path_pressed = path.clone();
                                                                 view! {
-                                                                    <button class="fb-row dir" data-workspace-path=path.clone() on:click=move |_| {
+                                                                    <button class="fb-row dir" data-workspace-path=path.clone()
+                                                                        class:selected=move || selected_workspace_paths.get().contains(&path_selected)
+                                                                        attr:aria-pressed=move || selecting_workspace_entries.get().then(|| {
+                                                                            selected_workspace_paths.get().contains(&path_pressed).to_string()
+                                                                        })
+                                                                        on:click=move |_| {
+                                                                        if selecting_workspace_entries.get_untracked() {
+                                                                            toggle_workspace_path(selected_workspace_paths, &path_click);
+                                                                            return;
+                                                                        }
                                                                         file_query.set(String::new());
                                                                         file_cwd.set(path_click.clone());
                                                                         refresh_dir(file_cwd, file_entries);
@@ -11701,8 +11747,19 @@ fn App() -> impl IntoView {
                                                                 }.into_view()
                                                             } else {
                                                                 let path_open = path.clone();
+                                                                let path_selected = path.clone();
+                                                                let path_pressed = path.clone();
                                                                 view! {
-                                                                    <button class="fb-row" data-workspace-path=path.clone() on:click=move |_| {
+                                                                    <button class="fb-row" data-workspace-path=path.clone()
+                                                                        class:selected=move || selected_workspace_paths.get().contains(&path_selected)
+                                                                        attr:aria-pressed=move || selecting_workspace_entries.get().then(|| {
+                                                                            selected_workspace_paths.get().contains(&path_pressed).to_string()
+                                                                        })
+                                                                        on:click=move |_| {
+                                                                        if selecting_workspace_entries.get_untracked() {
+                                                                            toggle_workspace_path(selected_workspace_paths, &path_open);
+                                                                            return;
+                                                                        }
                                                                         open_workspace_file(path_open.clone(), modal_artifact);
                                                                     }>
                                                                         <span class="fb-icon">{compose_icon("doc")}</span>
@@ -11737,8 +11794,19 @@ fn App() -> impl IntoView {
                                                             let full = join_path(&file_cwd.get(), &name);
                                                             if e.is_dir {
                                                                 let full_click = full.clone();
+                                                                let full_selected = full.clone();
+                                                                let full_pressed = full.clone();
                                                                 view! {
-                                                                    <button class="fb-row dir" data-workspace-path=full.clone() on:click=move |_| {
+                                                                    <button class="fb-row dir" data-workspace-path=full.clone()
+                                                                        class:selected=move || selected_workspace_paths.get().contains(&full_selected)
+                                                                        attr:aria-pressed=move || selecting_workspace_entries.get().then(|| {
+                                                                            selected_workspace_paths.get().contains(&full_pressed).to_string()
+                                                                        })
+                                                                        on:click=move |_| {
+                                                                        if selecting_workspace_entries.get_untracked() {
+                                                                            toggle_workspace_path(selected_workspace_paths, &full_click);
+                                                                            return;
+                                                                        }
                                                                         file_query.set(String::new());
                                                                         file_cwd.set(full_click.clone());
                                                                         refresh_dir(file_cwd, file_entries);
@@ -11749,8 +11817,19 @@ fn App() -> impl IntoView {
                                                                 }.into_view()
                                                             } else {
                                                                 let full_open = full.clone();
+                                                                let full_selected = full.clone();
+                                                                let full_pressed = full.clone();
                                                                 view! {
-                                                                    <button class="fb-row" data-workspace-path=full.clone() on:click=move |_| {
+                                                                    <button class="fb-row" data-workspace-path=full.clone()
+                                                                        class:selected=move || selected_workspace_paths.get().contains(&full_selected)
+                                                                        attr:aria-pressed=move || selecting_workspace_entries.get().then(|| {
+                                                                            selected_workspace_paths.get().contains(&full_pressed).to_string()
+                                                                        })
+                                                                        on:click=move |_| {
+                                                                        if selecting_workspace_entries.get_untracked() {
+                                                                            toggle_workspace_path(selected_workspace_paths, &full_open);
+                                                                            return;
+                                                                        }
                                                                         open_workspace_file(full_open.clone(), modal_artifact);
                                                                     }>
                                                                         <span class="fb-icon">{compose_icon("doc")}</span>
