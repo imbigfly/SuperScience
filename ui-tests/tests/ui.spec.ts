@@ -1987,6 +1987,8 @@ test("conversation action button renames, transfers, and deletes sessions (#557)
   const openActions = async () => {
     const row = session.locator("..");
     const actions = row.getByRole("button", { name: "Conversation actions" });
+    // The menu button is hover/focus-revealed: rest at opacity 0.
+    await row.hover();
     await expect.poll(() => actions.evaluate((el) => Number.parseFloat(getComputedStyle(el).opacity))).toBeGreaterThan(0);
     await actions.click();
   };
@@ -2193,6 +2195,8 @@ test("group action button visibly renames and deletes groups", async ({ page }) 
   let folder = page.locator(".side-folder", { hasText: "Figures" });
   await expect(folder).toBeVisible();
   let actions = folder.getByRole("button", { name: "Group actions" });
+  // The group menu button is hover/focus-revealed: rest at opacity 0.
+  await folder.hover();
   await expect.poll(() => actions.evaluate((el) => Number.parseFloat(getComputedStyle(el).opacity))).toBeGreaterThan(0);
   await actions.click();
   await page.getByRole("button", { name: "Rename group" }).click();
@@ -2202,6 +2206,7 @@ test("group action button visibly renames and deletes groups", async ({ page }) 
   folder = page.locator(".side-folder", { hasText: "Results" });
   await expect(folder).toBeVisible();
   actions = folder.getByRole("button", { name: "Group actions" });
+  await folder.hover();
   await actions.click();
   await page.getByRole("button", { name: "Delete group" }).click();
   await page.locator(".confirm-modal").getByRole("button", { name: "Delete group", exact: true }).click();
