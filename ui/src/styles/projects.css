@@ -222,11 +222,18 @@ body:has(.window-titlebar) .library-screen { top: 38px; }
   :root[data-theme="system"] .project-search-overlay { background: hsl(30 6% 6% / .55); }
 }
 body:has(.window-titlebar) .project-search-overlay { padding-top: max(12px, min(10vh, 72px)); }
+.conversation-search-overlay { background: hsl(30 6% 6% / .52); }
+:root[data-theme="dark"] .conversation-search-overlay { background: hsl(30 6% 6% / .68); }
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] .conversation-search-overlay { background: hsl(30 6% 6% / .68); }
+}
 .project-search-overlay input, .project-search-overlay textarea { user-select: text; }
 .project-search-dialog { width: min(560px, 92vw); max-height: min(520px, calc(100vh - 64px)); display: flex; flex-direction: column;
   background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); box-shadow: var(--shadow); overflow: hidden;
   transform-origin: top center; animation: motion-surface-in var(--motion-duration-medium) var(--motion-ease-decelerate) both; }
 body:has(.window-titlebar) .project-search-dialog { max-height: min(480px, calc(100vh - 96px)); }
+.conversation-search-dialog { width: min(720px, 92vw); max-height: min(680px, calc(100vh - 64px)); border-radius: var(--radius); }
+body:has(.window-titlebar) .conversation-search-dialog { max-height: min(660px, calc(100vh - 96px)); }
 .action-palette { width: min(520px, 92vw); }
 .action-palette-results { padding: 4px 6px 6px; }
 .action-palette-group { padding: 6px 8px 3px; color: var(--text-faint); font-size: 11px; font-weight: 600; }

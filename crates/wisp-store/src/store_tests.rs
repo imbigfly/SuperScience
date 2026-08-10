@@ -1938,7 +1938,7 @@ async fn global_composer_search_carries_project_and_session_metadata() {
     );
 
     let sessions = store
-        .search_sessions(None, "result", 20, None)
+        .search_sessions(None, "result", 20, None, None)
         .await
         .unwrap();
     assert_eq!(sessions.len(), 2);
@@ -1951,6 +1951,69 @@ async fn global_composer_search_carries_project_and_session_metadata() {
             .project_name,
         "Beta"
     );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn session_search_prefers_current_project_then_title_then_body() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_ranked_session_search_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store
+        .create_project("current", "Current", "/tmp/current")
+        .await
+        .unwrap();
+    store
+        .create_project("other", "Other", "/tmp/other")
+        .await
+        .unwrap();
+
+    for (frame, project, title, body) in [
+        (
+            "current-title",
+            "current",
+            "Needle title",
+            "ordinary response",
+        ),
+        (
+            "current-body",
+            "current",
+            "Body conversation",
+            "needle appears in the assistant body",
+        ),
+        (
+            "other-title",
+            "other",
+            "Needle in another project",
+            "ordinary response",
+        ),
+    ] {
+        store
+            .create_frame(frame, project, "OPERON", "m")
+            .await
+            .unwrap();
+        store
+            .append_message(frame, 1, &Message::user("initial prompt"))
+            .await
+            .unwrap();
+        store
+            .append_message(frame, 2, &Message::assistant(body))
+            .await
+            .unwrap();
+        store.rename_session(frame, project, title).await.unwrap();
+    }
+
+    let rows = store
+        .search_sessions(None, "needle", 10, None, Some("current"))
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+        vec!["current-title", "current-body", "other-title"]
+    );
+
     let _ = std::fs::remove_file(&tmp);
 }
 
@@ -2219,7 +2282,10 @@ async fn mark_frame_seen_clears_unseen_until_new_activity() {
     assert!(!unseen_of(
         store.list_session_last_roles("p").await.unwrap()
     ));
-    let found = store.search_sessions(None, "", 10, None).await.unwrap();
+    let found = store
+        .search_sessions(None, "", 10, None, None)
+        .await
+        .unwrap();
     assert!(!found.iter().find(|s| s.id == "f1").unwrap().unseen);
 
     // New activity after the seen snapshot flips it back. Message ts comes
@@ -5916,7 +5982,7 @@ async fn scratch_projects_hidden_from_user_lists() {
     assert_eq!(recent[0].project_id, "real");
 
     let hits = store
-        .search_sessions(None, "hello", 10, None)
+        .search_sessions(None, "hello", 10, None, None)
         .await
         .unwrap();
     assert!(hits.iter().all(|h| h.project_id == "real"));

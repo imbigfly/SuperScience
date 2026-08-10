@@ -1539,32 +1539,46 @@ impl Store {
         query: &str,
         limit: i64,
         session_id: Option<&str>,
+        preferred_project_id: Option<&str>,
     ) -> Result<Vec<SessionSearchResult>> {
         let q = query.trim().to_lowercase();
+        let pattern = format!("%{q}%");
         let rows = sqlx::query(
-            "SELECT f.id AS id, f.project_id AS project_id, COALESCE(p.name,'') AS project_name, \
-                    f.created_at AS created_at, COALESCE(f.title,'') AS custom_title, \
+            "WITH searchable_sessions AS ( \
+                SELECT f.rowid AS frame_rowid, f.id AS id, f.project_id AS project_id, \
+                    COALESCE(p.name,'') AS project_name, f.created_at AS created_at, \
+                    COALESCE(f.title,'') AS custom_title, \
                     (SELECT content FROM messages m WHERE m.frame_id=f.id AND m.role='user' ORDER BY m.seq ASC LIMIT 1) AS first_user, \
                     (SELECT role FROM messages m WHERE m.frame_id=f.id ORDER BY m.seq DESC LIMIT 1) AS last_role, \
                     (SELECT COALESCE(MAX(ts), f.updated_at) FROM messages m WHERE m.frame_id=f.id) AS activity_at, \
                     (SELECT COALESCE(MAX(ts), f.updated_at) FROM messages m WHERE m.frame_id=f.id) > f.seen_at AS unseen \
-             FROM frames f JOIN projects p ON p.id=f.project_id \
-             WHERE f.parent_frame_id=f.id \
-               AND f.exploration_id IS NULL \
-               AND f.project_id NOT LIKE 'scratch:%' \
-               AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id=f.id AND mm.role='user') \
-               AND (? IS NULL OR f.project_id=?) \
-               AND (? IS NULL OR f.id=?) \
-               AND (?='' OR lower(COALESCE(NULLIF(f.title,''), \
-                    (SELECT content FROM messages m WHERE m.frame_id=f.id AND m.role='user' ORDER BY m.seq ASC LIMIT 1), '')) LIKE ?) \
-             ORDER BY activity_at DESC, f.rowid DESC LIMIT ?",
+                FROM frames f JOIN projects p ON p.id=f.project_id \
+                WHERE f.parent_frame_id=f.id \
+                  AND f.exploration_id IS NULL \
+                  AND f.project_id NOT LIKE 'scratch:%' \
+                  AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id=f.id AND mm.role='user') \
+                  AND (? IS NULL OR f.project_id=?) \
+                  AND (? IS NULL OR f.id=?) \
+             ) \
+             SELECT * FROM searchable_sessions s \
+             WHERE (?='' OR lower(COALESCE(NULLIF(s.custom_title,''), s.first_user, '')) LIKE ? \
+                OR EXISTS (SELECT 1 FROM messages m WHERE m.frame_id=s.id \
+                    AND lower(COALESCE(m.content,'')) LIKE ?)) \
+             ORDER BY CASE WHEN ? IS NOT NULL AND s.project_id=? THEN 0 ELSE 1 END, \
+                CASE WHEN ?='' OR lower(COALESCE(NULLIF(s.custom_title,''), s.first_user, '')) LIKE ? THEN 0 ELSE 1 END, \
+                s.activity_at DESC, s.frame_rowid DESC LIMIT ?",
         )
         .bind(project_id)
         .bind(project_id)
         .bind(session_id)
         .bind(session_id)
         .bind(&q)
-        .bind(format!("%{q}%"))
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(preferred_project_id)
+        .bind(preferred_project_id)
+        .bind(&q)
+        .bind(&pattern)
         .bind(limit.clamp(1, 100))
         .fetch_all(&self.pool)
         .await?;
@@ -1589,7 +1603,7 @@ impl Store {
 
     pub async fn get_session_reference(&self, id: &str) -> Result<Option<SessionSearchResult>> {
         Ok(self
-            .search_sessions(None, "", 1, Some(id))
+            .search_sessions(None, "", 1, Some(id), None)
             .await?
             .into_iter()
             .next())

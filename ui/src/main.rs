@@ -8260,6 +8260,10 @@ fn App() -> impl IntoView {
             open_proj_settings=Callback::new(open_proj_settings)
             switch_project=switch_project
             new_session=Callback::new(new_session)
+            open_search=Callback::new(move |_| {
+                action_palette_open.set(false);
+                command_palette_open.set(true);
+            })
             new_folder=Callback::new(new_folder)
             open_files=Callback::new(open_files)
             open_research_graph=Callback::new(move |_| {
