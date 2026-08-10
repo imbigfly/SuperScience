@@ -75,4 +75,7 @@ test("Windows test signing has a dedicated non-release workflow", () => {
   expect(workflow).toContain("Verify Authenticode signatures");
   expect(workflow).not.toContain("SKIP_WINDOWS_SIGNING");
   expect(workflow).not.toContain("softprops/action-gh-release");
+  expect(workflow.indexOf("Upload unsigned NSIS installer")).toBeLessThan(
+    workflow.indexOf("Test-sign MSI with SignPath"),
+  );
 });

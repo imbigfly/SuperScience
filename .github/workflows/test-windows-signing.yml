@@ -69,6 +69,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Upload unsigned NSIS installer
+        id: unsigned-nsis
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.installers.outputs.nsis }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Test-sign MSI with SignPath
         id: sign-msi
         uses: signpath/github-action-submit-signing-request@v2
@@ -83,15 +92,6 @@ jobs:
           wait-for-completion-timeout-in-seconds: 1200
           output-artifact-directory: ${{ runner.temp }}/signed/msi
           skip-decompress: true
-
-      - name: Upload unsigned NSIS installer
-        id: unsigned-nsis
-        uses: actions/upload-artifact@v7
-        with:
-          path: ${{ steps.installers.outputs.nsis }}
-          archive: false
-          if-no-files-found: error
-          retention-days: 1
 
       - name: Test-sign NSIS installer with SignPath
         id: sign-nsis
