@@ -394,8 +394,8 @@ mod steps_title_tests {
             "The model is consulting its neurons…"
         );
         assert_eq!(
-            steps_title(Locale::Zh, false, true, Some("模型正在和神经元开会…"), 1, None),
-            "模型正在和神经元开会…"
+            steps_title(Locale::Zh, false, true, Some("模型正在和神经元商量…"), 1, None),
+            "模型正在和神经元商量…"
         );
     }
 }
