@@ -1623,7 +1623,17 @@ pub(crate) async fn run_quick_action(
     let templates = ensure_templates(&state.store).await;
     let (proposal, trusted_builtin) = proposal_for(&action, &input, &templates)?;
     let auto_safe = proposal.approval_policy == dynamic_workflow::AgentApprovalPolicy::AutoSafe;
-    let project = state.active(window.label());
+    let (project, scope) =
+        crate::exploration_commands::working_project_for_active_frame(&state, window.label())
+            .await?;
+    if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+        return Err(
+            "exploration_scope_violation: Quick Actions cannot create a mainline conversation from an exploration."
+                .into(),
+        );
+    }
+    let _project_activity = state.begin_project_activity(&project.id)?;
+    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
     let policy = delegation_runtime::dynamic_delegation_policy_for_project(
         &state.store,
         &project,

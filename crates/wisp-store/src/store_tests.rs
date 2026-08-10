@@ -6143,6 +6143,15 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
             .await
             .unwrap();
     assert_eq!(frame_scope.as_deref(), Some("explore"));
+    assert!(store.project_mainline_is_frozen("p").await.unwrap());
+    assert!(!store
+        .project_has_current_exploration_for_other_source("p", "main")
+        .await
+        .unwrap());
+    assert!(store
+        .project_has_current_exploration_for_other_source("p", "another-mainline")
+        .await
+        .unwrap());
 
     let branch_scope = StateScope::exploration("p", "explore");
     let main_scope = StateScope::mainline("p");
@@ -6160,6 +6169,7 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
         )
         .await
         .unwrap());
+    assert!(store.project_mainline_is_frozen("p").await.unwrap());
     assert!(store
         .transition_exploration(
             "explore",
@@ -6168,6 +6178,7 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
         )
         .await
         .unwrap());
+    assert!(!store.project_mainline_is_frozen("p").await.unwrap());
     assert!(store
         .transition_exploration(
             "explore",
@@ -6176,6 +6187,7 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
         )
         .await
         .unwrap());
+    assert!(store.project_mainline_is_frozen("p").await.unwrap());
     assert!(store
         .transition_exploration(
             "explore",
@@ -6184,6 +6196,7 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
         )
         .await
         .unwrap());
+    assert!(store.project_mainline_is_frozen("p").await.unwrap());
     assert!(store
         .transition_exploration(
             "explore",
@@ -6192,6 +6205,7 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
         )
         .await
         .unwrap());
+    assert!(!store.project_mainline_is_frozen("p").await.unwrap());
     assert!(store
         .transition_exploration(
             "explore",

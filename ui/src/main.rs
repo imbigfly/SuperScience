@@ -289,14 +289,42 @@ fn App() -> impl IntoView {
     let active_session = create_rw_signal::<Option<String>>(None);
     let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
     let explorations = create_rw_signal::<Vec<ExplorationSummary>>(vec![]);
-    let project_state_revisions = create_rw_signal::<Vec<ProjectStateRevision>>(vec![]);
+    let mainline_frozen = create_memo(move |_| {
+        active_session.get().is_some_and(|frame_id| {
+            explorations.with(|rows| {
+                let viewing_exploration = rows
+                    .iter()
+                    .any(|row| {
+                        row.exploration.frame_id == frame_id
+                            && row.exploration.status != "promoted"
+                    });
+                !viewing_exploration
+                    && rows.iter().any(|row| {
+                        matches!(
+                            row.exploration.status.as_str(),
+                            "creating" | "active" | "promoting"
+                        )
+                    })
+            })
+        })
+    });
+    let composer_scope_locked = create_memo(move |_| {
+        active_session.get().is_some_and(|frame_id| {
+            explorations.with(|rows| {
+                rows.iter()
+                    .find(|row| {
+                        row.exploration.frame_id == frame_id
+                            && row.exploration.status != "promoted"
+                    })
+                    .is_some_and(|row| row.exploration.status != "active")
+            }) || mainline_frozen.get()
+        })
+    });
     let exploration_overlay = create_rw_signal::<Option<ExplorationOverlay>>(None);
     let exploration_name = create_rw_signal(String::new());
     let exploration_preview = create_rw_signal::<Option<ExplorationPromotionPreview>>(None);
     let exploration_busy = create_rw_signal(false);
     let exploration_error = create_rw_signal::<Option<String>>(None);
-    let mainline_continue_confirm = create_rw_signal(false);
-    let mainline_continue_once = create_rw_signal(false);
     let session_has_items = create_memo(move |_| items.with(|rows| !rows.is_empty()));
     let conversation_outline = create_memo(move |_| {
         let Some(id) = active_session.get() else {
@@ -712,36 +740,6 @@ fn App() -> impl IntoView {
         let _ = project.id;
         refresh_explorations(explorations);
     });
-    create_effect(move |_| {
-        let _ = transcript_projection_epoch.get();
-        let Some(frame_id) = active_session.get() else {
-            project_state_revisions.set(Vec::new());
-            return;
-        };
-        let turn_start = transcript_pages
-            .with(|pages| pages.get(&frame_id).copied())
-            .map_or(0, |page| page.user_offset);
-        let turn_count = items.with(|rows| {
-            rows.iter()
-                .filter(|item| matches!(item, ChatItem::User(_)))
-                .count()
-        });
-        project_state_revisions.set(Vec::new());
-        let Some(turn_end) = turn_count
-            .checked_sub(1)
-            .and_then(|count| turn_start.checked_add(count))
-        else {
-            return;
-        };
-        refresh_project_state_revisions(
-            project_state_revisions,
-            active_session,
-            frame_id,
-            turn_start,
-            turn_end,
-        );
-    });
-
     // `busy` is "the active session is currently streaming" — derived from the
     // per-session `running` set so it stays correct when the user switches
     // conversations or a background turn finishes.
@@ -2686,19 +2684,6 @@ fn App() -> impl IntoView {
             return;
         }
         let active = active_session.get();
-        let continuing_guarded_mainline = action == ComposerSendAction::Normal
-            && active.as_ref().is_some_and(|frame_id| {
-                explorations.with_untracked(|rows| {
-                    rows.iter().any(|row| {
-                        row.source_frame_id == *frame_id && row.exploration.status == "active"
-                    })
-                })
-            });
-        if continuing_guarded_mainline && !mainline_continue_once.get_untracked() {
-            mainline_continue_confirm.set(true);
-            return;
-        }
-        mainline_continue_once.set(false);
         // Any prior send-failed hint (e.g. the max_tokens truncation notice) is
         // stale once a new turn is committed; the Ok path never cleared it, so it
         // lingered forever. Clear it here so continuing the conversation dismisses it.
@@ -3705,6 +3690,7 @@ fn App() -> impl IntoView {
     let composer_blocked = move || {
         demo_mode.get()
             || uploading.get()
+            || composer_scope_locked.get()
             || active_session
                 .get()
                 .is_some_and(|id| reviewing.with(|ids| ids.contains(&id)))
@@ -4898,35 +4884,13 @@ fn App() -> impl IntoView {
             exploration_error.set(None);
             let load_session = load_session.clone();
             spawn_local(async move {
-                let checkpoint_args =
-                    to_value(&tauri_args::exploration_checkpoint(
-                        &source_frame_id,
-                        Some(turn_index),
-                    ))
-                    .unwrap();
-                let checkpoint = match invoke_checked(
-                    "create_exploration_checkpoint",
-                    checkpoint_args,
-                )
-                .await
-                {
-                    Ok(value) => from_value::<serde_json::Value>(value)
-                        .ok()
-                        .and_then(|value| value.get("id").and_then(|id| id.as_str()).map(str::to_string)),
-                    Err(error) => {
-                        exploration_error.set(Some(localize_backend(
-                            locale.get_untracked(),
-                            &js_error_text(error),
-                        )));
-                        None
-                    }
-                };
-                let Some(checkpoint_id) = checkpoint else {
-                    exploration_busy.set(false);
-                    return;
-                };
-                let args = to_value(&tauri_args::create_exploration(&checkpoint_id, &name)).unwrap();
-                match invoke_checked("create_exploration", args).await {
+                let args = to_value(&tauri_args::start_exploration(
+                    &source_frame_id,
+                    Some(turn_index),
+                    &name,
+                ))
+                .unwrap();
+                match invoke_checked("start_exploration", args).await {
                     Ok(value) => match from_value::<Exploration>(value) {
                         Ok(exploration) => {
                             exploration_overlay.set(None);
@@ -6825,12 +6789,6 @@ fn App() -> impl IntoView {
             }
             return;
         }
-        if mainline_continue_confirm.get() {
-            ev.prevent_default();
-            mainline_continue_confirm.set(false);
-            return;
-        }
-
         // Overlays that can appear over the projects landing (must run before
         // the show_projects early-return below).
         if show_add_host.get() {
@@ -8967,8 +8925,18 @@ fn App() -> impl IntoView {
                             }.into_view())
                         } else {
                             let active_count = rows.iter().filter(|row| {
-                                row.source_frame_id == frame_id && row.exploration.status == "active"
+                                matches!(
+                                    row.exploration.status.as_str(),
+                                    "creating" | "active" | "promoting"
+                                )
                             }).count();
+                            let can_start_another = rows.iter().any(|row| {
+                                row.source_frame_id == frame_id
+                                    && matches!(
+                                        row.exploration.status.as_str(),
+                                        "creating" | "active" | "promoting"
+                                    )
+                            });
                             let latest_turn_index = items.with(|rows| {
                                 rows.iter()
                                     .filter(|item| matches!(item, ChatItem::User(_)))
@@ -8984,7 +8952,9 @@ fn App() -> impl IntoView {
                                         <strong>{tf(locale.get(), "exploration.mainline_count", &[("n", &active_count.to_string())])}</strong>
                                         <span>{t(locale.get(), "exploration.mainline_warning")}</span>
                                     </div>
-                                    <button type="button" on:click=move |_| start_exploration_from_head.call(latest_turn_index)>{t(locale.get(), "exploration.start_another")}</button>
+                                    {can_start_another.then(|| view! {
+                                        <button type="button" on:click=move |_| start_exploration_from_head.call(latest_turn_index)>{t(locale.get(), "exploration.start_another")}</button>
+                                    })}
                                 </section>
                             }.into_view())
                         }
@@ -9344,19 +9314,28 @@ fn App() -> impl IntoView {
                                         if !show_explore.get() || busy.get() {
                                             return false;
                                         }
+                                        let Some(frame_id) = active_session.get() else {
+                                            return false;
+                                        };
+                                        let joins_current_round = explorations.with(|rows| {
+                                            rows.iter()
+                                                .find(|row| {
+                                                    matches!(
+                                                        row.exploration.status.as_str(),
+                                                        "creating" | "active" | "promoting"
+                                                    )
+                                                })
+                                                .is_none_or(|row| row.source_frame_id == frame_id)
+                                        });
+                                        if !joins_current_round {
+                                            return false;
+                                        }
                                         let is_latest_completed = items.with(|rows| {
                                             rows.iter().rposition(|item| {
                                                 matches!(item, ChatItem::Assistant { text, .. } if !text.trim().is_empty())
                                             }) == Some(i)
                                         });
                                         is_latest_completed
-                                            || explore_turn_index.is_some_and(|index| {
-                                                project_state_revisions.with(|revisions| {
-                                                    revisions.iter().any(|revision| {
-                                                        revision.turn_index == index as i64
-                                                    })
-                                                })
-                                            })
                                     });
                                     view! {
                                         <div class=class
@@ -9866,6 +9845,7 @@ fn App() -> impl IntoView {
                     <div class="composer-mention-anchor">
                         <textarea
                             id="composer-input"
+                            disabled=move || composer_scope_locked.get()
                             style=move || {
                                 if composer_h_custom.get() {
                                     format!("height:{}px", composer_h.get())
@@ -9923,11 +9903,19 @@ fn App() -> impl IntoView {
                             }
                             on:keydown:undelegated=on_send
                             on:paste=on_paste
-                            prop:placeholder=move || tf(
-                                locale.get(),
-                                "composer.placeholder",
-                                &[("modifier", if is_mac() { "Cmd" } else { "Ctrl" })],
-                            )
+                            prop:placeholder=move || {
+                                if mainline_frozen.get() {
+                                    t(locale.get(), "exploration.mainline_frozen_placeholder").into()
+                                } else if composer_scope_locked.get() {
+                                    t(locale.get(), "exploration.read_only_placeholder").into()
+                                } else {
+                                    tf(
+                                        locale.get(),
+                                        "composer.placeholder",
+                                        &[("modifier", if is_mac() { "Cmd" } else { "Ctrl" })],
+                                    )
+                                }
+                            }
                         ></textarea>
                         {move || picker_mode.get().map(|mode| {
                             let loc = locale.get();
@@ -12663,23 +12651,6 @@ fn App() -> impl IntoView {
             on_restore=restore_exploration_from_overlay
             on_discard=discard_exploration_from_overlay
         />
-
-        {move || mainline_continue_confirm.get().then(|| view! {
-            <div class="overlay exploration-confirm-overlay" data-testid="mainline-continue-confirm">
-                <div class="modal confirm-modal exploration-confirm-modal" role="alertdialog" aria-modal="true">
-                    <h2>{t(locale.get(), "exploration.continue_title")}</h2>
-                    <div class="hint">{t(locale.get(), "exploration.continue_body")}</div>
-                    <div class="row">
-                        <button type="button" on:click=move |_| mainline_continue_confirm.set(false)>{t(locale.get(), "settings.cancel")}</button>
-                        <button type="button" class="primary danger" on:click=move |_| {
-                            mainline_continue_confirm.set(false);
-                            mainline_continue_once.set(true);
-                            send.call(ComposerSendAction::Normal);
-                        }>{t(locale.get(), "exploration.continue_action")}</button>
-                    </div>
-                </div>
-            </div>
-        })}
 
         <SessionTransferOverlay
             state=SessionTransferOverlayState {

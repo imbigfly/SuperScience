@@ -1061,6 +1061,7 @@ details.tool:not([open]) > summary.head .run-dot { animation: tool-pulse 1.1s ea
   font: inherit; font-family: var(--font-ui); font-size: 14.5px; line-height: 1.5; padding: 4px 0;
 }
 .composer textarea::placeholder { color: var(--text-faint); }
+.composer textarea:disabled { color: var(--text-muted); cursor: not-allowed; }
 .composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; min-height: 32px; }
 .composer-buttons { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 6px; flex: 0 1 auto; }
 /* Bottom-right model picker (composer). Menu drops UP since it sits at the page bottom. */

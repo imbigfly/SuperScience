@@ -75,6 +75,7 @@ impl TerminalOutputState {
 struct TerminalSession {
     id: String,
     project_id: String,
+    scope_key: String,
     context_id: String,
     title: String,
     kind: String,
@@ -203,11 +204,12 @@ impl TerminalManager {
     fn open(
         &self,
         project_id: &str,
+        scope_key: &str,
         project_root: &Path,
         context: &wisp_store::ExecutionContext,
     ) -> Result<TerminalSessionSummary, String> {
         let spec = build_terminal_launch_spec(context, project_root)?;
-        let (session, reader, child) = spawn_session(project_id, context, spec)?;
+        let (session, reader, child) = spawn_session(project_id, scope_key, context, spec)?;
         let summary = session.summary();
         lock(&self.state)
             .sessions
@@ -242,10 +244,17 @@ impl TerminalManager {
             let _ = session.terminate();
         }
     }
+
+    pub(crate) fn has_running(&self, project_id: &str, scope_key: &str) -> bool {
+        lock(&self.state).sessions.values().any(|session| {
+            session.project_id == project_id && session.scope_key == scope_key && session.running()
+        })
+    }
 }
 
 fn spawn_session(
     project_id: &str,
+    scope_key: &str,
     context: &wisp_store::ExecutionContext,
     spec: TerminalLaunchSpec,
 ) -> Result<
@@ -302,6 +311,7 @@ fn spawn_session(
     let session = Arc::new(TerminalSession {
         id: uuid::Uuid::new_v4().to_string(),
         project_id: project_id.into(),
+        scope_key: scope_key.into(),
         context_id: context.id.clone(),
         title: format!("{label} — Terminal"),
         kind: context.kind.as_str().into(),
@@ -440,14 +450,23 @@ pub async fn open_terminal(
     window: WebviewWindow,
     context_id: String,
 ) -> Result<TerminalSessionSummary, String> {
-    let project = app_state.active(window.label());
+    let (project, scope) =
+        crate::exploration_commands::working_project_for_active_frame(&app_state, window.label())
+            .await?;
+    let _activity = app_state.begin_project_activity(&project.id)?;
+    crate::exploration_commands::require_writable_scope(&app_state.store, &scope).await?;
     let context = app_state
         .store
         .get_execution_context(&context_id)
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
-    terminals.open(&project.id, &project.root, &context)
+    app_state
+        .store
+        .bump_state_generation(&scope)
+        .await
+        .map_err(|error| error.to_string())?;
+    terminals.open(&project.id, scope.scope_key(), &project.root, &context)
 }
 
 #[tauri::command]

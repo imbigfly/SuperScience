@@ -106,12 +106,19 @@ stateDiagram-v2
 - 项目不能正在同步、导入、删除或执行另一个晋升；
 - 活跃 Run 必须结束或由用户显式取消。活跃远程 Run 不能成为可晋升基线。
 
-多个探索共享同一不可变检查点和内容寻址 blob，但拥有不同工作区。
+多个探索共享同一不可变检查点和内容寻址 blob，但拥有不同工作区。检查点创建按
+`(family_id, source_frame_id, source_message_seq, guard_hash)` 幂等复用；面向 UI 的
+`start_exploration` 在项目独占锁内完成检查点复用和候选创建，不能暴露“两次调用之间主线仍可写”的空窗。
 
 每个首次进入探索工作流的普通会话会创建一个 `ExplorationFamily`。它持久记录
 `root_frame_id` 和当前 `mainline_frame_id`；晋升通过 compare-and-swap 把 family 的
 mainline 从 checkpoint source 更新为被采用 frame。这样后续可以从新主线继续探索，
 而不是靠侧栏当前选中项猜测哪条会话是主线。
+
+同一 family generation 中处于 `creating`、`active` 或 `promoting` 的候选构成当前探索轮。
+当前轮存在时，Wisp 的主线 conversation、workspace、Memory、Artifact、Runtime 和新任务入口
+统一拒绝写入。`archived` 不继续持有冻结：用户归档或丢弃全部候选即表示放弃本轮。
+晋升一个候选时，同轮其他活动候选在同一元数据事务内自动归档；旧 generation 的候选不能恢复。
 
 ### 2. `ExplorationScope`
 
@@ -245,7 +252,8 @@ referenced large/remote resource fingerprint hash
 变更就会错误地阻止晋升。文件系统可能被外部编辑器修改，所以晋升仍必须重新扫描
 manifest，不能只信 generation。
 
-其他纯会话新增消息如果没有改变 source frame 或项目状态，不应无故阻止采用；source frame 的新消息一定阻止。
+探索轮开启后，source frame 的新增消息由统一写 guard 直接拒绝。外部编辑器和 Wisp 进程外的
+写入无法由应用锁住，因此文件 manifest 复核仍是晋升的最终安全边界。
 
 ### 7. 差异模型
 
@@ -429,7 +437,7 @@ discard_exploration(exploration_id)
 4. 计算 base/current/exploration 三份 manifest，逐文件预检 checksum、大小、大小写冲突和 Windows 可替换性。
 5. 在 app data 创建 promotion journal、待写临时文件和回滚清单，状态置为 `prepared`。
 6. 用同目录临时文件 + rename 应用 add/modify；删除先移动到 journal trash。每一步记录并 fsync，状态置为 `files_applied`。
-7. 在一个 SQLite 事务内：采用探索 Artifact heads；把探索 Run/Decision/Resource 变为主线可见；CAS 更新 `ExplorationFamily.mainline_frame_id`；把探索 frame 设为新主线；更新探索状态和 mainline generation；把 promotion 置为 `metadata_committed`。
+7. 在一个 SQLite 事务内：采用探索 Artifact heads；把探索 Run/Decision/Resource 变为主线可见；CAS 更新 `ExplorationFamily.mainline_frame_id`；把探索 frame 设为新主线；自动归档同 generation 的其他活动候选；更新探索状态和 mainline generation；把 promotion 置为 `metadata_committed`。
 8. 驱逐 source/branch 的缓存 Agent、Runtime、Memory 和 skill index，用稳定主线 root 重建新主线 frame；状态置为 `committed`。
 9. 异步清理 rollback 数据。探索工作区在提交验证完成前不删除。
 
@@ -452,8 +460,8 @@ discard_exploration(exploration_id)
 
 ### 主线
 
-- 有活跃探索时显示“主线检查点已用于 N 个探索”。
-- 默认提示保持主线不动；用户仍可继续主线，但确认文案说明这会让一键采用失效。
+- 有活跃探索时显示“主线检查点已用于 N 个探索”，并禁用主线输入框、发送和其他 Wisp 写入口。
+- banner 明确给出结束冻结的两条路径：晋升一个候选，或归档/丢弃全部候选。
 - 外部文件变化无法被 UI 锁住，晋升时仍以后端扫描为准。
 
 ### 探索
@@ -487,6 +495,7 @@ IsolationPartial
 MainlineAdvanced
 ExplorationBusy
 ExplorationNotPromotable
+ExplorationMainlineFrozen
 WorkspaceChangedDuringPromotion
 ExternalReferenceChanged
 PromotionRollbackFailed
@@ -509,6 +518,7 @@ AcpExplorationUnsupported
 | Issue 验收 | 设计保证 |
 |---|---|
 | 同节点创建两个探索 | 共享 checkpoint，独立 exploration/workspace |
+| 探索期间主线不前进 | 当前 family generation 有活动候选时，统一 scope guard 拒绝 Wisp 主线写入 |
 | 同文件互不影响 | 不使用 hard link；各自物化可写文件 |
 | 文件和 Artifact 不泄漏 | `WorkingProject.root` + `artifact_heads.scope_key` + `exploration_id` |
 | 切回主线不变 | 主线 root/heads 从未切换，普通查询排除探索 |
@@ -521,7 +531,7 @@ AcpExplorationUnsupported
 
 ## 已知限制与后续
 
-1. 任意历史轮次需要在每次完成 turn 后生成增量 `ProjectStateRevision`；升级前历史无法可靠回填。
+1. MVP 有意只允许从当前头开启探索；若未来开放历史轮次，仍需证明当时的完整项目状态可重建且不会制造不可晋升候选。
 2. 大型本地数据的透明只读映射需要新的 DataAsset mount/resolver；MVP 只提供引用和显式警告。
 3. ACP 需要协议支持 clone/fork server-side session，不能复制本地 transcript 冒充隐藏上下文一致。
 4. 两条都前进后的选择性 Artifact/file adoption 应建立在同一 diff 模型上，但不得自动合并对话。

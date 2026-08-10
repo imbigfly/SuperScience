@@ -75,6 +75,22 @@ async fn build_memory_view(
     })
 }
 
+async fn require_writable_memory_target(
+    state: &AppState,
+    window_label: &str,
+    project_id: &str,
+) -> Result<wisp_store::StateScope, String> {
+    let (_, active_scope) =
+        exploration_commands::working_project_for_active_frame(state, window_label).await?;
+    let scope = if active_scope.project_id() == project_id {
+        active_scope
+    } else {
+        wisp_store::StateScope::mainline(project_id.to_string())
+    };
+    exploration_commands::require_writable_scope(&state.store, &scope).await?;
+    Ok(scope)
+}
+
 #[tauri::command]
 pub(super) async fn get_memory_view(
     state: State<'_, AppState>,
@@ -120,13 +136,25 @@ pub(super) async fn write_memory_file(
     content: String,
     project_id: Option<String>,
 ) -> Result<Vec<MemoryFile>, String> {
+    let target_project_id = project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| state.active(window.label()).id);
+    let _project_activity = state.begin_project_activity(&target_project_id)?;
     let (id, _, memory) = resolve_memory_target(&state, window.label(), project_id).await?;
-    let _project_activity = state.begin_project_activity(&id)?;
+    let scope = require_writable_memory_target(&state, window.label(), &id).await?;
     let path = memory_file_path(&memory, &name)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{e}"))?;
     }
     std::fs::write(&path, content).map_err(|e| format!("{e}"))?;
+    state
+        .store
+        .bump_state_generation(&scope)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(list_memory_files(&memory))
 }
 
@@ -137,11 +165,23 @@ pub(super) async fn delete_memory_file(
     name: String,
     project_id: Option<String>,
 ) -> Result<Vec<MemoryFile>, String> {
+    let target_project_id = project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| state.active(window.label()).id);
+    let _project_activity = state.begin_project_activity(&target_project_id)?;
     let (id, _, memory) = resolve_memory_target(&state, window.label(), project_id).await?;
-    let _project_activity = state.begin_project_activity(&id)?;
+    let scope = require_writable_memory_target(&state, window.label(), &id).await?;
     let path = memory_file_path(&memory, &name)?;
     if path.is_file() {
         std::fs::remove_file(&path).map_err(|e| format!("{e}"))?;
+        state
+            .store
+            .bump_state_generation(&scope)
+            .await
+            .map_err(|error| error.to_string())?;
     }
     Ok(list_memory_files(&memory))
 }
@@ -152,8 +192,15 @@ pub(super) async fn clear_memory(
     window: tauri::WebviewWindow,
     project_id: Option<String>,
 ) -> Result<Vec<MemoryFile>, String> {
+    let target_project_id = project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| state.active(window.label()).id);
+    let _project_activity = state.begin_project_activity(&target_project_id)?;
     let (id, _, memory) = resolve_memory_target(&state, window.label(), project_id).await?;
-    let _project_activity = state.begin_project_activity(&id)?;
+    let scope = require_writable_memory_target(&state, window.label(), &id).await?;
     let Ok(rd) = std::fs::read_dir(memory.dir()) else {
         return Ok(vec![]);
     };
@@ -163,5 +210,10 @@ pub(super) async fn clear_memory(
             let _ = std::fs::remove_file(path);
         }
     }
+    state
+        .store
+        .bump_state_generation(&scope)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(list_memory_files(&memory))
 }

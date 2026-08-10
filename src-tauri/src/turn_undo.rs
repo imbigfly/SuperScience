@@ -401,6 +401,13 @@ pub(super) async fn undo_turn(
 ) -> Result<TurnUndoPreview, String> {
     let (frame_id, project) = frame_and_project(state.inner(), window.label(), session_id).await?;
     let _project_activity = state.begin_project_activity(&project.id)?;
+    let scope = state
+        .store
+        .frame_state_scope(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Session state scope was not found.".to_string())?;
+    exploration_commands::require_writable_scope(&state.store, &scope).await?;
     validate_undo_session(state.inner(), &frame_id).await?;
     let runtime = state.sessions.lock().await.get(&frame_id).cloned();
     let _workflow = match runtime.as_ref() {

@@ -1030,6 +1030,10 @@ pub async fn set_session_execution_context_enabled(
     context_id: String,
     enabled: bool,
 ) -> Result<Vec<String>, String> {
+    let (project, scope) =
+        crate::exploration_commands::working_project_for_frame(&state, &session_id).await?;
+    let _activity = state.begin_project_activity(&project.id)?;
+    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
     state
         .store
         .set_session_execution_context_enabled(&session_id, &context_id, enabled)
