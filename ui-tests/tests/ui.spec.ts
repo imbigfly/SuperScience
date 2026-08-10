@@ -3190,6 +3190,50 @@ test("workspace file can be registered as an artifact", async ({ page }) => {
   await expect(page.locator('.rp-tile[data-artifact-name="report.csv"]')).toBeVisible();
 });
 
+test("Files copies absolute, relative, and multi-selected workspace paths", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await enterApp(page);
+  await page.getByRole("button", { name: "Files" }).click();
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, "writeText", {
+      configurable: true,
+      value: async (text: string) => { (window as any).__copiedWorkspacePaths = text; },
+    });
+  });
+
+  const files = page.locator(".rp-files");
+  const report = files.locator('.fb-row[data-workspace-path="report.csv"]');
+  const data = files.locator('.fb-row.dir[data-workspace-path="data"]');
+
+  await report.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Copy absolute path" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__copiedWorkspacePaths)).toBe(
+    "/mock/root/report.csv",
+  );
+
+  await data.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Copy relative path" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__copiedWorkspacePaths)).toBe("data");
+
+  await files.getByRole("button", { name: "Select" }).click();
+  await data.click();
+  await report.click();
+  await expect(data).toHaveAttribute("aria-pressed", "true");
+  await expect(report).toHaveAttribute("aria-pressed", "true");
+
+  await report.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Copy absolute path" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__copiedWorkspacePaths)).toBe(
+    "/mock/root/data\n/mock/root/report.csv",
+  );
+
+  await report.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Copy relative path" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__copiedWorkspacePaths)).toBe(
+    "data\nreport.csv",
+  );
+});
+
 test("Files creates, renames, deletes, and refreshes local entries", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Files" }).click();

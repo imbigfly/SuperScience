@@ -101,6 +101,8 @@ desktop app or a headless CLI.
 
 - Conversations persist to SQLite; restart and the full history is back. One
   click **undoes** a turn's file edits with a preview of what will be restored.
+- The Files sidebar copies project-relative or native absolute file and folder
+  paths from the context menu; Select mode copies multiple paths, one per line.
 - Inline **Generated** artifacts come only from structured file-write events;
   directory listings, reads, searches, and prose that merely mention a path
   are not presented as newly generated files.

@@ -354,3 +354,136 @@ pub(crate) fn file_dir_label(path: &str) -> String {
         format!("{p}/")
     }
 }
+
+pub(crate) fn toggle_workspace_path(selected_paths: RwSignal<HashSet<String>>, path: &str) {
+    selected_paths.update(|selected| {
+        if !selected.insert(path.to_string()) {
+            selected.remove(path);
+        }
+    });
+}
+
+fn is_absolute_workspace_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.starts_with('/')
+        || matches!(
+            normalized.as_bytes(),
+            [drive, b':', b'/', ..] if drive.is_ascii_alphabetic()
+        )
+}
+
+fn strip_workspace_root<'a>(root: &str, path: &'a str) -> Option<&'a str> {
+    let windows = root.contains('\\')
+        || root.starts_with("//")
+        || matches!(root.as_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic());
+    if path.len() == root.len()
+        && if windows {
+            path.eq_ignore_ascii_case(root)
+        } else {
+            path == root
+        }
+    {
+        return Some("");
+    }
+    let prefix = if root == "/" {
+        "/".to_string()
+    } else {
+        format!("{root}/")
+    };
+    let head = path.get(..prefix.len())?;
+    let matches = if windows {
+        head.eq_ignore_ascii_case(&prefix)
+    } else {
+        head == prefix
+    };
+    matches.then(|| &path[prefix.len()..])
+}
+
+pub(crate) fn workspace_relative_path(root: &str, path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    let normalized = path.replace('\\', "/");
+    if !is_absolute_workspace_path(path) {
+        return Some(normalized.trim_start_matches("./").to_string());
+    }
+    let normalized_root = root.replace('\\', "/");
+    let normalized_root = if normalized_root == "/" {
+        normalized_root
+    } else {
+        normalized_root.trim_end_matches('/').to_string()
+    };
+    if normalized_root.is_empty() {
+        return None;
+    }
+    strip_workspace_root(&normalized_root, &normalized)
+        .map(|relative| relative.trim_start_matches('/').to_string())
+}
+
+pub(crate) fn workspace_absolute_path(root: &str, path: &str) -> Option<String> {
+    if root.is_empty() {
+        return None;
+    }
+    let relative = workspace_relative_path(root, path)?;
+    if relative.is_empty() {
+        return Some(root.to_string());
+    }
+    let windows = root.contains('\\')
+        || matches!(root.as_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic());
+    let separator = if windows { '\\' } else { '/' };
+    let relative = if windows {
+        relative.replace('/', "\\")
+    } else {
+        relative.replace('\\', "/")
+    };
+    let root = root.trim_end_matches(['/', '\\']);
+    if root.is_empty() {
+        Some(format!("{separator}{relative}"))
+    } else {
+        Some(format!("{root}{separator}{relative}"))
+    }
+}
+
+#[cfg(test)]
+mod workspace_copy_path_tests {
+    use super::{workspace_absolute_path, workspace_relative_path};
+
+    #[test]
+    fn copies_relative_and_absolute_paths_on_posix() {
+        assert_eq!(
+            workspace_absolute_path("/work/project", "results/table.csv"),
+            Some("/work/project/results/table.csv".into())
+        );
+        assert_eq!(
+            workspace_relative_path("/work/project", "/work/project/results/table.csv"),
+            Some("results/table.csv".into())
+        );
+        assert_eq!(
+            workspace_relative_path("/work/project", "/other/table.csv"),
+            None
+        );
+        assert_eq!(
+            workspace_absolute_path("/work/project ", "results/table .csv"),
+            Some("/work/project /results/table .csv".into())
+        );
+    }
+
+    #[test]
+    fn copies_native_absolute_and_portable_relative_paths_on_windows() {
+        assert_eq!(
+            workspace_absolute_path(r"C:\work\project", "results/table.csv"),
+            Some(r"C:\work\project\results\table.csv".into())
+        );
+        assert_eq!(
+            workspace_relative_path(r"C:\work\project", r"c:\WORK\project\results\table.csv"),
+            Some("results/table.csv".into())
+        );
+        assert_eq!(
+            workspace_relative_path(
+                r"\\Server\Share\Project",
+                r"\\server\share\project\results\table.csv"
+            ),
+            Some("results/table.csv".into())
+        );
+    }
+}
