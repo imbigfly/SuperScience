@@ -19,7 +19,7 @@ pub(super) async fn new_session(
     let _project_activity = state.begin_project_activity(&ap.id)?;
     exploration_commands::require_writable_scope(
         &state.store,
-        &wisp_store::StateScope::mainline(ap.id.clone()),
+        &superscience_store::StateScope::mainline(ap.id.clone()),
     )
     .await?;
     let id = create_session_frame(&state.store, &ap.id).await?;
@@ -58,7 +58,7 @@ pub(super) async fn branch_session(
     }
     exploration_commands::require_writable_scope(
         &state.store,
-        &wisp_store::StateScope::mainline(ap.id.clone()),
+        &superscience_store::StateScope::mainline(ap.id.clone()),
     )
     .await?;
     let id = create_session_frame(&state.store, &ap.id).await?;
@@ -377,14 +377,13 @@ pub(super) async fn delete_session(
     if owner.as_deref() != Some(ap.id.as_str()) {
         return Err("Session does not belong to the active project.".into());
     }
-    if matches!(
-        state
-            .store
-            .frame_state_scope(&id)
-            .await
-            .map_err(|error| error.to_string())?,
-        Some(superscience_store::StateScope::Exploration { .. })
-    ) {
+    let scope = state
+        .store
+        .frame_state_scope(&id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Session state scope was not found.".to_string())?;
+    if matches!(&scope, superscience_store::StateScope::Exploration { .. }) {
         return Err(
             "exploration_scope_violation: discard the exploration instead of deleting its conversation."
                 .into(),

@@ -329,7 +329,7 @@ async fn writable_publication_mainline_project(
     let activity = state.begin_project_activity(&project.id)?;
     crate::exploration_commands::require_writable_scope(
         &state.store,
-        &wisp_store::StateScope::mainline(project.id.clone()),
+        &superscience_store::StateScope::mainline(project.id.clone()),
     )
     .await?;
     Ok((project, activity))

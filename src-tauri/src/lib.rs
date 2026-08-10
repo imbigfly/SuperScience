@@ -4884,7 +4884,7 @@ async fn send_message_inner(
     let _project_activity = state.begin_project_activity(&ap.id)?;
     let frame_scope = explicit_scope
         .clone()
-        .unwrap_or_else(|| wisp_store::StateScope::mainline(ap.id.clone()));
+        .unwrap_or_else(|| superscience_store::StateScope::mainline(ap.id.clone()));
     exploration_commands::require_writable_scope(&state.store, &frame_scope).await?;
     let saved_binding = match session_id.as_deref().filter(|id| !id.is_empty()) {
         Some(id) => state
@@ -5096,7 +5096,7 @@ async fn send_message_inner(
         Some(scope) => scope,
         None => superscience_store::StateScope::mainline(ap.id.clone()),
     };
-    exploration_commands::require_writable_exploration(&state.store, &frame_scope).await?;
+    exploration_commands::require_writable_scope(&state.store, &frame_scope).await?;
     if user_routed_turn {
         state.set_notification_window(&frame_id, window_label);
     }

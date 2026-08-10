@@ -587,7 +587,7 @@ async fn writable_active_project(
 ) -> Result<
     (
         crate::ActiveProject,
-        wisp_store::StateScope,
+        superscience_store::StateScope,
         tokio::sync::OwnedRwLockReadGuard<()>,
     ),
     String,

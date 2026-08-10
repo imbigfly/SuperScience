@@ -8013,7 +8013,7 @@ fn App() -> impl IntoView {
         project_export_prompt.set(Some((id, workspace)));
     });
     let export_current_project = {
-        let open_project_export = open_project_export;
+        let open_project_export = open_project_export.clone();
         Callback::new(move |_: ()| {
             if show_projects.get_untracked() || demo_mode.get_untracked() {
                 return;
@@ -8362,6 +8362,7 @@ fn App() -> impl IntoView {
             open_settings=Callback::new(move |section: Option<String>| open_settings_fn(section))
             open_library=Callback::new(move |_| show_library.set(true))
             on_capability_action=on_capability_action
+            open_project_export=open_project_export
         />
         <SessionImportModal
             locale=locale

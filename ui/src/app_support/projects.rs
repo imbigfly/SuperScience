@@ -16,6 +16,7 @@ pub(crate) fn ProjectsScreen(
     on_open_scratch: Callback<()>,
     on_search: Callback<()>,
     on_capability_action: Callback<crate::capabilities_home::CapabilityAction>,
+    on_export_project: Callback<(String, String)>,
     project_transfer: RwSignal<Option<ProjectTransferProgress>>,
 ) -> impl IntoView {
     let projects = create_rw_signal(Vec::<ProjectSummary>::new());

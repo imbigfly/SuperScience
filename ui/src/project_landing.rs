@@ -32,6 +32,7 @@ pub(super) fn ProjectLanding(
     open_settings: Callback<Option<String>>,
     open_library: Callback<()>,
     on_capability_action: Callback<CapabilityAction>,
+    open_project_export: Callback<(String, String)>,
 ) -> impl IntoView {
     let ProjectLandingState {
         show_projects,
@@ -85,6 +86,7 @@ pub(super) fn ProjectLanding(
                     on_open_scratch=open_scratch
                     on_search=Callback::new(move |_| command_palette_open.set(true))
                     on_capability_action=on_capability_action
+                    on_export_project=open_project_export
                     project_transfer=project_transfer
                 />
             }

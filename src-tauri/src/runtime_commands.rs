@@ -94,8 +94,10 @@ pub(super) async fn execute_runtime(
     }
     let (project, scope) =
         exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let _project_activity = state.begin_project_activity(&project.id)?;
+    exploration_commands::require_writable_scope(&state.store, &scope).await?;
     let key = superscience_runtime::RuntimeKey {
-        project_id: project.id,
+        project_id: project.id.clone(),
         scope_key: scope.scope_key().to_string(),
         context_id,
         language,
@@ -110,10 +112,16 @@ pub(super) async fn execute_runtime(
             // ponytail: buffered, not streamed — the final frame repeats every
             // chunk. Stream to the console when a cell runs long enough to care.
             Some(superscience_runtime::RuntimeEvent::Stdout(_)) => {}
-            Some(superscience_runtime::RuntimeEvent::Finished(Ok(response))) => {
-                return Ok(superscience_runtime::format_response(&response))
+            Some(superscience_runtime::RuntimeEvent::Finished(result)) => {
+                state
+                    .store
+                    .bump_state_generation(&scope)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                return result
+                    .map(|response| superscience_runtime::format_response(&response))
+                    .map_err(|error| error.to_string());
             }
-            Some(superscience_runtime::RuntimeEvent::Finished(Err(error))) => return Err(error),
             None => return Err("Runtime ended before returning a result.".into()),
         }
     }
@@ -134,7 +142,7 @@ pub(super) async fn start_runtime(
         .runtime_manager
         .start(
             superscience_runtime::RuntimeKey {
-                project_id: project.id,
+                project_id: project.id.clone(),
                 scope_key: scope.scope_key().to_string(),
                 context_id,
                 language,
@@ -206,7 +214,7 @@ pub(super) async fn restart_runtime(
             .ok_or_else(|| format!("Project not found: {project_id}"))?;
         (
             ensure_writable(PathBuf::from(workspace), &state.app_data),
-            superscience_runtime::MAINLINE_RUNTIME_SCOPE.into(),
+            superscience_store::StateScope::mainline(project_id.clone()),
         )
     };
     let _project_activity = state.begin_project_activity(&project_id)?;

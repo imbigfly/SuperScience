@@ -254,6 +254,7 @@ impl TerminalManager {
 
 fn spawn_session(
     project_id: &str,
+    scope_key: &str,
     context: &superscience_store::ExecutionContext,
     spec: TerminalLaunchSpec,
 ) -> Result<
@@ -512,8 +513,7 @@ mod tests {
 
     #[test]
     fn builds_wsl_terminal_for_selected_distro_and_project() {
-        let mut context =
-            superscience_store::ExecutionContext::new("wsl:Ubuntu-24.04", "Ubuntu").unwrap();
+        let mut context = superscience_store::ExecutionContext::new("wsl:Ubuntu-24.04", "Ubuntu").unwrap();
         context.config_json = serde_json::json!({"distro": "Ubuntu-24.04"}).to_string();
         let root = Path::new(r"C:\Users\scientist\project");
 

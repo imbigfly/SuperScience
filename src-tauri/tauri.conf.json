@@ -1,20 +1,34 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "天成科研助手",
-  "version": "0.36.0",
+  "version": "1.0.0",
   "identifier": "science.superscience",
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:1421",
-    "beforeDevCommand": { "script": "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File dev.ps1", "cwd": "../ui" },
-    "beforeBuildCommand": { "script": "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File build.ps1", "cwd": "../ui" }
+    "beforeDevCommand": {
+      "script": "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File dev.ps1",
+      "cwd": "../ui"
+    },
+    "beforeBuildCommand": {
+      "script": "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File build.ps1",
+      "cwd": "../ui"
+    }
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
-      { "title": "天成科研助手", "width": 1100, "height": 760, "resizable": true, "dragDropEnabled": false }
+      {
+        "title": "天成科研助手",
+        "width": 1100,
+        "height": 760,
+        "resizable": true,
+        "dragDropEnabled": false
+      }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,

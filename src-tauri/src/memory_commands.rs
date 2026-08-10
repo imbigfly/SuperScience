@@ -79,13 +79,13 @@ async fn require_writable_memory_target(
     state: &AppState,
     window_label: &str,
     project_id: &str,
-) -> Result<wisp_store::StateScope, String> {
+) -> Result<superscience_store::StateScope, String> {
     let (_, active_scope) =
         exploration_commands::working_project_for_active_frame(state, window_label).await?;
     let scope = if active_scope.project_id() == project_id {
         active_scope
     } else {
-        wisp_store::StateScope::mainline(project_id.to_string())
+        superscience_store::StateScope::mainline(project_id.to_string())
     };
     exploration_commands::require_writable_scope(&state.store, &scope).await?;
     Ok(scope)

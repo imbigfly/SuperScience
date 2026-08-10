@@ -742,9 +742,9 @@ async fn materialize_checkpoint_context_archive(
     if hex::encode(Sha256::digest(&bytes)) != archive.checksum {
         return Err("checkpoint context archive failed integrity verification".into());
     }
-    let history = workspace_root.join(".superscience").join("history");
+    let history = workspace_root.join(".wisp").join("history");
     std::fs::create_dir_all(&history).map_err(|error| error.to_string())?;
-    let legacy_history = source_workspace.join(".superscience").join("history");
+    let legacy_history = source_workspace.join(".wisp").join("history");
     if legacy_history.exists() {
         let metadata =
             std::fs::symlink_metadata(&legacy_history).map_err(|error| error.to_string())?;
@@ -781,7 +781,7 @@ async fn materialize_checkpoint_context_archive(
     std::fs::write(&destination, &bytes).map_err(|error| error.to_string())?;
 
     let references_path = workspace_root
-        .join(".superscience")
+        .join(".wisp")
         .join("exploration-references.json");
     let encoded = std::fs::read(&references_path).map_err(|error| error.to_string())?;
     let mut manifest: serde_json::Value =
@@ -792,8 +792,8 @@ async fn materialize_checkpoint_context_archive(
     object.insert(
         "context_archives".into(),
         serde_json::json!([{
-            "uri": format!("superscience-history:{}", archive.id),
-            "path": format!(".superscience/history/{}.json", archive.id),
+            "uri": format!("wisp-history:{}", archive.id),
+            "path": format!(".wisp/history/{}.json", archive.id),
             "checksum": archive.checksum,
         }]),
     );
@@ -813,7 +813,7 @@ pub(crate) fn exploration_runtime_injection(
     let StateScope::Exploration { exploration_id, .. } = scope else {
         return Ok(None);
     };
-    let references_path = root.join(".superscience").join("exploration-references.json");
+    let references_path = root.join(".wisp").join("exploration-references.json");
     let references = std::fs::read_to_string(&references_path)
         .map_err(|error| format!("cannot read exploration reference manifest: {error}"))?;
     let parsed: serde_json::Value =
@@ -826,7 +826,7 @@ pub(crate) fn exploration_runtime_injection(
         .filter_map(|entry| entry.get("uri").and_then(serde_json::Value::as_str))
         .collect::<Vec<_>>();
     Ok(Some(format!(
-        "You are working in isolated exploration {exploration_id}. Treat {} as the only writable local project root. Mainline and sibling exploration state is private. Discarding this exploration rolls back only its local workspace and scoped records; external execution contexts are not rolled back. Referenced or unsupported snapshot entries are listed in .superscience/exploration-references.json. Checkpoint history archives can be read in narrow ranges through: {}.",
+        "You are working in isolated exploration {exploration_id}. Treat {} as the only writable local project root. Mainline and sibling exploration state is private. Discarding this exploration rolls back only its local workspace and scoped records; external execution contexts are not rolled back. Referenced or unsupported snapshot entries are listed in .wisp/exploration-references.json. Checkpoint history archives can be read in narrow ranges through: {}.",
         root.display(),
         if context_uris.is_empty() {
             "none".into()
@@ -1447,7 +1447,7 @@ mod tests {
             Some(StateScope::exploration("p", first.id.clone()))
         );
         assert!(Path::new(&first.workspace_dir)
-            .join(".superscience/history")
+            .join(".wisp/history")
             .join(format!("{}.json", checkpoint.context_archive_id))
             .is_file());
         let injection = exploration_runtime_injection(
@@ -1456,7 +1456,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(injection.contains(&format!("superscience-history:{}", checkpoint.context_archive_id)));
+        assert!(injection.contains(&format!("wisp-history:{}", checkpoint.context_archive_id)));
         std::fs::write(
             Path::new(&first.workspace_dir).join("baseline.txt"),
             b"first",

@@ -9,6 +9,8 @@ use crate::exploration_commands::write_context_archive;
 use crate::exploration_workspace::PersistentExplorationWorkspace;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use superscience_store::{
     ContextArchiveRecord, ProjectStateRevision, StateScope, Store, WorkspaceSnapshotRecord,
     MAINLINE_SCOPE_KEY,

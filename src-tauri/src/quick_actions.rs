@@ -1626,7 +1626,7 @@ pub(crate) async fn run_quick_action(
     let (project, scope) =
         crate::exploration_commands::working_project_for_active_frame(&state, window.label())
             .await?;
-    if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+    if matches!(&scope, superscience_store::StateScope::Exploration { .. }) {
         return Err(
             "exploration_scope_violation: Quick Actions cannot create a mainline conversation from an exploration."
                 .into(),

@@ -972,7 +972,7 @@ pub(crate) async fn start_method_search(
     let (project, scope) =
         crate::exploration_commands::working_project_for_active_frame(&state, window.label())
             .await?;
-    if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+    if matches!(&scope, superscience_store::StateScope::Exploration { .. }) {
         return Err(
             "exploration_scope_violation: Method Search is not scope-aware inside an exploration."
                 .into(),
@@ -1070,7 +1070,7 @@ pub(crate) async fn resume_method_search(
     let (project, scope) =
         crate::exploration_commands::working_project_for_active_frame(&state, window.label())
             .await?;
-    if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+    if matches!(&scope, superscience_store::StateScope::Exploration { .. }) {
         return Err(
             "exploration_scope_violation: Method Search is not scope-aware inside an exploration."
                 .into(),
