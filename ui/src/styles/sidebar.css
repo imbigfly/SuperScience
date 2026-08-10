@@ -135,8 +135,10 @@
   font-size: 13px; color: var(--text-muted); white-space: nowrap;
 }
 .side-item:hover { background: var(--bg-elev); color: var(--text); }
-.side-item .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
-.side-item .dot.ok { background: var(--ok); }
+/* Status dots stay hidden at rest; only running/attention sessions light one up,
+   so the idle list reads as plain titles. Opacity (not display) keeps row geometry
+   stable when a run starts or finishes. */
+.side-item .dot { position: relative; width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; overflow: hidden; opacity: 0; transition: opacity .15s ease; }
 button.side-item { width: 100%; text-align: left; background: transparent; border: 1px solid transparent; font: inherit; font-size: 13px; cursor: pointer; }
 button.side-item.ses { cursor: pointer; user-select: none; padding-right: 34px; }
 button.side-item.ses.selecting { padding-right: 10px; }
@@ -150,6 +152,9 @@ button.side-item.ses.selecting { padding-right: 10px; }
 .side-item.ses.selected { background: var(--clay-soft); border-color: var(--clay); color: var(--text); }
 .side-item.ses.selected .session-select-mark { background: var(--clay); border-color: var(--clay); color: var(--on-clay); }
 .side-item-wrap { position: relative; min-width: 0; }
+/* Row menus are revealed only on hover/keyboard focus — including the active
+   session — so the list reads as plain titles at rest. Opacity (not display)
+   keeps the button tabbable; :focus-within lights it up on keyboard focus. */
 .session-actions, .folder-actions {
   position: absolute; z-index: 1; top: 50%; right: 5px; transform: translateY(-50%);
   display: inline-flex; align-items: center; justify-content: center;
@@ -157,22 +162,41 @@ button.side-item.ses.selecting { padding-right: 10px; }
   border: 1px solid transparent; border-radius: var(--radius-xs);
   background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
   color: var(--text-faint); font: inherit; font-size: 18px; line-height: 1;
-  cursor: pointer; opacity: .58;
+  cursor: pointer; opacity: 0;
   transition: opacity .12s ease, color .12s ease, background .12s ease;
 }
 .side-item-wrap:hover .session-actions,
 .side-item-wrap:focus-within .session-actions,
-.side-item.active + .session-actions,
 .side-folder:hover .folder-actions,
 .side-folder:focus-within .folder-actions { opacity: 1; }
 .session-actions:hover, .session-actions:focus-visible,
 .folder-actions:hover, .folder-actions:focus-visible { color: var(--text); background: var(--bg-input); }
 .session-actions.selection-hidden { display: none; }
 .side-item.active { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-sm); }
-.side-item.active .dot { background: var(--clay); }
-.side-item.ses.running .dot { background: var(--clay); animation: tool-pulse 1s ease-in-out infinite; }
-/* Awaiting user approval/confirmation (#327) — outranks running. */
-.side-item.ses.attention .dot { background: var(--warn); animation: tool-pulse 1s ease-in-out infinite; }
+/* Working indicator: glowing dot with a traveling sheen (reference: Claude's
+   shimmering "thinking" light). Attention (awaiting approval #327) shares the
+   motion in warning color and outranks running. */
+.side-item.ses.running .dot, .side-item.ses.attention .dot { opacity: 1; animation: dot-breathe 1.6s ease-in-out infinite; }
+.side-item.ses.running .dot { background: var(--ok); box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 55%, transparent); }
+.side-item.ses.attention .dot { background: var(--warn); box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 55%, transparent); }
+.side-item.ses.running .dot::after, .side-item.ses.attention .dot::after {
+  content: ""; position: absolute; inset: -1px;
+  background: linear-gradient(105deg, transparent 25%, rgba(255, 255, 255, .9) 50%, transparent 75%);
+  background-size: 250% 100%;
+  animation: dot-sheen 1.25s linear infinite;
+}
+@keyframes dot-breathe {
+  0%, 100% { transform: scale(.86); }
+  50% { transform: scale(1.08); }
+}
+@keyframes dot-sheen {
+  from { background-position: 120% 0; }
+  to { background-position: -90% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-item.ses.running .dot, .side-item.ses.attention .dot { animation: none; }
+  .side-item.ses.running .dot::after, .side-item.ses.attention .dot::after { display: none; }
+}
 .ses-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .side-exploration-group {
   display: grid; gap: 2px; margin: 2px 0 5px 14px; padding: 5px 0 2px 9px;

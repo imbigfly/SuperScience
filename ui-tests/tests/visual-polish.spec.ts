@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { tauriMock } from "./mock-tauri";
+import { tauriMock, parallelMock } from "./mock-tauri";
 
 // Regression coverage for the visual polish pass: the composer sits flat until
 // focused, right-pane tabs scroll instead of ellipsizing short labels, artifact
@@ -98,6 +98,57 @@ test("generated artifact cards render as compact rows", async ({ page }) => {
   expect(metrics.thumbSize).toBe(40);
   // Compact row: thumb + one or two text lines, not the old ~140px tile.
   expect(metrics.cardHeight).toBeLessThan(72);
+});
+
+test("session row menu button is hidden until hover or keyboard focus", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await enterApp(page);
+  await page.locator(".composer-inner textarea").first().fill("hover-reveal-me");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("echo:hover-reveal-me")).toBeVisible({ timeout: 10_000 });
+  const session = page.locator(".side-item.ses", { hasText: "hover-reveal-me" });
+  await expect(session).toBeVisible({ timeout: 10_000 });
+  const row = session.locator("..");
+  const actions = row.getByRole("button", { name: "Conversation actions" });
+
+  const opacity = () => actions.evaluate((el) => getComputedStyle(el).opacity);
+  await page.mouse.move(10, 400); // park the pointer off the sidebar rows
+  await expect.poll(opacity).toBe("0");
+
+  await row.hover();
+  await expect.poll(opacity).toBe("1");
+
+  await page.mouse.move(10, 400);
+  await expect.poll(opacity).toBe("0");
+
+  await actions.focus();
+  await expect.poll(opacity).toBe("1");
+});
+
+test("session status dot is hidden at rest and shimmers while running", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await enterApp(page);
+  // parallelMock holds Done for ~5s; the sidebar running indicator shows once the
+  // session is in the background, so start a second conversation to push it there.
+  await page.locator(".composer-inner textarea").first().fill("dot-shimmer");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("echo:dot-shimmer")).toBeVisible({ timeout: 10_000 });
+  await page.locator(".sidebar").getByRole("button", { name: "New session" }).click();
+
+  const session = page.locator(".side-item.ses", { hasText: "dot-shimmer" });
+  const dot = session.locator(".dot");
+  await expect(session).toHaveClass(/running/);
+
+  // Running: dot visible with a glow and a sheen overlay.
+  await expect.poll(() => dot.evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
+  const glow = await dot.evaluate((el) => getComputedStyle(el).boxShadow);
+  expect(glow).not.toBe("none");
+  const sheen = await dot.evaluate((el) => getComputedStyle(el, "::after").backgroundImage);
+  expect(sheen).toContain("linear-gradient");
+
+  // Idle again: the dot fades out completely once the turn finishes.
+  await expect(session).not.toHaveClass(/running/, { timeout: 15_000 });
+  await expect.poll(() => dot.evaluate((el) => getComputedStyle(el).opacity)).toBe("0");
 });
 
 test("follow-up suggestions sit on the canvas without a panel fill", async ({ page }) => {
