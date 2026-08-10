@@ -230,7 +230,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockExplorationPreview = (id: string) => {
     const row = mockExplorations.find((item) => item.exploration.id === id);
     if (!row) throw new Error("Exploration not found");
-    const blocked = mockMainlineAdvanced || (row.source_frame_id !== "exploration-mainline" && row.exploration.status === "active");
+    const blocked = mockMainlineAdvanced || row.source_frame_id !== "exploration-mainline";
     return {
       exploration: { ...row.exploration },
       diff: {
@@ -1924,24 +1924,19 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                   { frame_id: "exploration-mainline", turn_index: 2 },
                 ]
               : [{ frame_id: "exploration-mainline", turn_index: 0 }];
-          case "create_exploration_checkpoint":
-            ((window as any).__explorationCheckpointCalls ??= []).push({
+          case "start_exploration": {
+            ((window as any).__startExplorationCalls ??= []).push({
               sourceFrameId: arg("sourceFrameId"),
               turnIndex: arg("turnIndex"),
+              name: arg("name"),
             });
-            return {
-              id: "checkpoint-shared",
-              source_frame_id: String(arg("sourceFrameId") ?? "exploration-mainline"),
-              isolation_summary_json: '{"partial":false}',
-            };
-          case "create_exploration": {
             const index = mockExplorations.length + 1;
             const id = `exploration-created-${index}`;
             const frameId = `exploration-frame-created-${index}`;
             const exploration = makeMockExploration(id, frameId, String(arg("name") ?? `Exploration ${index}`), 2100 + index);
             mockExplorations.push({
               exploration,
-              source_frame_id: mockSessions[0]?.id ?? "exploration-mainline",
+              source_frame_id: String(arg("sourceFrameId") ?? "exploration-mainline"),
               isolation_summary_json: '{"partial":false}',
             });
             activeMockFrame = frameId;
@@ -1972,7 +1967,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             row.exploration.promoted_at = 2200;
             const adoptedFrame = row.exploration.frame_id;
             mockSessions.splice(0, mockSessions.length, { id: adoptedFrame, title: row.exploration.name, ts: 2200, running: false });
-            for (const item of mockExplorations) item.source_frame_id = adoptedFrame;
+            for (const item of mockExplorations) {
+              item.source_frame_id = adoptedFrame;
+              if (item.exploration.id !== id && item.exploration.status === "active") {
+                item.exploration.status = "archived";
+                item.exploration.archived_at = 2200;
+              }
+            }
             activeMockFrame = adoptedFrame;
             return { exploration: { ...row.exploration }, promotionId: `promotion-${id}`, adoptedFrameId: adoptedFrame };
           }

@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn historical_exploration_restores_second_turn_after_compaction() {
+    async fn compaction_preserves_revisions_but_only_latest_turn_can_explore() {
         let (store, base, project, app_data) = fixture("historical").await;
         std::fs::write(project.join("shared.txt"), b"unchanged").unwrap();
 
@@ -339,7 +339,8 @@ mod tests {
         );
 
         // Rewrite the live model context as compaction would. Stable visual
-        // indices and immutable context archives must still reconstruct turn 2.
+        // indices and immutable revisions remain available for audit, but a
+        // new exploration round may only start at the current head.
         store
             .replace_messages(
                 "main",
@@ -353,28 +354,30 @@ mod tests {
         assert_eq!(store.frame_visual_user_turn_count("main").await.unwrap(), 3);
 
         let service = ExplorationService::new(store.clone(), app_data.clone());
-        let checkpoint = service
+        let historical_error = service
             .create_checkpoint_at("p", "main", Some(1))
+            .await
+            .unwrap_err();
+        assert!(historical_error.starts_with("exploration_history_unavailable:"));
+        let checkpoint = service
+            .create_checkpoint_at("p", "main", Some(2))
             .await
             .unwrap();
         assert_eq!(
             checkpoint.workspace_snapshot_id,
-            second.workspace_snapshot_id
+            third.workspace_snapshot_id
         );
         let exploration = service
-            .create_exploration(&checkpoint.id, "Second turn")
+            .create_exploration(&checkpoint.id, "Latest turn")
             .await
             .unwrap();
         assert_eq!(
             std::fs::read(Path::new(&exploration.workspace_dir).join("state.txt")).unwrap(),
-            b"version two from editor"
+            b"version three"
         );
         let cloned = store.load_messages(&exploration.frame_id).await.unwrap();
-        assert_eq!(cloned.len(), 4);
-        assert_eq!(cloned.last().unwrap().content.as_text(), "second answer");
-        assert!(!cloned
-            .iter()
-            .any(|message| message.content.as_text().contains("third question")));
+        assert_eq!(cloned.len(), 6);
+        assert_eq!(cloned.last().unwrap().content.as_text(), "third answer");
 
         drop(service);
         drop(store);

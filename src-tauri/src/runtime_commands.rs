@@ -94,8 +94,10 @@ pub(super) async fn execute_runtime(
     }
     let (project, scope) =
         exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let _project_activity = state.begin_project_activity(&project.id)?;
+    exploration_commands::require_writable_scope(&state.store, &scope).await?;
     let key = wisp_runtime::RuntimeKey {
-        project_id: project.id,
+        project_id: project.id.clone(),
         scope_key: scope.scope_key().to_string(),
         context_id,
         language,
@@ -110,10 +112,16 @@ pub(super) async fn execute_runtime(
             // ponytail: buffered, not streamed — the final frame repeats every
             // chunk. Stream to the console when a cell runs long enough to care.
             Some(wisp_runtime::RuntimeEvent::Stdout(_)) => {}
-            Some(wisp_runtime::RuntimeEvent::Finished(Ok(response))) => {
-                return Ok(wisp_runtime::format_response(&response))
+            Some(wisp_runtime::RuntimeEvent::Finished(result)) => {
+                state
+                    .store
+                    .bump_state_generation(&scope)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                return result
+                    .map(|response| wisp_runtime::format_response(&response))
+                    .map_err(|error| error.to_string());
             }
-            Some(wisp_runtime::RuntimeEvent::Finished(Err(error))) => return Err(error),
             None => return Err("Runtime ended before returning a result.".into()),
         }
     }
@@ -128,11 +136,13 @@ pub(super) async fn start_runtime(
 ) -> Result<wisp_runtime::RuntimeInfo, String> {
     let (project, scope) =
         exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let _project_activity = state.begin_project_activity(&project.id)?;
+    exploration_commands::require_writable_scope(&state.store, &scope).await?;
     state
         .runtime_manager
         .start(
             wisp_runtime::RuntimeKey {
-                project_id: project.id,
+                project_id: project.id.clone(),
                 scope_key: scope.scope_key().to_string(),
                 context_id,
                 language,
@@ -193,8 +203,8 @@ pub(super) async fn restart_runtime(
             "exploration_scope_violation: cross-project runtime control is disabled".into(),
         );
     }
-    let (root, scope_key) = if working.id == project_id {
-        (working.root, scope.scope_key().to_string())
+    let (root, target_scope) = if working.id == project_id {
+        (working.root, scope)
     } else {
         let (_, workspace) = state
             .store
@@ -204,15 +214,17 @@ pub(super) async fn restart_runtime(
             .ok_or_else(|| format!("Project not found: {project_id}"))?;
         (
             ensure_writable(PathBuf::from(workspace), &state.app_data),
-            wisp_runtime::MAINLINE_RUNTIME_SCOPE.into(),
+            wisp_store::StateScope::mainline(project_id.clone()),
         )
     };
+    let _project_activity = state.begin_project_activity(&project_id)?;
+    exploration_commands::require_writable_scope(&state.store, &target_scope).await?;
     state
         .runtime_manager
         .restart(
             wisp_runtime::RuntimeKey {
                 project_id,
-                scope_key,
+                scope_key: target_scope.scope_key().to_string(),
                 context_id,
                 language,
             },

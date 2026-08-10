@@ -581,13 +581,38 @@ pub(super) fn create_file_at(root: &Path, path: &str) -> Result<(), String> {
         .map_err(|error| format!("could not create file '{path}': {error}"))
 }
 
+async fn writable_active_project(
+    state: &AppState,
+    window_label: &str,
+) -> Result<
+    (
+        crate::ActiveProject,
+        wisp_store::StateScope,
+        tokio::sync::OwnedRwLockReadGuard<()>,
+    ),
+    String,
+> {
+    let (project, scope) =
+        crate::exploration_commands::working_project_for_active_frame(state, window_label).await?;
+    let activity = state.begin_project_activity(&project.id)?;
+    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
+    Ok((project, scope, activity))
+}
+
 #[tauri::command]
-pub(super) fn create_file(
+pub(super) async fn create_file(
     state: State<'_, AppState>,
     window: WebviewWindow,
     path: String,
 ) -> Result<(), String> {
-    create_file_at(&state.active(window.label()).root, &path)
+    let (project, scope, _activity) = writable_active_project(&state, window.label()).await?;
+    create_file_at(&project.root, &path)?;
+    state
+        .store
+        .bump_state_generation(&scope)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub(super) fn create_directory_at(root: &Path, path: &str) -> Result<(), String> {
@@ -597,12 +622,19 @@ pub(super) fn create_directory_at(root: &Path, path: &str) -> Result<(), String>
 }
 
 #[tauri::command]
-pub(super) fn create_directory(
+pub(super) async fn create_directory(
     state: State<'_, AppState>,
     window: WebviewWindow,
     path: String,
 ) -> Result<(), String> {
-    create_directory_at(&state.active(window.label()).root, &path)
+    let (project, scope, _activity) = writable_active_project(&state, window.label()).await?;
+    create_directory_at(&project.root, &path)?;
+    state
+        .store
+        .bump_state_generation(&scope)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub(super) fn rename_entry_at(root: &Path, path: &str, new_path: &str) -> Result<(), String> {
@@ -630,13 +662,20 @@ pub(super) fn rename_entry_at(root: &Path, path: &str, new_path: &str) -> Result
 }
 
 #[tauri::command]
-pub(super) fn rename_entry(
+pub(super) async fn rename_entry(
     state: State<'_, AppState>,
     window: WebviewWindow,
     path: String,
     new_path: String,
 ) -> Result<(), String> {
-    rename_entry_at(&state.active(window.label()).root, &path, &new_path)
+    let (project, scope, _activity) = writable_active_project(&state, window.label()).await?;
+    rename_entry_at(&project.root, &path, &new_path)?;
+    state
+        .store
+        .bump_state_generation(&scope)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub(super) fn delete_entry_at(root: &Path, path: &str) -> Result<(), String> {
@@ -652,12 +691,19 @@ pub(super) fn delete_entry_at(root: &Path, path: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(super) fn delete_entry(
+pub(super) async fn delete_entry(
     state: State<'_, AppState>,
     window: WebviewWindow,
     path: String,
 ) -> Result<(), String> {
-    delete_entry_at(&state.active(window.label()).root, &path)
+    let (project, scope, _activity) = writable_active_project(&state, window.label()).await?;
+    delete_entry_at(&project.root, &path)?;
+    state
+        .store
+        .bump_state_generation(&scope)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn validate_remote_path(path: &str) -> Result<(), String> {
@@ -1274,19 +1320,21 @@ pub(super) fn append_review_note_at(
 }
 
 #[tauri::command]
-pub(super) fn append_review_note(
+pub(super) async fn append_review_note(
     state: State<'_, AppState>,
     window: WebviewWindow,
     source_path: String,
     quote: String,
     note: Option<String>,
 ) -> Result<String, String> {
-    append_review_note_at(
-        &state.active(window.label()).root,
-        &source_path,
-        &quote,
-        note.as_deref(),
-    )
+    let (project, scope, _activity) = writable_active_project(&state, window.label()).await?;
+    let path = append_review_note_at(&project.root, &source_path, &quote, note.as_deref())?;
+    state
+        .store
+        .bump_state_generation(&scope)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(path)
 }
 
 #[cfg(test)]

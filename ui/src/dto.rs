@@ -1938,12 +1938,6 @@ pub(crate) struct ExplorationSummary {
     pub(crate) isolation_summary_json: String,
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProjectStateRevision {
-    pub(crate) frame_id: String,
-    pub(crate) turn_index: i64,
-}
-
 impl ExplorationSummary {
     pub(crate) fn isolation_is_full(&self) -> bool {
         serde_json::from_str::<serde_json::Value>(&self.isolation_summary_json)

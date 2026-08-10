@@ -160,11 +160,14 @@ pub(crate) async fn get_session_delegation_enabled(
 #[tauri::command]
 pub(crate) async fn set_session_delegation_enabled(
     state: State<'_, crate::AppState>,
-    window: tauri::WebviewWindow,
+    _window: tauri::WebviewWindow,
     session_id: String,
     enabled: bool,
 ) -> Result<bool, String> {
-    let project = state.active(window.label());
+    let (project, scope) =
+        crate::exploration_commands::working_project_for_frame(&state, &session_id).await?;
+    let _activity = state.begin_project_activity(&project.id)?;
+    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
     save_session_delegation_enabled(&state.store, &project.id, &session_id, enabled).await?;
     crate::clear_idle_agents(&state).await;
     Ok(enabled)

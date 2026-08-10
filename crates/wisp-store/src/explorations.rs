@@ -844,6 +844,30 @@ impl Store {
         row.map(exploration_checkpoint_from_row).transpose()
     }
 
+    pub async fn get_exploration_checkpoint_by_guard(
+        &self,
+        family_id: &str,
+        source_frame_id: &str,
+        source_message_seq: i64,
+        guard_hash: &str,
+    ) -> Result<Option<ExplorationCheckpoint>> {
+        let row = sqlx::query(
+            "SELECT id,family_id,project_id,source_frame_id,source_message_seq,\
+                    source_frame_head_seq,source_ui_event_seq,source_family_generation,\
+                    source_state_generation,workspace_snapshot_id,context_archive_id,guard_hash,\
+                    entity_hash,isolation_summary_json,created_at \
+             FROM exploration_checkpoints \
+             WHERE family_id=? AND source_frame_id=? AND source_message_seq=? AND guard_hash=?",
+        )
+        .bind(family_id)
+        .bind(source_frame_id)
+        .bind(source_message_seq)
+        .bind(guard_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(exploration_checkpoint_from_row).transpose()
+    }
+
     pub async fn create_exploration(&self, exploration: &Exploration) -> Result<()> {
         validate_exploration(exploration)?;
         if exploration.status != ExplorationStatus::Creating || exploration.scope_generation != 0 {
@@ -977,6 +1001,45 @@ impl Store {
              WHERE checkpoint.project_id=? AND exploration.status IN ('creating','active','archived','promoting'))",
         )
         .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    /// Whether the current exploration round owns the project's mainline.
+    /// Archived candidates do not keep the mainline frozen; archiving every
+    /// candidate is the explicit way to abandon a round.
+    pub async fn project_mainline_is_frozen(&self, project_id: &str) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM explorations exploration \
+             JOIN exploration_checkpoints checkpoint ON checkpoint.id=exploration.checkpoint_id \
+             JOIN exploration_families family ON family.id=checkpoint.family_id \
+             WHERE checkpoint.project_id=? \
+               AND checkpoint.source_frame_id=family.mainline_frame_id \
+               AND checkpoint.source_family_generation=family.generation \
+               AND exploration.status IN ('creating','active','promoting'))",
+        )
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn project_has_current_exploration_for_other_source(
+        &self,
+        project_id: &str,
+        source_frame_id: &str,
+    ) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM explorations exploration \
+             JOIN exploration_checkpoints checkpoint ON checkpoint.id=exploration.checkpoint_id \
+             JOIN exploration_families family ON family.id=checkpoint.family_id \
+             WHERE checkpoint.project_id=? \
+               AND checkpoint.source_frame_id<>? \
+               AND checkpoint.source_frame_id=family.mainline_frame_id \
+               AND checkpoint.source_family_generation=family.generation \
+               AND exploration.status IN ('creating','active','promoting'))",
+        )
+        .bind(project_id)
+        .bind(source_frame_id)
         .fetch_one(&self.pool)
         .await?)
     }
@@ -1527,6 +1590,21 @@ impl Store {
         if family.rows_affected() != 1 {
             anyhow::bail!("Exploration family mainline advanced before metadata commit");
         }
+
+        sqlx::query(
+            "UPDATE explorations SET status='archived',updated_at=?,archived_at=COALESCE(archived_at,?) \
+             WHERE id<>? AND status='active' AND checkpoint_id IN (\
+               SELECT id FROM exploration_checkpoints \
+               WHERE family_id=? AND source_family_generation=?\
+             )",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(&exploration_id)
+        .bind(&family_id)
+        .bind(source_family_generation)
+        .execute(&mut *tx)
+        .await?;
 
         sqlx::query(
             "INSERT INTO artifact_heads(project_id,scope_key,logical_key,artifact_id,artifact_version_id,updated_at) \

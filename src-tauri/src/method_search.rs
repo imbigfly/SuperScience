@@ -969,8 +969,17 @@ pub(crate) async fn start_method_search(
     window: tauri::WebviewWindow,
     run_id: String,
 ) -> Result<MethodSearchRunDetails, String> {
-    let project = state.active(window.label());
+    let (project, scope) =
+        crate::exploration_commands::working_project_for_active_frame(&state, window.label())
+            .await?;
+    if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+        return Err(
+            "exploration_scope_violation: Method Search is not scope-aware inside an exploration."
+                .into(),
+        );
+    }
     let _activity = state.begin_project_activity(&project.id)?;
+    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
     let model_profile_id = crate::method_search_coordinator::validate_method_search_start(
         &state.store,
         &project.root,
@@ -1058,8 +1067,17 @@ pub(crate) async fn resume_method_search(
     window: tauri::WebviewWindow,
     run_id: String,
 ) -> Result<MethodSearchRunDetails, String> {
-    let project = state.active(window.label());
+    let (project, scope) =
+        crate::exploration_commands::working_project_for_active_frame(&state, window.label())
+            .await?;
+    if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+        return Err(
+            "exploration_scope_violation: Method Search is not scope-aware inside an exploration."
+                .into(),
+        );
+    }
     let _activity = state.begin_project_activity(&project.id)?;
+    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
     let model_profile_id = crate::method_search_coordinator::validate_method_search_resume(
         &state.store,
         &project.root,

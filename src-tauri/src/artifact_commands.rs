@@ -92,7 +92,7 @@ async fn register_artifact_at(
             .ok_or_else(|| "Artifact conversation no longer exists".to_string())?,
         None => wisp_store::StateScope::mainline(ap.id.clone()),
     };
-    crate::exploration_commands::require_writable_exploration(&state.store, &scope).await?;
+    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
     let real = existing_artifact_path(&ap.root, &path)?;
     let snapshot_source = {
         let source = std::path::PathBuf::from(&path);
@@ -171,7 +171,7 @@ pub(super) async fn upload_file(
     let (ap, scope) =
         crate::exploration_commands::working_project_for_active_frame(&state, window.label())
             .await?;
-    crate::exploration_commands::require_writable_exploration(&state.store, &scope).await?;
+    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
     let _project_activity = state.begin_project_activity(&ap.id)?;
     let upload_dir = ap.root.join("uploads");
     tokio::fs::create_dir_all(&upload_dir)
@@ -198,7 +198,7 @@ pub(super) async fn register_artifact(
     let (ap, scope) =
         crate::exploration_commands::working_project_for_active_frame(&state, window.label())
             .await?;
-    crate::exploration_commands::require_writable_exploration(&state.store, &scope).await?;
+    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
     let _project_activity = state.begin_project_activity(&ap.id)?;
     register_artifact_at(&state, window.label(), &ap, path, content_type, "artifact").await
 }
