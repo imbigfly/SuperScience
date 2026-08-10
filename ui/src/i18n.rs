@@ -1,11 +1,11 @@
 use leptos::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Locale {
-    #[default]
     En,
+    #[default]
     Zh,
 }
 
@@ -1852,6 +1852,68 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "files.delete_file_confirm") => Some("Delete “{path}”? This action cannot be undone."),
         (Locale::En, "files.delete_directory_confirm") => Some("Delete “{path}” and all of its contents? This action cannot be undone."),
         (Locale::En, "caps.title") => Some("Capabilities"),
+        (Locale::En, "caps.tab.overview") => Some("Runtime"),
+        (Locale::En, "caps.home.title") => Some("What you can do"),
+        (Locale::En, "caps.home.subtitle") => Some("Pick a capability to open its workspace or start a guided chat."),
+        (Locale::En, "caps.need_project") => Some("Create or open a project first, then try this capability again."),
+        (Locale::En, "caps.group.start") => Some("Get started"),
+        (Locale::En, "caps.group.literature") => Some("Literature"),
+        (Locale::En, "caps.group.compute") => Some("Data & compute"),
+        (Locale::En, "caps.group.structure") => Some("Structure & omics"),
+        (Locale::En, "caps.group.assets") => Some("Research assets"),
+        (Locale::En, "caps.group.collab") => Some("Collaboration"),
+        (Locale::En, "caps.tile.ai_agent.title") => Some("AI research agent"),
+        (Locale::En, "caps.tile.ai_agent.blurb") => Some("Read and edit your project, run tools, and finish research tasks in chat."),
+        (Locale::En, "caps.tile.env_setup.title") => Some("Set up local environment"),
+        (Locale::En, "caps.tile.env_setup.blurb") => Some("Check and install Python, uv, Node, and sci for this machine."),
+        (Locale::En, "caps.tile.demo.title") => Some("Open demo"),
+        (Locale::En, "caps.tile.demo.blurb") => Some("Browse a read-only example research trajectory without an API key."),
+        (Locale::En, "caps.tile.literature.title") => Some("Literature & evidence"),
+        (Locale::En, "caps.tile.literature.blurb") => Some("Search real papers, support or challenge claims, and map idea overlap."),
+        (Locale::En, "caps.tile.pdf_ppt.title") => Some("PDF deep-read & journal club"),
+        (Locale::En, "caps.tile.pdf_ppt.blurb") => Some("Navigate PDFs page by page and build argument-driven slides."),
+        (Locale::En, "caps.tile.bio_db.title") => Some("Biology databases"),
+        (Locale::En, "caps.tile.bio_db.blurb") => Some("Query PubMed, GEO, UniProt, PDB, and other bio-tools MCP domains."),
+        (Locale::En, "caps.tile.python_r.title") => Some("Python / R analysis"),
+        (Locale::En, "caps.tile.python_r.blurb") => Some("Use a persistent REPL to analyze data while you keep chatting."),
+        (Locale::En, "caps.tile.remote_compute.title") => Some("Remote compute & long runs"),
+        (Locale::En, "caps.tile.remote_compute.blurb") => Some("Register SSH/WSL contexts, launch Runs, and open terminals."),
+        (Locale::En, "caps.tile.structure.title") => Some("Structure & molecular design"),
+        (Locale::En, "caps.tile.structure.blurb") => Some("Fold, dock, and design sequences with AF, Boltz, DiffDock, MPNN, and more."),
+        (Locale::En, "caps.tile.single_cell.title") => Some("Single-cell & analysis workflows"),
+        (Locale::En, "caps.tile.single_cell.blurb") => Some("Run scvi/scGPT-style analysis and modular reproducible pipelines."),
+        (Locale::En, "caps.tile.research_graph.title") => Some("Research graph"),
+        (Locale::En, "caps.tile.research_graph.blurb") => Some("Record data assets, papers, and decisions, then link them together."),
+        (Locale::En, "caps.tile.publication.title") => Some("Publication workspace"),
+        (Locale::En, "caps.tile.publication.blurb") => Some("Bind evidence, freeze manuscript state, and export evidence capsules."),
+        (Locale::En, "caps.tile.files_library.title") => Some("Files & library"),
+        (Locale::En, "caps.tile.files_library.blurb") => Some("Browse project files and reopen saved cells or figures from the library."),
+        (Locale::En, "caps.tile.agents.title") => Some("Multi-agent & workflows"),
+        (Locale::En, "caps.tile.agents.blurb") => Some("Delegate tasks, run roundtables, and reuse workflow templates."),
+        (Locale::En, "caps.tile.channels.title") => Some("Feishu / WeChat access"),
+        (Locale::En, "caps.tile.channels.blurb") => Some("Drive the same desktop session from IM channels."),
+        (Locale::En, "caps.tile.browser.title") => Some("Real browser automation"),
+        (Locale::En, "caps.tile.browser.blurb") => Some("Control your local Chrome via the companion extension."),
+        (Locale::En, "caps.tile.plugins.title") => Some("Plugins"),
+        (Locale::En, "caps.tile.plugins.blurb") => Some("Install packaged Skill + MCP extensions into the workbench."),
+        (Locale::En, "caps.prompt.literature") => Some(
+            "Help me with literature and evidence. Prefer loading literature-review or bear-* skills as needed. Ask what claim, paper, or idea I want to investigate, then search real sources and summarize with citations.",
+        ),
+        (Locale::En, "caps.prompt.pdf_ppt") => Some(
+            "I want to deeply read a PDF and/or build a journal-club style presentation. Guide me to attach the PDF, load pdf-explore or journal-club-ppt, and walk through the argument structure.",
+        ),
+        (Locale::En, "caps.prompt.python_r") => Some(
+            "Help me analyze data with the persistent Python or R REPL in this project. Ask what dataset and question I have, then propose a short plan before running code.",
+        ),
+        (Locale::En, "caps.prompt.structure") => Some(
+            "I need structure prediction or molecular design (folding, docking, or sequence design). Explain which bundled skills fit, what compute I need, and start by clarifying my target molecule.",
+        ),
+        (Locale::En, "caps.prompt.single_cell") => Some(
+            "Help me with single-cell or multi-step omics analysis. Prefer scvi-tools, scgpt, or analysis-workflow skills when relevant, and start by asking for my data layout and goal.",
+        ),
+        (Locale::En, "caps.prompt.browser") => Some(
+            "Help me automate my real Chrome browser with the browser-use skill. Confirm the extension is ready, then ask which site and task I want.",
+        ),
         (Locale::En, "caps.runtime") => Some("Runtime v{version}"),
         (Locale::En, "caps.workspace") => Some("Workspace: {path}"),
         (Locale::En, "caps.runtime_status") => Some("Python: {py} · uv: {uv} · Node: {node} · sci: {sci} · pixi: {pixi} · startup effective Skills: {skills} · bundled MCP packages: {mcp}"),
@@ -3864,6 +3926,68 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "files.delete_file_confirm") => Some("删除“{path}”？此操作无法撤销。"),
         (Locale::Zh, "files.delete_directory_confirm") => Some("删除“{path}”及其中的全部内容？此操作无法撤销。"),
         (Locale::Zh, "caps.title") => Some("能力"),
+        (Locale::Zh, "caps.tab.overview") => Some("运行环境"),
+        (Locale::Zh, "caps.home.title") => Some("能做什么"),
+        (Locale::Zh, "caps.home.subtitle") => Some("点选能力即可打开对应面板，或开始一段引导对话。"),
+        (Locale::Zh, "caps.need_project") => Some("请先创建或打开一个项目，再使用该能力。"),
+        (Locale::Zh, "caps.group.start") => Some("开始"),
+        (Locale::Zh, "caps.group.literature") => Some("文献"),
+        (Locale::Zh, "caps.group.compute") => Some("数据与计算"),
+        (Locale::Zh, "caps.group.structure") => Some("结构与组学"),
+        (Locale::Zh, "caps.group.assets") => Some("研究资产"),
+        (Locale::Zh, "caps.group.collab") => Some("协作扩展"),
+        (Locale::Zh, "caps.tile.ai_agent.title") => Some("AI 科研助手"),
+        (Locale::Zh, "caps.tile.ai_agent.blurb") => Some("在项目中读写文件、调用工具，用对话完成研究任务。"),
+        (Locale::Zh, "caps.tile.env_setup.title") => Some("配置本机环境"),
+        (Locale::Zh, "caps.tile.env_setup.blurb") => Some("检查并引导安装 Python、uv、Node、sci。"),
+        (Locale::Zh, "caps.tile.demo.title") => Some("打开演示"),
+        (Locale::Zh, "caps.tile.demo.blurb") => Some("浏览只读示例研究轨迹，无需 API Key。"),
+        (Locale::Zh, "caps.tile.literature.title") => Some("文献综述与证据"),
+        (Locale::Zh, "caps.tile.literature.blurb") => Some("检索真实文献，支持/反对观点，并做选题撞车评估。"),
+        (Locale::Zh, "caps.tile.pdf_ppt.title") => Some("读 PDF / 组会 PPT"),
+        (Locale::Zh, "caps.tile.pdf_ppt.blurb") => Some("按页深读 PDF，并生成论证驱动的组会幻灯片。"),
+        (Locale::Zh, "caps.tile.bio_db.title") => Some("生物数据库"),
+        (Locale::Zh, "caps.tile.bio_db.blurb") => Some("查询 PubMed、GEO、UniProt、PDB 等 bio-tools 域。"),
+        (Locale::Zh, "caps.tile.python_r.title") => Some("Python / R 分析"),
+        (Locale::Zh, "caps.tile.python_r.blurb") => Some("使用持久 REPL 边算边问，适合交互式分析。"),
+        (Locale::Zh, "caps.tile.remote_compute.title") => Some("远程算力与长任务"),
+        (Locale::Zh, "caps.tile.remote_compute.blurb") => Some("注册 SSH/WSL 环境，发起 Runs，并打开终端。"),
+        (Locale::Zh, "caps.tile.structure.title") => Some("结构预测与分子设计"),
+        (Locale::Zh, "caps.tile.structure.blurb") => Some("折叠、对接与序列设计（AF / Boltz / DiffDock / MPNN 等）。"),
+        (Locale::Zh, "caps.tile.single_cell.title") => Some("单细胞与分析流程"),
+        (Locale::Zh, "caps.tile.single_cell.blurb") => Some("面向 scvi/scGPT 与可复现多阶段分析模块。"),
+        (Locale::Zh, "caps.tile.research_graph.title") => Some("研究图谱"),
+        (Locale::Zh, "caps.tile.research_graph.blurb") => Some("记录数据、论文与决策，并建立连边。"),
+        (Locale::Zh, "caps.tile.publication.title") => Some("论文证据工作区"),
+        (Locale::Zh, "caps.tile.publication.blurb") => Some("绑定证据、Freeze 稿件状态，并导出证据胶囊。"),
+        (Locale::Zh, "caps.tile.files_library.title") => Some("文件与收藏库"),
+        (Locale::Zh, "caps.tile.files_library.blurb") => Some("浏览项目文件，并打开跨项目收藏的代码与图。"),
+        (Locale::Zh, "caps.tile.agents.title") => Some("多 Agent / Workflow"),
+        (Locale::Zh, "caps.tile.agents.blurb") => Some("任务委派、圆桌审阅，以及可复用工作流模板。"),
+        (Locale::Zh, "caps.tile.channels.title") => Some("飞书 / 微信接入"),
+        (Locale::Zh, "caps.tile.channels.blurb") => Some("用 IM 驱动同一桌面会话。"),
+        (Locale::Zh, "caps.tile.browser.title") => Some("真实浏览器"),
+        (Locale::Zh, "caps.tile.browser.blurb") => Some("通过本机 Chrome 扩展完成网页自动化。"),
+        (Locale::Zh, "caps.tile.plugins.title") => Some("插件扩展"),
+        (Locale::Zh, "caps.tile.plugins.blurb") => Some("安装打包的 Skill + MCP 功能插件。"),
+        (Locale::Zh, "caps.prompt.literature") => Some(
+            "请帮我做文献与证据相关工作。按需加载 literature-review 或 bear-* 技能。先问清我要查的观点、论文或选题，再检索真实来源并带引用总结。",
+        ),
+        (Locale::Zh, "caps.prompt.pdf_ppt") => Some(
+            "我想深读 PDF，和/或做组会风格演示。请引导我附加 PDF，按需加载 pdf-explore 或 journal-club-ppt，并梳理论证结构。",
+        ),
+        (Locale::Zh, "caps.prompt.python_r") => Some(
+            "请用本项目的持久 Python 或 R REPL 帮我分析数据。先问清数据集与问题，再给出简短计划后运行代码。",
+        ),
+        (Locale::Zh, "caps.prompt.structure") => Some(
+            "我需要结构预测或分子设计（折叠、对接或序列设计）。请说明适用的内置技能与算力要求，并先澄清目标分子。",
+        ),
+        (Locale::Zh, "caps.prompt.single_cell") => Some(
+            "请帮我做单细胞或多阶段组学分析。相关时优先 scvi-tools、scgpt 或 analysis-workflow，并先问清数据布局与目标。",
+        ),
+        (Locale::Zh, "caps.prompt.browser") => Some(
+            "请用 browser-use 技能帮我自动化本机 Chrome。先确认扩展就绪，再问我想操作的网站与任务。",
+        ),
         (Locale::Zh, "caps.runtime") => Some("运行时 v{version}"),
         (Locale::Zh, "caps.workspace") => Some("工作区：{path}"),
         (Locale::Zh, "caps.runtime_status") => Some("Python：{py} · uv：{uv} · Node：{node} · sci：{sci} · pixi：{pixi} · 启动时有效 Skill：{skills} · 内置 MCP：{mcp}"),
@@ -4439,6 +4563,12 @@ mod api_error_hint_tests {
         let out = localize_backend(Locale::Zh, msg);
         assert!(out.starts_with(msg), "raw error must stay visible");
         assert!(out.contains(&t(Locale::Zh, "err.hint.balance")));
+    }
+
+    #[test]
+    fn default_locale_is_chinese() {
+        assert_eq!(Locale::default(), Locale::Zh);
+        assert_eq!(Locale::default().code(), "zh");
     }
 }
 

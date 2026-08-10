@@ -2,6 +2,7 @@ mod acp;
 mod agent_workflows;
 mod app_overlays;
 mod bindings;
+mod capabilities_home;
 mod channels_view;
 mod chat_render;
 mod context_menu;
@@ -38,6 +39,7 @@ use bindings::{
     preview_selection, schedule_chat_follow, cancel_saved_marks_apply, set_saved_marks,
     CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
+use capabilities_home::{CapabilityAction, CapabilityPanel};
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
 use i18n::{
@@ -160,7 +162,7 @@ use runtime_views::*;
 
 #[component]
 fn App() -> impl IntoView {
-    let locale = create_rw_signal(Locale::detect_browser());
+    let locale = create_rw_signal(Locale::default());
     provide_context(locale.read_only());
     let theme_mode = create_rw_signal(load_theme_mode());
     create_effect(move |_| apply_theme_mode(&theme_mode.get()));
@@ -1103,6 +1105,7 @@ fn App() -> impl IntoView {
     // interactive project-open path. The callback is built after `load_session`.
     let dedicated_project_id = url_project_param();
     let show_capabilities = create_rw_signal(false);
+    let pending_capability_action = create_rw_signal(None::<CapabilityAction>);
     let skill_filter_tag = create_rw_signal(String::new());
     let caps = create_rw_signal::<Option<Capabilities>>(None);
     let bootstrap = create_rw_signal::<Option<BootstrapStatus>>(None);
@@ -7376,6 +7379,218 @@ fn App() -> impl IntoView {
             open_project_transition.call((id, None));
         })
     };
+
+    let start_guided_capability_chat = Callback::new({
+        let items = items;
+        let running = running;
+        let status = status;
+        let locale = locale;
+        let show_capabilities = show_capabilities;
+        let active_session = active_session;
+        let sel_artifact = sel_artifact;
+        let right_tab = right_tab;
+        let models = models;
+        let needs_api_key = needs_api_key;
+        move |prompt_key: &'static str| {
+            if busy.get_untracked() {
+                return;
+            }
+            show_capabilities.set(false);
+            show_projects.set(false);
+            attachments.set(vec![]);
+            sel_artifact.set(0);
+            right_tab.set(RightTab::Artifacts);
+            let text: String = t(locale.get(), prompt_key).into();
+            let turn_model = active_model_label(&models.get());
+            items.set(vec![
+                ChatItem::User(text.clone()),
+                ChatItem::Assistant {
+                    text: String::new(),
+                    model: turn_model,
+                    resources: Vec::new(),
+                },
+            ]);
+            force_chat_bottom();
+            spawn_local(async move {
+                let v = invoke("new_session", JsValue::UNDEFINED).await;
+                let id = v.as_string().unwrap_or_default();
+                if id.is_empty() {
+                    status.set(t(locale.get(), "status.send_failed").into());
+                    return;
+                }
+                active_session.set(Some(id.clone()));
+                running.update(|r| {
+                    r.insert(id.clone());
+                });
+                refresh_session_history();
+                let arg = to_value(&SendMessageArgs {
+                    session_id: Some(id.clone()),
+                    message: text,
+                    attachments: vec![],
+                    references: vec![],
+                    resume: false,
+                    acp_agent_id: None,
+                    guide: None,
+                    replace: None,
+                })
+                .unwrap();
+                match invoke_checked("send_message", arg).await {
+                    Ok(_) => {
+                        running.update(|r| {
+                            r.remove(&id);
+                        });
+                        refresh_session_history();
+                    }
+                    Err(err) => {
+                        let loc = locale.get();
+                        let raw = js_error_text(err);
+                        if raw.contains(NO_API_KEY_MARK) {
+                            needs_api_key.set(true);
+                        }
+                        status.set(tf(
+                            loc,
+                            "status.send_failed",
+                            &[("msg", &localize_backend(loc, &raw))],
+                        ));
+                        running.update(|r| {
+                            r.clear();
+                        });
+                    }
+                }
+            });
+        }
+    });
+
+    let dispatch_capability_action = Callback::new({
+        let start_guided_capability_chat = start_guided_capability_chat;
+        move |action: CapabilityAction| {
+            show_capabilities.set(false);
+            match action {
+                CapabilityAction::NewChat => {
+                    show_projects.set(false);
+                    demo_mode.set(false);
+                    attachments.set(vec![]);
+                    sel_artifact.set(0);
+                    right_tab.set(RightTab::Artifacts);
+                    spawn_local(async move {
+                        let v = invoke("new_session", JsValue::UNDEFINED).await;
+                        let Some(id) = v.as_string() else {
+                            status.set(t(locale.get(), "status.send_failed").into());
+                            return;
+                        };
+                        replace_visible_transcript(
+                            active_session.get_untracked(),
+                            None,
+                            Vec::new(),
+                            items,
+                            transcripts,
+                            running,
+                        );
+                        active_session.set(Some(id));
+                        refresh_session_history();
+                        focus_composer();
+                    });
+                }
+                CapabilityAction::GuidedChat { prompt_key } => {
+                    start_guided_capability_chat.call(prompt_key);
+                }
+                CapabilityAction::OpenSettings { section } => {
+                    open_settings_fn(Some(section.to_string()));
+                }
+                CapabilityAction::OpenPanel(CapabilityPanel::Files) => {
+                    show_projects.set(false);
+                    ensure_right_tab(RightTab::File, show_right, open_right_tabs, right_tab);
+                }
+                CapabilityAction::OpenPanel(CapabilityPanel::Graph) => {
+                    show_projects.set(false);
+                    show_research_graph.set(true);
+                    refresh_research_graph(research_graph);
+                }
+                CapabilityAction::OpenPanel(CapabilityPanel::Publication) => {
+                    show_projects.set(false);
+                    publication_binding_source.set(None);
+                    show_publication_workspace.set(true);
+                }
+                CapabilityAction::OpenPanel(CapabilityPanel::Agents) => {
+                    show_projects.set(false);
+                    ensure_right_tab(RightTab::Agents, show_right, open_right_tabs, right_tab);
+                }
+                CapabilityAction::EnvSetup => {
+                    start_guided_capability_chat.call("caps.env_setup_prompt");
+                }
+                CapabilityAction::OpenDemo => {
+                    project_open_error.set(None);
+                    show_projects.set(false);
+                    demo_mode.set(true);
+                    items.set(vec![]);
+                    active_session.set(None);
+                    spawn_local(async move {
+                        let v = invoke("list_demos", JsValue::UNDEFINED).await;
+                        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<DemoInfo>>(v) {
+                            demos.set(list);
+                        }
+                    });
+                }
+            }
+        }
+    });
+
+    let on_capability_action = {
+        let open_project_transition = open_project_transition;
+        let dispatch_capability_action = dispatch_capability_action;
+        Callback::new(move |action: CapabilityAction| {
+            let needs_project = matches!(
+                action,
+                CapabilityAction::NewChat
+                    | CapabilityAction::GuidedChat { .. }
+                    | CapabilityAction::EnvSetup
+                    | CapabilityAction::OpenPanel(CapabilityPanel::Files)
+                    | CapabilityAction::OpenPanel(CapabilityPanel::Graph)
+                    | CapabilityAction::OpenPanel(CapabilityPanel::Publication)
+                    | CapabilityAction::OpenPanel(CapabilityPanel::Agents)
+            );
+            if needs_project && show_projects.get_untracked() {
+                pending_capability_action.set(Some(action));
+                spawn_local(async move {
+                    let v = invoke("list_projects", JsValue::UNDEFINED).await;
+                    let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(v) else {
+                        pending_capability_action.set(None);
+                        status.set(t(locale.get(), "caps.need_project").into());
+                        return;
+                    };
+                    let id = list
+                        .iter()
+                        .find(|p| p.id == "default")
+                        .or_else(|| list.first())
+                        .map(|p| p.id.clone());
+                    let Some(id) = id else {
+                        pending_capability_action.set(None);
+                        status.set(t(locale.get(), "caps.need_project").into());
+                        return;
+                    };
+                    open_project_transition.call((id, None));
+                });
+                return;
+            }
+            dispatch_capability_action.call(action);
+        })
+    };
+
+    create_effect(move |_| {
+        if show_projects.get() {
+            return;
+        }
+        let Some(action) = pending_capability_action.get_untracked() else {
+            return;
+        };
+        pending_capability_action.set(None);
+        let dispatch_capability_action = dispatch_capability_action;
+        set_timeout(
+            move || dispatch_capability_action.call(action),
+            std::time::Duration::from_millis(350),
+        );
+    });
+
     // Dedicated project window (#52): enter through the same serialized,
     // target-validated transition instead of maintaining a second startup path.
     // `&session=` (#423) drops the window straight into the requested session.
@@ -8086,6 +8301,7 @@ fn App() -> impl IntoView {
             open_scratch=open_scratch
             open_settings=Callback::new(move |section: Option<String>| open_settings_fn(section))
             open_library=Callback::new(move |_| show_library.set(true))
+            on_capability_action=on_capability_action
         />
         <SessionImportModal
             locale=locale
@@ -12970,6 +13186,7 @@ fn App() -> impl IntoView {
             locale=locale show_capabilities=show_capabilities
             bootstrap=bootstrap caps=caps busy=busy open_settings_section=open_capability_settings
             start_env_setup=Callback::new(start_env_setup)
+            on_capability_action=on_capability_action
         />
         <OnboardingOverlay
             locale=locale show_onboarding=show_onboarding onboard_step=onboard_step

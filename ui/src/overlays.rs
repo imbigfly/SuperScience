@@ -2,6 +2,9 @@ use crate::app_support::{
     compose_icon, js_error_text, refresh_execution_contexts, refresh_runtimes, show_toast,
 };
 use crate::bindings::{invoke_checked, open_external_url};
+use crate::capabilities_home::{
+    CapabilityAction, CapabilityGroup, CapabilityTileGrid,
+};
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, Locale};
 use crate::text::{dom_value, event_target_value};
@@ -341,6 +344,12 @@ pub(super) fn RuntimeInterpreterOverlay(
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CapsOverlayTab {
+    Overview,
+    Scene(CapabilityGroup),
+}
+
 #[component]
 pub(super) fn CapabilitiesOverlay(
     locale: RwSignal<Locale>,
@@ -350,12 +359,19 @@ pub(super) fn CapabilitiesOverlay(
     busy: RwSignal<bool>,
     open_settings_section: Callback<String>,
     start_env_setup: Callback<web_sys::MouseEvent>,
+    on_capability_action: Callback<CapabilityAction>,
 ) -> impl IntoView {
+    let active_tab = create_rw_signal(CapsOverlayTab::Overview);
+    create_effect(move |_| {
+        if show_capabilities.get() {
+            active_tab.set(CapsOverlayTab::Overview);
+        }
+    });
     move || {
         show_capabilities.get().then(|| view! {
-    <div class="overlay">
-        <div class="modal modal-wide" role="dialog" aria-modal="true"
-            aria-labelledby="capabilities-title">
+    <div class="overlay caps-fullscreen-overlay">
+        <div class="modal caps-fullscreen" role="dialog" aria-modal="true"
+            aria-labelledby="capabilities-title" data-testid="capabilities-dialog">
             <div class="ps-head">
                 <h2 id="capabilities-title">{move || t(locale.get(), "caps.title")}</h2>
                 <button type="button" class="ps-close"
@@ -365,86 +381,125 @@ pub(super) fn CapabilitiesOverlay(
                     {compose_icon("close")}
                 </button>
             </div>
-            {move || bootstrap.get().map(|b| {
-                let loc = locale.get();
-                view! {
-                <div class="cap-section">
-                    <h3>{tf(loc, "caps.runtime", &[("version", &b.app_version)])}</h3>
-                    <p class="hint">{tf(loc, "caps.workspace", &[("path", &b.workspace)])}</p>
-                    <p class="hint">{{
-                        let ready = t(loc, "caps.ready");
-                        let missing = t(loc, "caps.missing");
-                        tf(loc, "caps.runtime_status", &[
-                        ("py", if b.python_ok { &ready } else { &missing }),
-                        ("uv", if b.uv_ok { &ready } else { &missing }),
-                        ("node", if b.node_ok { &ready } else { &missing }),
-                        ("sci", if b.sci_ok { &ready } else { &missing }),
-                        ("pixi", if b.pixi_ok { &ready } else { &missing }),
-                        ("skills", &b.skills_loaded.to_string()),
-                        ("mcp", &b.mcp_catalog.to_string()),
-                    ])}}</p>
-                    {(!b.errors.is_empty()).then(|| view! {
-                        <div class="settings-status fail">
-                            {b.errors.join("\n")}
-                        </div>
-                    })}
-                </div>
-            }})}
-            {move || caps.get().map(|c| view! {
-                // ponytail: counts only — detail lists (bio-tool tags, skill list,
-                // permissions hint) live in Settings, not this read-only summary.
-                <div class="cap-grid">
-                    <button type="button" class="cap-stat"
-                        on:click=move |_| {
-                            show_capabilities.set(false);
-                            open_settings_section.call("skills".into());
-                        }>
-                        <span class="cap-num">{c.skill_counts.bundled}</span>
-                        <span class="cap-label">{move || t(locale.get(), "caps.bundled_skills")}</span>
-                    </button>
-                    <button type="button" class="cap-stat"
-                        on:click=move |_| {
-                            show_capabilities.set(false);
-                            open_settings_section.call("skills".into());
-                        }>
-                        <span class="cap-num">{c.skill_counts.project}</span>
-                        <span class="cap-label">{move || t(locale.get(), "caps.project_skills")}</span>
-                    </button>
-                    <button type="button" class="cap-stat"
-                        on:click=move |_| {
-                            show_capabilities.set(false);
-                            open_settings_section.call("connections".into());
-                        }>
-                        <span class="cap-num">{c.mcp_counts.bundled}</span>
-                        <span class="cap-label">{move || t(locale.get(), "caps.bundled_mcp_servers")}</span>
-                    </button>
-                    <button type="button" class="cap-stat"
-                        on:click=move |_| {
-                            show_capabilities.set(false);
-                            open_settings_section.call("connections".into());
-                        }>
-                        <span class="cap-num">{c.mcp_counts.project}</span>
-                        <span class="cap-label">{move || t(locale.get(), "caps.project_mcp_servers")}</span>
-                    </button>
-                    <button type="button" class="cap-stat"
-                        on:click=move |_| {
-                            show_capabilities.set(false);
-                            open_settings_section.call("memory".into());
-                        }>
-                        <span class="cap-num">{c.memory_files.len()}</span>
-                        <span class="cap-label">{move || t(locale.get(), "caps.memory_files")}</span>
-                    </button>
-                </div>
-            })}
-            <div class="row">
-                <button on:click=move |_| show_capabilities.set(false)>
-                    {move || t(locale.get(), "caps.close")}
+            <div class="caps-overlay-tabs" role="tablist" aria-label=move || t(locale.get(), "caps.title")>
+                <button type="button" class="cap-scene-tab" role="tab"
+                    data-testid="caps-tab-overview"
+                    class:active=move || active_tab.get() == CapsOverlayTab::Overview
+                    aria-selected=move || (active_tab.get() == CapsOverlayTab::Overview).to_string()
+                    on:click=move |_| active_tab.set(CapsOverlayTab::Overview)>
+                    {move || t(locale.get(), "caps.tab.overview")}
                 </button>
-                {move || bootstrap.get().filter(|b| !b.python_initializing && (!b.python_ok || !b.uv_ok || !b.node_ok || !b.sci_ok || !b.pixi_ok)).map(|_| view! {
-                    <button class="primary" disabled=move || busy.get() on:click=move |ev| start_env_setup.call(ev)>
-                        {move || t(locale.get(), "caps.setup_env")}
-                    </button>
-                })}
+                {CapabilityGroup::all().iter().copied().map(|group| {
+                    let group_for_click = group;
+                    view! {
+                        <button type="button" class="cap-scene-tab" role="tab"
+                            data-testid=format!("caps-tab-{}", group.label_key())
+                            class:active=move || active_tab.get() == CapsOverlayTab::Scene(group)
+                            aria-selected=move || (active_tab.get() == CapsOverlayTab::Scene(group)).to_string()
+                            on:click=move |_| active_tab.set(CapsOverlayTab::Scene(group_for_click))>
+                            {move || t(locale.get(), group.label_key())}
+                        </button>
+                    }
+                }).collect_view()}
+            </div>
+            <div class="caps-fullscreen-body">
+            {move || match active_tab.get() {
+                CapsOverlayTab::Overview => view! {
+                    <div class="caps-overview" data-testid="caps-overview">
+                        {move || bootstrap.get().map(|b| {
+                            let loc = locale.get();
+                            view! {
+                            <div class="cap-section">
+                                <h3>{tf(loc, "caps.runtime", &[("version", &b.app_version)])}</h3>
+                                <p class="hint">{tf(loc, "caps.workspace", &[("path", &b.workspace)])}</p>
+                                <p class="hint">{{
+                                    let ready = t(loc, "caps.ready");
+                                    let missing = t(loc, "caps.missing");
+                                    tf(loc, "caps.runtime_status", &[
+                                    ("py", if b.python_ok { &ready } else { &missing }),
+                                    ("uv", if b.uv_ok { &ready } else { &missing }),
+                                    ("node", if b.node_ok { &ready } else { &missing }),
+                                    ("sci", if b.sci_ok { &ready } else { &missing }),
+                                    ("pixi", if b.pixi_ok { &ready } else { &missing }),
+                                    ("skills", &b.skills_loaded.to_string()),
+                                    ("mcp", &b.mcp_catalog.to_string()),
+                                ])}}</p>
+                                {(!b.errors.is_empty()).then(|| view! {
+                                    <div class="settings-status fail">
+                                        {b.errors.join("\n")}
+                                    </div>
+                                })}
+                            </div>
+                        }})}
+                        {move || caps.get().map(|c| view! {
+                            // ponytail: counts only — detail lists (bio-tool tags, skill list,
+                            // permissions hint) live in Settings, not this read-only summary.
+                            <div class="cap-grid">
+                                <button type="button" class="cap-stat"
+                                    on:click=move |_| {
+                                        show_capabilities.set(false);
+                                        open_settings_section.call("skills".into());
+                                    }>
+                                    <span class="cap-num">{c.skill_counts.bundled}</span>
+                                    <span class="cap-label">{move || t(locale.get(), "caps.bundled_skills")}</span>
+                                </button>
+                                <button type="button" class="cap-stat"
+                                    on:click=move |_| {
+                                        show_capabilities.set(false);
+                                        open_settings_section.call("skills".into());
+                                    }>
+                                    <span class="cap-num">{c.skill_counts.project}</span>
+                                    <span class="cap-label">{move || t(locale.get(), "caps.project_skills")}</span>
+                                </button>
+                                <button type="button" class="cap-stat"
+                                    on:click=move |_| {
+                                        show_capabilities.set(false);
+                                        open_settings_section.call("connections".into());
+                                    }>
+                                    <span class="cap-num">{c.mcp_counts.bundled}</span>
+                                    <span class="cap-label">{move || t(locale.get(), "caps.bundled_mcp_servers")}</span>
+                                </button>
+                                <button type="button" class="cap-stat"
+                                    on:click=move |_| {
+                                        show_capabilities.set(false);
+                                        open_settings_section.call("connections".into());
+                                    }>
+                                    <span class="cap-num">{c.mcp_counts.project}</span>
+                                    <span class="cap-label">{move || t(locale.get(), "caps.project_mcp_servers")}</span>
+                                </button>
+                                <button type="button" class="cap-stat"
+                                    on:click=move |_| {
+                                        show_capabilities.set(false);
+                                        open_settings_section.call("memory".into());
+                                    }>
+                                    <span class="cap-num">{c.memory_files.len()}</span>
+                                    <span class="cap-label">{move || t(locale.get(), "caps.memory_files")}</span>
+                                </button>
+                            </div>
+                        })}
+                        <div class="row">
+                            <button on:click=move |_| show_capabilities.set(false)>
+                                {move || t(locale.get(), "caps.close")}
+                            </button>
+                            {move || bootstrap.get().filter(|b| !b.python_initializing && (!b.python_ok || !b.uv_ok || !b.node_ok || !b.sci_ok || !b.pixi_ok)).map(|_| view! {
+                                <button class="primary" disabled=move || busy.get() on:click=move |ev| start_env_setup.call(ev)>
+                                    {move || t(locale.get(), "caps.setup_env")}
+                                </button>
+                            })}
+                        </div>
+                    </div>
+                }.into_view(),
+                CapsOverlayTab::Scene(group) => view! {
+                    <div class="caps-scene-pane">
+                        <p class="cap-scene-subtitle">{move || t(locale.get(), "caps.home.subtitle")}</p>
+                        <CapabilityTileGrid
+                            locale=locale
+                            group=Signal::derive(move || group)
+                            on_activate=on_capability_action
+                        />
+                    </div>
+                }.into_view(),
+            }}
             </div>
         </div>
     </div>

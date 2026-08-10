@@ -15,6 +15,7 @@ pub(crate) fn ProjectsScreen(
     on_open_demo: Callback<()>,
     on_open_scratch: Callback<()>,
     on_search: Callback<()>,
+    on_capability_action: Callback<crate::capabilities_home::CapabilityAction>,
     project_transfer: RwSignal<Option<ProjectTransferProgress>>,
 ) -> impl IntoView {
     let projects = create_rw_signal(Vec::<ProjectSummary>::new());
@@ -854,6 +855,10 @@ pub(crate) fn ProjectsScreen(
                     }).collect_view()}
                 </div>
             </div>
+            <crate::capabilities_home::CapabilitySceneTabs
+                locale=locale
+                on_activate=on_capability_action
+            />
             <div class="projects-footer">
                 <span>{move || t(locale.get(), "projects.star_hint")}</span>
                 <button type="button" class="projects-star-link"

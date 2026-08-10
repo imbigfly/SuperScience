@@ -6216,21 +6216,23 @@ test("capability counts open skills, connections, and editable project memory", 
   await enterApp(page);
 
   await page.getByRole("button", { name: "Capabilities" }).click();
-  let capabilities = page.getByRole("dialog", { name: "Capabilities" });
+  let capabilities = page.getByTestId("capabilities-dialog");
+  await expect(capabilities).toBeVisible();
+  await expect(page.getByTestId("caps-tab-overview")).toHaveAttribute("aria-selected", "true");
   await expect(capabilities.getByRole("button", { name: "2 Bundled Skills" })).toBeVisible();
   await capabilities.getByRole("button", { name: "1 Project Skills" }).click();
   await expect(page.locator(".settings-nav button.active")).toHaveText("Skills");
 
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Capabilities" }).click();
-  capabilities = page.getByRole("dialog", { name: "Capabilities" });
+  capabilities = page.getByTestId("capabilities-dialog");
   await expect(capabilities.getByRole("button", { name: "2 Bundled MCP" })).toBeVisible();
   await capabilities.getByRole("button", { name: "1 Project MCP" }).click();
   await expect(page.locator(".settings-nav button.active")).toHaveText("Connections");
 
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Capabilities" }).click();
-  capabilities = page.getByRole("dialog", { name: "Capabilities" });
+  capabilities = page.getByTestId("capabilities-dialog");
   await capabilities.getByRole("button", { name: "1 Memory files" }).click();
   await expect(page.locator(".settings-nav button.active")).toHaveText("Memory");
   await expect(page.getByText("2026-07-01.md", { exact: true })).toBeVisible();
@@ -6254,6 +6256,38 @@ test("capability counts open skills, connections, and editable project memory", 
     name: "2026-07-04.md",
     content: "Prefer editable, reproducible local workflows.",
   });
+});
+
+test("projects home shows capability scene tabs and tiles", async ({ page }) => {
+  await page.goto("/");
+  const scene = page.getByTestId("capability-scene");
+  await expect(scene).toBeVisible();
+  await expect(scene.getByRole("heading", { name: "What you can do" })).toBeVisible();
+  await expect(page.getByTestId("cap-tile-ai-agent")).toBeVisible();
+  await page.getByRole("tab", { name: "Literature" }).click();
+  await expect(page.getByTestId("cap-tile-literature")).toBeVisible();
+  await expect(page.getByTestId("cap-tile-ai-agent")).toHaveCount(0);
+});
+
+test("capabilities overlay scene tab launches guided chat", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Capabilities" }).click();
+  const capabilities = page.getByTestId("capabilities-dialog");
+  await expect(capabilities).toBeVisible();
+  await page.getByRole("tab", { name: "Literature" }).click();
+  await page.getByTestId("cap-tile-literature").click();
+  await expect(capabilities).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: expect.stringMatching(/literature|bear/i),
+  });
+});
+
+test("capabilities overlay closes with Escape", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Capabilities" }).click();
+  await expect(page.getByTestId("capabilities-dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("capabilities-dialog")).toHaveCount(0);
 });
 
 test("skill manager filters by tag and batch disables visible skills", async ({ page }) => {
@@ -8981,13 +9015,13 @@ test("a ?project window opens straight into the project, skipping the landing (#
 test("specialists page configures the builtin Reader and saves a custom specialist", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Specialists");
-  await expect(page.getByText("Reviewer")).toBeVisible();
-  await expect(page.getByText("Reader")).toBeVisible();
-  await expect(page.getByText("Scientific Illustrator")).toBeVisible();
+  await expect(page.getByText("审阅专家")).toBeVisible();
+  await expect(page.getByText("检索专家")).toBeVisible();
+  await expect(page.getByText("科学插画专家")).toBeVisible();
   // Builtin rows have no remove button.
   await expect(page.locator(".settings-list-remove")).toHaveCount(0);
 
-  await page.getByText("Reader").click();
+  await page.getByText("检索专家").click();
   await expect(page.getByLabel("Instructions")).toBeDisabled();
   await page.getByTestId("reviewer-backend-select").selectOption("opus");
   await page.getByRole("button", { name: "Save" }).click();
@@ -8996,7 +9030,7 @@ test("specialists page configures the builtin Reader and saves a custom speciali
   });
 
   // builtin row: open it and verify instructions are disabled
-  await page.getByText("Reviewer").click();
+  await page.getByText("审阅专家").click();
   await expect(page.getByLabel("Instructions")).toBeDisabled();
   await page.locator(".settings-head-back").click();
 
@@ -9017,7 +9051,7 @@ test("specialists page configures the builtin Reader and saves a custom speciali
 test("Reviewer settings select, test, and persist an ACP backend", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Specialists");
-  await page.getByText("Reviewer").click();
+  await page.getByText("审阅专家").click();
 
   const backend = page.getByTestId("reviewer-backend-select");
   await expect(backend.locator('option[value="acp:acp-test"]')).toHaveCount(1);
@@ -9048,14 +9082,14 @@ test("Reviewer settings select, test, and persist an ACP backend", async ({ page
   await expect(backend).toHaveValue("acp:acp-test");
 
   await page.locator(".settings-head-back").click();
-  await page.getByText("Reviewer").click();
+  await page.getByText("审阅专家").click();
   await expect(page.getByTestId("reviewer-backend-select")).toHaveValue("acp:acp-test");
 });
 
 test("a deleted ACP reviewer remains visibly selected as missing", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Specialists");
-  await page.getByText("Reviewer").click();
+  await page.getByText("审阅专家").click();
   await page.getByTestId("reviewer-backend-select").selectOption("acp:acp-test");
   await page.getByRole("button", { name: "Save" }).click();
   await expect(page.locator(".settings-status")).toContainText("Specialist saved");
@@ -9072,7 +9106,7 @@ test("a deleted ACP reviewer remains visibly selected as missing", async ({ page
   await expect(row).toHaveCount(0);
 
   await nav.getByRole("button", { name: "Specialists", exact: true }).click();
-  await page.getByText("Reviewer").click();
+  await page.getByText("审阅专家").click();
   const backend = page.getByTestId("reviewer-backend-select");
   await expect(backend).toHaveValue("acp:acp-test");
   await expect(page.getByTestId("reviewer-missing-acp-option")).toHaveText(
@@ -9105,7 +9139,7 @@ test("new session can pick a specialist and it locks after the first message", a
   let agentMenu = await openAgentMenu(page);
   await agentMenu.getByRole("button", { name: /^Specialist/ }).click();
   const specialistMenu = page.getByRole("menu", { name: "Specialist" });
-  await expect(specialistMenu.getByRole("button", { name: "Scientific Illustrator" })).toBeVisible();
+  await expect(specialistMenu.getByRole("button", { name: "科学插画专家" })).toBeVisible();
   await specialistMenu.getByRole("button", { name: "Paper hunter" }).click();
   await expect(page.locator(".session-specialist")).toHaveText("Paper hunter");
 
