@@ -15,6 +15,7 @@ pub(crate) fn ProjectsScreen(
     on_open_demo: Callback<()>,
     on_open_scratch: Callback<()>,
     on_search: Callback<()>,
+    on_export_project: Callback<(String, String)>,
     project_transfer: RwSignal<Option<ProjectTransferProgress>>,
 ) -> impl IntoView {
     let projects = create_rw_signal(Vec::<ProjectSummary>::new());
@@ -29,6 +30,8 @@ pub(crate) fn ProjectsScreen(
     let new_dir = create_rw_signal(String::new());
     let new_desc = create_rw_signal(String::new());
     let new_ctx = create_rw_signal(String::new());
+    let import_options_open = create_rw_signal(false);
+    let opening_in_place = create_rw_signal(false);
     // Off by default: pointing at an existing repo must not litter it. Checking
     // the box reveals the convention text, which doubles as a worked example of
     // what Agent Context is for.
@@ -210,6 +213,7 @@ pub(crate) fn ProjectsScreen(
         }
         if pos == idx {
             search_open.set(false);
+            opening_in_place.set(false);
             creating.set(true);
         }
     });
@@ -244,15 +248,27 @@ pub(crate) fn ProjectsScreen(
                 "standardLayout": layout,
             }))
             .unwrap();
-            let v = invoke("create_project", arg).await;
-            if let Ok(p) = serde_wasm_bindgen::from_value::<ProjectSummary>(v) {
-                new_name.set(String::new());
-                new_dir.set(String::new());
-                new_desc.set(String::new());
-                new_ctx.set(String::new());
-                new_layout.set(false);
-                creating.set(false);
-                on_open.call(p.id);
+            match invoke_checked("create_project", arg).await {
+                Ok(value) => {
+                    if let Ok(project) = serde_wasm_bindgen::from_value::<ProjectSummary>(value) {
+                        new_name.set(String::new());
+                        new_dir.set(String::new());
+                        new_desc.set(String::new());
+                        new_ctx.set(String::new());
+                        new_layout.set(false);
+                        creating.set(false);
+                        opening_in_place.set(false);
+                        on_open.call(project.id);
+                    }
+                }
+                Err(error) => {
+                    creating.set(false);
+                    opening_in_place.set(false);
+                    open_error.set(Some(localize_backend(
+                        locale.get_untracked(),
+                        &js_error_text(error),
+                    )));
+                }
             }
         });
     };
@@ -277,7 +293,8 @@ pub(crate) fn ProjectsScreen(
     });
     let delete_confirmed = delete; // used by the confirm modal below
 
-    let import_project = move |_| {
+    let import_archive = Callback::new(move |_: ()| {
+        import_options_open.set(false);
         if project_transfer
             .get_untracked()
             .is_some_and(|transfer| transfer.is_active())
@@ -311,7 +328,31 @@ pub(crate) fn ProjectsScreen(
                 }
             }
         });
-    };
+    });
+
+    let import_in_place = Callback::new(move |_: ()| {
+        import_options_open.set(false);
+        open_error.set(None);
+        spawn_local(async move {
+            let value = invoke("pick_directory", JsValue::UNDEFINED).await;
+            let Ok(Some(path)) = serde_wasm_bindgen::from_value::<Option<String>>(value) else {
+                return;
+            };
+            let name = path
+                .trim_end_matches(['/', '\\'])
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            new_name.set(name);
+            new_dir.set(path);
+            new_desc.set(String::new());
+            new_ctx.set(String::new());
+            new_layout.set(false);
+            opening_in_place.set(true);
+            creating.set(true);
+        });
+    });
 
     let resolve_sync_conflict = Callback::new(move |strategy: String| {
         let Some(id) = sync_conflict_project.get_untracked() else {
@@ -383,6 +424,11 @@ pub(crate) fn ProjectsScreen(
             delete_data_countdown.set(0);
             return;
         }
+        if import_options_open.get() {
+            ev.prevent_default();
+            import_options_open.set(false);
+            return;
+        }
         if pending_delete.get().is_some() {
             ev.prevent_default();
             pending_delete.set(None);
@@ -401,6 +447,7 @@ pub(crate) fn ProjectsScreen(
         if creating.get() {
             ev.prevent_default();
             creating.set(false);
+            opening_in_place.set(false);
         }
     });
     on_cleanup(move || escape_listener.remove());
@@ -437,10 +484,13 @@ pub(crate) fn ProjectsScreen(
                     </button>
                     <button type="button" class="btn-ghost projects-import"
                         disabled=move || project_transfer.get().is_some_and(|transfer| transfer.is_active())
-                        on:click=import_project>
+                        on:click=move |_| import_options_open.set(true)>
                         {compose_icon("upload")}<span>{move || t(locale.get(), "projects.import")}</span>
                     </button>
-                    <button class="btn-primary" on:click=move |_| creating.set(true)>
+                    <button class="btn-primary" on:click=move |_| {
+                        opening_in_place.set(false);
+                        creating.set(true);
+                    }>
                         <span class="new-plus">"+"</span>{move || t(locale.get(), "projects.new")}
                     </button>
                 </div>
@@ -595,6 +645,7 @@ pub(crate) fn ProjectsScreen(
                             class:active=move || search_active.get() + 1 == search_count()
                             on:click=move |_| {
                                 search_open.set(false);
+                                opening_in_place.set(false);
                                 creating.set(true);
                             }>
                             <span class="gi plus"></span>
@@ -608,15 +659,59 @@ pub(crate) fn ProjectsScreen(
                     </div>
                 </div>
             })}
+            {move || import_options_open.get().then(|| view! {
+                <div class="overlay" data-testid="project-import-options">
+                    <div class="modal confirm-modal project-import-options-modal"
+                        role="dialog" aria-modal="true"
+                        aria-label=move || t(locale.get(), "projects.import")>
+                        <h2>{move || t(locale.get(), "projects.import")}</h2>
+                        <p class="project-import-options-hint">
+                            {move || t(locale.get(), "projects.import_options_hint")}
+                        </p>
+                        <div class="project-import-options">
+                            <button type="button" class="project-import-option"
+                                on:click=move |_| import_in_place.call(())>
+                                <strong>{move || t(locale.get(), "projects.import_in_place")}</strong>
+                                <span>{move || t(locale.get(), "projects.import_in_place_hint")}</span>
+                            </button>
+                            <button type="button" class="project-import-option"
+                                on:click=move |_| import_archive.call(())>
+                                <strong>{move || t(locale.get(), "projects.import_zip")}</strong>
+                                <span>{move || t(locale.get(), "projects.import_zip_hint")}</span>
+                            </button>
+                        </div>
+                        <div class="row">
+                            <button type="button" on:click=move |_| import_options_open.set(false)>
+                                {move || t(locale.get(), "settings.cancel")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            })}
             {move || creating.get().then(|| view! {
                 <div class="overlay">
                     <div class="modal proj-settings-modal" role="dialog" aria-modal="true">
                         <div class="ps-head">
-                            <h2>{move || t(locale.get(), "projects.new")}</h2>
+                            <h2>{move || t(
+                                locale.get(),
+                                if opening_in_place.get() {
+                                    "projects.open_folder_title"
+                                } else {
+                                    "projects.new"
+                                },
+                            )}</h2>
                             <button type="button" class="ps-close"
                                 title=move || t(locale.get(), "projects.cancel")
-                                on:click=move |_| creating.set(false)>{compose_icon("close")}</button>
+                                on:click=move |_| {
+                                    creating.set(false);
+                                    opening_in_place.set(false);
+                                }>{compose_icon("close")}</button>
                         </div>
+                        {move || opening_in_place.get().then(|| view! {
+                            <p class="project-in-place-hint">
+                                {move || t(locale.get(), "projects.open_folder_hint")}
+                            </p>
+                        })}
                         <label>
                             {move || t(locale.get(), "proj_settings.name")}
                             <input id="new-project-name" autofocus=true
@@ -639,17 +734,19 @@ pub(crate) fn ProjectsScreen(
                                 prop:value=move || new_desc.get()
                                 on:input=move |ev| new_desc.set(event_target_value(&ev))></textarea>
                         </label>
-                        <label class="pn-layout">
-                            <span class="toggle">
-                                <input type="checkbox" prop:checked=move || new_layout.get()
-                                    on:change=move |ev| new_layout.set(event_target_checked(&ev)) />
-                                <span class="toggle-track" aria-hidden="true"></span>
-                            </span>
-                            <span>
-                                {move || t(locale.get(), "projects.standard_layout")}
-                                <span class="ps-hint">{move || t(locale.get(), "projects.standard_layout_hint")}</span>
-                            </span>
-                        </label>
+                        {move || (!opening_in_place.get()).then(|| view! {
+                            <label class="pn-layout">
+                                <span class="toggle">
+                                    <input type="checkbox" prop:checked=move || new_layout.get()
+                                        on:change=move |ev| new_layout.set(event_target_checked(&ev)) />
+                                    <span class="toggle-track" aria-hidden="true"></span>
+                                </span>
+                                <span>
+                                    {move || t(locale.get(), "projects.standard_layout")}
+                                    <span class="ps-hint">{move || t(locale.get(), "projects.standard_layout_hint")}</span>
+                                </span>
+                            </label>
+                        })}
                         <label>
                             {move || t(locale.get(), "proj_settings.agent_context")}
                             <span class="ps-hint">{move || t(locale.get(), "proj_settings.agent_context_hint")}</span>
@@ -658,11 +755,21 @@ pub(crate) fn ProjectsScreen(
                                 on:input=move |ev| new_ctx.set(event_target_value(&ev))></textarea>
                         </label>
                         <div class="row">
-                            <button type="button" on:click=move |_| creating.set(false)>
+                            <button type="button" on:click=move |_| {
+                                creating.set(false);
+                                opening_in_place.set(false);
+                            }>
                                 {move || t(locale.get(), "projects.cancel")}</button>
                             <button type="button" class="primary"
                                 disabled=move || new_name.get().trim().is_empty() || new_dir.get().trim().is_empty()
-                                on:click=submit>{move || t(locale.get(), "projects.create")}</button>
+                                on:click=submit>{move || t(
+                                    locale.get(),
+                                    if opening_in_place.get() {
+                                        "projects.open_folder_action"
+                                    } else {
+                                        "projects.create"
+                                    },
+                                )}</button>
                         </div>
                     </div>
                 </div>
@@ -696,6 +803,7 @@ pub(crate) fn ProjectsScreen(
                             let id_win = p.id.clone();
                             let id_win_locked = p.id.clone();
                             let id_export = p.id.clone();
+                            let workspace_export = p.workspace_dir.clone();
                             let id_sync = p.id.clone();
                             let id_sync_disabled = p.id.clone();
                             let id_sync_locked = p.id.clone();
@@ -824,24 +932,7 @@ pub(crate) fn ProjectsScreen(
                                             e.stop_propagation();
                                             if project_transfer.get_untracked().is_some_and(|transfer| transfer.is_active()) { return; }
                                             open_error.set(None);
-                                            project_transfer.set(Some(ProjectTransferProgress::selecting("export", Some(id_export.clone()))));
-                                            let id = id_export.clone();
-                                            spawn_local(async move {
-                                                let arg = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
-                                                match invoke_checked("export_project", arg).await {
-                                                    Ok(value) => {
-                                                        if let Ok(Some(path)) = serde_wasm_bindgen::from_value::<Option<String>>(value) {
-                                                            project_transfer.set(Some(ProjectTransferProgress::complete("export", Some(id), Some(path))));
-                                                        } else {
-                                                            project_transfer.set(None);
-                                                        }
-                                                    }
-                                                    Err(error) => {
-                                                        let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                                                        project_transfer.set(Some(ProjectTransferProgress::failed("export", Some(id), message)));
-                                                    }
-                                                }
-                                            });
+                                            on_export_project.call((id_export.clone(), workspace_export.clone()));
                                         }>{compose_icon("download")}</button>
                                     <button class="pc-window" title=t(loc, "projects.new_window")
                                         disabled=move || project_transfer.get().is_some_and(|transfer| transfer.is_exporting_project(&id_win_locked))

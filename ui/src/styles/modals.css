@@ -284,6 +284,38 @@
 .project-transfer-hint { padding: 8px 10px; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--clay) 8%, var(--bg-elev)); color: var(--text-muted); font-size: 12px; line-height: 1.45; }
 .project-transfer-path { overflow: hidden; color: var(--text-faint); font: 11px/1.45 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .project-transfer-error { color: var(--err); font-size: 12px; line-height: 1.45; }
+.project-export-options-modal { max-width: 600px; }
+.project-export-zip-hint {
+  margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.55;
+}
+.project-copy-folder-option {
+  display: grid; gap: 8px; padding: 13px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-sunken);
+}
+.project-copy-folder-option strong { font-size: 13.5px; font-weight: 600; }
+.project-copy-folder-option p { margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+.project-copy-folder-option code {
+  overflow: hidden; padding: 8px 10px; border-radius: var(--radius-xs); background: var(--bg-elev);
+  color: var(--text-faint); font: 11.5px/1.45 var(--font-mono); text-overflow: ellipsis;
+  white-space: nowrap; user-select: text;
+}
+.project-copy-folder-option .btn-ghost { justify-self: start; }
+.project-import-options-modal { max-width: 560px; }
+.project-import-options-hint { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+.project-import-options { display: grid; gap: 10px; }
+.project-import-option {
+  display: grid; gap: 4px; width: 100%; padding: 13px; text-align: left;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-input); color: var(--text); cursor: pointer;
+}
+.project-import-option:hover { border-color: var(--clay); background: var(--surface-hover); }
+.project-import-option strong { font-size: 13.5px; font-weight: 600; }
+.project-import-option span { color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+.project-in-place-hint {
+  margin: 0; padding: 9px 11px; border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--clay) 8%, var(--bg-elev));
+  color: var(--text-muted); font-size: 12.5px; line-height: 1.5;
+}
 .host-modal { max-width: 460px; }
 .ssh-check-modal { max-width: 520px; }
 .ssh-check-modal .ssh-check-scroll { display: flex; flex-direction: column; gap: 10px; }

@@ -1,15 +1,28 @@
 # Project transfer
 
-The Projects screen exports a project as `wisp-project-<name>.zip`. The archive
-contains the workspace's regular files plus project-owned conversations, artifacts,
-runs, plans, provenance, and research-graph records.
+Wisp supports two deliberately different ways to bring a project onto a device:
+
+- **Open a folder in place** registers an existing local folder as a project. The
+  folder remains where it is and Wisp does not copy its files. Use this after
+  copying a workspace yourself, checking out a repository, or placing it in a
+  cloud-drive folder.
+- **Import a ZIP archive** restores a complete Wisp transfer into a new folder.
+  The ZIP contains the workspace's regular files plus project-owned conversations,
+  artifacts, runs, plans, provenance, and research-graph records.
+
+Opening a folder in place creates a new local Wisp project record. Conversation
+history and other records that exist only in another device's Wisp database are
+not recovered from a plain folder copy; use ZIP export/import when those records
+must move too.
 
 To move a project from Windows to macOS:
 
 1. Wait for the project's active conversations and jobs to finish.
 2. Open the project, then choose **File → Export current project**. The project
-   card's export action is also available as a shortcut.
-3. Copy the ZIP to the Mac and choose **Import project**.
+   card's export action is also available as a shortcut. Wisp explains that you
+   can copy the project folder directly when you only need its files; choose
+   **Export ZIP** for the complete portable copy.
+3. Copy the ZIP to the Mac and choose **Import project → Import a ZIP archive**.
 4. Pick a parent folder. Wisp creates a new folder named after the project; it
    appears on the Projects screen when the import finishes.
 
@@ -21,6 +34,10 @@ projects remain available. An export is published as the selected ZIP only
 after its completed archive has been checked against its manifest; while it is
 running, do not use the temporary or still-empty archive file as a transfer
 copy.
+
+For a folder you copied yourself, choose **Import project → Open a folder in
+place** instead. Confirm its local name and path; Wisp registers that exact path
+without creating a duplicate workspace.
 
 ## Path rules
 

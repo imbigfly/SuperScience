@@ -26,9 +26,10 @@ use agent_workflows::{
     agent_workflows_panel, refresh_agent_resources, refresh_agent_workflows, AgentPanelState,
 };
 use app_overlays::{
-    ContextRecoveryOverlay, ContextRecoveryOverlayState, ProjectTransferOverlay,
-    ProjectTransferOverlayState, SshConnectivityOverlay, SshConnectivityOverlayState,
-    UpdateCheckOverlay, UpdateCheckOverlayState,
+    ContextRecoveryOverlay, ContextRecoveryOverlayState, ProjectExportPrompt,
+    ProjectExportPromptState, ProjectTransferOverlay, ProjectTransferOverlayState,
+    SshConnectivityOverlay, SshConnectivityOverlayState, UpdateCheckOverlay,
+    UpdateCheckOverlayState,
 };
 use bindings::{
     attach_chat_autoscroll, clear_selection, close_mcp_app, force_chat_bottom, invoke,
@@ -432,6 +433,7 @@ fn App() -> impl IntoView {
     let feedback_context = create_rw_signal::<Option<String>>(None);
     let project_open_error = create_rw_signal(None::<String>);
     let project_transfer = create_rw_signal(None::<ProjectTransferProgress>);
+    let project_export_prompt = create_rw_signal(None::<(String, String)>);
     let app_shell_entering = create_rw_signal(false);
     let project_transition_epoch = Rc::new(Cell::new(0u64));
     let project_transition_target = Rc::new(RefCell::new(None::<String>));
@@ -6771,6 +6773,11 @@ fn App() -> impl IntoView {
             }
             return;
         }
+        if project_export_prompt.get().is_some() {
+            ev.prevent_default();
+            project_export_prompt.set(None);
+            return;
+        }
         if selection_popup.get().is_some() {
             ev.prevent_default();
             selection_popup.set(None);
@@ -7771,19 +7778,14 @@ fn App() -> impl IntoView {
             }
         });
     });
-    let export_current_project = Callback::new(move |_: ()| {
-        if show_projects.get_untracked() || demo_mode.get_untracked() {
-            return;
-        }
+    let start_project_export = Callback::new(move |id: String| {
         if project_transfer
             .get_untracked()
             .is_some_and(|transfer| transfer.is_active())
         {
             return;
         }
-        let Some(id) = project_info.get_untracked().map(|project| project.id) else {
-            return;
-        };
+        project_export_prompt.set(None);
         project_open_error.set(None);
         project_transfer.set(Some(ProjectTransferProgress::selecting(
             "export",
@@ -7816,6 +7818,28 @@ fn App() -> impl IntoView {
             }
         });
     });
+    let open_project_export = Callback::new(move |(id, workspace): (String, String)| {
+        if project_transfer
+            .get_untracked()
+            .is_some_and(|transfer| transfer.is_active())
+        {
+            return;
+        }
+        project_open_error.set(None);
+        project_export_prompt.set(Some((id, workspace)));
+    });
+    let export_current_project = {
+        let open_project_export = open_project_export;
+        Callback::new(move |_: ()| {
+            if show_projects.get_untracked() || demo_mode.get_untracked() {
+                return;
+            }
+            let Some(project) = project_info.get_untracked() else {
+                return;
+            };
+            open_project_export.call((project.id, project.root));
+        })
+    };
     let palette_attach = Callback::new(move |reference: ComposerReferenceChip| {
         if !composer_references
             .get()
@@ -8133,6 +8157,14 @@ fn App() -> impl IntoView {
             on_new_session=palette_new_session on_open_scratch=open_scratch
             on_project_settings=palette_project_settings
             on_manage_skills=palette_manage_skills on_attach=palette_attach />
+        <ProjectExportPrompt
+            state=ProjectExportPromptState { locale, prompt: project_export_prompt }
+            on_export_zip=start_project_export
+            on_copy_path=Callback::new(move |path: String| {
+                copy_text(path);
+                show_toast(&t(locale.get_untracked(), "projects.folder_path_copied"));
+            })
+        />
         <ProjectTransferOverlay state=ProjectTransferOverlayState { locale, project_transfer } />
         <ProjectLanding
             state=ProjectLandingState {
@@ -8145,6 +8177,7 @@ fn App() -> impl IntoView {
             open_scratch=open_scratch
             open_settings=Callback::new(move |section: Option<String>| open_settings_fn(section))
             open_library=Callback::new(move |_| show_library.set(true))
+            open_project_export=open_project_export
         />
         <SessionImportModal
             locale=locale

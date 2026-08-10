@@ -7675,6 +7675,17 @@ test("Windows uses the integrated title bar without covering the project landing
   const exportCurrentProject = page.getByRole("menuitem", { name: "Export current project" });
   await expect(exportCurrentProject).toBeEnabled();
   await exportCurrentProject.click();
+  const exportOptions = page.getByTestId("project-export-options");
+  await expect(exportOptions).toBeVisible();
+  await expect(exportOptions).toContainText("Copy this folder directly");
+  await page.keyboard.press("Escape");
+  await expect(exportOptions).toBeHidden();
+  await expect(page.locator(".app")).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "export_project")).toBeNull();
+
+  await page.getByRole("button", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Export current project" }).click();
+  await page.getByTestId("project-export-options").getByRole("button", { name: "Export ZIP" }).click();
   await expect.poll(() => lastInvokeArgs(page, "export_project")).toMatchObject({ id: "default" });
   const transferProgress = page.getByTestId("project-transfer-progress");
   await expect(transferProgress).toContainText("Project export complete");
@@ -7891,6 +7902,37 @@ test("new project form enables Create after name and folder are set", async ({ p
   await expect(create).toBeEnabled();
 });
 
+test("import can open an existing folder in place without copying it", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Import project" }).click();
+  const options = page.getByTestId("project-import-options");
+  await expect(options).toBeVisible();
+  await expect(options).toContainText("without copying it");
+
+  // The choice dialog is the top layer: Escape closes only it immediately,
+  // without moving focus first or leaving the Projects screen.
+  await page.keyboard.press("Escape");
+  await expect(options).toBeHidden();
+  await expect(page.locator(".projects-screen")).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "import_project")).toBeNull();
+
+  await page.getByRole("button", { name: "Import project" }).click();
+  await options.getByRole("button", { name: "Open a folder in place" }).click();
+  const form = page.locator(".overlay", { has: page.locator("#new-project-name") });
+  await expect(form.getByRole("heading", { name: "Open project folder" })).toBeVisible();
+  await expect(page.locator("#new-project-name")).toHaveValue("new-project");
+  await expect(form.locator(".pn-dir .path")).toHaveText("/mock/root/new-project");
+  await expect(form.locator(".pn-layout")).toHaveCount(0);
+  await form.getByRole("button", { name: "Open project" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "create_project")).toMatchObject({
+    name: "new-project",
+    workspaceDir: "/mock/root/new-project",
+    standardLayout: false,
+  });
+  await expect.poll(() => lastInvokeArgs(page, "import_project")).toBeNull();
+});
+
 test("project transfers stay in a lower-right progress card without blocking other projects", async ({ page }) => {
   await page.goto("/");
   await expect.poll(async () => page.evaluate(() =>
@@ -7903,6 +7945,10 @@ test("project transfers stay in a lower-right progress card without blocking oth
   await expect.poll(() => exportProject.evaluate((el) => Number.parseFloat(getComputedStyle(el).opacity))).toBeGreaterThan(0);
   await page.evaluate(() => (window as any).__delayNextProjectTransfer("export", 800));
   await exportProject.click();
+  const exportOptions = page.getByTestId("project-export-options");
+  await expect(exportOptions).toContainText("A ZIP is the complete portable copy");
+  await expect(exportOptions).toContainText("/mock/root");
+  await exportOptions.getByRole("button", { name: "Export ZIP" }).click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "export_project"),
   )).toBe(true);
@@ -7937,6 +7983,8 @@ test("project transfers stay in a lower-right progress card without blocking oth
   )).toBe(true);
   await page.evaluate(() => (window as any).__delayNextProjectTransfer("import", 800));
   await page.getByRole("button", { name: "Import project" }).click();
+  await page.getByTestId("project-import-options")
+    .getByRole("button", { name: "Import a ZIP archive" }).click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "import_project"),
   )).toBe(true);
