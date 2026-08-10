@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { tauriMock, parallelMock } from "./mock-tauri";
@@ -11,6 +11,15 @@ const motifAppHtmlPath = process.env.WISP_MOTIF_APP_HTML;
 
 function providerSelect(page: Page) {
   return page.getByTestId("settings-provider");
+}
+
+async function expectInsideViewport(locator: Locator, width: number, height: number) {
+  const box = await locator.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(height);
 }
 
 async function openModelsSettings(page: Page) {
@@ -227,9 +236,23 @@ test.beforeEach(async ({ page }) => {
 
 test("Example project shows bundled demos as read-only transcripts", async ({ page }) => {
   await page.goto("/");
+  const sessionsBefore = (await invokeArgsList(page, "new_session")).length;
+  const sendsBefore = (await invokeArgsList(page, "send_message")).length;
+  const scratchBefore = (await invokeArgsList(page, "start_scratch_chat")).length;
   // The synthetic "Example project" opens a demo view whose sidebar lists the
   // bundled demos (no per-project "Open demo" button any more).
   await page.getByText("Example project").click();
+  await expect(page.getByTestId("demo-read-only")).toBeVisible();
+  await expect(newSessionButton(page)).toHaveCount(0);
+  await expect(composer(page)).not.toBeVisible();
+
+  // Keyboard paths are guarded too; the read-only demo cannot be turned into
+  // either a regular or scratch conversation.
+  await page.keyboard.press("Control+n");
+  await page.keyboard.press("Control+Shift+n");
+  expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
+  expect((await invokeArgsList(page, "start_scratch_chat")).length).toBe(scratchBefore);
+
   await expect(page.getByText("Help me find RNA-seq knockdown datasets")).toBeVisible();
   await expect(page.getByText("What specific samples are included in GSE153250")).toBeVisible();
   await expect(page.getByText("Based on the upstream Counts data from GSE153250")).toBeVisible();
@@ -245,6 +268,8 @@ test("Example project shows bundled demos as read-only transcripts", async ({ pa
   // Full transcript includes SSH/run operation cards, not just the summary.
   await expect(page.getByText("Re-run pipeline with fixed STAR index")).toBeVisible();
   await expect(page.getByTestId("run-monitor-card")).toBeVisible();
+  expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
+  expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
 });
 
 test("send streams a mocked assistant reply", async ({ page, context }) => {
@@ -256,6 +281,21 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
   await page.locator(".msg.assistant").getByRole("button", { name: "Copy" }).click();
   await expect(page.locator(".copy-toast")).toHaveText("Copied");
+});
+
+test("tool-only turn endings do not generate follow-up questions", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("TOOLONLYDONE finish the report");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByRole("button", { name: "Processed" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await page.waitForTimeout(100);
+  await expect(page.getByTestId("follow-up-questions")).toHaveCount(0);
+  expect(await page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? [])
+      .filter((call: any) => call.cmd === "generate_follow_up_questions").length,
+  )).toBe(0);
 });
 
 test("manual review blocks sending and shows a playful progress animation", async ({ page }) => {
@@ -910,21 +950,20 @@ test("agent without plan mode renders a read-only compatibility plan", async ({ 
   await expect(card.locator(".plan-card-actions button")).toHaveCount(0);
 });
 
-test("plan action bar dispatches approve, modify, and save-exit correctly", async ({ page }) => {
+test("plan action bar explains revisions and dispatches approve or defer", async ({ page }) => {
   await openMockPlanSession(page, "acp");
   await activateAcpPlanMode(page);
 
   await expect(page.getByTestId("plan-approve")).toBeVisible();
-  await expect(page.getByTestId("plan-modify")).toBeVisible();
+  await expect(page.getByTestId("plan-modify")).toHaveCount(0);
+  await expect(page.getByTestId("plan-revision-hint")).toHaveText(
+    "Not happy with the plan? Send your requested changes in the chat box.",
+  );
   await expect(page.getByTestId("plan-save-exit")).toBeVisible();
-
-  await page.getByTestId("plan-modify").click();
-  await expect(composer(page)).toBeFocused();
-  expect(await invokeArgsList(page, "set_acp_session_mode")).toHaveLength(0);
-  expect(await invokeArgsList(page, "send_message")).toHaveLength(0);
+  await expect(page.getByTestId("plan-save-exit")).toHaveText("Not now");
 
   await page.getByTestId("plan-save-exit").click();
-  await expect(page.locator(".copy-toast")).toContainText("Plan saved; Default mode restored");
+  await expect(page.locator(".copy-toast")).toContainText("Plan not executed; Default mode restored");
   await expect.poll(() => invokeArgsList(page, "set_acp_session_mode")).toEqual([
     expect.objectContaining({ frameId: "s1", modeId: "default" }),
   ]);
@@ -1547,6 +1586,16 @@ test("Ctrl+K opens the unified command palette and Shift+Enter attaches", async 
   await expect(paletteRows.nth(1)).toHaveClass(/active/);
   await search.fill("counts");
   await expect(page.locator(".project-search-row").filter({ hasText: "counts.csv" })).toBeVisible();
+  await expect(page.locator(".project-search-row").filter({ hasText: "Current analysis" })).toBeVisible();
+  const sessionTitles = await page
+    .locator(".project-search-row:has(.gi.bubble) .project-search-title")
+    .allTextContents();
+  expect(sessionTitles.indexOf("Current analysis"))
+    .toBeLessThan(sessionTitles.indexOf("Cross-project counts"));
+  await expect.poll(() => lastInvokeArgs(page, "search_sessions")).toMatchObject({
+    query: "counts",
+    preferredProjectId: "default",
+  });
   await search.press("Shift+Enter");
   await expect(search).not.toBeVisible();
   await expect(page.locator(".composer-reference-chips")).toContainText(/counts\.csv|Cross-project counts/);
@@ -1737,8 +1786,17 @@ test("Cmd+K opens search and the composer shows the macOS shortcut", async ({ pa
   });
   await enterApp(page);
   await expect(composer(page)).toHaveAttribute("placeholder", /Cmd\+K/);
+  const shortcuts = page.locator(".sidebar .side-shortcut");
+  await expect(shortcuts.nth(0)).toHaveText("⌘N");
+  await expect(shortcuts.nth(1)).toHaveText("⌘K");
   await page.keyboard.press("Meta+k");
   await expect(commandPalette(page)).toBeVisible();
+  await page.keyboard.press("Meta+p");
+  const actionPalette = page.getByRole("dialog", { name: "Command Palette" });
+  await expect(actionPalette.locator(".action-palette-row", { hasText: "New session" })
+    .locator(".action-shortcut")).toHaveText("⌘N");
+  await expect(actionPalette.locator(".action-palette-row", { hasText: "Search" })
+    .locator(".action-shortcut")).toHaveText("⌘K");
 });
 
 test("Cmd+Enter sends when the modifier shortcut is selected on macOS", async ({ page }) => {
@@ -1773,6 +1831,10 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await expect(input).toHaveAttribute("inputmode", "search");
   await expect(input).toHaveAttribute("autocomplete", "off");
   await expect(palette).toContainText("New session");
+  await expect(palette.locator(".action-palette-row", { hasText: "New session" })
+    .locator(".action-shortcut")).toHaveText("Ctrl+N");
+  await expect(palette.locator(".action-palette-row", { hasText: "Search" })
+    .locator(".action-shortcut")).toHaveText("Ctrl+K");
 
   const rows = palette.locator(".project-search-row");
   await expect(rows.first()).toHaveClass(/active/);
@@ -1800,7 +1862,7 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
     "Search projects, artifacts, and sessions",
   );
   await input.press("Enter");
-  await expect(page.getByPlaceholder("Search this project…")).toBeVisible();
+  await expect(page.getByPlaceholder("Search conversations, projects, or files…")).toBeVisible();
   await page.keyboard.press("Escape");
 
   await page.keyboard.press("Control+k");
@@ -1928,6 +1990,8 @@ test("conversation action button renames, transfers, and deletes sessions (#557)
   const openActions = async () => {
     const row = session.locator("..");
     const actions = row.getByRole("button", { name: "Conversation actions" });
+    // The menu button is hover/focus-revealed: rest at opacity 0.
+    await row.hover();
     await expect.poll(() => actions.evaluate((el) => Number.parseFloat(getComputedStyle(el).opacity))).toBeGreaterThan(0);
     await actions.click();
   };
@@ -2134,6 +2198,8 @@ test("group action button visibly renames and deletes groups", async ({ page }) 
   let folder = page.locator(".side-folder", { hasText: "Figures" });
   await expect(folder).toBeVisible();
   let actions = folder.getByRole("button", { name: "Group actions" });
+  // The group menu button is hover/focus-revealed: rest at opacity 0.
+  await folder.hover();
   await expect.poll(() => actions.evaluate((el) => Number.parseFloat(getComputedStyle(el).opacity))).toBeGreaterThan(0);
   await actions.click();
   await page.getByRole("button", { name: "Rename group" }).click();
@@ -2143,6 +2209,7 @@ test("group action button visibly renames and deletes groups", async ({ page }) 
   folder = page.locator(".side-folder", { hasText: "Results" });
   await expect(folder).toBeVisible();
   actions = folder.getByRole("button", { name: "Group actions" });
+  await folder.hover();
   await actions.click();
   await page.getByRole("button", { name: "Delete group" }).click();
   await page.locator(".confirm-modal").getByRole("button", { name: "Delete group", exact: true }).click();
@@ -3129,6 +3196,50 @@ test("workspace file can be registered as an artifact", async ({ page }) => {
 
   await page.getByRole("button", { name: /^Artifacts/ }).click();
   await expect(page.locator('.rp-tile[data-artifact-name="report.csv"]')).toBeVisible();
+});
+
+test("Files copies absolute, relative, and multi-selected workspace paths", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await enterApp(page);
+  await page.getByRole("button", { name: "Files" }).click();
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, "writeText", {
+      configurable: true,
+      value: async (text: string) => { (window as any).__copiedWorkspacePaths = text; },
+    });
+  });
+
+  const files = page.locator(".rp-files");
+  const report = files.locator('.fb-row[data-workspace-path="report.csv"]');
+  const data = files.locator('.fb-row.dir[data-workspace-path="data"]');
+
+  await report.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Copy absolute path" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__copiedWorkspacePaths)).toBe(
+    "/mock/root/report.csv",
+  );
+
+  await data.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Copy relative path" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__copiedWorkspacePaths)).toBe("data");
+
+  await files.getByRole("button", { name: "Select" }).click();
+  await data.click();
+  await report.click();
+  await expect(data).toHaveAttribute("aria-pressed", "true");
+  await expect(report).toHaveAttribute("aria-pressed", "true");
+
+  await report.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Copy absolute path" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__copiedWorkspacePaths)).toBe(
+    "/mock/root/data\n/mock/root/report.csv",
+  );
+
+  await report.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Copy relative path" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__copiedWorkspacePaths)).toBe(
+    "data\nreport.csv",
+  );
 });
 
 test("Files creates, renames, deletes, and refreshes local entries", async ({ page }) => {
@@ -6821,7 +6932,13 @@ test("streaming assistant keeps formatted Markdown with a lightweight live tail"
   await live.evaluate((element) => ((element as any).__liveMarkdownProbe = true));
 
   await expect(page.getByText("stream line 18", { exact: false })).toBeVisible({ timeout: 10_000 });
-  await expect.poll(async () => Number(await live.getAttribute("data-pending-bytes") ?? 0))
+  // Deltas and the minimum Markdown commit interval are both 50 ms. Polling at
+  // Playwright's default cadence can repeatedly sample just after each commit
+  // and miss the short-lived plain-text tail entirely.
+  await expect.poll(
+    async () => Number(await live.getAttribute("data-pending-bytes") ?? 0),
+    { intervals: [10], timeout: 10_000 },
+  )
     .toBeGreaterThan(0);
   expect(await live.evaluate((element) => (element as any).__liveMarkdownProbe === true)).toBe(true);
 
@@ -6967,34 +7084,29 @@ test("session history loads older pages with a stable cursor", async ({ page }) 
   });
 });
 
-test("sidebar search finds sessions beyond the loaded history page and restores the list", async ({ page }) => {
+test("sidebar search opens the Ctrl+K palette and finds sessions beyond loaded history", async ({ page }) => {
   await page.goto("/?mockManySessions=1");
   await page.locator(".proj-card-main").first().click();
 
   const sidebar = page.locator(".sidebar");
+  const navButtons = sidebar.locator(".nav .side-btn");
+  await expect(navButtons.nth(0).locator(".side-btn-label")).toHaveText("New session");
+  await expect(navButtons.nth(0).locator(".side-shortcut")).toHaveText("Ctrl+N");
+  await expect(navButtons.nth(1).locator(".side-btn-label")).toHaveText("Search");
+  await expect(navButtons.nth(1).locator(".side-shortcut")).toHaveText("Ctrl+K");
+
   await sidebar.getByRole("button", { name: "Search sessions" }).click();
-  const search = sidebar.getByRole("searchbox", { name: "Search sessions" });
+  const search = commandPalette(page);
   await expect(search).toBeFocused();
 
   await search.fill("101");
-  await expect(sidebar.getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
-  await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toHaveCount(0);
-  await expect(sidebar.getByRole("button", { name: "Load earlier sessions" })).toHaveCount(0);
+  await expect(page.locator(".project-search-row", { hasText: "Paged session 101" })).toBeVisible();
   await expect.poll(() => lastInvokeArgs(page, "search_sessions")).toMatchObject({
     query: "101",
-    limit: 100,
-    projectId: "default",
+    limit: 12,
+    preferredProjectId: "default",
   });
 
-  await search.fill("missing conversation");
-  await expect(sidebar.getByRole("status")).toHaveText("No matching sessions.");
-  await sidebar.getByRole("button", { name: "Clear session search" }).click();
-  await expect(search).toHaveValue("");
-  await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();
-  await expect(sidebar.getByRole("button", { name: "Load earlier sessions" })).toBeVisible();
-
-  await search.fill("101");
-  await expect(sidebar.getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(search).toHaveCount(0);
   await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();
@@ -7601,11 +7713,22 @@ test("Windows uses the integrated title bar without covering the project landing
   const exportCurrentProject = page.getByRole("menuitem", { name: "Export current project" });
   await expect(exportCurrentProject).toBeEnabled();
   await exportCurrentProject.click();
+  const exportOptions = page.getByTestId("project-export-options");
+  await expect(exportOptions).toBeVisible();
+  await expect(exportOptions).toContainText("Copy this folder directly");
+  await page.keyboard.press("Escape");
+  await expect(exportOptions).toBeHidden();
+  await expect(page.locator(".app")).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "export_project")).toBeNull();
+
+  await page.getByRole("button", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Export current project" }).click();
+  await page.getByTestId("project-export-options").getByRole("button", { name: "Export ZIP" }).click();
   await expect.poll(() => lastInvokeArgs(page, "export_project")).toMatchObject({ id: "default" });
-  const transferModal = page.getByTestId("project-transfer-modal");
-  await expect(transferModal).toContainText("Project export complete");
-  await transferModal.getByRole("button", { name: "Done" }).click();
-  await expect(transferModal).toBeHidden();
+  const transferProgress = page.getByTestId("project-transfer-progress");
+  await expect(transferProgress).toContainText("Project export complete");
+  await transferProgress.getByRole("button", { name: "Done" }).click();
+  await expect(transferProgress).toBeHidden();
 
   await page.getByRole("button", { name: "Edit", exact: true }).click();
   await page.getByRole("menuitem", { name: "Import Codex conversations" }).click();
@@ -7817,42 +7940,102 @@ test("new project form enables Create after name and folder are set", async ({ p
   await expect(create).toBeEnabled();
 });
 
-test("project transfer exposes progress, blocks duplicate actions, and confirms completion", async ({ page }) => {
+test("import can open an existing folder in place without copying it", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Import project" }).click();
+  const options = page.getByTestId("project-import-options");
+  await expect(options).toBeVisible();
+  await expect(options).toContainText("without copying it");
+
+  // The choice dialog is the top layer: Escape closes only it immediately,
+  // without moving focus first or leaving the Projects screen.
+  await page.keyboard.press("Escape");
+  await expect(options).toBeHidden();
+  await expect(page.locator(".projects-screen")).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "import_project")).toBeNull();
+
+  await page.getByRole("button", { name: "Import project" }).click();
+  await options.getByRole("button", { name: "Open a folder in place" }).click();
+  const form = page.locator(".overlay", { has: page.locator("#new-project-name") });
+  await expect(form.getByRole("heading", { name: "Open project folder" })).toBeVisible();
+  await expect(page.locator("#new-project-name")).toHaveValue("new-project");
+  await expect(form.locator(".pn-dir .path")).toHaveText("/mock/root/new-project");
+  await expect(form.locator(".pn-layout")).toHaveCount(0);
+  await form.getByRole("button", { name: "Open project" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "create_project")).toMatchObject({
+    name: "new-project",
+    workspaceDir: "/mock/root/new-project",
+    standardLayout: false,
+  });
+  await expect.poll(() => lastInvokeArgs(page, "import_project")).toBeNull();
+});
+
+test("project transfers stay in a lower-right progress card without blocking other projects", async ({ page }) => {
   await page.goto("/");
   await expect.poll(async () => page.evaluate(() =>
     (window as any).__tauriListenerReady?.("project-transfer-progress"),
   )).toBe(true);
-  const projectCard = page.locator(".proj-card:not(.proj-example)").first();
+  const projectCards = page.locator(".proj-card:not(.proj-example)");
+  const projectCard = projectCards.first();
+  const otherProjectCard = projectCards.nth(1);
   const exportProject = projectCard.getByRole("button", { name: "Export project" });
   await expect.poll(() => exportProject.evaluate((el) => Number.parseFloat(getComputedStyle(el).opacity))).toBeGreaterThan(0);
-  await page.evaluate(() => (window as any).__delayNextProjectTransfer("export", 250));
+  await page.evaluate(() => (window as any).__delayNextProjectTransfer("export", 800));
   await exportProject.click();
+  const exportOptions = page.getByTestId("project-export-options");
+  await expect(exportOptions).toContainText("A ZIP is the complete portable copy");
+  await expect(exportOptions).toContainText("/mock/root");
+  await exportOptions.getByRole("button", { name: "Export ZIP" }).click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "export_project"),
   )).toBe(true);
-  const transferModal = page.getByTestId("project-transfer-modal");
-  await expect(transferModal).toContainText("Exporting project");
-  await expect(transferModal).toContainText("Compressing workspace files");
-  await expect(transferModal).toContainText("data/example.tsv");
-  await expect(page.getByRole("button", { name: "Import project" })).toBeDisabled();
+  const transferProgress = page.getByTestId("project-transfer-progress");
+  await expect(transferProgress).toContainText("Exporting project");
+  await expect(transferProgress).toContainText("Compressing workspace files");
+  await expect(transferProgress).toContainText("data/example.tsv");
+  await expect(page.locator(".project-transfer-overlay")).toHaveCount(0);
+  await expect.poll(() => transferProgress.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return {
+      position: getComputedStyle(el).position,
+      right: Math.round(innerWidth - rect.right),
+      bottom: Math.round(innerHeight - rect.bottom),
+    };
+  })).toMatchObject({ position: "fixed", right: 20, bottom: 20 });
+  await expect(projectCard.locator(".proj-card-main")).toBeDisabled();
+  await expect(projectCard.locator(".pc-transfer-lock")).toContainText("read-only");
+  await expect(otherProjectCard.locator(".proj-card-main")).toBeEnabled();
+  await otherProjectCard.locator(".proj-card-main").click();
+  await expect(page.locator(".proj-name")).toHaveText("Other project");
+  await expect(transferProgress).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(transferModal).toBeVisible();
-  await expect(transferModal).toContainText("Project export complete");
+  await expect(transferProgress).toBeVisible();
+  await expect(transferProgress).toContainText("Project export complete");
   await page.keyboard.press("Escape");
-  await expect(transferModal).toBeHidden();
+  await expect(transferProgress).toBeHidden();
 
-  await page.evaluate(() => (window as any).__delayNextProjectTransfer("import", 250));
+  await page.goto("/");
+  await expect.poll(async () => page.evaluate(() =>
+    (window as any).__tauriListenerReady?.("project-transfer-progress"),
+  )).toBe(true);
+  await page.evaluate(() => (window as any).__delayNextProjectTransfer("import", 800));
   await page.getByRole("button", { name: "Import project" }).click();
+  await page.getByTestId("project-import-options")
+    .getByRole("button", { name: "Import a ZIP archive" }).click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "import_project"),
   )).toBe(true);
-  await expect(transferModal).toContainText("Importing project");
-  await expect(transferModal).toContainText("project-named subfolder");
-  await expect(transferModal).toContainText("Extracting workspace files");
-  await expect(transferModal).toContainText("workspace/data/example.tsv");
-  await expect(transferModal).toContainText("Project import complete");
-  await transferModal.getByRole("button", { name: "Done" }).click();
-  await expect(transferModal).toBeHidden();
+  const importProgress = page.getByTestId("project-transfer-progress");
+  await expect(importProgress).toContainText("Importing project");
+  await expect(importProgress).toContainText("Extracting workspace files");
+  await expect(importProgress).toContainText("workspace/data/example.tsv");
+  await page.locator(".proj-card:not(.proj-example)").nth(1).locator(".proj-card-main").click();
+  await expect(page.locator(".proj-name")).toHaveText("Other project");
+  await expect(importProgress).toContainText("Project import complete");
+  await expect(page.locator(".proj-name")).toHaveText("Other project");
+  await importProgress.getByRole("button", { name: "Done" }).click();
+  await expect(importProgress).toBeHidden();
 });
 
 test("projects sync manually, copy a device code, and join on another device", async ({ page }) => {
@@ -8096,6 +8279,7 @@ test("pet stays off until the user explicitly configures its directory", async (
 });
 
 test("desktop pet remains independent and reflects global agent state", async ({ page }) => {
+  await page.setViewportSize({ width: 128, height: 176 });
   await page.goto("/?pet=desktop&mockPet=1");
 
   const pet = page.getByTestId("superscience-pet");
@@ -8108,13 +8292,17 @@ test("desktop pet remains independent and reflects global agent state", async ({
     (window as any).__tauriEmit("agent", { kind: "User", frame_id: "pet-frame", text: "run" });
   });
   await expect(pet).toHaveAttribute("data-state", "running");
-  await expect(pet.getByText("Working")).toBeVisible();
+  const workingLabel = pet.getByText("Working");
+  await expect(workingLabel).toBeVisible();
+  await expectInsideViewport(workingLabel, 128, 176);
 
   await page.evaluate(() => {
     (window as any).__tauriEmit("confirm-request", { frame_id: "pet-frame", message: "Approve?" });
   });
   await expect(pet).toHaveAttribute("data-state", "waiting");
-  await expect(pet.getByText("Needs you")).toBeVisible();
+  const waitingLabel = pet.getByText("Needs you");
+  await expect(waitingLabel).toBeVisible();
+  await expectInsideViewport(waitingLabel, 128, 176);
   await pet.click();
   await expect.poll(() => lastInvokeArgs(page, "open_pet_session")).toMatchObject({
     sessionId: "pet-frame",
@@ -8140,6 +8328,7 @@ test("desktop pet remains independent and reflects global agent state", async ({
 });
 
 test("desktop pet shows active Run titles and celebrates completion (#693)", async ({ page }) => {
+  await page.setViewportSize({ width: 128, height: 176 });
   await page.addInitScript(() => {
     (window as any).__mockPetActiveRuns = [
       { id: "run-data", title: "siibra atlas query example (with assignment)" },
@@ -8155,6 +8344,7 @@ test("desktop pet shows active Run titles and celebrates completion (#693)", asy
   await expect(label).toBeVisible();
   await expect(pet).toHaveAttribute("data-state", "running");
   const [spriteBox, labelBox] = await Promise.all([sprite.boundingBox(), label.boundingBox()]);
+  await expectInsideViewport(label, 128, 176);
   expect(labelBox!.y + labelBox!.height).toBeLessThanOrEqual(spriteBox!.y);
 
   await page.evaluate(() => {

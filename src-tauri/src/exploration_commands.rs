@@ -24,6 +24,7 @@ const ERR_SOURCE_INCOMPLETE: &str = "exploration_source_incomplete";
 const ERR_ACTIVE_RUN: &str = "exploration_active_run";
 const ERR_HISTORY_UNAVAILABLE: &str = "exploration_history_unavailable";
 const ERR_NOT_WRITABLE: &str = "exploration_not_writable";
+const ERR_MAINLINE_FROZEN: &str = "exploration_mainline_frozen";
 
 fn coded_error(code: &str, message: impl AsRef<str>) -> String {
     format!("{code}: {}", message.as_ref())
@@ -166,6 +167,12 @@ impl ExplorationService {
             return Err(coded_error(
                 ERR_HISTORY_UNAVAILABLE,
                 "the selected turn is outside the available conversation history",
+            ));
+        }
+        if selected_turn_index != current_turn_index {
+            return Err(coded_error(
+                ERR_HISTORY_UNAVAILABLE,
+                "explorations can only start from the current completed turn",
             ));
         }
         let revision = self
@@ -369,10 +376,35 @@ impl ExplorationService {
             .to_string(),
             created_at: now,
         };
-        self.store
-            .create_exploration_checkpoint(&checkpoint)
+        if let Some(existing) = self
+            .store
+            .get_exploration_checkpoint_by_guard(
+                &checkpoint.family_id,
+                &checkpoint.source_frame_id,
+                checkpoint.source_message_seq,
+                &checkpoint.guard_hash,
+            )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(existing);
+        }
+        if let Err(error) = self.store.create_exploration_checkpoint(&checkpoint).await {
+            if let Some(existing) = self
+                .store
+                .get_exploration_checkpoint_by_guard(
+                    &checkpoint.family_id,
+                    &checkpoint.source_frame_id,
+                    checkpoint.source_message_seq,
+                    &checkpoint.guard_hash,
+                )
+                .await
+                .map_err(|lookup_error| lookup_error.to_string())?
+            {
+                return Ok(existing);
+            }
+            return Err(error.to_string());
+        }
         for head in source.artifact_heads {
             self.store
                 .record_exploration_baseline_artifact_head(&ExplorationBaselineArtifactHead {
@@ -879,22 +911,36 @@ pub(crate) async fn working_project_for_active_frame(
     }
 }
 
-pub(crate) async fn require_writable_exploration(
+pub(crate) async fn require_writable_scope(
     store: &Store,
     scope: &StateScope,
 ) -> Result<(), String> {
-    if let StateScope::Exploration { exploration_id, .. } = scope {
-        let status = store
-            .get_exploration(exploration_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "Exploration not found".to_string())?
-            .status;
-        if status != ExplorationStatus::Active {
-            return Err(coded_error(
-                ERR_NOT_WRITABLE,
-                "only an active exploration accepts writes",
-            ));
+    match scope {
+        StateScope::Mainline { project_id } => {
+            if store
+                .project_mainline_is_frozen(project_id)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                return Err(coded_error(
+                    ERR_MAINLINE_FROZEN,
+                    "the mainline is frozen until an exploration is promoted or every candidate is archived or discarded",
+                ));
+            }
+        }
+        StateScope::Exploration { exploration_id, .. } => {
+            let status = store
+                .get_exploration(exploration_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "Exploration not found".to_string())?
+                .status;
+            if status != ExplorationStatus::Active {
+                return Err(coded_error(
+                    ERR_NOT_WRITABLE,
+                    "only an active exploration accepts writes",
+                ));
+            }
         }
     }
     Ok(())
@@ -917,13 +963,18 @@ pub(crate) async fn reject_private_exploration_project_mutation(
     Ok(())
 }
 
+/// Starts a candidate from one immutable checkpoint while holding the project
+/// write lock. This closes the gap between checkpoint creation and the first
+/// exploration becoming the owner of the mainline.
 #[tauri::command]
-pub(crate) async fn create_exploration_checkpoint(
+pub(crate) async fn start_exploration(
     state: State<'_, AppState>,
+    terminals: State<'_, crate::terminal_sessions::TerminalManager>,
     window: WebviewWindow,
     source_frame_id: String,
     turn_index: Option<i64>,
-) -> Result<ExplorationCheckpoint, String> {
+    name: String,
+) -> Result<Exploration, String> {
     let owner = state
         .store
         .frame_state_scope(&source_frame_id)
@@ -931,8 +982,20 @@ pub(crate) async fn create_exploration_checkpoint(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| coded_error(ERR_HISTORY_UNAVAILABLE, "source conversation not found"))?;
     let active = state.active(window.label());
-    if owner.project_id() != active.id {
-        return Err("Source conversation does not belong to the active project".into());
+    if owner.project_id() != active.id || !matches!(owner, StateScope::Mainline { .. }) {
+        return Err("Source conversation does not belong to the active mainline".into());
+    }
+    let _activity = state.begin_project_exclusive_activity(&active.id)?;
+    if state
+        .store
+        .project_has_current_exploration_for_other_source(&active.id, &source_frame_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err(coded_error(
+            ERR_MAINLINE_FROZEN,
+            "finish the current exploration round before starting from another conversation",
+        ));
     }
     if state.running_turns.lock().await.contains(&source_frame_id) {
         return Err(coded_error(
@@ -940,10 +1003,23 @@ pub(crate) async fn create_exploration_checkpoint(
             "wait for the source turn to finish",
         ));
     }
-    let _activity = state.begin_project_activity(&active.id)?;
-    ExplorationService::new(state.store.clone(), state.app_data.clone())
+    if terminals.has_running(&active.id, MAINLINE_SCOPE_KEY) {
+        return Err(coded_error(
+            ERR_SOURCE_BUSY,
+            "close the mainline terminal before starting an exploration",
+        ));
+    }
+    crate::exploration_promotion::ensure_no_queued_turns(&state, std::iter::once(&source_frame_id))
+        .await?;
+    let service = ExplorationService::new(state.store.clone(), state.app_data.clone());
+    let checkpoint = service
         .create_checkpoint_at(&active.id, &source_frame_id, turn_index)
-        .await
+        .await?;
+    let exploration = service.create_exploration(&checkpoint.id, &name).await?;
+    let (project, _) = working_project_for_frame(&state, &exploration.frame_id).await?;
+    state.set_active(window.label(), project);
+    state.set_active_frame(window.label(), Some(exploration.frame_id.clone()));
+    Ok(exploration)
 }
 
 #[tauri::command]
@@ -969,40 +1045,6 @@ pub(crate) async fn list_project_state_revisions(
         .list_project_state_revision_summaries(&frame_id, turn_start, turn_end)
         .await
         .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub(crate) async fn create_exploration(
-    state: State<'_, AppState>,
-    window: WebviewWindow,
-    checkpoint_id: String,
-    name: String,
-) -> Result<Exploration, String> {
-    let checkpoint = state
-        .store
-        .get_exploration_checkpoint(&checkpoint_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| coded_error(ERR_HISTORY_UNAVAILABLE, "checkpoint not found"))?;
-    if state
-        .running_turns
-        .lock()
-        .await
-        .contains(&checkpoint.source_frame_id)
-    {
-        return Err(coded_error(
-            ERR_SOURCE_BUSY,
-            "wait for the source turn to finish",
-        ));
-    }
-    let _activity = state.begin_project_activity(&checkpoint.project_id)?;
-    let exploration = ExplorationService::new(state.store.clone(), state.app_data.clone())
-        .create_exploration(&checkpoint_id, &name)
-        .await?;
-    let (project, _) = working_project_for_frame(&state, &exploration.frame_id).await?;
-    state.set_active(window.label(), project);
-    state.set_active_frame(window.label(), Some(exploration.frame_id.clone()));
-    Ok(exploration)
 }
 
 #[tauri::command]
@@ -1039,14 +1081,21 @@ pub(crate) async fn open_exploration(
 #[tauri::command]
 pub(crate) async fn archive_exploration(
     state: State<'_, AppState>,
+    terminals: State<'_, crate::terminal_sessions::TerminalManager>,
     exploration_id: String,
 ) -> Result<Exploration, String> {
-    let _exploration = state
+    let exploration = state
         .store
         .get_exploration(&exploration_id)
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Exploration not found".to_string())?;
+    let checkpoint = state
+        .store
+        .get_exploration_checkpoint(&exploration.checkpoint_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| coded_error(ERR_HISTORY_UNAVAILABLE, "checkpoint not found"))?;
     let running_frames = state.running_turns.lock().await.clone();
     for frame_id in &running_frames {
         if matches!(
@@ -1065,6 +1114,13 @@ pub(crate) async fn archive_exploration(
                 "wait for exploration turns to finish before archiving",
             ));
         }
+    }
+    let _activity = state.begin_project_exclusive_activity(&checkpoint.project_id)?;
+    if terminals.has_running(&checkpoint.project_id, &exploration_id) {
+        return Err(coded_error(
+            ERR_SOURCE_BUSY,
+            "close the exploration terminal before archiving",
+        ));
     }
     if state
         .store
@@ -1100,8 +1156,77 @@ pub(crate) async fn archive_exploration(
 #[tauri::command]
 pub(crate) async fn restore_exploration(
     state: State<'_, AppState>,
+    terminals: State<'_, crate::terminal_sessions::TerminalManager>,
     exploration_id: String,
 ) -> Result<Exploration, String> {
+    let exploration = state
+        .store
+        .get_exploration(&exploration_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Exploration not found".to_string())?;
+    if exploration.status != ExplorationStatus::Archived {
+        return Err("Exploration is not archived".into());
+    }
+    let checkpoint = state
+        .store
+        .get_exploration_checkpoint(&exploration.checkpoint_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| coded_error(ERR_HISTORY_UNAVAILABLE, "checkpoint not found"))?;
+    let _activity = state.begin_project_exclusive_activity(&checkpoint.project_id)?;
+    if state
+        .store
+        .project_has_current_exploration_for_other_source(
+            &checkpoint.project_id,
+            &checkpoint.source_frame_id,
+        )
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err(coded_error(
+            ERR_MAINLINE_FROZEN,
+            "finish the current exploration round before restoring this candidate",
+        ));
+    }
+    if terminals.has_running(&checkpoint.project_id, MAINLINE_SCOPE_KEY) {
+        return Err(coded_error(
+            ERR_SOURCE_BUSY,
+            "close the mainline terminal before restoring an exploration",
+        ));
+    }
+    let family = state
+        .store
+        .get_exploration_family(&checkpoint.family_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| coded_error(ERR_HISTORY_UNAVAILABLE, "exploration family not found"))?;
+    let message_head = state
+        .store
+        .frame_message_head(&checkpoint.source_frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let ui_event_head = state
+        .store
+        .frame_ui_event_head(&checkpoint.source_frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let state_generation = state
+        .store
+        .project_state_generation(&checkpoint.project_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if family.mainline_frame_id != checkpoint.source_frame_id
+        || family.generation != checkpoint.source_family_generation
+        || message_head != checkpoint.source_frame_head_seq
+        || ui_event_head != checkpoint.source_ui_event_seq
+        || state_generation != checkpoint.source_state_generation
+    {
+        return Err(coded_error(
+            ERR_HISTORY_UNAVAILABLE,
+            "this exploration belongs to an older mainline and cannot be restored",
+        ));
+    }
     if !state
         .store
         .transition_exploration(
@@ -1184,7 +1309,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_checkpoint_creates_independent_restartable_explorations() {
+    async fn repeated_start_reuses_one_checkpoint_for_independent_explorations() {
         let (service, base, project) = fixture("create").await;
         let logical_key = "path:result.txt";
         std::fs::write(project.join("result.txt"), b"baseline result").unwrap();
@@ -1269,6 +1394,7 @@ mod tests {
             "p",
             "main",
             &project,
+            None,
         )
         .await
         .unwrap()
@@ -1278,8 +1404,20 @@ mod tests {
             .create_exploration(&checkpoint.id, "First")
             .await
             .unwrap();
+        let frozen = require_writable_scope(&service.store, &StateScope::mainline("p"))
+            .await
+            .unwrap_err();
+        assert!(frozen.starts_with(ERR_MAINLINE_FROZEN));
+        require_writable_scope(
+            &service.store,
+            &StateScope::exploration("p", first.id.clone()),
+        )
+        .await
+        .unwrap();
+        let repeated_checkpoint = service.create_checkpoint("p", "main").await.unwrap();
+        assert_eq!(repeated_checkpoint.id, checkpoint.id);
         let second = service
-            .create_exploration(&checkpoint.id, "Second")
+            .create_exploration(&repeated_checkpoint.id, "Second")
             .await
             .unwrap();
         assert_ne!(first.frame_id, second.frame_id);

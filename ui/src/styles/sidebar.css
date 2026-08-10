@@ -49,6 +49,12 @@
 .side-btn:hover { background: var(--bg-elev); color: var(--text); }
 .side-btn.primary { color: var(--text); }
 .side-btn.primary:hover { background: var(--clay-soft); }
+.side-btn-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-shortcut {
+  flex: 0 0 auto; margin-left: auto; border: 0; background: transparent;
+  color: var(--text-faint); font: 11px/1 var(--font-ui); opacity: .78;
+}
+.side-btn:hover .side-shortcut { color: var(--text-muted); opacity: 1; }
 
 .side-list { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1 1 auto; scrollbar-gutter: stable; overscroll-behavior: contain; }
 
@@ -62,37 +68,9 @@
 }
 .side-select-btn:hover, .side-select-btn[aria-pressed="true"] { background: var(--bg-elev); color: var(--text); }
 .side-select-btn:disabled { cursor: default; opacity: .45; }
-.side-session-search-btn,
 .side-sort-btn { width: 26px; height: 26px; color: var(--text-faint); }
-.side-session-search-btn svg,
 .side-sort-btn svg { width: 16px; height: 16px; }
-.side-session-search-btn:hover, .side-session-search-btn.active,
 .side-sort-btn:hover, .side-sort-btn.active { color: var(--text); background: var(--bg-elev); }
-.side-session-search {
-  position: relative; display: flex; align-items: center; margin: 0 8px 6px;
-}
-.side-session-search input {
-  width: 100%; height: 32px; padding: 5px 29px 5px 30px;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--bg-input); color: var(--text); font: inherit; font-size: 12.5px;
-  outline: none; appearance: none; -webkit-appearance: none;
-}
-.side-session-search input::-webkit-search-cancel-button { display: none; }
-.side-session-search input::placeholder { color: var(--text-faint); }
-.side-session-search input:focus { border-color: var(--clay); box-shadow: 0 0 0 2px var(--clay-soft); }
-.side-session-search-icon {
-  position: absolute; left: 9px; z-index: 1; display: inline-flex;
-  color: var(--text-faint); pointer-events: none;
-}
-.side-session-search-icon svg { width: 14px; height: 14px; }
-.side-session-search-clear {
-  position: absolute; right: 4px; display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-xs);
-  background: transparent; color: var(--text-faint); cursor: pointer;
-}
-.side-session-search-clear:hover { background: var(--bg-elev); color: var(--text); }
-.side-session-search-clear svg { width: 13px; height: 13px; }
-.side-search-hint { padding-top: 9px; }
 .side-sort-backdrop { position: fixed; inset: 0; z-index: 40; }
 .side-sort-menu {
   position: absolute; z-index: 41; top: 34px; right: 8px; min-width: 184px;
@@ -135,8 +113,10 @@
   font-size: 13px; color: var(--text-muted); white-space: nowrap;
 }
 .side-item:hover { background: var(--bg-elev); color: var(--text); }
-.side-item .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
-.side-item .dot.ok { background: var(--ok); }
+/* Status dots stay hidden at rest; only running/attention sessions light one up,
+   so the idle list reads as plain titles. Opacity (not display) keeps row geometry
+   stable when a run starts or finishes. */
+.side-item .dot { position: relative; width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; overflow: hidden; opacity: 0; transition: opacity .15s ease; }
 button.side-item { width: 100%; text-align: left; background: transparent; border: 1px solid transparent; font: inherit; font-size: 13px; cursor: pointer; }
 button.side-item.ses { cursor: pointer; user-select: none; padding-right: 34px; }
 button.side-item.ses.selecting { padding-right: 10px; }
@@ -150,6 +130,9 @@ button.side-item.ses.selecting { padding-right: 10px; }
 .side-item.ses.selected { background: var(--clay-soft); border-color: var(--clay); color: var(--text); }
 .side-item.ses.selected .session-select-mark { background: var(--clay); border-color: var(--clay); color: var(--on-clay); }
 .side-item-wrap { position: relative; min-width: 0; }
+/* Row menus are revealed only on hover/keyboard focus — including the active
+   session — so the list reads as plain titles at rest. Opacity (not display)
+   keeps the button tabbable; :focus-within lights it up on keyboard focus. */
 .session-actions, .folder-actions {
   position: absolute; z-index: 1; top: 50%; right: 5px; transform: translateY(-50%);
   display: inline-flex; align-items: center; justify-content: center;
@@ -157,22 +140,41 @@ button.side-item.ses.selecting { padding-right: 10px; }
   border: 1px solid transparent; border-radius: var(--radius-xs);
   background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
   color: var(--text-faint); font: inherit; font-size: 18px; line-height: 1;
-  cursor: pointer; opacity: .58;
+  cursor: pointer; opacity: 0;
   transition: opacity .12s ease, color .12s ease, background .12s ease;
 }
 .side-item-wrap:hover .session-actions,
 .side-item-wrap:focus-within .session-actions,
-.side-item.active + .session-actions,
 .side-folder:hover .folder-actions,
 .side-folder:focus-within .folder-actions { opacity: 1; }
 .session-actions:hover, .session-actions:focus-visible,
 .folder-actions:hover, .folder-actions:focus-visible { color: var(--text); background: var(--bg-input); }
 .session-actions.selection-hidden { display: none; }
 .side-item.active { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-sm); }
-.side-item.active .dot { background: var(--clay); }
-.side-item.ses.running .dot { background: var(--clay); animation: tool-pulse 1s ease-in-out infinite; }
-/* Awaiting user approval/confirmation (#327) — outranks running. */
-.side-item.ses.attention .dot { background: var(--warn); animation: tool-pulse 1s ease-in-out infinite; }
+/* Working indicator: glowing dot with a traveling sheen (reference: Claude's
+   shimmering "thinking" light). Attention (awaiting approval #327) shares the
+   motion in warning color and outranks running. */
+.side-item.ses.running .dot, .side-item.ses.attention .dot { opacity: 1; animation: dot-breathe 1.6s ease-in-out infinite; }
+.side-item.ses.running .dot { background: var(--ok); box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 55%, transparent); }
+.side-item.ses.attention .dot { background: var(--warn); box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 55%, transparent); }
+.side-item.ses.running .dot::after, .side-item.ses.attention .dot::after {
+  content: ""; position: absolute; inset: -1px;
+  background: linear-gradient(105deg, transparent 25%, rgba(255, 255, 255, .9) 50%, transparent 75%);
+  background-size: 250% 100%;
+  animation: dot-sheen 1.25s linear infinite;
+}
+@keyframes dot-breathe {
+  0%, 100% { transform: scale(.86); }
+  50% { transform: scale(1.08); }
+}
+@keyframes dot-sheen {
+  from { background-position: 120% 0; }
+  to { background-position: -90% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-item.ses.running .dot, .side-item.ses.attention .dot { animation: none; }
+  .side-item.ses.running .dot::after, .side-item.ses.attention .dot::after { display: none; }
+}
 .ses-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .side-exploration-group {
   display: grid; gap: 2px; margin: 2px 0 5px 14px; padding: 5px 0 2px 9px;
@@ -191,7 +193,7 @@ button.side-item.ses.selecting { padding-right: 10px; }
 .side-exploration.active { border-color: var(--border-active); background: var(--clay-soft); color: var(--text); }
 .exploration-branch-mark { flex: 0 0 auto; color: var(--clay); font: 12px/1 var(--font-mono); }
 .side-exploration-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
-.side-exploration-title { overflow: hidden; font-size: 12px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
+.side-exploration-title { overflow: hidden; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .side-exploration-meta { overflow: hidden; color: var(--text-faint); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .side-hint { font-size: 12px; color: var(--text-faint); padding: 6px 10px; }
 .side-load-more { width: 100%; margin-top: 6px; padding: 7px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
@@ -255,7 +257,6 @@ button.side-item.ses.selecting { padding-right: 10px; }
   .sidebar .proj-name,
   .sidebar .side-group-title,
   .sidebar .side-sessions-head,
-  .sidebar .side-session-search,
   .sidebar .side-bulk-actions,
   .sidebar .side-folder-caret,
   .sidebar .side-folder-name,
@@ -306,6 +307,8 @@ button.side-item.ses.selecting { padding-right: 10px; }
     min-height: 36px;
     color: transparent;
   }
+  .sidebar .side-btn-label,
+  .sidebar .side-shortcut { display: none; }
   .sidebar .side-btn .gi {
     width: 17px;
     height: 17px;

@@ -418,7 +418,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   background: var(--clay);
   color: var(--on-clay);
   border-color: transparent;
-  font-weight: 650;
+  font-weight: 600;
 }
 .btn-primary {
   border: 1px solid transparent;

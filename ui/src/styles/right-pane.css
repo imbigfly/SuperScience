@@ -1,15 +1,18 @@
 /* ---------- Resizer + right pane ---------- */
 .resizer { flex: 0 0 auto; width: 5px; cursor: col-resize; background: transparent; position: relative; }
-.resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px; background: var(--border-strong); transition: background .12s ease; }
+.resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px; background: var(--border); transition: background .12s ease; }
 .resizer:hover::after { background: var(--clay); }
 .drag-overlay { position: fixed; inset: 0; z-index: 40; cursor: col-resize; }
 .drag-overlay-row { cursor: row-resize; }
 
 .rightpane { flex: 0 0 auto; display: flex; flex-direction: column; background: var(--bg-sunken); border-left: 0; min-width: 0; animation: motion-drawer-in var(--motion-duration-medium) var(--motion-ease-decelerate) both; }
-.rp-tabs { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 10px; border-bottom: 1px solid var(--border-strong); flex: 0 0 auto; background: var(--bg-sunken); min-width: 0; overflow: visible; }
+.rp-tabs { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 10px; border-bottom: 1px solid var(--border); flex: 0 0 auto; background: var(--bg-sunken); min-width: 0; overflow: visible; }
 .rp-tab-scroll { position: relative; display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; }
 .rp-tab-scroll::-webkit-scrollbar { display: none; }
-.rp-tab-wrap { position: relative; display: inline-flex; align-items: stretch; flex: 0 1 auto; min-width: 56px; max-width: 180px; border: 1px solid transparent; border-radius: var(--radius-xs); background: transparent; }
+/* Tabs never shrink below their label: overflow scrolls (rp-tab-scroll) instead
+   of ellipsizing two-character labels into unreadable fragments. Long file names
+   still cap at 180px with a title tooltip on the button. */
+.rp-tab-wrap { position: relative; display: inline-flex; align-items: stretch; flex: 0 0 auto; min-width: 0; max-width: 180px; border: 1px solid transparent; border-radius: var(--radius-xs); background: transparent; }
 .rp-tab-wrap.dragging { opacity: .45; }
 .rp-tab-wrap.drop-target { border-color: var(--clay); background: var(--clay-soft); }
 .rp-tab-wrap:has(.rp-tab.active) { border-color: var(--border-active); background: var(--bg-elev); box-shadow: var(--shadow-sm); }
@@ -30,7 +33,7 @@
 .rp-tab-add-item:hover { background: var(--bg-sunken); }
 .rp-tab-add-item.open { color: var(--text-muted); }
 .rp-tabs > .icon-btn, .rp-tabs > .rp-view-modes { flex: 0 0 auto; }
-.rp-tab { padding: 6px 10px; border-radius: var(--radius-xs); color: var(--text-faint); border: none; background: transparent; cursor: pointer; font: inherit; font-size: 12px; font-weight: 520; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rp-tab { padding: 6px 10px; border-radius: var(--radius-xs); color: var(--text-faint); border: none; background: transparent; cursor: pointer; font: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rp-tab.active { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-sm); }
 .rp-tab:hover:not(.active) { background: var(--surface-hover); color: var(--text); }
 .rp-doc { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: var(--bg-elev); }
@@ -322,7 +325,7 @@ button.run-status:hover { filter:brightness(0.96); }
 .rp-art-group.collapsed .rp-art-group-items { display: none; }
 .rp-tiles {
   display: flex; flex-direction: column; gap: 6px;
-  padding: 12px; border-bottom: 1px solid var(--border-strong);
+  padding: 12px; border-bottom: 1px solid var(--border);
   flex: 0 0 auto; max-height: min(240px, 34vh); overflow-y: auto;
   background: var(--bg-sunken);
 }
@@ -409,7 +412,7 @@ button.run-status:hover { filter:brightness(0.96); }
 .rp-path { margin: 0; font-family: var(--font-mono); font-size: 11px; word-break: break-all; }
 /* Type labels stay mono + quiet; only tabular data keeps a clay accent. */
 .rp-badge {
-  font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em;
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
   padding: 2px 6px; border-radius: var(--radius-xs);
   background: var(--bg-elev); color: var(--text-faint); border: 1px solid var(--border);
 }
@@ -433,7 +436,7 @@ button.run-status:hover { filter:brightness(0.96); }
   color: var(--text-faint); user-select: none; vertical-align: top;
   border-right: 1px solid var(--border-strong); background: var(--bg-sunken);
 }
-.rp-fasta-hdr { padding: 1px 12px 1px 8px; color: var(--clay-strong); font-weight: 650; white-space: pre; }
+.rp-fasta-hdr { padding: 1px 12px 1px 8px; color: var(--clay-strong); font-weight: 600; white-space: pre; }
 .rp-fasta-seq { padding: 1px 12px 1px 8px; color: var(--text-muted); letter-spacing: 0.02em; white-space: pre; }
 .rp-msa-wrap nightingale-msa { display: block; min-height: 420px; }
 
@@ -496,9 +499,9 @@ button.run-status:hover { filter:brightness(0.96); }
 .rp-xlsx-tabs { display: flex; flex: 0 0 auto; gap: 2px; padding: 5px 6px 0; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--bg-sunken); }
 .rp-xlsx-tabs button { max-width: 180px; padding: 5px 10px; overflow: hidden; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; background: transparent; color: var(--text-muted); font: inherit; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .rp-xlsx-tabs button:hover { color: var(--text); background: var(--surface-hover); }
-.rp-xlsx-tabs button.active { border-color: var(--border); background: var(--bg-elev); color: var(--text); font-weight: 650; }
+.rp-xlsx-tabs button.active { border-color: var(--border); background: var(--bg-elev); color: var(--text); font-weight: 600; }
 .rp-xlsx-formula { display: flex; min-height: 30px; flex: 0 0 auto; align-items: center; border-bottom: 1px solid var(--border); background: var(--bg-elev); }
-.rp-xlsx-formula > span { align-self: stretch; display: flex; align-items: center; padding: 0 9px; border-right: 1px solid var(--border); color: var(--text-faint); font-size: 10px; font-weight: 650; text-transform: uppercase; }
+.rp-xlsx-formula > span { align-self: stretch; display: flex; align-items: center; padding: 0 9px; border-right: 1px solid var(--border); color: var(--text-faint); font-size: 10px; font-weight: 600; text-transform: uppercase; }
 .rp-xlsx-formula code { min-width: 0; padding: 0 9px; overflow: hidden; color: var(--text-muted); font: 11px/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .rp-xlsx-grid { position: relative; min-width: 0; min-height: 180px; flex: 1 1 auto; overflow: auto; background: var(--bg-elev); scrollbar-gutter: stable; }
 .rp-xlsx-content { position: relative; min-width: 100%; min-height: 100%; background-image: linear-gradient(to right, transparent 139px, var(--border) 140px), linear-gradient(to bottom, transparent 27px, var(--border) 28px); background-position: 52px 28px; background-size: 140px 28px; }
@@ -551,7 +554,7 @@ button.run-status:hover { filter:brightness(0.96); }
 .file-preview-crop-layer { position: absolute; inset: 0; z-index: 3; cursor: crosshair; touch-action: none; }
 .file-preview-crop-rect { position: absolute; z-index: 4; border: 1.5px solid var(--clay); background: color-mix(in srgb, var(--clay) 18%, transparent); pointer-events: none; }
 .file-preview-crop-rect.selected { border-width: 2px; box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-elev) 70%, transparent); }
-.file-preview-crop-label { position: absolute; top: 6px; left: 6px; padding: 3px 7px; border-radius: 5px; background: var(--clay); color: var(--on-clay); font-size: 11px; font-weight: 650; white-space: nowrap; box-shadow: var(--shadow-sm); }
+.file-preview-crop-label { position: absolute; top: 6px; left: 6px; padding: 3px 7px; border-radius: 5px; background: var(--clay); color: var(--on-clay); font-size: 11px; font-weight: 600; white-space: nowrap; box-shadow: var(--shadow-sm); }
 /* Anchored inside the crop layer, not the window: absolute overrides the base
    .selection-popup fixed, and the entrance animation is dropped because its
    fill-mode `to { transform: none }` would cancel the centering translate. */
@@ -605,23 +608,23 @@ button.run-status:hover { filter:brightness(0.96); }
    instead of shattering numbers/headers character-by-character (matches the
    Claude Science CsvPreview approach: nowrap + tabular-nums + scroll). */
 .tbl th, .tbl td { padding: 7px 11px; text-align: left; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); white-space: nowrap; vertical-align: middle; line-height: 1.45; font-variant-numeric: tabular-nums; }
-.tbl td strong, .tbl th strong { font-weight: 650; }
+.tbl td strong, .tbl th strong { font-weight: 600; }
 .tbl td code, .tbl th code { font-family: var(--font-mono); font-size: 11.5px; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .tbl th:last-child, .tbl td:last-child { border-right: none; }
-.tbl thead th { position: sticky; top: 0; background: var(--bg-elev); color: var(--text); font-weight: 650; z-index: 1; }
+.tbl thead th { position: sticky; top: 0; background: var(--bg-elev); color: var(--text); font-weight: 600; z-index: 1; }
 .tbl tbody tr:hover { background: var(--bg-elev); }
 .tbl tbody tr:last-child td { border-bottom: none; }
 
 /* Controlled Agent workflows */
 .agents-pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px; background: var(--bg-sunken); }
 .agents-create { display: grid; gap: 7px; padding: 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-elev); box-shadow: var(--shadow-sm); }
-.agents-create label { color: var(--text-muted); font-size: 11.5px; font-weight: 650; }
+.agents-create label { color: var(--text-muted); font-size: 11.5px; font-weight: 600; }
 .agents-create textarea { box-sizing: border-box; width: 100%; min-height: 72px; resize: vertical; padding: 8px 9px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg-app); color: var(--text); font: inherit; font-size: 12.5px; line-height: 1.45; }
 .agents-create-actions, .agent-workflow-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .agents-mode-row { display: flex; align-items: center; gap: 8px; color: var(--text-faint); font-size: 11px; line-height: 1.4; }
 .agents-mode-row select { flex: 0 0 auto; }
 .agents-create select { min-width: 108px; padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg-elev); color: var(--text); font: inherit; font-size: 12px; }
-.agents-primary, .agents-secondary, .agents-danger { padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
+.agents-primary, .agents-secondary, .agents-danger { padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; }
 .agents-primary { border-color: var(--clay); background: var(--clay); color: var(--on-clay); }
 .agents-primary:hover:not(:disabled) { background: var(--clay-strong); }
 .agents-secondary { background: var(--bg-elev); color: var(--text-muted); }
@@ -632,18 +635,18 @@ button.run-status:hover { filter:brightness(0.96); }
 .agent-delegation-off { margin-bottom: 8px; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--clay) 22%, var(--border)); border-radius: var(--radius-xs); background: var(--clay-soft); color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 .agent-workflow-card { margin-top: 10px; padding: 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-elev); box-shadow: var(--shadow-sm); }
 .agent-workflow-head, .agent-step-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.agent-workflow-name { color: var(--text); font-size: 13px; font-weight: 680; line-height: 1.35; overflow-wrap: anywhere; }
+.agent-workflow-name { color: var(--text); font-size: 13px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
 .agent-workflow-meta, .agent-step-meta, .agent-step-limits, .agent-usage { margin-top: 3px; color: var(--text-faint); font-size: 10.5px; line-height: 1.4; overflow-wrap: anywhere; }
 .agent-workflow-goal { margin: 8px 0; color: var(--text-muted); font-size: 12px; line-height: 1.48; }
 .agent-confirm-hint { margin-bottom: 8px; padding: 6px 8px; border-radius: var(--radius-xs); background: var(--clay-soft); color: var(--text-muted); font-size: 10.5px; }
-.agent-workflow-status, .agent-attempt-status { flex: 0 0 auto; padding: 2px 6px; border-radius: var(--radius-xs); background: var(--bg-sunken); color: var(--text-muted); font-size: 10px; font-weight: 650; text-transform: capitalize; }
+.agent-workflow-status, .agent-attempt-status { flex: 0 0 auto; padding: 2px 6px; border-radius: var(--radius-xs); background: var(--bg-sunken); color: var(--text-muted); font-size: 10px; font-weight: 600; text-transform: capitalize; }
 .agent-workflow-status.running, .agent-attempt-status.running { background: color-mix(in srgb, var(--clay) 14%, var(--bg-elev)); color: var(--clay-strong); }
 .agent-workflow-status.succeeded, .agent-attempt-status.succeeded { background: color-mix(in srgb, var(--ok) 12%, var(--bg-elev)); color: var(--ok); }
 .agent-workflow-status.failed, .agent-workflow-status.cancelled, .agent-attempt-status.failed, .agent-attempt-status.cancelled, .agent-attempt-status.blocked { background: color-mix(in srgb, var(--err) 10%, var(--bg-elev)); color: var(--err); }
 .agent-step-list { display: grid; gap: 7px; margin-top: 10px; }
 .agent-step { padding: 8px 9px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-app); }
-.agent-step-name { color: var(--text); font-size: 11.5px; font-weight: 650; text-transform: capitalize; }
-.agent-retry-budget { display: flex; align-items: center; gap: 7px; margin-top: 7px; color: var(--text-muted); font-size: 10.5px; font-weight: 650; }
+.agent-step-name { color: var(--text); font-size: 11.5px; font-weight: 600; text-transform: capitalize; }
+.agent-retry-budget { display: flex; align-items: center; gap: 7px; margin-top: 7px; color: var(--text-muted); font-size: 10.5px; font-weight: 600; }
 .agent-retry-budget input { width: 96px; padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg-elev); color: var(--text); font: inherit; }
 .agent-attempt-summary { margin: 6px 0 0; color: var(--text-muted); font-size: 11.5px; line-height: 1.45; }
 /* Dynamic temporary Agents */
@@ -673,7 +676,7 @@ button.run-status:hover { filter:brightness(0.96); }
 .dynamic-agent-policy-row { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(140px, 1fr); align-items: end; gap: 9px; }
 .dynamic-agent-policy-row label { display: grid; gap: 4px; }
 .dynamic-agent-policy-row > span { padding-bottom: 4px; color: var(--text-faint); font-size: 10.5px; line-height: 1.4; }
-.dynamic-agent-context > summary, .dynamic-agent-advanced > summary { cursor: pointer; color: var(--text-muted); font-size: 11px; font-weight: 650; }
+.dynamic-agent-context > summary, .dynamic-agent-advanced > summary { cursor: pointer; color: var(--text-muted); font-size: 11px; font-weight: 600; }
 .dynamic-agent-context textarea { margin-top: 7px; min-height: 58px; }
 .dynamic-agent-task { min-width: 0; margin: 0; padding: 9px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-sunken); }
 .dynamic-agent-task-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -798,7 +801,7 @@ button.run-status:hover { filter:brightness(0.96); }
 
 /* Highlights tab: this session's saved text excerpts. */
 .highlights-list { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--bg-elev); }
-.highlight-card { display: flex; align-items: flex-start; gap: 6px; padding: 12px; border-bottom: 1px solid var(--border-strong); }
+.highlight-card { display: flex; align-items: flex-start; gap: 6px; padding: 12px; border-bottom: 1px solid var(--border); }
 .highlight-text { flex: 1; min-width: 0; text-align: left; background: none; border: none; margin: 0; padding: 2px 0 2px 10px; border-left: 3px solid var(--clay); color: var(--text); font: inherit; font-size: 13px; line-height: 1.55; cursor: pointer; white-space: pre-wrap; word-break: break-word; }
 .highlight-text:hover { color: var(--clay-strong); }
 .highlight-actions { display: flex; flex-direction: column; gap: 2px; }

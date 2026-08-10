@@ -43,7 +43,7 @@ test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct 
   await expect(diff).toBeHidden();
 });
 
-test("latest completed turn creates an isolated exploration and mainline continuation warns", async ({ page }) => {
+test("latest completed turn creates an isolated exploration and freezes mainline", async ({ page }) => {
   await enterExplorationProject(page);
 
   await page.getByTestId("start-exploration").click();
@@ -60,35 +60,34 @@ test("latest completed turn creates an isolated exploration and mainline continu
 
   await page.locator('[data-session-id="exploration-mainline"]').click();
   await expect(page.getByTestId("mainline-exploration-banner")).toContainText("3 active explorations");
-  await page.locator("#composer-input").fill("Continue the mainline analysis");
-  await page.locator("button.send").click();
-  await expect(page.getByTestId("mainline-continue-confirm")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("mainline-continue-confirm")).toBeHidden();
-  await expect(page.locator("#composer-input")).toHaveValue("Continue the mainline analysis");
+  await expect(page.getByTestId("mainline-exploration-banner")).toContainText("Mainline is frozen");
+  await expect(page.locator("#composer-input")).toBeDisabled();
+  await expect(page.locator("#composer-input")).toHaveAttribute("placeholder", /mainline frozen/i);
+  await expect(page.locator("button.send")).toBeDisabled();
 });
 
-test("historical completed turns use immutable revisions and legacy history stays unavailable", async ({ page }) => {
+test("only the current completed turn can start an exploration", async ({ page }) => {
   await page.goto("/?mockExplorations=1&mockHistoricalExploration=1");
   await page.locator(".proj-card-main").first().click();
   await page.locator('[data-session-id="exploration-mainline"]').click();
 
   const actions = page.getByTestId("start-exploration");
   await expect(actions).toHaveCount(3);
-  await expect(actions.nth(0)).toBeEnabled();
+  await expect(actions.nth(0)).toBeDisabled();
   await expect(actions.nth(1)).toBeDisabled();
-  await expect(actions.nth(1)).toHaveAttribute("title", /no immutable project-state revision/i);
+  await expect(actions.nth(0)).toHaveAttribute("title", /current completed turn/i);
+  await expect(actions.nth(1)).toHaveAttribute("title", /current completed turn/i);
   await expect(actions.nth(2)).toBeEnabled();
 
-  await actions.nth(0).click();
-  await page.getByTestId("exploration-name").fill("From first turn");
+  await actions.nth(2).click();
+  await page.getByTestId("exploration-name").fill("From latest turn");
   await page.getByTestId("exploration-create").click();
-  await expect.poll(async () => page.evaluate(() => (window as any).__explorationCheckpointCalls)).toEqual([
-    { sourceFrameId: "exploration-mainline", turnIndex: 0 },
+  await expect.poll(async () => page.evaluate(() => (window as any).__startExplorationCalls)).toEqual([
+    { sourceFrameId: "exploration-mainline", turnIndex: 2, name: "From latest turn" },
   ]);
 });
 
-test("promotion adopts one exploration, blocks its sibling, and discard leaves mainline intact", async ({ page }) => {
+test("promotion adopts one exploration, archives its sibling, and discard leaves mainline intact", async ({ page }) => {
   await enterExplorationProject(page);
   const group = page.getByTestId("sidebar-explorations");
 
@@ -98,10 +97,13 @@ test("promotion adopts one exploration, blocks its sibling, and discard leaves m
   await page.getByTestId("exploration-confirm-action").click();
 
   await expect(page.getByText("Exploration A result")).toBeVisible();
-  await expect(page.getByTestId("mainline-exploration-banner")).toContainText("1 active exploration");
+  await expect(page.getByTestId("mainline-exploration-banner")).toBeHidden();
+  await expect(page.locator("#composer-input")).toBeEnabled();
   const adoptedGroup = page.getByTestId("sidebar-explorations");
+  await expect(adoptedGroup.locator('[data-exploration-id="exploration-b"]')).toHaveAttribute("data-exploration-status", "archived");
   await adoptedGroup.locator('[data-exploration-id="exploration-b"]').click();
   await expect(page.getByText("Exploration B result")).toBeVisible();
+  await expect(page.locator("#composer-input")).toBeDisabled();
   await page.getByTestId("exploration-banner").getByRole("button", { name: "View diff" }).click();
   await expect(page.getByTestId("exploration-promotion-blocked")).toContainText("mainline no longer matches");
   await expect(page.getByTestId("exploration-promote")).toBeDisabled();

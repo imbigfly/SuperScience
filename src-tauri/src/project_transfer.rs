@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 const ARCHIVE_KIND: &str = "superscience-project";
@@ -16,12 +18,14 @@ const WORKSPACE_PREFIX: &str = "workspace";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const PROJECT_TRANSFER_PROGRESS_EVENT: &str = "project-transfer-progress";
 const COPY_PROGRESS_INTERVAL: u64 = 1024 * 1024;
+const PROGRESS_EVENT_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectTransferProgress {
     direction: &'static str,
     stage: &'static str,
+    project_id: Option<String>,
     completed_files: u64,
     total_files: Option<u64>,
     completed_bytes: u64,
@@ -34,14 +38,52 @@ struct TransferReporter {
     app: AppHandle,
     window_label: String,
     direction: &'static str,
+    state: Arc<Mutex<TransferReporterState>>,
+}
+
+#[derive(Default)]
+struct TransferReporterState {
+    project_id: Option<String>,
+    last_stage: Option<&'static str>,
+    last_emit: Option<Instant>,
+}
+
+impl TransferReporterState {
+    fn should_emit(&mut self, stage: &'static str, finished: bool, now: Instant) -> bool {
+        let stage_changed = self.last_stage != Some(stage);
+        let interval_elapsed = self
+            .last_emit
+            .is_none_or(|last| now.saturating_duration_since(last) >= PROGRESS_EVENT_INTERVAL);
+        if !stage_changed && !finished && !interval_elapsed {
+            return false;
+        }
+        self.last_stage = Some(stage);
+        self.last_emit = Some(now);
+        true
+    }
 }
 
 impl TransferReporter {
-    fn new(app: AppHandle, window: &WebviewWindow, direction: &'static str) -> Self {
+    fn new(
+        app: AppHandle,
+        window: &WebviewWindow,
+        direction: &'static str,
+        project_id: Option<String>,
+    ) -> Self {
         Self {
             app,
             window_label: window.label().to_string(),
             direction,
+            state: Arc::new(Mutex::new(TransferReporterState {
+                project_id,
+                ..TransferReporterState::default()
+            })),
+        }
+    }
+
+    fn set_project_id(&self, project_id: String) {
+        if let Ok(mut state) = self.state.lock() {
+            state.project_id = Some(project_id);
         }
     }
 
@@ -54,12 +96,25 @@ impl TransferReporter {
         total_bytes: Option<u64>,
         current_path: Option<&str>,
     ) {
+        let finished = stage == "complete"
+            || (total_files.is_some_and(|total| completed_files >= total)
+                && total_bytes.is_some_and(|total| completed_bytes >= total));
+        let project_id = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if !state.should_emit(stage, finished, Instant::now()) {
+                return;
+            }
+            state.project_id.clone()
+        };
         let _ = self.app.emit_to(
             &self.window_label,
             PROJECT_TRANSFER_PROGRESS_EVENT,
             ProjectTransferProgress {
                 direction: self.direction,
                 stage,
+                project_id,
                 completed_files,
                 total_files,
                 completed_bytes,
@@ -790,9 +845,9 @@ pub(super) async fn export_project(
         "Project export",
     )
     .await?;
-    let reporter = TransferReporter::new(app.clone(), &window, "export");
+    let reporter = TransferReporter::new(app.clone(), &window, "export", Some(id.clone()));
     reporter.report("selecting_export_destination", 0, None, 0, None, None);
-    let _project_activity = state.begin_project_activity(&id)?;
+    let _project_activity = state.begin_project_exclusive_activity(&id)?;
     let (name, description, workspace_dir) = state
         .store
         .get_project_meta(&id)
@@ -900,7 +955,7 @@ pub(super) async fn import_project(
                 .into(),
         );
     }
-    let reporter = TransferReporter::new(app.clone(), &window, "import");
+    let reporter = TransferReporter::new(app.clone(), &window, "import", None);
     reporter.report("selecting_archive", 0, None, 0, None, None);
     let Some(archive_path) = pick_archive(&app).await? else {
         return Ok(None);
@@ -910,6 +965,7 @@ pub(super) async fn import_project(
     let manifest = tokio::task::spawn_blocking(move || read_manifest(&archive_for_manifest))
         .await
         .map_err(|error| error.to_string())??;
+    reporter.set_project_id(manifest.project.id.clone());
     if state
         .store
         .get_project(&manifest.project.id)
@@ -977,6 +1033,21 @@ pub(super) async fn import_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_reporter_throttles_same_stage_but_not_stage_changes_or_completion() {
+        let start = Instant::now();
+        let mut state = TransferReporterState::default();
+        assert!(state.should_emit("writing", false, start));
+        assert!(!state.should_emit("writing", false, start + Duration::from_millis(20)));
+        assert!(state.should_emit("validating", false, start + Duration::from_millis(20)));
+        assert!(state.should_emit("validating", true, start + Duration::from_millis(21)));
+        assert!(state.should_emit(
+            "validating",
+            false,
+            start + PROGRESS_EVENT_INTERVAL + Duration::from_millis(21),
+        ));
+    }
 
     fn sample_manifest() -> ProjectArchiveManifest {
         ProjectArchiveManifest {

@@ -1057,7 +1057,7 @@ pub async fn reorder_models(
 #[tauri::command]
 pub async fn set_active_model(
     state: State<'_, crate::AppState>,
-    window: tauri::WebviewWindow,
+    _window: tauri::WebviewWindow,
     id: String,
     session_id: Option<String>,
 ) -> Result<Vec<ModelProfile>, String> {
@@ -1073,7 +1073,10 @@ pub async fn set_active_model(
         return Err("Image generation models cannot be used for chat.".into());
     }
     if let Some(session_id) = session_id.filter(|value| !value.is_empty()) {
-        let project = state.active(window.label());
+        let (project, scope) =
+            crate::exploration_commands::working_project_for_frame(&state, &session_id).await?;
+        let _activity = state.begin_project_activity(&project.id)?;
+        crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
         state
             .store
             .set_frame_model(&session_id, &project.id, &id)

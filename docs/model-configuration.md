@@ -5,7 +5,9 @@ After a completed reply, SuperScience uses that conversation's current model to 
 three optional next questions. That secondary call reads only the four most
 recent user turns, so completing a long, tool-heavy conversation does not load
 and duplicate its full history. The suggestion panel can be hidden per reply,
-or the setting can be turned off to skip the extra model call entirely.
+or the setting can be turned off to skip the extra model call entirely. Wisp
+does not request suggestions for failed, cancelled, paused, or tool-only turns;
+the current turn must contain a visible final answer.
 
 The desktop transcript also treats ordinary tool output as a preview: tool
 results are limited to 4,000 characters and streamed terminal output to 64 KiB
@@ -109,6 +111,12 @@ as silently processed. Completed tool results remain in the conversation; use
 **Resume** to request the missing final reply without replaying those tools. If
 this repeats in a long conversation, send `/compact` before resuming to fold old
 turns while preserving an archive of the full history.
+
+Wisp also treats an SSE `error` payload and a Responses API status other than
+`completed` as a failed, resumable turn, even when a compatible relay keeps the
+HTTP status at 200 or appends a `[DONE]` marker. Partial output is not committed
+as a final answer, completed tool results remain available, and follow-up
+questions are not generated for that interrupted turn.
 
 **Settings → General → Automatically compact long conversations** is enabled by
 default. Following mangopi-cli's model-boundary approach, SuperScience checks the

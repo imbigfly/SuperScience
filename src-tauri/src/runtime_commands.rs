@@ -128,6 +128,8 @@ pub(super) async fn start_runtime(
 ) -> Result<superscience_runtime::RuntimeInfo, String> {
     let (project, scope) =
         exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let _project_activity = state.begin_project_activity(&project.id)?;
+    exploration_commands::require_writable_scope(&state.store, &scope).await?;
     state
         .runtime_manager
         .start(
@@ -193,8 +195,8 @@ pub(super) async fn restart_runtime(
             "exploration_scope_violation: cross-project runtime control is disabled".into(),
         );
     }
-    let (root, scope_key) = if working.id == project_id {
-        (working.root, scope.scope_key().to_string())
+    let (root, target_scope) = if working.id == project_id {
+        (working.root, scope)
     } else {
         let (_, workspace) = state
             .store
@@ -207,12 +209,14 @@ pub(super) async fn restart_runtime(
             superscience_runtime::MAINLINE_RUNTIME_SCOPE.into(),
         )
     };
+    let _project_activity = state.begin_project_activity(&project_id)?;
+    exploration_commands::require_writable_scope(&state.store, &target_scope).await?;
     state
         .runtime_manager
         .restart(
             superscience_runtime::RuntimeKey {
                 project_id,
-                scope_key,
+                scope_key: target_scope.scope_key().to_string(),
                 context_id,
                 language,
             },

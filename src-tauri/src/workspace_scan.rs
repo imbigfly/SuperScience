@@ -1,7 +1,11 @@
 //! Deterministic, symlink-safe workspace traversal shared by project transfer
 //! and persistent exploration snapshots.
 
+use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub(crate) const MAX_WORKSPACE_ENTRIES: usize = 100_000;
 
@@ -20,12 +24,16 @@ pub(crate) struct WorkspaceNode {
     pub kind: WorkspaceNodeKind,
     pub size_bytes: u64,
     pub mode: Option<u32>,
+    pub modified_unix_millis: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceScanOptions {
     pub excluded_roots: Vec<PathBuf>,
     pub excluded_relative_prefixes: Vec<String>,
+    pub excluded_directory_names: Vec<String>,
+    pub use_ignore_files: bool,
+    pub cancel: Option<Arc<AtomicBool>>,
     pub max_entries: usize,
 }
 
@@ -34,6 +42,9 @@ impl Default for WorkspaceScanOptions {
         Self {
             excluded_roots: Vec::new(),
             excluded_relative_prefixes: Vec::new(),
+            excluded_directory_names: Vec::new(),
+            use_ignore_files: false,
+            cancel: None,
             max_entries: MAX_WORKSPACE_ENTRIES,
         }
     }
@@ -43,29 +54,6 @@ pub(crate) fn scan_workspace(
     root: &Path,
     options: &WorkspaceScanOptions,
 ) -> Result<Vec<WorkspaceNode>, String> {
-    fn children(
-        directory: &Path,
-        visited: &mut usize,
-        max_entries: usize,
-    ) -> Result<Vec<std::fs::DirEntry>, String> {
-        let mut children = Vec::new();
-        for child in std::fs::read_dir(directory)
-            .map_err(|error| format!("cannot read {}: {error}", directory.display()))?
-        {
-            if *visited >= max_entries {
-                return Err(format!(
-                    "workspace contains more than {max_entries} entries"
-                ));
-            }
-            *visited += 1;
-            children.push(
-                child.map_err(|error| format!("cannot read {}: {error}", directory.display()))?,
-            );
-        }
-        children.sort_by_key(|entry| entry.file_name());
-        Ok(children)
-    }
-
     let root_metadata = std::fs::symlink_metadata(root).map_err(|error| {
         format!(
             "project directory does not exist: {} ({error})",
@@ -79,25 +67,74 @@ pub(crate) fn scan_workspace(
         ));
     }
 
-    let mut nodes = Vec::new();
-    let mut visited = 0usize;
-    let mut pending = children(root, &mut visited, options.max_entries)?;
-    pending.reverse();
-    while let Some(child) = pending.pop() {
-        let path = child.path();
-        let relative_path = portable_relative(root, &path)?;
-        if options
-            .excluded_roots
+    let excluded_roots = options
+        .excluded_roots
+        .iter()
+        .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
+        .collect::<Vec<_>>();
+    let excluded_prefixes = options
+        .excluded_relative_prefixes
+        .iter()
+        .map(|prefix| root.join(prefix.trim_matches('/')))
+        .collect::<Vec<_>>();
+    let excluded_directory_names = options
+        .excluded_directory_names
+        .iter()
+        .map(OsString::from)
+        .collect::<HashSet<_>>();
+
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder.standard_filters(false).follow_links(false);
+    if options.use_ignore_files {
+        builder
+            .hidden(false)
+            .parents(false)
+            .ignore(false)
+            .git_ignore(true)
+            .git_global(false)
+            .git_exclude(false)
+            .require_git(false)
+            .add_custom_ignore_filename(".wispignore");
+    }
+    builder.filter_entry(move |entry| {
+        if entry.depth() == 0 {
+            return true;
+        }
+        let path = entry.path();
+        if excluded_roots
             .iter()
-            .any(|excluded| same_path(&path, excluded))
-            || options
-                .excluded_relative_prefixes
+            .any(|excluded| path == excluded || path.starts_with(excluded))
+            || excluded_prefixes
                 .iter()
-                .any(|prefix| is_path_at_or_below(&relative_path, prefix))
+                .any(|excluded| path == excluded || path.starts_with(excluded))
         {
+            return false;
+        }
+        !entry.file_type().is_some_and(|kind| kind.is_dir())
+            || !excluded_directory_names.contains(entry.file_name())
+    });
+
+    let mut nodes = Vec::new();
+    for entry in builder.build() {
+        if options
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+        {
+            return Err("workspace scan cancelled".into());
+        }
+        let entry = entry.map_err(|error| format!("cannot scan workspace: {error}"))?;
+        if entry.depth() == 0 {
             continue;
         }
-
+        if nodes.len() >= options.max_entries {
+            return Err(format!(
+                "workspace contains more than {} entries",
+                options.max_entries
+            ));
+        }
+        let path = entry.path().to_path_buf();
+        let relative_path = portable_relative(root, &path)?;
         let metadata = std::fs::symlink_metadata(&path)
             .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
         let kind = if metadata.file_type().is_symlink() {
@@ -115,22 +152,11 @@ pub(crate) fn scan_workspace(
             kind,
             size_bytes: metadata.len(),
             mode: file_mode(&metadata),
+            modified_unix_millis: modified_unix_millis(&metadata),
         });
-        if kind == WorkspaceNodeKind::Directory {
-            let mut nested = children(&path, &mut visited, options.max_entries)?;
-            nested.reverse();
-            pending.extend(nested);
-        }
     }
+    nodes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(nodes)
-}
-
-fn is_path_at_or_below(path: &str, prefix: &str) -> bool {
-    let prefix = prefix.trim_matches('/');
-    path == prefix
-        || path
-            .strip_prefix(prefix)
-            .is_some_and(|tail| tail.starts_with('/'))
 }
 
 fn portable_relative(root: &Path, path: &Path) -> Result<String, String> {
@@ -160,14 +186,13 @@ fn file_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
     None
 }
 
-fn same_path(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
+fn modified_unix_millis(metadata: &std::fs::Metadata) -> Option<u64> {
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
 }
 
 #[cfg(test)]
@@ -229,6 +254,47 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("more than 1 entries"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_honors_gitignore_wispignore_and_generated_directory_exclusions() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp_workspace_scan_ignore_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join("private")).unwrap();
+        std::fs::create_dir_all(root.join("nested/.pixi/cache")).unwrap();
+        std::fs::write(root.join(".gitignore"), b"ignored.txt\n*.tmp\n!keep.tmp\n").unwrap();
+        std::fs::write(root.join(".wispignore"), b"private/\n").unwrap();
+        std::fs::write(root.join("ignored.txt"), b"ignored").unwrap();
+        std::fs::write(root.join("drop.tmp"), b"ignored").unwrap();
+        std::fs::write(root.join("keep.tmp"), b"kept").unwrap();
+        std::fs::write(root.join("private/secret.txt"), b"ignored").unwrap();
+        std::fs::write(root.join("nested/.pixi/cache/package"), b"ignored").unwrap();
+        std::fs::write(root.join("visible.txt"), b"visible").unwrap();
+
+        let nodes = scan_workspace(
+            &root,
+            &WorkspaceScanOptions {
+                excluded_directory_names: vec![".pixi".into()],
+                use_ignore_files: true,
+                ..WorkspaceScanOptions::default()
+            },
+        )
+        .unwrap();
+        let paths = nodes
+            .iter()
+            .map(|node| node.relative_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&".gitignore"));
+        assert!(paths.contains(&".wispignore"));
+        assert!(paths.contains(&"keep.tmp"));
+        assert!(paths.contains(&"visible.txt"));
+        assert!(!paths.contains(&"ignored.txt"));
+        assert!(!paths.contains(&"drop.tmp"));
+        assert!(!paths.iter().any(|path| path.starts_with("private")));
+        assert!(!paths.iter().any(|path| path.contains(".pixi")));
         let _ = std::fs::remove_dir_all(root);
     }
 }

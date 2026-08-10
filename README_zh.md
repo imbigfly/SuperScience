@@ -81,6 +81,8 @@ Science 强调真实科研实践发生在你自己的机器上。
 
 - 会话持久化到 SQLite，重启后完整恢复；一键**撤销**某一轮对文件的修改，
   撤销前先预览将恢复或移除的文件。
+- 侧边栏“文件”的右键菜单可复制项目相对路径或系统原生绝对路径；进入“选择”模式后，
+  可一次复制多个文件和文件夹路径，每行一个。
 - 消息下方的 **Generated** 产物只来自结构化文件写入事件；目录列表、读取、
   搜索结果或正文中仅仅提到的路径，不会被标成新生成文件。
 - `@` 附加产物、文件、执行环境和语言运行时；`#` 通过只读、带引用的
@@ -411,7 +413,7 @@ superscience/
 
 如果你在研究中使用 superscience，请引用：
 
-[![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.21193742)
+[![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.21869520)
 
 ```bibtex
 @software{superscience2026,
@@ -420,8 +422,8 @@ superscience/
   version   = {v0.34.0},
   year      = {2026},
   publisher = {Zenodo},
-  doi       = {10.5281/zenodo.21193742},
-  url       = {https://doi.org/10.5281/zenodo.21193742}
+  doi       = {10.5281/zenodo.21869520},
+  url       = {https://doi.org/10.5281/zenodo.21869520}
 }
 ```
 

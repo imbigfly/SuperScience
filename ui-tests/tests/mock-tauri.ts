@@ -230,7 +230,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockExplorationPreview = (id: string) => {
     const row = mockExplorations.find((item) => item.exploration.id === id);
     if (!row) throw new Error("Exploration not found");
-    const blocked = mockMainlineAdvanced || (row.source_frame_id !== "exploration-mainline" && row.exploration.status === "active");
+    const blocked = mockMainlineAdvanced || row.source_frame_id !== "exploration-mainline";
     return {
       exploration: { ...row.exploration },
       diff: {
@@ -1930,24 +1930,19 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                   { frame_id: "exploration-mainline", turn_index: 2 },
                 ]
               : [{ frame_id: "exploration-mainline", turn_index: 0 }];
-          case "create_exploration_checkpoint":
-            ((window as any).__explorationCheckpointCalls ??= []).push({
+          case "start_exploration": {
+            ((window as any).__startExplorationCalls ??= []).push({
               sourceFrameId: arg("sourceFrameId"),
               turnIndex: arg("turnIndex"),
+              name: arg("name"),
             });
-            return {
-              id: "checkpoint-shared",
-              source_frame_id: String(arg("sourceFrameId") ?? "exploration-mainline"),
-              isolation_summary_json: '{"partial":false}',
-            };
-          case "create_exploration": {
             const index = mockExplorations.length + 1;
             const id = `exploration-created-${index}`;
             const frameId = `exploration-frame-created-${index}`;
             const exploration = makeMockExploration(id, frameId, String(arg("name") ?? `Exploration ${index}`), 2100 + index);
             mockExplorations.push({
               exploration,
-              source_frame_id: mockSessions[0]?.id ?? "exploration-mainline",
+              source_frame_id: String(arg("sourceFrameId") ?? "exploration-mainline"),
               isolation_summary_json: '{"partial":false}',
             });
             activeMockFrame = frameId;
@@ -1978,7 +1973,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             row.exploration.promoted_at = 2200;
             const adoptedFrame = row.exploration.frame_id;
             mockSessions.splice(0, mockSessions.length, { id: adoptedFrame, title: row.exploration.name, ts: 2200, running: false });
-            for (const item of mockExplorations) item.source_frame_id = adoptedFrame;
+            for (const item of mockExplorations) {
+              item.source_frame_id = adoptedFrame;
+              if (item.exploration.id !== id && item.exploration.status === "active") {
+                item.exploration.status = "archived";
+                item.exploration.archived_at = 2200;
+              }
+            }
             activeMockFrame = adoptedFrame;
             return { exploration: { ...row.exploration }, promotionId: `promotion-${id}`, adoptedFrameId: adoptedFrame };
           }
@@ -2121,7 +2122,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (delay > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(delay, 40)));
             emit("project-transfer-progress", {
               direction: "import", stage: "extracting", completedFiles: 1, totalFiles: 2,
-              completedBytes: 512, totalBytes: 1024, currentPath: "workspace/data/example.tsv",
+              projectId: "default", completedBytes: 512, totalBytes: 1024,
+              currentPath: "workspace/data/example.tsv",
             });
             if (delay > 40) await new Promise((resolve) => setTimeout(resolve, delay - 40));
             return { id: "default", name: project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
@@ -2133,7 +2135,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             delete nextProjectTransferDelayMs.export;
             emit("project-transfer-progress", {
               direction: "export", stage: "writing", completedFiles: 1, totalFiles: 2,
-              completedBytes: 512, totalBytes: 1024, currentPath: "data/example.tsv",
+              projectId: String(arg("id") ?? "default"), completedBytes: 512,
+              totalBytes: 1024, currentPath: "data/example.tsv",
             });
             if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
             return "/mock/superscience-project.zip";
@@ -3273,10 +3276,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "search_sessions": {
             const q = String(arg("query") ?? "").toLowerCase();
             const requestedProject = arg("projectId");
+            const preferredProject = arg("preferredProjectId");
             const limit = Math.max(1, Math.min(100, Number(arg("limit") ?? 12)));
             if (requestedProject != null) {
               return mockSessions
-                .filter((session) => String(session.title).toLowerCase().includes(q))
+                .filter((session) => [session.title, session.body]
+                  .some((value) => String(value ?? "").toLowerCase().includes(q)))
                 .slice(0, limit)
                 .map((session) => ({
                   id: session.id,
@@ -3819,6 +3824,18 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             if (String(msg).includes("POSTSTARTFAIL")) {
               throw new Error("[turn-started] execution failed after turn/start");
+            }
+            if (String(msg).includes("TOOLONLYDONE")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "I will record the decision first." });
+                emit("agent", { kind: "ToolCall", frame_id: fid, name: "research_graph", preview: "record_decision" });
+                emit("agent", { kind: "ToolResult", frame_id: fid, name: "research_graph", ok: true, content: '{"node_id":"decision-1"}' });
+                // Regression fixture: an old/buggy backend mislabeled the
+                // provider cut after this tool as a successful turn.
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
             }
             if (String(msg).includes("MONITORRUN")) {
               return await new Promise<string>((resolve) => {

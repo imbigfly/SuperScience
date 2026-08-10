@@ -2228,7 +2228,10 @@ impl AppState {
     ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, String> {
         self.project_activity(project_id)
             .try_read_owned()
-            .map_err(|_| "This project is being synchronized. Try again when sync finishes.".into())
+            .map_err(|_| {
+                "This project is busy. Try again when the current project operation finishes."
+                    .into()
+            })
     }
     fn begin_project_exclusive_activity(
         &self,
@@ -4879,6 +4882,10 @@ async fn send_message_inner(
         explicit_scope = Some(scope);
     }
     let _project_activity = state.begin_project_activity(&ap.id)?;
+    let frame_scope = explicit_scope
+        .clone()
+        .unwrap_or_else(|| wisp_store::StateScope::mainline(ap.id.clone()));
+    exploration_commands::require_writable_scope(&state.store, &frame_scope).await?;
     let saved_binding = match session_id.as_deref().filter(|id| !id.is_empty()) {
         Some(id) => state
             .store
@@ -5861,6 +5868,7 @@ async fn send_message_inner(
             &ap.id,
             &frame_id,
             &ap.root,
+            Some(rt.cancel.clone()),
         )
         .await
         {
@@ -5972,6 +5980,10 @@ async fn enqueue_turn(
     if session_id.is_empty() {
         return Err("queue requires a session id".into());
     }
+    let (project, scope) =
+        exploration_commands::working_project_for_frame(&state, &session_id).await?;
+    let _project_activity = state.begin_project_activity(&project.id)?;
+    exploration_commands::require_writable_scope(&state.store, &scope).await?;
     let rt = {
         let mut sessions = state.sessions.lock().await;
         sessions
@@ -7626,8 +7638,7 @@ pub fn run() {
             scratch_commands::start_scratch_chat,
             scratch_commands::close_scratch_chat,
             session_commands::branch_session,
-            exploration_commands::create_exploration_checkpoint,
-            exploration_commands::create_exploration,
+            exploration_commands::start_exploration,
             exploration_commands::list_project_explorations,
             exploration_commands::list_project_state_revisions,
             exploration_commands::open_exploration,

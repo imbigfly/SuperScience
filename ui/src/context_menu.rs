@@ -1,4 +1,7 @@
-use crate::app_support::{selection_targets_center_file, SessionTransferMode};
+use crate::app_support::{
+    selection_targets_center_file, workspace_absolute_path, workspace_relative_path,
+    SessionTransferMode,
+};
 use crate::dto::QuickAction;
 use crate::i18n::{self, Locale};
 use crate::window_capture_escape;
@@ -70,6 +73,60 @@ fn submenu(label: String, children: Vec<CtxItem>) -> CtxItem {
         payload: String::new(),
         children,
     }
+}
+
+fn workspace_paths_for_copy(path: &str, selected_paths: &[String]) -> Vec<String> {
+    if !selected_paths.iter().any(|selected| selected == path) {
+        return vec![path.to_string()];
+    }
+    let mut paths = selected_paths
+        .iter()
+        .filter(|selected| !selected.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn workspace_path_copy_items(
+    path: &str,
+    selected_paths: &[String],
+    project_root: Option<&str>,
+    locale: Locale,
+) -> Vec<CtxItem> {
+    let paths = workspace_paths_for_copy(path, selected_paths);
+    let relative_paths = project_root
+        .filter(|root| !root.is_empty())
+        .and_then(|root| {
+            paths
+                .iter()
+                .map(|path| workspace_relative_path(root, path))
+                .collect::<Option<Vec<_>>>()
+        })
+        .unwrap_or_else(|| paths.iter().map(|path| path.replace('\\', "/")).collect());
+    let mut items = Vec::with_capacity(2);
+    if let Some(absolute_paths) = project_root
+        .filter(|root| !root.is_empty())
+        .and_then(|root| {
+            paths
+                .iter()
+                .map(|path| workspace_absolute_path(root, path))
+                .collect::<Option<Vec<_>>>()
+        })
+    {
+        items.push(item(
+            "copyAbsolutePath",
+            i18n::t(locale, "files.copy_absolute_path"),
+            absolute_paths.join("\n"),
+        ));
+    }
+    items.push(item(
+        "copyRelativePath",
+        i18n::t(locale, "files.copy_relative_path"),
+        relative_paths.join("\n"),
+    ));
+    items
 }
 
 pub fn remote_file_download_uri(context_id: &str, path: &str) -> Option<String> {
@@ -366,6 +423,8 @@ pub fn build(
     _can_export: bool,
     center_file: Option<&str>,
     quick_actions: &[QuickAction],
+    project_root: Option<&str>,
+    selected_workspace_paths: &[String],
 ) -> Option<CtxMenu> {
     let target = event_target(ev)?;
     let x = ev.client_x() as f64;
@@ -545,27 +604,30 @@ pub fn build(
             .get_attribute("data-workspace-path")
             .unwrap_or_default();
         if !path.is_empty() {
-            return Some(CtxMenu {
-                x,
-                y,
-                items: vec![
-                    item(
-                        "attachWorkspaceDirectory",
-                        i18n::t(locale, "ctx.attach_directory"),
-                        path.clone(),
-                    ),
-                    item(
-                        "renameWorkspaceDirectory",
-                        i18n::t(locale, "files.rename_directory"),
-                        path.clone(),
-                    ),
-                    item(
-                        "deleteWorkspaceDirectory",
-                        i18n::t(locale, "files.delete_directory"),
-                        path,
-                    ),
-                ],
-            });
+            let mut items = vec![item(
+                "attachWorkspaceDirectory",
+                i18n::t(locale, "ctx.attach_directory"),
+                path.clone(),
+            )];
+            items.extend(workspace_path_copy_items(
+                &path,
+                selected_workspace_paths,
+                project_root,
+                locale,
+            ));
+            items.extend([
+                item(
+                    "renameWorkspaceDirectory",
+                    i18n::t(locale, "files.rename_directory"),
+                    path.clone(),
+                ),
+                item(
+                    "deleteWorkspaceDirectory",
+                    i18n::t(locale, "files.delete_directory"),
+                    path,
+                ),
+            ]);
+            return Some(CtxMenu { x, y, items });
         }
     }
 
@@ -575,50 +637,55 @@ pub fn build(
             .unwrap_or_default();
         if !path.is_empty() {
             let file_name = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
-            return Some(CtxMenu {
-                x,
-                y,
-                items: vec![
-                    item("copyName", i18n::t(locale, "ctx.copy_name"), file_name),
-                    item(
-                        "openWorkspaceFileCenter",
-                        i18n::t(locale, "center.open_file"),
-                        path.clone(),
-                    ),
-                    item(
-                        "attachWorkspaceFile",
-                        i18n::t(locale, "ctx.attach_file"),
-                        path.clone(),
-                    ),
-                    item(
-                        "registerWorkspaceArtifact",
-                        i18n::t(locale, "ctx.register_artifact"),
-                        path.clone(),
-                    ),
-                    item(
-                        "downloadFile",
-                        i18n::t(locale, "artifact.download"),
-                        path.clone(),
-                    ),
-                    item(
-                        "revealInFileManager",
-                        i18n::t(locale, "ctx.reveal_in_manager"),
-                        path,
-                    ),
-                    item(
-                        "renameWorkspaceFile",
-                        i18n::t(locale, "files.rename_file"),
-                        file.get_attribute("data-workspace-path")
-                            .unwrap_or_default(),
-                    ),
-                    item(
-                        "deleteWorkspaceFile",
-                        i18n::t(locale, "files.delete_file"),
-                        file.get_attribute("data-workspace-path")
-                            .unwrap_or_default(),
-                    ),
-                ],
-            });
+            let mut items = vec![item(
+                "copyName",
+                i18n::t(locale, "ctx.copy_name"),
+                file_name,
+            )];
+            items.extend(workspace_path_copy_items(
+                &path,
+                selected_workspace_paths,
+                project_root,
+                locale,
+            ));
+            items.extend([
+                item(
+                    "openWorkspaceFileCenter",
+                    i18n::t(locale, "center.open_file"),
+                    path.clone(),
+                ),
+                item(
+                    "attachWorkspaceFile",
+                    i18n::t(locale, "ctx.attach_file"),
+                    path.clone(),
+                ),
+                item(
+                    "registerWorkspaceArtifact",
+                    i18n::t(locale, "ctx.register_artifact"),
+                    path.clone(),
+                ),
+                item(
+                    "downloadFile",
+                    i18n::t(locale, "artifact.download"),
+                    path.clone(),
+                ),
+                item(
+                    "revealInFileManager",
+                    i18n::t(locale, "ctx.reveal_in_manager"),
+                    path.clone(),
+                ),
+                item(
+                    "renameWorkspaceFile",
+                    i18n::t(locale, "files.rename_file"),
+                    path.clone(),
+                ),
+                item(
+                    "deleteWorkspaceFile",
+                    i18n::t(locale, "files.delete_file"),
+                    path,
+                ),
+            ]);
+            return Some(CtxMenu { x, y, items });
         }
     }
 
@@ -642,7 +709,10 @@ pub fn build(
 
 pub fn run_action(action: &str, payload: &str, copy: impl Fn(String)) {
     match action {
-        "copy" | "copyCode" | "copyTitle" | "copyName" | "copyMessage" if !payload.is_empty() => {
+        "copy" | "copyCode" | "copyTitle" | "copyName" | "copyMessage" | "copyAbsolutePath"
+        | "copyRelativePath"
+            if !payload.is_empty() =>
+        {
             copy(payload.to_string());
         }
         _ => {}

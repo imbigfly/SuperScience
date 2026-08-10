@@ -2,6 +2,26 @@
 
 use super::*;
 
+fn same_workspace_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => {
+            #[cfg(target_os = "windows")]
+            {
+                left.to_string_lossy()
+                    .eq_ignore_ascii_case(&right.to_string_lossy())
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                left == right
+            }
+        }
+        _ => false,
+    }
+}
+
 #[tauri::command]
 pub(super) async fn get_research_graph(
     state: State<'_, AppState>,
@@ -71,6 +91,16 @@ pub(super) async fn create_project(
     let path = PathBuf::from(dir);
     std::fs::create_dir_all(&path)
         .map_err(|e| format!("Failed to create working directory: {e}"))?;
+    if state
+        .store
+        .list_projects()
+        .await
+        .map_err(|e| format!("{e}"))?
+        .iter()
+        .any(|project| same_workspace_path(&path, Path::new(&project.2)))
+    {
+        return Err("This folder is already registered as a project.".into());
+    }
     // Writability probe: create + remove a temp marker.
     let marker = path.join(".superscience-write-test");
     std::fs::write(&marker, b"").map_err(|e| format!("Working directory is not writable: {e}"))?;
@@ -529,4 +559,21 @@ pub(super) async fn get_project_info(
     window: tauri::WebviewWindow,
 ) -> Result<ProjectInfo, String> {
     Ok(build_project_info(&state, window.label()).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_workspace_path;
+
+    #[test]
+    fn workspace_path_match_resolves_equivalent_existing_paths() {
+        let root =
+            std::env::temp_dir().join(format!("wisp_same_workspace_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert!(same_workspace_path(&root, &root.join(".")));
+        assert!(!same_workspace_path(&root, &root.join("other")));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

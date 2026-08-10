@@ -59,7 +59,8 @@ html.pet-window-shell body {
   bottom: calc(100% + 6px);
   display: none;
   width: max-content;
-  max-width: 160px;
+  max-width: min(160px, calc(100vw - 16px));
+  max-height: 33px;
   min-width: 52px;
   padding: 2px 7px;
   border: 1px solid rgba(25, 29, 34, .13);
@@ -68,10 +69,14 @@ html.pet-window-shell body {
   box-shadow: 0 3px 10px rgba(20, 23, 28, .13);
   color: #34383e;
   font: 600 10px/1.35 "Segoe UI Variable", "Segoe UI", sans-serif;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   text-align: center;
   white-space: normal;
   transform: translateX(-50%);
   backdrop-filter: blur(8px);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 .pet-window-root .superscience-pet[data-state="running"] .superscience-pet-state-label,
 .pet-window-root .superscience-pet[data-state="review"] .superscience-pet-state-label,

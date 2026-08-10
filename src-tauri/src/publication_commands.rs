@@ -321,6 +321,20 @@ async fn publication_mainline_project(
     Ok(project)
 }
 
+async fn writable_publication_mainline_project(
+    state: &AppState,
+    window_label: &str,
+) -> Result<(crate::ActiveProject, tokio::sync::OwnedRwLockReadGuard<()>), String> {
+    let project = publication_mainline_project(state, window_label).await?;
+    let activity = state.begin_project_activity(&project.id)?;
+    crate::exploration_commands::require_writable_scope(
+        &state.store,
+        &wisp_store::StateScope::mainline(project.id.clone()),
+    )
+    .await?;
+    Ok((project, activity))
+}
+
 async fn publication_workspace(
     store: &Store,
     project_id: &str,
@@ -560,7 +574,8 @@ pub(super) async fn create_publication_workspace(
     window: tauri::WebviewWindow,
     input: CreatePublicationInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = publication_mainline_project(&state, window.label()).await?;
+    let (project, _activity) =
+        writable_publication_mainline_project(&state, window.label()).await?;
     let revision = create_publication(&state.store, &project.id, &input)
         .await
         .map_err(|error| error.to_string())?;
@@ -575,7 +590,8 @@ pub(super) async fn save_publication_item(
     window: tauri::WebviewWindow,
     input: SavePublicationItemInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = publication_mainline_project(&state, window.label()).await?;
+    let (project, _activity) =
+        writable_publication_mainline_project(&state, window.label()).await?;
     if revision_project(&state.store, &input.revision_id)
         .await
         .map_err(|error| error.to_string())?
@@ -613,7 +629,8 @@ pub(super) async fn bind_publication_evidence(
     window: tauri::WebviewWindow,
     input: BindPublicationEvidenceInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = publication_mainline_project(&state, window.label()).await?;
+    let (project, _activity) =
+        writable_publication_mainline_project(&state, window.label()).await?;
     bind_evidence(&state.store, &project.id, &input)
         .await
         .map_err(|error| error.to_string())?;
@@ -628,7 +645,8 @@ pub(super) async fn update_publication_evidence_binding(
     window: tauri::WebviewWindow,
     input: UpdateEvidenceBindingInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = publication_mainline_project(&state, window.label()).await?;
+    let (project, _activity) =
+        writable_publication_mainline_project(&state, window.label()).await?;
     let binding = state
         .store
         .get_evidence_binding(&input.binding_id)
@@ -663,7 +681,8 @@ pub(super) async fn clone_publication_revision(
     revision_id: String,
     label: String,
 ) -> Result<PublicationWorkspace, String> {
-    let project = publication_mainline_project(&state, window.label()).await?;
+    let (project, _activity) =
+        writable_publication_mainline_project(&state, window.label()).await?;
     if revision_project(&state.store, &revision_id)
         .await
         .map_err(|error| error.to_string())?
@@ -687,7 +706,8 @@ pub(super) async fn save_publication_waiver(
     window: tauri::WebviewWindow,
     input: SavePublicationWaiverInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = publication_mainline_project(&state, window.label()).await?;
+    let (project, _activity) =
+        writable_publication_mainline_project(&state, window.label()).await?;
     if revision_project(&state.store, &input.revision_id)
         .await
         .map_err(|error| error.to_string())?
@@ -718,7 +738,8 @@ pub(super) async fn verify_publication_revision(
     window: tauri::WebviewWindow,
     input: VerifyPublicationRevisionInput,
 ) -> Result<PublicationWorkspace, String> {
-    let project = publication_mainline_project(&state, window.label()).await?;
+    let (project, _activity) =
+        writable_publication_mainline_project(&state, window.label()).await?;
     if revision_project(&state.store, &input.revision_id)
         .await
         .map_err(|error| error.to_string())?

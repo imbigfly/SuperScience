@@ -98,6 +98,25 @@ pub(crate) fn is_error_assistant(item: &ChatItem) -> bool {
     matches!(item, ChatItem::Assistant { text, .. } if text.starts_with("Error: "))
 }
 
+/// Follow-up suggestions belong only to a turn that actually produced a final
+/// answer. In particular, assistant commentary before a tool is not a final
+/// answer: if the provider drops after that tool, a stray `Done` event must not
+/// make the interrupted task look complete by offering next questions.
+pub(crate) fn latest_turn_has_final_answer(items: &[ChatItem]) -> bool {
+    let turn_start = items
+        .iter()
+        .rposition(|item| matches!(item, ChatItem::User(_) | ChatItem::QueuedUser { .. }))
+        .map_or(0, |index| index.saturating_add(1));
+    items
+        .iter()
+        .enumerate()
+        .skip(turn_start)
+        .any(|(index, item)| {
+            matches!(item, ChatItem::Assistant { text, .. } if !text.trim().is_empty() && !text.starts_with("Error: "))
+                && !is_commentary_at(items, index)
+        })
+}
+
 pub(crate) fn strip_error_at(items: &mut Vec<ChatItem>, idx: usize) {
     if idx < items.len() && is_error_assistant(&items[idx]) {
         items.remove(idx);

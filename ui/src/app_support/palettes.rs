@@ -166,6 +166,7 @@ pub(crate) fn CommandPalette(
             return;
         }
         let q = query.get();
+        let preferred_project_id = current_project_id.get();
         spawn_local(async move {
             let p = invoke("list_projects", JsValue::UNDEFINED).await;
             if let Ok(rows) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(p) {
@@ -184,10 +185,17 @@ pub(crate) fn CommandPalette(
             }
             let s = invoke(
                 "search_sessions",
-                to_value(&serde_json::json!({ "query": q, "limit": 12 })).unwrap(),
+                to_value(&serde_json::json!({
+                    "query": q,
+                    "limit": 12,
+                    "preferredProjectId": preferred_project_id,
+                }))
+                .unwrap(),
             )
             .await;
-            if query.get_untracked() == q {
+            if query.get_untracked() == q
+                && current_project_id.get_untracked() == preferred_project_id
+            {
                 if let Ok(rows) = serde_wasm_bindgen::from_value::<Vec<SessionSearchInfo>>(s) {
                     sessions.set(rows);
                 }
@@ -224,18 +232,10 @@ pub(crate) fn CommandPalette(
         });
         out.extend(ars.into_iter().map(CommandPaletteItem::Artifact));
         let mut ss = sessions.get();
-        if q.is_empty() {
-            // Empty query is the "switch away" gesture (#423): most recent
-            // activity first across all projects, no current-project bias.
-            ss.sort_by_key(|s| std::cmp::Reverse(s.activity_at));
-        } else {
-            ss.sort_by_key(|s| {
-                (
-                    current.as_deref() != Some(s.project_id.as_str()),
-                    std::cmp::Reverse(s.activity_at),
-                )
-            });
-        }
+        // The store ranks title hits ahead of transcript-body hits. This stable
+        // partition keeps that order while retaining a current-project bias
+        // when an older backend or mocked bridge returns unranked rows.
+        ss.sort_by_key(|s| current.as_deref() != Some(s.project_id.as_str()));
         out.extend(ss.into_iter().map(CommandPaletteItem::Session));
         out.push(CommandPaletteItem::Command("scratch"));
         out.push(CommandPaletteItem::Command("new"));
@@ -312,8 +312,8 @@ pub(crate) fn CommandPalette(
     });
     view! {
         {move || open.get().then(|| view! {
-            <div class="project-search-overlay" on:click=move |_| open.set(false)>
-                <div class="project-search-dialog" role="dialog" aria-label="Search"
+            <div class="project-search-overlay conversation-search-overlay" on:click=move |_| open.set(false)>
+                <div class="project-search-dialog conversation-search-dialog" role="dialog" aria-label="Search"
                     on:click=|ev| ev.stop_propagation()>
                     <div class="project-search-input">
                         <span class="gi search"></span>
@@ -384,6 +384,7 @@ pub(crate) fn ActionPalette(
     let locale = use_locale();
     let query = create_rw_signal(String::new());
     let active = create_rw_signal(0usize);
+    let mac = is_mac();
     create_effect(move |_| {
         if !open.get() {
             return;
@@ -418,28 +419,28 @@ pub(crate) fn ActionPalette(
                 "bubble",
                 "command.scratch",
                 general.clone(),
-                "Ctrl/⌘ Shift N",
+                "shift-n",
             ),
             (
                 "new",
                 "plus",
                 "command.new_session",
                 general.clone(),
-                "Ctrl/⌘ N",
+                "n",
             ),
             (
                 "search",
                 "search",
                 "command.search",
                 general.clone(),
-                "Ctrl/⌘ K",
+                "k",
             ),
             (
                 "settings",
                 "gear",
                 "command.settings",
                 general.clone(),
-                "Ctrl/⌘ ,",
+                ",",
             ),
             (
                 "import-codex",
@@ -484,7 +485,7 @@ pub(crate) fn ActionPalette(
                 "panel",
                 "command.toggle_sidebar",
                 navigate.clone(),
-                "Ctrl/⌘ B",
+                "b",
             ),
             (
                 "artifacts",
@@ -572,12 +573,21 @@ pub(crate) fn ActionPalette(
             .into_iter()
             .filter_map(|(id, icon, key, group, shortcut)| {
                 let title = t(loc, key).to_string();
-                contains_search(&q, &[id, &title, &group]).then_some(CommandAction {
-                    id,
-                    icon,
-                    title,
-                    group,
-                    shortcut,
+                contains_search(&q, &[id, &title, &group]).then(|| {
+                    let shortcut = match (mac, shortcut) {
+                        (_, "") => String::new(),
+                        (true, "shift-n") => "⌘⇧N".into(),
+                        (false, "shift-n") => "Ctrl+Shift+N".into(),
+                        (true, key) => format!("⌘{}", key.to_uppercase()),
+                        (false, key) => format!("Ctrl+{}", key.to_uppercase()),
+                    };
+                    CommandAction {
+                        id,
+                        icon,
+                        title,
+                        group,
+                        shortcut,
+                    }
                 })
             })
             .collect::<Vec<_>>()

@@ -550,6 +550,7 @@ pub(crate) async fn preview_exploration_promotion(
 #[tauri::command]
 pub(crate) async fn promote_exploration(
     state: State<'_, AppState>,
+    terminals: State<'_, crate::terminal_sessions::TerminalManager>,
     window: tauri::WebviewWindow,
     exploration_id: String,
     expected_guard_hash: String,
@@ -567,6 +568,14 @@ pub(crate) async fn promote_exploration(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| coded(ERR_NOT_PROMOTABLE, "checkpoint not found"))?;
     let _exclusive = state.begin_project_exclusive_activity(&checkpoint.project_id)?;
+    if terminals.has_running(&checkpoint.project_id, MAINLINE_SCOPE_KEY)
+        || terminals.has_running(&checkpoint.project_id, &exploration_id)
+    {
+        return Err(coded(
+            ERR_EXPLORATION_BUSY,
+            "close mainline and exploration terminals before promotion",
+        ));
+    }
     ensure_no_queued_turns(
         state.inner(),
         [&checkpoint.source_frame_id, &exploration.frame_id],
@@ -616,6 +625,7 @@ pub(crate) async fn promote_exploration(
 #[tauri::command]
 pub(crate) async fn discard_exploration(
     state: State<'_, AppState>,
+    terminals: State<'_, crate::terminal_sessions::TerminalManager>,
     window: tauri::WebviewWindow,
     exploration_id: String,
 ) -> Result<Exploration, String> {
@@ -632,6 +642,12 @@ pub(crate) async fn discard_exploration(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| coded(ERR_NOT_PROMOTABLE, "checkpoint not found"))?;
     let _exclusive = state.begin_project_exclusive_activity(&checkpoint.project_id)?;
+    if terminals.has_running(&checkpoint.project_id, &exploration_id) {
+        return Err(coded(
+            ERR_EXPLORATION_BUSY,
+            "close the exploration terminal before discarding",
+        ));
+    }
     ensure_no_queued_turns(state.inner(), [&exploration.frame_id]).await?;
     if state
         .store
@@ -788,7 +804,7 @@ pub(crate) async fn recover_incomplete_promotions(store: &Store, app_data: &Path
     }
 }
 
-async fn ensure_no_queued_turns<'a>(
+pub(crate) async fn ensure_no_queued_turns<'a>(
     state: &AppState,
     frame_ids: impl IntoIterator<Item = &'a String>,
 ) -> Result<(), String> {
@@ -1464,7 +1480,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn promotion_adopts_one_complete_scope_and_keeps_sibling_private() {
+    async fn promotion_adopts_one_complete_scope_and_archives_sibling() {
         let (creator, store, base, project, app_data) = fixture("adopt").await;
         baseline_artifact(&store).await;
         let checkpoint = creator.create_checkpoint("p", "main").await.unwrap();
@@ -1598,6 +1614,15 @@ mod tests {
         assert_eq!(
             store.frame_state_scope(&sibling.frame_id).await.unwrap(),
             Some(StateScope::exploration("p", sibling.id.clone()))
+        );
+        assert_eq!(
+            store
+                .get_exploration(&sibling.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ExplorationStatus::Archived
         );
         assert_eq!(
             store

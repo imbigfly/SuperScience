@@ -17,6 +17,11 @@ pub(super) async fn new_session(
         .await?
         .0;
     let _project_activity = state.begin_project_activity(&ap.id)?;
+    exploration_commands::require_writable_scope(
+        &state.store,
+        &wisp_store::StateScope::mainline(ap.id.clone()),
+    )
+    .await?;
     let id = create_session_frame(&state.store, &ap.id).await?;
     state.set_active(window.label(), ap);
     state.set_active_frame(window.label(), Some(id.clone()));
@@ -51,6 +56,11 @@ pub(super) async fn branch_session(
             );
         }
     }
+    exploration_commands::require_writable_scope(
+        &state.store,
+        &wisp_store::StateScope::mainline(ap.id.clone()),
+    )
+    .await?;
     let id = create_session_frame(&state.store, &ap.id).await?;
     if let Some(source) = session_id.as_deref().filter(|s| !s.is_empty()) {
         // Display-only lineage so the sidebar can nest this branch under its source.
@@ -380,6 +390,7 @@ pub(super) async fn delete_session(
                 .into(),
         );
     }
+    exploration_commands::require_writable_scope(&state.store, &scope).await?;
     let runtime = state.sessions.lock().await.get(&id).cloned();
     if let Some(rt) = runtime.as_ref() {
         rt.deleted.store(true, Ordering::SeqCst);
@@ -506,6 +517,13 @@ pub(super) async fn rewind_session(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Session project was not found.".to_string())?;
     let _project_activity = state.begin_project_activity(&project_id)?;
+    let scope = state
+        .store
+        .frame_state_scope(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Session state scope was not found.".to_string())?;
+    exploration_commands::require_writable_scope(&state.store, &scope).await?;
     if state
         .store
         .get_acp_session(&frame_id)
@@ -812,6 +830,7 @@ pub(super) async fn search_sessions(
     query: Option<String>,
     limit: Option<i64>,
     project_id: Option<String>,
+    preferred_project_id: Option<String>,
 ) -> Result<Vec<SessionSearchInfo>, String> {
     let running = state.running_turns.lock().await.clone();
     let awaiting = state.awaiting_confirm.lock().unwrap().clone();
@@ -822,6 +841,7 @@ pub(super) async fn search_sessions(
             query.as_deref().unwrap_or(""),
             limit.unwrap_or(12),
             None,
+            preferred_project_id.as_deref(),
         )
         .await
         .map_err(|e| format!("{e}"))?;

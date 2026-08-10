@@ -58,3 +58,24 @@ test("GitHub Pages finishes its artifact job before deployment", () => {
   expect(workflow).toContain("  deploy:\n    needs: build");
   expect(workflow).toContain("          include-hidden-files: true");
 });
+
+test("Windows test signing has a dedicated non-release workflow", () => {
+  const workflow = readRepositoryFile(
+    ".github/workflows/test-windows-signing.yml",
+  );
+
+  expect(workflow).toContain("on:\n  workflow_dispatch:");
+  expect(workflow).toContain("signing-policy-slug: test-signing");
+  expect(
+    workflow.match(
+      /uses: signpath\/github-action-submit-signing-request@v2/g,
+    ),
+  ).toHaveLength(2);
+  expect(workflow).toContain("archive: false");
+  expect(workflow).toContain("Verify Authenticode signatures");
+  expect(workflow).not.toContain("SKIP_WINDOWS_SIGNING");
+  expect(workflow).not.toContain("softprops/action-gh-release");
+  expect(workflow.indexOf("Upload unsigned NSIS installer")).toBeLessThan(
+    workflow.indexOf("Test-sign MSI with SignPath"),
+  );
+});
