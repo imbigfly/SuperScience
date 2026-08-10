@@ -269,8 +269,9 @@ tokens stay in the OS keyring; deleting the connection removes its credential.
 data → inspect sample format → RNA-seq upstream (siESR1 vs siNT counts) →
 downstream DEG/ORA/GSEA → scientific hypothesis / research-project design. In
 the desktop app, **Open demo** lists them and opens each as a read-only
-transcript with full tool/run history — the fastest way to see what Wisp can
-do without an API key.
+transcript with full tool/run history. The Example project cannot create
+conversations or send messages — it is only for viewing what Wisp can do
+without an API key.
 
 ## Documentation
 
@@ -378,12 +379,14 @@ and pull requests (ordered by the number of issues reported):
   <a href="https://github.com/Charlesyu153"><img src="https://avatars.githubusercontent.com/u/232734740?v=4&amp;s=96" width="64" height="64" alt="@Charlesyu153" title="@Charlesyu153"></a>
   <a href="https://github.com/xiaowen621"><img src="https://avatars.githubusercontent.com/u/241900839?v=4&amp;s=96" width="64" height="64" alt="@xiaowen621" title="@xiaowen621"></a>
   <a href="https://github.com/liaoyuan919"><img src="https://avatars.githubusercontent.com/u/240658511?v=4&amp;s=96" width="64" height="64" alt="@liaoyuan919" title="@liaoyuan919"></a>
+  <a href="https://github.com/mayunyu925"><img src="https://avatars.githubusercontent.com/u/256124565?v=4&amp;s=96" width="64" height="64" alt="@mayunyu925" title="@mayunyu925"></a>
   <a href="https://github.com/lhx-JIPS"><img src="https://avatars.githubusercontent.com/u/33241642?v=4&amp;s=96" width="64" height="64" alt="@lhx-JIPS" title="@lhx-JIPS"></a>
   <a href="https://github.com/chenzhiyu48"><img src="https://avatars.githubusercontent.com/u/65606400?v=4&amp;s=96" width="64" height="64" alt="@chenzhiyu48" title="@chenzhiyu48"></a>
   <a href="https://github.com/liuyc414"><img src="https://avatars.githubusercontent.com/u/190511200?v=4&amp;s=96" width="64" height="64" alt="@liuyc414" title="@liuyc414"></a>
   <a href="https://github.com/kevinzzzhang76-dot"><img src="https://avatars.githubusercontent.com/u/251931886?v=4&amp;s=96" width="64" height="64" alt="@kevinzzzhang76-dot" title="@kevinzzzhang76-dot"></a>
   <a href="https://github.com/Shawn-Gua"><img src="https://avatars.githubusercontent.com/u/110019576?v=4&amp;s=96" width="64" height="64" alt="@Shawn-Gua" title="@Shawn-Gua"></a>
   <a href="https://github.com/Hayesss"><img src="https://avatars.githubusercontent.com/u/66942436?v=4&amp;s=96" width="64" height="64" alt="@Hayesss" title="@Hayesss"></a>
+  <a href="https://github.com/hufanglq"><img src="https://avatars.githubusercontent.com/u/10824450?v=4&amp;s=96" width="64" height="64" alt="@hufanglq" title="@hufanglq"></a>
   <a href="https://github.com/Az-Fan"><img src="https://avatars.githubusercontent.com/u/189823792?v=4&amp;s=96" width="64" height="64" alt="@Az-Fan" title="@Az-Fan"></a>
   <a href="https://github.com/19951219asd"><img src="https://avatars.githubusercontent.com/u/118892832?v=4&amp;s=96" width="64" height="64" alt="@19951219asd" title="@19951219asd"></a>
   <a href="https://github.com/yeshubiao2017-source"><img src="https://avatars.githubusercontent.com/u/233231577?v=4&amp;s=96" width="64" height="64" alt="@yeshubiao2017-source" title="@yeshubiao2017-source"></a>
@@ -393,11 +396,13 @@ and pull requests (ordered by the number of issues reported):
   <a href="https://github.com/lpc520"><img src="https://avatars.githubusercontent.com/u/61644087?v=4&amp;s=96" width="64" height="64" alt="@lpc520" title="@lpc520"></a>
   <a href="https://github.com/lijianchunChina"><img src="https://avatars.githubusercontent.com/u/42370856?v=4&amp;s=96" width="64" height="64" alt="@lijianchunChina" title="@lijianchunChina"></a>
   <a href="https://github.com/kjiojio"><img src="https://avatars.githubusercontent.com/u/118580250?v=4&amp;s=96" width="64" height="64" alt="@kjiojio" title="@kjiojio"></a>
+  <a href="https://github.com/Kururu1799"><img src="https://avatars.githubusercontent.com/u/64822570?v=4&amp;s=96" width="64" height="64" alt="@Kururu1799" title="@Kururu1799"></a>
   <a href="https://github.com/dmh-git-cop"><img src="https://avatars.githubusercontent.com/u/270353192?v=4&amp;s=96" width="64" height="64" alt="@dmh-git-cop" title="@dmh-git-cop"></a>
   <a href="https://github.com/ZZRSCAR"><img src="https://avatars.githubusercontent.com/u/255126066?v=4&amp;s=96" width="64" height="64" alt="@ZZRSCAR" title="@ZZRSCAR"></a>
   <a href="https://github.com/Toomi0124"><img src="https://avatars.githubusercontent.com/u/300393761?v=4&amp;s=96" width="64" height="64" alt="@Toomi0124" title="@Toomi0124"></a>
   <a href="https://github.com/Lezhao0226"><img src="https://avatars.githubusercontent.com/u/72743280?v=4&amp;s=96" width="64" height="64" alt="@Lezhao0226" title="@Lezhao0226"></a>
   <a href="https://github.com/HSsnano"><img src="https://avatars.githubusercontent.com/u/87816341?v=4&amp;s=96" width="64" height="64" alt="@HSsnano" title="@HSsnano"></a>
+  <a href="https://github.com/zhuifeng1991"><img src="https://avatars.githubusercontent.com/u/186464554?v=4&amp;s=96" width="64" height="64" alt="@zhuifeng1991" title="@zhuifeng1991"></a>
   <a href="https://github.com/zwbao"><img src="https://avatars.githubusercontent.com/u/24564677?v=4&amp;s=96" width="64" height="64" alt="@zwbao" title="@zwbao"></a>
   <a href="https://github.com/yuzhenpeng"><img src="https://avatars.githubusercontent.com/u/31943277?v=4&amp;s=96" width="64" height="64" alt="@yuzhenpeng" title="@yuzhenpeng"></a>
   <a href="https://github.com/youxiudongdong-lang"><img src="https://avatars.githubusercontent.com/u/306058340?v=4&amp;s=96" width="64" height="64" alt="@youxiudongdong-lang" title="@youxiudongdong-lang"></a>
@@ -413,6 +418,7 @@ and pull requests (ordered by the number of issues reported):
   <a href="https://github.com/gongmeiyuan"><img src="https://avatars.githubusercontent.com/u/75189860?v=4&amp;s=96" width="64" height="64" alt="@gongmeiyuan" title="@gongmeiyuan"></a>
   <a href="https://github.com/chhhhai"><img src="https://avatars.githubusercontent.com/u/99796066?v=4&amp;s=96" width="64" height="64" alt="@chhhhai" title="@chhhhai"></a>
   <a href="https://github.com/chenchen199401-cmyk"><img src="https://avatars.githubusercontent.com/u/236738705?v=4&amp;s=96" width="64" height="64" alt="@chenchen199401-cmyk" title="@chenchen199401-cmyk"></a>
+  <a href="https://github.com/chenhd3"><img src="https://avatars.githubusercontent.com/u/52345106?v=4&amp;s=96" width="64" height="64" alt="@chenhd3" title="@chenhd3"></a>
   <a href="https://github.com/btzheng"><img src="https://avatars.githubusercontent.com/u/15546828?v=4&amp;s=96" width="64" height="64" alt="@btzheng" title="@btzheng"></a>
   <a href="https://github.com/Winteric123"><img src="https://avatars.githubusercontent.com/u/122366825?v=4&amp;s=96" width="64" height="64" alt="@Winteric123" title="@Winteric123"></a>
   <a href="https://github.com/ShixiangWang"><img src="https://avatars.githubusercontent.com/u/25057508?v=4&amp;s=96" width="64" height="64" alt="@ShixiangWang" title="@ShixiangWang"></a>
@@ -421,8 +427,15 @@ and pull requests (ordered by the number of issues reported):
   <a href="https://github.com/JarningGau"><img src="https://avatars.githubusercontent.com/u/22016330?v=4&amp;s=96" width="64" height="64" alt="@JarningGau" title="@JarningGau"></a>
   <a href="https://github.com/Cloudy-Zhuang"><img src="https://avatars.githubusercontent.com/u/85553170?v=4&amp;s=96" width="64" height="64" alt="@Cloudy-Zhuang" title="@Cloudy-Zhuang"></a>
   <a href="https://github.com/245429488zc-svg"><img src="https://avatars.githubusercontent.com/u/250579619?v=4&amp;s=96" width="64" height="64" alt="@245429488zc-svg" title="@245429488zc-svg"></a>
+  <a href="https://github.com/entpyf"><img src="https://avatars.githubusercontent.com/u/125380093?v=4&amp;s=96" width="64" height="64" alt="@entpyf" title="@entpyf"></a>
+  <a href="https://github.com/jymtop"><img src="https://avatars.githubusercontent.com/u/248790276?v=4&amp;s=96" width="64" height="64" alt="@jymtop" title="@jymtop"></a>
+  <a href="https://github.com/MenghanLi-lab"><img src="https://avatars.githubusercontent.com/u/309669757?v=4&amp;s=96" width="64" height="64" alt="@MenghanLi-lab" title="@MenghanLi-lab"></a>
+  <a href="https://github.com/knifer510"><img src="https://avatars.githubusercontent.com/u/37789525?v=4&amp;s=96" width="64" height="64" alt="@knifer510" title="@knifer510"></a>
+  <a href="https://github.com/pilaobanmust-sketch"><img src="https://avatars.githubusercontent.com/u/269459169?v=4&amp;s=96" width="64" height="64" alt="@pilaobanmust-sketch" title="@pilaobanmust-sketch"></a>
+  <a href="https://github.com/JohnnyChen1113"><img src="https://avatars.githubusercontent.com/u/30077595?v=4&amp;s=96" width="64" height="64" alt="@JohnnyChen1113" title="@JohnnyChen1113"></a>
   <a href="https://github.com/chewice"><img src="https://avatars.githubusercontent.com/u/244145152?v=4&amp;s=96" width="64" height="64" alt="@chewice" title="@chewice"></a>
   <a href="https://github.com/XuuChen"><img src="https://avatars.githubusercontent.com/u/99383234?v=4&amp;s=96" width="64" height="64" alt="@XuuChen" title="@XuuChen"></a>
+  <a href="https://github.com/fei0810"><img src="https://avatars.githubusercontent.com/u/17489298?v=4&amp;s=96" width="64" height="64" alt="@fei0810" title="@fei0810"></a>
 </p>
 
 - Free code signing on Windows provided by [SignPath.io](https://signpath.io),

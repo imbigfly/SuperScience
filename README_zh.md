@@ -227,8 +227,8 @@ Agent 先用 `search_mcp_tools` 发现匹配的工具，再通过 `use_mcp_tool`
 `seed/` 提供五个按研究叙事排序的 ESR1 / GSE153250 示例：查找数据 → 查看样本/
 数据格式 → RNA-seq 上游分析（siESR1 vs siNT counts）→ 下游 DEG/ORA/GSEA →
 科学假设与研究项目设计。在桌面应用中，**Open demo** 会列出这些示例，并以只读
-对话形式打开（含完整工具/run 操作记录）——不需要 API Key 就能看到 Wisp 的
-完整工作过程。
+对话形式打开（含完整工具/run 操作记录）。示例项目不允许新建会话或发送消息，
+仅用于在无需 API Key 的情况下查看 Wisp 的完整工作过程。
 
 ## 文档
 

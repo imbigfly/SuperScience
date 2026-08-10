@@ -227,9 +227,23 @@ test.beforeEach(async ({ page }) => {
 
 test("Example project shows bundled demos as read-only transcripts", async ({ page }) => {
   await page.goto("/");
+  const sessionsBefore = (await invokeArgsList(page, "new_session")).length;
+  const sendsBefore = (await invokeArgsList(page, "send_message")).length;
+  const scratchBefore = (await invokeArgsList(page, "start_scratch_chat")).length;
   // The synthetic "Example project" opens a demo view whose sidebar lists the
   // bundled demos (no per-project "Open demo" button any more).
   await page.getByText("Example project").click();
+  await expect(page.getByTestId("demo-read-only")).toBeVisible();
+  await expect(newSessionButton(page)).toHaveCount(0);
+  await expect(composer(page)).not.toBeVisible();
+
+  // Keyboard paths are guarded too; the read-only demo cannot be turned into
+  // either a regular or scratch conversation.
+  await page.keyboard.press("Control+n");
+  await page.keyboard.press("Control+Shift+n");
+  expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
+  expect((await invokeArgsList(page, "start_scratch_chat")).length).toBe(scratchBefore);
+
   await expect(page.getByText("Help me find RNA-seq knockdown datasets")).toBeVisible();
   await expect(page.getByText("What specific samples are included in GSE153250")).toBeVisible();
   await expect(page.getByText("Based on the upstream Counts data from GSE153250")).toBeVisible();
@@ -245,6 +259,8 @@ test("Example project shows bundled demos as read-only transcripts", async ({ pa
   // Full transcript includes SSH/run operation cards, not just the summary.
   await expect(page.getByText("Re-run pipeline with fixed STAR index")).toBeVisible();
   await expect(page.getByTestId("run-monitor-card")).toBeVisible();
+  expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
+  expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
 });
 
 test("send streams a mocked assistant reply", async ({ page, context }) => {

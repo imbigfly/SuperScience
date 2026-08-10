@@ -1022,7 +1022,7 @@ fn App() -> impl IntoView {
     // Successful edit/write tool calls bump the matching tab's revision. The
     // preview subtree is keyed by this value and re-reads the saved file.
     let center_file_revisions = create_rw_signal::<HashMap<String, u64>>(HashMap::new());
-    let center_file_open = create_memo(move |_| center_file.get().is_some());
+    let center_file_open = create_memo(move |_| !demo_mode.get() && center_file.get().is_some());
     // Split view: keep the main conversation beside the open document instead of
     // hiding it. Same session, same history — only the layout moves.
     let center_split = create_rw_signal(false);
@@ -1174,6 +1174,9 @@ fn App() -> impl IntoView {
         });
     });
     let open_scratch = Callback::new(move |_: ()| {
+        if demo_mode.get_untracked() {
+            return;
+        }
         command_palette_open.set(false);
         action_palette_open.set(false);
         spawn_local(async move {
@@ -2640,6 +2643,9 @@ fn App() -> impl IntoView {
     };
 
     let send = Callback::new(move |action: ComposerSendAction| {
+        if demo_mode.get_untracked() {
+            return;
+        }
         let message = input.get();
         let saved_attachments = attachments.get();
         let refs = composer_references.get();
@@ -2941,6 +2947,9 @@ fn App() -> impl IntoView {
         });
     });
     let send_side_chat = move |request: (String, Vec<ComposerQuote>, bool)| {
+        if demo_mode.get_untracked() {
+            return;
+        }
         let (question, quotes, clear_draft) = request;
         let question = message_with_read_only_quotes(&question, &quotes);
         if question.is_empty() || side_chat_busy.get() {
@@ -3554,7 +3563,7 @@ fn App() -> impl IntoView {
     });
 
     let new_session_context_recovery = Callback::new(move |source_id: String| {
-        if context_recovery_busy.get_untracked() {
+        if demo_mode.get_untracked() || context_recovery_busy.get_untracked() {
             return;
         }
         context_recovery_busy.set(true);
@@ -3690,7 +3699,8 @@ fn App() -> impl IntoView {
     };
 
     let composer_blocked = move || {
-        uploading.get()
+        demo_mode.get()
+            || uploading.get()
             || active_session
                 .get()
                 .is_some_and(|id| reviewing.with(|ids| ids.contains(&id)))
@@ -4446,7 +4456,9 @@ fn App() -> impl IntoView {
     };
 
     let new_session = move |_| {
-        demo_mode.set(false); // starting a fresh chat leaves the demo view
+        if demo_mode.get_untracked() {
+            return;
+        }
         attachments.set(vec![]);
         sel_artifact.set(0);
         right_tab.set(RightTab::Artifacts);
@@ -4483,7 +4495,7 @@ fn App() -> impl IntoView {
         let right_tab = right_tab;
         let models = models;
         move |_| {
-            if busy.get() {
+            if demo_mode.get_untracked() || busy.get() {
                 return;
             }
             show_capabilities.set(false);
@@ -4605,6 +4617,9 @@ fn App() -> impl IntoView {
             Vec<String>,
             bool,
         )| {
+            if demo_mode.get_untracked() {
+                return;
+            }
             let prompt = tf(
                 locale.get(),
                 if skill_names.is_empty() {
@@ -5272,8 +5287,6 @@ fn App() -> impl IntoView {
         right_tab.set(RightTab::Artifacts);
         active_session.set(None);
         spawn_local(async move {
-            // Fresh session so the demo doesn't mix into a real conversation.
-            let _ = invoke("new_session", JsValue::UNDEFINED).await;
             let v = invoke(
                 "load_demo",
                 to_value(&serde_json::json!({ "id": id })).unwrap(),
@@ -5557,6 +5570,9 @@ fn App() -> impl IntoView {
     };
 
     let start_specialist_chat = Callback::new(move |ev: web_sys::MouseEvent| {
+        if demo_mode.get_untracked() {
+            return;
+        }
         close_details_ancestor(&ev);
         show_settings.set(false);
         let loc = locale.get();
@@ -5795,6 +5811,9 @@ fn App() -> impl IntoView {
         let load_session = load_session.clone();
         Callback::new(
             move |(action_id, selection, source_path): (String, String, Option<String>)| {
+                if demo_mode.get_untracked() {
+                    return;
+                }
                 selection_popup.set(None);
                 ctx_menu.set(None);
                 clear_selection();
@@ -6025,6 +6044,9 @@ fn App() -> impl IntoView {
 
     let apply_session_compute_resource =
         Callback::new(move |(context_id, enabled): (String, bool)| {
+            if demo_mode.get_untracked() {
+                return;
+            }
             spawn_local(async move {
                 let (session_id, created) = match active_session.get_untracked() {
                     Some(session_id) => (session_id, false),
@@ -7651,7 +7673,9 @@ fn App() -> impl IntoView {
             modal_artifact.set(Some((path, name, kind)));
         });
     let palette_new_session = Callback::new(move |_: ()| {
-        demo_mode.set(false);
+        if demo_mode.get_untracked() {
+            return;
+        }
         attachments.set(vec![]);
         composer_references.set(vec![]);
         composer_quotes.set(vec![]);
@@ -8209,10 +8233,14 @@ fn App() -> impl IntoView {
                 <div class="center-tabs" role="tablist">
                     <button type="button" class="center-tab" class:active=move || center_file.get().is_none()
                         on:click=move |_| center_file.set(None)>
-                        <span class="center-tab-label">{move || center_conversation_title.get()}</span>
+                        <span class="center-tab-label">{move || if demo_mode.get() {
+                            t(locale.get(), "projects.example").into()
+                        } else {
+                            center_conversation_title.get()
+                        }}</span>
                     </button>
                     <For
-                        each=move || center_files.get()
+                        each=move || if demo_mode.get() { Vec::new() } else { center_files.get() }
                         key=|file| file.path.clone()
                         children=move |file| {
                             let path = file.path;
@@ -8339,7 +8367,7 @@ fn App() -> impl IntoView {
                 </div>
                 <button class="icon-btn" title=move || t(locale.get(), "contexts.open_terminal")
                     class:active=move || terminal_panel_open.get()
-                    disabled=move || scratch_open.get()
+                    disabled=move || scratch_open.get() || demo_mode.get()
                     on:click=move |_| {
                         if terminal_sessions.get_untracked().is_empty() {
                             open_terminal_for_context.call("local".into());
@@ -8356,7 +8384,7 @@ fn App() -> impl IntoView {
                     }>{compose_icon("terminal")}</button>
                 <button class="icon-btn" title=move || t(locale.get(), "center.toggle_panel")
                     class:active=move || show_right.get()
-                    disabled=move || scratch_open.get()
+                    disabled=move || scratch_open.get() || demo_mode.get()
                     on:click=move |_| {
                         show_right.update(|open| {
                             if *open {
@@ -8373,7 +8401,7 @@ fn App() -> impl IntoView {
                 </div>
             </div>
 
-            {move || center_file.get().and_then(|path| {
+            {move || (!demo_mode.get()).then(|| center_file.get()).flatten().and_then(|path| {
                 center_files.get().into_iter().find(|file| file.path == path)
             }).map(|file| {
                 let path = file.path.clone();
@@ -8568,7 +8596,7 @@ fn App() -> impl IntoView {
                     </div>
                 }
             })}
-            {move || selection_popup.get().map(|(text, source, x, y)| {
+            {move || selection_popup.get().filter(|_| !demo_mode.get()).map(|(text, source, x, y)| {
                 let x = selection_popup_x(x);
                 let y = selection_popup_y(y);
                 let quote = text.clone();
@@ -9562,7 +9590,14 @@ fn App() -> impl IntoView {
                 })
             })}
 
-            <div class="composer" class:center-hidden=move || center_file_open.get() && !center_split.get()>
+            <div class="composer"
+                class:center-hidden=move || center_file_open.get() && !center_split.get()
+                class:demo-read-only=move || demo_mode.get()>
+                {move || demo_mode.get().then(|| view! {
+                    <div class="demo-read-only-notice" data-testid="demo-read-only" role="status">
+                        {t(locale.get(), "projects.example_read_only")}
+                    </div>
+                })}
                 {move || stopping_session.get().is_some().then(|| view! {
                     <div class="stopping-toast">
                         <span class="stopping-spinner"></span>
@@ -11039,7 +11074,7 @@ fn App() -> impl IntoView {
             </div>
         </main>
 
-        {move || (show_right.get() && !scratch_open.get()).then(|| view! {
+        {move || (show_right.get() && !scratch_open.get() && !demo_mode.get()).then(|| view! {
             <div class="resizer" on:mousedown=on_resize_start></div>
             <button type="button" class="rightpane-backdrop"
                 aria-label=move || t(locale.get(), "right.close")
@@ -12320,7 +12355,7 @@ fn App() -> impl IntoView {
 
         <Show when=move || !terminal_sessions.get().is_empty()>
             <section class="terminal-dock" data-testid="terminal-dock"
-                class:terminal-dock-hidden=move || !terminal_panel_open.get()
+                class:terminal-dock-hidden=move || !terminal_panel_open.get() || demo_mode.get()
                 style=move || format!("height:{}px", terminal_h.get())>
                 <div class="terminal-dock-resize" aria-hidden="true"
                     on:mousedown=on_terminal_resize_start></div>
