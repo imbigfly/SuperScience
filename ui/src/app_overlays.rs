@@ -140,6 +140,58 @@ pub(crate) fn ProjectTransferOverlay(state: ProjectTransferOverlayState) -> impl
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct ProjectExportPromptState {
+    pub(crate) locale: RwSignal<Locale>,
+    pub(crate) prompt: RwSignal<Option<(String, String)>>,
+}
+
+#[component]
+pub(crate) fn ProjectExportPrompt(
+    state: ProjectExportPromptState,
+    on_export_zip: Callback<String>,
+    on_copy_path: Callback<String>,
+) -> impl IntoView {
+    let ProjectExportPromptState { locale, prompt } = state;
+    view! {
+        {move || prompt.get().map(|(project_id, workspace_dir)| {
+            let export_id = project_id.clone();
+            let copy_path = workspace_dir.clone();
+            view! {
+                <div class="overlay" data-testid="project-export-options">
+                    <div class="modal confirm-modal project-export-options-modal"
+                        role="dialog" aria-modal="true"
+                        aria-label=move || t(locale.get(), "projects.export_options_title")>
+                        <h2>{move || t(locale.get(), "projects.export_options_title")}</h2>
+                        <p class="project-export-zip-hint">
+                            {move || t(locale.get(), "projects.export_zip_hint")}
+                        </p>
+                        <div class="project-copy-folder-option">
+                            <strong>{move || t(locale.get(), "projects.copy_folder_title")}</strong>
+                            <p>{move || t(locale.get(), "projects.copy_folder_hint")}</p>
+                            <code title=workspace_dir.clone()>{workspace_dir}</code>
+                            <button type="button" class="btn-ghost"
+                                on:click=move |_| on_copy_path.call(copy_path.clone())>
+                                {move || t(locale.get(), "projects.copy_folder_path")}
+                            </button>
+                        </div>
+                        <div class="row">
+                            <button type="button" on:click=move |_| prompt.set(None)>
+                                {move || t(locale.get(), "settings.cancel")}
+                            </button>
+                            <button type="button" class="primary" on:click=move |_| {
+                                on_export_zip.call(export_id.clone());
+                            }>
+                                {move || t(locale.get(), "projects.export_zip")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })}
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct UpdateCheckOverlayState {
     pub(crate) locale: RwSignal<Locale>,
     pub(crate) update_check_modal: RwSignal<Option<UpdateCheckModal>>,
