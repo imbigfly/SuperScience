@@ -812,6 +812,7 @@ pub(super) async fn search_sessions(
     query: Option<String>,
     limit: Option<i64>,
     project_id: Option<String>,
+    preferred_project_id: Option<String>,
 ) -> Result<Vec<SessionSearchInfo>, String> {
     let running = state.running_turns.lock().await.clone();
     let awaiting = state.awaiting_confirm.lock().unwrap().clone();
@@ -822,6 +823,7 @@ pub(super) async fn search_sessions(
             query.as_deref().unwrap_or(""),
             limit.unwrap_or(12),
             None,
+            preferred_project_id.as_deref(),
         )
         .await
         .map_err(|e| format!("{e}"))?;

@@ -1606,6 +1606,16 @@ test("Ctrl+K opens the unified command palette and Shift+Enter attaches", async 
   await expect(paletteRows.nth(1)).toHaveClass(/active/);
   await search.fill("counts");
   await expect(page.locator(".project-search-row").filter({ hasText: "counts.csv" })).toBeVisible();
+  await expect(page.locator(".project-search-row").filter({ hasText: "Current analysis" })).toBeVisible();
+  const sessionTitles = await page
+    .locator(".project-search-row:has(.gi.bubble) .project-search-title")
+    .allTextContents();
+  expect(sessionTitles.indexOf("Current analysis"))
+    .toBeLessThan(sessionTitles.indexOf("Cross-project counts"));
+  await expect.poll(() => lastInvokeArgs(page, "search_sessions")).toMatchObject({
+    query: "counts",
+    preferredProjectId: "default",
+  });
   await search.press("Shift+Enter");
   await expect(search).not.toBeVisible();
   await expect(page.locator(".composer-reference-chips")).toContainText(/counts\.csv|Cross-project counts/);
@@ -1796,8 +1806,17 @@ test("Cmd+K opens search and the composer shows the macOS shortcut", async ({ pa
   });
   await enterApp(page);
   await expect(composer(page)).toHaveAttribute("placeholder", /Cmd\+K/);
+  const shortcuts = page.locator(".sidebar .side-shortcut");
+  await expect(shortcuts.nth(0)).toHaveText("⌘N");
+  await expect(shortcuts.nth(1)).toHaveText("⌘K");
   await page.keyboard.press("Meta+k");
   await expect(commandPalette(page)).toBeVisible();
+  await page.keyboard.press("Meta+p");
+  const actionPalette = page.getByRole("dialog", { name: "Command Palette" });
+  await expect(actionPalette.locator(".action-palette-row", { hasText: "New session" })
+    .locator(".action-shortcut")).toHaveText("⌘N");
+  await expect(actionPalette.locator(".action-palette-row", { hasText: "Search" })
+    .locator(".action-shortcut")).toHaveText("⌘K");
 });
 
 test("Cmd+Enter sends when the modifier shortcut is selected on macOS", async ({ page }) => {
@@ -1832,6 +1851,10 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await expect(input).toHaveAttribute("inputmode", "search");
   await expect(input).toHaveAttribute("autocomplete", "off");
   await expect(palette).toContainText("New session");
+  await expect(palette.locator(".action-palette-row", { hasText: "New session" })
+    .locator(".action-shortcut")).toHaveText("Ctrl+N");
+  await expect(palette.locator(".action-palette-row", { hasText: "Search" })
+    .locator(".action-shortcut")).toHaveText("Ctrl+K");
 
   const rows = palette.locator(".project-search-row");
   await expect(rows.first()).toHaveClass(/active/);
@@ -1859,7 +1882,7 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
     "Search projects, artifacts, and sessions",
   );
   await input.press("Enter");
-  await expect(page.getByPlaceholder("Search this project…")).toBeVisible();
+  await expect(page.getByPlaceholder("Search conversations, projects, or files…")).toBeVisible();
   await page.keyboard.press("Escape");
 
   await page.keyboard.press("Control+k");
@@ -7041,34 +7064,29 @@ test("session history loads older pages with a stable cursor", async ({ page }) 
   });
 });
 
-test("sidebar search finds sessions beyond the loaded history page and restores the list", async ({ page }) => {
+test("sidebar search opens the Ctrl+K palette and finds sessions beyond loaded history", async ({ page }) => {
   await page.goto("/?mockManySessions=1");
   await page.locator(".proj-card-main").first().click();
 
   const sidebar = page.locator(".sidebar");
+  const navButtons = sidebar.locator(".nav .side-btn");
+  await expect(navButtons.nth(0).locator(".side-btn-label")).toHaveText("New session");
+  await expect(navButtons.nth(0).locator(".side-shortcut")).toHaveText("Ctrl+N");
+  await expect(navButtons.nth(1).locator(".side-btn-label")).toHaveText("Search");
+  await expect(navButtons.nth(1).locator(".side-shortcut")).toHaveText("Ctrl+K");
+
   await sidebar.getByRole("button", { name: "Search sessions" }).click();
-  const search = sidebar.getByRole("searchbox", { name: "Search sessions" });
+  const search = commandPalette(page);
   await expect(search).toBeFocused();
 
   await search.fill("101");
-  await expect(sidebar.getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
-  await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toHaveCount(0);
-  await expect(sidebar.getByRole("button", { name: "Load earlier sessions" })).toHaveCount(0);
+  await expect(page.locator(".project-search-row", { hasText: "Paged session 101" })).toBeVisible();
   await expect.poll(() => lastInvokeArgs(page, "search_sessions")).toMatchObject({
     query: "101",
-    limit: 100,
-    projectId: "default",
+    limit: 12,
+    preferredProjectId: "default",
   });
 
-  await search.fill("missing conversation");
-  await expect(sidebar.getByRole("status")).toHaveText("No matching sessions.");
-  await sidebar.getByRole("button", { name: "Clear session search" }).click();
-  await expect(search).toHaveValue("");
-  await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();
-  await expect(sidebar.getByRole("button", { name: "Load earlier sessions" })).toBeVisible();
-
-  await search.fill("101");
-  await expect(sidebar.getByRole("button", { name: "Paged session 101", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(search).toHaveCount(0);
   await expect(sidebar.getByRole("button", { name: "Paged session 1", exact: true })).toBeVisible();

@@ -136,7 +136,7 @@ pub(crate) struct CommandAction {
     pub(crate) icon: &'static str,
     pub(crate) title: String,
     pub(crate) group: String,
-    pub(crate) shortcut: &'static str,
+    pub(crate) shortcut: String,
 }
 
 impl ComposerReferenceChip {

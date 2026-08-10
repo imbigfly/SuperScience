@@ -1,15 +1,13 @@
 use crate::app_support::{
-    allow_drop, bucket_sessions_by_date, compose_icon, drag_session_id, focus_element_soon,
-    load_view_pref, nest_branch_sessions, save_view_pref, start_session_drag, AvailableUpdate,
-    FolderModal,
+    allow_drop, bucket_sessions_by_date, compose_icon, drag_session_id, load_view_pref,
+    nest_branch_sessions, save_view_pref, start_session_drag, AvailableUpdate, FolderModal,
 };
-use crate::bindings::invoke;
+use crate::bindings::is_mac;
 use crate::dto::*;
 use crate::i18n::{t, tf, Locale};
 use crate::text::dom_value;
 use crate::window_capture_escape;
 use leptos::*;
-use serde_wasm_bindgen::to_value;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy)]
@@ -50,6 +48,7 @@ pub(super) fn Sidebar(
     open_proj_settings: Callback<web_sys::MouseEvent>,
     switch_project: Callback<String>,
     new_session: Callback<web_sys::MouseEvent>,
+    open_search: Callback<web_sys::MouseEvent>,
     new_folder: Callback<web_sys::MouseEvent>,
     open_files: Callback<web_sys::MouseEvent>,
     open_research_graph: Callback<web_sys::MouseEvent>,
@@ -117,60 +116,17 @@ pub(super) fn Sidebar(
     let selecting_sessions = create_rw_signal(false);
     let selected_sessions = create_rw_signal::<HashSet<String>>(HashSet::new());
     let bulk_move_target = create_rw_signal(String::new());
-    let session_search_open = create_rw_signal(false);
-    let session_search_query = create_rw_signal(String::new());
-    let session_search_results = create_rw_signal(Vec::<SessionSearchInfo>::new());
-    let session_search_loading = create_rw_signal(false);
+    let new_session_shortcut = if is_mac() { "⌘N" } else { "Ctrl+N" };
+    let search_shortcut = if is_mac() { "⌘K" } else { "Ctrl+K" };
     create_effect(move |_| {
         let available: HashSet<String> = sessions.get().into_iter().map(|s| s.id).collect();
         selected_sessions.update(|selected| selected.retain(|id| available.contains(id)));
-    });
-    create_effect(move |_| {
-        let open = session_search_open.get();
-        let query = session_search_query.get();
-        let project_id = project_info.get().map(|project| project.id);
-        if !open || query.trim().is_empty() || project_id.is_none() {
-            session_search_results.set(Vec::new());
-            session_search_loading.set(false);
-            return;
-        }
-        let project_id = project_id.expect("a session search has an active project");
-        session_search_results.set(Vec::new());
-        session_search_loading.set(true);
-        spawn_local(async move {
-            let args = to_value(&serde_json::json!({
-                "query": query,
-                "limit": 100,
-                "projectId": project_id,
-            }))
-            .unwrap();
-            let value = invoke("search_sessions", args).await;
-            if session_search_open.get_untracked()
-                && session_search_query.get_untracked() == query
-                && project_info.get_untracked().map(|project| project.id) == Some(project_id)
-            {
-                if let Ok(rows) = serde_wasm_bindgen::from_value::<Vec<SessionSearchInfo>>(value) {
-                    session_search_results.set(rows);
-                }
-                session_search_loading.set(false);
-            }
-        });
     });
     window_capture_escape(move || {
         if !sort_menu_open.get_untracked() {
             return false;
         }
         sort_menu_open.set(false);
-        true
-    });
-    window_capture_escape(move || {
-        if !session_search_open.get_untracked() {
-            return false;
-        }
-        session_search_open.set(false);
-        session_search_query.set(String::new());
-        session_search_results.set(Vec::new());
-        session_search_loading.set(false);
         true
     });
 
@@ -224,7 +180,20 @@ pub(super) fn Sidebar(
             })}
             {move || (!demo_mode.get()).then(|| view! {
                 <nav class="nav">
-                    <button class="side-btn primary" title=move || t(locale.get(), "sidebar.new_session") on:click=move |ev| new_session.call(ev)><span class="gi plus"></span>{move || t(locale.get(), "sidebar.new_session")}</button>
+                    <button class="side-btn primary" title=move || t(locale.get(), "sidebar.new_session")
+                        aria-label=move || t(locale.get(), "sidebar.new_session")
+                        on:click=move |ev| new_session.call(ev)>
+                        <span class="gi plus"></span>
+                        <span class="side-btn-label">{move || t(locale.get(), "sidebar.new_session")}</span>
+                        <kbd class="side-shortcut" aria-hidden="true">{new_session_shortcut}</kbd>
+                    </button>
+                    <button class="side-btn" title=move || t(locale.get(), "sidebar.search_sessions")
+                        aria-label=move || t(locale.get(), "sidebar.search_sessions")
+                        on:click=move |ev| open_search.call(ev)>
+                        <span class="gi search"></span>
+                        <span class="side-btn-label">{move || t(locale.get(), "sidebar.search")}</span>
+                        <kbd class="side-shortcut" aria-hidden="true">{search_shortcut}</kbd>
+                    </button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.new_folder") on:click=move |ev| new_folder.call(ev)><span class="gi folder"></span>{move || t(locale.get(), "sidebar.new_folder")}</button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.files") on:click=move |ev| open_files.call(ev)><span class="gi doc"></span>{move || t(locale.get(), "sidebar.files")}</button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.graph") on:click=move |ev| open_research_graph.call(ev)>{compose_icon("branch")}{move || t(locale.get(), "sidebar.graph")}</button>
@@ -240,27 +209,6 @@ pub(super) fn Sidebar(
                     <div class="side-sessions-head">
                         <span class="side-sessions-title">{t(loc, "sidebar.sessions")}</span>
                         <div class="side-sessions-head-actions">
-                            <button type="button" class="icon-btn side-session-search-btn"
-                                class:active=move || session_search_open.get()
-                                title=move || t(locale.get(), "sidebar.search_sessions")
-                                aria-label=move || t(locale.get(), "sidebar.search_sessions")
-                                on:click=move |_| {
-                                    if session_search_open.get_untracked() {
-                                        session_search_open.set(false);
-                                        session_search_query.set(String::new());
-                                        session_search_results.set(Vec::new());
-                                        session_search_loading.set(false);
-                                    } else {
-                                        session_search_open.set(true);
-                                        selecting_sessions.set(false);
-                                        selected_sessions.set(HashSet::new());
-                                        bulk_move_target.set(String::new());
-                                        sort_menu_open.set(false);
-                                        focus_element_soon("sidebar-session-search-input");
-                                    }
-                                }>
-                                {compose_icon("search")}
-                            </button>
                             <button type="button" class="side-select-btn"
                                 disabled=move || sessions.get().is_empty()
                                 aria-pressed=move || selecting_sessions.get().to_string()
@@ -269,10 +217,6 @@ pub(super) fn Sidebar(
                                     selecting_sessions.set(next);
                                     selected_sessions.set(HashSet::new());
                                     bulk_move_target.set(String::new());
-                                    session_search_open.set(false);
-                                    session_search_query.set(String::new());
-                                    session_search_results.set(Vec::new());
-                                    session_search_loading.set(false);
                                     sort_menu_open.set(false);
                                 }>
                                 {move || t(locale.get(), if selecting_sessions.get() { "settings.cancel" } else { "sidebar.select_sessions" })}
@@ -283,10 +227,6 @@ pub(super) fn Sidebar(
                                 aria-label=move || t(locale.get(), "sidebar.sort_group")
                                 on:click=move |ev: web_sys::MouseEvent| {
                                     ev.stop_propagation();
-                                    session_search_open.set(false);
-                                    session_search_query.set(String::new());
-                                    session_search_results.set(Vec::new());
-                                    session_search_loading.set(false);
                                     sort_menu_open.update(|v| *v = !*v);
                                 }>
                                 {compose_icon("adjustments")}
@@ -321,30 +261,6 @@ pub(super) fn Sidebar(
                             </div>
                         })}
                     </div>
-                    {move || session_search_open.get().then(|| view! {
-                        <div class="side-session-search">
-                            <span class="side-session-search-icon" aria-hidden="true">{compose_icon("search")}</span>
-                            <input id="sidebar-session-search-input" type="search" inputmode="search"
-                                autocomplete="off" spellcheck="false"
-                                placeholder=move || t(locale.get(), "sidebar.search_sessions")
-                                aria-label=move || t(locale.get(), "sidebar.search_sessions")
-                                prop:value=move || session_search_query.get()
-                                on:input=move |ev| session_search_query.set(dom_value(&ev)) />
-                            {move || (!session_search_query.get().is_empty()).then(|| view! {
-                                <button type="button" class="side-session-search-clear"
-                                    title=move || t(locale.get(), "sidebar.clear_search")
-                                    aria-label=move || t(locale.get(), "sidebar.clear_search")
-                                    on:click=move |_| {
-                                        session_search_query.set(String::new());
-                                        session_search_results.set(Vec::new());
-                                        session_search_loading.set(false);
-                                        focus_element_soon("sidebar-session-search-input");
-                                    }>
-                                    {compose_icon("close")}
-                                </button>
-                            })}
-                        </div>
-                    })}
                     {move || selecting_sessions.get().then(|| {
                         let count = selected_sessions.get().len();
                         let all_selected = count > 0 && count == sessions.get().len();
@@ -429,40 +345,9 @@ pub(super) fn Sidebar(
                             }
                         }).collect_view();
                     }
-                    let loaded_sessions = sessions.get();
+                    let mut list = sessions.get();
                     let exploration_rows = explorations.get();
-                    let search_query = session_search_query.get();
-                    let searching = session_search_open.get() && !search_query.trim().is_empty();
-                    let mut list = if searching {
-                        let results = session_search_results.get();
-                        results
-                            .into_iter()
-                            .map(|result| {
-                                loaded_sessions
-                                    .iter()
-                                    .find(|session| session.id == result.id)
-                                    .cloned()
-                                    .unwrap_or(SessionInfo {
-                                        id: result.id,
-                                        title: result.title,
-                                        ts: result.activity_at,
-                                        folder_id: None,
-                                        branched_from: None,
-                                        pinned: false,
-                                    })
-                            })
-                            .collect()
-                    } else {
-                        loaded_sessions
-                    };
                     let folder_list = folders.get();
-                    if searching && list.is_empty() {
-                        return view! {
-                            <div class="side-hint side-search-hint" role="status">
-                                {t(loc, if session_search_loading.get() { "loading" } else { "sidebar.search_no_results" })}
-                            </div>
-                        }.into_view();
-                    }
                     if list.is_empty() && folder_list.is_empty() {
                         return view! { <div class="side-hint">{t(loc, "sidebar.no_sessions")}</div> }.into_view();
                     }
@@ -486,7 +371,7 @@ pub(super) fn Sidebar(
                     // nested under the session they were forked from, in whatever group
                     // that session lands in.
                     let (list, branch_kids) = nest_branch_sessions(&list);
-                    let group = if searching { "none".into() } else { group_by.get() };
+                    let group = group_by.get();
                     // Whether any folder exists — used to keep the "ungrouped" drop
                     // zone available (so a session can be dragged out of a folder) without
                     // reading drag_session here, which would rebuild the whole list mid-drag.
@@ -817,10 +702,7 @@ pub(super) fn Sidebar(
             </div>
             {move || {
                 let load_older = load_older_sessions_button.clone();
-                (!demo_mode.get()
-                    && session_history_cursor.get().is_some()
-                    && (!session_search_open.get() || session_search_query.get().trim().is_empty()))
-                .then(|| view! {
+                (!demo_mode.get() && session_history_cursor.get().is_some()).then(|| view! {
                     <button type="button" class="side-load-more"
                         disabled=move || session_history_loading.get()
                         on:click=move |_| load_older.call(())>
