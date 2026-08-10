@@ -6831,7 +6831,13 @@ test("streaming assistant keeps formatted Markdown with a lightweight live tail"
   await live.evaluate((element) => ((element as any).__liveMarkdownProbe = true));
 
   await expect(page.getByText("stream line 18", { exact: false })).toBeVisible({ timeout: 10_000 });
-  await expect.poll(async () => Number(await live.getAttribute("data-pending-bytes") ?? 0))
+  // Deltas and the minimum Markdown commit interval are both 50 ms. Polling at
+  // Playwright's default cadence can repeatedly sample just after each commit
+  // and miss the short-lived plain-text tail entirely.
+  await expect.poll(
+    async () => Number(await live.getAttribute("data-pending-bytes") ?? 0),
+    { intervals: [10], timeout: 10_000 },
+  )
     .toBeGreaterThan(0);
   expect(await live.evaluate((element) => (element as any).__liveMarkdownProbe === true)).toBe(true);
 
