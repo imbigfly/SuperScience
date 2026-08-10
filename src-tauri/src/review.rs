@@ -26,39 +26,35 @@ pub enum ReviewBackendConfig {
 /// upstream proprietary REVIEWER prompt) — captures the same job: trace the
 /// transcript, don't recompute; a finding needs transcript evidence.
 pub const REVIEWER_RUBRIC: &str = "\
-You are a REVIEWER. You are given a transcript of another agent's working \
-session — user turns, the agent's replies, and tool outputs (`[msg:N TOOL:name]`). \
-Your job is to trace it and report where the agent fabricated a result, \
-hallucinated a fact, or deviated from what it was asked to do.
+你是「审阅专家」。你会收到另一位 Agent 的工作会话记录——用户发言、Agent 回复，\
+以及工具输出（`[msg:N TOOL:name]`）。你的任务是追溯整段记录，报告 Agent 捏造结果、\
+幻觉事实，或偏离用户要求的位置。
 
-Rules:
-- Trace, don't recompute. If the agent claims a number or result, find the \
-tool output that produced it and compare. A mismatch between a claim and the \
-tool output it came from is a finding.
-- Every finding must cite evidence from the transcript itself (quote the claim \
-and the conflicting tool output). Never add facts from your own knowledge.
-- A value you cannot trace inside this transcript is NOT a finding — it may \
-come from earlier than the window you were given.
-- A later explicit correction supersedes an earlier claim. Do not reflag a \
-claim that the agent already corrected accurately.
-- Do not restate what the agent did correctly. Only report problems.
+规则：
+- 只追溯，不重算。若 Agent 声称某个数字或结果，请找到产生它的工具输出并对照。\
+声明与其来源工具输出不一致，即为一条发现。
+- 每条发现都必须引用会话记录中的证据（引述问题声明与冲突的工具输出）。\
+不得加入你自己知识库中的事实。
+- 在当前记录窗口内无法追溯的值不算发现——它可能来自你未拿到的更早内容。
+- 后续明确更正会覆盖先前声明。Agent 已准确纠正的内容不要再次标记。
+- 不要复述 Agent 做对的部分。只报告问题。
 
-Output one JSON object and nothing else:
+只输出一个 JSON 对象，不要输出其他内容：
 {
-  \"summary\": \"one sentence describing what was checked\",
+  \"summary\": \"一句话说明检查了什么\",
   \"findings\": [
     {
       \"message_index\": 0,
-      \"claim\": \"the exact problematic claim\",
-      \"evidence\": \"the conflicting transcript evidence\",
-      \"fix\": \"the smallest correction\",
-      \"verdict\": \"warn or fail\",
-      \"severity\": \"low, medium, or high\"
+      \"claim\": \"有问题的原文声明\",
+      \"evidence\": \"冲突的会话证据\",
+      \"fix\": \"最小可行修正\",
+      \"verdict\": \"warn 或 fail\",
+      \"severity\": \"low、medium 或 high\"
     }
   ]
 }
-Use the zero-based N from `[msg:N ...]` as message_index. If there are no \
-problems, return an empty findings array. Order findings most severe first.";
+使用 `[msg:N ...]` 中从零开始的 N 作为 message_index。若没有问题，\
+返回空的 findings 数组。发现按严重程度从高到低排序。";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReviewFinding {

@@ -1,11 +1,9 @@
 use crate::dto::BootstrapStatus;
 use crate::i18n::{tf, Locale};
 
-pub(crate) const GITHUB_ISSUE_NEW: &str = "https://github.com/imbigfly/SuperScience/issues/new";
-
-/// Hidden context attached to the user's first feedback turn. Non-sensitive
-/// bootstrap metadata is embedded so the model never has to ask for version/OS
-/// or read transcripts, API keys, or absolute paths.
+/// Non-sensitive bootstrap metadata appended to feedback emails so support
+/// never has to ask for version/OS, and never receives transcripts, API keys,
+/// or absolute paths.
 pub(crate) fn issue_report_chat_prompt(
     locale: Locale,
     bootstrap: Option<&BootstrapStatus>,
@@ -40,15 +38,13 @@ pub(crate) fn issue_report_chat_prompt(
     };
     tf(
         locale,
-        "issue_report.chat_prompt",
+        "issue_report.diagnostics",
         &[
             ("version", &bootstrap.app_version),
             ("os", &bootstrap.os),
             ("arch", &bootstrap.arch),
             ("model", model),
             ("startup", startup),
-            ("repo", "imbigfly/SuperScience"),
-            ("issue_base", GITHUB_ISSUE_NEW),
         ],
     )
 }
@@ -77,7 +73,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_prompt_includes_startup_timings_without_paths() {
+    fn diagnostics_include_startup_timings_without_paths() {
         let prompt = issue_report_chat_prompt(
             Locale::Zh,
             Some(&bootstrap("total=120ms store=90ms window_ready=600000ms")),
@@ -85,7 +81,9 @@ mod tests {
         );
         assert!(prompt.contains("total=120ms store=90ms window_ready=600000ms"));
         assert!(prompt.contains("0.34.0"));
+        assert!(prompt.contains("windows"));
+        assert!(prompt.contains("deepseek-chat"));
         assert!(!prompt.contains("/mock/root"));
-        assert!(prompt.contains("superscience"));
+        assert!(!prompt.contains("GitHub"));
     }
 }

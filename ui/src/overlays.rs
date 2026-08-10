@@ -8,7 +8,7 @@ use crate::capabilities_home::{
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, Locale};
 use crate::text::{dom_value, event_target_value};
-use leptos::*;
+use leptos::{spawn_local, *};
 use serde_wasm_bindgen::to_value;
 
 #[component]
@@ -504,6 +504,127 @@ pub(super) fn CapabilitiesOverlay(
         </div>
     </div>
 })
+    }
+}
+
+#[component]
+pub(super) fn FeedbackOverlay(
+    locale: RwSignal<Locale>,
+    show_feedback: RwSignal<bool>,
+    diagnostics: RwSignal<String>,
+) -> impl IntoView {
+    let message = create_rw_signal(String::new());
+    let sending = create_rw_signal(false);
+    let status = create_rw_signal::<Option<(bool, String)>>(None);
+    create_effect(move |_| {
+        if show_feedback.get() {
+            message.set(String::new());
+            sending.set(false);
+            status.set(None);
+        }
+    });
+    let send_email = move |_| {
+        if sending.get_untracked() {
+            return;
+        }
+        let body = message.get_untracked();
+        if body.trim().is_empty() {
+            status.set(Some((
+                false,
+                t(locale.get_untracked(), "issue_report.placeholder").into(),
+            )));
+            return;
+        }
+        sending.set(true);
+        status.set(None);
+        let diagnostics = diagnostics.get_untracked();
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({
+                "message": body.trim(),
+                "diagnostics": diagnostics,
+            }))
+            .unwrap();
+            match invoke_checked("send_feedback_email", args).await {
+                Ok(_) => {
+                    message.set(String::new());
+                    let ok = t(locale.get_untracked(), "issue_report.sent").to_string();
+                    status.set(Some((true, ok.clone())));
+                    show_toast(&ok);
+                }
+                Err(error) => {
+                    let detail =
+                        localize_backend(locale.get_untracked(), &js_error_text(error));
+                    status.set(Some((
+                        false,
+                        tf(
+                            locale.get_untracked(),
+                            "issue_report.send_failed",
+                            &[("msg", detail.as_str())],
+                        ),
+                    )));
+                }
+            }
+            sending.set(false);
+        });
+    };
+    move || {
+        show_feedback.get().then(|| view! {
+            <div class="overlay feedback-overlay" data-testid="feedback-dialog">
+                <div class="modal feedback-modal" role="dialog" aria-modal="true"
+                    aria-labelledby="feedback-title">
+                    <div class="ps-head">
+                        <h2 id="feedback-title">{move || t(locale.get(), "issue_report.title")}</h2>
+                        <button type="button" class="ps-close"
+                            title=move || t(locale.get(), "issue_report.close")
+                            aria-label=move || t(locale.get(), "issue_report.close")
+                            on:click=move |_| show_feedback.set(false)>
+                            {compose_icon("close")}
+                        </button>
+                    </div>
+                    <div class="feedback-body">
+                        <p class="feedback-subtitle">{move || t(locale.get(), "issue_report.subtitle")}</p>
+                        <div class="feedback-qr-placeholder" data-testid="feedback-qr" role="img"
+                            aria-label=move || t(locale.get(), "issue_report.qr_placeholder")>
+                            <span class="feedback-qr-label">{move || t(locale.get(), "issue_report.qr_placeholder")}</span>
+                            <span class="feedback-qr-hint">{move || t(locale.get(), "issue_report.qr_hint")}</span>
+                        </div>
+                        <div class="feedback-compose">
+                            <div class="feedback-context-chip" data-testid="feedback-context">
+                                <strong>{move || t(locale.get(), "issue_report.context")}</strong>
+                                <span>{move || t(locale.get(), "issue_report.context_attached")}</span>
+                            </div>
+                            <textarea
+                                id="feedback-input"
+                                class="feedback-textarea"
+                                data-testid="feedback-input"
+                                placeholder=move || t(locale.get(), "issue_report.placeholder")
+                                prop:value=move || message.get()
+                                on:input=move |ev| message.set(event_target_value(&ev))
+                            ></textarea>
+                            <div class="feedback-actions">
+                                <button type="button" class="primary"
+                                    data-testid="feedback-send"
+                                    disabled=move || sending.get() || message.get().trim().is_empty()
+                                    on:click=send_email>
+                                    {move || t(
+                                        locale.get(),
+                                        if sending.get() {
+                                            "issue_report.sending"
+                                        } else {
+                                            "issue_report.send_email"
+                                        },
+                                    )}
+                                </button>
+                            </div>
+                            {move || status.get().map(|(ok, text)| view! {
+                                <p class="feedback-status" class:ok=ok class:fail=!ok
+                                    data-testid="feedback-status">{text}</p>
+                            })}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        })
     }
 }
 

@@ -49,7 +49,10 @@ use i18n::{
 use leptos::{ev, window_event_listener, *};
 use library::{refresh_library, refresh_session_library, HighlightsPane, LibraryScreen};
 use notebook::{collect_notebook_cells, NotebookCache, NotebookView};
-use overlays::{AddHostOverlay, CapabilitiesOverlay, OnboardingOverlay, RuntimeInterpreterOverlay};
+use overlays::{
+    AddHostOverlay, CapabilitiesOverlay, FeedbackOverlay, OnboardingOverlay,
+    RuntimeInterpreterOverlay,
+};
 use pet::{PetDesktop, PetOverlay};
 use project_landing::{ProjectLanding, ProjectLandingState};
 use publication::{PublicationEvidenceSource, PublicationWorkspaceModal};
@@ -431,7 +434,8 @@ fn App() -> impl IntoView {
     let project_info = create_rw_signal::<Option<ProjectInfo>>(None);
     let demo_mode = create_rw_signal(false); // true = the synthetic "Example project" is open
     let scratch_open = create_rw_signal(false); // ephemeral scratch chat overlay
-    let feedback_context = create_rw_signal::<Option<String>>(None);
+    let show_feedback = create_rw_signal(false);
+    let feedback_diagnostics = create_rw_signal(String::new());
     let project_open_error = create_rw_signal(None::<String>);
     let project_transfer = create_rw_signal(None::<ProjectTransferProgress>);
     let app_shell_entering = create_rw_signal(false);
@@ -2677,16 +2681,7 @@ fn App() -> impl IntoView {
         let quotes = composer_quotes.get();
         let paths = attachment_paths(&saved_attachments);
         let display_message = message_with_composer_context(&message, &paths, &refs, &quotes);
-        let attached_feedback = feedback_context.get();
-        let agent_message = attached_feedback.as_ref().map_or_else(
-            || display_message.clone(),
-            |context| {
-                format!(
-                    "{display_message}\n\nFeedback context: {}",
-                    serde_json::to_string(context).unwrap_or_default()
-                )
-            },
-        );
+        let agent_message = display_message.clone();
         let reference_args = refs
             .iter()
             .map(ComposerReferenceChip::arg)
@@ -2792,7 +2787,6 @@ fn App() -> impl IntoView {
         composer_references.set(vec![]);
         composer_quotes.set(vec![]);
         picker_mode.set(None);
-        feedback_context.set(None);
         spawn_local(async move {
             let id = if branch {
                 let args = to_value(&tauri_args::branch_session(
@@ -2808,7 +2802,6 @@ fn App() -> impl IntoView {
                         attachments.set(saved_attachments);
                         composer_references.set(refs);
                         composer_quotes.set(quotes);
-                        feedback_context.set(attached_feedback.clone());
                         status.set(t(locale.get(), "status.send_failed").into());
                         return;
                     }
@@ -2823,7 +2816,6 @@ fn App() -> impl IntoView {
                         attachments.set(saved_attachments);
                         composer_references.set(refs);
                         composer_quotes.set(quotes);
-                        feedback_context.set(attached_feedback.clone());
                         status.set(t(locale.get(), "status.send_failed").into());
                         return;
                     }
@@ -2956,7 +2948,6 @@ fn App() -> impl IntoView {
                         if composer_quotes.get_untracked().is_empty() {
                             composer_quotes.set(quotes);
                         }
-                        feedback_context.set(attached_feedback.clone());
                     }
                     if raw.contains(NO_API_KEY_MARK) {
                         needs_api_key.set(true);
@@ -4588,43 +4579,18 @@ fn App() -> impl IntoView {
     };
 
     let start_issue_report = {
-        let items = items;
         let locale = locale;
-        let demo_mode = demo_mode;
-        let center_file = center_file;
-        let active_session = active_session;
-        let sel_artifact = sel_artifact;
-        let right_tab = right_tab;
         let models = models;
-        let transcripts = transcripts;
         move |_| {
-            demo_mode.set(false);
-            center_file.set(None);
-            replace_visible_transcript(
-                active_session.get_untracked(),
-                None,
-                Vec::new(),
-                items,
-                transcripts,
-                running,
-            );
-            attachments.set(vec![]);
-            composer_references.set(vec![]);
-            composer_quotes.set(vec![]);
-            sel_artifact.set(0);
-            right_tab.set(RightTab::Artifacts);
-            active_session.set(None);
-            input.set(String::new());
+            show_capabilities.set(false);
             let model = active_model_label(&models.get_untracked())
                 .unwrap_or_else(|| "not configured".into());
-            feedback_context.set(Some(issue_report_chat_prompt(
+            feedback_diagnostics.set(issue_report_chat_prompt(
                 locale.get_untracked(),
                 bootstrap.get_untracked().as_ref(),
                 &model,
-            )));
-            show_sidebar.set(false);
-            show_right.set(false);
-            focus_composer();
+            ));
+            show_feedback.set(true);
         }
     };
 
@@ -5583,6 +5549,7 @@ fn App() -> impl IntoView {
     };
 
     let open_capabilities = move |_| {
+        show_feedback.set(false);
         show_capabilities.set(true);
         refresh_capabilities(caps);
     };
@@ -6958,6 +6925,11 @@ fn App() -> impl IntoView {
         if show_capabilities.get() {
             ev.prevent_default();
             show_capabilities.set(false);
+            return;
+        }
+        if show_feedback.get() {
+            ev.prevent_default();
+            show_feedback.set(false);
             return;
         }
 
@@ -9158,7 +9130,7 @@ fn App() -> impl IntoView {
                         })
                     })}
                     {move || items.with(|l| l.is_empty()).then(|| view! {
-                        <div class="empty">
+                        <div class="empty" data-testid="chat-empty">
                             <span class="empty-logo"></span>
                             <h1>{move || empty_title(locale.get(), empty_title_idx.get())}</h1>
                             <p>{move || empty_subtitle(locale.get(), empty_subtitle_idx.get())}</p>
@@ -9831,21 +9803,6 @@ fn App() -> impl IntoView {
                         on:mousedown=on_composer_resize_start></div>
                     <input id="composer-file-input" type="file" multiple=true class="composer-file-input"
                         on:change=on_files_selected />
-                    {move || feedback_context.get().is_some().then(|| view! {
-                        <div class="composer-attachments composer-reference-chips" data-testid="feedback-context">
-                            <div class="composer-attachment-row composer-reference-card context">
-                                <span class="composer-attachment-icon">{compose_icon("server")}</span>
-                                <span class="composer-attachment-copy">
-                                    <span class="composer-attachment ready">{move || t(locale.get(), "issue_report.context")}</span>
-                                    <span class="composer-attachment-meta">{move || t(locale.get(), "issue_report.context_attached")}</span>
-                                </span>
-                                <button type="button" class="composer-attachment-remove"
-                                    title=move || t(locale.get(), "composer.remove_attachment")
-                                    aria-label=move || t(locale.get(), "composer.remove_attachment")
-                                    on:click=move |_| feedback_context.set(None)>{compose_icon("close")}</button>
-                            </div>
-                        </div>
-                    })}
                     {move || (!attachments.get().is_empty()).then(|| view! {
                         <div class="composer-attachments">
                             {attachments.get().into_iter().map(|att| {
@@ -13187,6 +13144,11 @@ fn App() -> impl IntoView {
             bootstrap=bootstrap caps=caps busy=busy open_settings_section=open_capability_settings
             start_env_setup=Callback::new(start_env_setup)
             on_capability_action=on_capability_action
+        />
+        <FeedbackOverlay
+            locale=locale
+            show_feedback=show_feedback
+            diagnostics=feedback_diagnostics
         />
         <OnboardingOverlay
             locale=locale show_onboarding=show_onboarding onboard_step=onboard_step

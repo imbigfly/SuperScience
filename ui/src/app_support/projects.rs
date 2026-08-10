@@ -654,6 +654,10 @@ pub(crate) fn ProjectsScreen(
                     </div>
                 </div>
             })}
+            <crate::capabilities_home::CapabilitySceneTabs
+                locale=locale
+                on_activate=on_capability_action
+            />
             <div class="projects-cols">
                 <div class="projects-col">
                     <h2>{move || t(locale.get(), "projects.title")}</h2>
@@ -855,10 +859,6 @@ pub(crate) fn ProjectsScreen(
                     }).collect_view()}
                 </div>
             </div>
-            <crate::capabilities_home::CapabilitySceneTabs
-                locale=locale
-                on_activate=on_capability_action
-            />
             <div class="projects-footer">
                 <span>{move || t(locale.get(), "projects.star_hint")}</span>
                 <button type="button" class="projects-star-link"

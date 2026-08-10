@@ -316,6 +316,19 @@ fn update_check_does_not_downgrade() {
     assert!(!result.update_available);
 }
 
+#[test]
+fn default_locale_is_chinese() {
+    assert_eq!(super::default_locale(), "zh");
+    let settings: super::Settings = serde_json::from_value(serde_json::json!({
+        "provider": "openai",
+        "api_url": "https://example.test",
+        "model": "test",
+        "has_api_key": false
+    }))
+    .expect("settings without locale should deserialize");
+    assert_eq!(settings.locale, "zh");
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn mac_menu_locale_uses_saved_zh_labels() {

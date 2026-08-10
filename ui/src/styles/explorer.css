@@ -75,7 +75,7 @@
 .cap-section h3 { margin: 0; font-size: 13px; font-weight: 650; color: var(--text-muted); }
 
 /* Capability discovery (home + fullscreen overlay) */
-.cap-scene { width: min(100%, 1200px); margin: 28px auto 8px; display: flex; flex-direction: column; gap: 14px; }
+.cap-scene { width: min(100%, 1200px); margin: 8px auto 28px; display: flex; flex-direction: column; gap: 14px; }
 .cap-scene-head h2 { margin: 0; font-size: 18px; font-weight: 700; color: var(--text); }
 .cap-scene-subtitle { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.45; }
 .cap-scene-tabs,
@@ -116,15 +116,22 @@
   color: var(--text-muted); font-size: 12.5px; line-height: 1.45;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.caps-fullscreen-overlay { align-items: stretch; justify-content: stretch; padding: 12px; }
+.caps-fullscreen-overlay {
+  align-items: stretch; justify-content: stretch; padding: 0;
+}
 .caps-fullscreen {
-  width: min(1180px, 100%); height: min(920px, 100%); max-width: none; max-height: none;
+  width: 100%; height: 100%; max-width: none; max-height: none;
+  border-radius: 0; border: none; box-shadow: none;
   display: flex; flex-direction: column; gap: 12px; padding: 18px 20px 16px;
+  box-sizing: border-box;
 }
 .caps-fullscreen-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 2px; }
 .caps-overview { display: flex; flex-direction: column; gap: 14px; }
 .caps-scene-pane { display: flex; flex-direction: column; gap: 12px; }
-body:has(.window-titlebar) .caps-fullscreen-overlay { padding-top: 44px; }
+body:has(.window-titlebar) .caps-fullscreen-overlay { padding-top: 38px; }
+body:has(.window-titlebar) .caps-fullscreen {
+  border-top: 1px solid var(--border);
+}
 
 /* ---------- Skill Manager ---------- */
 .skill-tags-filter button {

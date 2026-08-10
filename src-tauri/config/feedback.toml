@@ -1,0 +1,27 @@
+# Feedback / support mailbox settings for 天成科研助手.
+# Bundled into the desktop app via include_str!; edit this file to change
+# recipient or SMTP/IMAP endpoints. Automated tests never open a real SMTP
+# connection — they only parse this config and build the message payload.
+#
+# SMTP password is NOT stored here. Copy feedback.local.toml.example to
+# feedback.local.toml (gitignored) and set smtp.password there.
+
+[feedback]
+# Support inbox that receives user feedback emails.
+to_email = "tcscience@chaoxiiot.com"
+# Authenticated Feishu mailbox used as the SMTP From address.
+from_email = "tcscience@chaoxiiot.com"
+from_name = "天成科研助手"
+subject_prefix = "天成科研助手用户反馈"
+
+[smtp]
+host = "smtp.feishu.cn"
+# Prefer implicit TLS (SMTPS) on 465; fall back to STARTTLS on 587 if needed.
+port_ssl = 465
+port_starttls = 587
+prefer_ssl = true
+
+[imap]
+# Reserved for future inbox features; send-feedback uses SMTP only.
+host = "imap.feishu.cn"
+port_ssl = 993

@@ -1455,22 +1455,29 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.update_check") => Some("Check for updates"),
         (Locale::En, "settings.update_check_hint") => Some("Check GitHub Releases on startup and show a prompt in the sidebar when a newer version is available."),
         (Locale::En, "issue_report.sidebar") => Some("Feedback"),
+        (Locale::En, "issue_report.title") => Some("Feedback"),
+        (Locale::En, "issue_report.close") => Some("Close"),
+        (Locale::En, "issue_report.subtitle") => Some("Scan the WeChat group QR code, or email support directly."),
+        (Locale::En, "issue_report.placeholder") => Some("Describe the problem, steps to reproduce, and what you expected…"),
         (Locale::En, "issue_report.context") => Some("System information"),
-        (Locale::En, "issue_report.context_attached") => Some("Attached automatically"),
+        (Locale::En, "issue_report.context_attached") => Some("Attached to the email automatically"),
+        (Locale::En, "issue_report.send_email") => Some("Send email"),
+        (Locale::En, "issue_report.sending") => Some("Sending…"),
+        (Locale::En, "issue_report.sent") => Some("Feedback email sent."),
+        (Locale::En, "issue_report.send_failed") => Some("Failed to send feedback email: {msg}"),
+        (Locale::En, "issue_report.qr_placeholder") => Some("WeChat group QR"),
+        (Locale::En, "issue_report.qr_hint") => Some("Scan to join the WeChat group for feedback"),
+        (Locale::En, "issue_report.diagnostics") => Some(
+            "App version: {version}\n\
+             OS / architecture: {os} / {arch}\n\
+             Model profile: {model}\n\
+             Startup timings: {startup}",
+        ),
         (Locale::En, "issue_report.chat_prompt") => Some(
-            "Help me file a GitHub issue for {repo}.\n\n\
-             [Collected automatically — do not ask me for API keys, transcripts, project files, env vars, usernames, or absolute paths]\n\
-             - SuperScience version: {version}\n\
-             - OS / architecture: {os} / {arch}\n\
-             - Model profile: {model}\n\
-             - Startup timings: {startup}\n\n\
-             Guide me in plain language: what happened, steps to reproduce, expected vs actual behavior, and any Run ID or error text I know.\n\
-             If startup was slow or the window stayed blank, remind me that on Windows release builds the log is at \
-             %APPDATA%\\science.superscience\\superscience\\logs\\superscience.log (previous launch: superscience.previous.log).\n\
-             When we have enough detail, propose a short issue title plus a Markdown body with sections \
-             (Problem, Steps to reproduce, Expected, Actual, Environment). \
-             Then give a prefilled GitHub link using this base URL: {issue_base}?title=...&body=... \
-             Remind me that screenshots must be attached manually on GitHub; SuperScience does not upload them.",
+            "App version: {version}\n\
+             OS / architecture: {os} / {arch}\n\
+             Model profile: {model}\n\
+             Startup timings: {startup}",
         ),
         (Locale::En, "notify.done") => Some("Task completed"),
         (Locale::En, "notify.error") => Some("Task failed"),
@@ -3530,21 +3537,29 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.update_check") => Some("检查更新"),
         (Locale::Zh, "settings.update_check_hint") => Some("启动时检查 GitHub Releases，有新版本时在侧边栏显示提示。"),
         (Locale::Zh, "issue_report.sidebar") => Some("反馈"),
+        (Locale::Zh, "issue_report.title") => Some("反馈"),
+        (Locale::Zh, "issue_report.close") => Some("关闭"),
+        (Locale::Zh, "issue_report.subtitle") => Some("可扫码加入微信用户群，或直接编辑内容发送邮件给客服。"),
+        (Locale::Zh, "issue_report.placeholder") => Some("请描述问题、复现步骤和预期结果…"),
         (Locale::Zh, "issue_report.context") => Some("系统信息"),
-        (Locale::Zh, "issue_report.context_attached") => Some("已自动附加"),
+        (Locale::Zh, "issue_report.context_attached") => Some("将自动附加到邮件"),
+        (Locale::Zh, "issue_report.send_email") => Some("发送邮件"),
+        (Locale::Zh, "issue_report.sending") => Some("发送中…"),
+        (Locale::Zh, "issue_report.sent") => Some("反馈邮件已发送。"),
+        (Locale::Zh, "issue_report.send_failed") => Some("发送反馈邮件失败：{msg}"),
+        (Locale::Zh, "issue_report.qr_placeholder") => Some("微信群二维码"),
+        (Locale::Zh, "issue_report.qr_hint") => Some("扫码加入微信用户群反馈问题"),
+        (Locale::Zh, "issue_report.diagnostics") => Some(
+            "应用版本：{version}\n\
+             OS / 架构：{os} / {arch}\n\
+             模型配置：{model}\n\
+             启动耗时：{startup}",
+        ),
         (Locale::Zh, "issue_report.chat_prompt") => Some(
-            "请帮我向 {repo} 提交一个 GitHub issue。\n\n\
-             【已自动采集，请勿向我索要 API key、transcript、项目文件、环境变量、用户名或绝对路径】\n\
-             - SuperScience 版本：{version}\n\
-             - OS / 架构：{os} / {arch}\n\
-             - 模型配置：{model}\n\
-             - 启动耗时：{startup}\n\n\
-             请用中文逐条引导我说明：发生了什么、复现步骤、预期与实际行为，以及我知道的 Run ID 或错误信息。\n\
-             若启动很慢或长时间白屏，提醒我在 Windows 正式版可把日志发给维护者：\
-             %APPDATA%\\science.superscience\\superscience\\logs\\superscience.log（上次启动：superscience.previous.log）。\n\
-             信息足够后，给出简短 issue 标题和 Markdown 正文（含问题描述、复现步骤、预期、实际、环境等小节），\
-             并提供预填链接：{issue_base}?title=...&body=...\n\
-             提醒截图需在 GitHub 页面手动附加，SuperScience 不会上传截图。",
+            "应用版本：{version}\n\
+             OS / 架构：{os} / {arch}\n\
+             模型配置：{model}\n\
+             启动耗时：{startup}",
         ),
         (Locale::Zh, "notify.done") => Some("任务已完成"),
         (Locale::Zh, "notify.error") => Some("任务失败"),

@@ -108,9 +108,12 @@ own machines.
   visible history and exposes the message excerpts used for each answer.
 - Manual Reviewer checks keep sending paused and show live review progress until
   the independent audit finishes.
-- **Feedback** opens a blank conversation immediately and attaches non-sensitive
-  version, platform, model, and startup diagnostics to the first message you send;
-  it never contacts the model before you write that message.
+- **Feedback** opens a dedicated support dialog (separate from chat) with a
+  WeChat-group QR placeholder and an email composer. Non-sensitive version,
+  platform, model, and startup diagnostics are attached automatically when you
+  send mail to support. Non-secret SMTP settings live in
+  `src-tauri/config/feedback.toml`; copy `feedback.local.toml.example` to the
+  gitignored `feedback.local.toml` for the SMTP password.
 - [Encrypted manual sync](docs/project-sync.md) and one-click
   [project transfer](docs/project-transfer.md) keep machines in step — nothing
   ever syncs in the background.

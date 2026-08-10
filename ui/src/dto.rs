@@ -1645,7 +1645,7 @@ impl Default for Settings {
             model: "deepseek-v4-pro".into(),
             label: "deepseek-v4-pro".into(),
             has_api_key: false,
-            locale: Locale::En.code().into(),
+            locale: Locale::default().code().into(),
             workspace_dir: String::new(),
             max_iter: default_max_iter(),
             auto_compact: true,

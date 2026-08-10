@@ -439,9 +439,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     return String(raw);
   };
   let mockSpecialists: any[] = [
-    { id: "reviewer", name: "Reviewer", icon: "review", color: "clay", description: "", instructions: "rubric", model_id: "", skills: [], connectors: [], builtin: true },
-    { id: "reader", name: "Reader", icon: "search", color: "clay", description: "Searches project sessions", instructions: "reader rubric", model_id: "", skills: [], connectors: [], builtin: true },
-    { id: "scientific_illustrator", name: "Scientific Illustrator", icon: "image", color: "clay", description: "Creates scientific figures", instructions: "illustrator rubric", model_id: "", skills: ["figure-composer", "figure-style"], connectors: [], builtin: true },
+    { id: "reviewer", name: "审阅专家", icon: "review", color: "clay", description: "追溯会话记录，报告捏造结果、幻觉事实或偏离计划的问题。", instructions: "rubric", model_id: "", skills: [], connectors: [], builtin: true },
+    { id: "reader", name: "检索专家", icon: "search", color: "clay", description: "并行检索项目会话，并返回精炼且带出处的证据。", instructions: "reader rubric", model_id: "", skills: [], connectors: [], builtin: true },
+    { id: "scientific_illustrator", name: "科学插画专家", icon: "image", color: "clay", description: "根据请求与项目上下文创建可发表的科学图件。", instructions: "illustrator rubric", model_id: "", skills: ["figure-composer", "figure-style"], connectors: [], builtin: true },
   ];
   let sessionSpecialists: Record<string, string> = {};
   let mockQuickActions = [{
@@ -1444,6 +1444,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           return value;
         };
         switch (cmd) {
+          case "send_feedback_email": {
+            const message = String(arg("message") ?? "").trim();
+            if (!message) throw new Error("Please enter feedback before sending.");
+            ((window as any).__feedbackEmailLog ??= []).push(plain(args ?? {}));
+            return null;
+          }
           case "review_session": {
             const delay = Number((window as any).__reviewDelayMs ?? 0);
             if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
@@ -4452,6 +4458,11 @@ export function parallelMock(): void {
         ((window as any).__sendInvokeLog ??= []).push({ cmd, args });
         const arg = (key: string) => args instanceof Map ? args.get(key) : args?.[key];
         switch (cmd) {
+          case "send_feedback_email": {
+            const message = String(arg("message") ?? "").trim();
+            if (!message) throw new Error("Please enter feedback before sending.");
+            return null;
+          }
           case "list_demos": return [];
           case "load_demo": return { id: "x", title: "x", request: "x", response: "x" };
           case "load_session": {

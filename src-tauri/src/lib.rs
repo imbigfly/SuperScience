@@ -40,6 +40,7 @@ mod dynamic_workflow;
 mod exploration_commands;
 mod exploration_promotion;
 mod exploration_workspace;
+mod feedback;
 mod file_browser;
 mod harvest;
 mod image_generation_tool;
@@ -1925,7 +1926,7 @@ fn apply_live_agent_settings(agent: &mut superscience_core::Agent, max_iter: usi
 }
 
 fn default_locale() -> String {
-    "en".into()
+    "zh".into()
 }
 
 fn default_sync_backend() -> String {
@@ -2906,8 +2907,9 @@ async fn load_locale(store: &Store) -> String {
     let raw = store.get_setting("locale").await.ok().flatten();
     match raw.as_deref().map(str::trim) {
         Some("zh") | Some("zh-CN") | Some("zh-TW") => "zh".into(),
+        Some("en") | Some("en-US") | Some("en-GB") => "en".into(),
         Some(other) if !other.is_empty() => other.to_string(),
-        _ => "en".into(),
+        _ => default_locale(),
     }
 }
 
@@ -7634,6 +7636,7 @@ pub fn run() {
             exploration_promotion::preview_exploration_promotion,
             exploration_promotion::promote_exploration,
             exploration_promotion::discard_exploration,
+            feedback::send_feedback_email,
             session_commands::list_sessions_page,
             runtime_commands::list_execution_contexts,
             runtime_commands::list_runtimes,

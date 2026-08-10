@@ -1,5 +1,83 @@
 /* ---------- Modals ---------- */
 .overlay { position: fixed; inset: 0; z-index: 100; background: hsl(215 25% 14% / 0.28); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 20px; user-select: none; animation: motion-fade-in var(--motion-duration-medium) var(--motion-ease-standard) both; }
+
+/* Dedicated feedback screen (not the chat composer). */
+.feedback-overlay {
+  align-items: stretch; justify-content: stretch; padding: 0;
+}
+.feedback-modal {
+  width: 100%; height: 100%; max-width: none; max-height: none;
+  border-radius: 0; border: none; box-shadow: none;
+  display: flex; flex-direction: column; gap: 14px;
+  padding: 18px 20px 16px; box-sizing: border-box; overflow: hidden;
+}
+.feedback-body {
+  flex: 1 1 auto; min-height: 0; overflow: auto;
+  display: flex; flex-direction: column; align-items: center; gap: 16px;
+  padding: 8px 0 12px;
+}
+.feedback-subtitle {
+  margin: 0; max-width: 520px; text-align: center;
+  color: var(--text-muted); font-size: 13.5px; line-height: 1.5;
+}
+.feedback-qr-placeholder {
+  width: 188px; min-height: 188px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 16px; box-sizing: border-box;
+  border: 1px dashed color-mix(in srgb, var(--border) 80%, var(--text-faint));
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--bg-elev) 88%, transparent), transparent),
+    repeating-linear-gradient(
+      -45deg,
+      color-mix(in srgb, var(--border) 55%, transparent) 0 1px,
+      transparent 1px 10px
+    );
+  color: var(--text-muted);
+}
+.feedback-qr-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.feedback-qr-hint { font-size: 12px; line-height: 1.4; max-width: 150px; color: var(--text-faint); text-align: center; }
+.feedback-compose {
+  width: min(640px, 100%);
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 14px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  box-sizing: border-box;
+}
+.feedback-context-chip {
+  display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+  padding: 6px 10px; border-radius: 999px;
+  background: var(--bg-sunken); border: 1px solid var(--border);
+  color: var(--text-muted); font-size: 12px;
+}
+.feedback-context-chip strong { color: var(--text); font-weight: 600; }
+.feedback-textarea {
+  width: 100%; min-height: 140px; resize: vertical; box-sizing: border-box;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-input); color: var(--text);
+  padding: 11px 12px; font: inherit; font-size: 14px; line-height: 1.5;
+  outline: none;
+}
+.feedback-textarea:focus {
+  border-color: var(--clay); box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.feedback-actions {
+  display: flex; justify-content: flex-end; gap: 10px; align-items: center;
+}
+.feedback-actions .primary {
+  background: var(--clay); color: #fff; border: 1px solid transparent;
+  border-radius: 999px; padding: 9px 18px; font: inherit; font-size: 13.5px; cursor: pointer;
+}
+.feedback-actions .primary:disabled { opacity: .55; cursor: not-allowed; }
+.feedback-status {
+  margin: 0; font-size: 12.5px; line-height: 1.4; color: var(--text-muted);
+}
+.feedback-status.fail { color: var(--err); }
+.feedback-status.ok { color: var(--ok, var(--clay-strong)); }
+body:has(.window-titlebar) .feedback-overlay { padding-top: 38px; }
+body:has(.window-titlebar) .feedback-modal { border-top: 1px solid var(--border); }
 :root[data-theme="dark"] .overlay { background: hsl(30 8% 6% / 0.55); }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] .overlay { background: hsl(30 8% 6% / 0.55); }

@@ -1,0 +1,5 @@
+# Local secrets for feedback email. Copy to feedback.local.toml and fill in.
+# feedback.local.toml is gitignored and must never be committed.
+
+[smtp]
+password = "XXXXXX"

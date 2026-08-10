@@ -5,6 +5,8 @@ Cargo.lock.bak
 *.sqlite
 *.sqlite-journal
 .env
+# Local SMTP password for feedback email (never commit)
+src-tauri/config/feedback.local.toml
 .venv
 python/.venv
 node_modules

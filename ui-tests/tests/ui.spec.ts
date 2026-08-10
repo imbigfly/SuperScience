@@ -442,49 +442,39 @@ test("storage separates project paths and filters usage when a project is clicke
     .toContainText("120.0 MB");
 });
 
-test("sidebar Feedback opens a blank conversation and waits for the user's first turn (#596)", async ({ page }) => {
+test("sidebar Feedback opens a dedicated dialog and sends support email (#596)", async ({ page }) => {
   await enterApp(page);
-  await page.setInputFiles("#composer-file-input", {
-    name: "counts.csv",
-    mimeType: "text/csv",
-    buffer: Buffer.from("a,b\n1,2"),
-  });
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
-  await page.getByRole("button", { name: "Toggle panel" }).click();
-  const tile = page.locator('.rp-tile[data-artifact-name="counts.csv"]');
-  await tile.click({ button: "right" });
-  await page.locator(".ctx-menu").getByRole("button", { name: "Open in center" }).click();
-  await expect(page.locator(".center-tab.active")).toContainText("counts.csv");
   const sendsBefore = (await invokeArgsList(page, "send_message")).length;
   const sessionsBefore = (await invokeArgsList(page, "new_session")).length;
 
   await page.getByTestId("report-problem-entry").click();
+  await expect(page.getByTestId("feedback-dialog")).toBeVisible();
+  await expect(page.getByTestId("feedback-qr")).toContainText("WeChat group QR");
   await expect(page.getByTestId("feedback-context")).toContainText("System information");
-  await expect(page.getByTestId("feedback-context")).toContainText("Attached automatically");
-  await expect(page.locator("#composer-input")).toBeFocused();
-  await expect(page.locator(".center-file-preview")).toHaveCount(0);
+  await expect(page.getByTestId("feedback-context")).toContainText("Attached to the email automatically");
+  await expect(page.getByTestId("feedback-send")).toBeVisible();
+  // Chat composer stays a normal AI send button and is not hijacked.
+  await expect(page.locator(".composer .send")).toHaveText("Send");
   expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
   expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
 
-  await page.locator("#composer-input").fill("The app freezes when I open a document");
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect.poll(() => invokeArgsList(page, "new_session")).toHaveLength(sessionsBefore + 1);
-  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
-    message: expect.stringContaining("The app freezes when I open a document"),
+  await page.getByTestId("feedback-input").fill("The app freezes when I open a document");
+  await page.getByTestId("feedback-send").click();
+  await expect.poll(() => lastInvokeArgs(page, "send_feedback_email")).toMatchObject({
+    message: "The app freezes when I open a document",
   });
-  const sent = await lastInvokeArgs(page, "send_message");
-  expect(sent?.message).toContain("Feedback context:");
-  expect(sent?.message).toContain("GitHub issue");
-  expect(sent?.message).toMatch(/SuperScience version: 0\.29\.0/);
-  expect(sent?.message).toMatch(/OS \/ architecture: windows \/ x86_64/);
-  expect(sent?.message).toMatch(/Model profile: deepseek-v4-pro/);
-  expect(sent?.message).not.toMatch(/\/mock\/root/);
-  await expect(page.getByTestId("feedback-context")).toHaveCount(0);
-  const userBubble = page.locator(".msg.user").last();
-  await expect(userBubble).toContainText("The app freezes when I open a document");
-  await expect(userBubble).not.toContainText("Feedback context");
-  await expect(userBubble).not.toContainText("GitHub issue");
+  const sent = await lastInvokeArgs(page, "send_feedback_email");
+  expect(sent?.diagnostics).toMatch(/App version: 0\.29\.0/);
+  expect(sent?.diagnostics).toMatch(/OS \/ architecture: windows \/ x86_64/);
+  expect(sent?.diagnostics).toMatch(/Model profile: deepseek-v4-pro/);
+  expect(sent?.diagnostics).not.toMatch(/\/mock\/root/);
+  expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
+  expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
+  await expect(page.getByTestId("feedback-status")).toContainText("Feedback email sent.");
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("feedback-dialog")).toHaveCount(0);
+  await expect(page.locator(".composer .send")).toHaveText("Send");
 });
 
 test("Memory settings show the active project name", async ({ page }) => {
@@ -6263,6 +6253,12 @@ test("projects home shows capability scene tabs and tiles", async ({ page }) => 
   const scene = page.getByTestId("capability-scene");
   await expect(scene).toBeVisible();
   await expect(scene.getByRole("heading", { name: "What you can do" })).toBeVisible();
+  // Capability section sits above Projects / Recent sessions.
+  const projectsHeading = page.getByRole("heading", { name: "Projects", exact: true });
+  await expect(projectsHeading).toBeVisible();
+  const sceneBox = await scene.boundingBox();
+  const projectsBox = await projectsHeading.boundingBox();
+  expect(sceneBox && projectsBox && sceneBox.y < projectsBox.y).toBeTruthy();
   await expect(page.getByTestId("cap-tile-ai-agent")).toBeVisible();
   await page.getByRole("tab", { name: "Literature" }).click();
   await expect(page.getByTestId("cap-tile-literature")).toBeVisible();

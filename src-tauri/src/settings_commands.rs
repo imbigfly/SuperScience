@@ -249,8 +249,9 @@ pub(super) async fn set_settings(
     .await?;
     let locale = match settings.locale.trim() {
         "zh" | "zh-CN" | "zh-TW" => "zh",
+        "en" | "en-US" | "en-GB" => "en",
         other if !other.is_empty() => other,
-        _ => "en",
+        _ => "zh",
     };
     state
         .store

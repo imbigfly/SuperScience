@@ -10,37 +10,28 @@ use tauri::State;
 
 pub const SPECIALISTS_KEY: &str = "specialists";
 pub const SCIENTIFIC_ILLUSTRATOR_RUBRIC: &str = "\
-You are the Scientific Illustrator. Turn the user's request and relevant \
-project/session context into a finished scientific figure asset, not merely \
-drawing advice.\n\n\
-Inspect referenced data and files before drawing. Never invent measurements, \
-labels, sample sizes, or scientific conclusions. Load `figure-style` for \
-data-backed plots and also `figure-composer` for multi-panel figures.\n\n\
-Support exactly two output modes. An explicit user choice of format or method \
-has the highest priority; tool availability decides only when the user did not \
-choose:\n\
-- Direct-SVG mode: use this when the user explicitly asks for SVG, vector, an \
-editable figure, or direct SVG generation. Create the actual publication-ready \
-figure as a descriptive `figures/*.svg` file using `write`, Python, or R. Do \
-not call `generate_image`, do not replace the request with PNG, and do not claim \
-SVG is unsupported merely because `generate_image` itself only returns PNG. \
-After writing the SVG, rasterize that exact SVG to a PNG preview, inspect the \
-preview with `view_image`, fix visible problems in the SVG source, then \
-re-render and re-inspect. Repeat this SVG -> PNG preview -> SVG correction loop \
-until the figure is legible and unclipped. The SVG is the primary deliverable; \
-the PNG is only a QA preview.\n\
-- PNG image-model mode: use this when the user explicitly asks for PNG, \
-`gpt-image-2`, `generate_image`, or image-model generation. Call \
-`generate_image` with one complete, self-contained visual brief and save a \
-descriptive `figures/*.png` file. If `generate_image` is unavailable, explain \
-that an image-generation model must be configured; do not silently substitute \
-SVG for an explicit PNG or image-model request.\n\
-- When the user specifies neither format nor method, use PNG image-model mode \
-if `generate_image` is available. Otherwise use Direct-SVG mode, including its \
-SVG -> PNG preview -> SVG correction loop, and deliver the SVG.\n\n\
-Keep text legible, use colour-blind-safe encodings, and distinguish observed \
-data from conceptual illustration. End with a concise explanation and embed \
-the saved figure using a project-relative Markdown image link.";
+你是「科学插画专家」。要把用户请求及相关项目/会话上下文变成成品科学图件资源，\
+而不仅是绘图建议。\n\n\
+绘图前先检查所引用的数据与文件。不得捏造测量值、标签、样本量或科学结论。\
+数据驱动图请加载 `figure-style`；多面板图还要加载 `figure-composer`。\n\n\
+仅支持两种输出模式。用户对格式或方法的明确选择优先级最高；仅当用户未指定时，\
+才依据工具是否可用来决定：\n\
+- 直接 SVG 模式：当用户明确要求 SVG、矢量、可编辑图件，或直接生成 SVG 时使用。\
+用 `write`、Python 或 R，把真正可发表的图写成描述性的 `figures/*.svg` 文件。\
+不要调用 `generate_image`，不要把请求改成 PNG，也不要仅因 `generate_image` \
+本身只返回 PNG 就声称不支持 SVG。写好 SVG 后，将该 SVG 栅格化为 PNG 预览，\
+用 `view_image` 检查预览，修正 SVG 源中的可见问题，再重新渲染并复检。\
+重复此 SVG -> PNG 预览 -> SVG 修正循环，直到图清晰且无裁切。SVG 是主交付物；\
+PNG 仅作质检预览。\n\
+- PNG 图像模型模式：当用户明确要求 PNG、`gpt-image-2`、`generate_image` \
+或图像模型生成时使用。调用 `generate_image`，传入一份完整、自洽的视觉说明，\
+并保存描述性的 `figures/*.png`。若 `generate_image` 不可用，说明需要配置\
+图像生成模型；不要在用户明确要求 PNG 或图像模型时静默改用 SVG。\n\
+- 当用户既未指定格式也未指定方法时：若 `generate_image` 可用，使用 PNG \
+图像模型模式；否则使用直接 SVG 模式（含 SVG -> PNG 预览 -> SVG 修正循环），\
+并交付 SVG。\n\n\
+保持文字可读，使用色盲友好编码，并区分观测数据与概念示意。最后给出简明说明，\
+并用项目相对路径的 Markdown 图片链接嵌入已保存的图件。";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Specialist {
@@ -75,12 +66,10 @@ pub struct Specialist {
 pub fn builtin_reviewer() -> Specialist {
     Specialist {
         id: "reviewer".into(),
-        name: "Reviewer".into(),
+        name: "审阅专家".into(),
         icon: "review".into(),
         color: "clay".into(),
-        description:
-            "Traces a session transcript and reports fabrication, hallucination, or plan deviation."
-                .into(),
+        description: "追溯会话记录，报告捏造结果、幻觉事实或偏离计划的问题。".into(),
         instructions: crate::review::REVIEWER_RUBRIC.into(),
         model_id: String::new(),
         review_backend: None,
@@ -93,11 +82,10 @@ pub fn builtin_reviewer() -> Specialist {
 pub fn builtin_reader() -> Specialist {
     Specialist {
         id: "reader".into(),
-        name: "Reader".into(),
+        name: "检索专家".into(),
         icon: "search".into(),
         color: "clay".into(),
-        description: "Searches project sessions in parallel and returns compact, cited evidence."
-            .into(),
+        description: "并行检索项目会话，并返回精炼且带出处的证据。".into(),
         instructions: crate::project_reader::READER_RUBRIC.into(),
         model_id: String::new(),
         review_backend: None,
@@ -110,12 +98,10 @@ pub fn builtin_reader() -> Specialist {
 pub fn builtin_scientific_illustrator() -> Specialist {
     Specialist {
         id: "scientific_illustrator".into(),
-        name: "Scientific Illustrator".into(),
+        name: "科学插画专家".into(),
         icon: "image".into(),
         color: "clay".into(),
-        description:
-            "Creates publication-ready scientific figures from the request and project context."
-                .into(),
+        description: "根据请求与项目上下文创建可发表的科学图件。".into(),
         instructions: SCIENTIFIC_ILLUSTRATOR_RUBRIC.into(),
         model_id: String::new(),
         review_backend: None,
@@ -143,22 +129,28 @@ async fn save_raw(store: &Store, list: &[Specialist]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Load the list, materializing builtins if absent. Builtin instructions are
-/// always re-pinned to their compiled rubrics so improvements ship without a
-/// settings migration.
+/// Load the list, materializing builtins if absent. Builtin name, description,
+/// and instructions are always re-pinned to the compiled defaults so updates
+/// ship without a settings migration.
 pub async fn ensure(store: &Store) -> Vec<Specialist> {
     let mut list = load_raw(store).await;
     match list.iter_mut().find(|s| s.id == "reviewer") {
         Some(r) => {
+            let fresh = builtin_reviewer();
             r.builtin = true;
-            r.instructions = crate::review::REVIEWER_RUBRIC.into();
+            r.name = fresh.name;
+            r.description = fresh.description;
+            r.instructions = fresh.instructions;
         }
         None => list.insert(0, builtin_reviewer()),
     }
     match list.iter_mut().find(|s| s.id == "reader") {
         Some(reader) => {
+            let fresh = builtin_reader();
             reader.builtin = true;
-            reader.instructions = crate::project_reader::READER_RUBRIC.into();
+            reader.name = fresh.name;
+            reader.description = fresh.description;
+            reader.instructions = fresh.instructions;
             reader.review_backend = None;
             reader.skills = Some(vec![]);
             reader.connectors = Some(vec![]);
@@ -167,8 +159,11 @@ pub async fn ensure(store: &Store) -> Vec<Specialist> {
     }
     match list.iter_mut().find(|s| s.id == "scientific_illustrator") {
         Some(illustrator) => {
+            let fresh = builtin_scientific_illustrator();
             illustrator.builtin = true;
-            illustrator.instructions = SCIENTIFIC_ILLUSTRATOR_RUBRIC.into();
+            illustrator.name = fresh.name;
+            illustrator.description = fresh.description;
+            illustrator.instructions = fresh.instructions;
             illustrator.review_backend = None;
             illustrator.skills = Some(vec!["figure-composer".into(), "figure-style".into()]);
             illustrator.connectors = Some(vec![]);
@@ -362,21 +357,39 @@ mod tests {
     fn illustrator_rubric_gives_explicit_svg_requests_priority() {
         let rubric = SCIENTIFIC_ILLUSTRATOR_RUBRIC;
         let svg_rule = rubric
-            .find("when the user explicitly asks for SVG")
+            .find("当用户明确要求 SVG")
             .expect("rubric must define explicit SVG routing");
         let fallback_rule = rubric
-            .find("When the user specifies neither format nor method")
+            .find("当用户既未指定格式也未指定方法时")
             .expect("rubric must define the tool-availability fallback");
 
         assert!(svg_rule < fallback_rule);
-        assert!(rubric.contains("explicit user choice of format or method"));
-        assert!(rubric.contains("Do not call `generate_image`"));
-        assert!(rubric.contains("rasterize that exact SVG to a PNG preview"));
-        assert!(rubric.contains("inspect the preview with `view_image`"));
-        assert!(rubric.contains("SVG -> PNG preview -> SVG correction loop"));
-        assert!(rubric.contains("The SVG is the primary deliverable"));
-        assert!(rubric.contains("explicitly asks for PNG"));
-        assert!(rubric.contains("do not silently substitute"));
+        assert!(rubric.contains("用户对格式或方法的明确选择优先级最高"));
+        assert!(rubric.contains("不要调用 `generate_image`"));
+        assert!(rubric.contains("将该 SVG 栅格化为 PNG 预览"));
+        assert!(rubric.contains("用 `view_image` 检查预览"));
+        assert!(rubric.contains("SVG -> PNG 预览 -> SVG 修正循环"));
+        assert!(rubric.contains("SVG 是主交付物"));
+        assert!(rubric.contains("明确要求 PNG"));
+        assert!(rubric.contains("不要") && rubric.contains("静默改用 SVG"));
+    }
+
+    #[test]
+    fn builtin_specialists_use_chinese_defaults() {
+        let reviewer = builtin_reviewer();
+        assert_eq!(reviewer.name, "审阅专家");
+        assert!(reviewer.description.contains("追溯会话记录"));
+        assert!(reviewer.instructions.contains("审阅专家"));
+
+        let reader = builtin_reader();
+        assert_eq!(reader.name, "检索专家");
+        assert!(reader.description.contains("并行检索"));
+        assert!(reader.instructions.contains("检索专家"));
+
+        let illustrator = builtin_scientific_illustrator();
+        assert_eq!(illustrator.name, "科学插画专家");
+        assert!(illustrator.description.contains("科学图件"));
+        assert!(illustrator.instructions.contains("科学插画专家"));
     }
 
     async fn test_store() -> (superscience_store::Store, std::path::PathBuf) {
