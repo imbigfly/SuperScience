@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { tauriMock, parallelMock } from "./mock-tauri";
@@ -11,6 +11,15 @@ const motifAppHtmlPath = process.env.WISP_MOTIF_APP_HTML;
 
 function providerSelect(page: Page) {
   return page.getByTestId("settings-provider");
+}
+
+async function expectInsideViewport(locator: Locator, width: number, height: number) {
+  const box = await locator.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(height);
 }
 
 async function openModelsSettings(page: Page) {
@@ -8135,6 +8144,7 @@ test("pet stays off until the user explicitly configures its directory", async (
 });
 
 test("desktop pet remains independent and reflects global agent state", async ({ page }) => {
+  await page.setViewportSize({ width: 128, height: 176 });
   await page.goto("/?pet=desktop&mockPet=1");
 
   const pet = page.getByTestId("wisp-pet");
@@ -8147,13 +8157,17 @@ test("desktop pet remains independent and reflects global agent state", async ({
     (window as any).__tauriEmit("agent", { kind: "User", frame_id: "pet-frame", text: "run" });
   });
   await expect(pet).toHaveAttribute("data-state", "running");
-  await expect(pet.getByText("Working")).toBeVisible();
+  const workingLabel = pet.getByText("Working");
+  await expect(workingLabel).toBeVisible();
+  await expectInsideViewport(workingLabel, 128, 176);
 
   await page.evaluate(() => {
     (window as any).__tauriEmit("confirm-request", { frame_id: "pet-frame", message: "Approve?" });
   });
   await expect(pet).toHaveAttribute("data-state", "waiting");
-  await expect(pet.getByText("Needs you")).toBeVisible();
+  const waitingLabel = pet.getByText("Needs you");
+  await expect(waitingLabel).toBeVisible();
+  await expectInsideViewport(waitingLabel, 128, 176);
   await pet.click();
   await expect.poll(() => lastInvokeArgs(page, "open_pet_session")).toMatchObject({
     sessionId: "pet-frame",
@@ -8179,6 +8193,7 @@ test("desktop pet remains independent and reflects global agent state", async ({
 });
 
 test("desktop pet shows active Run titles and celebrates completion (#693)", async ({ page }) => {
+  await page.setViewportSize({ width: 128, height: 176 });
   await page.addInitScript(() => {
     (window as any).__mockPetActiveRuns = [
       { id: "run-data", title: "siibra atlas query example (with assignment)" },
@@ -8194,6 +8209,7 @@ test("desktop pet shows active Run titles and celebrates completion (#693)", asy
   await expect(label).toBeVisible();
   await expect(pet).toHaveAttribute("data-state", "running");
   const [spriteBox, labelBox] = await Promise.all([sprite.boundingBox(), label.boundingBox()]);
+  await expectInsideViewport(label, 128, 176);
   expect(labelBox!.y + labelBox!.height).toBeLessThanOrEqual(spriteBox!.y);
 
   await page.evaluate(() => {

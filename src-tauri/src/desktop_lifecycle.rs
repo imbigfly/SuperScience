@@ -10,6 +10,16 @@ use tauri::{AppHandle, Emitter, Manager};
 pub(crate) const PET_WINDOW_LABEL: &str = "pet";
 
 #[cfg(any(target_os = "windows", test))]
+pub(crate) const PET_WINDOW_WIDTH: u32 = 128;
+#[cfg(any(target_os = "windows", test))]
+pub(crate) const PET_WINDOW_HEIGHT: u32 = 176;
+
+#[cfg(target_os = "windows")]
+const PET_WINDOW_RIGHT_MARGIN: u32 = 24;
+#[cfg(target_os = "windows")]
+const PET_WINDOW_BOTTOM_MARGIN: u32 = 90;
+
+#[cfg(any(target_os = "windows", test))]
 pub(crate) fn should_hide_workspace_on_close(window_label: &str) -> bool {
     window_label == "main"
 }
@@ -87,8 +97,16 @@ fn default_pet_position(app: &AppHandle) -> Option<(f64, f64)> {
     let origin = monitor.position();
     let size = monitor.size();
     Some((
-        f64::from(origin.x) + f64::from(size.width.saturating_sub(152)),
-        f64::from(origin.y) + f64::from(size.height.saturating_sub(230)),
+        f64::from(origin.x)
+            + f64::from(
+                size.width
+                    .saturating_sub(PET_WINDOW_WIDTH + PET_WINDOW_RIGHT_MARGIN),
+            ),
+        f64::from(origin.y)
+            + f64::from(
+                size.height
+                    .saturating_sub(PET_WINDOW_HEIGHT + PET_WINDOW_BOTTOM_MARGIN),
+            ),
     ))
 }
 
@@ -100,7 +118,7 @@ fn ensure_pet_window(app: &AppHandle) -> Result<(), String> {
     let url = WebviewUrl::App("index.html?pet=desktop".into());
     let mut builder = WebviewWindowBuilder::new(app, PET_WINDOW_LABEL, url)
         .title("Wisp pet")
-        .inner_size(128.0, 140.0)
+        .inner_size(f64::from(PET_WINDOW_WIDTH), f64::from(PET_WINDOW_HEIGHT))
         .resizable(false)
         .maximizable(false)
         .minimizable(false)

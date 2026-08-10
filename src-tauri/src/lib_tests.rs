@@ -1,6 +1,9 @@
 use super::app_commands::parse_ssh_artifact_uri;
 use super::app_updates::{update_check_from_release, GithubRelease};
-use super::desktop_lifecycle::{should_activate_workspace_window, should_hide_workspace_on_close};
+use super::desktop_lifecycle::{
+    should_activate_workspace_window, should_hide_workspace_on_close, PET_WINDOW_HEIGHT,
+    PET_WINDOW_WIDTH,
+};
 use super::session_commands::transcript_page_items;
 use super::{
     begin_queued_cutin, branch_title, client_turn_error, coalesce_live_agent_events,
@@ -1572,6 +1575,11 @@ fn windows_close_to_tray_applies_only_to_the_main_window() {
     assert!(should_hide_workspace_on_close("main"));
     assert!(!should_hide_workspace_on_close("proj-default"));
     assert!(!should_hide_workspace_on_close("pet"));
+}
+
+#[test]
+fn windows_pet_window_uses_the_label_safe_viewport() {
+    assert_eq!((PET_WINDOW_WIDTH, PET_WINDOW_HEIGHT), (128, 176));
 }
 
 #[test]

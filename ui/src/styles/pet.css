@@ -59,7 +59,8 @@ html.pet-window-shell body {
   bottom: calc(100% + 6px);
   display: none;
   width: max-content;
-  max-width: 160px;
+  max-width: min(160px, calc(100vw - 16px));
+  max-height: 33px;
   min-width: 52px;
   padding: 2px 7px;
   border: 1px solid rgba(25, 29, 34, .13);
@@ -68,16 +69,20 @@ html.pet-window-shell body {
   box-shadow: 0 3px 10px rgba(20, 23, 28, .13);
   color: #34383e;
   font: 600 10px/1.35 "Segoe UI Variable", "Segoe UI", sans-serif;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   text-align: center;
   white-space: normal;
   transform: translateX(-50%);
   backdrop-filter: blur(8px);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 .pet-window-root .wisp-pet[data-state="running"] .wisp-pet-state-label,
 .pet-window-root .wisp-pet[data-state="review"] .wisp-pet-state-label,
 .pet-window-root .wisp-pet[data-state="waiting"] .wisp-pet-state-label,
 .pet-window-root .wisp-pet[data-state="jumping"] .wisp-pet-state-label,
-.pet-window-root .wisp-pet[data-state="failed"] .wisp-pet-state-label { display: block; }
+.pet-window-root .wisp-pet[data-state="failed"] .wisp-pet-state-label { display: -webkit-box; }
 
 @keyframes pet-arrive { from { opacity: 0; transform: translateX(var(--pet-x)) translateY(12px) scale(.92); } to { opacity: 1; transform: translateX(var(--pet-x)) translateY(0) scale(1); } }
 @keyframes pet-status-pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--warn) 20%, transparent); } }
