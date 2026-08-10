@@ -1,0 +1,112 @@
+import { test, expect, type Page } from "@playwright/test";
+import { tauriMock } from "./mock-tauri";
+
+// Regression coverage for the visual polish pass: the composer sits flat until
+// focused, right-pane tabs scroll instead of ellipsizing short labels, artifact
+// cards render as compact rows, and follow-up suggestions carry no panel fill.
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(tauriMock);
+});
+
+async function enterApp(page: Page, path = "/") {
+  await page.goto(path);
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.locator(".composer-inner").first()).toBeVisible();
+}
+
+test("composer rests on a hairline border and small shadow until focused", async ({ page }) => {
+  await enterApp(page);
+  const inner = page.locator(".composer-inner").first();
+  const input = page.locator(".composer-inner textarea").first();
+
+  await input.blur();
+  const resting = await inner.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return { borderColor: cs.borderTopColor, boxShadow: cs.boxShadow };
+  });
+  // --border (rgba(60,55,45,.1) in the paper palette), not --border-strong (#d6d4cc).
+  expect(resting.borderColor).toBe("rgba(60, 55, 45, 0.1)");
+  // Only --shadow-sm; the big --shadow lift (32px blur) is reserved for focus.
+  // Poll past the .15s box-shadow transition, which pads lists with zero layers.
+  await expect.poll(() => inner.evaluate((el) => getComputedStyle(el).boxShadow))
+    .not.toContain("32px");
+
+  await input.focus();
+  await expect.poll(() => inner.evaluate((el) => getComputedStyle(el).boxShadow))
+    .toContain("32px");
+});
+
+test("composer shortcut hint appears only while the composer is focused or hovered", async ({ page }) => {
+  await enterApp(page);
+  const hint = page.locator(".composer-hint").first();
+  const input = page.locator(".composer-inner textarea").first();
+
+  await input.blur();
+  await expect.poll(() => hint.evaluate((el) => getComputedStyle(el).opacity)).toBe("0");
+
+  await input.focus();
+  await expect.poll(() => hint.evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
+
+  await input.blur();
+  await expect.poll(() => hint.evaluate((el) => getComputedStyle(el).opacity)).toBe("0");
+  await hint.hover({ force: true });
+  await expect.poll(() => hint.evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
+});
+
+test("right-pane tabs keep their labels and scroll instead of ellipsizing", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await enterApp(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+
+  const panel = page.locator(".rightpane");
+  const addPanel = panel.getByRole("button", { name: "Add panel" });
+  for (const name of [/^Notebook/, /^Highlights/, /^Provenance/, /^Side chat$/]) {
+    await addPanel.click();
+    await panel.locator(".rp-tab-add-menu").getByRole("button", { name }).click();
+  }
+
+  const tabs = panel.locator(".rp-tab");
+  const tabCount = await tabs.count();
+  expect(tabCount).toBeGreaterThanOrEqual(5);
+  for (let i = 0; i < tabCount; i++) {
+    const tab = tabs.nth(i);
+    // Full label is always available as a tooltip.
+    await expect(tab).toHaveAttribute("title", /.+/);
+    // Short built-in labels never ellipsize; overflow moved to the scroller.
+    const fits = await tab.evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+    expect(await fits).toBe(true);
+  }
+  const scrollerOverflows = await panel.locator(".rp-tab-scroll")
+    .evaluate((el) => el.scrollWidth > el.clientWidth);
+  expect(scrollerOverflows).toBe(true);
+});
+
+test("generated artifact cards render as compact rows", async ({ page }) => {
+  await enterApp(page);
+  await page.locator(".composer-inner textarea").first().fill("ARTIFACTATTRIBUTION");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const card = page.locator('.message-artifact-card[data-artifact-name="new.png"]');
+  await expect(card).toBeVisible({ timeout: 10_000 });
+  const metrics = await card.evaluate((el) => {
+    const thumb = el.querySelector(".message-artifact-thumb")!;
+    const cardBox = el.getBoundingClientRect();
+    const thumbBox = thumb.getBoundingClientRect();
+    return { cardHeight: cardBox.height, thumbSize: thumbBox.width };
+  });
+  expect(metrics.thumbSize).toBe(40);
+  // Compact row: thumb + one or two text lines, not the old ~140px tile.
+  expect(metrics.cardHeight).toBeLessThan(72);
+});
+
+test("follow-up suggestions sit on the canvas without a panel fill", async ({ page }) => {
+  await enterApp(page);
+  await page.locator(".composer-inner textarea").first().fill("hello there");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const followUps = page.getByTestId("follow-up-questions");
+  await expect(followUps.getByRole("button").first()).toBeVisible({ timeout: 10_000 });
+  const background = await followUps.evaluate((el) => getComputedStyle(el).backgroundColor);
+  expect(background).toBe("rgba(0, 0, 0, 0)");
+});
