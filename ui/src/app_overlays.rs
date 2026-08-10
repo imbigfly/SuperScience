@@ -47,7 +47,18 @@ pub(crate) fn ProjectTransferOverlay(state: ProjectTransferOverlayState) -> impl
     view! {
         {move || project_transfer.get().map(|transfer| {
             let complete = transfer.is_complete();
-            let title = if complete {
+            let failed = transfer.is_failed();
+            let terminal = complete || failed;
+            let title = if failed {
+                t(
+                    locale.get(),
+                    if transfer.direction == "export" {
+                        "projects.transfer.export_failed"
+                    } else {
+                        "projects.transfer.import_failed"
+                    },
+                )
+            } else if complete {
                 t(
                     locale.get(),
                     if transfer.direction == "export" {
@@ -61,7 +72,7 @@ pub(crate) fn ProjectTransferOverlay(state: ProjectTransferOverlayState) -> impl
             } else {
                 t(locale.get(), "projects.transfer.import_title")
             };
-            let stage = if complete {
+            let stage = if terminal {
                 String::new()
             } else {
                 project_transfer_stage_label(locale.get(), &transfer.stage)
@@ -84,41 +95,44 @@ pub(crate) fn ProjectTransferOverlay(state: ProjectTransferOverlayState) -> impl
                 )
             });
             let detail = transfer.current_path.clone();
-            let import_hint = (!complete && transfer.direction == "import")
+            let error = transfer.error.clone();
+            let import_hint = (transfer.stage == "selecting_import_destination")
                 .then(|| t(locale.get(), "projects.transfer.import_destination_hint"));
             let max = transfer.total_bytes.unwrap_or(1).to_string();
             let value = transfer.total_bytes.map(|_| transfer.completed_bytes.to_string());
             view! {
-                <div class="overlay project-transfer-overlay">
-                    <div class="modal confirm-modal project-transfer-modal"
-                        data-testid="project-transfer-modal"
-                        role="dialog" aria-modal="true" aria-live="polite">
+                <div class="project-transfer-card" class:failed=failed
+                    data-testid="project-transfer-progress"
+                    role="status" aria-live="polite">
+                    <div class="project-transfer-head">
                         <h2>{title}</h2>
-                        {(!complete).then(|| view! {
-                            <div class="project-transfer-progress" role="status">
-                                <span class="project-transfer-stage">{stage}</span>
-                                <progress max=max value=value></progress>
-                                <div class="project-transfer-meta">
-                                    {byte_progress.map(|progress| view! { <span>{progress}</span> })}
-                                    {file_progress.map(|progress| view! { <span>{progress}</span> })}
-                                </div>
-                            </div>
-                        })}
-                        {import_hint.map(|hint| view! {
-                            <div class="project-transfer-hint">{hint}</div>
-                        })}
-                        {detail.map(|path| view! {
-                            <div class="project-transfer-path" title=path.clone()>{path}</div>
-                        })}
-                        {complete.then(|| view! {
-                            <div class="row">
-                                <button type="button" class="primary"
-                                    on:click=move |_| project_transfer.set(None)>
-                                    {move || t(locale.get(), "projects.transfer.done")}
-                                </button>
-                            </div>
+                        {terminal.then(|| view! {
+                            <button type="button" class="project-transfer-dismiss"
+                                aria-label=move || t(locale.get(), "projects.transfer.done")
+                                on:click=move |_| project_transfer.set(None)>
+                                <span aria-hidden="true">"×"</span>
+                            </button>
                         })}
                     </div>
+                    {(!terminal).then(|| view! {
+                        <div class="project-transfer-progress">
+                            <span class="project-transfer-stage">{stage}</span>
+                            <progress max=max value=value></progress>
+                            <div class="project-transfer-meta">
+                                {byte_progress.map(|progress| view! { <span>{progress}</span> })}
+                                {file_progress.map(|progress| view! { <span>{progress}</span> })}
+                            </div>
+                        </div>
+                    })}
+                    {import_hint.map(|hint| view! {
+                        <div class="project-transfer-hint">{hint}</div>
+                    })}
+                    {detail.map(|path| view! {
+                        <div class="project-transfer-path" title=path.clone()>{path}</div>
+                    })}
+                    {error.map(|message| view! {
+                        <div class="project-transfer-error" role="alert">{message}</div>
+                    })}
                 </div>
             }
         })}

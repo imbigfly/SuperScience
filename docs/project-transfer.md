@@ -10,14 +10,17 @@ To move a project from Windows to macOS:
 2. Open the project, then choose **File → Export current project**. The project
    card's export action is also available as a shortcut.
 3. Copy the ZIP to the Mac and choose **Import project**.
-4. Pick a parent folder. Wisp creates a new folder named after the project and
-   opens the imported project.
+4. Pick a parent folder. Wisp creates a new folder named after the project; it
+   appears on the Projects screen when the import finishes.
 
-During both operations, Wisp keeps a progress dialog open with the current
-stage, files, bytes, and path being processed. An export is published as the
-selected ZIP only after its completed archive has been checked against its
-manifest; while it is running, do not use the temporary or still-empty archive
-file as a transfer copy.
+During both operations, Wisp shows a non-modal progress card in the lower-right
+corner with the current stage, files, bytes, and path being processed. You can
+continue using the rest of the app. While an export is active, only its source
+project is read-only and cannot be opened in another editable view; unrelated
+projects remain available. An export is published as the selected ZIP only
+after its completed archive has been checked against its manifest; while it is
+running, do not use the temporary or still-empty archive file as a transfer
+copy.
 
 ## Path rules
 

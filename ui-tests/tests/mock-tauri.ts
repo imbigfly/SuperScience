@@ -2115,7 +2115,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (delay > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(delay, 40)));
             emit("project-transfer-progress", {
               direction: "import", stage: "extracting", completedFiles: 1, totalFiles: 2,
-              completedBytes: 512, totalBytes: 1024, currentPath: "workspace/data/example.tsv",
+              projectId: "default", completedBytes: 512, totalBytes: 1024,
+              currentPath: "workspace/data/example.tsv",
             });
             if (delay > 40) await new Promise((resolve) => setTimeout(resolve, delay - 40));
             return { id: "default", name: project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
@@ -2127,7 +2128,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             delete nextProjectTransferDelayMs.export;
             emit("project-transfer-progress", {
               direction: "export", stage: "writing", completedFiles: 1, totalFiles: 2,
-              completedBytes: 512, totalBytes: 1024, currentPath: "data/example.tsv",
+              projectId: String(arg("id") ?? "default"), completedBytes: 512,
+              totalBytes: 1024, currentPath: "data/example.tsv",
             });
             if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
             return "/mock/wisp-project.zip";

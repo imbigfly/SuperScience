@@ -2227,7 +2227,10 @@ impl AppState {
     ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, String> {
         self.project_activity(project_id)
             .try_read_owned()
-            .map_err(|_| "This project is being synchronized. Try again when sync finishes.".into())
+            .map_err(|_| {
+                "This project is busy. Try again when the current project operation finishes."
+                    .into()
+            })
     }
     fn begin_project_exclusive_activity(
         &self,

@@ -33,7 +33,6 @@ pub(crate) fn ProjectsScreen(
     // the box reveals the convention text, which doubles as a worked example of
     // what Agent Context is for.
     let new_layout = create_rw_signal(false);
-    let importing = create_rw_signal(false);
     let syncing_projects = create_rw_signal(HashSet::<String>::new());
     let sync_notice = create_rw_signal(None::<(bool, String)>);
     let sync_conflict_project = create_rw_signal(None::<String>);
@@ -98,6 +97,17 @@ pub(crate) fn ProjectsScreen(
         running.get();
         approval_pending.get();
         reload();
+    });
+
+    // Refresh the landing list when an import finishes while this screen is
+    // still mounted. If the user navigated elsewhere during the background
+    // import, the normal initial load refreshes it when they return.
+    create_effect(move |_| {
+        if project_transfer.get().is_some_and(|transfer| {
+            transfer.direction == "import" && transfer.is_complete()
+        }) {
+            reload();
+        }
     });
 
     create_effect(move |_| {
@@ -268,11 +278,13 @@ pub(crate) fn ProjectsScreen(
     let delete_confirmed = delete; // used by the confirm modal below
 
     let import_project = move |_| {
-        if importing.get_untracked() || project_transfer.get_untracked().is_some() {
+        if project_transfer
+            .get_untracked()
+            .is_some_and(|transfer| transfer.is_active())
+        {
             return;
         }
-        importing.set(true);
-        project_transfer.set(Some(ProjectTransferProgress::selecting("import")));
+        project_transfer.set(Some(ProjectTransferProgress::selecting("import", None)));
         open_error.set(None);
         spawn_local(async move {
             match invoke_checked("import_project", JsValue::UNDEFINED).await {
@@ -282,20 +294,22 @@ pub(crate) fn ProjectsScreen(
                     {
                         project_transfer.set(Some(ProjectTransferProgress::complete(
                             "import",
+                            Some(project.id),
                             Some(project.name.clone()),
                         )));
-                        on_open.call(project.id);
                     } else {
                         project_transfer.set(None);
                     }
                 }
                 Err(error) => {
-                    project_transfer.set(None);
                     let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                    open_error.set(Some(message));
+                    project_transfer.set(Some(ProjectTransferProgress::failed(
+                        "import",
+                        None,
+                        message,
+                    )));
                 }
             }
-            importing.set(false);
         });
     };
 
@@ -422,7 +436,7 @@ pub(crate) fn ProjectsScreen(
                         {move || t(locale.get(), "scratch.open")}
                     </button>
                     <button type="button" class="btn-ghost projects-import"
-                        disabled=move || importing.get() || project_transfer.get().is_some()
+                        disabled=move || project_transfer.get().is_some_and(|transfer| transfer.is_active())
                         on:click=import_project>
                         {compose_icon("upload")}<span>{move || t(locale.get(), "projects.import")}</span>
                     </button>
@@ -674,11 +688,17 @@ pub(crate) fn ProjectsScreen(
                         }
                         list.into_iter().map(|p| {
                             let id_open = p.id.clone();
+                            let id_open_locked = p.id.clone();
+                            let id_card_locked = p.id.clone();
+                            let id_badge_locked = p.id.clone();
                             let id_del = p.id.clone();
+                            let id_del_locked = p.id.clone();
                             let id_win = p.id.clone();
+                            let id_win_locked = p.id.clone();
                             let id_export = p.id.clone();
                             let id_sync = p.id.clone();
                             let id_sync_disabled = p.id.clone();
+                            let id_sync_locked = p.id.clone();
                             let id_code = p.id.clone();
                             let meta = tf(loc, "projects.sessions_n", &[("n", &p.session_count.to_string())]);
                             let artifacts_meta = tf(loc, "projects.artifacts_n", &[("n", &p.artifact_count.to_string())]);
@@ -697,11 +717,21 @@ pub(crate) fn ProjectsScreen(
                                 None
                             };
                             view! {
-                                <div class="proj-card">
-                                    <button type="button" class="proj-card-main" on:click=move |_| on_open.call(id_open.clone())>
+                                <div class="proj-card"
+                                    class:project-exporting=move || project_transfer.get().is_some_and(|transfer| transfer.is_exporting_project(&id_card_locked))>
+                                    <button type="button" class="proj-card-main"
+                                        disabled=move || project_transfer.get().is_some_and(|transfer| transfer.is_exporting_project(&id_open_locked))
+                                        on:click=move |_| on_open.call(id_open.clone())>
                                     <div class="pc-main">
                                         <div class="pc-name-row">
                                             <div class="pc-name">{p.name.clone()}</div>
+                                            {move || project_transfer.get()
+                                                .is_some_and(|transfer| transfer.is_exporting_project(&id_badge_locked))
+                                                .then(|| view! {
+                                                    <span class="pc-transfer-lock">
+                                                        {t(locale.get(), "projects.transfer.export_locked_badge")}
+                                                    </span>
+                                                })}
                                             {(active > 0).then(|| view! {
                                                 <span class=format!("pc-dot {dot_class}")>
                                                     <span class="pc-dot-mark"></span>
@@ -722,6 +752,7 @@ pub(crate) fn ProjectsScreen(
                                         <button class="pc-sync" title=t(loc, "projects.sync.now")
                                             aria-label=t(loc, "projects.sync.now")
                                             disabled=move || syncing_projects.with(|ids| ids.contains(&id_sync_disabled))
+                                                || project_transfer.get().is_some_and(|transfer| transfer.is_exporting_project(&id_sync_locked))
                                             on:click=move |e| {
                                                 e.stop_propagation();
                                                 let id = id_sync.clone();
@@ -788,32 +819,32 @@ pub(crate) fn ProjectsScreen(
                                     })}
                                     <button class="pc-export" title=t(loc, "projects.export")
                                         aria-label=t(loc, "projects.export")
-                                        disabled=move || project_transfer.get().is_some()
+                                        disabled=move || project_transfer.get().is_some_and(|transfer| transfer.is_active())
                                         on:click=move |e| {
                                             e.stop_propagation();
-                                            if project_transfer.get_untracked().is_some() { return; }
+                                            if project_transfer.get_untracked().is_some_and(|transfer| transfer.is_active()) { return; }
                                             open_error.set(None);
-                                            project_transfer.set(Some(ProjectTransferProgress::selecting("export")));
+                                            project_transfer.set(Some(ProjectTransferProgress::selecting("export", Some(id_export.clone()))));
                                             let id = id_export.clone();
                                             spawn_local(async move {
-                                                let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
+                                                let arg = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
                                                 match invoke_checked("export_project", arg).await {
                                                     Ok(value) => {
                                                         if let Ok(Some(path)) = serde_wasm_bindgen::from_value::<Option<String>>(value) {
-                                                            project_transfer.set(Some(ProjectTransferProgress::complete("export", Some(path))));
+                                                            project_transfer.set(Some(ProjectTransferProgress::complete("export", Some(id), Some(path))));
                                                         } else {
                                                             project_transfer.set(None);
                                                         }
                                                     }
                                                     Err(error) => {
-                                                        project_transfer.set(None);
                                                         let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                                                        open_error.set(Some(message));
+                                                        project_transfer.set(Some(ProjectTransferProgress::failed("export", Some(id), message)));
                                                     }
                                                 }
                                             });
                                         }>{compose_icon("download")}</button>
                                     <button class="pc-window" title=t(loc, "projects.new_window")
+                                        disabled=move || project_transfer.get().is_some_and(|transfer| transfer.is_exporting_project(&id_win_locked))
                                         on:click=move |e| {
                                             e.stop_propagation();
                                             let id = id_win.clone();
@@ -823,6 +854,7 @@ pub(crate) fn ProjectsScreen(
                                             });
                                         }>{compose_icon("expand")}</button>
                                     <button class="pc-del" title=t(loc, "projects.delete")
+                                        disabled=move || project_transfer.get().is_some_and(|transfer| transfer.is_exporting_project(&id_del_locked))
                                         on:click=move |e| {
                                             e.stop_propagation();
                                             confirm_delete_data.set(false);
@@ -839,9 +871,11 @@ pub(crate) fn ProjectsScreen(
                     <h2>{move || t(locale.get(), "projects.recent")}</h2>
                     {move || recent.get().into_iter().map(|s| {
                         let (pid, sid) = (s.project_id.clone(), s.id.clone());
+                        let transfer_pid = s.project_id.clone();
                         let status = SessionStatusKind::from_str(&s.status);
                         view! {
                             <button type="button" class="proj-card proj-recent" data-testid="recent-session-card"
+                                disabled=move || project_transfer.get().is_some_and(|transfer| transfer.is_exporting_project(&transfer_pid))
                                 on:click=move |_| on_open_session.call((pid.clone(), sid.clone()))>
                                 <div class="pc-main">
                                     <div class="pc-name-row">
