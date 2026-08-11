@@ -120,7 +120,7 @@
   cursor: pointer;
 }
 
-.terminal-dock-tab-main .gi {
+.terminal-dock-tab-main svg {
   flex: 0 0 auto;
   width: 14px;
   height: 14px;
@@ -142,7 +142,7 @@
   cursor: pointer;
 }
 
-.terminal-dock-tab-close .gi { width: 12px; height: 12px; }
+.terminal-dock-tab-close svg { width: 12px; height: 12px; }
 .terminal-dock-tab-close:hover {
   background: color-mix(in srgb, var(--err) 12%, transparent);
   color: var(--err);
@@ -174,7 +174,7 @@
 }
 
 .terminal-dock-action.icon { width: 27px; padding: 0; }
-.terminal-dock-action .gi { width: 13px; height: 13px; }
+.terminal-dock-action svg { width: 13px; height: 13px; }
 .terminal-dock-action:hover { background: var(--surface-hover); color: var(--text); }
 .terminal-dock-action.danger:hover { color: var(--err); }
 
@@ -222,7 +222,7 @@
 }
 
 .terminal-dock-add-item:hover { background: var(--surface-hover); }
-.terminal-dock-add-item .gi { width: 14px; height: 14px; color: var(--text-muted); }
+.terminal-dock-add-item svg { width: 14px; height: 14px; color: var(--text-muted); }
 .terminal-dock-add-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .terminal-dock-add-item small { color: var(--text-faint); font: 10px/1.2 var(--font-mono); }
 

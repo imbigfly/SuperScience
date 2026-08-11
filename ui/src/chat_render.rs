@@ -1477,7 +1477,7 @@ pub(crate) fn render_item(
             );
             view! {
                 <div class="context-compaction-flag" class:auto=automatic data-testid="context-compaction-flag">
-                    <span class="gi doc" aria-hidden="true"></span>
+                    {compose_icon("doc")}
                     <span>{move || t(
                         locale.get(),
                         if automatic {

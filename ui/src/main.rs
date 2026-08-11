@@ -8733,7 +8733,7 @@ fn App() -> impl IntoView {
                                 *open = true;
                             }
                         });
-                    }><span class="gi panel"></span></button>
+                    }>{compose_icon("panel")}</button>
                 </div>
             </div>
 
@@ -10267,7 +10267,7 @@ fn App() -> impl IntoView {
                                 class:active=move || compose_menu_open.get()
                                 title=move || t(locale.get(), "composer.add")
                                 on:click=move |_| compose_menu_open.update(|o| *o = !*o)>
-                                <span class="gi plus"></span>
+                                {compose_icon("plus")}
                             </button>
                             {move || compose_menu_open.get().then(|| view! {
                                 <div class="compose-backdrop" on:click=move |_| compose_menu_open.set(false)></div>

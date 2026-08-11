@@ -1725,21 +1725,19 @@ test("Ctrl+K opens the unified command palette and Shift+Enter attaches", async 
   await expect(search).toHaveAttribute("autocomplete", "off");
   const paletteRows = page.locator(".project-search-overlay .project-search-row");
   await expect(paletteRows.first()).toBeVisible();
-  // Session glyphs use `.gi.bubble` — `.gi.chat` collides with the main `.chat` scroller
-  // (`flex: 1 1 auto`) and stretches the icon, shoving labels to the right.
-  await expect(page.locator(".project-search-overlay .gi.chat")).toHaveCount(0);
-  const sessionIcon = page.locator(".project-search-overlay .gi.bubble").first();
-  if (await sessionIcon.count()) {
-    const box = await sessionIcon.boundingBox();
-    expect(box?.width ?? 0).toBeLessThanOrEqual(24);
-  }
+  // Row glyphs are inline Lucide-style SVGs from compose_icon; the row's
+  // data-icon marks which kind each result uses (sessions show "bubble").
+  const rowIcons = page.locator(".project-search-overlay .project-search-row > svg");
+  await expect(rowIcons.first()).toBeVisible();
+  const iconBox = await rowIcons.first().boundingBox();
+  expect(iconBox?.width ?? 0).toBeLessThanOrEqual(24);
   await search.press("ArrowDown");
   await expect(paletteRows.nth(1)).toHaveClass(/active/);
   await search.fill("counts");
   await expect(page.locator(".project-search-row").filter({ hasText: "counts.csv" })).toBeVisible();
   await expect(page.locator(".project-search-row").filter({ hasText: "Current analysis" })).toBeVisible();
   const sessionTitles = await page
-    .locator(".project-search-row:has(.gi.bubble) .project-search-title")
+    .locator(".project-search-row[data-icon='bubble'] .project-search-title")
     .allTextContents();
   expect(sessionTitles.indexOf("Current analysis"))
     .toBeLessThan(sessionTitles.indexOf("Cross-project counts"));

@@ -191,6 +191,14 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "plan" => view! { <path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6l1 1 2-2"/><path d="M3 12l1 1 2-2"/><path d="M3 18l1 1 2-2"/> }.into_view(),
         "chat" => view! { <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 10h8"/><path d="M8 14h5"/> }.into_view(),
         "branch" => view! { <path d="M6 3v6a4 4 0 0 0 4 4h8"/><path d="M18 7v12"/><path d="M14 15l4 4 4-4"/><circle cx="6" cy="3" r="2"/> }.into_view(),
+        "arrow-left" => view! { <path d="M19 12H5"/><path d="m12 19-7-7 7-7"/> }.into_view(),
+        "folder-plus" => view! { <path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/> }.into_view(),
+        "book" => view! { <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/> }.into_view(),
+        "gear" => view! { <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/> }.into_view(),
+        "bubble" => view! { <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/> }.into_view(),
+        "sparkles" => view! { <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/> }.into_view(),
+        "undo" => view! { <path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v1"/> }.into_view(),
+        "panel" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/> }.into_view(),
         "chevron-down" => view! { <path d="m6 9 6 6 6-6"/> }.into_view(),
         "chevron-left" => view! { <path d="m15 18-6-6 6-6"/> }.into_view(),
         "chevron-right" => view! { <path d="m9 18 6-6-6-6"/> }.into_view(),
@@ -233,7 +241,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
     };
     let size = if matches!(
         kind,
-        "chevron" | "chevron-down" | "chevron-left" | "chevron-right"
+        "chevron" | "chevron-down" | "chevron-left" | "chevron-right" | "arrow-left"
     ) {
         "16"
     } else {
@@ -912,7 +920,7 @@ pub(crate) fn AssistantMessage(
                     disabled=move || text_for_disabled.trim().is_empty()
                     on:click=move |_| on_copy.call(text_for_click_copy.clone())
                 >
-                    <span class="gi copy" aria-hidden="true"></span>
+                    {compose_icon("copy")}
                 </button>
                 {move || can_undo.get().then(|| view! {
                     <button
@@ -922,7 +930,7 @@ pub(crate) fn AssistantMessage(
                         aria-label=move || t(locale.get(), "msg.undo")
                         on:click=move |_| on_undo.call(source_item)
                     >
-                        <span class="gi undo" aria-hidden="true"></span>
+                        {compose_icon("undo")}
                     </button>
                 })}
             </div> })}}

@@ -23,7 +23,7 @@
 .rp-tab-wrap:focus-within .rp-tab-close { opacity: .72; transform: translateY(-50%) scale(1); }
 .rp-tab-wrap .rp-tab.active + .rp-tab-close { opacity: .55; transform: translateY(-50%) scale(1); }
 .rp-tab-close:hover { opacity: 1 !important; background: var(--surface-hover); color: var(--text); }
-.rp-tab-close .gi, .rp-tab-close svg { width: 12px; height: 12px; }
+.rp-tab-close svg { width: 12px; height: 12px; }
 .rp-tab-add-wrap { position: relative; flex: 0 0 auto; }
 .rp-tab-add { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg-elev); color: var(--text-muted); font: inherit; font-size: 18px; line-height: 1; cursor: pointer; }
 .rp-tab-add:hover, .rp-tab-add.active { background: var(--bg-sunken); color: var(--text); }
@@ -48,7 +48,7 @@
   box-shadow: 0 8px 22px color-mix(in srgb, var(--clay) 18%, transparent);
 }
 .rp-empty-icon.host { display: flex; align-items: center; justify-content: center; border: 1px solid color-mix(in srgb, var(--clay-strong) 22%, transparent); background: var(--clay-soft); color: var(--clay-strong); }
-.rp-empty-icon.host .gi { width: 22px; height: 22px; opacity: 1; }
+.rp-empty-icon.host svg { width: 22px; height: 22px; opacity: 1; }
 .rp-empty-title { font-size: var(--text-sm); font-weight: 600; color: var(--text-muted); }
 .rp-empty p { margin: 0; font-size: var(--text-xs); max-width: 260px; line-height: 1.5; }
 .rp-empty .side-btn { margin-top: 4px; }
@@ -56,7 +56,6 @@
 .rp-hosts { display:flex; flex-direction:column; gap:8px; padding:4px 10px 12px; }
 .rp-hosts-add { display:flex; align-items:center; justify-content:center; gap:6px; width:100%; padding:9px; margin-bottom:2px; border:1px solid var(--border-strong); border-radius:var(--radius-sm); background:var(--bg-elev); color:var(--clay-strong); font:inherit; font-size:12.5px; font-weight:600; cursor:pointer; }
 .rp-hosts-add:hover { background:var(--clay-soft); border-color: color-mix(in srgb, var(--clay-strong) 30%, var(--border-strong)); }
-.rp-hosts-add .gi { color:var(--clay-strong); width:14px; height:14px; opacity:1; }
 
 .rp-contexts { flex:1 1 auto; min-height:0; overflow:hidden; display:flex; flex-direction:column; background:var(--bg-elev); }
 .context-list-pane { flex:1 1 auto; min-height:0; overflow:auto; padding:12px; background:var(--bg-sunken); }

@@ -470,13 +470,13 @@ pub(crate) fn ProjectsScreen(
                         title=move || t(locale.get(), "projects.search")
                         aria-label=move || t(locale.get(), "projects.search")
                         on:click=move |_| on_search.call(())>
-                        <span class="gi search"></span>
+                        {compose_icon("search")}
                     </button>
                     <button type="button" class="projects-icon-btn"
                         title=move || t(locale.get(), "sidebar.settings")
                         aria-label=move || t(locale.get(), "sidebar.settings")
                         on:click=move |_| on_open_settings.call(())>
-                        <span class="gi gear"></span>
+                        {compose_icon("gear")}
                     </button>
                     <button type="button" class="btn-ghost projects-scratch"
                         on:click=move |_| on_open_scratch.call(())>
@@ -503,7 +503,7 @@ pub(crate) fn ProjectsScreen(
                     <div class="project-search-dialog" role="dialog" aria-label=move || t(locale.get(), "projects.search")
                         on:click=|ev| ev.stop_propagation()>
                         <div class="project-search-input">
-                            <span class="gi search"></span>
+                            {compose_icon("search")}
                             <input id="project-search-input" type="text" inputmode="search" autofocus=true
                                 autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
                                 placeholder=move || t(locale.get(), "projects.search_ph")
@@ -555,7 +555,7 @@ pub(crate) fn ProjectsScreen(
                                         view! {
                                             <button type="button" class="project-search-row" class:active=move || search_active.get() == row_idx
                                                 on:click=move |_| open.call(row_idx)>
-                                                <span class="gi folder"></span>
+                                                {compose_icon("folder")}
                                                 <span class="project-search-main">
                                                     <span class="project-search-title">{p.name.clone()}</span>
                                                     <span class="project-search-sub">
@@ -581,7 +581,7 @@ pub(crate) fn ProjectsScreen(
                                         view! {
                                             <button type="button" class="project-search-row" class:active=move || search_active.get() == row_idx
                                                 on:click=move |_| open.call(row_idx)>
-                                                <span class="gi doc"></span>
+                                                {compose_icon("doc")}
                                                 <span class="project-search-main">
                                                     <span class="project-search-title">{a.name.clone()}</span>
                                                     <span class="project-search-sub">
@@ -608,7 +608,7 @@ pub(crate) fn ProjectsScreen(
                                         view! {
                                             <button type="button" class="project-search-row" class:active=move || search_active.get() == row_idx
                                                 on:click=move |_| open.call(row_idx)>
-                                                <span class="gi bubble"></span>
+                                                {compose_icon("bubble")}
                                                 <span class="project-search-main">
                                                     <span class="project-search-title">{s.title.clone()}</span>
                                                     <span class="project-search-sub">{format_relative_time(s.ts, loc)}</span>
@@ -648,7 +648,7 @@ pub(crate) fn ProjectsScreen(
                                 opening_in_place.set(false);
                                 creating.set(true);
                             }>
-                            <span class="gi plus"></span>
+                            {compose_icon("plus")}
                             <span>{move || t(locale.get(), "projects.new")}</span>
                         </button>
                         <div class="project-search-foot">

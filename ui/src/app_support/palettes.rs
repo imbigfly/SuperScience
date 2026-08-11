@@ -316,7 +316,7 @@ pub(crate) fn CommandPalette(
                 <div class="project-search-dialog conversation-search-dialog" role="dialog" aria-label="Search"
                     on:click=|ev| ev.stop_propagation()>
                     <div class="project-search-input">
-                        <span class="gi search"></span>
+                        {compose_icon("search")}
                         <input id="command-palette-input" type="text" inputmode="search" autofocus=true
                             autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
                             placeholder=move || t(locale.get(), "command.search_ph")
@@ -353,9 +353,10 @@ pub(crate) fn CommandPalette(
                             };
                             view! {
                                 <button type="button" class="project-search-row" class:active=move || active.get() == i
+                                    data-icon=icon
                                     on:mousemove=move |_| active.set(i)
                                     on:click=move |_| open_item.call((i, false))>
-                                    <span class=format!("gi {icon}")></span>
+                                    {compose_icon(icon)}
                                     <span class="project-search-main">
                                         <span class="project-search-title">{title}</span>
                                         {(!sub.trim().is_empty()).then(|| view! { <span class="project-search-sub">{sub}</span> })}
@@ -673,7 +674,7 @@ pub(crate) fn ActionPalette(
                 <div class="project-search-dialog action-palette" role="dialog" aria-label="Command Palette"
                     on:click=|ev| ev.stop_propagation()>
                     <div class="project-search-input">
-                        <span class="gi search"></span>
+                        {compose_icon("search")}
                         <input id="action-palette-input" type="text" inputmode="search" autofocus=true
                             autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
                             placeholder=move || t(locale.get(), "command.placeholder")
@@ -723,7 +724,7 @@ pub(crate) fn ActionPalette(
                                     <button type="button" class="project-search-row action-palette-row" class:active=move || active.get() == i
                                         on:mousemove=move |_| active.set(i)
                                         on:click=move |_| run.call(i)>
-                                        <span class=format!("gi {}", action.icon)></span>
+                                        {compose_icon(&action.icon)}
                                         <span class="project-search-main"><span class="project-search-title">{action.title}</span></span>
                                         {(!action.shortcut.is_empty()).then(|| view! { <kbd class="action-shortcut">{action.shortcut}</kbd> })}
                                     </button>

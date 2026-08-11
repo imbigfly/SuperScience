@@ -12,8 +12,8 @@
   transition: background .12s ease, color .12s ease;
 }
 .side-back:hover { background: var(--bg-elev); color: var(--text); }
-.side-back .gi { width: 16px; height: 16px; opacity: .85; }
-.side-back:hover .gi { opacity: 1; }
+.side-back svg { width: 16px; height: 16px; opacity: .85; }
+.side-back:hover svg { opacity: 1; }
 
 /* --- Project switcher pill (name opens dropdown) --- */
 .proj-switch {
@@ -43,7 +43,7 @@
   cursor: pointer; text-align: left;
 }
 .proj-menu-item:hover { background: var(--bg-sunken); }
-.proj-menu-item .gi { width: 15px; height: 15px; flex: 0 0 auto; opacity: .8; }
+.proj-menu-item svg { width: 15px; height: 15px; flex: 0 0 auto; opacity: .8; }
 .proj-menu-sep { height: 1px; background: var(--border); margin: 6px 4px; }
 .proj-menu-list { display: flex; flex-direction: column; gap: 1px; }
 .proj-menu-row {
@@ -97,6 +97,7 @@
   border: 1px solid transparent;
 }
 .side-folder:hover { background: var(--bg-elev); color: var(--text); }
+.side-folder > svg { width: 15px; height: 15px; flex: 0 0 auto; opacity: .8; }
 .side-folder.drop-target { background: var(--clay-soft); border-color: var(--clay); color: var(--text); }
 .side-folder-caret { font-size: 10px; color: var(--text-faint); transition: transform .15s ease; }
 .side-folder-caret.collapsed { transform: rotate(-90deg); }

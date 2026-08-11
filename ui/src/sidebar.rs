@@ -137,7 +137,7 @@ pub(super) fn Sidebar(
                 <button class="side-back" title=move || t(locale.get(), "sidebar.back_projects")
                     aria-label=move || t(locale.get(), "sidebar.back_projects")
                     on:click=move |_| { show_proj_menu.set(false); demo_mode.set(false); show_projects.set(true); }>
-                    <span class="gi back" aria-hidden="true"></span>
+                    {compose_icon("arrow-left")}
                 </button>
                 <button class="proj-switch" class:active=move || show_proj_menu.get()
                     disabled=move || demo_mode.get()
@@ -151,7 +151,7 @@ pub(super) fn Sidebar(
                 <div class="proj-menu-backdrop" on:click=move |_| show_proj_menu.set(false)></div>
                 <div class="proj-menu">
                     <button type="button" class="proj-menu-item" on:click=move |ev| open_proj_settings.call(ev)>
-                        <span class="gi gear"></span>
+                        {compose_icon("gear")}
                         {move || t(locale.get(), "proj_menu.settings")}
                     </button>
                     <div class="proj-menu-sep"></div>
@@ -183,21 +183,21 @@ pub(super) fn Sidebar(
                     <button class="side-btn primary" title=move || t(locale.get(), "sidebar.new_session")
                         aria-label=move || t(locale.get(), "sidebar.new_session")
                         on:click=move |ev| new_session.call(ev)>
-                        <span class="gi plus"></span>
+                        {compose_icon("plus")}
                         <span class="side-btn-label">{move || t(locale.get(), "sidebar.new_session")}</span>
                         <kbd class="side-shortcut" aria-hidden="true">{new_session_shortcut}</kbd>
                     </button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.search_sessions")
                         aria-label=move || t(locale.get(), "sidebar.search_sessions")
                         on:click=move |ev| open_search.call(ev)>
-                        <span class="gi search"></span>
+                        {compose_icon("search")}
                         <span class="side-btn-label">{move || t(locale.get(), "sidebar.search")}</span>
                         <kbd class="side-shortcut" aria-hidden="true">{search_shortcut}</kbd>
                     </button>
-                    <button class="side-btn" title=move || t(locale.get(), "sidebar.new_folder") on:click=move |ev| new_folder.call(ev)><span class="gi folder"></span>{move || t(locale.get(), "sidebar.new_folder")}</button>
-                    <button class="side-btn" title=move || t(locale.get(), "sidebar.files") on:click=move |ev| open_files.call(ev)><span class="gi doc"></span>{move || t(locale.get(), "sidebar.files")}</button>
+                    <button class="side-btn" title=move || t(locale.get(), "sidebar.new_folder") on:click=move |ev| new_folder.call(ev)>{compose_icon("folder-plus")}{move || t(locale.get(), "sidebar.new_folder")}</button>
+                    <button class="side-btn" title=move || t(locale.get(), "sidebar.files") on:click=move |ev| open_files.call(ev)>{compose_icon("doc")}{move || t(locale.get(), "sidebar.files")}</button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.graph") on:click=move |ev| open_research_graph.call(ev)>{compose_icon("branch")}{move || t(locale.get(), "sidebar.graph")}</button>
-                    <button class="side-btn" title=move || t(locale.get(), "sidebar.publication") on:click=move |ev| open_publication_workspace.call(ev)><span class="gi doc"></span>{move || t(locale.get(), "sidebar.publication")}</button>
+                    <button class="side-btn" title=move || t(locale.get(), "sidebar.publication") on:click=move |ev| open_publication_workspace.call(ev)>{compose_icon("book")}{move || t(locale.get(), "sidebar.publication")}</button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.library") on:click=move |ev| open_library.call(ev)>{compose_icon("star")}{move || t(locale.get(), "sidebar.library")}</button>
                 </nav>
             })}
@@ -639,7 +639,7 @@ pub(super) fn Sidebar(
                                         folder_modal.set(Some(FolderModal::Rename(fid_rename.clone())));
                                     }>
                                     <span class="side-folder-caret" class:collapsed=collapsed>"▾"</span>
-                                    <span class="gi folder"></span>
+                                    {compose_icon("folder")}
                                     <span class="side-folder-name">{fname}</span>
                                     <span class="side-folder-count">{in_folder.len()}</span>
                                     <button type="button" class="folder-actions"
@@ -716,7 +716,7 @@ pub(super) fn Sidebar(
                         <button type="button" class="update-card" data-testid="update-card"
                             title=move || t(locale.get(), "update_card.title")
                             on:click=move |ev| open_update.call(ev)>
-                            <span class="update-card-icon gi grid" aria-hidden="true"></span>
+                            <span class="update-card-icon" aria-hidden="true">{compose_icon("download")}</span>
                             <span class="update-card-text">
                                 <span class="update-card-title">{move || t(locale.get(), "update_card.title")}</span>
                                 <span class="update-card-ver">{format!("v{}", u.version)}</span>
@@ -735,9 +735,9 @@ pub(super) fn Sidebar(
                             ])}</span>
                         </div>
                     }})}
-                    <button class="side-btn" title=move || t(locale.get(), "sidebar.capabilities") on:click=move |ev| open_capabilities.call(ev)><span class="gi grid"></span>{move || t(locale.get(), "sidebar.capabilities")}</button>
+                    <button class="side-btn" title=move || t(locale.get(), "sidebar.capabilities") on:click=move |ev| open_capabilities.call(ev)>{compose_icon("grid")}{move || t(locale.get(), "sidebar.capabilities")}</button>
                     <button class="side-btn" data-testid="report-problem-entry" title=move || t(locale.get(), "issue_report.sidebar") on:click=move |ev| open_issue_report.call(ev)>{compose_icon("chat")}{move || t(locale.get(), "issue_report.sidebar")}</button>
-                    <button class="side-btn" title=move || t(locale.get(), "sidebar.settings") on:click=move |ev| open_settings.call(ev)><span class="gi gear"></span>{move || t(locale.get(), "sidebar.settings")}</button>
+                    <button class="side-btn" title=move || t(locale.get(), "sidebar.settings") on:click=move |ev| open_settings.call(ev)>{compose_icon("gear")}{move || t(locale.get(), "sidebar.settings")}</button>
                 </div>
             })}
         </aside>
