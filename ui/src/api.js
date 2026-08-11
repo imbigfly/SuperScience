@@ -790,12 +790,23 @@ export function preview_selection() {
   if (node && node.nodeType === 3) node = node.parentElement;
   const container = node && node.closest ? node.closest("[data-file-path]") : null;
   if (!container) return "";
-  const rect = range.getBoundingClientRect();
+  // A Range's bounding box spans the whole selection and its bottom is the
+  // same regardless of drag direction. Anchor to the topmost rendered text
+  // fragment instead so an upward selection does not leave the toolbar at the
+  // opposite end of a long passage. Empty rects can be emitted around line
+  // breaks; fall back to the bounding box for unusual Selection API clients.
+  const rect = Array.from(range.getClientRects())
+    .filter((candidate) => candidate.width > 0 && candidate.height > 0)
+    .reduce((topmost, candidate) => {
+      if (!topmost || candidate.top < topmost.top) return candidate;
+      if (candidate.top === topmost.top && candidate.left < topmost.left) return candidate;
+      return topmost;
+    }, null) || range.getBoundingClientRect();
   return JSON.stringify({
     text,
     path: container.getAttribute("data-file-path") || "",
     x: Math.round(rect.left + rect.width / 2),
-    y: Math.round(rect.bottom),
+    y: Math.round(rect.top),
   });
 }
 

@@ -1058,7 +1058,7 @@ details.tool:not([open]) > summary.head .run-dot { animation: tool-pulse 1.1s ea
   gap: 2px; padding: 3px;
   background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   box-shadow: var(--shadow); transform: translate(-50%, calc(-100% - 10px));
-  animation: motion-surface-in-soft var(--motion-duration-fast) var(--motion-ease-decelerate) both;
+  animation: selection-popup-in var(--motion-duration-fast) var(--motion-ease-decelerate) both;
 }
 .selection-popup-btn {
   display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: none; border-radius: var(--radius-xs);

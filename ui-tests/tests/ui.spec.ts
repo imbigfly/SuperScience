@@ -7897,6 +7897,47 @@ test("Markdown artifact modal opens its rendered preview in center", async ({ pa
   await expect(page.locator(".center-file-preview")).toContainText("Rendered Markdown body.");
 });
 
+test("reverse preview selections anchor the action popup above the first selected line (#779)", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Search" }).click();
+  const search = commandPalette(page);
+  await search.fill("analysis-report");
+  await search.press("Enter");
+  await page.locator(".artifact-modal").getByRole("button", { name: "Open in center" }).click();
+
+  const preview = page.locator('.center-file-preview[data-file-path="artifact:art-markdown"]');
+  await expect(preview.locator("h1")).toHaveText("Differential expression report");
+  const selection = await preview.evaluate((host) => {
+    const start = host.querySelector("h1")?.firstChild;
+    const end = host.querySelector("p")?.firstChild;
+    if (!(start instanceof Text) || !(end instanceof Text)) {
+      throw new Error("Markdown preview did not render the expected text nodes");
+    }
+
+    // Anchor at the end and focus at the beginning to reproduce an upward drag.
+    const selected = window.getSelection()!;
+    selected.removeAllRanges();
+    selected.setBaseAndExtent(end, end.data.length, start, 0);
+    const range = selected.getRangeAt(0);
+    const rects = Array.from(range.getClientRects())
+      .filter((rect) => rect.width > 0 && rect.height > 0);
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    const backward = selected.anchorNode === end && selected.focusNode === start;
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+    return { top, bottom, backward };
+  });
+
+  expect(selection.backward).toBe(true);
+  expect(selection.bottom - selection.top).toBeGreaterThan(20);
+  const popup = page.locator(".selection-popup");
+  await expect(popup).toBeVisible();
+  const anchorY = await popup.evaluate((element) => Number.parseFloat((element as HTMLElement).style.top));
+  expect(anchorY).toBeCloseTo(selection.top, 0);
+  await expect.poll(() => popup.evaluate((element) => element.getBoundingClientRect().bottom))
+    .toBeLessThan(selection.top);
+});
+
 test("bound Markdown resources use immutable versions and a scrollable center preview", async ({ page }) => {
   await page.goto("/?mockResourceSession=1");
   await page.getByRole("button", { name: "Search" }).click();
