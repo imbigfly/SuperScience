@@ -7839,6 +7839,10 @@ test("bound Markdown resources use immutable versions and a scrollable center pr
   await search.press("Enter");
 
   await page.getByRole("link", { name: "Open bound report" }).click();
+  const modal = page.locator(".artifact-modal");
+  await expect(modal).toBeVisible();
+  await expect(modal.locator(".am-name")).toHaveText("report.md");
+  await modal.getByRole("button", { name: "Open in center" }).click();
   const tab = page.locator('.center-tab[data-center-path="artifact-version:resource-version-markdown"]');
   await expect(tab).toContainText("report.md");
   const preview = page.locator(".center-file-preview");
@@ -7867,6 +7871,10 @@ test("bound DOCX resources open their immutable preview", async ({ page }) => {
   await search.press("Enter");
 
   await page.getByRole("link", { name: "Open bound manuscript" }).click();
+  const modal = page.locator(".artifact-modal");
+  await expect(modal).toBeVisible();
+  await expect(modal.locator(".am-name")).toHaveText("manuscript.docx");
+  await modal.getByRole("button", { name: "Open in center" }).click();
   await expect(page.locator('.center-tab[data-center-path="artifact-version:resource-version-docx"]'))
     .toContainText("manuscript.docx");
   await expect(page.locator(".center-file-preview .rp-docx"))
@@ -7883,6 +7891,10 @@ test("bound BibTeX resources open their immutable text preview", async ({ page }
   await search.press("Enter");
 
   await page.getByRole("link", { name: "Open bound references" }).click();
+  const modal = page.locator(".artifact-modal");
+  await expect(modal).toBeVisible();
+  await expect(modal.locator(".am-name")).toHaveText("references.bib");
+  await modal.getByRole("button", { name: "Open in center" }).click();
   await expect(page.locator('.center-tab[data-center-path="artifact-version:resource-version-bib"]'))
     .toContainText("references.bib");
   await expect(page.locator(".center-file-preview"))
