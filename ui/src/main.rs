@@ -87,6 +87,8 @@ const TRANSCRIPT_RENDER_TURNS: usize = 20;
 const TRANSCRIPT_WINDOW_STEP: usize = 20;
 const TRANSCRIPT_LIVE_TRIM_TURNS: usize = TRANSCRIPT_RENDER_TURNS + TRANSCRIPT_WINDOW_STEP;
 const CENTER_PANE_MIN_WIDTH: f64 = 360.0;
+const CENTER_CHAT_MIN_WIDTH: f64 = 320.0;
+const CENTER_DOCUMENT_MIN_WIDTH: f64 = 240.0;
 const RIGHT_PANE_MIN_WIDTH: f64 = 320.0;
 const RIGHT_PANE_MAX_WIDTH: f64 = 900.0;
 const PANE_RESIZER_WIDTH: f64 = 5.0;
@@ -1126,6 +1128,10 @@ fn App() -> impl IntoView {
     // hiding it. Same session, same history — only the layout moves.
     let center_split = create_rw_signal(false);
     let center_split_on = create_memo(move |_| center_split.get() && center_file_open.get());
+    let center_chat_w = create_rw_signal(None::<f64>);
+    let center_split_dragging = create_rw_signal(false);
+    let center_split_drag_start_x = create_rw_signal(0.0_f64);
+    let center_split_drag_start_w = create_rw_signal(0.0_f64);
     // Runtime binding for R/Python previews: file path -> execution context id.
     // The language comes from the extension, so the context is the whole binding.
     // In-memory on purpose — a runtime dies with the app, so a binding that
@@ -5647,6 +5653,35 @@ fn App() -> impl IntoView {
         }
     };
 
+    let on_center_split_resize_start = move |ev: web_sys::MouseEvent| {
+        ev.prevent_default();
+        let width = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.query_selector(".center.split > .chat-stage").ok().flatten())
+            .map(|element| element.get_bounding_client_rect().width())
+            .unwrap_or(CENTER_CHAT_MIN_WIDTH);
+        center_chat_w.set(Some(width));
+        center_split_drag_start_w.set(width);
+        center_split_drag_start_x.set(ev.client_x() as f64);
+        center_split_dragging.set(true);
+    };
+    let on_center_split_resize_move = move |ev: web_sys::MouseEvent| {
+        if !center_split_dragging.get() {
+            return;
+        }
+        let center_width = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.query_selector(".center.split").ok().flatten())
+            .map(|element| element.get_bounding_client_rect().width())
+            .unwrap_or(CENTER_CHAT_MIN_WIDTH + CENTER_DOCUMENT_MIN_WIDTH + PANE_RESIZER_WIDTH);
+        let max_width = (center_width - CENTER_DOCUMENT_MIN_WIDTH - PANE_RESIZER_WIDTH)
+            .max(CENTER_CHAT_MIN_WIDTH);
+        let dx = center_split_drag_start_x.get() - ev.client_x() as f64;
+        center_chat_w.set(Some(
+            (center_split_drag_start_w.get() + dx).clamp(CENTER_CHAT_MIN_WIDTH, max_width),
+        ));
+    };
+
     let on_composer_resize_start = move |ev: web_sys::MouseEvent| {
         ev.prevent_default();
         composer_dragging.set(true);
@@ -7220,6 +7255,11 @@ fn App() -> impl IntoView {
             dragging.set(false);
             return;
         }
+        if center_split_dragging.get() {
+            ev.prevent_default();
+            center_split_dragging.set(false);
+            return;
+        }
         if composer_dragging.get() {
             ev.prevent_default();
             composer_dragging.set(false);
@@ -8555,7 +8595,10 @@ fn App() -> impl IntoView {
 
         <div class="workspace-area">
         <div class="workspace-main">
-        <main class="center" class:split=move || center_split_on.get()>
+        <main class="center" class:split=move || center_split_on.get()
+            style=move || center_chat_w.get()
+                .map(|width| format!("--center-chat-width:{width}px"))
+                .unwrap_or_default()>
             <div class="topbar">
                 <div class="scratch-topbar">
                     <span class="scratch-title">{move || t(locale.get(), "scratch.title")}</span>
@@ -9140,6 +9183,9 @@ fn App() -> impl IntoView {
                     </div>
                 }
             })}
+            <div class="center-split-resizer" role="separator" aria-orientation="vertical"
+                aria-label=move || t(locale.get(), "center.resize_split")
+                on:mousedown=on_center_split_resize_start></div>
             <div class="chat-stage" class:center-hidden=move || center_file_open.get() && !center_split.get()>
             <div class="chat" id=CHAT_SCROLLER_ID
                 on:mouseup=move |ev| {
@@ -12945,6 +12991,12 @@ fn App() -> impl IntoView {
             <div class="drag-overlay"
                 on:mousemove=on_resize_move
                 on:mouseup=move |_| dragging.set(false)></div>
+        })}
+
+        {move || center_split_dragging.get().then(|| view! {
+            <div class="drag-overlay"
+                on:mousemove=on_center_split_resize_move
+                on:mouseup=move |_| center_split_dragging.set(false)></div>
         })}
 
         {move || sidebar_dragging.get().then(|| view! {
