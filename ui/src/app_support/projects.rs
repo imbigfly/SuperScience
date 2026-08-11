@@ -847,6 +847,7 @@ pub(crate) fn ProjectsScreen(
                                                     <span class="pc-dot-n">{active}</span>
                                                 </span>
                                             })}
+                                            {(!when.is_empty()).then(|| view! { <span class="pc-when">{when.clone()}</span> })}
                                         </div>
                                         {(!workspace_path.trim().is_empty()).then(|| view! {
                                             <div class="pc-path" title=workspace_path.clone()>{workspace_path.clone()}</div>
@@ -854,7 +855,6 @@ pub(crate) fn ProjectsScreen(
                                         <div class="pc-meta-row">
                                             <span class="pc-meta">{meta}</span>
                                             <span class="pc-meta">{artifacts_meta}</span>
-                                            {(!when.is_empty()).then(|| view! { <span class="pc-when">{when.clone()}</span> })}
                                             {sync_label.clone().map(|label| view! { <span class="pc-sync-state">{label}</span> })}
                                         </div>
                                     </div>

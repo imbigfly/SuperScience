@@ -8304,6 +8304,13 @@ test("project cards show the workspace path and aligned action icons", async ({ 
   // projects stay distinguishable before destructive actions.
   await expect(cards.first().locator(".pc-path")).toHaveText("/mock/root");
   await expect(cards.nth(1).locator(".pc-path")).toHaveText("/mock/other");
+  // The relative timestamp sits on the name row, level with the project name,
+  // instead of floating between the meta line and the action icons.
+  const when = cards.first().locator(".pc-name-row .pc-when");
+  await expect(when).toBeVisible();
+  const nameBox = await cards.first().locator(".pc-name").boundingBox();
+  const whenBox = await when.boundingBox();
+  expect(Math.abs((nameBox!.y + nameBox!.height / 2) - (whenBox!.y + whenBox!.height / 2))).toBeLessThanOrEqual(4);
   // Action glyphs share one uniform box and one vertical center line.
   const boxes = await cards.first().locator(".pc-actions button").evaluateAll((els) =>
     els.map((el) => {
