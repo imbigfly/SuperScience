@@ -804,6 +804,7 @@ pub(crate) fn ProjectsScreen(
                             let id_win_locked = p.id.clone();
                             let id_export = p.id.clone();
                             let workspace_export = p.workspace_dir.clone();
+                            let workspace_path = p.workspace_dir.clone();
                             let id_sync = p.id.clone();
                             let id_sync_disabled = p.id.clone();
                             let id_sync_locked = p.id.clone();
@@ -847,6 +848,9 @@ pub(crate) fn ProjectsScreen(
                                                 </span>
                                             })}
                                         </div>
+                                        {(!workspace_path.trim().is_empty()).then(|| view! {
+                                            <div class="pc-path" title=workspace_path.clone()>{workspace_path.clone()}</div>
+                                        })}
                                         <div class="pc-meta-row">
                                             <span class="pc-meta">{meta}</span>
                                             <span class="pc-meta">{artifacts_meta}</span>

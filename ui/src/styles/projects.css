@@ -78,6 +78,14 @@ button.proj-card { width: 100%; padding: 16px 18px; color: var(--text); font: in
 .proj-card .pc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text); }
 .proj-card .pc-main { flex: 1 1 auto; min-width: 0; }
 .proj-card .pc-name-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Workspace path under the project name (issue #772) so identically named
+   projects stay distinguishable before destructive actions. Ellipsize the head,
+   keeping the distinctive tail of the path visible. */
+.proj-card .pc-path {
+  margin-top: 2px; color: var(--text-faint); font: 11px/1.3 var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; text-align: left; unicode-bidi: plaintext;
+}
 .proj-card .pc-meta-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
 .proj-card .pc-meta { color: var(--text-faint); font-size: 13px; }
 .proj-card .pc-when { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; margin-left: auto; }
@@ -94,9 +102,17 @@ button.proj-card { width: 100%; padding: 16px 18px; color: var(--text); font: in
 .sess-status-running { color: var(--clay); background: color-mix(in srgb, var(--clay) 12%, transparent); }
 .sess-status-needs-you { color: var(--info); background: var(--info-soft); }
 .sess-status-complete { color: var(--text-faint); background: var(--bg-sunken); }
-.proj-card .pc-del, .proj-card .pc-window, .proj-card .pc-export, .proj-card .pc-sync, .proj-card .pc-sync-code { opacity: .58; color: var(--text-faint); background: none; border: 0; cursor: pointer; font-size: 15px; line-height: 1; padding: 4px 6px; flex: 0 0 auto; }
+/* Card actions share one uniform 28px box with a 16px compose_icon glyph so the
+   cluster reads as a single aligned row (previously padding-sized boxes made the
+   icons look uneven). */
+.proj-card .pc-del, .proj-card .pc-window, .proj-card .pc-export, .proj-card .pc-sync, .proj-card .pc-sync-code {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; flex: 0 0 auto;
+  opacity: .58; color: var(--text-faint); background: none; border: 0; border-radius: var(--radius-xs); cursor: pointer;
+}
+.proj-card .pc-actions button svg { width: 16px; height: 16px; }
 .proj-card:hover .pc-del, .proj-card:hover .pc-window, .proj-card:hover .pc-export, .proj-card:hover .pc-sync, .proj-card:hover .pc-sync-code, .proj-card:focus-within .pc-del, .proj-card:focus-within .pc-window, .proj-card:focus-within .pc-export, .proj-card:focus-within .pc-sync, .proj-card:focus-within .pc-sync-code { opacity: 1; }
-.proj-card .pc-window:hover, .proj-card .pc-export:hover, .proj-card .pc-sync:hover, .proj-card .pc-sync-code:hover, .proj-card .pc-del:hover { color: var(--clay); }
+.proj-card .pc-window:hover, .proj-card .pc-export:hover, .proj-card .pc-sync:hover, .proj-card .pc-sync-code:hover, .proj-card .pc-del:hover { color: var(--clay); background: var(--surface-hover); }
 .proj-card .pc-sync:disabled { cursor: wait; opacity: .45; }
 .proj-card .pc-del:disabled, .proj-card .pc-window:disabled, .proj-card .pc-export:disabled { cursor: not-allowed; opacity: .35; }
 .projects-sync-notice { position: fixed; right: 24px; bottom: 24px; z-index: 80; max-width: min(440px, calc(100vw - 48px)); padding: 10px 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow); font-size: 13px; }

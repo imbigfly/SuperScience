@@ -8297,6 +8297,27 @@ test("project transfers stay in a lower-right progress card without blocking oth
   await expect(importProgress).toBeHidden();
 });
 
+test("project cards show the workspace path and aligned action icons", async ({ page }) => {
+  await page.goto("/");
+  const cards = page.locator(".proj-card:not(.proj-example)");
+  // Issue #772: each card shows its workspace path so identically named
+  // projects stay distinguishable before destructive actions.
+  await expect(cards.first().locator(".pc-path")).toHaveText("/mock/root");
+  await expect(cards.nth(1).locator(".pc-path")).toHaveText("/mock/other");
+  // Action glyphs share one uniform box and one vertical center line.
+  const boxes = await cards.first().locator(".pc-actions button").evaluateAll((els) =>
+    els.map((el) => {
+      const r = el.getBoundingClientRect();
+      return { w: r.width, h: r.height, cy: r.y + r.height / 2 };
+    }));
+  expect(boxes.length).toBeGreaterThan(0);
+  for (const box of boxes) {
+    expect(box.w).toBeCloseTo(boxes[0].w, 1);
+    expect(box.h).toBeCloseTo(boxes[0].h, 1);
+    expect(box.cy).toBeCloseTo(boxes[0].cy, 1);
+  }
+});
+
 test("projects sync manually, copy a device code, and join on another device", async ({ page }) => {
   await page.goto("/");
   const projectCard = page.locator(".proj-card:not(.proj-example)").first();
