@@ -521,7 +521,7 @@ button.msg-icon-btn svg { width: 14px; height: 14px; }
 }
 .user-attachment-file-copy, .user-context-copy, .composer-attachment-copy { display: flex; flex: 1 1 auto; min-width: 0; flex-direction: column; gap: 2px; }
 .user-attachment-file-name, .user-context-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; }
-.user-attachment-file-meta, .user-context-meta, .composer-attachment-meta { color: var(--text-faint); font-size: 10.5px; line-height: 1.2; }
+.user-attachment-file-meta, .user-context-meta, .composer-attachment-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; color: var(--text-faint); font-size: 10.5px; line-height: 1.2; }
 .user-attachment-open { display: inline-flex; flex: 0 0 auto; color: var(--text-faint); }
 .user-context-cards { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; max-width: 100%; }
 .user-context-card {

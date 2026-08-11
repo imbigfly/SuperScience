@@ -5555,6 +5555,48 @@ test("DOCX text in the modal (Files browser) can be added to chat", async ({ pag
   await expect(page.locator(".composer-reference-chips .quote")).toContainText("Differential expression");
 });
 
+test("composer quote card ellipsizes a long source path instead of overflowing", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Files" }).click();
+  await page.locator('.fb-row[data-workspace-path*="manuscript.docx"]').click();
+
+  const docx = page.locator(".artifact-modal .rp-docx");
+  await expect(docx).toContainText("Differential expression of FX-cell markers");
+  const heading = docx.getByText("Differential expression of FX-cell markers").first();
+  await heading.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+  });
+  await page.locator(".selection-popup").getByRole("button", { name: "Add to chat" }).click();
+  const card = page.locator(".composer-reference-chips .quote");
+  await expect(card).toContainText("Differential expression");
+
+  // A long Windows-style source path must stay on one clipped line inside the
+  // fixed-width card instead of wrapping out of it or spilling past its edge.
+  const meta = card.locator(".composer-attachment-meta");
+  await meta.evaluate((el) => {
+    el.textContent = "D:\\New PHD\\depmap\\results\\reports\\DepMap_26Q1_Full_Data_Inventory.md";
+  });
+  const metrics = await card.evaluate((el) => {
+    const cardBox = el.getBoundingClientRect();
+    const metaEl = el.querySelector(".composer-attachment-meta")!;
+    const metaBox = metaEl.getBoundingClientRect();
+    return {
+      cardRight: cardBox.right,
+      metaRight: metaBox.right,
+      metaHeight: metaBox.height,
+      metaWhiteSpace: getComputedStyle(metaEl).whiteSpace,
+    };
+  });
+  expect(metrics.metaWhiteSpace).toBe("nowrap");
+  expect(metrics.metaHeight).toBeLessThan(20); // single line (~13px), not wrapped
+  expect(metrics.metaRight).toBeLessThanOrEqual(metrics.cardRight + 1);
+});
+
 test("DOCX artifacts render offline with headings, tables, and equations", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("open manuscript.docx");
