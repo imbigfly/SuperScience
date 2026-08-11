@@ -55,8 +55,9 @@ use publication::{PublicationEvidenceSource, PublicationWorkspaceModal};
 use research::{refresh_research_graph, ResearchGraphModal};
 use serde_wasm_bindgen::{from_value, to_value};
 use session_modals::{
-    EditConfirmOverlay, EditConfirmOverlayState, FileEntryOverlay, FileEntryOverlayState,
-    ExplorationOverlay, ExplorationOverlayState, ExplorationOverlayView,
+    BranchComparisonOverlay, BranchComparisonOverlayState, EditConfirmOverlay,
+    EditConfirmOverlayState, FileEntryOverlay, FileEntryOverlayState, ExplorationOverlay,
+    ExplorationOverlayState, ExplorationOverlayView,
     FolderModalOverlay, FolderModalOverlayState, ModelSwitchConfirmOverlay,
     ModelSwitchConfirmOverlayState, ProjSettingsOverlay, ProjSettingsOverlayState,
     RenameSessionOverlay, RenameSessionOverlayState, SessionTransferOverlay,
@@ -5921,7 +5922,50 @@ fn App() -> impl IntoView {
     let file_entry_input = create_rw_signal(String::new());
     let file_entry_busy = create_rw_signal(false);
     let file_entry_error = create_rw_signal::<Option<String>>(None);
+    let branch_comparison_open = create_rw_signal::<Option<String>>(None);
+    let branch_comparison = create_rw_signal::<Option<SessionBranchComparison>>(None);
+    let branch_comparison_selected = create_rw_signal(String::new());
+    let branch_comparison_busy = create_rw_signal(false);
+    let branch_comparison_error = create_rw_signal::<Option<String>>(None);
     let ui_confirm = create_rw_signal::<Option<UiConfirm>>(None);
+    let converge_branch_comparison = {
+        let load_main = load_session.clone();
+        Callback::new(move |(selected_session_id, expected_guard_hash): (String, String)| {
+            branch_comparison_busy.set(true);
+            branch_comparison_error.set(None);
+            let load_main = load_main.clone();
+            spawn_local(async move {
+                let args = to_value(&serde_json::json!({
+                    "selectedSessionId": selected_session_id,
+                    "expectedGuardHash": expected_guard_hash,
+                }))
+                .unwrap();
+                match invoke_checked("converge_session_branches", args).await {
+                    Ok(value) => match from_value::<SessionBranchConvergence>(value) {
+                        Ok(result) => {
+                            transcripts.update(|stored| {
+                                stored.remove(&result.main_session_id);
+                                for id in &result.removed_session_ids {
+                                    stored.remove(id);
+                                }
+                            });
+                            branch_comparison_open.set(None);
+                            branch_comparison.set(None);
+                            refresh_session_history();
+                            load_main.call(result.main_session_id);
+                            show_toast(&t(locale.get_untracked(), "branch.converge_success"));
+                        }
+                        Err(error) => branch_comparison_error.set(Some(error.to_string())),
+                    },
+                    Err(error) => branch_comparison_error.set(Some(localize_backend(
+                        locale.get_untracked(),
+                        &js_error_text(error),
+                    ))),
+                }
+                branch_comparison_busy.set(false);
+            });
+        })
+    };
     let full_permission_enabled = create_rw_signal(false);
     let full_permission_busy = create_rw_signal(false);
     let compose_menu_open = create_rw_signal(false);
@@ -6567,6 +6611,11 @@ fn App() -> impl IntoView {
         let folder_modal = folder_modal;
         let folder_modal_input = folder_modal_input;
         let ui_confirm = ui_confirm;
+        let branch_comparison_open = branch_comparison_open;
+        let branch_comparison = branch_comparison;
+        let branch_comparison_selected = branch_comparison_selected;
+        let branch_comparison_busy = branch_comparison_busy;
+        let branch_comparison_error = branch_comparison_error;
         let active_session = active_session;
         let artifacts = artifacts;
         let db_artifacts = db_artifacts;
@@ -6841,6 +6890,95 @@ fn App() -> impl IntoView {
             if let Some(act) = context_menu::session_action(&action, &payload) {
                 match act {
                     context_menu::SessionAction::Open(id) => open_session.call(id),
+                    context_menu::SessionAction::CompareBranches(id) => {
+                        branch_comparison_open.set(Some(id.clone()));
+                        branch_comparison.set(None);
+                        branch_comparison_selected.set(id.clone());
+                        branch_comparison_error.set(None);
+                        branch_comparison_busy.set(false);
+                        spawn_local(async move {
+                            let args = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
+                            match invoke_checked("compare_session_branches", args).await {
+                                Ok(value) => match from_value::<SessionBranchComparison>(value) {
+                                    Ok(result) => {
+                                        let guard_hash = result.guard_hash.clone();
+                                        if branch_comparison_open.get_untracked().as_deref()
+                                            != Some(id.as_str())
+                                        {
+                                            return;
+                                        }
+                                        branch_comparison.set(Some(result));
+                                        let args = to_value(&serde_json::json!({
+                                            "id": id.clone(),
+                                            "expectedGuardHash": guard_hash.clone(),
+                                        }))
+                                        .unwrap();
+                                        let analysis = invoke_checked("analyze_session_branches", args)
+                                            .await
+                                            .and_then(|value| {
+                                                value.as_string().ok_or_else(|| {
+                                                    wasm_bindgen::JsValue::from_str(
+                                                        "Branch analysis returned invalid text.",
+                                                    )
+                                                })
+                                            });
+                                        if branch_comparison_open.get_untracked().as_deref()
+                                            == Some(id.as_str())
+                                        {
+                                            branch_comparison.update(|current| {
+                                                let Some(current) = current.as_mut().filter(|current| {
+                                                    current.guard_hash == guard_hash
+                                                }) else {
+                                                    return;
+                                                };
+                                                match analysis {
+                                                    Ok(text) => current.analysis = Some(text),
+                                                    Err(error) => current.analysis_error = Some(
+                                                        localize_backend(
+                                                            locale.get_untracked(),
+                                                            &js_error_text(error),
+                                                        ),
+                                                    ),
+                                                }
+                                            });
+                                        }
+                                    }
+                                    Err(error) => {
+                                        if branch_comparison_open.get_untracked().as_deref()
+                                            == Some(id.as_str())
+                                        {
+                                            branch_comparison_error.set(Some(error.to_string()));
+                                        }
+                                    }
+                                },
+                                Err(error) => {
+                                    if branch_comparison_open.get_untracked().as_deref()
+                                        == Some(id.as_str())
+                                    {
+                                        branch_comparison_error.set(Some(localize_backend(
+                                            locale.get_untracked(),
+                                            &js_error_text(error),
+                                        )));
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    context_menu::SessionAction::DetachBranch(id) => {
+                        spawn_local(async move {
+                            let args = to_value(&serde_json::json!({ "id": id })).unwrap();
+                            match invoke_checked("detach_session_branch", args).await {
+                                Ok(_) => {
+                                    refresh_session_history();
+                                    show_toast(&t(locale.get_untracked(), "branch.detach_success"));
+                                }
+                                Err(error) => show_toast(&localize_backend(
+                                    locale.get_untracked(),
+                                    &js_error_text(error),
+                                )),
+                            }
+                        });
+                    }
                     context_menu::SessionAction::Rename { id, title } => {
                         rename_session_input.set(title.clone());
                         rename_session_target.set(Some((id, title)));
@@ -6904,6 +7042,9 @@ fn App() -> impl IntoView {
                         });
                     }
                     context_menu::SessionAction::Delete(id) => {
+                        ui_confirm.set(Some(UiConfirm::DeleteSessions(vec![id])));
+                    }
+                    context_menu::SessionAction::DeleteBranch(id) => {
                         ui_confirm.set(Some(UiConfirm::DeleteSessions(vec![id])));
                     }
                 }
@@ -7031,6 +7172,15 @@ fn App() -> impl IntoView {
             return;
         }
 
+        if branch_comparison_open.get().is_some() {
+            ev.prevent_default();
+            if !branch_comparison_busy.get() {
+                branch_comparison_open.set(None);
+                branch_comparison.set(None);
+                branch_comparison_error.set(None);
+            }
+            return;
+        }
         if exploration_overlay.get().is_some() {
             ev.prevent_default();
             if !exploration_busy.get() {
@@ -8568,13 +8718,15 @@ fn App() -> impl IntoView {
             delete_sessions=Callback::new(move |ids: Vec<String>| {
                 ui_confirm.set(Some(UiConfirm::DeleteSessions(ids)));
             })
-            open_session_actions=Callback::new(move |(ev, id, title, pinned): (web_sys::MouseEvent, String, String, bool)| {
+            open_session_actions=Callback::new(move |(ev, id, title, pinned, is_branch, has_branch_family): (web_sys::MouseEvent, String, String, bool, bool, bool)| {
                 ctx_menu.set(Some(context_menu::session_menu(
                     ev.client_x() as f64,
                     ev.client_y() as f64,
                     &id,
                     &title,
                     pinned,
+                    is_branch,
+                    has_branch_family,
                     locale.get(),
                 )));
             })
@@ -13016,6 +13168,18 @@ fn App() -> impl IntoView {
                 on:mousemove=on_terminal_resize_move
                 on:mouseup=move |_| terminal_dragging.set(false)></div>
         })}
+
+        <BranchComparisonOverlay
+            state=BranchComparisonOverlayState {
+                locale,
+                open: branch_comparison_open,
+                comparison: branch_comparison,
+                selected: branch_comparison_selected,
+                busy: branch_comparison_busy,
+                error: branch_comparison_error,
+            }
+            on_converge=converge_branch_comparison
+        />
 
         <ExplorationOverlayView
             state=ExplorationOverlayState {

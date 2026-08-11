@@ -1522,6 +1522,162 @@ async fn branched_from_survives_listing() {
 }
 
 #[tokio::test]
+async fn conversation_branches_compare_from_their_common_ancestor_and_converge() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_branch_convergence_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    for id in ["main", "branch-a", "branch-b"] {
+        store.create_frame(id, "p", "OPERON", "m").await.unwrap();
+    }
+    let shared = [
+        Message::user("shared question"),
+        Message::assistant("shared answer"),
+    ];
+    for id in ["main", "branch-a", "branch-b"] {
+        for (index, message) in shared.iter().enumerate() {
+            store
+                .append_message(id, index as i64 + 1, message)
+                .await
+                .unwrap();
+        }
+    }
+    for (id, question, answer) in [
+        ("main", "main route", "main result"),
+        ("branch-a", "route A", "result A"),
+        ("branch-b", "route B", "result B"),
+    ] {
+        store
+            .append_message(id, 3, &Message::user(question))
+            .await
+            .unwrap();
+        store
+            .append_message(id, 4, &Message::assistant(answer))
+            .await
+            .unwrap();
+    }
+    for id in ["branch-a", "branch-b"] {
+        store.set_session_branched_from(id, "main").await.unwrap();
+    }
+    store
+        .rename_session("branch-a", "p", "Branch: Route A")
+        .await
+        .unwrap();
+    store
+        .save_artifact(
+            "branch-artifact",
+            "p",
+            "branch-b",
+            "result.csv",
+            "text/csv",
+            "results/result.csv",
+        )
+        .await
+        .unwrap();
+
+    let from_main = store.compare_session_branches("main", "p").await.unwrap();
+    let from_branch = store
+        .compare_session_branches("branch-b", "p")
+        .await
+        .unwrap();
+    assert_eq!(from_main, from_branch);
+    assert_eq!(from_main.main_session_id, "main");
+    assert_eq!(from_main.common_ancestor_messages, 2);
+    assert_eq!(from_main.candidates.len(), 3);
+    assert_eq!(from_main.candidates[0].messages[0].text, "main route");
+    assert_eq!(from_main.candidates[1].title, "Route A");
+
+    let converged = store
+        .converge_session_branches(
+            "branch-a",
+            "p",
+            &from_main.guard_hash,
+            "Selected Route A. Result A is retained; the other alternatives were discarded.",
+            Some("summary-model"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(converged.main_session_id, "main");
+    assert_eq!(converged.selected_session_id, "branch-a");
+    assert_eq!(
+        converged.removed_session_ids,
+        ["branch-a".to_string(), "branch-b".to_string()]
+    );
+    let main = store.load_messages("main").await.unwrap();
+    assert_eq!(
+        main.iter()
+            .map(|message| message.content.as_text())
+            .collect::<Vec<_>>(),
+        [
+            "shared question",
+            "shared answer",
+            "Selected Route A. Result A is retained; the other alternatives were discarded.",
+        ]
+    );
+    assert!(store
+        .load_session_ui_events("main")
+        .await
+        .unwrap()
+        .is_empty());
+    let listed = store.list_sessions("p").await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].0, "main");
+    assert_eq!(listed[0].1, "Route A");
+    assert_eq!(
+        store
+            .get_artifact("branch-artifact")
+            .await
+            .unwrap()
+            .unwrap()
+            .3,
+        "main",
+        "conversation cleanup must preserve project Artifacts"
+    );
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn branch_convergence_rejects_stale_comparisons_and_detach_starts_a_new_family() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_branch_detach_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    for id in ["main", "branch"] {
+        store.create_frame(id, "p", "OPERON", "m").await.unwrap();
+        store
+            .append_message(id, 1, &Message::user("shared"))
+            .await
+            .unwrap();
+    }
+    store
+        .set_session_branched_from("branch", "main")
+        .await
+        .unwrap();
+    let comparison = store.compare_session_branches("branch", "p").await.unwrap();
+    store
+        .append_message("branch", 2, &Message::assistant("late result"))
+        .await
+        .unwrap();
+    let error = store
+        .converge_session_branches("branch", "p", &comparison.guard_hash, "stale summary", None)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("changed"));
+    assert_eq!(store.list_sessions("p").await.unwrap().len(), 2);
+
+    store.detach_session_branch("branch", "p").await.unwrap();
+    let listed = store.list_sessions("p").await.unwrap();
+    assert!(listed.iter().all(|row| row.4.is_none()));
+    assert!(store.compare_session_branches("main", "p").await.is_err());
+    assert!(store.compare_session_branches("branch", "p").await.is_err());
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
 async fn existing_database_without_branched_from_column_is_repaired() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_branch_lineage_migration_{}.sqlite",

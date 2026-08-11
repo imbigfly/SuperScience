@@ -60,7 +60,7 @@ pub(super) fn Sidebar(
     load_older_sessions: Callback<()>,
     move_sessions_to: Callback<(Vec<String>, Option<String>)>,
     delete_sessions: Callback<Vec<String>>,
-    open_session_actions: Callback<(web_sys::MouseEvent, String, String, bool)>,
+    open_session_actions: Callback<(web_sys::MouseEvent, String, String, bool, bool, bool)>,
     open_folder_actions: Callback<(web_sys::MouseEvent, String, String)>,
     open_capabilities: Callback<web_sys::MouseEvent>,
     open_settings: Callback<web_sys::MouseEvent>,
@@ -370,6 +370,15 @@ pub(super) fn Sidebar(
                     // Branch sessions (#531) are lifted out of the flat list and drawn
                     // nested under the session they were forked from, in whatever group
                     // that session lands in.
+                    let branch_family_ids = list
+                        .iter()
+                        .filter_map(|session| {
+                            session.branched_from.as_ref().map(|source| {
+                                [source.clone(), session.id.clone()]
+                            })
+                        })
+                        .flatten()
+                        .collect::<HashSet<_>>();
                     let (list, branch_kids) = nest_branch_sessions(&list);
                     let group = group_by.get();
                     // Whether any folder exists — used to keep the "ungrouped" drop
@@ -377,6 +386,8 @@ pub(super) fn Sidebar(
                     // reading drag_session here, which would rebuild the whole list mid-drag.
                     let has_folders = !folder_list.is_empty();
                     let item = move |s: &SessionInfo| {
+                        let is_branch = s.branched_from.is_some();
+                        let has_branch_family = branch_family_ids.contains(&s.id);
                         let id = s.id.clone();
                         let id_active = id.clone();
                         let id_attr = id.clone();
@@ -387,7 +398,13 @@ pub(super) fn Sidebar(
                         let id_selected = id.clone();
                         let id_pressed = id.clone();
                         let id_select_click = id.clone();
-                        let title = if s.title.trim().is_empty() { t(loc, "sidebar.untitled").into() } else { s.title.clone() };
+                        let title = if s.title.trim().is_empty() {
+                            t(loc, "sidebar.untitled").into()
+                        } else if is_branch {
+                            s.title.strip_prefix("Branch: ").unwrap_or(&s.title).to_string()
+                        } else {
+                            s.title.clone()
+                        };
                         let title_attr = title.clone();
                         let title_tooltip = title.clone();
                         let open = load_session.clone();
@@ -403,6 +420,7 @@ pub(super) fn Sidebar(
                             <div class="side-item-wrap">
                                 <button type="button" class="side-item ses"
                                     class:pinned=pinned
+                                    class:branch-session=is_branch
                                     title=title_tooltip
                                     class:active=move || active_session.get().as_deref() == Some(id_active.as_str())
                                     class:running=move || running.get().contains(&id_running)
@@ -417,6 +435,8 @@ pub(super) fn Sidebar(
                                     data-session-id=id_attr
                                     data-session-title=title_attr
                                     data-session-pinned=if pinned { "true" } else { "false" }
+                                    data-session-branch=if is_branch { "true" } else { "false" }
+                                    data-session-family=if has_branch_family { "true" } else { "false" }
                                     on:click=move |_| {
                                         if selecting_sessions.get_untracked() {
                                             selected_sessions.update(|selected| {
@@ -457,6 +477,9 @@ pub(super) fn Sidebar(
                                     }>
                                     <span class="session-select-mark" aria-hidden="true">{compose_icon("check")}</span>
                                     <span class="dot"></span>
+                                    {is_branch.then(|| view! {
+                                        <span class="session-branch-icon" aria-hidden="true">{compose_icon("branch")}</span>
+                                    })}
                                     <span class="ses-title">{title}</span>
                                 </button>
                                 <button type="button" class="session-actions"
@@ -467,7 +490,7 @@ pub(super) fn Sidebar(
                                     on:click=move |ev: web_sys::MouseEvent| {
                                         ev.prevent_default();
                                         ev.stop_propagation();
-                                        show_actions.call((ev, id_actions.clone(), title_actions.clone(), pinned));
+                                        show_actions.call((ev, id_actions.clone(), title_actions.clone(), pinned, is_branch, has_branch_family));
                                     }>"⋯"</button>
                             </div>
                         }.into_view()
@@ -506,7 +529,7 @@ pub(super) fn Sidebar(
                                 data-exploration-status=exploration.status.clone()
                                 title=title.clone()
                                 on:click=move |_| open.call(exploration_for_open.clone())>
-                                <span class="exploration-branch-mark" aria-hidden="true">"↳"</span>
+                                <span class="exploration-kind-icon" aria-hidden="true">{compose_icon("flask")}</span>
                                 <span class="side-exploration-copy">
                                     <span class="side-exploration-title">{title}</span>
                                     <span class="side-exploration-meta">

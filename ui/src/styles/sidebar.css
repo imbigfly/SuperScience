@@ -134,6 +134,9 @@ button.side-item.ses.selecting { padding-right: 10px; }
 .side-item.ses.selecting .dot { display: none; }
 .side-item.ses.selected { background: var(--clay-soft); border-color: var(--clay); color: var(--text); }
 .side-item.ses.selected .session-select-mark { background: var(--clay); border-color: var(--clay); color: var(--on-clay); }
+.session-branch-icon { display: inline-flex; flex: 0 0 auto; color: var(--clay); }
+.session-branch-icon svg { width: 15px; height: 15px; }
+.side-item.ses.selecting .session-branch-icon { display: none; }
 .side-item-wrap { position: relative; min-width: 0; }
 /* Row menus are revealed only on hover/keyboard focus — including the active
    session — so the list reads as plain titles at rest. Opacity (not display)
@@ -196,7 +199,8 @@ button.side-item.ses.selecting { padding-right: 10px; }
 }
 .side-exploration:hover { background: var(--surface-hover); color: var(--text); }
 .side-exploration.active { border-color: var(--border-active); background: var(--clay-soft); color: var(--text); }
-.exploration-branch-mark { flex: 0 0 auto; color: var(--clay); font: 12px/1 var(--font-mono); }
+.exploration-kind-icon { display: inline-flex; flex: 0 0 auto; color: var(--clay); }
+.exploration-kind-icon svg { width: 14px; height: 14px; }
 .side-exploration-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
 .side-exploration-title { overflow: hidden; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .side-exploration-meta { overflow: hidden; color: var(--text-faint); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }

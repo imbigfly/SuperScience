@@ -19,6 +19,16 @@ Checkpoint updates are incremental. An unchanged path with the same size and mod
 
 Older completed turns keep a disabled **Start exploration** action: exploration rounds intentionally start only at the current head so every candidate remains promotable. Context compaction does not change archived transcripts. ACP conversations cannot be explored yet because ACP v1 has no server-side fork operation.
 
+## Ordinary conversation branches
+
+Ordinary conversation branches use a branch icon in the sidebar; isolated explorations use a flask icon. Right-click the main conversation or any dependent branch and choose **Compare branches** to see every path in that family side by side. Each column contains only the messages after the longest message prefix shared by the whole family, so opening the comparison from main or from any sibling produces the same common ancestor and candidates. The main conversation's configured model also produces a decision-oriented comparison of approaches, results, agreements, conflicts, tradeoffs, and risks; if that model is unavailable, the structural comparison remains usable and reports the analysis error inline.
+
+Select one path and choose **Summarize & set as main** to converge the family. Wisp uses the selected conversation's model to generate one semantic summary, keeps the common ancestor, places that summary immediately after it, and removes the dependent branch conversations. It does not linearly append sibling transcripts. The family must remain unchanged and have no active turns, approvals, or reviews while the summary is prepared. A configured HTTP model is required for AI comparison and convergence. ACP families can show their structural comparison but cannot converge because their remote context cannot be rewritten safely.
+
+Choose **Make independent** on a branch to remove its dependency without changing its transcript. That branch, together with any descendants, becomes a separate family and is excluded from later comparison or cleanup of the original family. Do this before convergence for every path that must survive. **Delete branch** remains available for an individual dependent conversation.
+
+These actions affect conversation history only. They do not merge, restore, or roll back project files, Runs, Artifacts, or external side effects. Use an isolated exploration when those project-level changes must be compared and promoted together.
+
 ## Set an exploration as mainline
 
 **Set as mainline** is a fast-forward operation, not a general merge. It is available only while the mainline still exactly matches the exploration checkpoint and the exploration has no active runs or unsupported changed references.

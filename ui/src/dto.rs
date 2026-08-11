@@ -1921,6 +1921,41 @@ pub(crate) struct SessionInfo {
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionBranchDeltaMessage {
+    pub(crate) seq: i64,
+    pub(crate) role: String,
+    pub(crate) text: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionBranchCandidate {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) is_main: bool,
+    pub(crate) new_message_count: usize,
+    pub(crate) messages: Vec<SessionBranchDeltaMessage>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionBranchComparison {
+    pub(crate) main_session_id: String,
+    pub(crate) common_ancestor_messages: usize,
+    pub(crate) guard_hash: String,
+    pub(crate) candidates: Vec<SessionBranchCandidate>,
+    #[serde(default)]
+    pub(crate) analysis: Option<String>,
+    #[serde(default)]
+    pub(crate) analysis_error: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionBranchConvergence {
+    pub(crate) main_session_id: String,
+    pub(crate) selected_session_id: String,
+    pub(crate) removed_session_ids: Vec<String>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Exploration {
     pub(crate) id: String,
     pub(crate) checkpoint_id: String,
