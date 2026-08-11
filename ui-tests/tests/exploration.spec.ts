@@ -66,20 +66,17 @@ test("latest completed turn creates an isolated exploration and freezes mainline
   await expect(page.locator("button.send")).toBeDisabled();
 });
 
-test("only the current completed turn can start an exploration", async ({ page }) => {
+test("only the latest completed turn shows message actions and can start an exploration", async ({ page }) => {
   await page.goto("/?mockExplorations=1&mockHistoricalExploration=1");
   await page.locator(".proj-card-main").first().click();
   await page.locator('[data-session-id="exploration-mainline"]').click();
 
   const actions = page.getByTestId("start-exploration");
-  await expect(actions).toHaveCount(3);
-  await expect(actions.nth(0)).toBeDisabled();
-  await expect(actions.nth(1)).toBeDisabled();
-  await expect(actions.nth(0)).toHaveAttribute("title", /current completed turn/i);
-  await expect(actions.nth(1)).toHaveAttribute("title", /current completed turn/i);
-  await expect(actions.nth(2)).toBeEnabled();
+  await expect(page.locator(".assistant-wrap > .msg-actions")).toHaveCount(1);
+  await expect(actions).toHaveCount(1);
+  await expect(actions).toBeEnabled();
 
-  await actions.nth(2).click();
+  await actions.click();
   await page.getByTestId("exploration-name").fill("From latest turn");
   await page.getByTestId("exploration-create").click();
   await expect.poll(async () => page.evaluate(() => (window as any).__startExplorationCalls)).toEqual([

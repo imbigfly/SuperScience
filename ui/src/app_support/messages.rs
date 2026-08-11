@@ -695,6 +695,7 @@ pub(crate) fn AssistantMessage(
     on_copy: Callback<String>,
     on_memory: Callback<()>,
     on_review: Callback<()>,
+    show_actions: Signal<bool>,
     can_undo: Signal<bool>,
     on_undo: Callback<usize>,
     show_explore: Signal<bool>,
@@ -854,7 +855,10 @@ pub(crate) fn AssistantMessage(
                     </div>
                 </div>
             })}
-            <div class="msg-actions">
+            {move || {
+                let text_for_disabled = text_for_disabled.clone();
+                let text_for_click_copy = text_for_click_copy.clone();
+                show_actions.get().then(move || view! { <div class="msg-actions">
                 {move || show_explore.get().then(|| view! {
                     <button
                         type="button"
@@ -918,7 +922,7 @@ pub(crate) fn AssistantMessage(
                         <span class="gi undo" aria-hidden="true"></span>
                     </button>
                 })}
-            </div>
+            </div> })}}
         </div>
     }
 }
