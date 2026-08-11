@@ -1274,6 +1274,7 @@ pub(crate) fn render_item(
     busy: ReadSignal<bool>,
     compact_assistant: bool,
     can_modify: bool,
+    show_actions: Signal<bool>,
     can_undo: Signal<bool>,
     show_explore: Signal<bool>,
     can_explore: Signal<bool>,
@@ -1377,6 +1378,7 @@ pub(crate) fn render_item(
                     move |_| on_memory.call((session_id.clone(), explore_turn_index))
                 })
                 on_review=Callback::new(move |_| on_review.call(session_id.clone()))
+                show_actions=show_actions
                 can_undo=can_undo
                 on_undo=on_undo
                 show_explore=show_explore

@@ -9575,6 +9575,14 @@ fn App() -> impl IntoView {
                                     let can_undo = Signal::derive(move || {
                                         !compact_assistant && undo_assistant_index.get() == Some(i)
                                     });
+                                    let show_actions = Signal::derive(move || {
+                                        !busy.get()
+                                            && items.with(|rows| {
+                                                rows.iter().rposition(|item| {
+                                                    matches!(item, ChatItem::Assistant { text, .. } if !text.trim().is_empty())
+                                                }) == Some(i)
+                                            })
+                                    });
                                     let show_explore = Signal::derive(move || {
                                         if compact_assistant
                                             || active_acp_agent_id.get().is_some()
@@ -9647,7 +9655,7 @@ fn App() -> impl IntoView {
                                             } else {
                                                 render_item(
                                                     i, &item, timestamp, &arts, on_artifact_select, on_file_link,
-                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, show_explore, can_explore, edit_message, branch_message, undo_message, explore_turn_index.unwrap_or_default(), start_exploration_from_head, session_id,
+                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), show_actions, can_undo, show_explore, can_explore, edit_message, branch_message, undo_message, explore_turn_index.unwrap_or_default(), start_exploration_from_head, session_id,
                                                     request_turn_memory, request_session_review, respond_confirm, on_resume, on_queue,
                                                     step_disclosure_state,
                                                     plan_mode_active, plan_compat, on_plan_decision,
