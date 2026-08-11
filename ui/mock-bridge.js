@@ -726,13 +726,21 @@
               tool_calls: 0,
               failed_tool_calls: 0,
               failure_rate: 0,
+              global_memories: globalMemories,
             };
           }
           case "confirm_turn_memory":
             if (args?.scope === "global") {
-              globalMemories.push({ id: `global-memory-${globalMemories.length + 1}`, content: String(args?.content ?? "") });
+              const existing = globalMemories.find((memory) => memory.id === String(args?.replaceId ?? ""));
+              if (existing) existing.content = String(args?.content ?? "");
+              else globalMemories.push({ id: `global-memory-${globalMemories.length + 1}`, content: String(args?.content ?? "") });
             }
-            return { id: args?.scope === "global" ? "global-memory-preview" : null, scope: args?.scope ?? "project" };
+            return { id: args?.scope === "global" ? (args?.replaceId || "global-memory-preview") : null, scope: args?.scope ?? "project" };
+          case "update_global_memory": {
+            const existing = globalMemories.find((memory) => memory.id === String(args?.id ?? ""));
+            if (existing) existing.content = String(args?.content ?? "");
+            return null;
+          }
           case "delete_global_memory":
             globalMemories = globalMemories.filter((memory) => memory.id !== String(args?.id ?? ""));
             return null;

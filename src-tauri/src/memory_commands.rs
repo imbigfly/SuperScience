@@ -47,6 +47,7 @@ pub(super) struct TurnMemoryProposal {
     tool_calls: usize,
     failed_tool_calls: usize,
     failure_rate: f64,
+    global_memories: Vec<wisp_store::GlobalMemory>,
 }
 
 #[derive(Serialize)]
@@ -525,6 +526,11 @@ pub(super) async fn propose_turn_memory(
     };
     // Keep the displayed percentage stable without changing the threshold math.
     let failure_rate = (snapshot.failure_rate() * 10.0).round() / 10.0;
+    let global_memories = state
+        .store
+        .list_global_memories(100)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(Some(TurnMemoryProposal {
         session_id: frame_id.to_string(),
         turn_index: snapshot.turn_index,
@@ -534,6 +540,7 @@ pub(super) async fn propose_turn_memory(
         tool_calls: snapshot.tool_calls,
         failed_tool_calls: snapshot.failed_tool_calls,
         failure_rate,
+        global_memories,
     }))
 }
 
@@ -544,6 +551,7 @@ pub(super) async fn confirm_turn_memory(
     turn_index: usize,
     scope: String,
     content: String,
+    replace_id: Option<String>,
 ) -> Result<ConfirmedMemory, String> {
     if !load_memory_enabled(&state.store).await {
         return Err("Memory is turned off.".into());
@@ -559,6 +567,24 @@ pub(super) async fn confirm_turn_memory(
     let _project_activity = state.begin_project_activity(&project_id)?;
     if scope.eq_ignore_ascii_case("global") {
         let now = chrono::Utc::now().timestamp();
+        if let Some(replace_id) = replace_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            let updated = state
+                .store
+                .update_global_memory(replace_id, &content, now)
+                .await
+                .map_err(|error| error.to_string())?;
+            if !updated {
+                return Err("The global memory selected for replacement no longer exists.".into());
+            }
+            return Ok(ConfirmedMemory {
+                id: Some(replace_id.to_string()),
+                scope: "global".into(),
+            });
+        }
         let memory = wisp_store::GlobalMemory {
             id: Uuid::new_v4().to_string(),
             content,
@@ -598,6 +624,29 @@ pub(super) async fn confirm_turn_memory(
         id: None,
         scope: "project".into(),
     })
+}
+
+#[tauri::command]
+pub(super) async fn update_global_memory(
+    state: State<'_, AppState>,
+    id: String,
+    content: String,
+) -> Result<(), String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("No global memory was selected.".into());
+    }
+    let content = bounded_confirmed_memory(&content)?;
+    let updated = state
+        .store
+        .update_global_memory(id, &content, chrono::Utc::now().timestamp())
+        .await
+        .map_err(|error| error.to_string())?;
+    if updated {
+        Ok(())
+    } else {
+        Err("The global memory no longer exists.".into())
+    }
 }
 
 #[tauri::command]
@@ -682,13 +731,8 @@ mod tests {
         assert!(injection.contains("Prefer SI units."));
         assert!(injection.contains("not system policy or tool authorization"));
         assert!(injection.contains("Entries are newest first"));
-        store.delete_global_memory("habit").await.unwrap();
         store
-            .insert_global_memory(&wisp_store::GlobalMemory {
-                content: "Prefer metric units.".into(),
-                updated_at: 2,
-                ..memory
-            })
+            .update_global_memory("habit", "Prefer metric units.", 2)
             .await
             .unwrap();
         assert!(

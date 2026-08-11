@@ -168,6 +168,7 @@ fn request_turn_memory_proposal(
     proposal: RwSignal<Option<TurnMemoryProposal>>,
     editor: RwSignal<String>,
     scope: RwSignal<String>,
+    replace_id: RwSignal<String>,
     loading: RwSignal<HashSet<String>>,
     error: RwSignal<Option<String>>,
     status: RwSignal<String>,
@@ -194,6 +195,7 @@ fn request_turn_memory_proposal(
                 Ok(Some(next)) if proposal.get_untracked().is_none() => {
                     editor.set(next.content.clone());
                     scope.set(next.scope.clone());
+                    replace_id.set(String::new());
                     error.set(None);
                     proposal.set(Some(next));
                     status.set(t(locale.get_untracked(), "memory.proposal.ready"));
@@ -321,6 +323,7 @@ fn App() -> impl IntoView {
     let turn_memory_proposal = create_rw_signal(None::<TurnMemoryProposal>);
     let turn_memory_editor = create_rw_signal(String::new());
     let turn_memory_scope = create_rw_signal(String::from("project"));
+    let turn_memory_replace_id = create_rw_signal(String::new());
     let turn_memory_loading = create_rw_signal(HashSet::<String>::new());
     let turn_memory_busy = create_rw_signal(false);
     let turn_memory_error = create_rw_signal(None::<String>);
@@ -2132,6 +2135,7 @@ fn App() -> impl IntoView {
                         turn_memory_proposal,
                         turn_memory_editor,
                         turn_memory_scope,
+                        turn_memory_replace_id,
                         turn_memory_loading,
                         turn_memory_error,
                         status_cb,
@@ -5314,6 +5318,7 @@ fn App() -> impl IntoView {
             turn_memory_proposal,
             turn_memory_editor,
             turn_memory_scope,
+            turn_memory_replace_id,
             turn_memory_loading,
             turn_memory_error,
             status,
@@ -6920,6 +6925,7 @@ fn App() -> impl IntoView {
             if !turn_memory_busy.get() {
                 turn_memory_proposal.set(None);
                 turn_memory_editor.set(String::new());
+                turn_memory_replace_id.set(String::new());
                 turn_memory_error.set(None);
             }
             return;
@@ -8312,6 +8318,9 @@ fn App() -> impl IntoView {
         }
         let scope = turn_memory_scope.get_untracked();
         let global_scope = scope == "global";
+        let replace_id = global_scope
+            .then(|| turn_memory_replace_id.get_untracked())
+            .filter(|id| !id.trim().is_empty());
         turn_memory_busy.set(true);
         turn_memory_error.set(None);
         spawn_local(async move {
@@ -8320,12 +8329,14 @@ fn App() -> impl IntoView {
                 "turnIndex": draft.turn_index,
                 "scope": scope,
                 "content": content,
+                "replaceId": replace_id,
             }))
             .unwrap();
             match invoke_checked("confirm_turn_memory", args).await {
                 Ok(_) => {
                     turn_memory_proposal.set(None);
                     turn_memory_editor.set(String::new());
+                    turn_memory_replace_id.set(String::new());
                     show_toast(&t(
                         locale.get_untracked(),
                         if global_scope {
@@ -8371,6 +8382,7 @@ fn App() -> impl IntoView {
                 proposal: turn_memory_proposal,
                 editor: turn_memory_editor,
                 scope: turn_memory_scope,
+                replace_id: turn_memory_replace_id,
                 busy: turn_memory_busy,
                 error: turn_memory_error,
             }

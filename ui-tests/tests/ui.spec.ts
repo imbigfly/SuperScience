@@ -322,6 +322,8 @@ test("completed turns propose editable memory and require confirmation", async (
   await page.locator(".msg.assistant").getByRole("button", { name: "Memory" }).click();
   await page.getByTestId("turn-memory-content").fill("Always prefer reproducible local workflows.");
   await page.getByTestId("turn-memory-scope").selectOption("global");
+  await expect(page.getByTestId("turn-memory-replace")).toHaveValue("");
+  await page.getByTestId("turn-memory-replace").selectOption("global-memory-existing");
   await page.getByTestId("turn-memory-confirm").click();
   await expect(modal).toHaveCount(0);
   await expect(page.locator(".copy-toast")).toHaveText(
@@ -330,6 +332,7 @@ test("completed turns propose editable memory and require confirmation", async (
   await expect.poll(() => lastInvokeArgs(page, "confirm_turn_memory")).toMatchObject({
     scope: "global",
     content: "Always prefer reproducible local workflows.",
+    replaceId: "global-memory-existing",
     turnIndex: 0,
   });
 });
@@ -630,6 +633,19 @@ test("Memory settings show and forget global habits", async ({ page }) => {
   const global = page.getByTestId("global-memories");
   await expect(global).toContainText("Prefer SI units across projects.");
   await expect(page.getByText(/Snapshotted when a turn starts/)).toBeVisible();
+  await global.getByRole("button", { name: "Edit global habit" }).click();
+  const editor = page.getByTestId("global-memory-editor");
+  await expect(editor.getByRole("textbox", { name: "Memory" })).toHaveValue(
+    "Prefer SI units across projects.",
+  );
+  await editor.getByRole("textbox", { name: "Memory" }).fill("Prefer metric units across projects.");
+  await editor.getByRole("button", { name: "Save global habit" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "update_global_memory")).toMatchObject({
+    id: "global-memory-existing",
+    content: "Prefer metric units across projects.",
+  });
+  await expect(global).toContainText("Prefer metric units across projects.");
+  await expect(page.getByText(/new value will be used from the next turn/)).toBeVisible();
   await global.getByRole("button", { name: "Forget global habit" }).click();
   await expect.poll(() => lastInvokeArgs(page, "delete_global_memory")).toMatchObject({
     id: "global-memory-existing",

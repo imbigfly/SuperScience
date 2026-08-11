@@ -7827,6 +7827,7 @@ pub fn run() {
             memory_commands::set_auto_failure_analysis_settings,
             memory_commands::propose_turn_memory,
             memory_commands::confirm_turn_memory,
+            memory_commands::update_global_memory,
             memory_commands::delete_global_memory,
             settings_commands::get_auto_review_enabled,
             settings_commands::set_auto_review_enabled,

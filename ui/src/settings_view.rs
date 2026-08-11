@@ -781,9 +781,14 @@ pub(super) fn SettingsView(
     let acp_form_open = create_memo(move |_| acp_form.get().is_some());
     let memory_projects = create_rw_signal(Vec::<ProjectSummary>::new());
     let memory_project_menu_open = create_rw_signal(false);
+    let global_memory_edit_id = create_rw_signal(None::<String>);
+    let global_memory_editor = create_rw_signal(String::new());
+    let global_memory_busy = create_rw_signal(false);
     create_effect(move |_| {
         if settings_section.get() != "memory" {
             memory_project_menu_open.set(false);
+            global_memory_edit_id.set(None);
+            global_memory_editor.set(String::new());
             return;
         }
         spawn_local(async move {
@@ -3639,17 +3644,90 @@ pub(super) fn SettingsView(
                             <p class="model-empty-hint memory-global-timing">
                                 {move || t(locale.get(), "memory.global_timing_hint")}
                             </p>
+                            {move || global_memory_edit_id.get().map(|id| {
+                                let save_id = id.clone();
+                                view! {
+                                    <div class="global-memory-editor" data-testid="global-memory-editor">
+                                        <textarea class="memory-editor-text"
+                                            aria-label=move || t(locale.get(), "memory.proposal.content")
+                                            prop:value=move || global_memory_editor.get()
+                                            disabled=move || global_memory_busy.get()
+                                            on:input=move |event| global_memory_editor.set(event_target_value(&event))></textarea>
+                                        <div class="row">
+                                            <button type="button"
+                                                disabled=move || global_memory_busy.get()
+                                                on:click=move |_| {
+                                                    global_memory_edit_id.set(None);
+                                                    global_memory_editor.set(String::new());
+                                                }>{move || t(locale.get(), "settings.cancel")}</button>
+                                            <button type="button" class="primary"
+                                                disabled=move || global_memory_busy.get()
+                                                    || global_memory_editor.get().trim().is_empty()
+                                                on:click=move |_| {
+                                                    let id = save_id.clone();
+                                                    let content = global_memory_editor.get_untracked().trim().to_string();
+                                                    if content.is_empty() {
+                                                        memory_msg.set(Some((false, t(
+                                                            locale.get_untracked(),
+                                                            "memory.proposal.empty",
+                                                        ).into())));
+                                                        return;
+                                                    }
+                                                    global_memory_busy.set(true);
+                                                    spawn_local(async move {
+                                                        let arg = to_value(&serde_json::json!({
+                                                            "id": id.clone(),
+                                                            "content": content.clone(),
+                                                        })).unwrap();
+                                                        match invoke_checked("update_global_memory", arg).await {
+                                                            Ok(_) => {
+                                                                memory_view.update(|view| {
+                                                                    if let Some(view) = view {
+                                                                        if let Some(memory) = view.global_memories
+                                                                            .iter_mut()
+                                                                            .find(|memory| memory.id == id)
+                                                                        {
+                                                                            memory.content = content;
+                                                                        }
+                                                                    }
+                                                                });
+                                                                global_memory_edit_id.set(None);
+                                                                global_memory_editor.set(String::new());
+                                                                memory_msg.set(Some((true, t(
+                                                                    locale.get_untracked(),
+                                                                    "memory.global_updated",
+                                                                ).into())));
+                                                            }
+                                                            Err(error) => memory_msg.set(Some((false, js_error_text(error)))),
+                                                        }
+                                                        global_memory_busy.set(false);
+                                                    });
+                                                }>{move || t(locale.get(), "memory.global_save")}</button>
+                                        </div>
+                                    </div>
+                                }
+                            })}
                             <div class="settings-list" data-testid="global-memories">
                                 <For each=move || memory_view.get().map(|v| v.global_memories).unwrap_or_default()
-                                    key=|memory| memory.id.clone() let:memory>
+                                    key=|memory| (memory.id.clone(), memory.content.clone()) let:memory>
                                     {
                                         let id = memory.id.clone();
+                                        let edit_id = memory.id.clone();
+                                        let edit_content = memory.content.clone();
                                         view! {
                                             <div class="settings-list-row">
                                                 <div class="settings-list-main">
                                                     <span class="settings-list-title global-memory-content">{memory.content}</span>
                                                 </div>
                                                 <div class="settings-list-actions">
+                                                    <button type="button" class="settings-list-edit"
+                                                        aria-label=move || t(locale.get(), "memory.global_edit")
+                                                        title=move || t(locale.get(), "memory.global_edit")
+                                                        on:click=move |_| {
+                                                            global_memory_edit_id.set(Some(edit_id.clone()));
+                                                            global_memory_editor.set(edit_content.clone());
+                                                            memory_msg.set(None);
+                                                        }>{compose_icon("edit")}</button>
                                                     <button type="button" class="settings-list-remove"
                                                         aria-label=move || t(locale.get(), "memory.global_delete")
                                                         title=move || t(locale.get(), "memory.global_delete")
@@ -3664,6 +3742,10 @@ pub(super) fn SettingsView(
                                                                                 view.global_memories.retain(|memory| memory.id != id);
                                                                             }
                                                                         });
+                                                                        if global_memory_edit_id.get_untracked().as_deref() == Some(id.as_str()) {
+                                                                            global_memory_edit_id.set(None);
+                                                                            global_memory_editor.set(String::new());
+                                                                        }
                                                                         memory_msg.set(Some((true, t(
                                                                             locale.get_untracked(),
                                                                             "memory.global_deleted",

@@ -2708,6 +2708,8 @@ pub(crate) struct TurnMemoryProposal {
     pub(crate) tool_calls: usize,
     pub(crate) failed_tool_calls: usize,
     pub(crate) failure_rate: f64,
+    #[serde(default)]
+    pub(crate) global_memories: Vec<GlobalMemory>,
 }
 
 #[derive(Deserialize, Clone)]

@@ -2499,6 +2499,17 @@ button.workflow-graph-port.output.active {
   line-height: 1.55;
 }
 .global-memory-content { white-space: pre-wrap; }
+.global-memory-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+.global-memory-editor .memory-editor-text { min-height: 100px; }
+.global-memory-editor .row { justify-content: flex-end; }
 .settings-list-remove,
 .settings-list-edit {
   display: inline-flex;
