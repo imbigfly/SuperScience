@@ -704,6 +704,7 @@ pub(crate) fn AssistantMessage(
     on_copy: Callback<String>,
     on_memory: Callback<()>,
     on_review: Callback<()>,
+    on_branch: Callback<usize>,
     show_actions: Signal<bool>,
     can_undo: Signal<bool>,
     on_undo: Callback<usize>,
@@ -884,7 +885,6 @@ pub(crate) fn AssistantMessage(
                     on:click=move |_| on_memory.call(())
                 >
                     {compose_icon("memory")}
-                    <span>{move || t(locale.get(), "msg.memory")}</span>
                 </button>
                 <button
                     type="button"
@@ -894,7 +894,15 @@ pub(crate) fn AssistantMessage(
                     on:click=move |_| on_review.call(())
                 >
                     {compose_icon("review")}
-                    <span>{move || t(locale.get(), "msg.review")}</span>
+                </button>
+                <button
+                    type="button"
+                    class="msg-icon-btn msg-branch-btn"
+                    title=move || t(locale.get(), "msg.branch")
+                    aria-label=move || t(locale.get(), "msg.branch")
+                    on:click=move |_| on_branch.call(source_item)
+                >
+                    {compose_icon("branch")}
                 </button>
                 <button
                     type="button"

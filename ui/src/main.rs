@@ -3363,14 +3363,18 @@ fn App() -> impl IntoView {
         let transcripts = transcripts;
         move |ui_index: usize| {
             let Some((user_idx, draft, prefix_items)) = items.with(|list| {
-                let user_idx = user_message_index(list, ui_index)?;
-                let ChatItem::User(text) = list.get(ui_index)? else {
+                let user_ui_index = list
+                    .iter()
+                    .take(ui_index.saturating_add(1))
+                    .rposition(|item| matches!(item, ChatItem::User(_)))?;
+                let user_idx = user_message_index(list, user_ui_index)?;
+                let ChatItem::User(text) = list.get(user_ui_index)? else {
                     return None;
                 };
                 Some((
                     user_idx,
                     composer_text_from_user_message(text),
-                    list.iter().take(ui_index).cloned().collect::<Vec<_>>(),
+                    list.iter().take(user_ui_index).cloned().collect::<Vec<_>>(),
                 ))
             }) else {
                 return;
@@ -9587,14 +9591,7 @@ fn App() -> impl IntoView {
                                     let can_undo = Signal::derive(move || {
                                         !compact_assistant && undo_assistant_index.get() == Some(i)
                                     });
-                                    let show_actions = Signal::derive(move || {
-                                        !busy.get()
-                                            && items.with(|rows| {
-                                                rows.iter().rposition(|item| {
-                                                    matches!(item, ChatItem::Assistant { text, .. } if !text.trim().is_empty())
-                                                }) == Some(i)
-                                            })
-                                    });
+                                    let show_actions = Signal::derive(move || !busy.get());
                                     let show_explore = Signal::derive(move || {
                                         if compact_assistant
                                             || active_acp_agent_id.get().is_some()

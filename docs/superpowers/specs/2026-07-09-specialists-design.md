@@ -91,7 +91,8 @@ session-runtime build around line 1653). No `agent_loop` changes.
   the Specialists page. Custom review rules = duplicate Reviewer into a custom
   specialist (v1 keeps builtin instructions read-only).
 - Users can request the same one-shot review from the composer menu or from the
-  Review action beside Copy on any complete assistant reply.
+  icon-only action row beneath any complete assistant reply. The row also
+  exposes Memory, Branch, Copy, and eligible Undo actions with accessible labels.
 
 ## 4. Creation flows
 

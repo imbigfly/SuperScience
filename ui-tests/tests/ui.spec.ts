@@ -3044,6 +3044,31 @@ test("branch on an earlier user message opens a new session from that point", as
   });
 });
 
+test("assistant actions are icon-only and can branch from the preceding user turn", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("branch from this answer");
+  await page.getByRole("button", { name: "Send" }).click();
+  const assistant = page.locator(".msg.assistant").filter({ hasText: "Hello from mock wisp-science." }).first();
+  await expect(assistant).toBeVisible({ timeout: 10_000 });
+
+  await composer(page).fill("a later turn");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".msg.assistant").filter({ hasText: "Hello from mock wisp-science." })).toHaveCount(2);
+
+  for (const name of ["Memory", "Review", "Branch"]) {
+    const action = assistant.getByRole("button", { name, exact: true });
+    await expect(action).toBeVisible();
+    await expect(action.locator("span")).toHaveCount(0);
+  }
+
+  await assistant.getByRole("button", { name: "Branch", exact: true }).click();
+  await expect.poll(() => lastInvokeArgs(page, "branch_session")).toMatchObject({
+    title: "branch from this answer",
+    userIndex: 0,
+  });
+  await expect(composer(page)).toHaveValue("branch from this answer");
+});
+
 test("editing a middle message asks for confirmation before rewinding", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("first idea");
