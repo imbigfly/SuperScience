@@ -4351,7 +4351,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 emit("agent", {
                   kind: "Text",
                   frame_id: fid,
-                  delta: "I inspected `old.csv` and created the requested output.",
+                  delta: "I inspected `old.csv` and created the requested output. See `notes/FIGURE_LEGEND.md`.",
                 });
                 emit("agent", { kind: "Done", frame_id: fid });
               }, 30);

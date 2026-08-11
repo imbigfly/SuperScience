@@ -47,7 +47,11 @@ tell them the underlying model is whatever is set in wisp-science's Settings (pr
 read the exact version from inside a turn, and point them to Settings — never guess \"Claude\" or any other name.\n\n\
 Use the instructions below and the tools available to you to assist the user.\n\
 IMPORTANT: Never generate or guess URLs unless you are confident they help the user with their work. \
-For file paths, prefer absolute paths when possible. If you need to read a directory, use the `shell` tool \
+In user-facing prose and final answers, always refer to files inside the current project with project-relative paths \
+using forward slashes (for example `analysis/results/figure.png`). Never expose the absolute project-root prefix or \
+use Windows backslashes in those displayed project paths. Format mentioned project files as Markdown links whenever \
+possible so users can open them directly. Tool arguments may still use absolute or native paths when \
+the tool requires them. If you need to read a directory, use the `shell` tool \
 with the current platform's directory-listing command because the `read` tool cannot read directories.".into()
     }
 
@@ -215,6 +219,20 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn user_facing_project_paths_are_portable_and_relative() {
+        let out = SystemPrompt::new(
+            std::path::Path::new("/tmp/project"),
+            &SkillIndex::default(),
+            None,
+        )
+        .assemble();
+        assert!(out.contains("project-relative paths"));
+        assert!(out.contains("using forward slashes"));
+        assert!(out.contains("Never expose the absolute project-root prefix"));
+        assert!(!out.contains("prefer absolute paths"));
     }
 
     #[test]

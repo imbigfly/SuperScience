@@ -549,6 +549,7 @@ fn App() -> impl IntoView {
         refresh_session_library(session_library_items, active_session.read_only());
     });
     let project_info = create_rw_signal::<Option<ProjectInfo>>(None);
+    provide_context(project_info.read_only());
     let demo_mode = create_rw_signal(false); // true = the synthetic "Example project" is open
     let scratch_open = create_rw_signal(false); // ephemeral scratch chat overlay
     let feedback_context = create_rw_signal::<Option<String>>(None);
@@ -8744,6 +8745,10 @@ fn App() -> impl IntoView {
                 center_files.get().into_iter().find(|file| file.path == path)
             }).map(|file| {
                 let path = file.path.clone();
+                let display_path = project_info
+                    .get()
+                    .and_then(|project| workspace_relative_path(&project.root, &path))
+                    .unwrap_or_else(|| path.replace('\\', "/"));
                 let revision = center_file_revisions.with(|revisions| {
                     revisions.get(&path).copied().unwrap_or_default()
                 });
@@ -8775,7 +8780,7 @@ fn App() -> impl IntoView {
                         data-preview-kind=kind.clone()
                         data-file-path=path.clone()>
                         <div class="center-file-head">
-                            <span>{if is_mcp_app { label } else { path.clone() }}</span>
+                            <span>{if is_mcp_app { label } else { display_path }}</span>
                             <div class="spacer"></div>
                             // Bind this script to a runtime. Whole-file execution
                             // and direct editing deliberately stay out of this
