@@ -4516,6 +4516,15 @@ test("monitor_run renders a live Run card from summary polls and on-demand detai
   await card.getByRole("button", { name: "Dismiss completed run card" }).click();
   await expect(card).toHaveCount(0);
   await expect(page.locator(".run-monitor-wrap")).toBeHidden();
+
+  // Starting another turn remounts settled transcript rows. A manual
+  // dismissal must survive that remount instead of flashing back until the
+  // next run-list refresh.
+  await composer(page).fill("continue after dismiss");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(card).toHaveCount(0);
+  await page.waitForTimeout(1_500);
+  await expect(card).toHaveCount(0);
 });
 
 test("run monitor output stays pinned to the tail across poll rebuilds (#654)", async ({ page }) => {
