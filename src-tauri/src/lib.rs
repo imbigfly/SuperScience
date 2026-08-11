@@ -2461,6 +2461,9 @@ struct TauriOutput {
     /// Built-in plan mode for this session, read once per turn. ACP-bound
     /// frames never set it — their plan mode lives on the agent side.
     plan_mode: bool,
+    /// Project state is frozen by an active isolated exploration. The
+    /// conversation remains usable, but mutating tools fail closed.
+    project_write_locked: bool,
     approval_grants: Arc<StdMutex<ApprovalGrants>>,
     /// Shared live set so enabling Full Permission can take effect during a
     /// running turn, including while it is approaching an approval boundary.
@@ -2833,6 +2836,9 @@ impl Output for TauriOutput {
     }
     fn plan_mode(&self) -> bool {
         self.plan_mode
+    }
+    fn project_write_locked(&self) -> bool {
+        self.project_write_locked
     }
     fn on_message(&self, msg: &Message) {
         if msg.role == wisp_llm::Role::User {
@@ -4916,7 +4922,12 @@ async fn send_message_inner(
     let frame_scope = explicit_scope
         .clone()
         .unwrap_or_else(|| wisp_store::StateScope::mainline(ap.id.clone()));
-    exploration_commands::require_writable_scope(&state.store, &frame_scope).await?;
+    let project_write_locked = exploration_commands::conversation_project_write_locked(
+        &state.store,
+        &frame_scope,
+        session_id.as_deref().filter(|id| !id.is_empty()),
+    )
+    .await?;
     let saved_binding = match session_id.as_deref().filter(|id| !id.is_empty()) {
         Some(id) => state
             .store
@@ -4930,6 +4941,12 @@ async fn send_message_inner(
         .is_some_and(|id| !id.trim().is_empty())
         || saved_binding.is_some()
     {
+        if project_write_locked {
+            return Err(
+                "exploration_mainline_frozen: ACP conversations cannot enforce the exploration read-only project lock; use the built-in Agent or finish the exploration round first."
+                    .into(),
+            );
+        }
         if matches!(
             explicit_scope.as_ref(),
             Some(wisp_store::StateScope::Exploration { .. })
@@ -5295,9 +5312,10 @@ async fn send_message_inner(
             vision_cfg.clone(),
         );
         agent.set_auto_compact(load_auto_compact_enabled(&state.store).await);
-        if specialist
-            .as_ref()
-            .is_some_and(|specialist| specialist.id == "scientific_illustrator")
+        if !project_write_locked
+            && specialist
+                .as_ref()
+                .is_some_and(|specialist| specialist.id == "scientific_illustrator")
         {
             std::fs::create_dir_all(ap.root.join("figures"))
                 .map_err(|error| format!("Failed to prepare figures directory: {error}"))?;
@@ -5571,6 +5589,11 @@ async fn send_message_inner(
     {
         agent.ctx.inject_user(injection);
     }
+    if project_write_locked {
+        agent.ctx.inject_user(
+            "An active isolated exploration has frozen project state for possible promotion. This separate mainline conversation remains available for normal discussion and read-only inspection, but project-mutating tools are unavailable. Do not attempt to write files, run commands or jobs, change project records, or call mutating external tools until the exploration round finishes.",
+        );
+    }
     if !resume {
         if let Some(context) = rt.mcp_app_context_injection() {
             agent.ctx.inject_user(context);
@@ -5787,6 +5810,7 @@ async fn send_message_inner(
         awaiting_confirm: state.awaiting_confirm.clone(),
         approvals: state.approvals.clone(),
         plan_mode: plan_mode_enabled,
+        project_write_locked,
         approval_grants: state.approval_grants.clone(),
         full_permission_sessions: state.full_permission_sessions.clone(),
         persist: Some(persist_tx),
@@ -6021,7 +6045,12 @@ async fn enqueue_turn(
     let (project, scope) =
         exploration_commands::working_project_for_frame(&state, &session_id).await?;
     let _project_activity = state.begin_project_activity(&project.id)?;
-    exploration_commands::require_writable_scope(&state.store, &scope).await?;
+    let _project_write_locked = exploration_commands::conversation_project_write_locked(
+        &state.store,
+        &scope,
+        Some(&session_id),
+    )
+    .await?;
     let rt = {
         let mut sessions = state.sessions.lock().await;
         sessions

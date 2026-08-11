@@ -6145,6 +6145,8 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
             .unwrap();
     assert_eq!(frame_scope.as_deref(), Some("explore"));
     assert!(store.project_mainline_is_frozen("p").await.unwrap());
+    assert!(store.mainline_frame_is_frozen("main").await.unwrap());
+    assert!(!store.mainline_frame_is_frozen("branch").await.unwrap());
     assert!(!store
         .project_has_current_exploration_for_other_source("p", "main")
         .await
@@ -6180,6 +6182,7 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
         .await
         .unwrap());
     assert!(!store.project_mainline_is_frozen("p").await.unwrap());
+    assert!(!store.mainline_frame_is_frozen("main").await.unwrap());
     assert!(store
         .transition_exploration(
             "explore",
@@ -6189,6 +6192,7 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
         .await
         .unwrap());
     assert!(store.project_mainline_is_frozen("p").await.unwrap());
+    assert!(store.mainline_frame_is_frozen("main").await.unwrap());
     assert!(store
         .transition_exploration(
             "explore",

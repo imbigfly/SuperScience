@@ -167,7 +167,12 @@ pub(crate) async fn set_session_delegation_enabled(
     let (project, scope) =
         crate::exploration_commands::working_project_for_frame(&state, &session_id).await?;
     let _activity = state.begin_project_activity(&project.id)?;
-    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
+    let _project_write_locked = crate::exploration_commands::conversation_project_write_locked(
+        &state.store,
+        &scope,
+        Some(&session_id),
+    )
+    .await?;
     save_session_delegation_enabled(&state.store, &project.id, &session_id, enabled).await?;
     crate::clear_idle_agents(&state).await;
     Ok(enabled)
