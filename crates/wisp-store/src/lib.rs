@@ -14,6 +14,7 @@ mod codex_imports;
 mod execution_contexts;
 mod explorations;
 mod external_session_cache;
+mod global_memories;
 mod library;
 mod lineage;
 mod method_search;
@@ -52,6 +53,7 @@ pub use explorations::{
     StateScope, WorkspaceSnapshotRecord, MAINLINE_SCOPE_KEY,
 };
 pub use external_session_cache::ExternalSessionCacheRecord;
+pub use global_memories::GlobalMemory;
 pub use library::{
     LibraryItem, LibraryItemDetail, LibraryItemSummary, LibraryItemVersion, LibraryStore,
     NewLibraryItem,
@@ -139,6 +141,8 @@ const EXPLORATION_BRANCHES_MIGRATION_SQL: &str =
 const PROJECT_STATE_REVISIONS_MIGRATION: &str = "0038_project_state_revisions";
 const PROJECT_STATE_REVISIONS_MIGRATION_SQL: &str =
     include_str!("../migrations/0038_project_state_revisions.sql");
+const GLOBAL_MEMORIES_MIGRATION: &str = "0039_global_memories";
+const GLOBAL_MEMORIES_MIGRATION_SQL: &str = include_str!("../migrations/0039_global_memories.sql");
 
 #[derive(Clone)]
 pub struct Store {
@@ -532,6 +536,10 @@ impl Store {
         if !Self::migration_applied(pool, PROJECT_STATE_REVISIONS_MIGRATION).await? {
             Self::execute_sql_script(pool, PROJECT_STATE_REVISIONS_MIGRATION_SQL).await?;
             Self::record_migration(pool, PROJECT_STATE_REVISIONS_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, GLOBAL_MEMORIES_MIGRATION).await? {
+            Self::execute_sql_script(pool, GLOBAL_MEMORIES_MIGRATION_SQL).await?;
+            Self::record_migration(pool, GLOBAL_MEMORIES_MIGRATION).await?;
         }
         Ok(())
     }

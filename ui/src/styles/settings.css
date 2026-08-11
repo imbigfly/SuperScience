@@ -2498,6 +2498,7 @@ button.workflow-graph-port.output.active {
   font-size: 13px;
   line-height: 1.55;
 }
+.global-memory-content { white-space: pre-wrap; }
 .settings-list-remove,
 .settings-list-edit {
   display: inline-flex;

@@ -1283,6 +1283,7 @@ pub(crate) fn render_item(
     explore_turn_index: usize,
     on_explore: Callback<usize>,
     session_id: String,
+    on_memory: Callback<(String, usize)>,
     on_review: Callback<String>,
     on_approval: Callback<(String, bool, Option<String>, String)>,
     on_resume: Callback<usize>,
@@ -1371,6 +1372,10 @@ pub(crate) fn render_item(
                 on_artifact=on_artifact
                 on_file=on_file
                 on_copy=Callback::new(copy_text)
+                on_memory=Callback::new({
+                    let session_id = session_id.clone();
+                    move |_| on_memory.call((session_id.clone(), explore_turn_index))
+                })
                 on_review=Callback::new(move |_| on_review.call(session_id.clone()))
                 can_undo=can_undo
                 on_undo=on_undo

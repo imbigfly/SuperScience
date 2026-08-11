@@ -55,7 +55,6 @@ const BUILT_IN_SCHEMA_NAMES: &[&str] = &[
     "search_models",
     "use_skill",
     "search_memory",
-    "append_memory",
 ];
 
 const SUBAGENT_SCHEMA_NAMES: &[&str] = &["explore", "delegate_tasks", "get_delegated_result"];

@@ -29,7 +29,7 @@ use app_overlays::{
     ContextRecoveryOverlay, ContextRecoveryOverlayState, ProjectExportPrompt,
     ProjectExportPromptState, ProjectTransferOverlay, ProjectTransferOverlayState,
     SshConnectivityOverlay, SshConnectivityOverlayState, UpdateCheckOverlay,
-    UpdateCheckOverlayState,
+    UpdateCheckOverlayState, TurnMemoryOverlay, TurnMemoryOverlayState,
 };
 use bindings::{
     attach_chat_autoscroll, clear_selection, close_mcp_app, force_chat_bottom, invoke,
@@ -160,6 +160,74 @@ pub(crate) use chat_render::*;
 use mcp_app::*;
 use runtime_views::*;
 
+#[allow(clippy::too_many_arguments)]
+fn request_turn_memory_proposal(
+    session_id: String,
+    turn_index: Option<usize>,
+    automatic: bool,
+    proposal: RwSignal<Option<TurnMemoryProposal>>,
+    editor: RwSignal<String>,
+    scope: RwSignal<String>,
+    loading: RwSignal<HashSet<String>>,
+    error: RwSignal<Option<String>>,
+    status: RwSignal<String>,
+    locale: RwSignal<Locale>,
+) {
+    if loading.with_untracked(|ids| ids.contains(&session_id)) {
+        return;
+    }
+    loading.update(|ids| {
+        ids.insert(session_id.clone());
+    });
+    if !automatic {
+        status.set(t(locale.get_untracked(), "memory.proposal.generating"));
+    }
+    spawn_local(async move {
+        let args = to_value(&serde_json::json!({
+            "sessionId": session_id.clone(),
+            "turnIndex": turn_index,
+            "automatic": automatic,
+        }))
+        .unwrap();
+        match invoke_checked("propose_turn_memory", args).await {
+            Ok(value) => match from_value::<Option<TurnMemoryProposal>>(value) {
+                Ok(Some(next)) if proposal.get_untracked().is_none() => {
+                    editor.set(next.content.clone());
+                    scope.set(next.scope.clone());
+                    error.set(None);
+                    proposal.set(Some(next));
+                    status.set(t(locale.get_untracked(), "memory.proposal.ready"));
+                }
+                Ok(_) => {
+                    if !automatic {
+                        status.set(t(locale.get_untracked(), "memory.proposal.none"));
+                    }
+                }
+                Err(parse_error) => {
+                    status.set(tf(
+                        locale.get_untracked(),
+                        "memory.proposal.failed",
+                        &[("msg", &parse_error.to_string())],
+                    ));
+                }
+            },
+            Err(invoke_error) => {
+                status.set(tf(
+                    locale.get_untracked(),
+                    "memory.proposal.failed",
+                    &[(
+                        "msg",
+                        &localize_backend(locale.get_untracked(), &js_error_text(invoke_error)),
+                    )],
+                ));
+            }
+        }
+        loading.update(|ids| {
+            ids.remove(&session_id);
+        });
+    });
+}
+
 #[component]
 fn App() -> impl IntoView {
     let locale = create_rw_signal(Locale::detect_browser());
@@ -250,6 +318,12 @@ fn App() -> impl IntoView {
     let memory_selected = create_rw_signal(None::<String>);
     let memory_editor = create_rw_signal(String::new());
     let memory_msg = create_rw_signal(None::<(bool, String)>);
+    let turn_memory_proposal = create_rw_signal(None::<TurnMemoryProposal>);
+    let turn_memory_editor = create_rw_signal(String::new());
+    let turn_memory_scope = create_rw_signal(String::from("project"));
+    let turn_memory_loading = create_rw_signal(HashSet::<String>::new());
+    let turn_memory_busy = create_rw_signal(false);
+    let turn_memory_error = create_rw_signal(None::<String>);
     let conns_view = create_rw_signal(None::<ConnView>);
     let connectors = create_rw_signal(None::<ConnectorsView>);
     let approval_grants = create_rw_signal(Vec::<ApprovalGrantRow>::new());
@@ -1989,7 +2063,10 @@ fn App() -> impl IntoView {
                 set_pet_activity(&frame_id, "running");
                 queue(frame_id, PendingDelta::Stdout(chunk));
             }
-            AgentEvent::Done { frame_id } => {
+            AgentEvent::Done {
+                frame_id,
+                stop_reason,
+            } => {
                 finish_compaction(&frame_id);
                 flush_now();
                 conversation_outlines_cb.update(|outlines| {
@@ -2048,6 +2125,23 @@ fn App() -> impl IntoView {
                     stopping_session.set(None);
                 }
                 refresh_session_history();
+                if stop_reason
+                    .as_deref()
+                    .is_none_or(|reason| reason == "end_turn")
+                {
+                    request_turn_memory_proposal(
+                        frame_id.clone(),
+                        None,
+                        true,
+                        turn_memory_proposal,
+                        turn_memory_editor,
+                        turn_memory_scope,
+                        turn_memory_loading,
+                        turn_memory_error,
+                        status_cb,
+                        locale_cb,
+                    );
+                }
                 let has_final_answer = if active_cb.get_untracked().as_deref()
                     == Some(frame_id.as_str())
                 {
@@ -5216,6 +5310,21 @@ fn App() -> impl IntoView {
         });
     });
 
+    let request_turn_memory = Callback::new(move |(session_id, turn_index): (String, usize)| {
+        request_turn_memory_proposal(
+            session_id,
+            Some(turn_index),
+            false,
+            turn_memory_proposal,
+            turn_memory_editor,
+            turn_memory_scope,
+            turn_memory_loading,
+            turn_memory_error,
+            status,
+            locale,
+        );
+    });
+
     let jump_to_conversation_outline =
         Callback::new(move |(target, before_seq): (usize, Option<i64>)| {
             let Some(id) = active_session.get_untracked() else {
@@ -5779,6 +5888,7 @@ fn App() -> impl IntoView {
     let hosts_attach_search = create_rw_signal(String::new());
     let specialist_menu_open = create_rw_signal(false);
     let auto_review_enabled = create_rw_signal(false);
+    let auto_failure_analysis = create_rw_signal(AutoFailureAnalysisSettings::default());
     let delegation_enabled = create_rw_signal(false);
     let delegation_setting_busy = create_rw_signal(false);
     let agent_completion = create_rw_signal(AgentCompletionSettings::default());
@@ -5960,6 +6070,31 @@ fn App() -> impl IntoView {
         if let Some(enabled) = value.as_bool() {
             auto_review_enabled.set(enabled);
         }
+    });
+    spawn_local(async move {
+        let value = invoke(
+            "get_auto_failure_analysis_settings",
+            JsValue::UNDEFINED,
+        )
+        .await;
+        if let Ok(settings) = from_value::<AutoFailureAnalysisSettings>(value) {
+            auto_failure_analysis.set(settings);
+        }
+    });
+    let save_auto_failure_analysis = Callback::new(move |next: AutoFailureAnalysisSettings| {
+        let previous = auto_failure_analysis.get_untracked();
+        auto_failure_analysis.set(next);
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({ "settings": next })).unwrap();
+            match invoke_checked("set_auto_failure_analysis_settings", args).await {
+                Ok(value) => {
+                    if let Ok(saved) = from_value::<AutoFailureAnalysisSettings>(value) {
+                        auto_failure_analysis.set(saved);
+                    }
+                }
+                Err(_) => auto_failure_analysis.set(previous),
+            }
+        });
     });
     let ssh_hosts = create_rw_signal::<Vec<SshHost>>(vec![]);
     let selected_context_id = create_rw_signal::<Option<String>>(None);
@@ -6782,6 +6917,15 @@ fn App() -> impl IntoView {
             return;
         };
         if ev.key() != "Escape" || ev.default_prevented() || ime_composing(ev) {
+            return;
+        }
+        if turn_memory_proposal.get().is_some() {
+            ev.prevent_default();
+            if !turn_memory_busy.get() {
+                turn_memory_proposal.set(None);
+                turn_memory_editor.set(String::new());
+                turn_memory_error.set(None);
+            }
             return;
         }
         if context_recovery_dialog.get().is_some() {
@@ -8159,6 +8303,52 @@ fn App() -> impl IntoView {
         })
     });
 
+    let confirm_turn_memory = Callback::new(move |_: ()| {
+        let Some(draft) = turn_memory_proposal.get_untracked() else {
+            return;
+        };
+        let content = turn_memory_editor.get_untracked().trim().to_string();
+        if content.is_empty() {
+            turn_memory_error.set(Some(t(
+                locale.get_untracked(),
+                "memory.proposal.empty",
+            )));
+            return;
+        }
+        let scope = turn_memory_scope.get_untracked();
+        let global_scope = scope == "global";
+        turn_memory_busy.set(true);
+        turn_memory_error.set(None);
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({
+                "sessionId": draft.session_id,
+                "turnIndex": draft.turn_index,
+                "scope": scope,
+                "content": content,
+            }))
+            .unwrap();
+            match invoke_checked("confirm_turn_memory", args).await {
+                Ok(_) => {
+                    turn_memory_proposal.set(None);
+                    turn_memory_editor.set(String::new());
+                    show_toast(&t(
+                        locale.get_untracked(),
+                        if global_scope {
+                            "memory.proposal.saved_global"
+                        } else {
+                            "memory.proposal.saved"
+                        },
+                    ));
+                }
+                Err(error) => turn_memory_error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(error),
+                ))),
+            }
+            turn_memory_busy.set(false);
+        });
+    });
+
     view! {
         {is_windows().then(|| view! {
             <WindowTitlebar locale=locale has_current_project=has_current_project
@@ -8181,6 +8371,17 @@ fn App() -> impl IntoView {
             })
         />
         <ProjectTransferOverlay state=ProjectTransferOverlayState { locale, project_transfer } />
+        <TurnMemoryOverlay
+            state=TurnMemoryOverlayState {
+                locale,
+                proposal: turn_memory_proposal,
+                editor: turn_memory_editor,
+                scope: turn_memory_scope,
+                busy: turn_memory_busy,
+                error: turn_memory_error,
+            }
+            on_confirm=confirm_turn_memory
+        />
         <ProjectLanding
             state=ProjectLandingState {
                 show_projects, demo_mode, items, active_session, project_open_error,
@@ -9424,7 +9625,7 @@ fn App() -> impl IntoView {
                                                 render_item(
                                                     i, &item, timestamp, &arts, on_artifact_select, on_file_link,
                                                     run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, show_explore, can_explore, edit_message, branch_message, undo_message, explore_turn_index.unwrap_or_default(), start_exploration_from_head, session_id,
-                                                    request_session_review, respond_confirm, on_resume, on_queue,
+                                                    request_turn_memory, request_session_review, respond_confirm, on_resume, on_queue,
                                                     step_disclosure_state,
                                                     plan_mode_active, plan_compat, on_plan_decision,
                                                     on_question_answer, jump_to_review_message,
@@ -10385,6 +10586,46 @@ fn App() -> impl IntoView {
                                             <span class="toggle-track" aria-hidden="true"></span>
                                         </span>
                                     </label>
+                                    <label class="agent-menu-row">
+                                        <span>{move || t(locale.get(), "composer.auto_failure_analysis")}</span>
+                                        <span class="toggle agent-menu-toggle">
+                                            <input type="checkbox"
+                                                data-testid="auto-failure-analysis"
+                                                prop:checked=move || auto_failure_analysis.get().enabled
+                                                on:change=move |event| {
+                                                    let mut next = auto_failure_analysis.get_untracked();
+                                                    next.enabled = event_target_checked(&event);
+                                                    save_auto_failure_analysis.call(next);
+                                                } />
+                                            <span class="toggle-track" aria-hidden="true"></span>
+                                        </span>
+                                    </label>
+                                    {move || auto_failure_analysis.get().enabled.then(|| view! {
+                                        <label class="agent-menu-row agent-menu-setting">
+                                            <span>{move || t(locale.get(), "composer.failure_rate_threshold")}</span>
+                                            <input class="agent-menu-number" type="number" min="1" max="100" step="1"
+                                                data-testid="failure-rate-threshold"
+                                                prop:value=move || auto_failure_analysis.get().failure_rate_threshold.to_string()
+                                                on:change=move |event| {
+                                                    let Ok(value) = dom_value(&event).parse::<u8>() else { return; };
+                                                    let mut next = auto_failure_analysis.get_untracked();
+                                                    next.failure_rate_threshold = value;
+                                                    save_auto_failure_analysis.call(next);
+                                                } />
+                                        </label>
+                                        <label class="agent-menu-row agent-menu-setting">
+                                            <span>{move || t(locale.get(), "composer.minimum_failures")}</span>
+                                            <input class="agent-menu-number" type="number" min="1" max="100" step="1"
+                                                data-testid="minimum-failures"
+                                                prop:value=move || auto_failure_analysis.get().minimum_failures.to_string()
+                                                on:change=move |event| {
+                                                    let Ok(value) = dom_value(&event).parse::<u16>() else { return; };
+                                                    let mut next = auto_failure_analysis.get_untracked();
+                                                    next.minimum_failures = value;
+                                                    save_auto_failure_analysis.call(next);
+                                                } />
+                                        </label>
+                                    })}
                                     <button type="button" class="agent-menu-row" aria-haspopup="menu"
                                         on:click=move |_| {
                                             reviewer_model_menu_open.update(|open| *open = !*open);

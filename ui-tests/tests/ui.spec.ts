@@ -293,6 +293,81 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await expect(page.locator(".copy-toast")).toHaveText("Copied");
 });
 
+test("completed turns propose editable memory and require confirmation", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("summarize this project convention");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await expect(page.locator(".rightpane")).toBeVisible();
+
+  await page.locator(".msg.assistant").getByRole("button", { name: "Memory" }).click();
+  const modal = page.getByTestId("turn-memory-overlay");
+  await expect(modal).toBeVisible();
+  await expect(page.getByTestId("turn-memory-content")).toHaveValue(
+    "Prefer reproducible local workflows for this project.",
+  );
+  await expect.poll(() => lastInvokeArgs(page, "propose_turn_memory")).toMatchObject({
+    sessionId: expect.stringMatching(/^s-/),
+    turnIndex: 0,
+    automatic: false,
+  });
+
+  // Root-owned modal participates in the window Escape stack without focus.
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  await expect(page.locator(".rightpane")).toBeVisible();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+
+  await page.locator(".msg.assistant").getByRole("button", { name: "Memory" }).click();
+  await page.getByTestId("turn-memory-content").fill("Always prefer reproducible local workflows.");
+  await page.getByTestId("turn-memory-scope").selectOption("global");
+  await page.getByTestId("turn-memory-confirm").click();
+  await expect(modal).toHaveCount(0);
+  await expect(page.locator(".copy-toast")).toHaveText(
+    "Global memory saved. It will be used from the next turn.",
+  );
+  await expect.poll(() => lastInvokeArgs(page, "confirm_turn_memory")).toMatchObject({
+    scope: "global",
+    content: "Always prefer reproducible local workflows.",
+    turnIndex: 0,
+  });
+});
+
+test("explicit remember requests open a global confirmation even when failure analysis is off", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("REMEMBER always use SI units");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const modal = page.getByTestId("turn-memory-overlay");
+  await expect(modal).toBeVisible();
+  await expect(page.getByTestId("turn-memory-scope")).toHaveValue("global");
+  await expect(modal).toContainText("asked Wisp to remember");
+});
+
+test("optional tool-failure analysis exposes thresholds and proposes a confirmed lesson", async ({ page }) => {
+  await enterApp(page);
+  let menu = await openAgentMenu(page);
+  await menu.locator("label.agent-menu-row", { hasText: "Analyze tool failures" }).click();
+  await expect(page.getByTestId("failure-rate-threshold")).toHaveValue("30");
+  await expect(page.getByTestId("minimum-failures")).toHaveValue("2");
+  await page.getByTestId("failure-rate-threshold").fill("60");
+  await page.getByTestId("failure-rate-threshold").press("Tab");
+  await expect.poll(() => lastInvokeArgs(page, "set_auto_failure_analysis_settings"))
+    .toMatchObject({ settings: { enabled: true, failure_rate_threshold: 60, minimum_failures: 2 } });
+
+  await page.keyboard.press("Escape");
+  await composer(page).fill("TOOLFAILMEMORY diagnose retries");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const modal = page.getByTestId("turn-memory-overlay");
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("2 of 3 tool calls failed (66.7%)");
+  await expect(page.getByTestId("turn-memory-scope")).toHaveValue("project");
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+});
+
 test("tool-only turn endings do not generate follow-up questions", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("TOOLONLYDONE finish the report");
@@ -544,8 +619,23 @@ test("Memory settings show the active project name", async ({ page }) => {
   await expect(page.getByTestId("memory-project-select")).toHaveAttribute("data-project-id", "default");
   await expect(page.getByTestId("memory-project-select")).toContainText("wisp-science");
   await expect(project).toContainText("(1)");
-  await expect(page.locator(".conn-group-label")).toContainText("Project memory");
+  await expect(page.locator(".conn-group-label", { hasText: "Project memory" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Clear all" })).toHaveClass("memory-clear-btn");
+});
+
+test("Memory settings show and forget global habits", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+
+  const global = page.getByTestId("global-memories");
+  await expect(global).toContainText("Prefer SI units across projects.");
+  await expect(page.getByText(/Snapshotted when a turn starts/)).toBeVisible();
+  await global.getByRole("button", { name: "Forget global habit" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "delete_global_memory")).toMatchObject({
+    id: "global-memory-existing",
+  });
+  await expect(global).toContainText("No global habits yet.");
+  await expect(page.getByText(/older chat history may still affect this session/)).toBeVisible();
 });
 
 test("Memory settings can browse another project's notes without switching workspace", async ({ page }) => {
@@ -1214,6 +1304,8 @@ test("ACP cancellation is scoped to the active bound frame", async ({ page }) =>
   await page.getByRole("button", { name: "Stop" }).click();
   await expect.poll(() => lastInvokeArgs(page, "stop_agent")).toMatchObject({ sessionId: expect.any(String) });
   await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await page.waitForTimeout(100);
+  expect(await invokeArgsList(page, "propose_turn_memory")).toHaveLength(0);
 });
 
 test("failed stop command restores the Stop control instead of staying in Stopping", async ({ page }) => {

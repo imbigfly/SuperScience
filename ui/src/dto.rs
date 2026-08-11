@@ -268,7 +268,11 @@ pub(crate) enum AgentEvent {
         frame_id: String,
         chunk: String,
     },
-    Done { frame_id: String },
+    Done {
+        frame_id: String,
+        #[serde(default)]
+        stop_reason: Option<String>,
+    },
     Error {
         frame_id: String,
         message: String,
@@ -2667,6 +2671,43 @@ pub(crate) struct MemoryView {
     pub(crate) project_name: String,
     pub(crate) today_file: String,
     pub(crate) files: Vec<MemoryFile>,
+    #[serde(default)]
+    pub(crate) global_memories: Vec<GlobalMemory>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GlobalMemory {
+    pub(crate) id: String,
+    pub(crate) content: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AutoFailureAnalysisSettings {
+    pub(crate) enabled: bool,
+    pub(crate) failure_rate_threshold: u8,
+    pub(crate) minimum_failures: u16,
+}
+
+impl Default for AutoFailureAnalysisSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            failure_rate_threshold: 30,
+            minimum_failures: 2,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct TurnMemoryProposal {
+    pub(crate) session_id: String,
+    pub(crate) turn_index: usize,
+    pub(crate) scope: String,
+    pub(crate) content: String,
+    pub(crate) trigger: String,
+    pub(crate) tool_calls: usize,
+    pub(crate) failed_tool_calls: usize,
+    pub(crate) failure_rate: f64,
 }
 
 #[derive(Deserialize, Clone)]

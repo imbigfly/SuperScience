@@ -3635,6 +3635,59 @@ pub(super) fn SettingsView(
                                     })
                                 }}
                             </div>
+                            <div class="conn-group-label">{move || t(locale.get(), "memory.global_scope")}</div>
+                            <p class="model-empty-hint memory-global-timing">
+                                {move || t(locale.get(), "memory.global_timing_hint")}
+                            </p>
+                            <div class="settings-list" data-testid="global-memories">
+                                <For each=move || memory_view.get().map(|v| v.global_memories).unwrap_or_default()
+                                    key=|memory| memory.id.clone() let:memory>
+                                    {
+                                        let id = memory.id.clone();
+                                        view! {
+                                            <div class="settings-list-row">
+                                                <div class="settings-list-main">
+                                                    <span class="settings-list-title global-memory-content">{memory.content}</span>
+                                                </div>
+                                                <div class="settings-list-actions">
+                                                    <button type="button" class="settings-list-remove"
+                                                        aria-label=move || t(locale.get(), "memory.global_delete")
+                                                        title=move || t(locale.get(), "memory.global_delete")
+                                                        on:click=move |_| {
+                                                            let id = id.clone();
+                                                            spawn_local(async move {
+                                                                let arg = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
+                                                                match invoke_checked("delete_global_memory", arg).await {
+                                                                    Ok(_) => {
+                                                                        memory_view.update(|view| {
+                                                                            if let Some(view) = view {
+                                                                                view.global_memories.retain(|memory| memory.id != id);
+                                                                            }
+                                                                        });
+                                                                        memory_msg.set(Some((true, t(
+                                                                            locale.get_untracked(),
+                                                                            "memory.global_deleted",
+                                                                        ).into())));
+                                                                    }
+                                                                    Err(error) => memory_msg.set(Some((false, js_error_text(error)))),
+                                                                }
+                                                            });
+                                                        }>{compose_icon("close")}</button>
+                                                </div>
+                                            </div>
+                                        }
+                                    }
+                                </For>
+                                {move || {
+                                    let empty = memory_view
+                                        .get()
+                                        .map(|view| view.global_memories.is_empty())
+                                        .unwrap_or(true);
+                                    empty.then(|| view! {
+                                        <p class="model-empty-hint">{move || t(locale.get(), "memory.global_empty")}</p>
+                                    })
+                                }}
+                            </div>
                         </div>
                         }.into_view()
                     }
