@@ -285,6 +285,10 @@ fn App() -> impl IntoView {
     let sync_actions_available = create_rw_signal(false);
     let pet_status = create_rw_signal(PetStatus::default());
     let run_records = create_rw_signal::<Vec<RunSummary>>(vec![]);
+    // A transcript row is remounted when a later turn changes its keyed
+    // projection. Keep explicit Run-card dismissals above the card component
+    // so a dismissed terminal Run cannot flash back during that remount.
+    let dismissed_run_cards = create_rw_signal::<HashSet<String>>(HashSet::new());
     // Configured model profiles + the composer's bottom-right picker state.
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
     let active_session = create_rw_signal::<Option<String>>(None);
@@ -9288,6 +9292,7 @@ fn App() -> impl IntoView {
                                             clock=run_clock.read_only()
                                             tool_ok=None
                                             tool_output=String::new()
+                                            dismissed_runs=dismissed_run_cards
                                         />
                                     </div>
                                 }.into_view(),
@@ -9421,6 +9426,7 @@ fn App() -> impl IntoView {
                                                     step_disclosure_state,
                                                     plan_mode_active, plan_compat, on_plan_decision,
                                                     on_question_answer, jump_to_review_message,
+                                                    dismissed_run_cards,
                                                 ).into_view()
                                             }}
                                         </div>

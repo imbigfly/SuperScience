@@ -8,7 +8,7 @@ use crate::text::{event_target_value, format_duration_ms, md_to_html, tool_card_
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// True for items whose `render_item` produces an empty view, so the thread
@@ -1015,9 +1015,9 @@ pub(crate) fn RunMonitorCard(
     clock: ReadSignal<i64>,
     tool_ok: Option<bool>,
     tool_output: String,
+    dismissed_runs: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
     let locale = use_locale();
-    let dismissed = create_rw_signal(false);
     let fallback = serde_json::from_str::<RunRecord>(&tool_output).ok();
     let detail = create_rw_signal(fallback.clone());
     let lookup_id = run_id.clone();
@@ -1074,7 +1074,7 @@ pub(crate) fn RunMonitorCard(
     let env_open = create_rw_signal(false);
     view! {
         {move || {
-            if dismissed.get() {
+            if dismissed_runs.with(|ids| ids.contains(&run_id)) {
                 return view! {}.into_view();
             }
             let run = selected_run.get();
@@ -1145,7 +1145,7 @@ pub(crate) fn RunMonitorCard(
             let cancel_id = run.id.clone();
             let output_id = run.id.clone();
             view! {
-                <article class="run-monitor-card" data-testid="run-monitor-card" data-run-id=run.id>
+                <article class="run-monitor-card" data-testid="run-monitor-card" data-run-id=run.id.clone()>
                     <div class="run-monitor-head">
                         <span class="run-monitor-icon">{
                             if active {
@@ -1200,11 +1200,14 @@ pub(crate) fn RunMonitorCard(
                         })}
                         {dismissible.then(|| {
                             let tip = t(locale.get(), "runs.dismiss");
+                            let dismiss_id = run.id.clone();
                             view! {
                                 <button type="button" class="icon-btn run-monitor-dismiss"
                                     title=tip.clone()
                                     aria-label=tip
-                                    on:click=move |_| dismissed.set(true)
+                                    on:click=move |_| dismissed_runs.update(|ids| {
+                                        ids.insert(dismiss_id.clone());
+                                    })
                                 >{compose_icon("close")}</button>
                             }
                         })}
@@ -1290,6 +1293,7 @@ pub(crate) fn render_item(
     on_plan_decision: Callback<PlanDecision>,
     on_question_answer: Callback<(usize, Option<String>, String)>,
     on_review_jump: Callback<usize>,
+    dismissed_runs: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
     let locale = use_locale();
     match item {
@@ -1385,6 +1389,7 @@ pub(crate) fn render_item(
                 clock=run_clock
                 tool_ok=*ok
                 tool_output=output.clone()
+                dismissed_runs=dismissed_runs
             />
         }.into_view(),
         ChatItem::Tool { name, ok, input, output, .. } if is_image_generation_tool(name) => view! {
