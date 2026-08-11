@@ -5703,6 +5703,30 @@ test("center split keeps the same conversation beside the open document", async 
   expect(box.x).toBeGreaterThanOrEqual(doc.x + doc.width - 1);
   expect(box.y).toBeLessThan(doc.y + doc.height);
 
+  // The divider is a real drag target. Moving it right gives the document more
+  // room and makes the chat composer switch to its compact controls.
+  const divider = page.getByRole("separator", { name: "Resize document and chat" });
+  const dividerBox = (await divider.boundingBox())!;
+  await page.mouse.move(dividerBox.x + dividerBox.width / 2, dividerBox.y + 100);
+  await page.mouse.down();
+  await page.mouse.move(dividerBox.x + 100, dividerBox.y + 100);
+  await page.mouse.up();
+  const resizedDoc = (await preview.boundingBox())!;
+  const resizedChat = (await chat.boundingBox())!;
+  expect(resizedDoc.width).toBeGreaterThan(doc.width + 60);
+  expect(resizedChat.width).toBeLessThan(box.width - 60);
+  await expect(page.locator(".model-picker-btn")).toHaveCSS("height", "28px");
+  await expect(page.locator("button.send")).toHaveCSS("height", "28px");
+  await page.locator(".thread").evaluate((thread) => {
+    thread.insertAdjacentHTML(
+      "beforeend",
+      '<div class="usage-row" data-testid="chat-usage-regression"><div class="usage-line">20.5k in · 555 out tokens · 20.2k cached · 124 reasoning</div></div>',
+    );
+  });
+  const usageLine = page.getByTestId("chat-usage-regression").locator(".usage-line");
+  await expect(usageLine).toBeVisible();
+  expect((await usageLine.boundingBox())!.height).toBeLessThan(20);
+
   // Same session, not a new one — the sent message is still in the thread.
   await expect(chat.getByText("open report.md")).toBeVisible();
 
