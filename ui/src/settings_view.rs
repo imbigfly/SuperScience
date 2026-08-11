@@ -613,6 +613,8 @@ pub(super) struct SettingsViewState {
     pub(super) dark_palette: RwSignal<String>,
     pub(super) ui_font_size: RwSignal<u16>,
     pub(super) code_font_size: RwSignal<u16>,
+    pub(super) ui_font_family: RwSignal<String>,
+    pub(super) code_font_family: RwSignal<String>,
     pub(super) selection_popup_enabled: RwSignal<bool>,
     pub(super) send_with_modifier: RwSignal<bool>,
     pub(super) update_check_enabled: RwSignal<bool>,
@@ -717,6 +719,8 @@ pub(super) fn SettingsView(
         dark_palette,
         ui_font_size,
         code_font_size,
+        ui_font_family,
+        code_font_family,
         selection_popup_enabled,
         send_with_modifier,
         update_check_enabled,
@@ -2172,7 +2176,7 @@ pub(super) fn SettingsView(
                                             <span>{t(locale.get(), "appearance.ui_font_size_hint")}</span>
                                         </div>
                                         <label class="font-size-control">
-                                            <input type="range" min="12" max="18" step="1"
+                                            <input type="range" min="0" max="30" step="1"
                                                 aria-label=t(locale.get(), "appearance.ui_font_size")
                                                 prop:value=move || ui_font_size.get().to_string()
                                                 on:input=move |ev| ui_font_size.set(event_target_value(&ev).parse().unwrap_or(14)) />
@@ -2181,16 +2185,38 @@ pub(super) fn SettingsView(
                                     </div>
                                     <div class="appearance-config-row">
                                         <div>
+                                            <strong>{t(locale.get(), "appearance.ui_font_family")}</strong>
+                                            <span>{t(locale.get(), "appearance.ui_font_family_hint")}</span>
+                                        </div>
+                                        <input type="text" class="appearance-font-input" data-testid="appearance-ui-font"
+                                            aria-label=t(locale.get(), "appearance.ui_font_family")
+                                            placeholder="Inter"
+                                            prop:value=move || ui_font_family.get()
+                                            on:input=move |ev| ui_font_family.set(event_target_value(&ev)) />
+                                    </div>
+                                    <div class="appearance-config-row">
+                                        <div>
                                             <strong>{t(locale.get(), "appearance.code_font_size")}</strong>
                                             <span>{t(locale.get(), "appearance.code_font_size_hint")}</span>
                                         </div>
                                         <label class="font-size-control">
-                                            <input type="range" min="10" max="18" step="1"
+                                            <input type="range" min="0" max="30" step="1"
                                                 aria-label=t(locale.get(), "appearance.code_font_size")
                                                 prop:value=move || code_font_size.get().to_string()
                                                 on:input=move |ev| code_font_size.set(event_target_value(&ev).parse().unwrap_or(12)) />
                                             <output>{move || format!("{} px", code_font_size.get())}</output>
                                         </label>
+                                    </div>
+                                    <div class="appearance-config-row">
+                                        <div>
+                                            <strong>{t(locale.get(), "appearance.code_font_family")}</strong>
+                                            <span>{t(locale.get(), "appearance.code_font_family_hint")}</span>
+                                        </div>
+                                        <input type="text" class="appearance-font-input" data-testid="appearance-code-font"
+                                            aria-label=t(locale.get(), "appearance.code_font_family")
+                                            placeholder="JetBrains Mono"
+                                            prop:value=move || code_font_family.get()
+                                            on:input=move |ev| code_font_family.set(event_target_value(&ev)) />
                                     </div>
                                 </section>
                             }

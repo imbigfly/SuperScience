@@ -5974,6 +5974,46 @@ test("appearance settings persist separate light and dark palettes and font size
     .getPropertyValue("--code-font-size").trim())).toBe("15px");
 });
 
+test("appearance settings customize font families and allow 0-30px sizes", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Appearance");
+
+  const uiFont = page.getByTestId("appearance-ui-font");
+  const codeFont = page.getByTestId("appearance-code-font");
+  await uiFont.fill("Noto Sans SC");
+  await codeFont.fill("Fira Code");
+  // The user family is injected ahead of the default stack on :root.
+  await expect.poll(() => page.evaluate(() =>
+    document.documentElement.getAttribute("style") ?? "",
+  )).toContain("--font-user-ui:Noto Sans SC");
+  await expect.poll(() => page.evaluate(() =>
+    getComputedStyle(document.body).fontFamily,
+  )).toContain("Noto Sans SC");
+
+  // Font sizes accept the full 0-30 range instead of the old 12-18 clamp.
+  await page.getByRole("slider", { name: "UI font size" }).fill("30");
+  await page.getByRole("slider", { name: "Code font size" }).fill("0");
+  await expect.poll(() => page.evaluate(() => ({
+    ui: localStorage.getItem("wisp-ui-font-size"),
+    code: localStorage.getItem("wisp-code-font-size"),
+    uiFont: localStorage.getItem("wisp-font-ui"),
+    codeFont: localStorage.getItem("wisp-font-mono"),
+  }))).toEqual({ ui: "30", code: "0", uiFont: "Noto Sans SC", codeFont: "Fira Code" });
+
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement)
+    .getPropertyValue("--font-user-ui").trim())).toBe("Noto Sans SC");
+
+  // Clearing the input removes the override and restores the default stack.
+  await page.locator(".proj-card-main").first().click();
+  await openSettingsSection(page, "Appearance");
+  await expect(page.getByTestId("appearance-ui-font")).toHaveValue("Noto Sans SC");
+  await page.getByTestId("appearance-ui-font").fill("");
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement)
+    .getPropertyValue("--font-user-ui").trim())).toBe("");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-font-ui"))).toBeNull();
+});
+
 test("UI font size setting scales chat message body text", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("MDLIST");

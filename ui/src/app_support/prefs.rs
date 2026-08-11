@@ -144,24 +144,69 @@ fn load_font_size(key: &str, fallback: u16, min: u16, max: u16) -> u16 {
 }
 
 pub(crate) fn load_ui_font_size() -> u16 {
-    load_font_size("wisp-ui-font-size", 14, 12, 18)
+    load_font_size("wisp-ui-font-size", 14, 0, 30)
 }
 
 pub(crate) fn load_code_font_size() -> u16 {
-    load_font_size("wisp-code-font-size", 12, 10, 18)
+    load_font_size("wisp-code-font-size", 12, 0, 30)
 }
 
-pub(crate) fn apply_font_sizes(ui_size: u16, code_size: u16) {
+/// A user-chosen font family is substituted into the `--font-ui` /
+/// `--font-mono` stacks via `var(--font-user-*)`, so strip anything that could
+/// break out of the custom-property value.
+fn sanitize_font_family(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, ';' | '{' | '}' | '"' | '\'' | '!' | '(' | ')'))
+        .take(100)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn load_font_family(key: &str) -> String {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(key).ok().flatten())
+        .map(|value| sanitize_font_family(&value))
+        .unwrap_or_default()
+}
+
+pub(crate) fn load_ui_font_family() -> String {
+    load_font_family("wisp-font-ui")
+}
+
+pub(crate) fn load_code_font_family() -> String {
+    load_font_family("wisp-font-mono")
+}
+
+pub(crate) fn apply_font_prefs(ui_size: u16, code_size: u16, ui_family: &str, code_family: &str) {
+    let ui_family = sanitize_font_family(ui_family);
+    let code_family = sanitize_font_family(code_family);
     let Some(window) = web_sys::window() else {
         return;
     };
     if let Some(root) = window.document().and_then(|d| d.document_element()) {
-        let style = format!("--ui-font-size:{ui_size}px;--code-font-size:{code_size}px",);
+        let mut style = format!("--ui-font-size:{ui_size}px;--code-font-size:{code_size}px");
+        if !ui_family.is_empty() {
+            style.push_str(&format!(";--font-user-ui:{ui_family}"));
+        }
+        if !code_family.is_empty() {
+            style.push_str(&format!(";--font-user-mono:{code_family}"));
+        }
         let _ = root.set_attribute("style", &style);
     }
     if let Ok(Some(storage)) = window.local_storage() {
         let _ = storage.set_item("wisp-ui-font-size", &ui_size.to_string());
         let _ = storage.set_item("wisp-code-font-size", &code_size.to_string());
+        for (key, value) in [("wisp-font-ui", ui_family), ("wisp-font-mono", code_family)] {
+            let _ = if value.is_empty() {
+                storage.remove_item(key)
+            } else {
+                storage.set_item(key, &value)
+            };
+        }
     }
 }
 

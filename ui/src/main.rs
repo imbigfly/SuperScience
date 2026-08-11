@@ -241,7 +241,16 @@ fn App() -> impl IntoView {
     create_effect(move |_| apply_palette_modes(&light_palette.get(), &dark_palette.get()));
     let ui_font_size = create_rw_signal(load_ui_font_size());
     let code_font_size = create_rw_signal(load_code_font_size());
-    create_effect(move |_| apply_font_sizes(ui_font_size.get(), code_font_size.get()));
+    let ui_font_family = create_rw_signal(load_ui_font_family());
+    let code_font_family = create_rw_signal(load_code_font_family());
+    create_effect(move |_| {
+        apply_font_prefs(
+            ui_font_size.get(),
+            code_font_size.get(),
+            &ui_font_family.get(),
+            &code_font_family.get(),
+        )
+    });
     let selection_popup_enabled = create_rw_signal(load_selection_popup_enabled());
     create_effect(move |_| save_selection_popup_enabled(selection_popup_enabled.get()));
     let send_with_modifier = create_rw_signal(load_send_with_modifier());
@@ -8148,10 +8157,10 @@ fn App() -> impl IntoView {
             "theme-light" => theme_mode.set("light".into()),
             "theme-dark" => theme_mode.set("dark".into()),
             "theme-system" => theme_mode.set("system".into()),
-            "font-ui-increase" => ui_font_size.update(|size| *size = (*size + 1).min(18)),
-            "font-ui-decrease" => ui_font_size.update(|size| *size = size.saturating_sub(1).max(12)),
-            "font-code-increase" => code_font_size.update(|size| *size = (*size + 1).min(18)),
-            "font-code-decrease" => code_font_size.update(|size| *size = size.saturating_sub(1).max(10)),
+            "font-ui-increase" => ui_font_size.update(|size| *size = (*size + 1).min(30)),
+            "font-ui-decrease" => ui_font_size.update(|size| *size = size.saturating_sub(1)),
+            "font-code-increase" => code_font_size.update(|size| *size = (*size + 1).min(30)),
+            "font-code-decrease" => code_font_size.update(|size| *size = size.saturating_sub(1)),
             _ => {}
         })
     };
@@ -13234,7 +13243,7 @@ fn App() -> impl IntoView {
         })}
         <SettingsView
             state=SettingsViewState {
-                locale, theme_mode, light_palette, dark_palette, ui_font_size, code_font_size, selection_popup_enabled, send_with_modifier, update_check_enabled, show_settings, settings_section, open_conn_key, channels_open, connectors, model_form,
+                locale, theme_mode, light_palette, dark_palette, ui_font_size, code_font_size, ui_font_family, code_font_family, selection_popup_enabled, send_with_modifier, update_check_enabled, show_settings, settings_section, open_conn_key, channels_open, connectors, model_form,
                 conn_form, memory_selected, specialist_form, settings, bootstrap, settings_message,
                 settings_busy, model_form_open, model_form_key, models, model_form_msg, show_acp_agents,
                 acp_agents, active_acp_agent_id, acp_form, acp_form_msg, acp_infos, specialists,

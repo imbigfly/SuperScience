@@ -1686,6 +1686,12 @@ button.workflow-graph-port.output.active {
 .settings-page label.font-size-control { display: grid; grid-template-columns: minmax(150px, 220px) 54px; align-items: center; gap: 12px; flex: 0 0 auto; }
 .font-size-control input[type="range"] { width: 100%; padding: 0; accent-color: var(--clay); box-shadow: none; }
 .font-size-control output { color: var(--text-muted); font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; }
+.appearance-font-input {
+  width: 264px; flex: 0 0 auto; padding: 7px 10px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
+  background: var(--bg-input); color: var(--text); font: inherit; font-size: 12.5px;
+}
+.appearance-font-input:focus { border-color: var(--clay); outline: none; box-shadow: 0 0 0 3px var(--focus-ring); }
 .settings-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2627,6 +2633,7 @@ button.workflow-graph-port.output.active {
   .appearance-diff-column + .appearance-diff-column { border-left: none; border-top: 1px solid var(--border); }
   .appearance-config-head, .appearance-config-row { align-items: flex-start; flex-direction: column; gap: 10px; padding: 14px 0; }
   .appearance-config-head select, .appearance-color-value { width: 100%; }
+  .appearance-font-input { width: 100%; }
   .settings-page label.font-size-control { width: 100%; grid-template-columns: 1fr 54px; }
   .settings-form-grid .span-2 { grid-column: auto; }
   .settings-toolbar { grid-template-columns: 1fr; }
