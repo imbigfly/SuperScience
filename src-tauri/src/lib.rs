@@ -90,6 +90,7 @@ mod ssh_guard;
 mod ssh_hosts;
 mod ssh_master;
 mod terminal_sessions;
+mod turn_memory;
 mod turn_undo;
 mod workspace_manifest;
 mod workspace_scan;
@@ -4977,6 +4978,9 @@ async fn send_message_inner(
         let skills = active_skill_index(&state.store, &ap).await;
         let mut injected_context =
             resolve_composer_references(&state.store, refs, &frame_id, &ap.root, &skills).await?;
+        if let Some(memory) = memory_commands::global_memory_runtime_injection(&state.store).await {
+            injected_context.push(memory);
+        }
         if let Some(context) = runtime.mcp_app_context_injection() {
             injected_context.push(context);
         }
@@ -5525,7 +5529,7 @@ async fn send_message_inner(
                     &app,
                     AgentEvent::Done {
                         frame_id: frame_id.clone(),
-                        stop_reason: None,
+                        stop_reason: Some("compact".into()),
                     },
                 );
                 return Ok(frame_id);
@@ -5559,6 +5563,9 @@ async fn send_message_inner(
         .map(|delivery| delivery.id)
         .collect::<Vec<_>>();
     agent.ctx.clear_runtime_injections();
+    if let Some(memory) = memory_commands::global_memory_runtime_injection(&state.store).await {
+        agent.ctx.inject_user(memory);
+    }
     if let Some(injection) =
         exploration_commands::exploration_runtime_injection(&ap.root, &frame_scope)?
     {
@@ -5584,6 +5591,10 @@ async fn send_message_inner(
         {
             agent.ctx.inject_user(injection);
         }
+        // Context resolved before the turn belongs before the user's actual
+        // request. Observations and review corrections injected later remain
+        // at the tail.
+        agent.ctx.prefix_runtime_injections_to_user();
     }
     if rt.cancel.load(Ordering::SeqCst) {
         return Err("Turn was cancelled before it started.".into());
@@ -5813,7 +5824,6 @@ async fn send_message_inner(
     *rt.interrupted_turn_start.lock().unwrap() =
         (result.is_err() && rt.cancel.load(Ordering::SeqCst)).then_some(turn_start);
     if result.is_ok() {
-        agent.ctx.clear_runtime_injections();
         if !completion_delivery_ids.is_empty() {
             let _ = state
                 .store
@@ -5837,6 +5847,9 @@ async fn send_message_inner(
             .await;
         }
     }
+    // Keep the turn-start snapshot through a possible automatic correction;
+    // clear it only after the whole visual turn reaches a terminal outcome.
+    agent.ctx.clear_runtime_injections();
     state.running_turns.lock().await.remove(&frame_id);
 
     // Close the persist channel and wait for the task to flush; its final seq is
@@ -7810,6 +7823,11 @@ pub fn run() {
             app_commands::get_capabilities,
             memory_commands::get_memory_view,
             memory_commands::set_memory_enabled,
+            memory_commands::get_auto_failure_analysis_settings,
+            memory_commands::set_auto_failure_analysis_settings,
+            memory_commands::propose_turn_memory,
+            memory_commands::confirm_turn_memory,
+            memory_commands::delete_global_memory,
             settings_commands::get_auto_review_enabled,
             settings_commands::set_auto_review_enabled,
             settings_commands::get_update_check_enabled,

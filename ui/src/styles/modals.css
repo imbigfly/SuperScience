@@ -1053,3 +1053,15 @@ textarea.host-input { min-height:64px; resize:vertical; }
   .publication-form-grid { grid-template-columns: 1fr; }
   .publication-form-grid .wide { grid-column: auto; }
 }
+.turn-memory-overlay { z-index: 140; }
+.turn-memory-modal { width: min(620px, calc(100vw - 32px)); }
+.turn-memory-modal .hint { margin: 0 0 16px; color: var(--text-muted); line-height: 1.55; }
+.turn-memory-field { display: grid; gap: 7px; margin-top: 13px; color: var(--text-muted); font-size: 13px; }
+.turn-memory-field select,
+.turn-memory-field textarea {
+  box-sizing: border-box; width: 100%; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text); font: inherit;
+}
+.turn-memory-field select { height: 38px; padding: 0 34px 0 11px; }
+.turn-memory-field textarea { min-height: 210px; padding: 11px 12px; line-height: 1.55; resize: vertical; }
+.turn-memory-modal .row { justify-content: flex-end; margin-top: 18px; }

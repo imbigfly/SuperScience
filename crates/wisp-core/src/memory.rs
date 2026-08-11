@@ -111,7 +111,7 @@ impl MemoryManager {
             }
         }
         if scored.is_empty() {
-            return "No memory found. Tip: append important user preferences, decisions, and non-obvious fixes so future sessions can recall them.".into();
+            return "No memory found. New durable notes are saved only after the user confirms a completed-turn memory proposal in the Wisp UI.".into();
         }
         scored.sort_by(|a, b| b.0.cmp(&a.0));
         scored
@@ -148,6 +148,16 @@ mod tests {
         let root = temp_root("new");
         let memory = MemoryManager::new(&root);
         assert!(memory.dir().is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn empty_search_does_not_advertise_a_direct_write_tool() {
+        let root = temp_root("empty-search");
+        let memory = MemoryManager::new(&root);
+        let result = memory.search("preference", 10);
+        assert!(result.contains("user confirms"));
+        assert!(!result.contains("append_memory"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

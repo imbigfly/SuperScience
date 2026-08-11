@@ -219,6 +219,10 @@ pub struct ContextManager {
     /// automatic compaction.
     compaction_revision: u64,
     pub runtime_injections: Vec<Message>,
+    /// Initial host context that belongs before the current user request.
+    /// Later injections (for example image observations or review corrections)
+    /// stay at the tail where they were added.
+    runtime_prefix_len: usize,
     /// Whether the model this context is about to be sent to accepts image
     /// content parts. Set per turn from the active profile; `true` by default
     /// so anything that builds a context without asking keeps sending images.
@@ -228,6 +232,7 @@ pub struct ContextManager {
     /// every agent-loop iteration.
     last_request_message_count: Option<usize>,
     last_request_runtime_injections: Vec<Message>,
+    last_request_runtime_prefix_len: usize,
     /// Session-level multiplier applied to heuristic token estimates after
     /// comparing them to provider-reported input usage.
     token_estimate_factor: f64,
@@ -244,9 +249,11 @@ impl ContextManager {
             auto_compact: true,
             compaction_revision: 0,
             runtime_injections: vec![],
+            runtime_prefix_len: 0,
             supports_vision: true,
             last_request_message_count: None,
             last_request_runtime_injections: vec![],
+            last_request_runtime_prefix_len: 0,
             token_estimate_factor: 1.0,
             last_request_estimated_tokens: 0,
         }
@@ -331,13 +338,43 @@ impl ContextManager {
     pub fn inject_user(&mut self, content: impl Into<String>) {
         self.runtime_injections.push(Message::user(content));
     }
+    /// Mark the host context accumulated so far as belonging immediately
+    /// before the next durable user request. Injections added later remain
+    /// after durable history.
+    pub fn prefix_runtime_injections_to_user(&mut self) {
+        self.runtime_prefix_len = self.runtime_injections.len();
+    }
     pub fn clear_runtime_injections(&mut self) {
         self.runtime_injections.clear();
+        self.runtime_prefix_len = 0;
     }
 
     fn invalidate_last_request(&mut self) {
         self.last_request_message_count = None;
         self.last_request_runtime_injections.clear();
+        self.last_request_runtime_prefix_len = 0;
+    }
+
+    fn combine_runtime_injections(
+        messages: &[Message],
+        injections: &[Message],
+        prefix_len: usize,
+    ) -> Vec<Message> {
+        let prefix_len = prefix_len.min(injections.len());
+        let insert_at = if prefix_len == 0 {
+            messages.len()
+        } else {
+            messages
+                .iter()
+                .rposition(|message| message.role == Role::User)
+                .unwrap_or(messages.len())
+        };
+        let mut combined = Vec::with_capacity(messages.len() + injections.len());
+        combined.extend_from_slice(&messages[..insert_at]);
+        combined.extend(injections[..prefix_len].iter().cloned());
+        combined.extend_from_slice(&messages[insert_at..]);
+        combined.extend(injections[prefix_len..].iter().cloned());
+        combined
     }
 
     /// Reconstruct the provider-agnostic messages prepared for the latest
@@ -348,9 +385,11 @@ impl ContextManager {
         if count > self.messages.len() {
             return None;
         }
-        let mut messages = self.messages[..count].to_vec();
-        messages.extend(self.last_request_runtime_injections.iter().cloned());
-        Some(messages)
+        Some(Self::combine_runtime_injections(
+            &self.messages[..count],
+            &self.last_request_runtime_injections,
+            self.last_request_runtime_prefix_len,
+        ))
     }
 
     pub fn append_assistant(
@@ -1473,12 +1512,15 @@ impl ContextManager {
         self.last_request_message_count = Some(self.messages.len());
         self.last_request_runtime_injections
             .clone_from(&self.runtime_injections);
+        self.last_request_runtime_prefix_len = self.runtime_prefix_len;
         let mut prepared = if self.runtime_injections.is_empty() {
             std::borrow::Cow::Borrowed(&self.messages[..])
         } else {
-            let mut out = self.messages.clone();
-            out.extend(self.runtime_injections.iter().cloned());
-            std::borrow::Cow::Owned(out)
+            std::borrow::Cow::Owned(Self::combine_runtime_injections(
+                &self.messages,
+                &self.runtime_injections,
+                self.runtime_prefix_len,
+            ))
         };
         // A text-only model rejects the whole request over one image part, and
         // an image sent under an earlier vision model stays in history forever
@@ -2246,6 +2288,57 @@ mod tests {
         assert!(!captured
             .iter()
             .any(|message| message.content.as_text() == "answer"));
+    }
+
+    #[test]
+    fn prefixed_turn_context_precedes_the_current_user_and_keeps_later_injections_at_tail() {
+        let counter = WarnCounter(std::sync::atomic::AtomicUsize::new(0));
+        let mut ctx = ContextManager::new(100_000);
+        ctx.append_system("system");
+        ctx.append_user("old question");
+        ctx.append_assistant("old answer".into(), vec![], None);
+        ctx.inject_user("<global_memory>preference</global_memory>");
+        ctx.prefix_runtime_injections_to_user();
+        ctx.append_user("current request");
+        ctx.inject_user("image observation");
+
+        let prepared = ctx.prepare_for_api(&counter).into_owned();
+        let text = prepared
+            .iter()
+            .map(|message| message.content.as_text())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            text,
+            vec![
+                "system",
+                "old question",
+                "old answer",
+                "<global_memory>preference</global_memory>",
+                "current request",
+                "image observation",
+            ]
+        );
+
+        ctx.append_assistant("tool call".into(), vec![], None);
+        ctx.append_tool("call-1", "read", Content::text("tool result"));
+        let prepared = ctx.prepare_for_api(&counter).into_owned();
+        let memory = prepared
+            .iter()
+            .position(|message| message.content.as_text().contains("global_memory"))
+            .unwrap();
+        let request = prepared
+            .iter()
+            .position(|message| message.content.as_text() == "current request")
+            .unwrap();
+        let tool = prepared
+            .iter()
+            .position(|message| message.content.as_text() == "tool result")
+            .unwrap();
+        let observation = prepared
+            .iter()
+            .position(|message| message.content.as_text() == "image observation")
+            .unwrap();
+        assert!(memory < request && request < tool && tool < observation);
     }
 
     #[test]

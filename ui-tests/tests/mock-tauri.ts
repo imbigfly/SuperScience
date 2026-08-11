@@ -376,6 +376,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   ];
   let memoryEnabled = true;
   let autoReviewEnabled = false;
+  let autoFailureAnalysis = {
+    enabled: false,
+    failure_rate_threshold: 30,
+    minimum_failures: 2,
+  };
+  const lastMessageBySession: Record<string, string> = {};
   const sessionDelegationEnabled: Record<string, boolean> = {};
   const sessionPlanMode: Record<string, boolean> = {};
   const sessionFullPermission: Record<string, boolean> = {};
@@ -414,6 +420,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     default: [{ name: "2026-07-01.md", preview: "User prefers DeepSeek.", bytes: 128 }],
     other: [{ name: "other-2026-07-02.md", preview: "Notes for other workspace.", bytes: 64 }],
   };
+  let globalMemories = [{ id: "global-memory-existing", content: "Prefer SI units across projects." }];
   const memoryFilesFor = (projectId: string) => {
     const id = projectId || "default";
     if (!memoryByProject[id]) memoryByProject[id] = [];
@@ -429,6 +436,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       project_name: memoryProjectName(id),
       today_file: "2026-07-04.md",
       files: memoryFilesFor(id),
+      global_memories: globalMemories,
     };
   };
   // Tauri v2 binds command arguments by camelCase name only, so the mock must
@@ -3574,6 +3582,53 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "set_memory_enabled":
             memoryEnabled = !!(arg("enabled") ?? args?.enabled);
             return memoryViewFor(resolveMemoryProjectId(args, arg));
+          case "get_auto_failure_analysis_settings":
+            return { ...autoFailureAnalysis };
+          case "set_auto_failure_analysis_settings":
+            autoFailureAnalysis = {
+              ...autoFailureAnalysis,
+              ...plain(arg("settings") ?? {}),
+            };
+            return { ...autoFailureAnalysis };
+          case "propose_turn_memory": {
+            const sessionId = String(arg("sessionId") ?? "");
+            const automatic = Boolean(arg("automatic"));
+            const latest = lastMessageBySession[sessionId] ?? "";
+            if (automatic && !autoFailureAnalysis.enabled && !/记住|REMEMBER/i.test(latest)) {
+              return null;
+            }
+            if (automatic && !/记住|REMEMBER|TOOLFAILMEMORY/i.test(latest)) {
+              return null;
+            }
+            const failure = /TOOLFAILMEMORY/i.test(latest);
+            return {
+              session_id: sessionId,
+              turn_index: Number(arg("turnIndex") ?? 0),
+              scope: /记住|REMEMBER/i.test(latest) ? "global" : "project",
+              content: failure
+                ? "Two shell calls failed because the input path was invalid; validate the path before retrying."
+                : "Prefer reproducible local workflows for this project.",
+              trigger: failure ? "tool_failures" : (automatic ? "explicit" : "manual"),
+              tool_calls: failure ? 3 : 1,
+              failed_tool_calls: failure ? 2 : 0,
+              failure_rate: failure ? 66.7 : 0,
+            };
+          }
+          case "confirm_turn_memory": {
+            if (String(arg("scope")) === "global") {
+              globalMemories.push({
+                id: `global-memory-${globalMemories.length + 1}`,
+                content: String(arg("content") ?? ""),
+              });
+            }
+            return {
+              id: String(arg("scope")) === "global" ? "global-memory-1" : null,
+              scope: String(arg("scope") ?? "project"),
+            };
+          }
+          case "delete_global_memory":
+            globalMemories = globalMemories.filter((memory) => memory.id !== String(arg("id") ?? ""));
+            return null;
           case "get_auto_review_enabled":
             return autoReviewEnabled;
           case "set_auto_review_enabled":
@@ -3766,6 +3821,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "send_message": {
             const fid = String(arg("sessionId") ?? arg("session_id") ?? "") || "t1";
             const msg = String(arg("message") ?? "");
+            lastMessageBySession[fid] = msg;
             sessionModels[fid] ??= activeHttpModelId();
             const acpAgentId = arg("acpAgentId") ?? acpBindings[fid];
             if (acpAgentId && String(msg).includes("ACPTHINK")) {
@@ -3820,6 +3876,20 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             if (String(msg).includes("PRESTARTFAIL")) {
               throw new Error("No model profile is available");
+            }
+            if (String(msg).includes("TOOLFAILMEMORY")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "ToolCall", frame_id: fid, name: "shell", preview: "first" });
+                emit("agent", { kind: "ToolResult", frame_id: fid, name: "shell", ok: false, content: "path not found" });
+                emit("agent", { kind: "ToolCall", frame_id: fid, name: "shell", preview: "second" });
+                emit("agent", { kind: "ToolResult", frame_id: fid, name: "shell", ok: false, content: "invalid path" });
+                emit("agent", { kind: "ToolCall", frame_id: fid, name: "shell", preview: "third" });
+                emit("agent", { kind: "ToolResult", frame_id: fid, name: "shell", ok: true, content: "ok" });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Recovered after validating the path." });
+                emit("agent", { kind: "Done", frame_id: fid, stop_reason: "end_turn" });
+              }, 30);
+              return fid;
             }
             if (String(msg).includes("POSTSTARTFAIL_EVENT")) {
               // Mirrors the real backend: live Error event + turn-started

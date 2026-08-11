@@ -2766,6 +2766,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             SESSION_IMPORTS_MIGRATION.to_string(),
             EXPLORATION_BRANCHES_MIGRATION.to_string(),
             PROJECT_STATE_REVISIONS_MIGRATION.to_string(),
+            GLOBAL_MEMORIES_MIGRATION.to_string(),
         ]
     );
 

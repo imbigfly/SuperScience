@@ -58,7 +58,10 @@
     { name: "Projects--2026-06-28.md", preview: "Library rerun tracking shipped in #474.", bytes: 88 },
     { name: "Preferences--2026-07-03.md", preview: "Reply in Chinese; keep diffs minimal.", bytes: 72 },
   ];
+  let globalMemories = [{ id: "global-memory-existing", content: "Prefer SI units across projects." }];
   let memoryEnabled = true;
+  let autoFailureAnalysis = { enabled: false, failure_rate_threshold: 30, minimum_failures: 2 };
+  const lastMessageBySession = {};
   const mockModels = [
     {
       id: "default",
@@ -701,10 +704,38 @@
           case "validate_settings":
             return "Validated openai with deepseek-v4-pro";
           case "get_memory_view":
-            return { enabled: memoryEnabled, today_file: "2026-07-04.md", files: memoryFiles };
+            return { enabled: memoryEnabled, project_id: "default", project_name: "wisp-science", today_file: "2026-07-04.md", files: memoryFiles, global_memories: globalMemories };
           case "set_memory_enabled":
             memoryEnabled = !!args?.enabled;
-            return { enabled: memoryEnabled, today_file: "2026-07-04.md", files: memoryFiles };
+            return { enabled: memoryEnabled, project_id: "default", project_name: "wisp-science", today_file: "2026-07-04.md", files: memoryFiles, global_memories: globalMemories };
+          case "get_auto_failure_analysis_settings":
+            return { ...autoFailureAnalysis };
+          case "set_auto_failure_analysis_settings":
+            autoFailureAnalysis = { ...autoFailureAnalysis, ...(args?.settings ?? {}) };
+            return { ...autoFailureAnalysis };
+          case "propose_turn_memory": {
+            const sessionId = String(args?.sessionId ?? "");
+            const explicit = /记住|remember/i.test(lastMessageBySession[sessionId] ?? "");
+            if (args?.automatic && !explicit) return null;
+            return {
+              session_id: sessionId,
+              turn_index: Number(args?.turnIndex ?? 0),
+              scope: explicit ? "global" : "project",
+              content: explicit ? "Prefer concise answers." : "Keep the verified project convention from this turn.",
+              trigger: explicit ? "explicit" : "manual",
+              tool_calls: 0,
+              failed_tool_calls: 0,
+              failure_rate: 0,
+            };
+          }
+          case "confirm_turn_memory":
+            if (args?.scope === "global") {
+              globalMemories.push({ id: `global-memory-${globalMemories.length + 1}`, content: String(args?.content ?? "") });
+            }
+            return { id: args?.scope === "global" ? "global-memory-preview" : null, scope: args?.scope ?? "project" };
+          case "delete_global_memory":
+            globalMemories = globalMemories.filter((memory) => memory.id !== String(args?.id ?? ""));
+            return null;
           case "write_memory_file": {
             const existing = memoryFiles.find((f) => f.name === args?.name);
             const content = args?.content ?? "";
@@ -727,6 +758,7 @@
           case "send_message": {
             const fid = (args && (args.sessionId ?? args.session_id)) || "mock-frame";
             const msg = (args && args.message) || "";
+            lastMessageBySession[fid] = msg;
             // Mirror enable_referenced_contexts: an @-referenced non-local
             // server turns itself on for the session.
             const on = new Set(sessionContexts[fid] ?? []);

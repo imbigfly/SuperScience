@@ -67,8 +67,7 @@ pub fn build_registry(
     reg.add(Box::new(wisp_skills::SearchSkillsTool::new(skills.clone())));
     reg.add(Box::new(wisp_skills::UseSkillTool::new(skills)));
     if memory_enabled {
-        reg.add(Box::new(SearchMemoryTool::new(memory.clone())));
-        reg.add(Box::new(AppendMemoryTool::new(memory)));
+        reg.add(Box::new(SearchMemoryTool::new(memory)));
     }
     reg
 }
@@ -267,38 +266,5 @@ impl Tool for SearchMemoryTool {
             None => return ToolResult::fail("missing 'query'"),
         };
         ToolResult::ok(self.memory.search(&q, 10))
-    }
-}
-
-pub struct AppendMemoryTool {
-    memory: Arc<MemoryManager>,
-}
-impl AppendMemoryTool {
-    pub fn new(memory: Arc<MemoryManager>) -> Self {
-        Self { memory }
-    }
-}
-
-#[async_trait]
-impl Tool for AppendMemoryTool {
-    fn name(&self) -> &str {
-        "append_memory"
-    }
-    fn schema(&self) -> ToolSchema {
-        ToolSchema::new(
-            "append_memory",
-            "Save a note to YOUR long-term memory. Persists across sessions. Use for preferences, architecture decisions, non-obvious bug fixes, project conventions. Not for ephemeral context.",
-            json!({ "type": "object", "properties": { "content": { "type": "string", "description": "Concise 5-10 sentence note. Prefix tag: [PREFERENCE]/[DECISION]/[BUG-FIX]/[CONVENTION]" } }, "required": ["content"] }),
-        )
-    }
-    async fn run(&self, args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
-        let c = match args.get("content").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(),
-            None => return ToolResult::fail("missing 'content'"),
-        };
-        match self.memory.append(&c) {
-            Ok(_) => ToolResult::ok("memory appended"),
-            Err(e) => ToolResult::fail(format!("append_memory error: {e}")),
-        }
     }
 }
