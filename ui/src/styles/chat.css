@@ -546,6 +546,11 @@ button.msg-review-btn span { font-size: 11px; }
 .msg.assistant .body { color: var(--text); font-family: var(--font-response); }
 .msg.assistant .body.md { display: block; font-size: calc(var(--ui-font-size, 14px) + 1px); line-height: 1.55; letter-spacing: -0.004em; white-space: normal; }
 .msg.assistant .body.md:empty { display: none; }
+/* `.msg .body` above sets `overflow-wrap: anywhere` for plain-text bodies, but
+   in Markdown that splits inline code chips mid-token (`file.p|y`) even when
+   normal break points exist. `break-word` only breaks a token that overflows
+   on its own. (Ties `.msg .body` in specificity and wins by source order.) */
+.body.md { overflow-wrap: break-word; word-break: normal; }
 .msg.assistant .streaming-markdown { white-space: normal; }
 .streaming-markdown-prefix:empty { display: none; }
 .streaming-markdown-tail {
@@ -832,6 +837,9 @@ details.tool:not([open]) > summary.head .run-dot { animation: tool-pulse 1.1s ea
 }
 .md ul > li + li,
 .md ol > li + li { margin-top: 0.35em; }
+/* Residual empty items (e.g. `- ` followed by a blank line) must not draw an
+   orphan bullet dot. */
+.md li:empty { display: none; }
 .md ul > li::before {
   content: "";
   position: static;
@@ -954,7 +962,7 @@ details.tool:not([open]) > summary.head .run-dot { animation: tool-pulse 1.1s ea
 .md .md-table-card { margin: 0 0 10px; }
 .md .md-table-card table { width: 100%; margin: 0; display: table; overflow: visible; }
 .md .md-table-card .tbl-wrap { margin: 0; }
-.md th, .md td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; white-space: normal; word-break: break-word; vertical-align: top; }
+.md th, .md td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; white-space: normal; vertical-align: top; }
 .md thead th { background: var(--bg-elev); font-weight: 600; position: sticky; top: 0; }
 /* File chips in table cells often arrive as mini-lists ("- `file`"). Hide the
    custom bullets and lay chips out as a wrapping row instead of a dotted list. */

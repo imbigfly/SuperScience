@@ -161,3 +161,27 @@ test("follow-up suggestions sit on the canvas without a panel fill", async ({ pa
   const background = await followUps.evaluate((el) => getComputedStyle(el).backgroundColor);
   expect(background).toBe("rgba(0, 0, 0, 0)");
 });
+
+test("assistant markdown rejoins bare list markers and wraps at word boundaries", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await enterApp(page);
+  // `- ` alone on a line with the item text on the next line used to render an
+  // orphan bullet dot above a flush-left paragraph.
+  const payload = "coords:\n\n- 450 = x\n- \nTb1 15,248,784 y\n";
+  await page.locator(".composer-inner textarea").first().fill(payload);
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const body = page.locator(".msg.assistant .body.md").last();
+  await expect(body).toContainText("Tb1 15,248,784 y", { timeout: 10_000 });
+  await expect(body.locator("li", { hasText: "Tb1 15,248,784 y" })).toHaveCount(1);
+  await expect(body.locator("li:empty")).toHaveCount(0);
+
+  // `overflow-wrap: anywhere` from `.msg .body` must not win on markdown bodies:
+  // it splits inline code chips mid-token (`file.p|y`) even at normal break points.
+  const wrap = await body.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return { overflowWrap: cs.overflowWrap, wordBreak: cs.wordBreak };
+  });
+  expect(wrap.overflowWrap).toBe("break-word");
+  expect(wrap.wordBreak).toBe("normal");
+});
