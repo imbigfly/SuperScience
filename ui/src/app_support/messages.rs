@@ -49,6 +49,7 @@ pub(crate) fn StreamingAssistantMessage(
     let commit_handle = Rc::new(Cell::new(None::<TimeoutHandle>));
     let active = Rc::new(Cell::new(true));
     let recent_parse_cost_ms = Rc::new(Cell::new(None::<f64>));
+    let project = use_context::<ReadSignal<Option<ProjectInfo>>>();
 
     create_render_effect({
         let commit_handle = Rc::clone(&commit_handle);
@@ -104,7 +105,14 @@ pub(crate) fn StreamingAssistantMessage(
         let recent_parse_cost_ms = Rc::clone(&recent_parse_cost_ms);
         move |_| {
             let started_at = js_sys::Date::now();
-            let html = enrich_md_html(md_to_html(&rendered_text.get()), &[], &[], locale.get());
+            let project_root = project.and_then(|project| project.get().map(|project| project.root));
+            let html = enrich_md_html(
+                md_to_html(&rendered_text.get()),
+                &[],
+                &[],
+                locale.get(),
+                project_root.as_deref(),
+            );
             let elapsed = (js_sys::Date::now() - started_at).max(0.0);
             let smoothed = recent_parse_cost_ms
                 .get()
@@ -704,12 +712,16 @@ pub(crate) fn AssistantMessage(
     let arts_for_html = artifacts.clone();
     let resources_for_html = resources.clone();
     let text_for_html = text.clone();
+    let project = use_context::<ReadSignal<Option<ProjectInfo>>>();
     let html = create_memo(move |_| {
+        let project_root = project
+            .and_then(|project| project.get().map(|project| project.root));
         enrich_md_html(
             md_to_html(&text_for_html),
             &arts_for_html,
             &resources_for_html,
             locale.get(),
+            project_root.as_deref(),
         )
     });
     let hid = unique_dom_id("md");

@@ -1348,7 +1348,15 @@ pub(crate) fn render_item(
             }.into_view()
         }
         ChatItem::Assistant { text, .. } if compact_assistant => {
-            let html = enrich_md_html(md_to_html(text), &[], &[], locale.get());
+            let project_root = use_context::<ReadSignal<Option<ProjectInfo>>>()
+                .and_then(|project| project.get().map(|project| project.root));
+            let html = enrich_md_html(
+                md_to_html(text),
+                &[],
+                &[],
+                locale.get(),
+                project_root.as_deref(),
+            );
             view! {
                 <div class="assistant-wrap">
                     <div class="body md compact-markdown"

@@ -3066,6 +3066,24 @@ test("Generated artifacts survive follow-up tool commentary and ignore mentioned
   await expect(reply.locator('.message-artifact-card[data-artifact-name="old.csv"]')).toHaveCount(0);
   await expect(reply.locator('.message-artifact-card[data-artifact-name="old.png"]')).toHaveCount(0);
   await expect(reply.locator('.message-artifact-card[data-artifact-name="old-report.md"]')).toHaveCount(0);
+  const pathLink = reply.locator('a.workspace-path-link[href="notes/FIGURE_LEGEND.md"]');
+  await expect(pathLink).toHaveText("notes/FIGURE_LEGEND.md");
+  await pathLink.click();
+  const linkedPreview = page.locator('.center-file-preview[data-file-path="notes/FIGURE_LEGEND.md"]');
+  await expect(linkedPreview).toBeVisible();
+  await expect(linkedPreview.locator(".center-file-head > span").first())
+    .toHaveText("notes/FIGURE_LEGEND.md");
+  await page.locator(".center-tabs > .center-tab").click();
+
+  // The backing artifact path remains absolute for loading, but project UI
+  // must present the portable project-relative form.
+  await reply.locator('.message-artifact-card[data-artifact-name="new.png"]').click();
+  const modal = page.locator(".artifact-modal");
+  await expect(modal).toBeVisible();
+  await modal.getByRole("button", { name: "Open in center" }).click();
+  const preview = page.locator('.center-file-preview[data-file-path="/mock/root/results/new.png"]');
+  await expect(preview).toBeVisible();
+  await expect(preview.locator(".center-file-head > span").first()).toHaveText("results/new.png");
 });
 
 test("artifact category headers collapse and expand their tiles", async ({ page }) => {
