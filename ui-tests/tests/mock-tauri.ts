@@ -3612,19 +3612,35 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               tool_calls: failure ? 3 : 1,
               failed_tool_calls: failure ? 2 : 0,
               failure_rate: failure ? 66.7 : 0,
+              global_memories: globalMemories,
             };
           }
           case "confirm_turn_memory": {
             if (String(arg("scope")) === "global") {
-              globalMemories.push({
-                id: `global-memory-${globalMemories.length + 1}`,
-                content: String(arg("content") ?? ""),
-              });
+              const replaceId = String(arg("replaceId") ?? "");
+              const existing = globalMemories.find((memory) => memory.id === replaceId);
+              if (existing) {
+                existing.content = String(arg("content") ?? "");
+              } else {
+                globalMemories.push({
+                  id: `global-memory-${globalMemories.length + 1}`,
+                  content: String(arg("content") ?? ""),
+                });
+              }
             }
             return {
-              id: String(arg("scope")) === "global" ? "global-memory-1" : null,
+              id: String(arg("scope")) === "global"
+                ? String(arg("replaceId") ?? "global-memory-1")
+                : null,
               scope: String(arg("scope") ?? "project"),
             };
+          }
+          case "update_global_memory": {
+            const existing = globalMemories.find(
+              (memory) => memory.id === String(arg("id") ?? ""),
+            );
+            if (existing) existing.content = String(arg("content") ?? "");
+            return null;
           }
           case "delete_global_memory":
             globalMemories = globalMemories.filter((memory) => memory.id !== String(arg("id") ?? ""));

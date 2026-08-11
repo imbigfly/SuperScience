@@ -53,6 +53,23 @@ impl Store {
             .collect()
     }
 
+    pub async fn update_global_memory(
+        &self,
+        id: &str,
+        content: &str,
+        updated_at: i64,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE global_memories SET content=?,updated_at=MAX(?,updated_at+1) WHERE id=?",
+        )
+        .bind(content.trim())
+        .bind(updated_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     pub async fn delete_global_memory(&self, id: &str) -> Result<()> {
         sqlx::query("DELETE FROM global_memories WHERE id=?")
             .bind(id)
@@ -82,7 +99,18 @@ mod tests {
         };
 
         store.insert_global_memory(&memory).await.unwrap();
-        assert_eq!(store.list_global_memories(10).await.unwrap(), vec![memory]);
+        assert!(store
+            .update_global_memory("m1", "Prefer concise Chinese answers.", 20)
+            .await
+            .unwrap());
+        assert!(!store
+            .update_global_memory("missing", "unused", 20)
+            .await
+            .unwrap());
+        let mut updated = memory.clone();
+        updated.content = "Prefer concise Chinese answers.".into();
+        updated.updated_at = 20;
+        assert_eq!(store.list_global_memories(10).await.unwrap(), vec![updated]);
         store.delete_global_memory("m1").await.unwrap();
         assert!(store.list_global_memories(10).await.unwrap().is_empty());
 

@@ -38,6 +38,7 @@ pub(crate) struct TurnMemoryOverlayState {
     pub(crate) proposal: RwSignal<Option<TurnMemoryProposal>>,
     pub(crate) editor: RwSignal<String>,
     pub(crate) scope: RwSignal<String>,
+    pub(crate) replace_id: RwSignal<String>,
     pub(crate) busy: RwSignal<bool>,
     pub(crate) error: RwSignal<Option<String>>,
 }
@@ -52,6 +53,7 @@ pub(crate) fn TurnMemoryOverlay(
         proposal,
         editor,
         scope,
+        replace_id,
         busy,
         error,
     } = state;
@@ -73,6 +75,7 @@ pub(crate) fn TurnMemoryOverlay(
             } else {
                 t(locale.get(), "memory.proposal.manual_hint")
             };
+            let global_memories = draft.global_memories.clone();
             view! {
                 <div class="overlay turn-memory-overlay" data-testid="turn-memory-overlay">
                     <div class="modal turn-memory-modal" role="dialog" aria-modal="true"
@@ -100,6 +103,27 @@ pub(crate) fn TurnMemoryOverlay(
                                 </option>
                             </select>
                         </label>
+                        {move || {
+                            let memories = global_memories.clone();
+                            (scope.get() == "global" && !memories.is_empty()).then(move || view! {
+                                <label class="turn-memory-field">
+                                    <span>{move || t(locale.get(), "memory.proposal.replace")}</span>
+                                    <select data-testid="turn-memory-replace"
+                                        prop:value=move || replace_id.get()
+                                        disabled=move || busy.get()
+                                        on:change=move |event| replace_id.set(event_target_value(&event))>
+                                        <option value="">{move || t(locale.get(), "memory.proposal.add_new")}</option>
+                                        <For each=move || memories.clone()
+                                            key=|memory| memory.id.clone() let:memory>
+                                            <option value=memory.id.clone()>
+                                                {memory.content}
+                                            </option>
+                                        </For>
+                                    </select>
+                                    <span class="hint">{move || t(locale.get(), "memory.proposal.replace_hint")}</span>
+                                </label>
+                            })
+                        }}
                         <label class="turn-memory-field">
                             <span>{move || t(locale.get(), "memory.proposal.content")}</span>
                             <textarea data-testid="turn-memory-content"
@@ -116,6 +140,7 @@ pub(crate) fn TurnMemoryOverlay(
                                 on:click=move |_| {
                                     proposal.set(None);
                                     editor.set(String::new());
+                                    replace_id.set(String::new());
                                     error.set(None);
                                 }>{move || t(locale.get(), "settings.cancel")}</button>
                             <button type="button" class="primary" data-testid="turn-memory-confirm"
