@@ -158,7 +158,7 @@ fn message_to_input(m: &Message) -> Vec<Value> {
                     "type": "function_call",
                     "call_id": tc.id,
                     "name": openai_wire_tool_name(&tc.function.name),
-                    "arguments": tc.function.arguments,
+                    "arguments": crate::provider::valid_json_tool_arguments(&tc.function.arguments),
                 }));
             }
             items
@@ -384,6 +384,27 @@ mod tests {
             output["call_id"], "call_abc",
             "output must match the emitted call_id"
         );
+    }
+
+    /// History arguments can be invalid JSON (compaction truncates oversized
+    /// arguments mid-string; a `finish_reason: "length"` turn can persist a
+    /// half-written call). Strict gateways re-parse them and 400, so the wire
+    /// format must replace them with valid JSON.
+    #[test]
+    fn replaces_invalid_arguments_with_empty_object() {
+        let messages = vec![
+            Message::user("run the skill"),
+            assistant_with_call("", "call_bad", "openalex", "{\"q\":\"x...[ archived ...]"),
+            Message::tool("call_bad", "openalex", "result body"),
+        ];
+
+        let input = wire_input(&messages);
+
+        let call = input
+            .iter()
+            .find(|v| v.get("type").and_then(|t| t.as_str()) == Some("function_call"))
+            .expect("function_call item present");
+        assert_eq!(call["arguments"], "{}");
     }
 
     /// Interrupted turn: assistant emitted a call, then the user resumed before

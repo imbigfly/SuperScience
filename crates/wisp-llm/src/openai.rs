@@ -131,6 +131,8 @@ impl OpenAiProvider {
                         .cloned()
                         .map(|mut tc| {
                             tc.function.name = openai_wire_tool_name(&tc.function.name).into();
+                            tc.function.arguments =
+                                crate::provider::valid_json_tool_arguments(&tc.function.arguments);
                             tc
                         })
                         .collect();
@@ -880,6 +882,44 @@ mod tests {
         let out = OpenAiProvider::sanitize(&msgs);
         assert_eq!(out[0]["tool_calls"].as_array().unwrap().len(), 1);
         assert_eq!(out[1]["tool_call_id"], "a");
+    }
+
+    // Context compaction truncates oversized arguments mid-string, and a
+    // `finish_reason: "length"` turn can persist a half-written call. Strict
+    // gateways re-parse history arguments and 400 ("Unterminated string") on
+    // such values, so the wire format must replace them with valid JSON.
+    #[test]
+    fn replaces_invalid_tool_arguments_with_empty_object() {
+        let mut truncated = call("a");
+        truncated.function.arguments =
+            "{\"path\":\"/tmp/long...[... tool arguments archived ...]".into();
+        let mut empty = call("b");
+        empty.function.arguments = String::new();
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![truncated, empty];
+        let msgs = vec![
+            asst,
+            Message::tool("a", "read", "ok"),
+            Message::tool("b", "read", "ok"),
+        ];
+        let out = OpenAiProvider::sanitize(&msgs);
+        let kept = out[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(kept[0]["function"]["arguments"], "{}");
+        assert_eq!(kept[1]["function"]["arguments"], "{}");
+    }
+
+    #[test]
+    fn keeps_valid_tool_arguments_verbatim() {
+        let mut valid = call("a");
+        valid.function.arguments = "{\"path\":\"/tmp/x\"}".into();
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![valid];
+        let msgs = vec![asst, Message::tool("a", "read", "ok")];
+        let out = OpenAiProvider::sanitize(&msgs);
+        assert_eq!(
+            out[0]["tool_calls"][0]["function"]["arguments"],
+            "{\"path\":\"/tmp/x\"}"
+        );
     }
 
     #[test]

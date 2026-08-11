@@ -21,6 +21,21 @@ pub(crate) fn openai_internal_tool_name(name: &str) -> &str {
     }
 }
 
+/// OpenAI-compatible history must carry `tool_calls[].function.arguments` as
+/// a *valid* JSON string: strict gateways re-parse it and 400 with Python
+/// `json` errors like "Unterminated string" when the value is broken. Ours
+/// can be: context compaction cuts oversized arguments mid-string
+/// (`wisp-core` `bounded_latest_turn`), and a `finish_reason: "length"` turn
+/// can persist a half-written call. Replace anything that doesn't parse with
+/// an empty object, matching the Anthropic provider's stance.
+pub(crate) fn valid_json_tool_arguments(arguments: &str) -> String {
+    let trimmed = arguments.trim();
+    if !trimmed.is_empty() && serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        return arguments.to_string();
+    }
+    "{}".to_string()
+}
+
 /// reqwest's Display hides the useful part ("connection refused", "proxy
 /// unreachable", dns errors) in `source()`; walk the chain so users see it (#77).
 fn error_chain(e: &reqwest::Error) -> String {
