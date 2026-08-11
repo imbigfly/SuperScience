@@ -1324,6 +1324,29 @@ test("ACP cancellation is scoped to the active bound frame", async ({ page }) =>
   expect(await invokeArgsList(page, "propose_turn_memory")).toHaveLength(0);
 });
 
+test("switching conversations dismisses the previous conversation's stopping modal", async ({ page }) => {
+  await enterApp(page, "/?mockPlanFlow=acp");
+  await expect(page.locator('[data-session-id="s1"]')).toBeVisible();
+  // Keep the seeded session as the navigation target, then run and stop work
+  // in a fresh conversation.
+  await newSessionButton(page).click();
+  const runningSessionId = await page.locator(".side-item.ses.active").getAttribute("data-session-id");
+  expect(runningSessionId).toBeTruthy();
+
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /Test ACP Agent/ }).click();
+  await composer(page).fill("ACP LONG");
+  await page.getByRole("button", { name: "Send" }).click();
+  await page.evaluate(() => { (window as any).__holdStopAgent = true; });
+  await page.getByRole("button", { name: "Stop" }).click();
+  await expect(page.locator(".stopping-toast")).toBeVisible();
+
+  const otherSession = page.locator(`.side-item.ses:not([data-session-id="${runningSessionId}"])`).first();
+  await expect(otherSession).toBeVisible();
+  await otherSession.click();
+  await expect(page.locator(".stopping-toast")).toHaveCount(0);
+});
+
 test("failed stop command restores the Stop control instead of staying in Stopping", async ({ page }) => {
   await enterApp(page);
   await newSessionButton(page).click();

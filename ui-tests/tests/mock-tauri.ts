@@ -3827,6 +3827,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if ((window as any).__failStopAgent) {
               throw new Error("stop command unavailable");
             }
+            if ((window as any).__holdStopAgent) {
+              return null;
+            }
             setTimeout(() => {
               const frameId = String(arg("id") ?? arg("sessionId") ?? "");
               emit("agent", { kind: "Done", frame_id: frameId, stop_reason: "cancelled" });
