@@ -109,10 +109,12 @@ desktop app or a headless CLI.
 - `@` attaches artifacts, files, execution contexts, and language runtimes;
   `#` reaches saved sessions through a cited, read-only **Reader** specialist;
   `/` applies a skill to the next turn.
-- Ctrl+K / Ctrl+P palettes (including quick UI/code font sizing), with Search
-  directly below New session and platform-specific shortcut hints (`Ctrl` on
-  Windows/Linux, `⌘` on macOS). Conversation results prefer the current project,
-  then title matches, then matches in the saved transcript body.
+- Ctrl+K unified search covers projects, artifacts, and sessions. Conversation
+  results prefer the current project, then title matches, then matches in the
+  saved transcript body.
+- Ctrl+P opens a grouped, alias-aware command palette with session
+  import/export, navigation, appearance, help, and platform-specific shortcut
+  hints (`Ctrl` on Windows/Linux, `⌘` on macOS).
   Conversation folders, a global library of cells and figures, and in-app
   update checks.
   Side chat searches a frozen snapshot of the current conversation's full

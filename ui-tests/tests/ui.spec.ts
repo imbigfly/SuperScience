@@ -1855,6 +1855,8 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
     .locator(".action-shortcut")).toHaveText("Ctrl+N");
   await expect(palette.locator(".action-palette-row", { hasText: "Search" })
     .locator(".action-shortcut")).toHaveText("Ctrl+K");
+  await expect(palette).toContainText("Import and export");
+  await expect(palette).toContainText("Import session archive");
 
   const rows = palette.locator(".project-search-row");
   await expect(rows.first()).toHaveClass(/active/);
@@ -1895,6 +1897,14 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await page.keyboard.press("Escape");
 
   await page.keyboard.press("Control+p");
+  await input.fill("restore archive");
+  await expect(palette.locator(".action-palette-row.active")).toContainText("Import session archive");
+  await input.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "import_session_archive")).not.toBeNull();
+
+  await page.keyboard.press("Control+p");
+  await input.fill("definitely-not-a-command");
+  await expect(page.getByTestId("action-palette-empty")).toHaveText("No matching commands");
   await input.fill("dark theme");
   await input.press("Enter");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");

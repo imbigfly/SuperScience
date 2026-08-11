@@ -8022,6 +8022,7 @@ fn App() -> impl IntoView {
                         "settings" => Some("settings"),
                         "import-codex" => Some("import-codex"),
                         "import-claude" => Some("import-claude"),
+                        "import-session" => Some("import-session"),
                         "project-settings" => Some("project-settings"),
                         "export-current-project" => Some("export-current-project"),
                         "skills" => Some("skills"),
@@ -8163,7 +8164,8 @@ fn App() -> impl IntoView {
             <WindowTitlebar locale=locale has_current_project=has_current_project
                 on_action=palette_action.clone() />
         })}
-        <ActionPalette open=action_palette_open on_action=palette_action />
+        <ActionPalette open=action_palette_open has_current_project=has_current_project
+            on_action=palette_action />
         <CommandPalette open=command_palette_open current_project_id=palette_project_id
             on_open_project=command_palette_open_project on_open_session=command_palette_open_session on_open_artifact=palette_open_artifact
             on_command=palette_action
