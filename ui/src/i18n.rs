@@ -1837,6 +1837,30 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "session.transfer_hint") => Some("Transfer only the saved transcript for “{title}”. Project files and runs stay in the source project; conversation-linked artifact records are not transferred, and underlying files are never deleted."),
         (Locale::En, "session.copy_success") => Some("Conversation copied to {project}."),
         (Locale::En, "session.move_success") => Some("Conversation moved to {project}."),
+        (Locale::En, "branch.compare") => Some("Compare branches"),
+        (Locale::En, "branch.detach") => Some("Make independent"),
+        (Locale::En, "branch.delete") => Some("Delete branch"),
+        (Locale::En, "branch.compare_title") => Some("Compare branch family"),
+        (Locale::En, "branch.compare_hint") => Some("Every path is shown relative to its shared conversation ancestor."),
+        (Locale::En, "branch.common_ancestor") => Some("{n} shared messages before divergence"),
+        (Locale::En, "branch.paths") => Some("{n} paths"),
+        (Locale::En, "branch.analysis") => Some("AI comparison"),
+        (Locale::En, "branch.analyzing") => Some("AI is comparing the branch differences…"),
+        (Locale::En, "branch.analysis_unavailable") => Some("AI comparison unavailable"),
+        (Locale::En, "branch.no_changes") => Some("No messages after the common ancestor."),
+        (Locale::En, "branch.main") => Some("main"),
+        (Locale::En, "branch.new_messages") => Some("{n} new messages"),
+        (Locale::En, "branch.converge_note") => Some("The selected path guides an AI summary. Compatible findings from other paths may be retained; conflicts stay explicit."),
+        (Locale::En, "branch.converge") => Some("Summarize & set as main"),
+        (Locale::En, "branch.converging") => Some("Summarizing branches…"),
+        (Locale::En, "branch.converge_confirm_title") => Some("Converge this branch family?"),
+        (Locale::En, "branch.converge_confirm") => Some("Wisp will keep the shared ancestor, add one AI summary based on the selected path, and remove {n} dependent conversations. Project files and external side effects are not rolled back. Make any path independent first if it must survive."),
+        (Locale::En, "branch.converge_success") => Some("Branches converged into one summarized main conversation."),
+        (Locale::En, "branch.detach_success") => Some("Branch is now an independent conversation."),
+        (Locale::En, "branch.role_user") => Some("You"),
+        (Locale::En, "branch.role_assistant") => Some("Assistant"),
+        (Locale::En, "branch.role_tool") => Some("Tool"),
+        (Locale::En, "branch.role_system") => Some("System"),
         (Locale::En, "err.session_transfer_busy") => Some("Wait for the conversation to finish its turn, approval, or review before transferring it."),
         (Locale::En, "err.session_transfer_same_project") => Some("Choose a different project."),
         (Locale::En, "err.session_transfer_target_missing") => Some("The target project no longer exists."),
@@ -3911,6 +3935,30 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "session.transfer_hint") => Some("仅转移“{title}”的已保存对话记录。项目文件和运行记录仍保留在原项目中；与会话关联的产物记录不会转移，底层文件不会被删除。"),
         (Locale::Zh, "session.copy_success") => Some("会话已复制到 {project}。"),
         (Locale::Zh, "session.move_success") => Some("会话已移动到 {project}。"),
+        (Locale::Zh, "branch.compare") => Some("比较分支"),
+        (Locale::Zh, "branch.detach") => Some("转为独立会话"),
+        (Locale::Zh, "branch.delete") => Some("删除分支"),
+        (Locale::Zh, "branch.compare_title") => Some("比较同族分支"),
+        (Locale::Zh, "branch.compare_hint") => Some("所有路线都按共同对话祖先之后的差异并列展示。"),
+        (Locale::Zh, "branch.common_ancestor") => Some("分叉前共有 {n} 条消息"),
+        (Locale::Zh, "branch.paths") => Some("{n} 条路线"),
+        (Locale::Zh, "branch.analysis") => Some("AI 智能对比"),
+        (Locale::Zh, "branch.analyzing") => Some("AI 正在比较各分支差异…"),
+        (Locale::Zh, "branch.analysis_unavailable") => Some("AI 智能对比暂不可用"),
+        (Locale::Zh, "branch.no_changes") => Some("共同祖先之后没有新消息。"),
+        (Locale::Zh, "branch.main") => Some("main"),
+        (Locale::Zh, "branch.new_messages") => Some("{n} 条新消息"),
+        (Locale::Zh, "branch.converge_note") => Some("所选路线将作为 AI 总结的主依据；其他路线中兼容的发现可以保留，冲突会明确标出。"),
+        (Locale::Zh, "branch.converge") => Some("智能总结并设为 main"),
+        (Locale::Zh, "branch.converging") => Some("正在总结分支…"),
+        (Locale::Zh, "branch.converge_confirm_title") => Some("收敛这个分支家族？"),
+        (Locale::Zh, "branch.converge_confirm") => Some("Wisp 会保留共同祖先，以所选路线为主生成一条 AI 总结，并清理 {n} 个依赖会话。项目文件和外部副作用不会回滚；需要保留的路线请先转为独立会话。"),
+        (Locale::Zh, "branch.converge_success") => Some("分支已收敛为一个带总结的 main 会话。"),
+        (Locale::Zh, "branch.detach_success") => Some("该分支已转为独立会话。"),
+        (Locale::Zh, "branch.role_user") => Some("你"),
+        (Locale::Zh, "branch.role_assistant") => Some("助手"),
+        (Locale::Zh, "branch.role_tool") => Some("工具"),
+        (Locale::Zh, "branch.role_system") => Some("系统"),
         (Locale::Zh, "err.session_transfer_busy") => Some("请等待该会话完成当前回复、审批或审查后再转移。"),
         (Locale::Zh, "err.session_transfer_same_project") => Some("请选择其他项目。"),
         (Locale::Zh, "err.session_transfer_target_missing") => Some("目标项目已不存在。"),
@@ -4291,6 +4339,83 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
         }
         "Wait for the session to finish its turn, approval, or review before transferring it." => {
             t(locale, "err.session_transfer_busy")
+        }
+        "Wait for every compared conversation to finish before converging branches." => {
+            if locale == Locale::Zh {
+                "请等待所有参与比较的会话完成当前回复、审批或审阅后再收敛。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "ACP conversations cannot converge because their remote context cannot be rewritten." => {
+            if locale == Locale::Zh {
+                "ACP 会话暂不支持分支收敛，因为无法安全改写远端会话上下文。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Conversation branches changed while the summary was being prepared. Compare them again." => {
+            if locale == Locale::Zh {
+                "生成总结期间分支已发生变化，请重新比较。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Conversation branches changed before AI comparison. Compare them again." => {
+            if locale == Locale::Zh {
+                "开始 AI 智能对比前分支已发生变化，请重新比较。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Branch analysis returned invalid text." => {
+            if locale == Locale::Zh {
+                "分支智能对比返回了无效文本。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Branch analysis model timed out after 90 seconds." => {
+            if locale == Locale::Zh {
+                "分支智能对比模型在 90 秒后超时。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Branch analysis model returned an empty comparison." => {
+            if locale == Locale::Zh {
+                "分支智能对比模型返回了空结果。".into()
+            } else {
+                msg.into()
+            }
+        }
+        m if m.starts_with("Branch analysis model failed:") => {
+            if locale == Locale::Zh {
+                format!("分支智能对比模型失败：{}", m.trim_start_matches("Branch analysis model failed:"))
+            } else {
+                msg.into()
+            }
+        }
+        "Branch comparison model timed out after 120 seconds." => {
+            if locale == Locale::Zh {
+                "分支比较模型在 120 秒后超时。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Branch comparison model returned an empty summary." => {
+            if locale == Locale::Zh {
+                "分支比较模型返回了空总结。".into()
+            } else {
+                msg.into()
+            }
+        }
+        m if m.starts_with("Branch comparison model failed:") => {
+            if locale == Locale::Zh {
+                format!("分支比较模型失败：{}", m.trim_start_matches("Branch comparison model failed:"))
+            } else {
+                msg.into()
+            }
         }
         "Source and target projects must be different." => {
             t(locale, "err.session_transfer_same_project")

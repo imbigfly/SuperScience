@@ -146,10 +146,23 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockOnboarding = query.get("mockOnboarding") === "1";
   const mockSyncUnconfigured = query.get("mockSyncUnconfigured") === "1";
   const mockExplorationFlow = query.get("mockExplorations") === "1";
+  const mockBranchFlow = query.get("mockBranches") === "1";
   const mockHistoricalExploration = query.get("mockHistoricalExploration") === "1";
   let mockLocale = query.get("mockLocale") === "zh" ? "zh" : "en";
   const mockSessions: any[] = mockExplorationFlow
-    ? [{ id: "exploration-mainline", title: "Mainline analysis", ts: 2100, running: false }]
+    ? [
+        { id: "exploration-mainline", title: "Mainline analysis", ts: 2100, running: false },
+        ...(mockBranchFlow
+          ? [{ id: "conversation-branch", title: "Branch: alternate analysis", ts: 2090, running: false, branched_from: "exploration-mainline" }]
+          : []),
+      ]
+    : mockBranchFlow
+      ? [
+          { id: "conversation-main", title: "Main analysis", ts: 2100, running: false },
+          { id: "conversation-branch", title: "Branch: alternate analysis", ts: 2090, running: false, branched_from: "conversation-main" },
+          { id: "conversation-branch-b", title: "Method B", ts: 2080, running: false, branched_from: "conversation-main" },
+          { id: "conversation-branch-c", title: "Method C", ts: 2070, running: false, branched_from: "conversation-main" },
+        ]
     : mockPlanFlow
     ? [{ id: "s1", title: "Plan mode regression", ts: 2000, running: false }]
     : mockPublication
@@ -3752,6 +3765,69 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const source = String(arg("sessionId") ?? "");
             sessionModels[id] = sessionModels[source] ?? activeHttpModelId();
             return id;
+          }
+          case "compare_session_branches": {
+            const requested = mockSessions.find((session) => session.id === arg("id"));
+            if (!requested) throw new Error("Conversation branch family was not found");
+            let main = requested;
+            while (main.branched_from) {
+              const parent = mockSessions.find((session) => session.id === main.branched_from);
+              if (!parent) throw new Error("Conversation branch family was not found");
+              main = parent;
+            }
+            const family = mockSessions.filter((session) =>
+              session.id === main.id || session.branched_from === main.id
+            );
+            if (family.length < 2) throw new Error("Conversation has no related branches to compare");
+            return {
+              main_session_id: main.id,
+              common_ancestor_messages: 2,
+              guard_hash: "mock-branch-guard",
+              analysis: null,
+              analysis_error: null,
+              candidates: family.map((session) => ({
+                id: session.id,
+                title: String(session.title).replace(/^Branch: /, ""),
+                is_main: session.id === main.id,
+                new_message_count: 2,
+                messages: [
+                  { seq: 3, role: "user", text: `${session.title} question` },
+                  { seq: 4, role: "assistant", text: `${session.title} result` },
+                ],
+              })),
+            };
+          }
+          case "analyze_session_branches":
+            return "Method A is fastest; Method B is more robust; Method C keeps the baseline. Compare evidence quality before choosing.";
+          case "detach_session_branch": {
+            const branch = mockSessions.find((session) => session.id === arg("id"));
+            if (!branch?.branched_from) throw new Error("Conversation is not a branch");
+            branch.branched_from = null;
+            branch.title = String(branch.title).replace(/^Branch: /, "");
+            return null;
+          }
+          case "converge_session_branches": {
+            const selectedId = String(arg("selectedSessionId") ?? "");
+            const selected = mockSessions.find((session) => session.id === selectedId);
+            if (!selected) throw new Error("Selected conversation is not in this branch family");
+            let main = selected;
+            while (main.branched_from) {
+              const parent = mockSessions.find((session) => session.id === main.branched_from);
+              if (!parent) throw new Error("Conversation branch family was not found");
+              main = parent;
+            }
+            const removed = mockSessions
+              .filter((session) => session.branched_from === main.id)
+              .map((session) => session.id);
+            main.title = String(selected.title).replace(/^Branch: /, "");
+            for (let index = mockSessions.length - 1; index >= 0; index -= 1) {
+              if (removed.includes(mockSessions[index].id)) mockSessions.splice(index, 1);
+            }
+            return {
+              main_session_id: main.id,
+              selected_session_id: selectedId,
+              removed_session_ids: removed,
+            };
           }
           case "preview_turn_undo":
           case "undo_turn":

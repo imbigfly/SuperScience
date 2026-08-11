@@ -3,8 +3,8 @@ use crate::app_support::{
 };
 use crate::bindings::invoke_checked;
 use crate::dto::*;
-use crate::i18n::{t, tf, Locale};
-use crate::text::{dom_value, event_target_checked, event_target_value, parent_path};
+use crate::i18n::{localize_backend, t, tf, Locale};
+use crate::text::{dom_value, event_target_checked, event_target_value, md_to_html, parent_path};
 use crate::window_capture_escape;
 use leptos::*;
 use serde_wasm_bindgen::to_value;
@@ -635,6 +635,180 @@ pub(crate) fn ProjSettingsOverlay(
                     </div>
                 </div>
             </div>
+        })}
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct BranchComparisonOverlayState {
+    pub(crate) locale: RwSignal<Locale>,
+    pub(crate) open: RwSignal<Option<String>>,
+    pub(crate) comparison: RwSignal<Option<SessionBranchComparison>>,
+    pub(crate) selected: RwSignal<String>,
+    pub(crate) busy: RwSignal<bool>,
+    pub(crate) error: RwSignal<Option<String>>,
+}
+
+fn branch_message_role(locale: Locale, role: &str) -> String {
+    t(
+        locale,
+        match role {
+            "user" => "branch.role_user",
+            "assistant" => "branch.role_assistant",
+            "tool" => "branch.role_tool",
+            _ => "branch.role_system",
+        },
+    )
+}
+
+#[component]
+pub(crate) fn BranchComparisonOverlay(
+    state: BranchComparisonOverlayState,
+    on_converge: Callback<(String, String)>,
+) -> impl IntoView {
+    let BranchComparisonOverlayState {
+        locale,
+        open,
+        comparison,
+        selected,
+        busy,
+        error,
+    } = state;
+    let confirm = create_rw_signal(false);
+    window_capture_escape(move || {
+        if !confirm.get_untracked() {
+            return false;
+        }
+        confirm.set(false);
+        true
+    });
+
+    view! {
+        {move || open.get().map(|_| {
+            let current = comparison.get();
+            let close = move |_| {
+                if busy.get_untracked() {
+                    return;
+                }
+                open.set(None);
+                comparison.set(None);
+                error.set(None);
+                confirm.set(false);
+            };
+            view! {
+                <div class="overlay branch-comparison-overlay" data-testid="branch-comparison-overlay">
+                    <div class="modal exploration-diff-modal branch-comparison-modal" role="dialog" aria-modal="true">
+                        <div class="ps-head">
+                            <div>
+                                <h2>{t(locale.get(), "branch.compare_title")}</h2>
+                                <span class="exploration-modal-status">{t(locale.get(), "branch.compare_hint")}</span>
+                            </div>
+                            <button type="button" class="ps-close" disabled=move || busy.get()
+                                aria-label=move || t(locale.get(), "settings.cancel")
+                                on:click=close>{compose_icon("close")}</button>
+                        </div>
+                        {move || error.get().map(|message| view! {
+                            <div class="exploration-error" role="alert">{message}</div>
+                        })}
+                        {if let Some(current) = current {
+                            let guard_hash = current.guard_hash.clone();
+                            let remove_count = current.candidates.len().saturating_sub(1);
+                            let analysis_pending = current.analysis.is_none() && current.analysis_error.is_none();
+                            view! {
+                                <div class="branch-comparison-meta">
+                                    <span>{tf(locale.get(), "branch.common_ancestor", &[("n", &current.common_ancestor_messages.to_string())])}</span>
+                                    <span>{tf(locale.get(), "branch.paths", &[("n", &current.candidates.len().to_string())])}</span>
+                                </div>
+                                {analysis_pending.then(|| view! {
+                                    <div class="branch-analysis-loading">{t(locale.get(), "branch.analyzing")}</div>
+                                })}
+                                {current.analysis.map(|analysis| view! {
+                                    <section class="branch-ai-analysis" data-testid="branch-ai-analysis">
+                                        <strong>{t(locale.get(), "branch.analysis")}</strong>
+                                        <div class="md" inner_html=md_to_html(&analysis)></div>
+                                    </section>
+                                })}
+                                {current.analysis_error.map(|message| view! {
+                                    <div class="branch-analysis-error">
+                                        <strong>{t(locale.get(), "branch.analysis_unavailable")}</strong>
+                                        <span>{localize_backend(locale.get(), &message)}</span>
+                                    </div>
+                                })}
+                                <div class="branch-comparison-candidates" data-testid="branch-comparison-candidates">
+                                    {current.candidates.into_iter().map(|candidate| {
+                                        let candidate_id = candidate.id.clone();
+                                        let checked_id = candidate.id.clone();
+                                        let choose_id = candidate.id.clone();
+                                        let kind = if candidate.is_main { "chat" } else { "branch" };
+                                        let messages = if candidate.messages.is_empty() {
+                                            view! { <div class="branch-comparison-empty">{t(locale.get(), "branch.no_changes")}</div> }.into_view()
+                                        } else {
+                                            candidate.messages.into_iter().map(|message| view! {
+                                                <div class=format!("branch-delta-message {}", message.role)>
+                                                    <span>{branch_message_role(locale.get(), &message.role)}</span>
+                                                    <div>{message.text}</div>
+                                                </div>
+                                            }).collect_view().into_view()
+                                        };
+                                        view! {
+                                            <label class="branch-candidate"
+                                                class:selected=move || selected.get() == candidate_id
+                                                data-testid="branch-candidate"
+                                                data-session-id=candidate.id.clone()>
+                                                <div class="branch-candidate-head">
+                                                    <input type="radio" name="branch-convergence-winner"
+                                                        prop:checked=move || selected.get() == checked_id
+                                                        on:change=move |_| selected.set(choose_id.clone()) />
+                                                    <span class="branch-candidate-icon" aria-hidden="true">{compose_icon(kind)}</span>
+                                                    <strong>{candidate.title}</strong>
+                                                    {candidate.is_main.then(|| view! { <span class="branch-main-badge">{t(locale.get(), "branch.main")}</span> })}
+                                                    <span class="spacer"></span>
+                                                    <span>{tf(locale.get(), "branch.new_messages", &[("n", &candidate.new_message_count.to_string())])}</span>
+                                                </div>
+                                                <div class="branch-candidate-messages">{messages}</div>
+                                            </label>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                                <div class="branch-convergence-note">{t(locale.get(), "branch.converge_note")}</div>
+                                <div class="row exploration-actions">
+                                    <button type="button" disabled=move || busy.get() on:click=close>
+                                        {move || t(locale.get(), "settings.cancel")}
+                                    </button>
+                                    <span class="spacer"></span>
+                                    <button type="button" class="primary" data-testid="branch-converge"
+                                        disabled=move || busy.get() || selected.get().is_empty()
+                                        on:click=move |_| confirm.set(true)>
+                                        {move || if busy.get() { t(locale.get(), "branch.converging") } else { t(locale.get(), "branch.converge") }}
+                                    </button>
+                                </div>
+                                {move || confirm.get().then(|| {
+                                    let selected_id = selected.get_untracked();
+                                    let guard = guard_hash.clone();
+                                    view! {
+                                        <div class="overlay exploration-confirm-overlay" data-testid="branch-convergence-confirm">
+                                            <div class="modal confirm-modal exploration-confirm-modal" role="alertdialog" aria-modal="true">
+                                                <h2>{t(locale.get(), "branch.converge_confirm_title")}</h2>
+                                                <div class="hint">{tf(locale.get(), "branch.converge_confirm", &[("n", &remove_count.to_string())])}</div>
+                                                <div class="row">
+                                                    <button type="button" on:click=move |_| confirm.set(false)>{t(locale.get(), "settings.cancel")}</button>
+                                                    <button type="button" class="primary danger" data-testid="branch-converge-action"
+                                                        on:click=move |_| {
+                                                            confirm.set(false);
+                                                            on_converge.call((selected_id.clone(), guard.clone()));
+                                                        }>{t(locale.get(), "branch.converge")}</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    }
+                                })}
+                            }.into_view()
+                        } else {
+                            view! { <div class="exploration-loading">{move || t(locale.get(), "loading")}</div> }.into_view()
+                        }}
+                    </div>
+                </div>
+            }
         })}
     }
 }

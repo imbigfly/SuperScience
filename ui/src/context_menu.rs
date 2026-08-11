@@ -221,6 +221,9 @@ fn text_from_code_block(el: &web_sys::Element) -> Option<String> {
 pub enum SessionAction {
     Open(String),
     Delete(String),
+    DeleteBranch(String),
+    CompareBranches(String),
+    DetachBranch(String),
     Rename {
         id: String,
         title: String,
@@ -288,6 +291,8 @@ pub fn session_menu(
     session_id: &str,
     title: &str,
     pinned: bool,
+    is_branch: bool,
+    has_branch_family: bool,
     locale: Locale,
 ) -> CtxMenu {
     let mut items = vec![item(
@@ -301,6 +306,20 @@ pub fn session_menu(
             i18n::t(locale, "ctx.open_session"),
             session_id.to_string(),
         ));
+        if has_branch_family {
+            items.push(item(
+                "compareSessionBranches",
+                i18n::t(locale, "branch.compare"),
+                session_id.to_string(),
+            ));
+        }
+        if is_branch {
+            items.push(item(
+                "detachSessionBranch",
+                i18n::t(locale, "branch.detach"),
+                session_id.to_string(),
+            ));
+        }
         items.push(item(
             if pinned { "unpinSession" } else { "pinSession" },
             i18n::t(
@@ -343,8 +362,19 @@ pub fn session_menu(
             session_id.to_string(),
         ));
         items.push(item(
-            "deleteSession",
-            i18n::t(locale, "ctx.delete_session"),
+            if is_branch {
+                "deleteSessionBranch"
+            } else {
+                "deleteSession"
+            },
+            i18n::t(
+                locale,
+                if is_branch {
+                    "branch.delete"
+                } else {
+                    "ctx.delete_session"
+                },
+            ),
             session_id.to_string(),
         ));
     }
@@ -470,7 +500,19 @@ pub fn build(
         let title = ses.get_attribute("data-session-title").unwrap_or_default();
         let id = ses.get_attribute("data-session-id").unwrap_or_default();
         let pinned = ses.get_attribute("data-session-pinned").as_deref() == Some("true");
-        return Some(session_menu(x, y, &id, &title, pinned, locale));
+        let is_branch = ses.get_attribute("data-session-branch").as_deref() == Some("true");
+        let has_branch_family =
+            ses.get_attribute("data-session-family").as_deref() == Some("true");
+        return Some(session_menu(
+            x,
+            y,
+            &id,
+            &title,
+            pinned,
+            is_branch,
+            has_branch_family,
+            locale,
+        ));
     }
 
     if let Some(folder) = closest(&target, ".side-folder") {
@@ -735,10 +777,40 @@ mod remote_file_tests {
     }
 }
 
+#[cfg(test)]
+mod session_branch_action_tests {
+    use super::{session_action, SessionAction};
+
+    #[test]
+    fn parses_branch_specific_actions() {
+        assert!(matches!(
+            session_action("compareSessionBranches", "branch-1"),
+            Some(SessionAction::CompareBranches(id)) if id == "branch-1"
+        ));
+        assert!(matches!(
+            session_action("detachSessionBranch", "branch-1"),
+            Some(SessionAction::DetachBranch(id)) if id == "branch-1"
+        ));
+        assert!(matches!(
+            session_action("deleteSessionBranch", "branch-1"),
+            Some(SessionAction::DeleteBranch(id)) if id == "branch-1"
+        ));
+    }
+}
+
 pub fn session_action(action: &str, payload: &str) -> Option<SessionAction> {
     match action {
         "openSession" if !payload.is_empty() => Some(SessionAction::Open(payload.to_string())),
         "deleteSession" if !payload.is_empty() => Some(SessionAction::Delete(payload.to_string())),
+        "deleteSessionBranch" if !payload.is_empty() => {
+            Some(SessionAction::DeleteBranch(payload.to_string()))
+        }
+        "compareSessionBranches" if !payload.is_empty() => {
+            Some(SessionAction::CompareBranches(payload.to_string()))
+        }
+        "detachSessionBranch" if !payload.is_empty() => {
+            Some(SessionAction::DetachBranch(payload.to_string()))
+        }
         "renameSession" if !payload.is_empty() => {
             let (id, title) = payload.split_once('\u{1e}')?;
             Some(SessionAction::Rename {
@@ -981,6 +1053,7 @@ pub fn ContextMenuPortal(
                         let danger = matches!(
                             action.as_str(),
                             "deleteSession"
+                                | "deleteSessionBranch"
                                 | "deleteFolder"
                                 | "deleteWorkspaceFile"
                                 | "deleteWorkspaceDirectory"

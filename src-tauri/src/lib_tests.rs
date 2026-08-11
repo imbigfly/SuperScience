@@ -1126,13 +1126,13 @@ fn session_runtime_status_labels() {
 }
 
 #[test]
-fn branch_title_marks_new_session_without_long_labels() {
+fn branch_title_uses_the_draft_without_long_labels() {
     assert_eq!(
         branch_title(Some("  follow up analysis  ")).unwrap(),
-        "Branch: follow up analysis"
+        "follow up analysis"
     );
     assert_eq!(branch_title(Some("")).is_none(), true);
-    assert!(branch_title(Some(&"a".repeat(80))).unwrap().chars().count() <= "Branch: ".len() + 64);
+    assert!(branch_title(Some(&"a".repeat(80))).unwrap().chars().count() <= 64);
 }
 
 #[test]

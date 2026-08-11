@@ -14,6 +14,14 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(tauriMock);
 });
 
+async function lastInvokeArgs(page: Page, cmd: string) {
+  return page.evaluate((name) => {
+    const calls = ((window as any).__skillInvokeLog ?? []).filter((call: any) => call.cmd === name);
+    const args = calls.at(-1)?.args;
+    return args instanceof Map ? Object.fromEntries(args) : (args ?? null);
+  }, cmd);
+}
+
 test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct from Branch", async ({ page }) => {
   await enterExplorationProject(page);
 
@@ -41,6 +49,88 @@ test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct 
   await expect(diff).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(diff).toBeHidden();
+});
+
+test("conversation branches have a distinct icon and branch-only context actions", async ({ page }) => {
+  await page.goto("/?mockExplorations=1&mockBranches=1");
+  await page.locator(".proj-card-main").first().click();
+
+  const branch = page.locator('[data-session-id="conversation-branch"]');
+  const exploration = page.locator('[data-exploration-id="exploration-a"]');
+  await expect(branch.locator(".session-branch-icon svg")).toHaveCount(1);
+  await expect(exploration.locator(".exploration-kind-icon svg")).toHaveCount(1);
+  expect(await branch.locator(".session-branch-icon").innerHTML())
+    .not.toBe(await exploration.locator(".exploration-kind-icon").innerHTML());
+
+  await branch.click({ button: "right" });
+  await expect(page.getByRole("button", { name: "Compare branches", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Make independent", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Delete branch", exact: true })).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".ctx-menu")).toBeHidden();
+  await expect(branch).toBeVisible();
+
+  await branch.click({ button: "right" });
+  await page.getByRole("button", { name: "Compare branches", exact: true }).click();
+  const comparison = page.getByTestId("branch-comparison-overlay");
+  await expect(comparison).toBeVisible();
+  await expect(comparison.getByTestId("branch-candidate")).toHaveCount(2);
+  await expect(comparison).toContainText("2 shared messages before divergence");
+  await page.keyboard.press("Escape");
+  await expect(comparison).toBeHidden();
+  await expect(branch).toBeVisible();
+
+  const main = page.locator('[data-session-id="exploration-mainline"]');
+  await main.click({ button: "right" });
+  await expect(page.getByRole("button", { name: "Compare branches", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Make independent", exact: true })).toHaveCount(0);
+});
+
+test("main and sibling branches compare together and converge through one selected path", async ({ page }) => {
+  await page.goto("/?mockBranches=1");
+  await page.locator(".proj-card-main").first().click();
+
+  const main = page.locator('[data-session-id="conversation-main"]');
+  const branch = page.locator('[data-session-id="conversation-branch"]');
+  await main.click({ button: "right" });
+  await page.getByRole("button", { name: "Compare branches", exact: true }).click();
+
+  const comparison = page.getByTestId("branch-comparison-overlay");
+  await expect(comparison.getByTestId("branch-candidate")).toHaveCount(4);
+  await expect(comparison.getByTestId("branch-ai-analysis")).toContainText("Method B is more robust");
+  await comparison.locator('[data-session-id="conversation-branch"]').click();
+  await comparison.getByTestId("branch-converge").click();
+  const confirm = page.getByTestId("branch-convergence-confirm");
+  await expect(confirm).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(confirm).toBeHidden();
+  await expect(comparison).toBeVisible();
+  expect(await lastInvokeArgs(page, "converge_session_branches")).toBeNull();
+
+  await comparison.getByTestId("branch-converge").click();
+  await confirm.getByTestId("branch-converge-action").click();
+  await expect.poll(() => lastInvokeArgs(page, "converge_session_branches")).toMatchObject({
+    selectedSessionId: "conversation-branch",
+    expectedGuardHash: "mock-branch-guard",
+  });
+  await expect(comparison).toBeHidden();
+  await expect(main).toHaveAttribute("data-session-title", "alternate analysis");
+  await expect(page.locator('[data-session-branch="true"]')).toHaveCount(0);
+});
+
+test("a branch can leave its family without changing its transcript", async ({ page }) => {
+  await page.goto("/?mockBranches=1");
+  await page.locator(".proj-card-main").first().click();
+
+  const branch = page.locator('[data-session-id="conversation-branch-b"]');
+  await branch.click({ button: "right" });
+  await page.getByRole("button", { name: "Make independent", exact: true }).click();
+  await expect.poll(() => lastInvokeArgs(page, "detach_session_branch")).toMatchObject({
+    id: "conversation-branch-b",
+  });
+  await expect(branch).toHaveAttribute("data-session-branch", "false");
+  await expect(branch).toHaveAttribute("data-session-family", "false");
 });
 
 test("starting a new exploration is hidden while the feature is incomplete", async ({ page }) => {
