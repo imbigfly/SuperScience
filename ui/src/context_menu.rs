@@ -640,6 +640,30 @@ pub fn build(
         }
     }
 
+    if let Some(message) = closest(&target, "[data-branch-ui-index]") {
+        let ui_index = message
+            .get_attribute("data-branch-ui-index")
+            .unwrap_or_default();
+        if !ui_index.is_empty() {
+            let mut items = vec![item(
+                "branchMessage",
+                i18n::t(locale, "msg.branch_to_new_chat"),
+                ui_index,
+            )];
+            if let Some(body) = closest(&target, ".msg .body") {
+                let text = body.text_content().unwrap_or_default();
+                if !text.trim().is_empty() {
+                    items.push(item(
+                        "copyMessage",
+                        i18n::t(locale, "ctx.copy_message"),
+                        text,
+                    ));
+                }
+            }
+            return Some(CtxMenu { x, y, items });
+        }
+    }
+
     if let Some(body) = closest(&target, ".msg .body") {
         let text = body.text_content().unwrap_or_default();
         if !text.trim().is_empty() {

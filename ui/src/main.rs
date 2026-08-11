@@ -6544,7 +6544,14 @@ fn App() -> impl IntoView {
         let artifacts = artifacts;
         let db_artifacts = db_artifacts;
         let attachments = attachments;
+        let branch_message_from_context_menu = branch_message.clone();
         Callback::new(move |(action, payload): (String, String)| {
+            if action == "branchMessage" {
+                if let Ok(ui_index) = payload.parse::<usize>() {
+                    branch_message_from_context_menu(ui_index);
+                }
+                return;
+            }
             if action == "quoteSelection" {
                 let (source, text) = payload
                     .split_once('\u{1e}')

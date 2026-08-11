@@ -629,7 +629,8 @@ pub(crate) fn UserMessage(
     })
     .collect_view();
     view! {
-        <div class="user-bubble">
+        <div class="user-bubble"
+            data-branch-ui-index=can_modify.then(|| ui_index.to_string())>
             {has_images.then(|| view! { <div class="user-attachment-images">{image_cards}</div> })}
             {has_files.then(|| view! { <div class="user-attachment-files">{file_cards}</div> })}
             {has_context.then(|| view! { <div class="user-context-cards">{context_cards}</div> })}
@@ -711,6 +712,9 @@ pub(crate) fn AssistantMessage(
     explore_turn_index: usize,
     on_explore: Callback<usize>,
 ) -> impl IntoView {
+    // Exploration creation is intentionally hidden for now; keep the inputs in
+    // the component API while callers are migrated to the stable branch flow.
+    let _ = (show_explore, can_explore, explore_turn_index, on_explore);
     let locale = use_locale();
     let arts_for_html = artifacts.clone();
     let resources_for_html = resources.clone();
@@ -871,27 +875,6 @@ pub(crate) fn AssistantMessage(
                 let text_for_disabled = text_for_disabled.clone();
                 let text_for_click_copy = text_for_click_copy.clone();
                 show_actions.get().then(move || view! { <div class="msg-actions">
-                {move || show_explore.get().then(|| view! {
-                    <button
-                        type="button"
-                        class="msg-icon-btn msg-explore-btn"
-                        data-testid="start-exploration"
-                        disabled=move || !can_explore.get()
-                        title=move || t(
-                            locale.get(),
-                            if can_explore.get() {
-                                "exploration.start"
-                            } else {
-                                "exploration.history_unavailable"
-                            },
-                        )
-                        aria-label=move || t(locale.get(), "exploration.start")
-                        on:click=move |_| on_explore.call(explore_turn_index)
-                    >
-                        {compose_icon("branch")}
-                        <span>{move || t(locale.get(), "exploration.start")}</span>
-                    </button>
-                })}
                 <button
                     type="button"
                     class="msg-icon-btn msg-memory-btn"
