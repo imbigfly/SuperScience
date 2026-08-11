@@ -3225,11 +3225,13 @@ test("Generated artifacts survive follow-up tool commentary and ignore mentioned
   const pathLink = reply.locator('a.workspace-path-link[href="notes/FIGURE_LEGEND.md"]');
   await expect(pathLink).toHaveText("notes/FIGURE_LEGEND.md");
   await pathLink.click();
-  const linkedPreview = page.locator('.center-file-preview[data-file-path="notes/FIGURE_LEGEND.md"]');
-  await expect(linkedPreview).toBeVisible();
-  await expect(linkedPreview.locator(".center-file-head > span").first())
-    .toHaveText("notes/FIGURE_LEGEND.md");
-  await page.locator(".center-tabs > .center-tab").click();
+  const linkedModal = page.locator('.artifact-modal:has(.am-figure[data-file-path="notes/FIGURE_LEGEND.md"])');
+  await expect(linkedModal).toBeVisible();
+  await expect(linkedModal.locator(".am-name")).toHaveText("FIGURE_LEGEND.md");
+  await expect(page.locator(".center-file-preview")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(linkedModal).toHaveCount(0);
+  await expect(reply).toBeVisible();
 
   // The backing artifact path remains absolute for loading, but project UI
   // must present the portable project-relative form.
@@ -7159,6 +7161,36 @@ test("chat keeps the user's reading position when streaming finishes (#670)", as
 
   await expect(page.getByText("line 79", { exact: false })).toBeVisible({ timeout: 10_000 });
   await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(readingTop - 40);
+});
+
+test("closing a center-file tab restores the conversation reading position", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await scroller.evaluate((element) => {
+    element.scrollTop = Math.max(120, element.scrollHeight / 3);
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -80, bubbles: true }));
+  });
+  const readingTop = await scroller.evaluate((element) => element.scrollTop);
+
+  await page.locator(".sidebar").getByRole("button", { name: "Search sessions" }).click();
+  const search = commandPalette(page);
+  await search.fill("nif3.treefile");
+  await expect(page.locator(".project-search-row", { hasText: "nif3.treefile" })).toBeVisible();
+  await search.press("Enter");
+  const modal = page.locator(".artifact-modal");
+  await expect(modal).toBeVisible();
+  await modal.getByRole("button", { name: "Open in center" }).click();
+  await expect(page.locator(".center-file-preview")).toBeVisible();
+
+  await page.locator(".center-tab-wrap", { hasText: "nif3.treefile" })
+    .getByRole("button", { name: "Close tab" }).click();
+  await expect(scroller).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(readingTop - 40);
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeLessThan(readingTop + 40);
 });
 
 test("agent options stay mounted while chat content streams (#678)", async ({ page }) => {

@@ -1219,26 +1219,11 @@ fn App() -> impl IntoView {
         refresh_file_search(file_query, file_search_hits);
     });
 
-    let open_resource = Callback::new(move |(path, name, kind): ModalArtifact| {
-        if opens_in_modal(&kind) {
-            modal_artifact.set(Some((path, name, kind)));
-            return;
-        }
-        let tab = CenterFileTab::new(path.clone(), name, kind);
-        center_files.update(|files| {
-            if !files.iter().any(|file| file.path == path) {
-                files.push(tab.clone());
-            }
-        });
-        center_file.set(Some(path));
-        show_projects.set(false);
-    });
-
     let on_artifact_select = Callback::new(move |idx: usize| {
         let arts = artifacts.get();
         if let Some(a) = arts.get(idx) {
             if let PreviewData::File { path, kind } = &a.data {
-                open_resource.call((path.clone(), a.name.clone(), kind.clone()));
+                modal_artifact.set(Some((path.clone(), a.name.clone(), kind.clone())));
             } else {
                 ensure_right_tab(RightTab::Artifacts, show_right, open_right_tabs, right_tab);
                 sel_artifact.set(idx);
@@ -1248,7 +1233,7 @@ fn App() -> impl IntoView {
     });
 
     let on_file_link = Callback::new(move |resource: ModalArtifact| {
-        open_resource.call(resource);
+        modal_artifact.set(Some(resource));
     });
 
     // Inline @ artifact, # session, and / skill or Workflow pickers all share one cursor
