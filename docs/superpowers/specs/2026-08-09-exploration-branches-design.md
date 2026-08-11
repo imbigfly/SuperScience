@@ -116,8 +116,9 @@ mainline 从 checkpoint source 更新为被采用 frame。这样后续可以从�
 而不是靠侧栏当前选中项猜测哪条会话是主线。
 
 同一 family generation 中处于 `creating`、`active` 或 `promoting` 的候选构成当前探索轮。
-当前轮存在时，Wisp 的主线 conversation、workspace、Memory、Artifact、Runtime 和新任务入口
-统一拒绝写入。`archived` 不继续持有冻结：用户归档或丢弃全部候选即表示放弃本轮。
+当前轮存在时，Wisp 冻结探索源 conversation，以及主线 workspace、Memory、Artifact、Runtime
+和新任务入口的写入。其他 conversation 仍可创建并记录消息，但只能使用只读项目工具。
+`archived` 不继续持有冻结：用户归档或丢弃全部候选即表示放弃本轮。
 晋升一个候选时，同轮其他活动候选在同一元数据事务内自动归档；旧 generation 的候选不能恢复。
 
 ### 2. `ExplorationScope`

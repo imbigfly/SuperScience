@@ -1070,7 +1070,12 @@ pub async fn set_active_model(
         let (project, scope) =
             crate::exploration_commands::working_project_for_frame(&state, &session_id).await?;
         let _activity = state.begin_project_activity(&project.id)?;
-        crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
+        let _project_write_locked = crate::exploration_commands::conversation_project_write_locked(
+            &state.store,
+            &scope,
+            Some(&session_id),
+        )
+        .await?;
         state
             .store
             .set_frame_model(&session_id, &project.id, &id)

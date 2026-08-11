@@ -17,11 +17,9 @@ pub(super) async fn new_session(
         .await?
         .0;
     let _project_activity = state.begin_project_activity(&ap.id)?;
-    exploration_commands::require_writable_scope(
-        &state.store,
-        &wisp_store::StateScope::mainline(ap.id.clone()),
-    )
-    .await?;
+    // An exploration freezes project state, not the ability to open a fresh
+    // conversation. Turns in the new mainline frame are restricted to
+    // read-only project tools until the exploration round finishes.
     let id = create_session_frame(&state.store, &ap.id).await?;
     state.set_active(window.label(), ap);
     state.set_active_frame(window.label(), Some(id.clone()));
@@ -56,11 +54,9 @@ pub(super) async fn branch_session(
             );
         }
     }
-    exploration_commands::require_writable_scope(
-        &state.store,
-        &wisp_store::StateScope::mainline(ap.id.clone()),
-    )
-    .await?;
+    // Copying conversation history does not change the frozen workspace.
+    // The branched frame receives the same read-only project-tool restriction
+    // as any other non-source mainline conversation during an active round.
     let id = create_session_frame(&state.store, &ap.id).await?;
     if let Some(source) = session_id.as_deref().filter(|s| !s.is_empty()) {
         // Display-only lineage so the sidebar can nest this branch under its source.

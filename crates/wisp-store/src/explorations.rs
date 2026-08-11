@@ -1023,6 +1023,25 @@ impl Store {
         .await?)
     }
 
+    /// Whether this specific mainline conversation is the immutable source of
+    /// the project's current exploration round. Other mainline conversations
+    /// may continue to record read-only research while project state remains
+    /// frozen for a possible fast-forward promotion.
+    pub async fn mainline_frame_is_frozen(&self, frame_id: &str) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM explorations exploration \
+             JOIN exploration_checkpoints checkpoint ON checkpoint.id=exploration.checkpoint_id \
+             JOIN exploration_families family ON family.id=checkpoint.family_id \
+             WHERE checkpoint.source_frame_id=? \
+               AND checkpoint.source_frame_id=family.mainline_frame_id \
+               AND checkpoint.source_family_generation=family.generation \
+               AND exploration.status IN ('creating','active','promoting'))",
+        )
+        .bind(frame_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     pub async fn project_has_current_exploration_for_other_source(
         &self,
         project_id: &str,

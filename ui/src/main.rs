@@ -385,19 +385,13 @@ fn App() -> impl IntoView {
     let mainline_frozen = create_memo(move |_| {
         active_session.get().is_some_and(|frame_id| {
             explorations.with(|rows| {
-                let viewing_exploration = rows
-                    .iter()
-                    .any(|row| {
-                        row.exploration.frame_id == frame_id
-                            && row.exploration.status != "promoted"
-                    });
-                !viewing_exploration
-                    && rows.iter().any(|row| {
-                        matches!(
+                rows.iter().any(|row| {
+                    row.source_frame_id == frame_id
+                        && matches!(
                             row.exploration.status.as_str(),
                             "creating" | "active" | "promoting"
                         )
-                    })
+                })
             })
         })
     });

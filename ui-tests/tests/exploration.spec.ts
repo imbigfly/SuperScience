@@ -21,7 +21,7 @@ test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct 
   await expect(group).toBeVisible();
   await expect(group.locator(".side-exploration")).toHaveCount(2);
   await expect(page.getByTestId("start-exploration")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Branch", exact: true })).toBeVisible();
+  await expect(page.locator(".msg-branch-btn").last()).toBeVisible();
 
   await group.locator('[data-exploration-id="exploration-a"]').click();
   await expect(page.getByText("Exploration A result")).toBeVisible();
@@ -46,6 +46,22 @@ test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct 
 test("starting a new exploration is hidden while the feature is incomplete", async ({ page }) => {
   await enterExplorationProject(page);
   await expect(page.getByTestId("start-exploration")).toHaveCount(0);
+});
+
+test("a new conversation remains available while an exploration is active", async ({ page }) => {
+  await enterExplorationProject(page);
+  await page
+    .getByTestId("sidebar-explorations")
+    .locator('[data-exploration-id="exploration-a"]')
+    .click();
+  await expect(page.getByTestId("exploration-banner")).toContainText("Exploration A");
+
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+
+  await expect(page.locator("#composer-input")).toBeEnabled();
+  await expect(page.getByTestId("mainline-exploration-banner")).toContainText(
+    "Other conversations remain available with read-only project tools",
+  );
 });
 
 test("user messages offer the mature branch flow from the context menu", async ({ page }) => {

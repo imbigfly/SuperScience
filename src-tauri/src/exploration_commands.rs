@@ -946,6 +946,40 @@ pub(crate) async fn require_writable_scope(
     Ok(())
 }
 
+/// Conversation turns are narrower than project mutations. The exploration
+/// source transcript stays immutable, while unrelated mainline conversations
+/// may continue under a read-only project-tool gate.
+pub(crate) async fn conversation_project_write_locked(
+    store: &Store,
+    scope: &StateScope,
+    frame_id: Option<&str>,
+) -> Result<bool, String> {
+    match scope {
+        StateScope::Mainline { project_id } => {
+            if let Some(frame_id) = frame_id {
+                if store
+                    .mainline_frame_is_frozen(frame_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err(coded_error(
+                        ERR_MAINLINE_FROZEN,
+                        "the exploration source conversation is frozen until an exploration is promoted or every candidate is archived or discarded",
+                    ));
+                }
+            }
+            store
+                .project_mainline_is_frozen(project_id)
+                .await
+                .map_err(|error| error.to_string())
+        }
+        StateScope::Exploration { .. } => {
+            require_writable_scope(store, scope).await?;
+            Ok(false)
+        }
+    }
+}
+
 pub(crate) async fn reject_private_exploration_project_mutation(
     store: &Store,
     project_id: &str,
@@ -1408,12 +1442,34 @@ mod tests {
             .await
             .unwrap_err();
         assert!(frozen.starts_with(ERR_MAINLINE_FROZEN));
+        let source_frozen = conversation_project_write_locked(
+            &service.store,
+            &StateScope::mainline("p"),
+            Some("main"),
+        )
+        .await
+        .unwrap_err();
+        assert!(source_frozen.starts_with(ERR_MAINLINE_FROZEN));
+        assert!(conversation_project_write_locked(
+            &service.store,
+            &StateScope::mainline("p"),
+            Some("other-conversation"),
+        )
+        .await
+        .unwrap());
         require_writable_scope(
             &service.store,
             &StateScope::exploration("p", first.id.clone()),
         )
         .await
         .unwrap();
+        assert!(!conversation_project_write_locked(
+            &service.store,
+            &StateScope::exploration("p", first.id.clone()),
+            Some(&first.frame_id),
+        )
+        .await
+        .unwrap());
         let repeated_checkpoint = service.create_checkpoint("p", "main").await.unwrap();
         assert_eq!(repeated_checkpoint.id, checkpoint.id);
         let second = service
