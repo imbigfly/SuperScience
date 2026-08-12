@@ -36,7 +36,9 @@ pub use execution::{
     DelegationExecutor, DelegationStepExecution, NoopDelegationObserver, WorkflowRunActivityDriver,
     WorkflowRunActivityRequest,
 };
-pub use memory::{MemoryManager, MemorySearchQuery, MemorySearchResponse, MemorySearchResult};
+pub use memory::{
+    MemoryManager, MemorySearchQuery, MemorySearchRequest, MemorySearchResponse, MemorySearchResult,
+};
 pub use orchestration::{
     DelegationMode, DelegationPlan, DelegationPlanStep, RunActivitySpec, WorkflowTaskKind,
     DYNAMIC_DELEGATION_SCHEMA_VERSION, MAX_DELEGATION_TASKS,
@@ -248,42 +250,6 @@ impl SearchMemoryTool {
     }
 }
 
-fn memory_search_args(
-    args: &serde_json::Value,
-) -> Result<(Vec<MemorySearchQuery>, usize, Option<String>), String> {
-    let items = args
-        .get("queries")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "missing required 'queries' array".to_string())?;
-    let mut queries = Vec::new();
-    for item in items.iter().take(4) {
-        let Some(text) = item.get("text").and_then(serde_json::Value::as_str) else {
-            return Err("each memory query must contain a string 'text' field".into());
-        };
-        queries.push(MemorySearchQuery {
-            text: text.into(),
-            kind: item
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "each memory query must contain a string 'kind' field")?
-                .into(),
-        });
-    }
-    if queries.iter().all(|query| query.text.trim().is_empty()) {
-        return Err("memory queries cannot all be empty".into());
-    }
-    let max_results = args
-        .get("max_results")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(10)
-        .min(20) as usize;
-    let time_hint = args
-        .get("time_hint")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    Ok((queries, max_results, time_hint))
-}
-
 #[async_trait]
 impl Tool for SearchMemoryTool {
     fn name(&self) -> &str {
@@ -304,7 +270,7 @@ impl Tool for SearchMemoryTool {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "text": { "type": "string", "description": "A concise, self-contained retrieval phrase containing the key entity." },
+                                "text": { "type": "string", "minLength": 1, "description": "A concise, self-contained retrieval phrase containing the key entity." },
                                 "kind": { "type": "string", "enum": ["exact", "concept", "procedural", "temporal"] }
                             },
                             "required": ["text", "kind"],
@@ -323,13 +289,14 @@ impl Tool for SearchMemoryTool {
         true
     }
     async fn run(&self, args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
-        let (queries, max_results, time_hint) = match memory_search_args(args) {
-            Ok(parsed) => parsed,
+        let request: MemorySearchRequest = match serde_json::from_value(args.clone()) {
+            Ok(request) => request,
+            Err(error) => return ToolResult::fail(error.to_string()),
+        };
+        let response = match self.memory.search(&request) {
+            Ok(response) => response,
             Err(error) => return ToolResult::fail(error),
         };
-        let response = self
-            .memory
-            .search_queries(&queries, max_results, time_hint.as_deref());
         ToolResult::ok(
             serde_json::to_string_pretty(&response)
                 .unwrap_or_else(|_| "{\"queries\":[],\"results\":[],\"truncated\":false}".into()),
@@ -343,7 +310,7 @@ mod memory_tool_tests {
 
     #[test]
     fn memory_search_args_requires_query_fan_out() {
-        let (queries, max_results, time_hint) = memory_search_args(&json!({
+        let request: MemorySearchRequest = serde_json::from_value(json!({
             "queries": [
                 { "text": "Scanpy h5ad", "kind": "exact" },
                 { "text": "single-cell OOM fix", "kind": "procedural" }
@@ -352,9 +319,15 @@ mod memory_tool_tests {
             "max_results": 12
         }))
         .unwrap();
-        assert_eq!(queries.len(), 2);
-        assert_eq!(max_results, 12);
-        assert_eq!(time_hint.as_deref(), Some("recent"));
-        assert!(memory_search_args(&json!({ "query": "TS-999" })).is_err());
+        assert_eq!(request.queries.len(), 2);
+        assert_eq!(request.max_results, 12);
+        assert_eq!(request.time_hint.as_deref(), Some("recent"));
+        assert!(
+            serde_json::from_value::<MemorySearchRequest>(json!({ "query": "TS-999" })).is_err()
+        );
+        assert!(serde_json::from_value::<MemorySearchRequest>(json!({
+            "queries": [{ "text": "cohort", "kind": "exact", "extra": true }]
+        }))
+        .is_err());
     }
 }

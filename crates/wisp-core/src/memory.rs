@@ -20,10 +20,24 @@ const RESULT_CONTENT_CHARS: usize = 2_000;
 const RRF_K: f64 = 60.0;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct MemorySearchQuery {
     pub text: String,
-    #[serde(default)]
     pub kind: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MemorySearchRequest {
+    pub queries: Vec<MemorySearchQuery>,
+    #[serde(default)]
+    pub time_hint: Option<String>,
+    #[serde(default = "default_max_results")]
+    pub max_results: usize,
+}
+
+fn default_max_results() -> usize {
+    10
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -242,25 +256,43 @@ impl MemoryManager {
         Some((score, reasons))
     }
 
-    pub fn search_queries(
-        &self,
-        queries: &[MemorySearchQuery],
-        top_k: usize,
-        time_hint: Option<&str>,
-    ) -> MemorySearchResponse {
-        let queries = queries
+    pub fn search(&self, request: &MemorySearchRequest) -> Result<MemorySearchResponse, String> {
+        if request.queries.is_empty() || request.queries.len() > MAX_QUERIES {
+            return Err(format!("memory search requires 1-{MAX_QUERIES} queries"));
+        }
+        if !(1..=MAX_RESULTS).contains(&request.max_results) {
+            return Err(format!("max_results must be between 1 and {MAX_RESULTS}"));
+        }
+        if request
+            .time_hint
+            .as_deref()
+            .is_some_and(|hint| hint != "recent")
+        {
+            return Err("time_hint must be 'recent' when provided".into());
+        }
+
+        let queries = request
+            .queries
             .iter()
-            .filter_map(|query| {
+            .map(|query| {
                 let text = query.text.trim();
-                (!text.is_empty()).then(|| MemorySearchQuery {
+                if text.is_empty() {
+                    return Err("memory query text cannot be empty".to_string());
+                }
+                if !matches!(
+                    query.kind.as_str(),
+                    "exact" | "concept" | "procedural" | "temporal"
+                ) {
+                    return Err(format!("unsupported memory query kind: {}", query.kind));
+                }
+                Ok(MemorySearchQuery {
                     text: text.to_string(),
-                    kind: query.kind.trim().to_ascii_lowercase(),
+                    kind: query.kind.clone(),
                 })
             })
-            .take(MAX_QUERIES)
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, String>>()?;
         let chunks = self.chunks();
-        let prefer_recent = time_hint.is_some_and(|hint| hint.eq_ignore_ascii_case("recent"));
+        let prefer_recent = request.time_hint.as_deref() == Some("recent");
         let mut fused: HashMap<String, FusedMatch> = HashMap::new();
 
         for query in &queries {
@@ -290,7 +322,7 @@ impl MemoryManager {
         }
 
         let available = fused.len();
-        let limit = top_k.clamp(1, MAX_RESULTS);
+        let limit = request.max_results;
         let mut matches = fused.into_iter().collect::<Vec<_>>();
         matches.sort_by(|left, right| {
             right
@@ -315,24 +347,11 @@ impl MemoryManager {
                 })
             })
             .collect();
-        MemorySearchResponse {
+        Ok(MemorySearchResponse {
             queries,
             results,
             truncated: available > limit,
-        }
-    }
-
-    /// Convenience wrapper for single-query non-tool callers.
-    pub fn search(&self, query: &str, top_k: usize) -> String {
-        serde_json::to_string_pretty(&self.search_queries(
-            &[MemorySearchQuery {
-                text: query.to_string(),
-                kind: "exact".into(),
-            }],
-            top_k,
-            None,
-        ))
-        .unwrap_or_else(|_| "{\"queries\":[],\"results\":[],\"truncated\":false}".into())
+        })
     }
 }
 
@@ -375,8 +394,16 @@ mod tests {
     fn empty_search_returns_structured_empty_results() {
         let root = temp_root("empty-search");
         let memory = MemoryManager::new(&root);
-        let result: MemorySearchResponse =
-            serde_json::from_str(&memory.search("preference", 10)).unwrap();
+        let result = memory
+            .search(&MemorySearchRequest {
+                queries: vec![MemorySearchQuery {
+                    text: "preference".into(),
+                    kind: "exact".into(),
+                }],
+                time_hint: None,
+                max_results: 10,
+            })
+            .unwrap();
         assert!(result.results.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -388,14 +415,16 @@ mod tests {
         memory
             .append("[TURN-MEMORY]\n单细胞分析内存不足时使用 backed 模式分批读取。")
             .unwrap();
-        let response = memory.search_queries(
-            &[MemorySearchQuery {
-                text: "单细胞爆内存".into(),
-                kind: "concept".into(),
-            }],
-            10,
-            None,
-        );
+        let response = memory
+            .search(&MemorySearchRequest {
+                queries: vec![MemorySearchQuery {
+                    text: "单细胞爆内存".into(),
+                    kind: "concept".into(),
+                }],
+                time_hint: None,
+                max_results: 10,
+            })
+            .unwrap();
         assert_eq!(response.results.len(), 1);
         assert!(response.results[0].content.contains("backed"));
         assert!(response.results[0]
@@ -412,22 +441,64 @@ mod tests {
         memory
             .append("Scanpy h5ad OOM was fixed with backed mode.\n\nGeneric OOM troubleshooting.")
             .unwrap();
-        let response = memory.search_queries(
-            &[
-                MemorySearchQuery {
-                    text: "Scanpy h5ad".into(),
-                    kind: "exact".into(),
-                },
-                MemorySearchQuery {
-                    text: "OOM backed mode".into(),
-                    kind: "procedural".into(),
-                },
-            ],
-            10,
-            None,
-        );
+        let response = memory
+            .search(&MemorySearchRequest {
+                queries: vec![
+                    MemorySearchQuery {
+                        text: "Scanpy h5ad".into(),
+                        kind: "exact".into(),
+                    },
+                    MemorySearchQuery {
+                        text: "OOM backed mode".into(),
+                        kind: "procedural".into(),
+                    },
+                ],
+                time_hint: None,
+                max_results: 10,
+            })
+            .unwrap();
         assert_eq!(response.results[0].matched_queries.len(), 2);
         assert!(response.results[0].content.contains("Scanpy"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_rejects_out_of_contract_requests() {
+        let root = temp_root("invalid-request");
+        let memory = MemoryManager::new(&root);
+        let valid = || MemorySearchRequest {
+            queries: vec![MemorySearchQuery {
+                text: "cohort".into(),
+                kind: "exact".into(),
+            }],
+            time_hint: None,
+            max_results: 10,
+        };
+
+        let mut invalid = valid();
+        invalid.queries[0].kind = "unknown".into();
+        assert!(memory.search(&invalid).is_err());
+
+        let mut invalid = valid();
+        invalid.queries[0].text = "  ".into();
+        assert!(memory.search(&invalid).is_err());
+
+        let mut invalid = valid();
+        invalid.queries = (0..=MAX_QUERIES)
+            .map(|index| MemorySearchQuery {
+                text: format!("query {index}"),
+                kind: "exact".into(),
+            })
+            .collect();
+        assert!(memory.search(&invalid).is_err());
+
+        let mut invalid = valid();
+        invalid.max_results = MAX_RESULTS + 1;
+        assert!(memory.search(&invalid).is_err());
+
+        let mut invalid = valid();
+        invalid.time_hint = Some("oldest".into());
+        assert!(memory.search(&invalid).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

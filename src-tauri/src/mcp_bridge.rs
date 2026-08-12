@@ -788,13 +788,10 @@ impl BridgeServer {
     }
 
     fn search_memory_text(&self, args: &Value) -> Result<String> {
-        let query = required_string(args, "query")?;
-        let top_k = bounded_i64(args, "top_k", 5, 1, 10) as usize;
-        pretty_json(&json!({
-            "query": query,
-            "topK": top_k,
-            "results": self.memory.search(query, top_k)
-        }))
+        let request: wisp_core::MemorySearchRequest =
+            serde_json::from_value(args.clone()).context("invalid memory search request")?;
+        let response = self.memory.search(&request).map_err(anyhow::Error::msg)?;
+        pretty_json(&json!(response))
     }
 
     async fn list_artifacts_text(&self, args: &Value) -> Result<String> {
@@ -959,14 +956,6 @@ async fn filter_skills(
 
 fn pretty_json(value: &Value) -> Result<String> {
     serde_json::to_string_pretty(value).context("serialize Wisp bridge response")
-}
-
-fn required_string<'a>(args: &'a Value, name: &str) -> Result<&'a str> {
-    args.get(name)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("missing required argument '{name}'"))
 }
 
 fn bounded_i64(args: &Value, name: &str, default: i64, min: i64, max: i64) -> i64 {
@@ -1157,14 +1146,29 @@ fn ask_user_tool_schema() -> Value {
 fn search_memory_tool_schema() -> Value {
     json!({
         "name": "wisp_search_memory",
-        "description": "Search the active project's durable Wisp memory. Read-only; does not append or alter memory.",
+        "description": "Search the active project's durable Wisp memory with 1-4 complementary retrieval queries. Preserve exact identifiers in an exact query and add concept, procedural, or temporal queries only when useful. Read-only; does not append or alter memory.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": { "type": "string", "description": "Keywords to find in project memory" },
-                "top_k": { "type": "integer", "minimum": 1, "maximum": 10, "default": 5 }
+                "queries": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "description": "Complementary, self-contained retrieval queries.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": { "type": "string", "minLength": 1 },
+                            "kind": { "type": "string", "enum": ["exact", "concept", "procedural", "temporal"] }
+                        },
+                        "required": ["text", "kind"],
+                        "additionalProperties": false
+                    }
+                },
+                "time_hint": { "type": "string", "enum": ["recent"] },
+                "max_results": { "type": "integer", "minimum": 1, "maximum": 20, "default": 10 }
             },
-            "required": ["query"],
+            "required": ["queries"],
             "additionalProperties": false
         }
     })
@@ -2111,12 +2115,21 @@ mod tests {
         .unwrap();
         let memory: Value = serde_json::from_str(
             &server
-                .search_memory_text(&json!({ "query": "cohort", "top_k": 99 }))
+                .search_memory_text(&json!({
+                    "queries": [{ "text": "cohort", "kind": "exact" }],
+                    "max_results": 20
+                }))
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(memory["topK"], 10);
-        assert!(memory["results"].as_str().unwrap().contains("forty-two"));
+        assert_eq!(memory["queries"][0]["text"], "cohort");
+        assert!(memory["results"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("forty-two"));
+        assert!(server
+            .search_memory_text(&json!({ "query": "cohort" }))
+            .is_err());
 
         let artifacts: Value = serde_json::from_str(
             &server
