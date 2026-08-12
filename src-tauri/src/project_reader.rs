@@ -226,7 +226,7 @@ pub async fn read_references(
         inputs.push(SessionInput { info, messages });
     }
 
-    let (provider, api_url, model, api_key, _, reasoning_effort) =
+    let (provider, api_url, model, api_key, profile_max_tokens, reasoning_effort) =
         crate::specialists::specialist_llm(store, &reader).await;
     let cfg = crate::build_provider_config(
         &provider,
@@ -238,6 +238,23 @@ pub async fn read_references(
     )
     .map_err(|error| format!("Reader model is unavailable: {error}"))?;
     let llm: Arc<dyn Provider> = Arc::from(wisp_llm::build(cfg));
+    // A reasoning model can burn the compact Reader budget on hidden reasoning
+    // before writing any JSON (`max_output_tokens`, #784). Keep the profile's
+    // full budget on hand so a chunk that hits the limit can retry once.
+    let retry_llm: Option<Arc<dyn Provider>> = if profile_max_tokens > READER_OUTPUT_TOKENS {
+        crate::build_provider_config(
+            &provider,
+            &api_url,
+            &api_key,
+            &model,
+            profile_max_tokens,
+            &reasoning_effort,
+        )
+        .ok()
+        .map(|cfg| Arc::from(wisp_llm::build(cfg)))
+    } else {
+        None
+    };
 
     let mut tasks = Vec::new();
     for (session_index, session) in inputs.iter().enumerate() {
@@ -254,7 +271,7 @@ pub async fn read_references(
         }
     }
     let task_count = tasks.len();
-    let results = run_tasks(llm, &question, tasks, cancel).await;
+    let results = run_tasks(llm, retry_llm, &question, tasks, cancel).await;
 
     if cancel.load(Ordering::SeqCst) {
         return Err("Project reading was cancelled.".into());
@@ -264,12 +281,10 @@ pub async fn read_references(
         .filter(|result| result.result.is_ok())
         .count();
     if successful_tasks == 0 {
-        let detail = results
-            .iter()
-            .find_map(|result| result.result.as_ref().err())
-            .cloned()
-            .unwrap_or_else(|| "Reader returned no result.".into());
-        return Err(format!("Reader could not inspect any session: {detail}"));
+        // A failed Reader augmentation must not abort the whole send (#784):
+        // degrade to a visible note so the turn proceeds and the model tells
+        // the user the reference could not be retrieved.
+        return Ok(Some(failure_injection(&results)));
     }
 
     let mut by_session: Vec<Vec<(usize, ChunkResult)>> = vec![Vec::new(); inputs.len()];
@@ -282,17 +297,32 @@ pub async fn read_references(
     Ok(Some(render_injection(&inputs, by_session, failed_tasks)))
 }
 
+fn failure_injection(results: &[TaskResult]) -> String {
+    let detail = results
+        .iter()
+        .find_map(|result| result.result.as_ref().err())
+        .cloned()
+        .unwrap_or_else(|| "Reader returned no result.".into());
+    format!(
+        "## Reader project search\nThe Reader could not inspect the referenced session(s): {detail}. \
+         Tell the user the `#` reference could not be retrieved, then answer as best you can without it."
+    )
+}
+
 async fn run_tasks(
     llm: Arc<dyn Provider>,
+    retry_llm: Option<Arc<dyn Provider>>,
     question: &str,
     tasks: Vec<Task>,
     cancel: &AtomicBool,
 ) -> Vec<TaskResult> {
     stream::iter(tasks.into_iter().map(|task| {
         let llm = llm.clone();
+        let retry_llm = retry_llm.clone();
         let question = question.to_string();
         async move {
-            let result = run_task(llm, &question, &task, cancel).await;
+            let result =
+                run_task(llm.as_ref(), retry_llm.as_deref(), &question, &task, cancel).await;
             TaskResult {
                 session_index: task.session_index,
                 chunk_index: task.chunk_index,
@@ -305,8 +335,17 @@ async fn run_tasks(
     .await
 }
 
+/// A chunk call that failed. `OutputLimit` is the one failure worth a retry:
+/// the model exhausted `max_output_tokens` before producing JSON, so a larger
+/// budget may still succeed.
+enum ChunkFailure {
+    OutputLimit(String),
+    Other(String),
+}
+
 async fn run_task(
-    llm: Arc<dyn Provider>,
+    llm: &dyn Provider,
+    retry_llm: Option<&dyn Provider>,
     question: &str,
     task: &Task,
     cancel: &AtomicBool,
@@ -324,17 +363,50 @@ async fn run_task(
         task.chunk.transcript
     );
     let messages = [Message::system(READER_RUBRIC), Message::user(prompt)];
-    let request = llm.complete(&messages, &[]);
+    let completion = match complete_chunk(llm, &messages, cancel).await {
+        Ok(completion) => completion,
+        Err(ChunkFailure::Other(error)) => return Err(error),
+        Err(ChunkFailure::OutputLimit(first)) => match retry_llm {
+            Some(retry) if !cancel.load(Ordering::SeqCst) => {
+                match complete_chunk(retry, &messages, cancel).await {
+                    Ok(completion) => completion,
+                    Err(ChunkFailure::OutputLimit(second)) | Err(ChunkFailure::Other(second)) => {
+                        return Err(format!(
+                            "{first}; retry with the profile's full output budget also failed: {second}"
+                        ));
+                    }
+                }
+            }
+            _ => return Err(first),
+        },
+    };
+    parse_result(&completion.content, &task.chunk)
+}
+
+async fn complete_chunk(
+    llm: &dyn Provider,
+    messages: &[Message],
+    cancel: &AtomicBool,
+) -> Result<wisp_llm::Completion, ChunkFailure> {
+    let request = llm.complete(messages, &[]);
     tokio::pin!(request);
     let completion = tokio::select! {
-        result = &mut request => result.map_err(|error| error.to_string())?,
-        _ = wait_for_cancel(cancel) => return Err("cancelled".into()),
-        _ = tokio::time::sleep(READER_TIMEOUT) => return Err("Reader model timed out.".into()),
+        result = &mut request => result.map_err(|error| {
+            if error.output_limit_hit() {
+                ChunkFailure::OutputLimit(error.to_string())
+            } else {
+                ChunkFailure::Other(error.to_string())
+            }
+        })?,
+        _ = wait_for_cancel(cancel) => return Err(ChunkFailure::Other("cancelled".into())),
+        _ = tokio::time::sleep(READER_TIMEOUT) => {
+            return Err(ChunkFailure::Other("Reader model timed out.".into()));
+        }
     };
     if cancel.load(Ordering::SeqCst) {
-        return Err("cancelled".into());
+        return Err(ChunkFailure::Other("cancelled".into()));
     }
-    parse_result(&completion.content, &task.chunk)
+    Ok(completion)
 }
 
 async fn wait_for_cancel(cancel: &AtomicBool) {
@@ -872,11 +944,162 @@ mod tests {
             })
             .collect();
         let cancel = AtomicBool::new(false);
-        let results = run_tasks(provider.clone(), "find it", tasks, &cancel).await;
+        let results = run_tasks(provider.clone(), None, "find it", tasks, &cancel).await;
         assert_eq!(results.len(), 8);
         assert!(results.iter().all(|result| result.result.is_ok()));
         let max_active = provider.max_active.load(Ordering::SeqCst);
         assert!(max_active > 1, "tasks ran serially");
         assert!(max_active <= READER_PARALLELISM, "unbounded fan-out");
+    }
+
+    /// Always fails with the given error; records how often it was called.
+    struct FailingProvider {
+        error: String,
+        output_limit: bool,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for FailingProvider {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn model(&self) -> &str {
+            "fake-reader"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[wisp_llm::ToolSchema],
+        ) -> wisp_llm::Result<wisp_llm::Completion> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.output_limit {
+                return Err(wisp_llm::LlmError::NotCompleted {
+                    status: "incomplete".into(),
+                    reason: "max_output_tokens".into(),
+                });
+            }
+            Err(wisp_llm::LlmError::Api {
+                status: 500,
+                body: self.error.clone(),
+            })
+        }
+
+        async fn stream(
+            &self,
+            messages: &[Message],
+            tools: &[wisp_llm::ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<wisp_llm::Completion> {
+            self.complete(messages, tools).await
+        }
+    }
+
+    fn one_chunk_task() -> Task {
+        Task {
+            session_index: 0,
+            chunk_index: 0,
+            chunk_count: 1,
+            session: SessionSearchResult {
+                id: "s0".into(),
+                project_id: "p".into(),
+                project_name: "Project".into(),
+                title: "Session 0".into(),
+                created_at: 0,
+                activity_at: 0,
+                last_role: None,
+                unseen: false,
+            },
+            chunk: SessionChunk {
+                transcript: "[message seq=1 USER]\nevidence".into(),
+                sources: HashMap::from([(1, "evidence".into())]),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn output_limit_retries_once_with_larger_budget() {
+        let primary = FailingProvider {
+            error: String::new(),
+            output_limit: true,
+            calls: AtomicUsize::new(0),
+        };
+        let retry = SlowProvider {
+            active: AtomicUsize::new(0),
+            max_active: AtomicUsize::new(0),
+        };
+        let cancel = AtomicBool::new(false);
+        let result = run_task(
+            &primary,
+            Some(&retry),
+            "find it",
+            &one_chunk_task(),
+            &cancel,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "output-limit retry should succeed: {result:?}"
+        );
+        assert_eq!(primary.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn output_limit_without_retry_budget_surfaces_the_reason() {
+        let primary = FailingProvider {
+            error: String::new(),
+            output_limit: true,
+            calls: AtomicUsize::new(0),
+        };
+        let cancel = AtomicBool::new(false);
+        let error = run_task(&primary, None, "find it", &one_chunk_task(), &cancel)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("max_output_tokens"),
+            "error should name the wire reason: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_output_limit_failures_do_not_retry() {
+        let primary = FailingProvider {
+            error: "boom".into(),
+            output_limit: false,
+            calls: AtomicUsize::new(0),
+        };
+        let retry = FailingProvider {
+            error: "boom".into(),
+            output_limit: false,
+            calls: AtomicUsize::new(0),
+        };
+        let cancel = AtomicBool::new(false);
+        let error = run_task(
+            &primary,
+            Some(&retry),
+            "find it",
+            &one_chunk_task(),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("boom"), "{error}");
+        assert_eq!(retry.calls.load(Ordering::SeqCst), 0, "must not retry");
+    }
+
+    #[test]
+    fn failure_injection_degrades_to_a_user_visible_note() {
+        let results = vec![TaskResult {
+            session_index: 0,
+            chunk_index: 0,
+            result: Err("response ended with status 'incomplete' (max_output_tokens)".into()),
+        }];
+        let note = failure_injection(&results);
+        assert!(note.contains("## Reader project search"));
+        assert!(note.contains("max_output_tokens"));
+        assert!(note.contains("could not be retrieved"));
+        assert!(failure_injection(&[]).contains("Reader returned no result."));
     }
 }
