@@ -278,8 +278,17 @@
 .branch-merge-card-copy strong { font-size: 13px; }
 .branch-merge-card-copy > span { overflow: hidden; color: var(--text-faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .branch-merge-card-open { color: var(--text-faint); }
-.branch-merge-detail-modal { width: min(820px, 100%); max-height: min(82vh, 900px); }
-.branch-merge-detail-content { min-height: 0; overflow: auto; padding: 14px 2px 4px; }
+.branch-merge-detail-modal { width: min(880px, 94vw); height: min(760px, 82vh); max-height: calc(100vh - 40px); padding: 16px; }
+.branch-merge-detail-head { min-height: 30px; padding-inline: 2px; }
+.branch-merge-detail-kind { flex: 0 0 auto; padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-sunken); color: var(--text-faint); font-size: 10px; font-weight: 600; }
+.artifact-modal .branch-merge-detail-preview { min-height: 0; max-height: none; flex: 1 1 auto; align-items: flex-start; padding: clamp(14px, 3vw, 28px); overflow: auto; background: var(--bg-sunken); }
+.artifact-modal .branch-merge-detail-preview > .branch-merge-detail-content { width: min(100%, 720px); min-height: 100%; margin: 0 auto; padding: clamp(22px, 4vw, 42px); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elev); box-shadow: var(--shadow-sm); color: var(--text); font-size: 14px; line-height: 1.65; user-select: text; }
+.branch-merge-detail-content > :last-child { margin-bottom: 0; }
+@media (max-width: 640px) {
+  .branch-merge-detail-modal { width: 100%; height: min(86vh, 760px); padding: 12px; }
+  .artifact-modal .branch-merge-detail-preview { padding: 8px; }
+  .artifact-modal .branch-merge-detail-preview > .branch-merge-detail-content { padding: 20px 18px; }
+}
 @media (max-width: 640px) {
   .exploration-diff-modal { padding: 16px; }
   .exploration-actions { flex-wrap: wrap; }

@@ -4,7 +4,9 @@ use crate::app_support::{
 use crate::bindings::invoke_checked;
 use crate::dto::*;
 use crate::i18n::{t, tf, Locale};
-use crate::text::{dom_value, event_target_checked, event_target_value, md_to_html, parent_path};
+use crate::text::{
+    dom_value, event_target_checked, event_target_value, md_document_to_html, parent_path,
+};
 use crate::window_capture_escape;
 use leptos::*;
 use serde_wasm_bindgen::to_value;
@@ -662,17 +664,20 @@ pub(crate) fn BranchMergeDetailOverlay(
         {move || detail.get().map(|(title, text)| {
             view! {
                 <div class="overlay branch-merge-detail-overlay" data-testid="branch-merge-detail-overlay">
-                    <div class="modal branch-merge-detail-modal" role="dialog" aria-modal="true">
-                        <div class="ps-head">
-                            <div>
-                                <h2>{t(locale.get(), "branch.merged_result")}</h2>
-                                <span class="exploration-modal-status">{title}</span>
-                            </div>
-                            <button type="button" class="ps-close"
-                                aria-label=move || t(locale.get(), "settings.cancel")
+                    <div class="modal artifact-modal branch-merge-detail-modal" role="dialog" aria-modal="true">
+                        <div class="am-head branch-merge-detail-head">
+                            <span class="am-name">{title}</span>
+                            <span class="branch-merge-detail-kind">{t(locale.get(), "branch.merged_result")}</span>
+                            <div class="spacer"></div>
+                            <button type="button" class="icon-btn"
+                                title=move || t(locale.get(), "right.close")
+                                aria-label=move || t(locale.get(), "right.close")
                                 on:click=move |_| detail.set(None)>{compose_icon("close")}</button>
                         </div>
-                        <div class="branch-merge-detail-content md" inner_html=md_to_html(&text)></div>
+                        <div class="am-figure branch-merge-detail-preview">
+                            <article class="rp-heavy md branch-merge-detail-content"
+                                inner_html=md_document_to_html(&text)></article>
+                        </div>
                     </div>
                 </div>
             }

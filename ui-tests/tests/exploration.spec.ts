@@ -128,6 +128,8 @@ test("an edited branch-only summary appends to the current main tail and keeps t
   await mergedCard.click();
   const detail = page.getByTestId("branch-merge-detail-overlay");
   await expect(detail).toContainText("Edited branch result ready for main.");
+  await expect(detail.locator(".artifact-modal .am-head")).toBeVisible();
+  await expect(detail.locator(".am-figure .rp-heavy.md")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(detail).toBeHidden();
   await expect(mergedCard).toBeVisible();
