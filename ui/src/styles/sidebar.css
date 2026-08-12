@@ -137,6 +137,11 @@ button.side-item.ses.selecting { padding-right: 10px; }
 .session-branch-icon { display: inline-flex; flex: 0 0 auto; color: var(--clay); }
 .session-branch-icon svg { width: 15px; height: 15px; }
 .side-item.ses.selecting .session-branch-icon { display: none; }
+/* Marks sessions whose persisted system prompt lags AGENTS.md / WISP.md. */
+.ses-stale { display: inline-flex; flex: 0 0 auto; color: var(--text-faint); }
+.ses-stale svg { width: 13px; height: 13px; }
+.side-item.ses:hover .ses-stale, .side-item.ses.active .ses-stale { color: var(--clay); }
+.side-item.ses.selecting .ses-stale { display: none; }
 .side-item-wrap { position: relative; min-width: 0; }
 /* Row menus are revealed only on hover/keyboard focus — including the active
    session — so the list reads as plain titles at rest. Opacity (not display)

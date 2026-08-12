@@ -4686,6 +4686,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
 // test starts a second conversation. `list_sessions` reports every session that
 // received a user turn so the sidebar can list them.
 export function parallelMock(): void {
+  const params = new URLSearchParams(window.location.search);
   const listeners: Record<string, ((e: { payload: unknown }) => void) | undefined> = {};
   const windowListeners: Record<string, ((e: { payload: unknown }) => void) | undefined> = {};
   const emit = (event: string, payload: unknown) => {
@@ -4694,7 +4695,10 @@ export function parallelMock(): void {
       windowListeners[event]?.({ payload });
     } catch { /* not registered yet */ }
   };
-  const sessions: { id: string; title: string; ts: number; folder_id: string | null }[] = [];
+  const sessions: { id: string; title: string; ts: number; folder_id: string | null; stale_prompt?: boolean }[] = [];
+  if (params.get("mockStaleRules") === "1") {
+    sessions.push({ id: "stale-session", title: "Outdated rules chat", ts: 1999, folder_id: null, stale_prompt: true });
+  }
   const folders: { id: string; name: string }[] = [];
   const queues: Record<string, Promise<void>> = {};
 
@@ -4828,6 +4832,11 @@ export function parallelMock(): void {
             const index = sessions.findIndex((entry) => entry.id === arg("id"));
             if (index >= 0) sessions.splice(index, 1);
             return null;
+          }
+          case "reload_project_rules": {
+            const session = sessions.find((entry) => entry.id === String(arg("frameId")));
+            if (session) session.stale_prompt = false;
+            return true;
           }
           case "move_session": {
             const session = sessions.find((entry) => entry.id === arg("id"));

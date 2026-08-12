@@ -2279,6 +2279,57 @@ test("conversation action button renames, transfers, and deletes sessions (#557)
   )).toBe(true);
 });
 
+test("stale project rules can be reloaded from the session context menu", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await enterApp(page, "/?mockStaleRules=1");
+  const stale = page.locator(".side-item.ses", { hasText: "Outdated rules chat" });
+  await expect(stale).toBeVisible({ timeout: 10_000 });
+  await expect(stale.locator(".ses-stale")).toBeVisible();
+
+  // A fresh session has no marker and no reload menu item.
+  await newSessionButton(page).click();
+  await composer(page).fill("fresh rules chat");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("echo:fresh rules chat")).toBeVisible({ timeout: 10_000 });
+  const fresh = page.locator(".side-item.ses", { hasText: "fresh rules chat" });
+  await expect(fresh).toBeVisible({ timeout: 10_000 });
+  await expect(fresh.locator(".ses-stale")).toHaveCount(0);
+  await fresh.click({ button: "right" });
+  await expect(page.locator(".ctx-menu")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Reload project rules…", exact: true }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".ctx-menu")).toHaveCount(0);
+
+  // The stale session offers the reload item; Escape closes only the confirm.
+  await stale.click({ button: "right" });
+  await page.getByRole("button", { name: "Reload project rules…", exact: true }).click();
+  const modal = page.locator(".confirm-modal");
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("prompt cache");
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    ((window as any).__sendInvokeLog ?? []).some((call: any) => call.cmd === "reload_project_rules")
+  )).toBe(false);
+
+  await stale.click({ button: "right" });
+  await page.getByRole("button", { name: "Reload project rules…", exact: true }).click();
+  await page
+    .locator(".confirm-modal")
+    .getByRole("button", { name: "Reload rules", exact: true })
+    .click();
+  await expect.poll(() => page.evaluate(() => {
+    const calls = ((window as any).__sendInvokeLog ?? []).filter((call: any) => call.cmd === "reload_project_rules");
+    const args = calls.at(-1)?.args;
+    return args instanceof Map ? Object.fromEntries(args) : args;
+  })).toMatchObject({
+    frameId: "stale-session",
+  });
+  await expect(stale.locator(".ses-stale")).toHaveCount(0);
+});
+
 test("session context menu near the window bottom stays fully visible (#650)", async ({ page }) => {
   // Narrow + short window: labels wrap, so real item heights exceed the 38px
   // estimate the initial placement uses — the menu must re-clamp after measuring.
