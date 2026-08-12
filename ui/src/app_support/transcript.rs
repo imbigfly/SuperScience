@@ -118,6 +118,7 @@ pub(crate) fn review_message_ui_index(items: &[ChatItem], message_index: usize) 
             ChatItem::User(text) | ChatItem::Assistant { text, .. } | ChatItem::Reasoning(text) => {
                 !text.trim().is_empty()
             }
+            ChatItem::BranchMerge { text, .. } => !text.trim().is_empty(),
             ChatItem::Tool { name, .. } => name != "attempt_completion",
             ChatItem::AcpTool { .. } | ChatItem::Plan(_) | ChatItem::Question(_) => true,
             ChatItem::QueuedUser { .. }

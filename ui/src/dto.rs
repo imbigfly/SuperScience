@@ -361,6 +361,11 @@ pub(crate) enum ChatItem {
         model: Option<String>,
         resources: Vec<MessageResource>,
     },
+    BranchMerge {
+        text: String,
+        branch_id: String,
+        branch_title: String,
+    },
     Reasoning(String),
     Tool {
         name: String,
@@ -535,6 +540,14 @@ impl ChatItem {
                 resources,
             } => {
                 (2u8, model, resources).hash(&mut h);
+                hash_text_sampled(&mut h, text);
+            }
+            Self::BranchMerge {
+                text,
+                branch_id,
+                branch_title,
+            } => {
+                (15u8, branch_id, branch_title).hash(&mut h);
                 hash_text_sampled(&mut h, text);
             }
             Self::Reasoning(s) => {
@@ -1971,31 +1984,31 @@ pub(crate) struct SessionBranchDeltaMessage {
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SessionBranchCandidate {
+pub(crate) struct SessionBranchLink {
     pub(crate) id: String,
     pub(crate) title: String,
-    pub(crate) is_main: bool,
+    pub(crate) source_session_id: String,
+    pub(crate) checkpoint_user_index: usize,
+    pub(crate) checkpoint_kind: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionBranchMergePreview {
+    pub(crate) main_session_id: String,
+    pub(crate) branch_session_id: String,
+    pub(crate) branch_title: String,
+    pub(crate) checkpoint_user_index: usize,
+    pub(crate) checkpoint_kind: String,
+    pub(crate) guard_hash: String,
     pub(crate) new_message_count: usize,
     pub(crate) messages: Vec<SessionBranchDeltaMessage>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SessionBranchComparison {
+pub(crate) struct SessionBranchMerge {
     pub(crate) main_session_id: String,
-    pub(crate) common_ancestor_messages: usize,
-    pub(crate) guard_hash: String,
-    pub(crate) candidates: Vec<SessionBranchCandidate>,
-    #[serde(default)]
-    pub(crate) analysis: Option<String>,
-    #[serde(default)]
-    pub(crate) analysis_error: Option<String>,
-}
-
-#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SessionBranchConvergence {
-    pub(crate) main_session_id: String,
-    pub(crate) selected_session_id: String,
-    pub(crate) removed_session_ids: Vec<String>,
+    pub(crate) branch_session_id: String,
+    pub(crate) summary_message_seq: i64,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2214,6 +2227,8 @@ pub(crate) struct LoadedSessionPage {
     pub(crate) outline: Vec<SessionOutlineItem>,
     #[serde(default)]
     pub(crate) presentations: Vec<LoadedPresentation>,
+    #[serde(default)]
+    pub(crate) branches: Vec<SessionBranchLink>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2248,6 +2263,11 @@ impl LoadedItem {
     pub(crate) fn into_chat(self) -> ChatItem {
         match self.role.as_str() {
             "user" => ChatItem::User(self.text),
+            "branch_merge" => ChatItem::BranchMerge {
+                text: self.text,
+                branch_id: self.input,
+                branch_title: self.tool_name.unwrap_or_default(),
+            },
             "reasoning" => ChatItem::Reasoning(self.text),
             "review" => serde_json::from_str(&self.text)
                 .map(ChatItem::Review)

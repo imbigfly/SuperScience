@@ -3062,7 +3062,7 @@ test("branch on an earlier user message opens a new session from that point", as
     title: "first idea",
     userIndex: 0,
   });
-  await expect(composer(page)).toHaveValue("first idea");
+  await expect(composer(page)).toHaveValue("");
   await expect(page.locator(".msg.user", { hasText: "second idea" })).toHaveCount(0);
 
   await composer(page).fill("first idea, but normalize first");
@@ -3095,10 +3095,10 @@ test("assistant actions are icon-only and can branch from the preceding user tur
     title: "branch from this answer",
     userIndex: 0,
   });
-  await expect(composer(page)).toHaveValue("branch from this answer");
+  await expect(composer(page)).toHaveValue("");
 });
 
-test("editing a middle message asks for confirmation before rewinding", async ({ page }) => {
+test("rewinding a middle message asks for confirmation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -3109,18 +3109,18 @@ test("editing a middle message asks for confirmation before rewinding", async ({
   const firstUser = page.locator(".msg.user", { hasText: "first idea" });
   await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
   await expect(page.locator(".msg.assistant")).toHaveCount(2, { timeout: 10_000 });
-  await expect(firstUser.getByRole("button", { name: "Edit" })).toBeEnabled();
+  await expect(firstUser.getByRole("button", { name: "Rewind" })).toBeEnabled();
 
   const modal = page.getByTestId("edit-confirm-modal");
-  await firstUser.getByRole("button", { name: "Edit" }).click();
+  await firstUser.getByRole("button", { name: "Rewind" }).click();
   await expect(modal).toBeVisible();
-  await expect(modal).toContainText("permanently deletes all conversation after this message");
+  await expect(modal).toContainText("permanently removes all conversation after this message");
   // While the modal is open nothing is rewound and the transcript is intact.
   expect(await lastInvokeArgs(page, "rewind_session")).toBeNull();
   await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
 
-  // Confirming Edit runs the destructive rewind to the first message.
-  await modal.getByRole("button", { name: "Edit", exact: true }).click();
+  // Confirming Rewind runs the destructive rewind to the first message.
+  await modal.getByRole("button", { name: "Rewind", exact: true }).click();
   await expect(modal).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "rewind_session")).toMatchObject({
     sessionId: expect.stringMatching(/^s-/),
@@ -3131,7 +3131,7 @@ test("editing a middle message asks for confirmation before rewinding", async ({
   await expect(page.locator(".msg.assistant")).toHaveCount(0);
 });
 
-test("edit confirmation can branch instead of rewinding", async ({ page }) => {
+test("rewind confirmation can branch instead", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -3142,10 +3142,10 @@ test("edit confirmation can branch instead of rewinding", async ({ page }) => {
   const firstUser = page.locator(".msg.user", { hasText: "first idea" });
   await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
   await expect(page.locator(".msg.assistant")).toHaveCount(2, { timeout: 10_000 });
-  await expect(firstUser.getByRole("button", { name: "Edit" })).toBeEnabled();
+  await expect(firstUser.getByRole("button", { name: "Rewind" })).toBeEnabled();
 
   const modal = page.getByTestId("edit-confirm-modal");
-  await firstUser.getByRole("button", { name: "Edit" }).click();
+  await firstUser.getByRole("button", { name: "Rewind" }).click();
   await expect(modal).toBeVisible();
   await modal.getByRole("button", { name: "Branch" }).click();
   await expect(modal).toHaveCount(0);
@@ -3157,10 +3157,10 @@ test("edit confirmation can branch instead of rewinding", async ({ page }) => {
   });
   // Branching is non-destructive: no rewind happened.
   expect(await lastInvokeArgs(page, "rewind_session")).toBeNull();
-  await expect(composer(page)).toHaveValue("first idea");
+  await expect(composer(page)).toHaveValue("");
 });
 
-test("Escape closes only the edit confirmation modal and keeps the transcript", async ({ page }) => {
+test("Escape closes only the rewind confirmation modal and keeps the transcript", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -3171,10 +3171,10 @@ test("Escape closes only the edit confirmation modal and keeps the transcript", 
   const firstUser = page.locator(".msg.user", { hasText: "first idea" });
   await expect(page.locator(".msg.user", { hasText: "second idea" })).toBeVisible();
   await expect(page.locator(".msg.assistant")).toHaveCount(2, { timeout: 10_000 });
-  await expect(firstUser.getByRole("button", { name: "Edit" })).toBeEnabled();
+  await expect(firstUser.getByRole("button", { name: "Rewind" })).toBeEnabled();
 
   const modal = page.getByTestId("edit-confirm-modal");
-  await firstUser.getByRole("button", { name: "Edit" }).click();
+  await firstUser.getByRole("button", { name: "Rewind" }).click();
   await expect(modal).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(modal).toHaveCount(0);
@@ -3724,7 +3724,7 @@ test("R scripts expose variables and console while only selected code can run", 
   // The AI-first source preview has no whole-file run or direct-edit action.
   const filePreview = page.locator(".center-file-preview");
   await expect(filePreview.getByRole("button", { name: "Run this script in its runtime" })).toHaveCount(0);
-  await expect(filePreview.getByRole("button", { name: "Edit" })).toHaveCount(0);
+  await expect(filePreview.getByRole("button", { name: "Rewind" })).toHaveCount(0);
 
   // The replacement control opens the bound runtime's variable rail and an
   // initially empty console without executing the file.
@@ -5726,7 +5726,7 @@ test("center previews are read-only and send selected code or text to the AI con
   const preview = page.locator('.center-file-preview[data-file-path="report.md"]');
   await expect(preview.locator("h1")).toHaveText("Draft manuscript");
 
-  await expect(preview.getByRole("button", { name: "Edit" })).toHaveCount(0);
+  await expect(preview.getByRole("button", { name: "Rewind" })).toHaveCount(0);
   await expect(preview.locator(".center-file-editor")).toHaveCount(0);
 
   // Selecting source material offers the AI handoff. Choosing it opens the

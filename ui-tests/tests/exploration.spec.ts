@@ -51,11 +51,11 @@ test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct 
   await expect(diff).toBeHidden();
 });
 
-test("conversation branches have a distinct icon and branch-only context actions", async ({ page }) => {
+test("conversation branches appear at their checkpoint and expose merge-back actions", async ({ page }) => {
   await page.goto("/?mockExplorations=1&mockBranches=1");
   await page.locator(".proj-card-main").first().click();
 
-  const branch = page.locator('[data-session-id="conversation-branch"]');
+  const branch = page.locator('.sidebar [data-session-id="conversation-branch"]');
   const exploration = page.locator('[data-exploration-id="exploration-a"]');
   await expect(branch.locator(".session-branch-icon svg")).toHaveCount(1);
   await expect(exploration.locator(".exploration-kind-icon svg")).toHaveCount(1);
@@ -63,8 +63,9 @@ test("conversation branches have a distinct icon and branch-only context actions
     .not.toBe(await exploration.locator(".exploration-kind-icon").innerHTML());
 
   await branch.click({ button: "right" });
-  await expect(page.getByRole("button", { name: "Compare branches", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Make independent", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Merge back", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Compare branches", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Make independent", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Delete branch", exact: true })).toBeVisible();
 
   await page.keyboard.press("Escape");
@@ -72,65 +73,94 @@ test("conversation branches have a distinct icon and branch-only context actions
   await expect(branch).toBeVisible();
 
   await branch.click({ button: "right" });
-  await page.getByRole("button", { name: "Compare branches", exact: true }).click();
-  const comparison = page.getByTestId("branch-comparison-overlay");
-  await expect(comparison).toBeVisible();
-  await expect(comparison.getByTestId("branch-candidate")).toHaveCount(2);
-  await expect(comparison).toContainText("2 shared messages before divergence");
+  await page.getByRole("button", { name: "Merge back", exact: true }).click();
+  const merge = page.getByTestId("branch-merge-overlay");
+  await expect(merge).toBeVisible();
+  await expect(merge.getByTestId("branch-merge-delta")).toContainText("alternate analysis result");
+  await expect(merge.locator("textarea")).toHaveValue(/completed its focused analysis/);
   await page.keyboard.press("Escape");
-  await expect(comparison).toBeHidden();
+  await expect(merge).toBeHidden();
   await expect(branch).toBeVisible();
 
-  const main = page.locator('[data-session-id="exploration-mainline"]');
-  await main.click({ button: "right" });
-  await expect(page.getByRole("button", { name: "Compare branches", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Make independent", exact: true })).toHaveCount(0);
+  const main = page.locator('.sidebar [data-session-id="exploration-mainline"]');
+  await main.click();
+  const inlineBranch = page.getByTestId("message-branch-link");
+  await expect(inlineBranch).toHaveCount(1);
+  await expect(inlineBranch).toContainText("alternate analysis");
 });
 
-test("main and sibling branches compare together and converge through one selected path", async ({ page }) => {
+test("an edited branch-only summary appends to the current main tail and keeps the branch", async ({ page }) => {
   await page.goto("/?mockBranches=1");
   await page.locator(".proj-card-main").first().click();
 
-  const main = page.locator('[data-session-id="conversation-main"]');
-  const branch = page.locator('[data-session-id="conversation-branch"]');
-  await main.click({ button: "right" });
-  await page.getByRole("button", { name: "Compare branches", exact: true }).click();
-
-  const comparison = page.getByTestId("branch-comparison-overlay");
-  await expect(comparison.getByTestId("branch-candidate")).toHaveCount(4);
-  await expect(comparison.getByTestId("branch-ai-analysis")).toContainText("Method B is more robust");
-  await comparison.locator('[data-session-id="conversation-branch"]').click();
-  await comparison.getByTestId("branch-converge").click();
-  const confirm = page.getByTestId("branch-convergence-confirm");
-  await expect(confirm).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(confirm).toBeHidden();
-  await expect(comparison).toBeVisible();
-  expect(await lastInvokeArgs(page, "converge_session_branches")).toBeNull();
-
-  await comparison.getByTestId("branch-converge").click();
-  await confirm.getByTestId("branch-converge-action").click();
-  await expect.poll(() => lastInvokeArgs(page, "converge_session_branches")).toMatchObject({
-    selectedSessionId: "conversation-branch",
-    expectedGuardHash: "mock-branch-guard",
-  });
-  await expect(comparison).toBeHidden();
-  await expect(main).toHaveAttribute("data-session-title", "alternate analysis");
-  await expect(page.locator('[data-session-branch="true"]')).toHaveCount(0);
-});
-
-test("a branch can leave its family without changing its transcript", async ({ page }) => {
-  await page.goto("/?mockBranches=1");
-  await page.locator(".proj-card-main").first().click();
-
-  const branch = page.locator('[data-session-id="conversation-branch-b"]');
+  const branch = page.locator('.sidebar [data-session-id="conversation-branch"]');
   await branch.click({ button: "right" });
-  await page.getByRole("button", { name: "Make independent", exact: true }).click();
-  await expect.poll(() => lastInvokeArgs(page, "detach_session_branch")).toMatchObject({
-    id: "conversation-branch-b",
+  await page.getByRole("button", { name: "Merge back", exact: true }).click();
+  const merge = page.getByTestId("branch-merge-overlay");
+  await merge.locator("textarea").fill("Edited branch result ready for main.");
+  await merge.getByTestId("branch-merge-action").click();
+  await expect.poll(() => lastInvokeArgs(page, "merge_session_branch_summary")).toMatchObject({
+    id: "conversation-branch",
+    expectedGuardHash: "mock-branch-merge-guard",
+    summary: "Edited branch result ready for main.",
   });
-  await expect(branch).toHaveAttribute("data-session-branch", "false");
-  await expect(branch).toHaveAttribute("data-session-family", "false");
+  await expect(merge).toBeHidden();
+  await expect(page.getByText("Main current result", { exact: true })).toBeVisible();
+  await expect(page.getByText("Edited branch result ready for main.", { exact: true })).toHaveCount(0);
+  const mergedCard = page.getByTestId("branch-merge-card");
+  await expect(mergedCard).toContainText("Merged branch result");
+  await expect(mergedCard).toContainText("alternate analysis");
+  await mergedCard.click();
+  const detail = page.getByTestId("branch-merge-detail-overlay");
+  await expect(detail).toContainText("Edited branch result ready for main.");
+  await page.keyboard.press("Escape");
+  await expect(detail).toBeHidden();
+  await expect(mergedCard).toBeVisible();
+  await expect(branch).toBeVisible();
+});
+
+test("branch summaries can be regenerated or revised with explicit guidance", async ({ page }) => {
+  await page.goto("/?mockBranches=1");
+  await page.locator(".proj-card-main").first().click();
+
+  const branch = page.locator('.sidebar [data-session-id="conversation-branch"]');
+  await branch.click({ button: "right" });
+  await page.getByRole("button", { name: "Merge back", exact: true }).click();
+  const merge = page.getByTestId("branch-merge-overlay");
+  const draft = merge.locator("textarea");
+  await expect(draft).toHaveValue(/completed its focused analysis/);
+
+  await merge.getByTestId("branch-regenerate").click();
+  await expect.poll(() => lastInvokeArgs(page, "summarize_session_branch_merge")).toMatchObject({
+    id: "conversation-branch",
+    expectedGuardHash: "mock-branch-merge-guard",
+  });
+  const regenerateArgs = await lastInvokeArgs(page, "summarize_session_branch_merge");
+  expect(regenerateArgs.currentVersion).toBeUndefined();
+  expect(regenerateArgs.userGuidance).toBeUndefined();
+
+  await draft.fill("Current edited version for main.");
+  await merge.getByTestId("branch-guided-generate").click();
+  const guidance = page.getByTestId("branch-guidance-overlay");
+  await expect(guidance).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(guidance).toBeHidden();
+  await expect(merge).toBeVisible();
+  await expect(draft).toHaveValue("Current edited version for main.");
+
+  await merge.getByTestId("branch-guided-generate").click();
+  await guidance.locator("textarea").fill("Emphasize the evidence and shorten the conclusion.");
+  await guidance.getByTestId("branch-guidance-action").click();
+  await expect.poll(() => lastInvokeArgs(page, "summarize_session_branch_merge")).toMatchObject({
+    id: "conversation-branch",
+    expectedGuardHash: "mock-branch-merge-guard",
+    currentVersion: "Current edited version for main.",
+    userGuidance: "Emphasize the evidence and shorten the conclusion.",
+  });
+  await expect(guidance).toBeHidden();
+  await expect(draft).toHaveValue(
+    "Guided version: Emphasize the evidence and shorten the conclusion.",
+  );
 });
 
 test("starting a new exploration is hidden while the feature is incomplete", async ({ page }) => {
@@ -165,7 +195,7 @@ test("user messages offer the mature branch flow from the context menu", async (
   await expect(branch).toBeVisible();
   await expect(page.getByRole("button", { name: "Start exploration", exact: true })).toHaveCount(0);
   await branch.click();
-  await expect(page.locator("#composer-input")).toHaveValue("First method");
+  await expect(page.locator("#composer-input")).toHaveValue("");
   await expect(page.getByText("Legacy method", { exact: true })).toHaveCount(0);
 });
 

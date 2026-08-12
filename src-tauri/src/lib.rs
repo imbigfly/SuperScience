@@ -846,6 +846,7 @@ struct SessionTranscriptPage {
     user_offset: usize,
     outline: Vec<SessionOutlineItem>,
     presentations: Vec<SessionPresentation>,
+    branches: Vec<wisp_store::SessionBranchLink>,
 }
 
 #[derive(Serialize)]
@@ -7701,10 +7702,9 @@ pub fn run() {
             scratch_commands::start_scratch_chat,
             scratch_commands::close_scratch_chat,
             session_commands::branch_session,
-            session_commands::compare_session_branches,
-            session_commands::analyze_session_branches,
-            session_commands::converge_session_branches,
-            session_commands::detach_session_branch,
+            session_commands::preview_session_branch_merge,
+            session_commands::summarize_session_branch_merge,
+            session_commands::merge_session_branch_summary,
             exploration_commands::start_exploration,
             exploration_commands::list_project_explorations,
             exploration_commands::list_project_state_revisions,

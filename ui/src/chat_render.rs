@@ -25,6 +25,7 @@ pub(crate) fn class_for(item: &ChatItem) -> &'static str {
         ChatItem::QueuedUser { .. } => "msg user queued",
         ChatItem::Assistant { text, .. } if text.starts_with("Error: ") => "tool-wrap",
         ChatItem::Assistant { .. } => "msg assistant",
+        ChatItem::BranchMerge { .. } => "branch-merge-card-row",
         ChatItem::Reasoning(_) => "msg reasoning",
         ChatItem::Tool { name, .. } if is_run_monitor_tool(name) => "tool-wrap run-monitor-wrap",
         ChatItem::Tool { name, .. } if is_image_generation_tool(name) => {
@@ -1296,6 +1297,7 @@ pub(crate) fn render_item(
     on_question_answer: Callback<(usize, Option<String>, String)>,
     on_review_jump: Callback<usize>,
     dismissed_runs: RwSignal<HashSet<String>>,
+    on_branch_merge: Callback<(String, String)>,
 ) -> impl IntoView {
     let locale = use_locale();
     match item {
@@ -1396,6 +1398,25 @@ pub(crate) fn render_item(
                 on_explore=on_explore
             />
         }.into_view(),
+        ChatItem::BranchMerge { text, branch_title, .. } => {
+            let open_text = text.clone();
+            let title = if branch_title.trim().is_empty() {
+                t(locale.get(), "branch.merged_result")
+            } else {
+                branch_title.clone()
+            };
+            view! {
+                <button type="button" class="branch-merge-card" data-testid="branch-merge-card"
+                    on:click=move |_| on_branch_merge.call((title.clone(), open_text.clone()))>
+                    <span class="branch-merge-card-icon" aria-hidden="true">{compose_icon("branch")}</span>
+                    <span class="branch-merge-card-copy">
+                        <strong>{t(locale.get(), "branch.merged_result")}</strong>
+                        <span>{branch_title.clone()}</span>
+                    </span>
+                    <span class="branch-merge-card-open">{compose_icon("chevron-right")}</span>
+                </button>
+            }.into_view()
+        }
         ChatItem::Tool { name, .. } if name == "attempt_completion" => view! {}.into_view(),
         ChatItem::FileChanged(_) => view! {}.into_view(),
         ChatItem::Tool { name, ok, input, output, .. } if is_run_monitor_tool(name) => view! {

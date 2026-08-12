@@ -222,8 +222,7 @@ pub enum SessionAction {
     Open(String),
     Delete(String),
     DeleteBranch(String),
-    CompareBranches(String),
-    DetachBranch(String),
+    MergeBranch(String),
     Rename {
         id: String,
         title: String,
@@ -292,7 +291,7 @@ pub fn session_menu(
     title: &str,
     pinned: bool,
     is_branch: bool,
-    has_branch_family: bool,
+    _has_branch_family: bool,
     locale: Locale,
 ) -> CtxMenu {
     let mut items = vec![item(
@@ -306,17 +305,10 @@ pub fn session_menu(
             i18n::t(locale, "ctx.open_session"),
             session_id.to_string(),
         ));
-        if has_branch_family {
-            items.push(item(
-                "compareSessionBranches",
-                i18n::t(locale, "branch.compare"),
-                session_id.to_string(),
-            ));
-        }
         if is_branch {
             items.push(item(
-                "detachSessionBranch",
-                i18n::t(locale, "branch.detach"),
+                "mergeSessionBranch",
+                i18n::t(locale, "branch.merge"),
                 session_id.to_string(),
             ));
         }
@@ -496,11 +488,12 @@ pub fn build(
         });
     }
 
-    if let Some(ses) = closest(&target, ".side-item.ses") {
+    if let Some(ses) = closest(&target, ".side-item.ses, .message-branch-link") {
         let title = ses.get_attribute("data-session-title").unwrap_or_default();
         let id = ses.get_attribute("data-session-id").unwrap_or_default();
         let pinned = ses.get_attribute("data-session-pinned").as_deref() == Some("true");
-        let is_branch = ses.get_attribute("data-session-branch").as_deref() == Some("true");
+        let is_branch = ses.get_attribute("data-session-branch").as_deref() == Some("true")
+            || ses.class_list().contains("message-branch-link");
         let has_branch_family =
             ses.get_attribute("data-session-family").as_deref() == Some("true");
         return Some(session_menu(
@@ -784,12 +777,8 @@ mod session_branch_action_tests {
     #[test]
     fn parses_branch_specific_actions() {
         assert!(matches!(
-            session_action("compareSessionBranches", "branch-1"),
-            Some(SessionAction::CompareBranches(id)) if id == "branch-1"
-        ));
-        assert!(matches!(
-            session_action("detachSessionBranch", "branch-1"),
-            Some(SessionAction::DetachBranch(id)) if id == "branch-1"
+            session_action("mergeSessionBranch", "branch-1"),
+            Some(SessionAction::MergeBranch(id)) if id == "branch-1"
         ));
         assert!(matches!(
             session_action("deleteSessionBranch", "branch-1"),
@@ -805,11 +794,8 @@ pub fn session_action(action: &str, payload: &str) -> Option<SessionAction> {
         "deleteSessionBranch" if !payload.is_empty() => {
             Some(SessionAction::DeleteBranch(payload.to_string()))
         }
-        "compareSessionBranches" if !payload.is_empty() => {
-            Some(SessionAction::CompareBranches(payload.to_string()))
-        }
-        "detachSessionBranch" if !payload.is_empty() => {
-            Some(SessionAction::DetachBranch(payload.to_string()))
+        "mergeSessionBranch" if !payload.is_empty() => {
+            Some(SessionAction::MergeBranch(payload.to_string()))
         }
         "renameSession" if !payload.is_empty() => {
             let (id, title) = payload.split_once('\u{1e}')?;

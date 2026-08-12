@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS frames (
     exploration_id  TEXT,
     folder_id       TEXT REFERENCES folders(id) ON DELETE SET NULL,
     branched_from   TEXT,
+    branch_point_user_index INTEGER,
+    branch_point_kind TEXT,
     pinned          INTEGER NOT NULL DEFAULT 0,
     model           TEXT,
     reasoning_effort TEXT,
@@ -58,6 +60,19 @@ CREATE TABLE IF NOT EXISTS messages (
     UNIQUE(frame_id, seq)
 );
 CREATE INDEX IF NOT EXISTS ix_messages_frame ON messages(frame_id);
+
+CREATE TABLE IF NOT EXISTS session_branch_merges (
+    id                      TEXT PRIMARY KEY,
+    source_frame_id         TEXT NOT NULL REFERENCES frames(id) ON DELETE CASCADE,
+    branch_frame_id         TEXT NOT NULL REFERENCES frames(id) ON DELETE CASCADE,
+    checkpoint_user_index   INTEGER NOT NULL,
+    checkpoint_kind         TEXT NOT NULL,
+    summary_message_seq     INTEGER NOT NULL,
+    guard_hash              TEXT NOT NULL,
+    created_at              INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_session_branch_merges_source
+    ON session_branch_merges(source_frame_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS session_reviews (
     id          TEXT PRIMARY KEY,
