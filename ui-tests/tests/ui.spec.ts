@@ -9711,6 +9711,41 @@ test("specialists page configures the builtin Reader and saves a custom speciali
   await expect(page.getByText("Paper hunter")).toBeVisible();
 });
 
+test("specialist skills whitelist uses a searchable picker instead of a full list", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Specialists");
+  await page.getByText("Scientific Illustrator").click();
+
+  // Existing whitelist entries show as removable chips, even when the skill is
+  // not present in the local skill list.
+  const selected = page.getByTestId("specialist-selected-skill");
+  await expect(selected).toHaveCount(2);
+  await expect(selected.filter({ hasText: "figure-composer" })).toHaveCount(1);
+
+  // No skills render until a search query narrows the list.
+  const options = page.getByTestId("specialist-skill-option");
+  await expect(options).toHaveCount(0);
+  const search = page.getByTestId("specialist-skill-search");
+  await expect(page.getByTestId("specialist-skill-results")).toContainText("3 available skills");
+
+  await search.fill("alpha");
+  await expect(options).toHaveCount(1);
+  await options.first().click();
+  await expect(selected).toHaveCount(3);
+
+  // Unchecking through the picker removes the chip again.
+  await options.first().click();
+  await expect(selected).toHaveCount(2);
+
+  // Chips remove entries directly.
+  await selected.filter({ hasText: "figure-style" }).click();
+  await expect(selected).toHaveCount(1);
+
+  await search.fill("does-not-exist");
+  await expect(options).toHaveCount(0);
+  await expect(page.getByTestId("specialist-skill-results")).toContainText("No matching skills.");
+});
+
 test("Reviewer settings select, test, and persist an ACP backend", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Specialists");

@@ -1349,6 +1349,28 @@ button.workflow-graph-port.output.active {
   color: var(--text-faint);
   font-size: 8.5px;
 }
+/* Specialist skill whitelist picker — same search + chips pattern as the
+   workflow task picker, sized for the settings pane instead of the inspector. */
+.specialist-skill-picker { display: grid; gap: 8px; }
+.specialist-skill-picker .dynamic-skill-selected { margin-bottom: 0; }
+.specialist-skill-picker .dynamic-skill-selected button { padding: 5px 9px; font-size: 12px; }
+.specialist-skill-picker .dynamic-skill-selected button svg { width: 12px; height: 12px; }
+.specialist-skill-picker .dynamic-skill-search { padding: 8px 10px; font-size: 12.5px; }
+.specialist-skill-picker .dynamic-skill-results { max-height: 220px; margin-top: 0; }
+.specialist-skill-picker .dynamic-skill-hint { padding: 10px 12px; font-size: 12px; }
+/* Beat the generic `.settings-page label` column-flex rule so options keep the
+   workflow picker's checkbox | name | scope row layout. */
+.specialist-skill-picker label.dynamic-skill-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+.specialist-skill-picker .dynamic-skill-option small { font-size: 10px; }
 .workflow-studio-actions {
   align-items: center;
   position: sticky;
@@ -1729,10 +1751,9 @@ button.workflow-graph-port.output.active {
   flex-shrink: 0;
 }
 .settings-pane .hint {
-  padding: 10px 12px;
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  padding: 0;
+  background: transparent;
+  border: 0;
 }
 .settings-footer {
   margin-top: auto;

@@ -862,6 +862,26 @@ pub(super) fn SettingsView(
     let quick_action_form = create_rw_signal(None::<QuickAction>);
     let quick_action_busy = create_rw_signal(false);
     let quick_action_error = create_rw_signal(None::<String>);
+    // Specialist skill whitelist picker: search query + filtered results, so a
+    // large skill library never renders as an unbounded checkbox list.
+    let specialist_skill_query = create_rw_signal(String::new());
+    let specialist_filtered_skills = create_memo(move |_| {
+        let query = specialist_skill_query.get();
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        skills_list
+            .get()
+            .into_iter()
+            .filter(|s| {
+                s.name.to_lowercase().contains(&query)
+                    || s.description.to_lowercase().contains(&query)
+                    || s.scope.to_lowercase().contains(&query)
+                    || s.tags.iter().any(|tag| tag.to_lowercase().contains(&query))
+            })
+            .collect::<Vec<_>>()
+    });
     window_capture_escape(move || {
         if !show_settings.get_untracked() {
             return false;
@@ -3221,23 +3241,84 @@ pub(super) fn SettingsView(
                                             {move || specialist_form.get().filter(|f| f.skills.is_some()).map(|_| view! {
                                                 <span class="hint span-2">{move || t(locale.get(), "specialists.skills.whitelist_hint")}</span>
                                             })}
-                                            {move || {
-                                                let whitelist = specialist_form.get().and_then(|f| f.skills);
-                                                whitelist.map(|list| {
-                                                    let list = std::rc::Rc::new(list);
-                                                    view! {
-                                                        <div class="span-2 settings-form-grid">
-                                                            {move || skills_list.get().into_iter().map(|s| {
+                                            {move || specialist_form.get().is_some_and(|f| f.skills.is_some()).then(|| view! {
+                                                <div class="span-2 dynamic-skill-picker specialist-skill-picker" data-testid="specialist-skill-picker">
+                                                    {move || {
+                                                        let selected = specialist_form.get()
+                                                            .and_then(|f| f.skills)
+                                                            .unwrap_or_default();
+                                                        (!selected.is_empty()).then(|| view! {
+                                                            <div class="dynamic-skill-selected" data-testid="specialist-selected-skills">
+                                                                <For each=move || specialist_form.get()
+                                                                        .and_then(|f| f.skills)
+                                                                        .unwrap_or_default()
+                                                                    key=|name| name.clone()
+                                                                    children=move |name| {
+                                                                        let remove_name = name.clone();
+                                                                        view! {
+                                                                            <button type="button" data-testid="specialist-selected-skill"
+                                                                                aria-label=tf(
+                                                                                    locale.get(),
+                                                                                    "specialists.skills.remove",
+                                                                                    &[("skill", &remove_name)],
+                                                                                )
+                                                                                on:click=move |_| specialist_form.update(|o| if let Some(o) = o {
+                                                                                    if let Some(cur) = o.skills.as_mut() {
+                                                                                        cur.retain(|n| n != &remove_name);
+                                                                                    }
+                                                                                })>
+                                                                                <span>{name}</span>
+                                                                                {compose_icon("close")}
+                                                                            </button>
+                                                                        }
+                                                                    }
+                                                                />
+                                                            </div>
+                                                        })
+                                                    }}
+                                                    <input type="search" class="dynamic-skill-search"
+                                                        data-testid="specialist-skill-search"
+                                                        autocomplete="off"
+                                                        prop:value=move || specialist_skill_query.get()
+                                                        prop:placeholder=move || t(locale.get(), "specialists.skills.search")
+                                                        aria-label=move || t(locale.get(), "specialists.skills.search")
+                                                        on:input=move |ev| specialist_skill_query.set(event_target_value(&ev)) />
+                                                    <div class="dynamic-skill-results" data-testid="specialist-skill-results">
+                                                        {move || {
+                                                            if specialist_skill_query.get().trim().is_empty() {
+                                                                view! {
+                                                                    <span class="dynamic-skill-hint">{tf(
+                                                                        locale.get(),
+                                                                        "specialists.skills.search_hint",
+                                                                        &[("count", &skills_list.get().len().to_string())],
+                                                                    )}</span>
+                                                                }.into_view()
+                                                            } else if specialist_filtered_skills.get().is_empty() {
+                                                                view! {
+                                                                    <span class="dynamic-skill-hint">
+                                                                        {t(locale.get(), "specialists.skills.no_results")}
+                                                                    </span>
+                                                                }.into_view()
+                                                            } else {
+                                                                ().into_view()
+                                                            }
+                                                        }}
+                                                        <For each=move || specialist_filtered_skills.get()
+                                                            key=|s| s.name.clone()
+                                                            children=move |s| {
                                                                 let name = s.name.clone();
                                                                 let name_checked = name.clone();
-                                                                let checked = list.contains(&name);
                                                                 view! {
-                                                                    <label class="settings-check">
+                                                                    <label class="dynamic-skill-option" title=s.description.clone()
+                                                                        data-testid="specialist-skill-option">
                                                                         <input type="checkbox"
-                                                                            prop:checked=checked
+                                                                            prop:checked=move || specialist_form.get()
+                                                                                .and_then(|f| f.skills.clone())
+                                                                                .unwrap_or_default()
+                                                                                .contains(&name_checked)
                                                                             on:change=move |ev| {
                                                                                 let on = event_target_checked(&ev);
-                                                                                let name = name_checked.clone();
+                                                                                let name = name.clone();
                                                                                 specialist_form.update(|o| if let Some(o) = o {
                                                                                     let mut cur = o.skills.clone().unwrap_or_default();
                                                                                     if on {
@@ -3248,14 +3329,15 @@ pub(super) fn SettingsView(
                                                                                     o.skills = Some(cur);
                                                                                 });
                                                                             } />
-                                                                        <span>{name}</span>
+                                                                        <span>{s.name}</span>
+                                                                        <small>{s.scope}</small>
                                                                     </label>
                                                                 }
-                                                            }).collect_view()}
-                                                        </div>
-                                                    }
-                                                })
-                                            }}
+                                                            }
+                                                        />
+                                                    </div>
+                                                </div>
+                                            })}
                                         </div>
                                     </div>
                                     {move || model_form_msg.get().map(|(ok, text)| view! {
@@ -3288,6 +3370,7 @@ pub(super) fn SettingsView(
                                     <button type="button" on:click=move |ev| {
                                         close_details_ancestor(&ev);
                                         model_form_msg.set(None);
+                                        specialist_skill_query.set(String::new());
                                         specialist_form.set(Some(Specialist {
                                             id: String::new(),
                                             name: String::new(),
@@ -3316,6 +3399,7 @@ pub(super) fn SettingsView(
                                             <div class="settings-list-row settings-list-row-link"
                                                 on:click=move |_| {
                                                     model_form_msg.set(None);
+                                                    specialist_skill_query.set(String::new());
                                                     specialist_form.set(Some(edit.clone()));
                                                 }>
                                                 <div class="settings-list-main">
@@ -3342,6 +3426,7 @@ pub(super) fn SettingsView(
                                             <div class="settings-list-row settings-list-row-link"
                                                 on:click=move |_| {
                                                     model_form_msg.set(None);
+                                                    specialist_skill_query.set(String::new());
                                                     specialist_form.set(Some(edit.clone()));
                                                 }>
                                                 <div class="settings-list-main">
