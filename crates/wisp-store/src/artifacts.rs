@@ -710,9 +710,11 @@ impl Store {
     /// internal snapshot path under `.wisp/` and must not be shown as the
     /// document's real location.
     pub async fn artifact_location(&self, id: &str) -> Result<Option<String>> {
-        Ok(sqlx::query_scalar("SELECT logical_key FROM artifacts WHERE id=?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?)
+        Ok(
+            sqlx::query_scalar("SELECT logical_key FROM artifacts WHERE id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
     }
 }
