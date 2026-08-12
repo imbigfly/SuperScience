@@ -327,7 +327,15 @@ impl Provider for OpenAiResponsesProvider {
 fn ensure_completed_response(value: &Value) -> Result<()> {
     match value.get("status").and_then(Value::as_str) {
         None | Some("completed") => Ok(()),
-        Some(_) => Err(LlmError::Incomplete),
+        Some(status) => Err(LlmError::NotCompleted {
+            status: status.to_string(),
+            reason: value
+                .pointer("/incomplete_details/reason")
+                .and_then(Value::as_str)
+                .or_else(|| value.pointer("/error/message").and_then(Value::as_str))
+                .unwrap_or("no detail provided")
+                .to_string(),
+        }),
     }
 }
 
@@ -521,13 +529,54 @@ mod tests {
                 "output_text": "partial report",
                 "incomplete_details": {"reason": "upstream_error"}
             });
-            assert!(matches!(
-                ensure_completed_response(&value),
-                Err(LlmError::Incomplete)
-            ));
+            match ensure_completed_response(&value) {
+                Err(LlmError::NotCompleted { status: s, reason }) => {
+                    assert_eq!(s, status);
+                    assert_eq!(reason, "upstream_error");
+                }
+                other => panic!("expected NotCompleted, got {other:?}"),
+            }
         }
         assert!(ensure_completed_response(&json!({"status": "completed"})).is_ok());
         assert!(ensure_completed_response(&json!({"output_text": "relay response"})).is_ok());
+    }
+
+    #[test]
+    fn output_token_limit_is_distinguished_from_other_failures() {
+        let limited = ensure_completed_response(&json!({
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"}
+        }))
+        .unwrap_err();
+        assert!(limited.output_limit_hit());
+        assert_eq!(
+            limited.to_string(),
+            "response ended with status 'incomplete' (max_output_tokens)"
+        );
+
+        let filtered = ensure_completed_response(&json!({
+            "status": "incomplete",
+            "incomplete_details": {"reason": "content_filter"}
+        }))
+        .unwrap_err();
+        assert!(!filtered.output_limit_hit());
+
+        let failed = ensure_completed_response(&json!({
+            "status": "failed",
+            "error": {"message": "upstream exploded"}
+        }))
+        .unwrap_err();
+        assert!(!failed.output_limit_hit());
+        assert_eq!(
+            failed.to_string(),
+            "response ended with status 'failed' (upstream exploded)"
+        );
+
+        let undetailed = ensure_completed_response(&json!({"status": "cancelled"})).unwrap_err();
+        assert_eq!(
+            undetailed.to_string(),
+            "response ended with status 'cancelled' (no detail provided)"
+        );
     }
 
     #[test]

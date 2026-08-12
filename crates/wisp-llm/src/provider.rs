@@ -61,11 +61,22 @@ pub enum LlmError {
     Config(String),
     #[error("stream ended without completion")]
     Incomplete,
+    /// A Responses-API turn that ended in a terminal status other than
+    /// `completed` (HTTP 200, but `incomplete`/`failed`/`cancelled`). Carries
+    /// the wire detail (`incomplete_details.reason` or `error.message`) so
+    /// callers can tell an exhausted output budget from a genuine failure.
+    #[error("response ended with status '{status}' ({reason})")]
+    NotCompleted { status: String, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, LlmError>;
 
 impl LlmError {
+    /// The model stopped because it exhausted the output token budget
+    /// (`max_output_tokens`), so a retry with a larger budget can succeed.
+    pub fn output_limit_hit(&self) -> bool {
+        matches!(self, LlmError::NotCompleted { reason, .. } if reason == "max_output_tokens")
+    }
     /// Provider rejected the request because the assembled prompt exceeds the
     /// model context window.
     pub fn is_context_overflow(&self) -> bool {
