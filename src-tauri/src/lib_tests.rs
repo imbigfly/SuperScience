@@ -1170,6 +1170,7 @@ fn transcript_page_reconstructs_legacy_prefix_before_persisted_events() {
             (1, wisp_llm::Message::user("legacy question")),
             (2, wisp_llm::Message::assistant("fallback answer")),
         ],
+        branch_merges: vec![],
         reviews: vec![],
         resources: vec![],
         ui_events: events
