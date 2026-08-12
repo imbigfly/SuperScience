@@ -308,7 +308,7 @@ fn merge_finished_uploads(items: &mut Vec<ComposerAttachment>, results: Vec<Uplo
             .unwrap_or_else(|| "file".into());
         if result.ok {
             if let Some(info) = result.info {
-                let path = info.path;
+                let path = info.location.unwrap_or(info.path);
                 if !ready_paths.insert(path.clone()) {
                     continue;
                 }
@@ -728,6 +728,7 @@ mod upload_attachment_tests {
                 name: name.clone(),
                 kind: "file".into(),
                 path: path.into(),
+                location: None,
                 ts: 0,
                 project_id: None,
                 project_name: None,

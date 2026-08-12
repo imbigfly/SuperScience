@@ -71,6 +71,7 @@ pub(crate) fn artifact_meta(a: &Artifact, locale: Locale) -> String {
             ],
         ),
         PreviewData::File { path, kind } => {
+            let path = a.location.as_deref().unwrap_or(path);
             if kind == "fasta" {
                 t(locale, "artifact.kind.fasta").into()
             } else if kind == "msa" {

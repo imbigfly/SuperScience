@@ -480,6 +480,8 @@ struct ArtifactInfo {
     name: String,
     kind: String,
     path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location: Option<String>,
     ts: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     project_id: Option<String>,

@@ -178,7 +178,7 @@ pub(crate) fn ProjectsScreen(
         {
             if pos == idx {
                 search_open.set(false);
-                let path = stored_artifact_path(&a.path);
+                let path = stored_artifact_path(a.location.as_deref().unwrap_or(&a.path));
                 let kind = file_kind(&a.name)
                     .or_else(|| file_kind(&path))
                     .unwrap_or_else(|| {
@@ -585,7 +585,7 @@ pub(crate) fn ProjectsScreen(
                                                 <span class="project-search-main">
                                                     <span class="project-search-title">{a.name.clone()}</span>
                                                     <span class="project-search-sub">
-                                                        {a.path.clone()}{(!when.is_empty()).then(|| format!(" · {when}")).unwrap_or_default()}
+                                                        {a.location.as_deref().unwrap_or(&a.path).to_string()}{(!when.is_empty()).then(|| format!(" · {when}")).unwrap_or_default()}
                                                     </span>
                                                 </span>
                                                 <span class="project-search-badge">{badge}</span>

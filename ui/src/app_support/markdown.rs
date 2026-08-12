@@ -189,6 +189,12 @@ pub(crate) fn artifact_file_paths(a: &Artifact) -> Vec<String> {
     match &a.data {
         PreviewData::File { path, .. } => {
             let mut out = vec![normalize_path(path)];
+            if let Some(location) = a.location.as_deref() {
+                let location = normalize_path(location);
+                if !out.contains(&location) {
+                    out.push(location);
+                }
+            }
             if let Some(name) = path.rsplit(['/', '\\']).next() {
                 let name = normalize_path(name);
                 if !out.contains(&name) {
@@ -633,6 +639,7 @@ mod art_ref_marker_tests {
                     path: "a/denovo_design_worklist.csv".into(),
                     kind: "csv".into(),
                 },
+                location: None,
                 source_item: 0,
                 superseded: false,
             },
@@ -644,6 +651,7 @@ mod art_ref_marker_tests {
                     path: "b/denovo_design_worklist.csv".into(),
                     kind: "csv".into(),
                 },
+                location: None,
                 source_item: 0,
                 superseded: false,
             },

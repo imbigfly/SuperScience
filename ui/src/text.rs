@@ -683,8 +683,9 @@ pub(crate) fn artifact_group_key(a: &crate::dto::Artifact, project_root: &str) -
     use crate::dto::PreviewData;
     match &a.data {
         PreviewData::File { path, .. } => {
-            let relative = artifact_workspace_path(path, project_root);
-            let outside_workspace_absolute = relative == path.trim().replace('\\', "/")
+            let display_path = a.location.as_deref().unwrap_or(path);
+            let relative = artifact_workspace_path(display_path, project_root);
+            let outside_workspace_absolute = relative == display_path.trim().replace('\\', "/")
                 && (relative.starts_with('/')
                     || relative.as_bytes().get(1) == Some(&b':')
                     || relative.contains("://"));
@@ -739,6 +740,7 @@ mod artifact_group_tests {
                 path: path.into(),
                 kind: "image".into(),
             },
+            location: None,
             source_item: 0,
             superseded: false,
         }
@@ -765,6 +767,26 @@ mod artifact_group_tests {
         assert_eq!(artifact_group_key(&outside, r"D:\project"), "results/");
         let remote = file("ssh://gpu/work/results/plot.png");
         assert_eq!(artifact_group_key(&remote, r"D:\project"), "results/");
+    }
+
+    #[test]
+    fn registered_artifact_groups_by_workspace_location_not_snapshot_path() {
+        let snapshot = Artifact {
+            id: "artifact-1".into(),
+            name: "report.md".into(),
+            kind: "markdown",
+            data: PreviewData::File {
+                path: ".wisp/artifacts/sha256/aa/report.md".into(),
+                kind: "markdown".into(),
+            },
+            location: Some("results/report.md".into()),
+            source_item: 0,
+            superseded: false,
+        };
+        assert_eq!(
+            artifact_group_key(&snapshot, r"D:\project"),
+            "results/"
+        );
     }
 
     #[test]
