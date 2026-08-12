@@ -12110,6 +12110,10 @@ fn App() -> impl IntoView {
                                         };
                                         let file_click = file.clone();
                                         let context_path = file.as_ref().map(|(path, _)| path.clone()).unwrap_or_default();
+                                        let context_location = a
+                                            .location
+                                            .clone()
+                                            .unwrap_or_else(|| context_path.clone());
                                         let name_click = name.clone();
                                         let publication_source = db_artifacts.get().iter()
                                             .find(|artifact| artifact.id == a.id)
@@ -12120,6 +12124,8 @@ fn App() -> impl IntoView {
                                             });
                                         let tools = file.map(|(path, fkind)| {
                                         let (dl, vn) = (path.clone(), name.clone());
+                                        let workspace_location =
+                                            a.location.clone().unwrap_or_else(|| path.clone());
                                         let publication_source = publication_source.clone();
                                         view! {
                                             <div class="rp-tile-tools">
@@ -12138,9 +12144,10 @@ fn App() -> impl IntoView {
                                                 let (mi, cx, cy) = artifact_menu.get()?;
                                                 (mi == i).then(|| {
                                                 let (p, n, k) = (path.clone(), vn.clone(), fkind.clone());
-                                                let (mv, sp, dw) = (p.clone(), p.clone(), p.clone());
-                                                let rv = p.clone();
-                                                let at = p.clone();
+                                                let (mv, dw) = (p.clone(), p.clone());
+                                                let sp = workspace_location.clone();
+                                                let at = workspace_location.clone();
+                                                let rv = workspace_location.clone();
                                                 let oc = CenterFileTab::new(p.clone(), n.clone(), k.clone());
                                                 let (mvn, mvk) = (n.clone(), k.clone());
                                                 view! {
@@ -12210,7 +12217,8 @@ fn App() -> impl IntoView {
                                     view! {
                                         <div class="rp-tile" class:active=move || sel_artifact.get() == i
                                             data-artifact-name=name.clone()
-                                            data-artifact-path=context_path>
+                                            data-artifact-path=context_path
+                                            data-artifact-location=context_location>
                                             <button type="button" class="rp-tile-main"
                                                 on:click=move |_| {
                                                     artifact_menu.set(None);

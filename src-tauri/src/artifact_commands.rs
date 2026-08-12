@@ -75,6 +75,21 @@ fn existing_artifact_path(
     Ok(real)
 }
 
+/// Convert an artifact's stored logical key into the path users should see in
+/// the file browser. `path:` and `source:` keys are workspace paths; anything
+/// else (internal run keys, remote URIs, legacy rows) keeps the storage path
+/// as a fallback rather than inventing a user-facing location.
+fn user_artifact_location(logical_key: Option<&str>, storage_path: &str) -> String {
+    logical_key
+        .and_then(|key| {
+            key.strip_prefix("path:")
+                .or_else(|| key.strip_prefix("source:"))
+        })
+        .filter(|path| !path.is_empty())
+        .unwrap_or(storage_path)
+        .to_string()
+}
+
 async fn register_artifact_at(
     state: &AppState,
     label: &str,
@@ -149,6 +164,7 @@ async fn register_artifact_at(
         name: filename,
         kind: mime,
         path: captured.storage_path,
+        location: Some(source_path),
         ts,
         project_id: Some(ap.id.clone()),
         project_name: None,
@@ -241,6 +257,24 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn user_artifact_location_uses_workspace_keys_and_falls_back_to_storage() {
+        let storage = ".wisp/artifacts/sha256/aa/report.md";
+        assert_eq!(
+            user_artifact_location(Some("path:results/report.md"), storage),
+            "results/report.md"
+        );
+        assert_eq!(
+            user_artifact_location(Some("source:notes/claim.md"), storage),
+            "notes/claim.md"
+        );
+        assert_eq!(
+            user_artifact_location(Some("method-search-run:run:spec"), storage),
+            storage
+        );
+        assert_eq!(user_artifact_location(None, storage), storage);
+    }
 }
 #[tauri::command]
 pub(super) async fn list_artifacts(
@@ -260,13 +294,19 @@ pub(super) async fn list_artifacts(
         .list_artifacts(&fid)
         .await
         .map_err(|e| format!("{e}"))?;
-    Ok(rows
-        .into_iter()
-        .map(|(id, name, ct, path, ts)| ArtifactInfo {
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, name, ct, path, ts) in rows {
+        let logical_key = state
+            .store
+            .artifact_location(&id)
+            .await
+            .map_err(|e| format!("{e}"))?;
+        out.push(ArtifactInfo {
             id,
             name: name.clone(),
             kind: ct,
-            path,
+            path: path.clone(),
+            location: Some(user_artifact_location(logical_key.as_deref(), &path)),
             ts,
             project_id: None,
             project_name: None,
@@ -274,8 +314,9 @@ pub(super) async fn list_artifacts(
             session_title: None,
             size_bytes: None,
             origin: None,
-        })
-        .collect())
+        });
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -328,13 +369,20 @@ pub(super) async fn search_artifacts(
                 .map_err(|e| format!("{e}"))?
         }
     };
-    Ok(rows
-        .into_iter()
-        .map(|a| ArtifactInfo {
+    let mut out = Vec::with_capacity(rows.len());
+    for a in rows {
+        let path = a.path.clone();
+        let logical_key = state
+            .store
+            .artifact_location(&a.id)
+            .await
+            .map_err(|e| format!("{e}"))?;
+        out.push(ArtifactInfo {
             id: a.id,
             name: a.name,
             kind: a.kind,
-            path: a.path,
+            path: path.clone(),
+            location: Some(user_artifact_location(logical_key.as_deref(), &path)),
             ts: a.ts,
             project_id: Some(a.project_id),
             project_name: Some(a.project_name),
@@ -342,8 +390,9 @@ pub(super) async fn search_artifacts(
             session_title: Some(a.session_title),
             size_bytes: a.size_bytes,
             origin: Some(a.origin),
-        })
-        .collect())
+        });
+    }
+    Ok(out)
 }
 
 /// Given candidate artifact file paths (as they appear in chat), return the

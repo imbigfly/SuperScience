@@ -1270,6 +1270,8 @@ pub(crate) struct ArtifactInfo {
     pub(crate) name: String,
     pub(crate) kind: String,
     pub(crate) path: String,
+    #[serde(default)]
+    pub(crate) location: Option<String>,
     pub(crate) ts: i64,
     #[serde(default)]
     pub(crate) project_id: Option<String>,
@@ -2379,6 +2381,8 @@ pub(crate) struct Artifact {
     pub(crate) name: String,
     pub(crate) kind: &'static str,
     pub(crate) data: PreviewData,
+    /// Workspace-visible location when `data` points at an internal snapshot.
+    pub(crate) location: Option<String>,
     /// Transcript item that most recently produced or mentioned this artifact.
     pub(crate) source_item: usize,
     pub(crate) superseded: bool,

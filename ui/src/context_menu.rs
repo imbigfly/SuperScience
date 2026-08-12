@@ -533,6 +533,10 @@ pub fn build(
     if let Some(tile) = closest(&target, ".rp-tile") {
         let name = tile.get_attribute("data-artifact-name").unwrap_or_default();
         let path = tile.get_attribute("data-artifact-path").unwrap_or_default();
+        let location = tile
+            .get_attribute("data-artifact-location")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| path.clone());
         if !name.is_empty() {
             let mut items = vec![item("copyName", i18n::t(locale, "ctx.copy_name"), name)];
             if !path.is_empty() {
@@ -549,7 +553,7 @@ pub fn build(
                     item(
                         "attachWorkspaceFile",
                         i18n::t(locale, "ctx.attach_file"),
-                        path.clone(),
+                        location.clone(),
                     ),
                 );
                 items.push(item(
@@ -560,7 +564,7 @@ pub fn build(
                 items.push(item(
                     "revealInFileManager",
                     i18n::t(locale, "ctx.reveal_in_manager"),
-                    path,
+                    location,
                 ));
             }
             return Some(CtxMenu { x, y, items });

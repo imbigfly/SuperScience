@@ -175,6 +175,7 @@ pub(crate) fn assemble_artifacts(
                         name: tf(locale, "artifact.table", &[("n", &scan.tbl_n.to_string())]),
                         kind: "table",
                         data: PreviewData::Table(t.clone()),
+                        location: None,
                         source_item,
                         superseded: false,
                     });
@@ -187,6 +188,7 @@ pub(crate) fn assemble_artifacts(
                         name: format!("data-{}.csv", scan.csv_n),
                         kind: "csv",
                         data: PreviewData::Table(t.clone()),
+                        location: None,
                         source_item,
                         superseded: false,
                     });
@@ -198,6 +200,7 @@ pub(crate) fn assemble_artifacts(
                         name: format!("alignment-{}.fasta", scan.csv_n),
                         kind: "fasta",
                         data: PreviewData::Fasta(body.clone()),
+                        location: None,
                         source_item,
                         superseded: false,
                     });
@@ -217,6 +220,7 @@ pub(crate) fn assemble_artifacts(
                             tex: tex.clone(),
                             display: true,
                         },
+                        location: None,
                         source_item,
                         superseded: false,
                     });
@@ -243,6 +247,7 @@ pub(crate) fn assemble_artifacts(
                             path: path.clone(),
                             kind: kind.to_string(),
                         },
+                        location: None,
                         source_item,
                         superseded: false,
                     });
@@ -672,10 +677,14 @@ pub(crate) fn current_artifacts(
     }
     current.reverse();
     for info in registered {
-        if !seen_files.insert(artifact_file_identity(&info.path, project_root)) {
+        let location = info
+            .location
+            .clone()
+            .unwrap_or_else(|| info.path.clone());
+        if !seen_files.insert(artifact_file_identity(&location, project_root)) {
             continue;
         }
-        let kind = file_kind(&info.path)
+        let kind = file_kind(&location)
             .or_else(|| file_kind(&info.name))
             .unwrap_or("file");
         current.push(Artifact {
@@ -686,6 +695,7 @@ pub(crate) fn current_artifacts(
                 path: info.path.clone(),
                 kind: kind.to_string(),
             },
+            location: Some(location),
             // No transcript message produced these, so they never render as an
             // inline card under one (`artifacts_for_item` matches on this).
             source_item: usize::MAX,
@@ -952,6 +962,7 @@ mod artifact_scan_tests {
             name: name.into(),
             kind: "table".into(),
             path: path.into(),
+            location: None,
             ts: 0,
             project_id: None,
             project_name: None,
