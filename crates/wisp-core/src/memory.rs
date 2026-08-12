@@ -322,7 +322,7 @@ impl MemoryManager {
         }
     }
 
-    /// Backward-compatible single-query search for non-tool callers.
+    /// Convenience wrapper for single-query non-tool callers.
     pub fn search(&self, query: &str, top_k: usize) -> String {
         serde_json::to_string_pretty(&self.search_queries(
             &[MemorySearchQuery {
