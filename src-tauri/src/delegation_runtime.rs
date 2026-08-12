@@ -1730,7 +1730,6 @@ async fn persisted_successful_steps(
     let mut completed = Vec::new();
     for attempt in latest
         .into_values()
-        .into_iter()
         .filter(|attempt| attempt.status == AgentWorkflowAttemptStatus::Succeeded)
     {
         let Some(raw) = attempt.response_json else {

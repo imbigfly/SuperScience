@@ -1061,7 +1061,7 @@ pub(super) fn transcript_page_items(
     }
     let mut inserted = 0usize;
     for (message_seq, report_json) in &page.reviews {
-        let report: review::ReviewReport = serde_json::from_str(&report_json)
+        let report: review::ReviewReport = serde_json::from_str(report_json)
             .map_err(|e| format!("invalid persisted review: {e}"))?;
         let at = boundaries.get(message_seq).copied().unwrap_or_else(|| {
             let message_count = page
