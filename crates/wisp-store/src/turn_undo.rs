@@ -217,6 +217,7 @@ impl Store {
             }
         }
 
+        crate::sessions::reconcile_session_branches_after_truncate(&mut tx, frame_id, keep).await?;
         Store::truncate_message_rows(&mut tx, frame_id, keep).await?;
         tx.commit().await?;
         Ok(())

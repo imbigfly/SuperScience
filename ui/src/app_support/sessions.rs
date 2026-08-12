@@ -33,6 +33,7 @@ pub(crate) fn refresh_sessions(
                         folder_id: None,
                         branched_from: None,
                         pinned: false,
+                        branch_state: None,
                     });
                 page.items.insert(0, draft);
             }
@@ -175,6 +176,7 @@ mod branch_nesting_tests {
             folder_id: folder.map(Into::into),
             branched_from: branched_from.map(Into::into),
             pinned: false,
+            branch_state: branched_from.map(|_| "active".into()),
         }
     }
 

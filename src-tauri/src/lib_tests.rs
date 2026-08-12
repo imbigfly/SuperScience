@@ -1191,6 +1191,36 @@ fn transcript_page_reconstructs_legacy_prefix_before_persisted_events() {
 }
 
 #[test]
+fn branch_merge_projection_never_relabels_the_previous_answer() {
+    let page = wisp_store::SessionTranscriptPage {
+        messages: vec![
+            (1, wisp_llm::Message::user("question")),
+            (2, wisp_llm::Message::assistant("original answer")),
+            (3, wisp_llm::Message::assistant("branch summary")),
+        ],
+        branch_merges: vec![wisp_store::SessionBranchMergeCard {
+            summary_message_seq: 3,
+            branch_session_id: "branch".into(),
+            branch_title: "focused work".into(),
+            checkpoint_user_index: 0,
+            checkpoint_kind: "after_response".into(),
+            summary: "branch summary".into(),
+        }],
+        reviews: vec![],
+        resources: vec![],
+        ui_events: vec![],
+        next_before_seq: None,
+        user_offset: 0,
+        latest_seq: 3,
+    };
+
+    let items = transcript_page_items(&page).unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[1].role, "assistant");
+    assert_eq!(items[1].text, "original answer");
+}
+
+#[test]
 fn resource_bindings_cover_messages_rendered_as_assistant_output() {
     assert!(message_uses_resource_bindings(
         &wisp_llm::Message::assistant("answer")

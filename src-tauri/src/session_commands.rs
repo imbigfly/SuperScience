@@ -41,6 +41,15 @@ pub(super) async fn branch_session(
         .0;
     let _project_activity = state.begin_project_activity(&ap.id)?;
     if let Some(source) = session_id.as_deref().filter(|s| !s.is_empty()) {
+        if state
+            .store
+            .session_branch_state(source)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Err("Conversation branches cannot be branched again.".into());
+        }
         if matches!(
             state
                 .store
@@ -331,9 +340,9 @@ pub(super) async fn list_sessions_page(
     };
     let pinned_ids: HashSet<String> = pinned_rows.iter().map(|row| row.0.clone()).collect();
     let page_ids: HashSet<String> = rows.iter().map(|row| row.0.clone()).collect();
-    let mergeable_branch_ids = state
+    let branch_states = state
         .store
-        .list_mergeable_branch_ids(&ap.id)
+        .list_session_branch_states(&ap.id)
         .await
         .map_err(|error| error.to_string())?;
     let running = state.running_turns.lock().await.clone();
@@ -343,8 +352,10 @@ pub(super) async fn list_sessions_page(
         .map(|(id, title, ts, folder_id, branched_from)| SessionInfo {
             running: running.contains(&id),
             pinned: true,
-            branched_from: mergeable_branch_ids
-                .contains(&id)
+            branch_state: branch_states.get(&id).cloned(),
+            branched_from: branch_states
+                .get(&id)
+                .is_some_and(|state| state != "orphaned")
                 .then_some(branched_from)
                 .flatten(),
             id,
@@ -358,8 +369,10 @@ pub(super) async fn list_sessions_page(
             .map(|(id, title, ts, folder_id, branched_from)| SessionInfo {
                 running: running.contains(&id),
                 pinned: pinned_ids.contains(&id),
-                branched_from: mergeable_branch_ids
-                    .contains(&id)
+                branch_state: branch_states.get(&id).cloned(),
+                branched_from: branch_states
+                    .get(&id)
+                    .is_some_and(|state| state != "orphaned")
                     .then_some(branched_from)
                     .flatten(),
                 id,
@@ -723,6 +736,16 @@ pub(super) async fn rewind_session(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Session project was not found.".to_string())?;
     let _project_activity = state.begin_project_activity(&project_id)?;
+    if matches!(
+        state
+            .store
+            .session_branch_state(&frame_id)
+            .await
+            .map_err(|error| error.to_string())?,
+        Some("merged" | "orphaned")
+    ) {
+        return Err("Frozen conversation branches cannot be rewound.".into());
+    }
     let scope = state
         .store
         .frame_state_scope(&frame_id)
@@ -896,7 +919,14 @@ pub(super) fn transcript_page_items(
             item.resources = resources;
         }
     }
-    for merge in &page.branch_merges {
+    // Merge summaries remain real tail messages for model retrieval, but the
+    // transcript projects their cards back under the originating branch link.
+    // Remove only the exact persisted summary row here. The old nearest-
+    // assistant fallback could relabel an unrelated answer when event replay
+    // lacked a matching boundary, which made the original content disappear.
+    let mut merges = page.branch_merges.iter().collect::<Vec<_>>();
+    merges.sort_by_key(|merge| std::cmp::Reverse(merge.summary_message_seq));
+    for merge in merges {
         let end = boundaries
             .get(&merge.summary_message_seq)
             .copied()
@@ -909,14 +939,37 @@ pub(super) fn transcript_page_items(
                 messages_to_items(&msgs[..message_count]).len()
             })
             .min(items.len());
-        if let Some(item) = items[..end]
-            .iter_mut()
-            .rev()
-            .find(|item| item.role == "assistant")
+        let start = boundaries
+            .iter()
+            .filter(|(seq, _)| **seq < merge.summary_message_seq)
+            .max_by_key(|(seq, _)| *seq)
+            .map(|(_, offset)| *offset)
+            .unwrap_or_else(|| {
+                let message_count = page
+                    .messages
+                    .iter()
+                    .take_while(|(seq, _)| *seq < merge.summary_message_seq)
+                    .count();
+                messages_to_items(&msgs[..message_count]).len()
+            })
+            .min(end);
+        if let Some(relative) = items[start..end]
+            .iter()
+            .position(|item| item.role == "assistant" && item.text.trim() == merge.summary.trim())
         {
-            item.role = "branch_merge".into();
-            item.tool_name = Some(merge.branch_title.clone());
-            item.input = Some(merge.branch_session_id.clone());
+            items.remove(start + relative);
+        } else if let Some((index, item)) = items
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .find(|(_, item)| item.role == "assistant" && item.text.ends_with(&merge.summary))
+        {
+            // Repair summaries written by the first merge implementation,
+            // whose Text event could coalesce with the preceding answer.
+            item.text.truncate(item.text.len() - merge.summary.len());
+            if item.text.trim().is_empty() {
+                items.remove(index);
+            }
         }
     }
     let mut inserted = 0usize;
@@ -1013,6 +1066,16 @@ pub(super) async fn load_session(
     } else {
         Vec::new()
     };
+    let branch_state = if before_seq.is_none() {
+        state
+            .store
+            .session_branch_state(&id)
+            .await
+            .map_err(|error| error.to_string())?
+            .map(str::to_string)
+    } else {
+        None
+    };
     let branches = if before_seq.is_none() {
         let project_id = state
             .store
@@ -1048,6 +1111,7 @@ pub(super) async fn load_session(
         outline,
         presentations,
         branches,
+        branch_state,
     })
 }
 

@@ -536,6 +536,7 @@ pub(crate) fn UserMessage(
     ui_index: usize,
     busy: ReadSignal<bool>,
     can_modify: bool,
+    can_branch: Signal<bool>,
     on_copy: Callback<String>,
     on_edit: Callback<usize>,
     on_branch: Callback<usize>,
@@ -639,7 +640,7 @@ pub(crate) fn UserMessage(
     .collect_view();
     view! {
         <div class="user-bubble"
-            data-branch-ui-index=can_modify.then(|| ui_index.to_string())>
+            data-branch-ui-index=can_branch.get_untracked().then(|| ui_index.to_string())>
             {has_images.then(|| view! { <div class="user-attachment-images">{image_cards}</div> })}
             {has_files.then(|| view! { <div class="user-attachment-files">{file_cards}</div> })}
             {has_context.then(|| view! { <div class="user-context-cards">{context_cards}</div> })}
@@ -688,6 +689,8 @@ pub(crate) fn UserMessage(
                         title=move || t(locale.get(), "msg.edit")
                         on:click=move |_| on_edit.call(ui_index)
                     >{move || t(locale.get(), "msg.edit")}</button>
+                })}
+                {move || can_branch.get().then(|| view! {
                     <button
                         type="button"
                         class="msg-btn"
@@ -714,6 +717,7 @@ pub(crate) fn AssistantMessage(
     on_memory: Callback<()>,
     on_review: Callback<()>,
     on_branch: Callback<usize>,
+    can_branch: Signal<bool>,
     show_actions: Signal<bool>,
     can_undo: Signal<bool>,
     on_undo: Callback<usize>,
@@ -904,7 +908,7 @@ pub(crate) fn AssistantMessage(
                 >
                     {compose_icon("review")}
                 </button>
-                <button
+                {move || can_branch.get().then(|| view! { <button
                     type="button"
                     class="msg-icon-btn msg-branch-btn"
                     title=move || t(locale.get(), "msg.branch")
@@ -912,7 +916,7 @@ pub(crate) fn AssistantMessage(
                     on:click=move |_| on_branch.call(source_item)
                 >
                     {compose_icon("branch")}
-                </button>
+                </button> })}
                 <button
                     type="button"
                     class="msg-icon-btn"

@@ -291,6 +291,7 @@ pub fn session_menu(
     title: &str,
     pinned: bool,
     is_branch: bool,
+    branch_merged: bool,
     _has_branch_family: bool,
     locale: Locale,
 ) -> CtxMenu {
@@ -305,7 +306,7 @@ pub fn session_menu(
             i18n::t(locale, "ctx.open_session"),
             session_id.to_string(),
         ));
-        if is_branch {
+        if is_branch && !branch_merged {
             items.push(item(
                 "mergeSessionBranch",
                 i18n::t(locale, "branch.merge"),
@@ -494,6 +495,7 @@ pub fn build(
         let pinned = ses.get_attribute("data-session-pinned").as_deref() == Some("true");
         let is_branch = ses.get_attribute("data-session-branch").as_deref() == Some("true")
             || ses.class_list().contains("message-branch-link");
+        let branch_merged = ses.get_attribute("data-branch-merged").as_deref() == Some("true");
         let has_branch_family =
             ses.get_attribute("data-session-family").as_deref() == Some("true");
         return Some(session_menu(
@@ -503,6 +505,7 @@ pub fn build(
             &title,
             pinned,
             is_branch,
+            branch_merged,
             has_branch_family,
             locale,
         ));

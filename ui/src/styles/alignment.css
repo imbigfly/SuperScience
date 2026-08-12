@@ -109,7 +109,8 @@
 /* Branch sessions nested under the session they were forked from (#531). */
 .side-branch-group { display: flex; flex-direction: column; gap: 1px; }
 .side-branch-kids { display: flex; flex-direction: column; gap: 1px; margin-left: 12px; padding-left: 8px; border-left: 1px solid var(--border); }
-.message-branch-links { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0 4px; padding-left: 28px; }
+.message-branch-links { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 7px; margin: 8px 0 4px; padding-left: 28px; }
+.message-branch-entry { display: flex; width: min(100%, 620px); flex-direction: column; gap: 7px; }
 .message-branch-link { display: inline-flex; max-width: min(320px, 80vw); align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elev); color: var(--text-muted); font-size: 11px; }
 .message-branch-link:hover { border-color: var(--border-active); color: var(--text); }
 .message-branch-link > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

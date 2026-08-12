@@ -153,15 +153,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     ? [
         { id: "exploration-mainline", title: "Mainline analysis", ts: 2100, running: false },
         ...(mockBranchFlow
-          ? [{ id: "conversation-branch", title: "Branch: alternate analysis", ts: 2090, running: false, branched_from: "exploration-mainline" }]
+          ? [{ id: "conversation-branch", title: "Branch: alternate analysis", ts: 2090, running: false, branched_from: "exploration-mainline", branch_state: "active" }]
           : []),
       ]
     : mockBranchFlow
       ? [
           { id: "conversation-main", title: "Main analysis", ts: 2100, running: false },
-          { id: "conversation-branch", title: "Branch: alternate analysis", ts: 2090, running: false, branched_from: "conversation-main" },
-          { id: "conversation-branch-b", title: "Method B", ts: 2080, running: false, branched_from: "conversation-main" },
-          { id: "conversation-branch-c", title: "Method C", ts: 2070, running: false, branched_from: "conversation-main" },
+          { id: "conversation-branch", title: "Branch: alternate analysis", ts: 2090, running: false, branched_from: "conversation-main", branch_state: "active" },
+          { id: "conversation-branch-b", title: "Method B", ts: 2080, running: false, branched_from: "conversation-main", branch_state: "active" },
+          { id: "conversation-branch-c", title: "Method C", ts: 2070, running: false, branched_from: "conversation-main", branch_state: "active" },
         ]
     : mockPlanFlow
     ? [{ id: "s1", title: "Plan mode regression", ts: 2000, running: false }]
@@ -227,6 +227,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             source_session_id: frameId,
             checkpoint_user_index: 0,
             checkpoint_kind: "after_response",
+            merged: Boolean(row.branch_state === "merged"),
+            merge_summary: row.branch_state === "merged" ? mockBranchMergedSummary : null,
           }))
       : [];
     if (mockHistoricalExploration && frameId === "exploration-mainline") {
@@ -1763,15 +1765,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                       : [
                           { role: "user", text: "Main continued independently", tool_name: null, ok: null },
                           { role: "assistant", text: "Main current result", tool_name: null, ok: null },
-                          ...(mockBranchMergedSummary
-                            ? [{
-                                role: "branch_merge",
-                                text: mockBranchMergedSummary,
-                                tool_name: "alternate analysis",
-                                input: "conversation-branch",
-                                ok: null,
-                              }]
-                            : []),
                         ]),
                   ],
                   next_before_seq: null,
@@ -1786,7 +1779,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                           source_session_id: id,
                           checkpoint_user_index: 0,
                           checkpoint_kind: "after_response",
+                          merged: Boolean(row.branch_state === "merged"),
+                          merge_summary: row.branch_state === "merged" ? mockBranchMergedSummary : null,
                         })),
+                  branch_state: session.branch_state ?? null,
                 };
               }
             }
@@ -3843,6 +3839,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "preview_session_branch_merge": {
             const branch = mockSessions.find((session) => session.id === arg("id"));
             if (!branch?.branched_from) throw new Error("Conversation is not a mergeable branch");
+            if (branch.branch_state === "merged") throw new Error("Conversation branch has already been merged");
             return {
               main_session_id: branch.branched_from,
               branch_session_id: branch.id,
@@ -3864,7 +3861,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "merge_session_branch_summary": {
             const branch = mockSessions.find((session) => session.id === arg("id"));
             if (!branch?.branched_from) throw new Error("Conversation is not a mergeable branch");
+            if (branch.branch_state === "merged") throw new Error("Conversation branch has already been merged");
             mockBranchMergedSummary = String(arg("summary") ?? "");
+            branch.branch_state = "merged";
             return {
               main_session_id: branch.branched_from,
               branch_session_id: branch.id,

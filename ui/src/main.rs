@@ -393,6 +393,18 @@ fn App() -> impl IntoView {
         }
     });
     let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
+    let active_branch_state = create_rw_signal::<Option<String>>(None);
+    create_effect(move |_| {
+        let active = active_session.get();
+        let state = active.and_then(|id| {
+            sessions.with(|rows| {
+                rows.iter()
+                    .find(|session| session.id == id)
+                    .and_then(|session| session.branch_state.clone())
+            })
+        });
+        active_branch_state.set(state);
+    });
     let conversation_branches =
         create_rw_signal::<HashMap<String, Vec<SessionBranchLink>>>(HashMap::new());
     let explorations = create_rw_signal::<Vec<ExplorationSummary>>(vec![]);
@@ -419,6 +431,7 @@ fn App() -> impl IntoView {
                     })
                     .is_some_and(|row| row.exploration.status != "active")
             }) || mainline_frozen.get()
+                || matches!(active_branch_state.get().as_deref(), Some("merged" | "orphaned"))
         })
     });
     let exploration_overlay = create_rw_signal::<Option<ExplorationOverlay>>(None);
@@ -1736,7 +1749,29 @@ fn App() -> impl IntoView {
         focus_composer();
         spawn_local(async move {
             let arg = to_value(&tauri_args::rewind_session(&sid, user_idx)).unwrap();
-            let _ = invoke("rewind_session", arg).await;
+            if invoke_checked("rewind_session", arg).await.is_ok() {
+                if let Some(id) = sid.filter(|id| !id.is_empty()) {
+                    let loaded = invoke(
+                        "load_session",
+                        to_value(&serde_json::json!({ "id": id.clone() })).unwrap(),
+                    )
+                    .await;
+                    if let Ok(page) = serde_wasm_bindgen::from_value::<LoadedSessionPage>(loaded) {
+                        conversation_branches.update(|branches| {
+                            branches.insert(id.clone(), page.branches.clone());
+                        });
+                        active_branch_state.set(page.branch_state.clone());
+                        let mut chats = page
+                            .items
+                            .into_iter()
+                            .map(LoadedItem::into_chat)
+                            .collect::<Vec<_>>();
+                        settle_question_cards(&mut chats);
+                        items.set(chats);
+                    }
+                    refresh_session_history();
+                }
+            }
         });
     };
     // Streaming deltas are buffered and flushed on a timer (~20 fps) instead of
@@ -3369,6 +3404,9 @@ fn App() -> impl IntoView {
         let composer_references = composer_references;
         let transcripts = transcripts;
         move |ui_index: usize| {
+            if active_branch_state.get_untracked().is_some() {
+                return;
+            }
             let Some((user_idx, draft, prefix_items)) = items.with(|list| {
                 let user_ui_index = list
                     .iter()
@@ -3430,6 +3468,8 @@ fn App() -> impl IntoView {
                                 source_session_id: source_id,
                                 checkpoint_user_index: user_idx,
                                 checkpoint_kind: checkpoint_kind.into(),
+                                merged: false,
+                                merge_summary: None,
                             });
                     });
                 }
@@ -3483,6 +3523,7 @@ fn App() -> impl IntoView {
                 // accidental duplicate send.
                 input.set(String::new());
                 active_session.set(Some(id));
+                active_branch_state.set(Some("active".into()));
                 refresh_session_history();
                 focus_composer();
             });
@@ -4939,6 +4980,11 @@ fn App() -> impl IntoView {
         );
         let is_running = running.get().contains(&id);
         active_session.set(Some(id.clone()));
+        active_branch_state.set(
+            sessions.with_untracked(|rows| {
+                rows.iter().find(|session| session.id == id).and_then(|session| session.branch_state.clone())
+            }),
+        );
         if is_running {
             // Mid-stream: render the cached transcript immediately, but still
             // reconcile the separately persisted Plan claim/status. This keeps
@@ -4971,6 +5017,7 @@ fn App() -> impl IntoView {
                 conversation_branches.update(|branches| {
                     branches.insert(id.clone(), page.branches.clone());
                 });
+                active_branch_state.set(page.branch_state.clone());
                 conversation_outlines.update(|outlines| {
                     outlines.insert(id.clone(), page.outline.clone());
                 });
@@ -6018,6 +6065,7 @@ fn App() -> impl IntoView {
             branch_merge_busy.set(true);
             branch_merge_error.set(None);
             let load_main = load_main.clone();
+            let approved_summary = summary.clone();
             spawn_local(async move {
                 let args = to_value(&serde_json::json!({
                     "id": id,
@@ -6028,6 +6076,19 @@ fn App() -> impl IntoView {
                 match invoke_checked("merge_session_branch_summary", args).await {
                     Ok(value) => match from_value::<SessionBranchMerge>(value) {
                         Ok(result) => {
+                            conversation_branches.update(|by_source| {
+                                if let Some(branches) = by_source.get_mut(&result.main_session_id) {
+                                    if let Some(branch) = branches.iter_mut().find(|branch| branch.id == result.branch_session_id) {
+                                        branch.merged = true;
+                                        branch.merge_summary = Some(approved_summary.clone());
+                                    }
+                                }
+                            });
+                            sessions.update(|rows| {
+                                if let Some(branch) = rows.iter_mut().find(|session| session.id == result.branch_session_id) {
+                                    branch.branch_state = Some("merged".into());
+                                }
+                            });
                             transcripts.update(|stored| {
                                 stored.remove(&result.main_session_id);
                             });
@@ -8761,7 +8822,7 @@ fn App() -> impl IntoView {
             delete_sessions=Callback::new(move |ids: Vec<String>| {
                 ui_confirm.set(Some(UiConfirm::DeleteSessions(ids)));
             })
-            open_session_actions=Callback::new(move |(ev, id, title, pinned, is_branch, has_branch_family): (web_sys::MouseEvent, String, String, bool, bool, bool)| {
+            open_session_actions=Callback::new(move |(ev, id, title, pinned, is_branch, branch_merged, has_branch_family): (web_sys::MouseEvent, String, String, bool, bool, bool, bool)| {
                 ctx_menu.set(Some(context_menu::session_menu(
                     ev.client_x() as f64,
                     ev.client_y() as f64,
@@ -8769,6 +8830,7 @@ fn App() -> impl IntoView {
                     &title,
                     pinned,
                     is_branch,
+                    branch_merged,
                     has_branch_family,
                     locale.get(),
                 )));
@@ -9552,6 +9614,13 @@ fn App() -> impl IntoView {
                             // so that second update rebuilds callbacks which must target the
                             // newly active session (notably background approval cards).
                             let thread_session_id = active_session.get().unwrap_or_default();
+                            let branch_projection_revision = conversation_branches.with(|all| {
+                                all.get(&thread_session_id)
+                                    .into_iter()
+                                    .flatten()
+                                    .filter(|branch| branch.merged)
+                                    .count() as u64
+                            });
                             let user_offset = transcript_pages
                                 .with(|pages| pages.get(&thread_session_id).copied())
                                 .map_or(0, |page| page.user_offset);
@@ -9695,6 +9764,7 @@ fn App() -> impl IntoView {
                                     fp ^= (commentary as u64) << 63;
                                     fp ^= (compact_assistant as u64) << 62;
                                     fp ^= timestamp.unwrap_or_default() as u64;
+                                    fp ^= branch_projection_revision.rotate_left(17);
                                     rows.push((thread_session_id.clone(), i, streaming_assistant || streaming_reasoning, fp, ThreadRow::Item {
                                         i,
                                         timestamp,
@@ -9825,7 +9895,7 @@ fn App() -> impl IntoView {
                                         None
                                     };
                                     let message_branches = branch_anchor.map_or_else(Vec::new, |(index, kind)| {
-                                        conversation_branches.with_untracked(|all| {
+                                        conversation_branches.with(|all| {
                                             all.get(&session_id)
                                                 .into_iter()
                                                 .flatten()
@@ -9838,9 +9908,16 @@ fn App() -> impl IntoView {
                                         })
                                     });
                                     let can_undo = Signal::derive(move || {
-                                        !compact_assistant && undo_assistant_index.get() == Some(i)
+                                        !compact_assistant
+                                            && !matches!(active_branch_state.get().as_deref(), Some("merged" | "orphaned"))
+                                            && undo_assistant_index.get() == Some(i)
                                     });
                                     let show_actions = Signal::derive(move || !busy.get());
+                                    let can_branch = Signal::derive(move || {
+                                        active_branch_state.get().is_none()
+                                            && active_acp_agent_id.get().is_none()
+                                            && !busy.get()
+                                    });
                                     let show_explore = Signal::derive(move || {
                                         if compact_assistant
                                             || active_acp_agent_id.get().is_some()
@@ -9913,7 +9990,10 @@ fn App() -> impl IntoView {
                                             } else {
                                                 render_item(
                                                     i, &item, timestamp, &arts, on_artifact_select, on_file_link,
-                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), show_actions, can_undo, show_explore, can_explore, edit_message, branch_message, undo_message, explore_turn_index.unwrap_or_default(), start_exploration_from_head, session_id,
+                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant,
+                                                    active_acp_agent_id.get().is_none()
+                                                        && !matches!(active_branch_state.get_untracked().as_deref(), Some("merged" | "orphaned")),
+                                                    can_branch, show_actions, can_undo, show_explore, can_explore, edit_message, branch_message, undo_message, explore_turn_index.unwrap_or_default(), start_exploration_from_head, session_id,
                                                     request_turn_memory, request_session_review, respond_confirm, on_resume, on_queue,
                                                     step_disclosure_state,
                                                     plan_mode_active, plan_compat, on_plan_decision,
@@ -9927,22 +10007,43 @@ fn App() -> impl IntoView {
                                                     {message_branches.into_iter().map(|branch| {
                                                         let open = load_session.clone();
                                                         let open_id = branch.id.clone();
+                                                        let merged = branch.merged;
+                                                        let merge_summary = branch.merge_summary.clone();
                                                         let title = if branch.title.trim().is_empty() {
                                                             t(locale.get(), "sidebar.untitled").to_string()
                                                         } else {
                                                             branch.title
                                                         };
+                                                        let detail_title = title.clone();
+                                                        let card_title = title.clone();
                                                         view! {
-                                                            <button type="button" class="message-branch-link"
-                                                                data-testid="message-branch-link"
-                                                                data-session-id=branch.id
-                                                                data-session-title=title.clone()
-                                                                data-session-branch="true"
-                                                                data-session-family="true"
-                                                                on:click=move |_| open.call(open_id.clone())>
-                                                                <span aria-hidden="true">{compose_icon("branch")}</span>
-                                                                <span>{title}</span>
-                                                            </button>
+                                                            <div class="message-branch-entry">
+                                                                <button type="button" class="message-branch-link"
+                                                                    data-testid="message-branch-link"
+                                                                    data-session-id=branch.id
+                                                                    data-session-title=title.clone()
+                                                                    data-session-branch="true"
+                                                                    data-session-family="true"
+                                                                    data-branch-merged=if merged { "true" } else { "false" }
+                                                                    on:click=move |_| open.call(open_id.clone())>
+                                                                    <span aria-hidden="true">{compose_icon("branch")}</span>
+                                                                    <span>{title}</span>
+                                                                </button>
+                                                                {merge_summary.map(|summary| {
+                                                                    let detail_summary = summary.clone();
+                                                                    view! {
+                                                                        <button type="button" class="branch-merge-card" data-testid="branch-merge-card"
+                                                                            on:click=move |_| branch_merge_detail.set(Some((detail_title.clone(), detail_summary.clone())))>
+                                                                            <span class="branch-merge-card-icon" aria-hidden="true">{compose_icon("branch")}</span>
+                                                                            <span class="branch-merge-card-copy">
+                                                                                <strong>{t(locale.get(), "branch.merged_result")}</strong>
+                                                                                <span>{card_title}</span>
+                                                                            </span>
+                                                                            <span class="branch-merge-card-open">{compose_icon("chevron-right")}</span>
+                                                                        </button>
+                                                                    }
+                                                                })}
+                                                            </div>
                                                         }
                                                     }).collect_view()}
                                                 </div>
@@ -10480,7 +10581,9 @@ fn App() -> impl IntoView {
                             on:keydown:undelegated=on_send
                             on:paste=on_paste
                             prop:placeholder=move || {
-                                if mainline_frozen.get() {
+                                if matches!(active_branch_state.get().as_deref(), Some("merged" | "orphaned")) {
+                                    t(locale.get(), "branch.frozen_placeholder").into()
+                                } else if mainline_frozen.get() {
                                     t(locale.get(), "exploration.mainline_frozen_placeholder").into()
                                 } else if composer_scope_locked.get() {
                                     t(locale.get(), "exploration.read_only_placeholder").into()
@@ -13318,7 +13421,11 @@ fn App() -> impl IntoView {
         />
 
         <EditConfirmOverlay
-            state=EditConfirmOverlayState { locale, edit_confirm }
+            state=EditConfirmOverlayState {
+                locale,
+                edit_confirm,
+                can_branch: Signal::derive(move || active_branch_state.get().is_none()),
+            }
             on_branch=Callback::new(branch_message)
             on_rewind=Callback::new(rewind_to_user_item)
         />

@@ -1974,6 +1974,8 @@ pub(crate) struct SessionInfo {
     pub(crate) branched_from: Option<String>,
     #[serde(default)]
     pub(crate) pinned: bool,
+    #[serde(default)]
+    pub(crate) branch_state: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1990,6 +1992,10 @@ pub(crate) struct SessionBranchLink {
     pub(crate) source_session_id: String,
     pub(crate) checkpoint_user_index: usize,
     pub(crate) checkpoint_kind: String,
+    #[serde(default)]
+    pub(crate) merged: bool,
+    #[serde(default)]
+    pub(crate) merge_summary: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2229,6 +2235,8 @@ pub(crate) struct LoadedSessionPage {
     pub(crate) presentations: Vec<LoadedPresentation>,
     #[serde(default)]
     pub(crate) branches: Vec<SessionBranchLink>,
+    #[serde(default)]
+    pub(crate) branch_state: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]

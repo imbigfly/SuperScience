@@ -467,6 +467,7 @@ pub(crate) fn TurnUndoOverlay(
 pub(crate) struct EditConfirmOverlayState {
     pub(crate) locale: RwSignal<Locale>,
     pub(crate) edit_confirm: RwSignal<Option<usize>>,
+    pub(crate) can_branch: Signal<bool>,
 }
 
 #[component]
@@ -478,6 +479,7 @@ pub(crate) fn EditConfirmOverlay(
     let EditConfirmOverlayState {
         locale,
         edit_confirm,
+        can_branch,
     } = state;
     view! {
         {move || edit_confirm.get().map(|ui_index| {
@@ -496,12 +498,12 @@ pub(crate) fn EditConfirmOverlay(
                             <button on:click=move |_| edit_confirm.set(None)>
                                 {move || t(locale.get(), "settings.cancel")}
                             </button>
-                            <button on:click=move |_| {
+                            {move || can_branch.get().then(|| view! { <button on:click=move |_| {
                                 edit_confirm.set(None);
                                 on_branch.call(ui_index);
                             }>
                                 {move || t(locale.get(), "msg.branch")}
-                            </button>
+                            </button> })}
                             <button class="primary" class:danger=true on:click=move |_| {
                                 edit_confirm.set(None);
                                 on_rewind.call(ui_index);

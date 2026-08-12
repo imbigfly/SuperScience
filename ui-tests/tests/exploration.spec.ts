@@ -62,6 +62,11 @@ test("conversation branches appear at their checkpoint and expose merge-back act
   expect(await branch.locator(".session-branch-icon").innerHTML())
     .not.toBe(await exploration.locator(".exploration-kind-icon").innerHTML());
 
+  await branch.click();
+  await expect(page.locator(".msg-branch-btn")).toHaveCount(0);
+  await expect(page.locator('.user-bubble [title="Branch"]')).toHaveCount(0);
+  await expect(page.locator("#composer-input")).toBeEnabled();
+
   await branch.click({ button: "right" });
   await expect(page.getByRole("button", { name: "Merge back", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Compare branches", exact: true })).toHaveCount(0);
@@ -110,6 +115,8 @@ test("an edited branch-only summary appends to the current main tail and keeps t
   const mergedCard = page.getByTestId("branch-merge-card");
   await expect(mergedCard).toContainText("Merged branch result");
   await expect(mergedCard).toContainText("alternate analysis");
+  await expect(page.getByTestId("message-branch-link").filter({ hasText: "alternate analysis" })
+    .locator("xpath=..").getByTestId("branch-merge-card")).toHaveCount(1);
   await mergedCard.click();
   const detail = page.getByTestId("branch-merge-detail-overlay");
   await expect(detail).toContainText("Edited branch result ready for main.");
@@ -117,6 +124,11 @@ test("an edited branch-only summary appends to the current main tail and keeps t
   await expect(detail).toBeHidden();
   await expect(mergedCard).toBeVisible();
   await expect(branch).toBeVisible();
+  await branch.click();
+  await expect(page.locator("#composer-input")).toBeDisabled();
+  await expect(page.locator(".msg-branch-btn")).toHaveCount(0);
+  await branch.click({ button: "right" });
+  await expect(page.getByRole("button", { name: "Merge back", exact: true })).toHaveCount(0);
 });
 
 test("branch summaries can be regenerated or revised with explicit guidance", async ({ page }) => {

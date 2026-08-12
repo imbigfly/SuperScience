@@ -1275,6 +1275,7 @@ pub(crate) fn render_item(
     busy: ReadSignal<bool>,
     compact_assistant: bool,
     can_modify: bool,
+    can_branch: Signal<bool>,
     show_actions: Signal<bool>,
     can_undo: Signal<bool>,
     show_explore: Signal<bool>,
@@ -1308,6 +1309,7 @@ pub(crate) fn render_item(
                 ui_index=ui_index
                 busy=busy
                 can_modify=can_modify
+                can_branch=can_branch
                 on_copy=Callback::new(copy_text)
                 on_edit=Callback::new(on_edit)
                 on_branch=Callback::new(on_branch)
@@ -1389,6 +1391,7 @@ pub(crate) fn render_item(
                 })
                 on_review=Callback::new(move |_| on_review.call(session_id.clone()))
                 on_branch=Callback::new(on_branch)
+                can_branch=can_branch
                 show_actions=show_actions
                 can_undo=can_undo
                 on_undo=on_undo

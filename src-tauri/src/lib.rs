@@ -817,6 +817,8 @@ struct SessionInfo {
     running: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pinned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch_state: Option<String>,
 }
 
 const SESSION_HISTORY_PAGE_SIZE: usize = 100;
@@ -847,6 +849,8 @@ struct SessionTranscriptPage {
     outline: Vec<SessionOutlineItem>,
     presentations: Vec<SessionPresentation>,
     branches: Vec<wisp_store::SessionBranchLink>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch_state: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -4916,6 +4920,18 @@ async fn send_message_inner(
     // run the turn in the owner project — never error out on a mismatch or,
     // worse, run tools in a stranger's workspace (#182, #194).
     if let Some(id) = session_id.as_deref().filter(|id| !id.is_empty()) {
+        if matches!(
+            state
+                .store
+                .session_branch_state(id)
+                .await
+                .map_err(|error| error.to_string())?,
+            Some("merged" | "orphaned")
+        ) {
+            return Err(
+                "This conversation branch is frozen and cannot accept new messages.".into(),
+            );
+        }
         let (working_project, scope) =
             exploration_commands::working_project_for_frame(state, id).await?;
         ap = working_project;
