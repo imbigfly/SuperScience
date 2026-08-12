@@ -114,9 +114,17 @@ test("an edited branch-only summary appends to the current main tail and keeps t
   await expect(page.getByText("Edited branch result ready for main.", { exact: true })).toHaveCount(0);
   const mergedCard = page.getByTestId("branch-merge-card");
   await expect(mergedCard).toContainText("Merged branch result");
-  await expect(mergedCard).toContainText("alternate analysis");
-  await expect(page.getByTestId("message-branch-link").filter({ hasText: "alternate analysis" })
+  await expect(mergedCard).not.toContainText("alternate analysis");
+  const inlineBranch = page.getByTestId("message-branch-link").filter({ hasText: "alternate analysis" });
+  await expect(inlineBranch
     .locator("xpath=..").getByTestId("branch-merge-card")).toHaveCount(1);
+  const branchBox = await inlineBranch.boundingBox();
+  const mergeBox = await mergedCard.boundingBox();
+  expect(branchBox).not.toBeNull();
+  expect(mergeBox).not.toBeNull();
+  expect(mergeBox!.x).toBeGreaterThan(branchBox!.x);
+  expect(mergeBox!.width).toBeLessThan(branchBox!.width);
+  expect(mergeBox!.height).toBeLessThanOrEqual(branchBox!.height);
   await mergedCard.click();
   const detail = page.getByTestId("branch-merge-detail-overlay");
   await expect(detail).toContainText("Edited branch result ready for main.");

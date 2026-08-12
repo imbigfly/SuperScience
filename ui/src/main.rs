@@ -10015,7 +10015,6 @@ fn App() -> impl IntoView {
                                                             branch.title
                                                         };
                                                         let detail_title = title.clone();
-                                                        let card_title = title.clone();
                                                         view! {
                                                             <div class="message-branch-entry">
                                                                 <button type="button" class="message-branch-link"
@@ -10034,10 +10033,9 @@ fn App() -> impl IntoView {
                                                                     view! {
                                                                         <button type="button" class="branch-merge-card" data-testid="branch-merge-card"
                                                                             on:click=move |_| branch_merge_detail.set(Some((detail_title.clone(), detail_summary.clone())))>
-                                                                            <span class="branch-merge-card-icon" aria-hidden="true">{compose_icon("branch")}</span>
+                                                                            <span class="branch-merge-card-icon" aria-hidden="true">{compose_icon("check")}</span>
                                                                             <span class="branch-merge-card-copy">
                                                                                 <strong>{t(locale.get(), "branch.merged_result")}</strong>
-                                                                                <span>{card_title}</span>
                                                                             </span>
                                                                             <span class="branch-merge-card-open">{compose_icon("chevron-right")}</span>
                                                                         </button>
