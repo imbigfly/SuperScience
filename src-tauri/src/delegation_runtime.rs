@@ -4463,7 +4463,6 @@ fn acp_text(payload: &Value) -> Option<&str> {
     payload
         .get("content")
         .and_then(|content| content.get("text"))
-        .and_then(|content| content.get("text"))
         .and_then(Value::as_str)
         .or_else(|| payload.get("text").and_then(Value::as_str))
 }
@@ -4493,6 +4492,23 @@ mod tests {
     fn bounded_values_snap_to_utf8_boundaries() {
         assert_eq!(bounded_text("a中b", 2), "a…");
         assert_eq!(bounded_json(&json!({"text": "中"}), 11), "{\"text\":\"…");
+    }
+
+    #[test]
+    fn acp_text_reads_standard_agent_message_chunk_payload() {
+        let payload = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+                "type": "text",
+                "text": "reviewed result"
+            }
+        });
+
+        assert_eq!(acp_text(&payload), Some("reviewed result"));
+        assert_eq!(
+            acp_text(&json!({"text": "legacy result"})),
+            Some("legacy result")
+        );
     }
 
     async fn dynamic_fixture() -> (Store, std::path::PathBuf) {
