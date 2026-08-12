@@ -5861,7 +5861,7 @@ async fn send_message_inner(
             .is_some_and(|specialist| specialist.id == "reviewer");
         if !resume && !is_reviewer && load_auto_review_enabled(&state.store).await {
             automatic_review(
-                &state,
+                state,
                 &app,
                 &frame_id,
                 &model_label,
@@ -5923,7 +5923,7 @@ async fn send_message_inner(
     let turn_started = resume || agent.ctx.messages.len() > turn_start;
     drop(guard);
     // After the persist flush so the seen snapshot covers the final messages.
-    mark_seen_if_viewed(&state, &frame_id).await;
+    mark_seen_if_viewed(state, &frame_id).await;
 
     if result.is_ok() {
         if let Err(error) = project_state_revisions::record_completed_mainline_turn(

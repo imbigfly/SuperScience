@@ -91,21 +91,16 @@ impl BudgetReservation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentWorkflowStatus {
+    #[default]
     Draft,
     Approved,
     Running,
     Succeeded,
     Failed,
     Cancelled,
-}
-
-impl Default for AgentWorkflowStatus {
-    fn default() -> Self {
-        Self::Draft
-    }
 }
 
 fn manual_mode() -> String {

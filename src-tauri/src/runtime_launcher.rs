@@ -244,8 +244,8 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
             }
         }
         let ssh_auth_envs = if context.kind == wisp_store::ExecutionContextKind::Ssh {
-            let connection = SshConnection::from_execution_context(&context)
-                .map_err(|e| anyhow::Error::msg(e))?;
+            let connection =
+                SshConnection::from_execution_context(&context).map_err(anyhow::Error::msg)?;
             crate::ssh_hosts::auth_envs_for_connection(&connection).map_err(anyhow::Error::msg)?
         } else {
             Vec::new()
