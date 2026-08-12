@@ -3410,24 +3410,26 @@ async fn load_session_settings(
     frame_id: &str,
 ) -> (String, String, String, String, u64, String) {
     let profile_id = models::session_profile_id(store, frame_id).await;
-    let (provider, api_url, model, api_key, max_tokens, reasoning_effort) =
+    let (provider, api_url, model, api_key, max_tokens, profile_reasoning_effort) =
         match models::profile_llm(store, &profile_id).await {
             Some(config) => config,
             None => {
                 let (provider, api_url, model, api_key) = load_settings(store).await;
                 let (max_tokens, reasoning_effort) = models::active_llm_advanced(store).await;
-                return (
+                (
                     provider,
                     api_url,
                     model,
                     api_key,
                     max_tokens,
                     reasoning_effort,
-                );
+                )
             }
         };
     let (provider, api_url, model, api_key) =
         resolve_model_settings(provider, api_url, model, api_key);
+    let reasoning_effort =
+        models::session_reasoning_effort(store, frame_id, &profile_reasoning_effort).await;
     (
         provider,
         api_url,
@@ -7812,10 +7814,12 @@ pub fn run() {
             desktop_lifecycle::set_pet_window_visible,
             models::list_models,
             models::get_session_model,
+            models::get_session_reasoning_effort,
             models::save_model,
             models::remove_model,
             models::reorder_models,
             models::set_active_model,
+            models::set_session_reasoning_effort,
             settings_commands::validate_settings,
             list_dir,
             create_file,

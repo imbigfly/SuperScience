@@ -493,6 +493,7 @@ fn App() -> impl IntoView {
         conversation_outline_selected.set(None);
     });
     let session_model_ids = create_rw_signal::<HashMap<String, String>>(HashMap::new());
+    let session_reasoning_efforts = create_rw_signal::<HashMap<String, String>>(HashMap::new());
     let acp_agents = create_rw_signal::<Vec<AcpAgentProfile>>(vec![]);
     let active_acp_agent_id = create_rw_signal::<Option<String>>(None);
     let acp_context_usage =
@@ -737,16 +738,24 @@ fn App() -> impl IntoView {
         };
         spawn_local(async move {
             let args = to_value(&serde_json::json!({ "sessionId": session_id.clone() })).unwrap();
-            let Ok(value) = invoke_checked("get_session_model", args).await else {
-                return;
-            };
-            let Some(model_id) = value.as_string() else {
-                return;
-            };
-            if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
-                session_model_ids.update(|models| {
-                    models.insert(session_id, model_id);
-                });
+            if let Ok(value) = invoke_checked("get_session_model", args).await {
+                if let Some(model_id) = value.as_string() {
+                    if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
+                        session_model_ids.update(|models| {
+                            models.insert(session_id.clone(), model_id);
+                        });
+                    }
+                }
+            }
+            let args = to_value(&serde_json::json!({ "sessionId": session_id.clone() })).unwrap();
+            if let Ok(value) = invoke_checked("get_session_reasoning_effort", args).await {
+                if let Some(effort) = value.as_string() {
+                    if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
+                        session_reasoning_efforts.update(|efforts| {
+                            efforts.insert(session_id, effort);
+                        });
+                    }
+                }
             }
         });
     });
@@ -11409,42 +11418,36 @@ fn App() -> impl IntoView {
                                                         on:change=move |ev| {
                                                             let v = dom_value(&ev);
                                                             let effort = if v == "default" { String::new() } else { v };
-                                                            let Some(m) = models.get_untracked().into_iter().find(|m| m.active) else { return; };
-                                                            let profile = serde_json::json!({
-                                                                "id": m.id,
-                                                                "label": m.label,
-                                                                "provider": m.provider,
-                                                                "api_url": m.api_url,
-                                                                "model": m.model,
-                                                                "max_tokens": m.max_tokens,
-                                                                "reasoning_effort": effort,
-                                                                "supports_vision": m.supports_vision,
-                                                                "use_for_vision": m.use_for_vision,
-                                                                "use_for_image_generation": m.use_for_image_generation,
-                                                            });
-                                                            let use_for_vision = m.use_for_vision;
-                                                            let use_for_image_generation = m.use_for_image_generation;
+                                                            let Some(session_id) = active_session.get_untracked() else { return; };
                                                             spawn_local(async move {
                                                                 let arg = to_value(&serde_json::json!({
-                                                                    "profile": profile,
-                                                                    "key": Option::<String>::None,
-                                                                    "useForVision": use_for_vision,
-                                                                    "useForImageGeneration": use_for_image_generation,
+                                                                    "sessionId": session_id.clone(),
+                                                                    "effort": effort.clone(),
                                                                 })).unwrap();
-                                                                if let Ok(v) = invoke_checked("save_model", arg).await {
-                                                                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                                                                        models.set(list);
-                                                                    }
+                                                                if invoke_checked("set_session_reasoning_effort", arg).await.is_ok() {
+                                                                    session_reasoning_efforts.update(|efforts| {
+                                                                        efforts.insert(session_id, effort);
+                                                                    });
                                                                 }
                                                             });
                                                         }>
                                                         <option value="default"
-                                                            prop:selected=move || models.get().iter().find(|m| m.active).map(|m| m.reasoning_effort.is_empty()).unwrap_or(true)>
+                                                            prop:selected=move || session_reasoning_effort(
+                                                                &models.get(),
+                                                                &session_model_ids.get(),
+                                                                &session_reasoning_efforts.get(),
+                                                                active_session.get().as_deref(),
+                                                            ).is_empty()>
                                                             {move || t(locale.get(), "settings.reasoning_effort.default")}
                                                         </option>
                                                         {["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].into_iter().map(|lvl| view! {
                                                             <option value=lvl
-                                                                prop:selected=move || models.get().iter().find(|m| m.active).is_some_and(|m| m.reasoning_effort == lvl)>
+                                                                prop:selected=move || session_reasoning_effort(
+                                                                    &models.get(),
+                                                                    &session_model_ids.get(),
+                                                                    &session_reasoning_efforts.get(),
+                                                                    active_session.get().as_deref(),
+                                                                ) == lvl>
                                                                 {lvl}
                                                             </option>
                                                         }).collect_view()}

@@ -671,7 +671,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       active: true,
       max_tokens: 4096,
       context_window: 128000,
-      reasoning_effort: "",
+      reasoning_effort: query.get("mockSessionModels") === "1" ? "low" : "",
       supports_vision: query.get("mockTextOnlyModel") !== "1",
       use_for_vision: query.get("mockTextOnlyModel") !== "1",
       use_for_image_generation: false,
@@ -686,7 +686,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       active: false,
       max_tokens: 4096,
       context_window: 200000,
-      reasoning_effort: "",
+      reasoning_effort: query.get("mockSessionModels") === "1" ? "max" : "",
       supports_vision: true,
       use_for_vision: false,
       use_for_image_generation: false,
@@ -696,6 +696,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const sessionModels: Record<string, string> = query.get("mockSessionModels") === "1"
     ? { "s-model-a": "default", "s-model-b": "default" }
     : {};
+  const sessionReasoningEfforts: Record<string, string> = {};
   let mockAcpAgents = [
     { id: "acp-test", label: "Test ACP Agent", command: "fake-acp", args: ["--stdio"] },
   ];
@@ -2333,6 +2334,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const sessionId = String(arg("sessionId") ?? "");
             return sessionModels[sessionId] ?? activeHttpModelId();
           }
+          case "get_session_reasoning_effort": {
+            const sessionId = String(arg("sessionId") ?? "");
+            if (Object.prototype.hasOwnProperty.call(sessionReasoningEfforts, sessionId)) {
+              return sessionReasoningEfforts[sessionId];
+            }
+            return null;
+          }
           case "list_acp_agents":
             return mockAcpAgents;
           case "get_dynamic_agent_options":
@@ -2987,6 +2995,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               mockModels = mockModels.map((m) => ({ ...m, active: m.id === id }));
             }
             return mockModels;
+          }
+          case "set_session_reasoning_effort": {
+            const sessionId = String(arg("sessionId") ?? "");
+            sessionReasoningEfforts[sessionId] = String(arg("effort") ?? "");
+            return null;
           }
           case "get_project_info":
             ((window as any).__projectInfoReads ??= []).push(activeProjectId);
@@ -3764,6 +3777,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const id = `branch-${Math.random().toString(36).slice(2)}`;
             const source = String(arg("sessionId") ?? "");
             sessionModels[id] = sessionModels[source] ?? activeHttpModelId();
+            if (Object.prototype.hasOwnProperty.call(sessionReasoningEfforts, source)) {
+              sessionReasoningEfforts[id] = sessionReasoningEfforts[source];
+            }
             return id;
           }
           case "compare_session_branches": {

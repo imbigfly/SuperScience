@@ -144,6 +144,7 @@ const PROJECT_STATE_REVISIONS_MIGRATION_SQL: &str =
     include_str!("../migrations/0038_project_state_revisions.sql");
 const GLOBAL_MEMORIES_MIGRATION: &str = "0039_global_memories";
 const GLOBAL_MEMORIES_MIGRATION_SQL: &str = include_str!("../migrations/0039_global_memories.sql");
+const SESSION_REASONING_EFFORT_MIGRATION: &str = "0040_session_reasoning_effort";
 
 #[derive(Clone)]
 pub struct Store {
@@ -541,6 +542,10 @@ impl Store {
         if !Self::migration_applied(pool, GLOBAL_MEMORIES_MIGRATION).await? {
             Self::execute_sql_script(pool, GLOBAL_MEMORIES_MIGRATION_SQL).await?;
             Self::record_migration(pool, GLOBAL_MEMORIES_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, SESSION_REASONING_EFFORT_MIGRATION).await? {
+            Self::add_columns_if_missing(pool, "frames", &[("reasoning_effort", "TEXT")]).await?;
+            Self::record_migration(pool, SESSION_REASONING_EFFORT_MIGRATION).await?;
         }
         Ok(())
     }

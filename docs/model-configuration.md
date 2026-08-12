@@ -33,7 +33,10 @@ The composer model picker binds the selected HTTP model to the current
 conversation. Switching one populated conversation asks for confirmation and
 does not change any other conversation. Empty conversations switch immediately
 without a warning. The active profile in Settings remains the default for new
-conversations.
+conversations. The reasoning-effort selector in the same menu is also scoped to
+the current conversation: changing it overrides that conversation's model
+profile without editing the profile or affecting other conversations. A new
+conversation inherits the reasoning effort configured on its model profile.
 
 Model profiles describe model access and capabilities for the **built-in Wisp
 agent**. External coding agents (Codex / Claude via ACP) are configured under

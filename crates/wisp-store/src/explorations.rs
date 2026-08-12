@@ -472,7 +472,7 @@ impl Store {
         }
         let mut tx = self.begin_write().await?;
         let source = sqlx::query(
-            "SELECT project_id,agent_name,status,model,input_tokens,output_tokens,completed_at,title \
+            "SELECT project_id,agent_name,status,model,reasoning_effort,input_tokens,output_tokens,completed_at,title \
              FROM frames WHERE id=? AND parent_frame_id=id",
         )
         .bind(source_frame_id)
@@ -497,9 +497,9 @@ impl Store {
         let now = chrono::Utc::now().timestamp();
         sqlx::query(
             "INSERT INTO frames(\
-               id,parent_frame_id,root_frame_id,agent_name,status,project_id,branched_from,model,\
+               id,parent_frame_id,root_frame_id,agent_name,status,project_id,branched_from,model,reasoning_effort,\
                input_tokens,output_tokens,created_at,updated_at,completed_at,title\
-             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(target_frame_id)
         .bind(target_frame_id)
@@ -509,6 +509,7 @@ impl Store {
         .bind(source.try_get::<String, _>("project_id")?)
         .bind(source_frame_id)
         .bind(source.try_get::<Option<String>, _>("model")?)
+        .bind(source.try_get::<Option<String>, _>("reasoning_effort")?)
         .bind(source.try_get::<Option<i64>, _>("input_tokens")?)
         .bind(source.try_get::<Option<i64>, _>("output_tokens")?)
         .bind(now)

@@ -67,6 +67,16 @@ pub(super) async fn branch_session(
             .set_frame_model(&id, &ap.id, &model_id)
             .await
             .map_err(|error| error.to_string())?;
+        let reasoning_effort = state
+            .store
+            .frame_reasoning_effort(source)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .store
+            .set_frame_reasoning_effort(&id, &ap.id, reasoning_effort.as_deref())
+            .await
+            .map_err(|error| error.to_string())?;
         let msgs = state
             .store
             .load_messages(source)
