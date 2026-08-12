@@ -69,9 +69,10 @@ pub use project_transfer::ProjectTransferStats;
 pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
 pub use provenance::{canonical_json, canonical_json_sha256};
 pub use sessions::{
-    ModelTokenUsage, ProjectTokenUsage, SessionBranchCandidate, SessionBranchComparison,
-    SessionBranchConvergence, SessionBranchDeltaMessage, SessionTokenUsage, SessionTokenUsagePage,
-    SessionTranscriptPage, SessionUiEventSnapshot, TokenUsageDay, ToolCallUsage,
+    ModelTokenUsage, ProjectTokenUsage, SessionBranchDeltaMessage, SessionBranchLink,
+    SessionBranchMerge, SessionBranchMergeCard, SessionBranchMergePreview, SessionTokenUsage,
+    SessionTokenUsagePage, SessionTranscriptPage, SessionUiEventSnapshot, TokenUsageDay,
+    ToolCallUsage,
 };
 
 use anyhow::Result;
@@ -145,6 +146,7 @@ const PROJECT_STATE_REVISIONS_MIGRATION_SQL: &str =
 const GLOBAL_MEMORIES_MIGRATION: &str = "0039_global_memories";
 const GLOBAL_MEMORIES_MIGRATION_SQL: &str = include_str!("../migrations/0039_global_memories.sql");
 const SESSION_REASONING_EFFORT_MIGRATION: &str = "0040_session_reasoning_effort";
+const SESSION_BRANCH_MERGE_MIGRATION: &str = "0041_session_branch_merge";
 
 #[derive(Clone)]
 pub struct Store {
@@ -546,6 +548,35 @@ impl Store {
         if !Self::migration_applied(pool, SESSION_REASONING_EFFORT_MIGRATION).await? {
             Self::add_columns_if_missing(pool, "frames", &[("reasoning_effort", "TEXT")]).await?;
             Self::record_migration(pool, SESSION_REASONING_EFFORT_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, SESSION_BRANCH_MERGE_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "frames",
+                &[
+                    ("branch_point_user_index", "INTEGER"),
+                    ("branch_point_kind", "TEXT"),
+                ],
+            )
+            .await?;
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS session_branch_merges (\
+                 id TEXT PRIMARY KEY, \
+                 source_frame_id TEXT NOT NULL REFERENCES frames(id) ON DELETE CASCADE, \
+                 branch_frame_id TEXT NOT NULL REFERENCES frames(id) ON DELETE CASCADE, \
+                 checkpoint_user_index INTEGER NOT NULL, checkpoint_kind TEXT NOT NULL, \
+                 summary_message_seq INTEGER NOT NULL, guard_hash TEXT NOT NULL, \
+                 created_at INTEGER NOT NULL)",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS ix_session_branch_merges_source \
+                 ON session_branch_merges(source_frame_id, created_at DESC)",
+            )
+            .execute(pool)
+            .await?;
+            Self::record_migration(pool, SESSION_BRANCH_MERGE_MIGRATION).await?;
         }
         Ok(())
     }

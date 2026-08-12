@@ -60,7 +60,7 @@ pub(super) fn Sidebar(
     load_older_sessions: Callback<()>,
     move_sessions_to: Callback<(Vec<String>, Option<String>)>,
     delete_sessions: Callback<Vec<String>>,
-    open_session_actions: Callback<(web_sys::MouseEvent, String, String, bool, bool, bool)>,
+    open_session_actions: Callback<(web_sys::MouseEvent, String, String, bool, bool, bool, bool)>,
     open_folder_actions: Callback<(web_sys::MouseEvent, String, String)>,
     open_capabilities: Callback<web_sys::MouseEvent>,
     open_settings: Callback<web_sys::MouseEvent>,
@@ -386,7 +386,7 @@ pub(super) fn Sidebar(
                     // reading drag_session here, which would rebuild the whole list mid-drag.
                     let has_folders = !folder_list.is_empty();
                     let item = move |s: &SessionInfo| {
-                        let is_branch = s.branched_from.is_some();
+                        let is_branch = s.branch_state.is_some();
                         let has_branch_family = branch_family_ids.contains(&s.id);
                         let id = s.id.clone();
                         let id_active = id.clone();
@@ -416,6 +416,10 @@ pub(super) fn Sidebar(
                         let title_actions = title.clone();
                         let show_actions = open_session_actions.clone();
                         let pinned = s.pinned;
+                        let branch_merged = matches!(
+                            s.branch_state.as_deref(),
+                            Some("merged" | "orphaned")
+                        );
                         view! {
                             <div class="side-item-wrap">
                                 <button type="button" class="side-item ses"
@@ -437,6 +441,7 @@ pub(super) fn Sidebar(
                                     data-session-pinned=if pinned { "true" } else { "false" }
                                     data-session-branch=if is_branch { "true" } else { "false" }
                                     data-session-family=if has_branch_family { "true" } else { "false" }
+                                    data-branch-merged=if branch_merged { "true" } else { "false" }
                                     on:click=move |_| {
                                         if selecting_sessions.get_untracked() {
                                             selected_sessions.update(|selected| {
@@ -490,7 +495,7 @@ pub(super) fn Sidebar(
                                     on:click=move |ev: web_sys::MouseEvent| {
                                         ev.prevent_default();
                                         ev.stop_propagation();
-                                        show_actions.call((ev, id_actions.clone(), title_actions.clone(), pinned, is_branch, has_branch_family));
+                                        show_actions.call((ev, id_actions.clone(), title_actions.clone(), pinned, is_branch, branch_merged, has_branch_family));
                                     }>"⋯"</button>
                             </div>
                         }.into_view()

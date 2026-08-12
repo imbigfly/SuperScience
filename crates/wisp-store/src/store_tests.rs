@@ -1587,89 +1587,111 @@ async fn branched_from_survives_listing() {
 }
 
 #[tokio::test]
-async fn conversation_branches_compare_from_their_common_ancestor_and_converge() {
+async fn legacy_branch_lineage_is_not_treated_as_a_mergeable_branch() {
     let tmp = std::env::temp_dir().join(format!(
-        "wisp_branch_convergence_{}.sqlite",
+        "wisp_legacy_branch_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    for id in ["main", "branch-a", "branch-b"] {
+    for id in ["main", "legacy", "new"] {
         store.create_frame(id, "p", "OPERON", "m").await.unwrap();
-    }
-    let shared = [
-        Message::user("shared question"),
-        Message::assistant("shared answer"),
-    ];
-    for id in ["main", "branch-a", "branch-b"] {
-        for (index, message) in shared.iter().enumerate() {
-            store
-                .append_message(id, index as i64 + 1, message)
-                .await
-                .unwrap();
-        }
-    }
-    for (id, question, answer) in [
-        ("main", "main route", "main result"),
-        ("branch-a", "route A", "result A"),
-        ("branch-b", "route B", "result B"),
-    ] {
         store
-            .append_message(id, 3, &Message::user(question))
-            .await
-            .unwrap();
-        store
-            .append_message(id, 4, &Message::assistant(answer))
+            .append_message(id, 1, &Message::user("shared"))
             .await
             .unwrap();
     }
-    for id in ["branch-a", "branch-b"] {
-        store.set_session_branched_from(id, "main").await.unwrap();
-    }
     store
-        .rename_session("branch-a", "p", "Branch: Route A")
+        .set_session_branched_from("legacy", "main")
         .await
         .unwrap();
     store
-        .save_artifact(
-            "branch-artifact",
-            "p",
-            "branch-b",
-            "result.csv",
-            "text/csv",
-            "results/result.csv",
-        )
+        .set_session_branch_point("new", "main", 0, "before_user")
         .await
         .unwrap();
 
-    let from_main = store.compare_session_branches("main", "p").await.unwrap();
-    let from_branch = store
-        .compare_session_branches("branch-b", "p")
-        .await
-        .unwrap();
-    assert_eq!(from_main, from_branch);
-    assert_eq!(from_main.main_session_id, "main");
-    assert_eq!(from_main.common_ancestor_messages, 2);
-    assert_eq!(from_main.candidates.len(), 3);
-    assert_eq!(from_main.candidates[0].messages[0].text, "main route");
-    assert_eq!(from_main.candidates[1].title, "Route A");
-
-    let converged = store
-        .converge_session_branches(
-            "branch-a",
-            "p",
-            &from_main.guard_hash,
-            "Selected Route A. Result A is retained; the other alternatives were discarded.",
-            Some("summary-model"),
-        )
-        .await
-        .unwrap();
-    assert_eq!(converged.main_session_id, "main");
-    assert_eq!(converged.selected_session_id, "branch-a");
+    let mergeable = store.list_mergeable_branch_ids("p").await.unwrap();
+    assert!(!mergeable.contains("legacy"));
+    assert!(mergeable.contains("new"));
+    let links = store.list_session_branches("main", "p").await.unwrap();
     assert_eq!(
-        converged.removed_session_ids,
-        ["branch-a".to_string(), "branch-b".to_string()]
+        links
+            .iter()
+            .map(|link| link.id.as_str())
+            .collect::<Vec<_>>(),
+        ["new"]
     );
+    assert!(store
+        .preview_session_branch_merge("legacy", "p")
+        .await
+        .is_err());
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn branch_summary_appends_to_the_current_main_tail_without_reading_or_rewriting_it() {
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_branch_merge_{}.sqlite", uuid::Uuid::new_v4()));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    for id in ["main", "branch"] {
+        store.create_frame(id, "p", "OPERON", "m").await.unwrap();
+        store
+            .append_message(id, 1, &Message::user("shared question"))
+            .await
+            .unwrap();
+        store
+            .append_message(id, 2, &Message::assistant("shared answer"))
+            .await
+            .unwrap();
+    }
+    store
+        .set_session_branch_point("branch", "main", 0, "after_response")
+        .await
+        .unwrap();
+    store
+        .append_message("branch", 3, &Message::user("download the dataset"))
+        .await
+        .unwrap();
+    store
+        .append_message("branch", 4, &Message::assistant("saved data/counts.csv"))
+        .await
+        .unwrap();
+
+    let preview = store
+        .preview_session_branch_merge("branch", "p")
+        .await
+        .unwrap();
+    assert_eq!(preview.new_message_count, 2);
+    assert_eq!(preview.messages[0].text, "download the dataset");
+
+    // Main is free to advance after the checkpoint and even after the branch
+    // summary draft was generated. Main changes are not part of the guard.
+    store
+        .append_message("main", 3, &Message::user("continue the paper review"))
+        .await
+        .unwrap();
+    store
+        .append_message("main", 4, &Message::assistant("review continued"))
+        .await
+        .unwrap();
+    let after_main_advanced = store
+        .preview_session_branch_merge("branch", "p")
+        .await
+        .unwrap();
+    assert_eq!(after_main_advanced.guard_hash, preview.guard_hash);
+
+    let merged = store
+        .merge_session_branch_summary(
+            "branch",
+            "p",
+            &preview.guard_hash,
+            "Dataset downloaded to data/counts.csv.",
+        )
+        .await
+        .unwrap();
+    assert_eq!(merged.main_session_id, "main");
+    assert_eq!(merged.summary_message_seq, 5);
     let main = store.load_messages("main").await.unwrap();
     assert_eq!(
         main.iter()
@@ -1678,35 +1700,194 @@ async fn conversation_branches_compare_from_their_common_ancestor_and_converge()
         [
             "shared question",
             "shared answer",
-            "Selected Route A. Result A is retained; the other alternatives were discarded.",
+            "continue the paper review",
+            "review continued",
+            "Dataset downloaded to data/counts.csv.",
         ]
     );
+    let transcript = store
+        .load_session_transcript_page("main", None, 20)
+        .await
+        .unwrap();
+    assert_eq!(
+        transcript.branch_merges,
+        [SessionBranchMergeCard {
+            summary_message_seq: 5,
+            branch_session_id: "branch".into(),
+            branch_title: "shared question".into(),
+            checkpoint_user_index: 0,
+            checkpoint_kind: "after_response".into(),
+            summary: "Dataset downloaded to data/counts.csv.".into(),
+        }]
+    );
+    assert_eq!(store.list_sessions("p").await.unwrap().len(), 2);
+    assert_eq!(
+        store.session_branch_state("branch").await.unwrap(),
+        Some("merged")
+    );
     assert!(store
-        .load_session_ui_events("main")
+        .preview_session_branch_merge("branch", "p")
+        .await
+        .is_err());
+    assert!(store
+        .merge_session_branch_summary(
+            "branch",
+            "p",
+            &preview.guard_hash,
+            "A second summary must not replace the first.",
+        )
+        .await
+        .is_err());
+    let links = store.list_session_branches("main", "p").await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert!(links[0].merged);
+    assert_eq!(
+        links[0].merge_summary.as_deref(),
+        Some("Dataset downloaded to data/counts.csv.")
+    );
+
+    // Rewinding across the real merge tail revokes it and makes the branch
+    // active again. The checkpoint remains valid because the shared turn is
+    // still present.
+    store.truncate_messages("main", 4).await.unwrap();
+    assert_eq!(
+        store.session_branch_state("branch").await.unwrap(),
+        Some("active")
+    );
+    assert!(store
+        .preview_session_branch_merge("branch", "p")
+        .await
+        .is_ok());
+    assert!(store
+        .load_session_transcript_page("main", None, 20)
         .await
         .unwrap()
+        .branch_merges
         .is_empty());
-    let listed = store.list_sessions("p").await.unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].0, "main");
-    assert_eq!(listed[0].1, "Route A");
+
+    // The artifact-aware turn-undo path must reconcile the same merge tail.
+    let preview = store
+        .preview_session_branch_merge("branch", "p")
+        .await
+        .unwrap();
+    store
+        .merge_session_branch_summary(
+            "branch",
+            "p",
+            &preview.guard_hash,
+            "Dataset remains available after review.",
+        )
+        .await
+        .unwrap();
+    store.truncate_messages_for_undo("main", 4).await.unwrap();
     assert_eq!(
-        store
-            .get_artifact("branch-artifact")
-            .await
-            .unwrap()
-            .unwrap()
-            .3,
-        "main",
-        "conversation cleanup must preserve project Artifacts"
+        store.session_branch_state("branch").await.unwrap(),
+        Some("active")
     );
     let _ = std::fs::remove_file(tmp);
 }
 
 #[tokio::test]
-async fn branch_convergence_rejects_stale_comparisons_and_detach_starts_a_new_family() {
+async fn rewinding_past_a_branch_checkpoint_keeps_it_as_frozen_history() {
     let tmp = std::env::temp_dir().join(format!(
-        "wisp_branch_detach_{}.sqlite",
+        "wisp_branch_rewind_checkpoint_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    for id in ["main", "branch"] {
+        store.create_frame(id, "p", "OPERON", "m").await.unwrap();
+        store
+            .append_message(id, 1, &Message::user("first"))
+            .await
+            .unwrap();
+        store
+            .append_message(id, 2, &Message::assistant("answer"))
+            .await
+            .unwrap();
+        store
+            .append_message(id, 3, &Message::user("second"))
+            .await
+            .unwrap();
+    }
+    store
+        .set_session_branch_point("branch", "main", 1, "before_user")
+        .await
+        .unwrap();
+
+    store.truncate_messages("main", 2).await.unwrap();
+    assert_eq!(
+        store.session_branch_state("branch").await.unwrap(),
+        Some("orphaned")
+    );
+    assert!(store
+        .list_session_branches("main", "p")
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .preview_session_branch_merge("branch", "p")
+        .await
+        .is_err());
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn after_response_checkpoint_requires_the_reply_to_survive_rewind() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_branch_rewind_response_checkpoint_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    for id in ["main", "before", "after"] {
+        store.create_frame(id, "p", "OPERON", "m").await.unwrap();
+        store
+            .append_message(id, 1, &Message::user("question"))
+            .await
+            .unwrap();
+        store
+            .append_message(id, 2, &Message::assistant("answer"))
+            .await
+            .unwrap();
+    }
+    store
+        .set_session_branch_point("before", "main", 0, "before_user")
+        .await
+        .unwrap();
+    store
+        .set_session_branch_point("after", "main", 0, "after_response")
+        .await
+        .unwrap();
+
+    // Retaining the user preserves a before-user anchor, but an
+    // after-response anchor is gone once that turn's reply is removed.
+    store.truncate_messages("main", 1).await.unwrap();
+    assert_eq!(
+        store.session_branch_state("before").await.unwrap(),
+        Some("active")
+    );
+    assert_eq!(
+        store.session_branch_state("after").await.unwrap(),
+        Some("orphaned")
+    );
+    assert_eq!(
+        store
+            .list_session_branches("main", "p")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|branch| branch.id)
+            .collect::<Vec<_>>(),
+        ["before"]
+    );
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn branch_summary_guard_changes_only_when_the_branch_changes() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_branch_merge_guard_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -1719,26 +1900,23 @@ async fn branch_convergence_rejects_stale_comparisons_and_detach_starts_a_new_fa
             .unwrap();
     }
     store
-        .set_session_branched_from("branch", "main")
+        .set_session_branch_point("branch", "main", 0, "before_user")
         .await
         .unwrap();
-    let comparison = store.compare_session_branches("branch", "p").await.unwrap();
+    let preview = store
+        .preview_session_branch_merge("branch", "p")
+        .await
+        .unwrap();
     store
-        .append_message("branch", 2, &Message::assistant("late result"))
+        .append_message("branch", 2, &Message::assistant("new branch result"))
         .await
         .unwrap();
     let error = store
-        .converge_session_branches("branch", "p", &comparison.guard_hash, "stale summary", None)
+        .merge_session_branch_summary("branch", "p", &preview.guard_hash, "stale")
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("changed"));
-    assert_eq!(store.list_sessions("p").await.unwrap().len(), 2);
-
-    store.detach_session_branch("branch", "p").await.unwrap();
-    let listed = store.list_sessions("p").await.unwrap();
-    assert!(listed.iter().all(|row| row.4.is_none()));
-    assert!(store.compare_session_branches("main", "p").await.is_err());
-    assert!(store.compare_session_branches("branch", "p").await.is_err());
+    assert!(error.to_string().contains("branch changed"));
+    assert_eq!(store.load_messages("main").await.unwrap().len(), 1);
     let _ = std::fs::remove_file(tmp);
 }
 
@@ -2989,6 +3167,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             PROJECT_STATE_REVISIONS_MIGRATION.to_string(),
             GLOBAL_MEMORIES_MIGRATION.to_string(),
             SESSION_REASONING_EFFORT_MIGRATION.to_string(),
+            SESSION_BRANCH_MERGE_MIGRATION.to_string(),
         ]
     );
 

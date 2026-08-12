@@ -817,6 +817,8 @@ struct SessionInfo {
     running: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pinned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch_state: Option<String>,
 }
 
 const SESSION_HISTORY_PAGE_SIZE: usize = 100;
@@ -846,6 +848,9 @@ struct SessionTranscriptPage {
     user_offset: usize,
     outline: Vec<SessionOutlineItem>,
     presentations: Vec<SessionPresentation>,
+    branches: Vec<wisp_store::SessionBranchLink>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch_state: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -4915,6 +4920,18 @@ async fn send_message_inner(
     // run the turn in the owner project — never error out on a mismatch or,
     // worse, run tools in a stranger's workspace (#182, #194).
     if let Some(id) = session_id.as_deref().filter(|id| !id.is_empty()) {
+        if matches!(
+            state
+                .store
+                .session_branch_state(id)
+                .await
+                .map_err(|error| error.to_string())?,
+            Some("merged" | "orphaned")
+        ) {
+            return Err(
+                "This conversation branch is frozen and cannot accept new messages.".into(),
+            );
+        }
         let (working_project, scope) =
             exploration_commands::working_project_for_frame(state, id).await?;
         ap = working_project;
@@ -7701,10 +7718,9 @@ pub fn run() {
             scratch_commands::start_scratch_chat,
             scratch_commands::close_scratch_chat,
             session_commands::branch_session,
-            session_commands::compare_session_branches,
-            session_commands::analyze_session_branches,
-            session_commands::converge_session_branches,
-            session_commands::detach_session_branch,
+            session_commands::preview_session_branch_merge,
+            session_commands::summarize_session_branch_merge,
+            session_commands::merge_session_branch_summary,
             exploration_commands::start_exploration,
             exploration_commands::list_project_explorations,
             exploration_commands::list_project_state_revisions,

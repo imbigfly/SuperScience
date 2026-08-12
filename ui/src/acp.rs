@@ -218,6 +218,7 @@ pub(crate) fn turn_activity_after_user(rows: &[ChatItem], user_index: usize) -> 
     rows.get(user_index + 1..).is_some_and(|tail| {
         tail.iter().any(|item| match item {
             ChatItem::Assistant { text, .. } => !text.trim().is_empty(),
+            ChatItem::BranchMerge { .. } => true,
             ChatItem::Reasoning(_)
             | ChatItem::Tool { .. }
             | ChatItem::FileChanged(_)

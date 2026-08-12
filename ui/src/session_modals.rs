@@ -3,8 +3,10 @@ use crate::app_support::{
 };
 use crate::bindings::invoke_checked;
 use crate::dto::*;
-use crate::i18n::{localize_backend, t, tf, Locale};
-use crate::text::{dom_value, event_target_checked, event_target_value, md_to_html, parent_path};
+use crate::i18n::{t, tf, Locale};
+use crate::text::{
+    dom_value, event_target_checked, event_target_value, md_document_to_html, parent_path,
+};
 use crate::window_capture_escape;
 use leptos::*;
 use serde_wasm_bindgen::to_value;
@@ -467,6 +469,7 @@ pub(crate) fn TurnUndoOverlay(
 pub(crate) struct EditConfirmOverlayState {
     pub(crate) locale: RwSignal<Locale>,
     pub(crate) edit_confirm: RwSignal<Option<usize>>,
+    pub(crate) can_branch: Signal<bool>,
 }
 
 #[component]
@@ -478,6 +481,7 @@ pub(crate) fn EditConfirmOverlay(
     let EditConfirmOverlayState {
         locale,
         edit_confirm,
+        can_branch,
     } = state;
     view! {
         {move || edit_confirm.get().map(|ui_index| {
@@ -496,12 +500,12 @@ pub(crate) fn EditConfirmOverlay(
                             <button on:click=move |_| edit_confirm.set(None)>
                                 {move || t(locale.get(), "settings.cancel")}
                             </button>
-                            <button on:click=move |_| {
+                            {move || can_branch.get().then(|| view! { <button on:click=move |_| {
                                 edit_confirm.set(None);
                                 on_branch.call(ui_index);
                             }>
                                 {move || t(locale.get(), "msg.branch")}
-                            </button>
+                            </button> })}
                             <button class="primary" class:danger=true on:click=move |_| {
                                 edit_confirm.set(None);
                                 on_rewind.call(ui_index);
@@ -640,13 +644,45 @@ pub(crate) fn ProjSettingsOverlay(
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct BranchComparisonOverlayState {
+pub(crate) struct BranchMergeOverlayState {
     pub(crate) locale: RwSignal<Locale>,
     pub(crate) open: RwSignal<Option<String>>,
-    pub(crate) comparison: RwSignal<Option<SessionBranchComparison>>,
-    pub(crate) selected: RwSignal<String>,
+    pub(crate) preview: RwSignal<Option<SessionBranchMergePreview>>,
+    pub(crate) draft: RwSignal<String>,
     pub(crate) busy: RwSignal<bool>,
     pub(crate) error: RwSignal<Option<String>>,
+    pub(crate) guidance_open: RwSignal<bool>,
+    pub(crate) guidance: RwSignal<String>,
+}
+
+#[component]
+pub(crate) fn BranchMergeDetailOverlay(
+    locale: RwSignal<Locale>,
+    detail: RwSignal<Option<(String, String)>>,
+) -> impl IntoView {
+    view! {
+        {move || detail.get().map(|(title, text)| {
+            view! {
+                <div class="overlay branch-merge-detail-overlay" data-testid="branch-merge-detail-overlay">
+                    <div class="modal artifact-modal branch-merge-detail-modal" role="dialog" aria-modal="true">
+                        <div class="am-head branch-merge-detail-head">
+                            <span class="am-name">{title}</span>
+                            <span class="branch-merge-detail-kind">{t(locale.get(), "branch.merged_result")}</span>
+                            <div class="spacer"></div>
+                            <button type="button" class="icon-btn"
+                                title=move || t(locale.get(), "right.close")
+                                aria-label=move || t(locale.get(), "right.close")
+                                on:click=move |_| detail.set(None)>{compose_icon("close")}</button>
+                        </div>
+                        <div class="am-figure branch-merge-detail-preview">
+                            <article class="rp-heavy md branch-merge-detail-content"
+                                inner_html=md_document_to_html(&text)></article>
+                        </div>
+                    </div>
+                </div>
+            }
+        })}
+    }
 }
 
 fn branch_message_role(locale: Locale, role: &str) -> String {
@@ -662,46 +698,51 @@ fn branch_message_role(locale: Locale, role: &str) -> String {
 }
 
 #[component]
-pub(crate) fn BranchComparisonOverlay(
-    state: BranchComparisonOverlayState,
-    on_converge: Callback<(String, String)>,
+pub(crate) fn BranchMergeOverlay(
+    state: BranchMergeOverlayState,
+    on_merge: Callback<(String, String, String)>,
+    on_generate: Callback<(String, String, Option<String>, Option<String>)>,
 ) -> impl IntoView {
-    let BranchComparisonOverlayState {
+    let BranchMergeOverlayState {
         locale,
         open,
-        comparison,
-        selected,
+        preview,
+        draft,
         busy,
         error,
+        guidance_open,
+        guidance,
     } = state;
-    let confirm = create_rw_signal(false);
     window_capture_escape(move || {
-        if !confirm.get_untracked() {
+        if !guidance_open.get_untracked() {
             return false;
         }
-        confirm.set(false);
+        guidance_open.set(false);
+        guidance.set(String::new());
         true
     });
 
     view! {
         {move || open.get().map(|_| {
-            let current = comparison.get();
+            let current = preview.get();
             let close = move |_| {
                 if busy.get_untracked() {
                     return;
                 }
                 open.set(None);
-                comparison.set(None);
+                preview.set(None);
+                draft.set(String::new());
                 error.set(None);
-                confirm.set(false);
+                guidance_open.set(false);
+                guidance.set(String::new());
             };
             view! {
-                <div class="overlay branch-comparison-overlay" data-testid="branch-comparison-overlay">
+                <div class="overlay branch-comparison-overlay" data-testid="branch-merge-overlay">
                     <div class="modal exploration-diff-modal branch-comparison-modal" role="dialog" aria-modal="true">
                         <div class="ps-head">
                             <div>
-                                <h2>{t(locale.get(), "branch.compare_title")}</h2>
-                                <span class="exploration-modal-status">{t(locale.get(), "branch.compare_hint")}</span>
+                                <h2>{t(locale.get(), "branch.merge_title")}</h2>
+                                <span class="exploration-modal-status">{t(locale.get(), "branch.merge_hint")}</span>
                             </div>
                             <button type="button" class="ps-close" disabled=move || busy.get()
                                 aria-label=move || t(locale.get(), "settings.cancel")
@@ -712,91 +753,102 @@ pub(crate) fn BranchComparisonOverlay(
                         })}
                         {if let Some(current) = current {
                             let guard_hash = current.guard_hash.clone();
-                            let remove_count = current.candidates.len().saturating_sub(1);
-                            let analysis_pending = current.analysis.is_none() && current.analysis_error.is_none();
+                            let branch_id = current.branch_session_id.clone();
+                            let regenerate_branch_id = branch_id.clone();
+                            let regenerate_guard_hash = guard_hash.clone();
+                            let merge_branch_id = branch_id.clone();
+                            let merge_guard_hash = guard_hash.clone();
+                            let guided_branch_id = branch_id.clone();
+                            let guided_guard_hash = guard_hash.clone();
+                            let messages = current.messages.into_iter().map(|message| view! {
+                                <div class=format!("branch-delta-message {}", message.role)>
+                                    <span>{branch_message_role(locale.get(), &message.role)}</span>
+                                    <div>{message.text}</div>
+                                </div>
+                            }).collect_view();
                             view! {
                                 <div class="branch-comparison-meta">
-                                    <span>{tf(locale.get(), "branch.common_ancestor", &[("n", &current.common_ancestor_messages.to_string())])}</span>
-                                    <span>{tf(locale.get(), "branch.paths", &[("n", &current.candidates.len().to_string())])}</span>
+                                    <strong>{current.branch_title}</strong>
+                                    <span>{tf(locale.get(), "branch.checkpoint", &[("n", &(current.checkpoint_user_index + 1).to_string())])}</span>
+                                    <span>{tf(locale.get(), "branch.new_messages", &[("n", &current.new_message_count.to_string())])}</span>
                                 </div>
-                                {analysis_pending.then(|| view! {
-                                    <div class="branch-analysis-loading">{t(locale.get(), "branch.analyzing")}</div>
-                                })}
-                                {current.analysis.map(|analysis| view! {
-                                    <section class="branch-ai-analysis" data-testid="branch-ai-analysis">
-                                        <strong>{t(locale.get(), "branch.analysis")}</strong>
-                                        <div class="md" inner_html=md_to_html(&analysis)></div>
+                                <div class="branch-merge-body">
+                                    <section class="branch-merge-delta" data-testid="branch-merge-delta">
+                                        <strong>{t(locale.get(), "branch.branch_work")}</strong>
+                                        <div class="branch-candidate-messages">{messages}</div>
                                     </section>
-                                })}
-                                {current.analysis_error.map(|message| view! {
-                                    <div class="branch-analysis-error">
-                                        <strong>{t(locale.get(), "branch.analysis_unavailable")}</strong>
-                                        <span>{localize_backend(locale.get(), &message)}</span>
-                                    </div>
-                                })}
-                                <div class="branch-comparison-candidates" data-testid="branch-comparison-candidates">
-                                    {current.candidates.into_iter().map(|candidate| {
-                                        let candidate_id = candidate.id.clone();
-                                        let checked_id = candidate.id.clone();
-                                        let choose_id = candidate.id.clone();
-                                        let kind = if candidate.is_main { "chat" } else { "branch" };
-                                        let messages = if candidate.messages.is_empty() {
-                                            view! { <div class="branch-comparison-empty">{t(locale.get(), "branch.no_changes")}</div> }.into_view()
-                                        } else {
-                                            candidate.messages.into_iter().map(|message| view! {
-                                                <div class=format!("branch-delta-message {}", message.role)>
-                                                    <span>{branch_message_role(locale.get(), &message.role)}</span>
-                                                    <div>{message.text}</div>
-                                                </div>
-                                            }).collect_view().into_view()
-                                        };
-                                        view! {
-                                            <label class="branch-candidate"
-                                                class:selected=move || selected.get() == candidate_id
-                                                data-testid="branch-candidate"
-                                                data-session-id=candidate.id.clone()>
-                                                <div class="branch-candidate-head">
-                                                    <input type="radio" name="branch-convergence-winner"
-                                                        prop:checked=move || selected.get() == checked_id
-                                                        on:change=move |_| selected.set(choose_id.clone()) />
-                                                    <span class="branch-candidate-icon" aria-hidden="true">{compose_icon(kind)}</span>
-                                                    <strong>{candidate.title}</strong>
-                                                    {candidate.is_main.then(|| view! { <span class="branch-main-badge">{t(locale.get(), "branch.main")}</span> })}
-                                                    <span class="spacer"></span>
-                                                    <span>{tf(locale.get(), "branch.new_messages", &[("n", &candidate.new_message_count.to_string())])}</span>
-                                                </div>
-                                                <div class="branch-candidate-messages">{messages}</div>
-                                            </label>
-                                        }
-                                    }).collect_view()}
+                                    <label class="branch-merge-editor">
+                                        <strong>{t(locale.get(), "branch.summary_draft")}</strong>
+                                        <span>{t(locale.get(), "branch.summary_edit_hint")}</span>
+                                        <textarea rows="12" prop:value=move || draft.get()
+                                            on:input=move |event| draft.set(event_target_value(&event))></textarea>
+                                    </label>
                                 </div>
-                                <div class="branch-convergence-note">{t(locale.get(), "branch.converge_note")}</div>
                                 <div class="row exploration-actions">
                                     <button type="button" disabled=move || busy.get() on:click=close>
                                         {move || t(locale.get(), "settings.cancel")}
                                     </button>
+                                    <button type="button" data-testid="branch-regenerate"
+                                        disabled=move || busy.get()
+                                        on:click=move |_| on_generate.call((regenerate_branch_id.clone(), regenerate_guard_hash.clone(), None, None))>
+                                        {t(locale.get(), "branch.regenerate")}
+                                    </button>
+                                    <button type="button" data-testid="branch-guided-generate"
+                                        disabled=move || busy.get() || draft.get().trim().is_empty()
+                                        on:click=move |_| {
+                                            guidance.set(String::new());
+                                            guidance_open.set(true);
+                                        }>
+                                        {t(locale.get(), "branch.guided_generate")}
+                                    </button>
                                     <span class="spacer"></span>
-                                    <button type="button" class="primary" data-testid="branch-converge"
-                                        disabled=move || busy.get() || selected.get().is_empty()
-                                        on:click=move |_| confirm.set(true)>
-                                        {move || if busy.get() { t(locale.get(), "branch.converging") } else { t(locale.get(), "branch.converge") }}
+                                    <button type="button" class="primary" data-testid="branch-merge-action"
+                                        disabled=move || busy.get() || draft.get().trim().is_empty()
+                                        on:click=move |_| on_merge.call((merge_branch_id.clone(), merge_guard_hash.clone(), draft.get_untracked()))>
+                                        {move || if busy.get() { t(locale.get(), "branch.merging") } else { t(locale.get(), "branch.merge") }}
                                     </button>
                                 </div>
-                                {move || confirm.get().then(|| {
-                                    let selected_id = selected.get_untracked();
-                                    let guard = guard_hash.clone();
+                                {move || guidance_open.get().then(|| {
+                                    let branch_id = guided_branch_id.clone();
+                                    let guard_hash = guided_guard_hash.clone();
                                     view! {
-                                        <div class="overlay exploration-confirm-overlay" data-testid="branch-convergence-confirm">
-                                            <div class="modal confirm-modal exploration-confirm-modal" role="alertdialog" aria-modal="true">
-                                                <h2>{t(locale.get(), "branch.converge_confirm_title")}</h2>
-                                                <div class="hint">{tf(locale.get(), "branch.converge_confirm", &[("n", &remove_count.to_string())])}</div>
-                                                <div class="row">
-                                                    <button type="button" on:click=move |_| confirm.set(false)>{t(locale.get(), "settings.cancel")}</button>
-                                                    <button type="button" class="primary danger" data-testid="branch-converge-action"
+                                        <div class="overlay exploration-confirm-overlay" data-testid="branch-guidance-overlay">
+                                            <div class="modal branch-guidance-modal" role="dialog" aria-modal="true">
+                                                <div class="ps-head">
+                                                    <div>
+                                                        <h2>{t(locale.get(), "branch.guidance_title")}</h2>
+                                                        <span class="exploration-modal-status">{t(locale.get(), "branch.guidance_hint")}</span>
+                                                    </div>
+                                                    <button type="button" class="ps-close" disabled=move || busy.get()
+                                                        aria-label=move || t(locale.get(), "settings.cancel")
                                                         on:click=move |_| {
-                                                            confirm.set(false);
-                                                            on_converge.call((selected_id.clone(), guard.clone()));
-                                                        }>{t(locale.get(), "branch.converge")}</button>
+                                                            guidance_open.set(false);
+                                                            guidance.set(String::new());
+                                                        }>{compose_icon("close")}</button>
+                                                </div>
+                                                <label class="branch-guidance-editor">
+                                                    <strong>{t(locale.get(), "branch.guidance_label")}</strong>
+                                                    <textarea rows="7" maxlength="8000"
+                                                        placeholder=move || t(locale.get(), "branch.guidance_placeholder")
+                                                        prop:value=move || guidance.get()
+                                                        on:input=move |event| guidance.set(event_target_value(&event))></textarea>
+                                                </label>
+                                                <div class="row exploration-actions">
+                                                    <button type="button" disabled=move || busy.get() on:click=move |_| {
+                                                        guidance_open.set(false);
+                                                        guidance.set(String::new());
+                                                    }>{t(locale.get(), "settings.cancel")}</button>
+                                                    <span class="spacer"></span>
+                                                    <button type="button" class="primary" data-testid="branch-guidance-action"
+                                                        disabled=move || busy.get() || guidance.get().trim().is_empty()
+                                                        on:click=move |_| {
+                                                            let user_guidance = guidance.get_untracked();
+                                                            let current_version = draft.get_untracked();
+                                                            guidance_open.set(false);
+                                                            on_generate.call((branch_id.clone(), guard_hash.clone(), Some(current_version), Some(user_guidance)));
+                                                        }>
+                                                        {move || if busy.get() { t(locale.get(), "branch.generating") } else { t(locale.get(), "branch.generate") }}
+                                                    </button>
                                                 </div>
                                             </div>
                                         </div>

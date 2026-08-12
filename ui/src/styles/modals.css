@@ -259,11 +259,42 @@
 .branch-delta-message.user { background: color-mix(in srgb, var(--accent) 7%, var(--bg-elev)); }
 .branch-comparison-empty { display: grid; min-height: 100px; place-items: center; color: var(--text-faint); font-size: 11px; text-align: center; }
 .branch-convergence-note { color: var(--text-faint); font-size: 11px; line-height: 1.45; }
+.branch-merge-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 1fr); gap: 10px; min-height: 0; flex: 1 1 auto; }
+.branch-merge-delta, .branch-merge-editor { display: flex; min-height: 0; flex-direction: column; gap: 7px; }
+.branch-merge-delta > strong, .branch-merge-editor > strong { color: var(--text); font-size: 12px; }
+.branch-merge-delta { overflow: hidden; padding: 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-sunken); }
+.branch-merge-delta .branch-candidate-messages { padding: 0; }
+.branch-merge-editor > span { color: var(--text-faint); font-size: 11px; line-height: 1.45; }
+.branch-merge-editor textarea { min-height: 220px; flex: 1 1 auto; resize: none; }
+.branch-guidance-modal { width: min(560px, 100%); }
+.branch-guidance-editor { display: flex; flex-direction: column; gap: 7px; margin: 14px 0; }
+.branch-guidance-editor > strong { color: var(--text); font-size: 12px; }
+.branch-guidance-editor textarea { min-height: 150px; resize: vertical; }
+.branch-merge-card-row { width: min(100%, 620px); }
+.branch-merge-card { display: flex; width: 100%; align-items: center; gap: 11px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-raised); color: var(--text); text-align: left; box-shadow: var(--shadow-sm); }
+.branch-merge-card:hover { border-color: var(--accent); background: var(--bg-hover); }
+.branch-merge-card-icon { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
+.branch-merge-card-copy { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 3px; }
+.branch-merge-card-copy strong { font-size: 13px; }
+.branch-merge-card-copy > span { overflow: hidden; color: var(--text-faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.branch-merge-card-open { color: var(--text-faint); }
+.branch-merge-detail-modal { width: min(880px, 94vw); height: min(760px, 82vh); max-height: calc(100vh - 40px); padding: 16px; }
+.branch-merge-detail-head { min-height: 30px; padding-inline: 2px; }
+.branch-merge-detail-kind { flex: 0 0 auto; padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-sunken); color: var(--text-faint); font-size: 10px; font-weight: 600; }
+.artifact-modal .branch-merge-detail-preview { min-height: 0; max-height: none; flex: 1 1 auto; align-items: flex-start; padding: clamp(14px, 3vw, 28px); overflow: auto; background: var(--bg-sunken); }
+.artifact-modal .branch-merge-detail-preview > .branch-merge-detail-content { width: min(100%, 720px); min-height: 100%; margin: 0 auto; padding: clamp(22px, 4vw, 42px); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elev); box-shadow: var(--shadow-sm); color: var(--text); font-size: 14px; line-height: 1.65; user-select: text; }
+.branch-merge-detail-content > :last-child { margin-bottom: 0; }
+@media (max-width: 640px) {
+  .branch-merge-detail-modal { width: 100%; height: min(86vh, 760px); padding: 12px; }
+  .artifact-modal .branch-merge-detail-preview { padding: 8px; }
+  .artifact-modal .branch-merge-detail-preview > .branch-merge-detail-content { padding: 20px 18px; }
+}
 @media (max-width: 640px) {
   .exploration-diff-modal { padding: 16px; }
   .exploration-actions { flex-wrap: wrap; }
   .exploration-actions .spacer { display: none; }
   .branch-comparison-candidates { grid-auto-columns: minmax(250px, 86vw); }
+  .branch-merge-body { grid-template-columns: 1fr; }
 }
 .turn-undo-modal { max-width: 560px; }
 .turn-undo-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
