@@ -3647,6 +3647,7 @@ pub(super) fn SettingsView(
                                     </div>
                                 </div>
                                 <div class="settings-toolbar-actions memory-toolbar-actions">
+                                    <span class="memory-toggle-label">{move || t(locale.get(), "memory.enabled_label")}</span>
                                     <label class="toggle" title=move || t(locale.get(), "settings.nav.memory")>
                                         <input type="checkbox" prop:checked=move || memory_view.get().map(|v| v.enabled).unwrap_or(true)
                                             on:change=move |ev| {
@@ -3733,11 +3734,12 @@ pub(super) fn SettingsView(
                                         view! {
                                             <div class="settings-list-row settings-list-row-link"
                                                 on:click=move |_| load_memory_file.call(pick.clone())>
+                                                <span class="memory-note-icon" aria-hidden="true">{compose_icon("doc")}</span>
                                                 <div class="settings-list-main">
                                                     <span class="settings-list-title">{f.name.clone()}</span>
-                                                    <span class="settings-list-sub">{format_bytes(f.bytes)}</span>
                                                 </div>
                                                 <div class="settings-list-actions">
+                                                    <span class="memory-note-size">{format_bytes(f.bytes)}</span>
                                                     <span class="settings-list-chevron" aria-hidden="true">"›"</span>
                                                 </div>
                                             </div>
@@ -3747,7 +3749,10 @@ pub(super) fn SettingsView(
                                 {move || {
                                     let empty = memory_view.get().map(|v| v.files.is_empty()).unwrap_or(true);
                                     empty.then(|| view! {
-                                        <p class="model-empty-hint">{move || t(locale.get(), "memory.empty")}</p>
+                                        <div class="memory-empty">
+                                            <span class="memory-empty-icon" aria-hidden="true">{compose_icon("doc")}</span>
+                                            <span>{move || t(locale.get(), "memory.empty")}</span>
+                                        </div>
                                     })
                                 }}
                             </div>
@@ -3877,7 +3882,10 @@ pub(super) fn SettingsView(
                                         .map(|view| view.global_memories.is_empty())
                                         .unwrap_or(true);
                                     empty.then(|| view! {
-                                        <p class="model-empty-hint">{move || t(locale.get(), "memory.global_empty")}</p>
+                                        <div class="memory-empty">
+                                            <span class="memory-empty-icon" aria-hidden="true">{compose_icon("doc")}</span>
+                                            <span>{move || t(locale.get(), "memory.global_empty")}</span>
+                                        </div>
                                     })
                                 }}
                             </div>
