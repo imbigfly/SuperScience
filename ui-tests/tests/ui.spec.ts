@@ -624,6 +624,10 @@ test("Memory settings show the active project name", async ({ page }) => {
   await expect(project).toContainText("(1)");
   await expect(page.locator(".conn-group-label", { hasText: "Project memory" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Clear all" })).toHaveClass("memory-clear-btn");
+  await expect(page.locator(".memory-toggle-label")).toHaveText("Memory");
+  await expect(
+    page.getByTestId("memory-notes").locator(".memory-note-icon svg").first(),
+  ).toBeVisible();
 });
 
 test("Memory settings show and forget global habits", async ({ page }) => {
@@ -651,6 +655,7 @@ test("Memory settings show and forget global habits", async ({ page }) => {
     id: "global-memory-existing",
   });
   await expect(global).toContainText("No global habits yet.");
+  await expect(global.locator(".memory-empty")).toBeVisible();
   await expect(page.getByText(/older chat history may still affect this session/)).toBeVisible();
 });
 
