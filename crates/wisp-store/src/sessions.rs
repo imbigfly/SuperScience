@@ -772,6 +772,18 @@ impl Store {
         )
     }
 
+    /// Per-conversation reasoning-effort override. `None` inherits the bound
+    /// model profile; an empty string explicitly requests the provider default.
+    pub async fn frame_reasoning_effort(&self, frame_id: &str) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar::<_, Option<String>>(
+            "SELECT reasoning_effort FROM frames WHERE id=?",
+        )
+        .bind(frame_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten())
+    }
+
     /// Overwrite a frame's created/updated timestamps. Used by importers so
     /// external conversations keep their original chronology in the sidebar.
     pub async fn set_frame_timestamps(
@@ -803,6 +815,27 @@ impl Store {
                 .bind(project_id)
                 .execute(&self.pool)
                 .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Session not found");
+        }
+        Ok(())
+    }
+
+    pub async fn set_frame_reasoning_effort(
+        &self,
+        frame_id: &str,
+        project_id: &str,
+        reasoning_effort: Option<&str>,
+    ) -> Result<()> {
+        let updated = sqlx::query(
+            "UPDATE frames SET reasoning_effort=?,updated_at=? WHERE id=? AND project_id=?",
+        )
+        .bind(reasoning_effort)
+        .bind(chrono::Utc::now().timestamp())
+        .bind(frame_id)
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
         if updated.rows_affected() != 1 {
             anyhow::bail!("Session not found");
         }
@@ -1571,7 +1604,7 @@ impl Store {
         }
 
         let source = sqlx::query(
-            "SELECT agent_name,status,model,input_tokens,output_tokens,completed_at,title \
+            "SELECT agent_name,status,model,reasoning_effort,input_tokens,output_tokens,completed_at,title \
              FROM frames WHERE id=? AND project_id=? AND parent_frame_id=id",
         )
         .bind(frame_id)
@@ -1583,9 +1616,9 @@ impl Store {
         let now = chrono::Utc::now().timestamp();
         sqlx::query(
             "INSERT INTO frames(\
-                id,parent_frame_id,root_frame_id,agent_name,status,project_id,folder_id,model,\
+                id,parent_frame_id,root_frame_id,agent_name,status,project_id,folder_id,model,reasoning_effort,\
                 input_tokens,output_tokens,created_at,updated_at,completed_at,title\
-             ) VALUES(?,?,?,?,?,?,NULL,?,?,?,?,?,?,?)",
+             ) VALUES(?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?)",
         )
         .bind(new_frame_id)
         .bind(new_frame_id)
@@ -1594,6 +1627,7 @@ impl Store {
         .bind(source.try_get::<String, _>("status")?)
         .bind(target_project_id)
         .bind(source.try_get::<Option<String>, _>("model")?)
+        .bind(source.try_get::<Option<String>, _>("reasoning_effort")?)
         .bind(source.try_get::<Option<i64>, _>("input_tokens")?)
         .bind(source.try_get::<Option<i64>, _>("output_tokens")?)
         .bind(now)

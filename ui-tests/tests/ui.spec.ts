@@ -888,6 +888,37 @@ test("model selection stays bound to its conversation", async ({ page }) => {
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 });
 
+test("reasoning effort stays scoped to the current conversation", async ({ page }) => {
+  await enterApp(page, "/?mockSessionModels=1");
+  await page.locator('[data-session-id="s-model-a"]').click();
+
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /opus-4\.8/ }).click();
+  await page.getByTestId("model-switch-confirm")
+    .getByRole("button", { name: "Yes, switch" }).click();
+  await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
+
+  await page.locator(".model-picker-btn").click();
+  const effort = page.locator(".model-menu-effort-select");
+  await expect(effort).toHaveValue("max");
+  await effort.selectOption("high");
+  await expect.poll(() => lastInvokeArgs(page, "set_session_reasoning_effort")).toMatchObject({
+    sessionId: "s-model-a",
+    effort: "high",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toBeNull();
+  await page.locator(".model-menu-backdrop").click();
+
+  await page.locator('[data-session-id="s-model-b"]').click();
+  await page.locator(".model-picker-btn").click();
+  await expect(page.locator(".model-menu-effort-select")).toHaveValue("low");
+  await page.locator(".model-menu-backdrop").click();
+
+  await page.locator('[data-session-id="s-model-a"]').click();
+  await page.locator(".model-picker-btn").click();
+  await expect(page.locator(".model-menu-effort-select")).toHaveValue("high");
+});
+
 test("Settings Models page can open ACP Agents dialog", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Settings" }).click();

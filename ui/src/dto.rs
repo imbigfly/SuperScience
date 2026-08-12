@@ -1067,6 +1067,31 @@ pub(crate) fn session_model_label(
     )
 }
 
+/// Effective effort for the active conversation. A value loaded from the
+/// frame wins; before that IPC read completes, fall back to the bound profile.
+pub(crate) fn session_reasoning_effort(
+    models: &[ModelProfile],
+    session_models: &HashMap<String, String>,
+    session_efforts: &HashMap<String, String>,
+    session_id: Option<&str>,
+) -> String {
+    if let Some(effort) = session_id.and_then(|id| session_efforts.get(id)) {
+        return effort.clone();
+    }
+    let bound = session_id.and_then(|id| session_models.get(id));
+    models
+        .iter()
+        .find(|model| model.is_chat_model() && bound == Some(&model.id))
+        .or_else(|| {
+            models
+                .iter()
+                .find(|model| model.active && model.is_chat_model())
+        })
+        .or_else(|| models.iter().find(|model| model.is_chat_model()))
+        .map(|model| model.reasoning_effort.clone())
+        .unwrap_or_default()
+}
+
 /// Mirrors `models::effective_context_window` in src-tauri: a configured
 /// window below 4K counts as "unset" and falls back to 128K.
 pub(crate) fn effective_context_window(value: u64) -> u64 {
@@ -1121,7 +1146,7 @@ mod model_label_tests {
 
 #[cfg(test)]
 mod session_context_window_tests {
-    use super::{session_context_window, ModelProfile};
+    use super::{session_context_window, session_reasoning_effort, ModelProfile};
     use std::collections::HashMap;
 
     fn profile(id: &str, active: bool, context_window: u64) -> ModelProfile {
@@ -1150,6 +1175,24 @@ mod session_context_window_tests {
             session_context_window(&models, &bindings, Some("s1")),
             Some(1_000_000)
         );
+    }
+
+    #[test]
+    fn session_effort_override_wins_without_changing_profile() {
+        let mut active = profile("a", true, 128_000);
+        active.reasoning_effort = "max".into();
+        let mut bound = profile("b", false, 128_000);
+        bound.reasoning_effort = "max".into();
+        let models = vec![active, bound];
+        let bindings = HashMap::from([("s1".to_string(), "b".to_string())]);
+        let efforts = HashMap::from([("s1".to_string(), "high".to_string())]);
+
+        assert_eq!(
+            session_reasoning_effort(&models, &bindings, &efforts, Some("s1")),
+            "high"
+        );
+        assert_eq!(models[0].reasoning_effort, "max");
+        assert_eq!(models[1].reasoning_effort, "max");
     }
 
     #[test]

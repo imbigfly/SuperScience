@@ -450,6 +450,71 @@ async fn frame_models_are_session_scoped() {
 }
 
 #[tokio::test]
+async fn frame_reasoning_effort_is_session_scoped_and_nullable() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_frame_reasoning_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store
+        .create_frame("first", "p", "OPERON", "m1")
+        .await
+        .unwrap();
+    store
+        .create_frame("second", "p", "OPERON", "m1")
+        .await
+        .unwrap();
+
+    store
+        .set_frame_reasoning_effort("first", "p", Some("high"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.frame_reasoning_effort("first").await.unwrap(),
+        Some("high".into())
+    );
+    assert_eq!(store.frame_reasoning_effort("second").await.unwrap(), None);
+
+    sqlx::query("INSERT INTO messages(id,frame_id,seq,role,ts) VALUES('msg','first',1,'user',1)")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store
+        .clone_exploration_frame("first", "exploration", 1, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.frame_reasoning_effort("exploration").await.unwrap(),
+        Some("high".into()),
+        "an exploration branch must preserve the conversation override"
+    );
+
+    assert!(store
+        .set_frame_reasoning_effort("first", "other", Some("low"))
+        .await
+        .is_err());
+
+    store
+        .set_frame_reasoning_effort("first", "p", Some(""))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.frame_reasoning_effort("first").await.unwrap(),
+        Some(String::new()),
+        "an explicit provider-default override must differ from inheritance"
+    );
+    store
+        .set_frame_reasoning_effort("first", "p", None)
+        .await
+        .unwrap();
+    assert_eq!(store.frame_reasoning_effort("first").await.unwrap(), None);
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
 async fn agent_workflow_and_steps_roundtrip() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_agent_workflow_{}.sqlite",
@@ -2923,6 +2988,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             EXPLORATION_BRANCHES_MIGRATION.to_string(),
             PROJECT_STATE_REVISIONS_MIGRATION.to_string(),
             GLOBAL_MEMORIES_MIGRATION.to_string(),
+            SESSION_REASONING_EFFORT_MIGRATION.to_string(),
         ]
     );
 
