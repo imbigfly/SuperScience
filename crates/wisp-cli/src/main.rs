@@ -24,6 +24,7 @@ Eval defaults to the built-in deterministic offline suite and requires no API ke
 Use --mode live for a real configured model. Common options:
   --case ID                 Run one case (repeatable)
   --tag TAG                 Require a case tag (repeatable)
+  --model MODEL             Live model to benchmark (repeatable)
   --repeat N                Repeat every selected case
   --parallel N              Maximum concurrent cases
   --timeout-ms N            Per-case wall-time timeout
@@ -130,6 +131,7 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliCommand> {
                     "--artifacts" => replace_path(&mut options.artifacts, &arg, value(&mut args)?)?,
                     "--case" => options.cases.push(value(&mut args)?),
                     "--tag" => options.tags.push(value(&mut args)?),
+                    "--model" => options.models.push(value(&mut args)?),
                     "--repeat" => options.repeat = parse_usize(&arg, &value(&mut args)?)?,
                     "--parallel" => options.parallel = parse_usize(&arg, &value(&mut args)?)?,
                     "--timeout-ms" => {
@@ -1085,6 +1087,18 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("only be specified once"));
+    }
+
+    #[test]
+    fn parses_live_model_matrix() {
+        let mut expected = eval::EvalOptions::default();
+        expected.mode = eval::EvalMode::Live;
+        expected.models = vec!["model-a".into(), "model-b".into()];
+        assert_eq!(
+            command(&["eval", "--mode", "live", "--model", "model-a", "--model", "model-b"])
+                .unwrap(),
+            CliCommand::Eval(expected)
+        );
     }
 
     #[test]

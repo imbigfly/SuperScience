@@ -20,6 +20,8 @@ const SUITE_SCHEMA: &str = "wisp.agent-eval-suite.v1";
 const REPORT_SCHEMA: &str = "wisp.agent-eval-report.v1";
 const TRAJECTORY_SCHEMA: &str = "wisp.agent-trajectory.v1";
 const BUILTIN_SUITE: &str = include_str!("../eval-suites/offline-v1.yaml");
+#[cfg(test)]
+const LIVE_COMPACTION_SUITE: &str = include_str!("../eval-suites/live-compaction-v1.yaml");
 const DEFAULT_MAX_CONTEXT: usize = 128_000;
 const DEFAULT_MAX_ROUNDS: usize = 12;
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
@@ -56,6 +58,7 @@ pub struct EvalOptions {
     pub artifacts: Option<PathBuf>,
     pub cases: Vec<String>,
     pub tags: Vec<String>,
+    pub models: Vec<String>,
     pub repeat: usize,
     pub timeout_ms: Option<u64>,
     pub parallel: usize,
@@ -83,6 +86,7 @@ impl Default for EvalOptions {
             artifacts: None,
             cases: Vec::new(),
             tags: Vec::new(),
+            models: Vec::new(),
             repeat: 1,
             timeout_ms: None,
             parallel: 1,
@@ -249,7 +253,11 @@ struct EvalExpectation {
     #[serde(default)]
     completion_contains: Vec<String>,
     #[serde(default)]
+    completion_not_contains: Vec<String>,
+    #[serde(default)]
     expected_files: BTreeMap<String, String>,
+    #[serde(default)]
+    file_contains: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     deleted_files: Vec<String>,
     #[serde(default)]
@@ -266,6 +274,10 @@ struct EvalExpectation {
     approvals: Option<usize>,
     #[serde(default)]
     remaining_script: Option<usize>,
+    #[serde(default)]
+    compactions: Option<usize>,
+    #[serde(default)]
+    max_compaction_ratio_percent: Option<u64>,
 }
 
 fn default_outcome() -> String {
@@ -278,7 +290,9 @@ impl Default for EvalExpectation {
             outcome: default_outcome(),
             error_contains: Vec::new(),
             completion_contains: Vec::new(),
+            completion_not_contains: Vec::new(),
             expected_files: BTreeMap::new(),
+            file_contains: BTreeMap::new(),
             deleted_files: Vec::new(),
             required_tools: Vec::new(),
             forbidden_tools: Vec::new(),
@@ -287,6 +301,8 @@ impl Default for EvalExpectation {
             request_contains: Vec::new(),
             approvals: None,
             remaining_script: None,
+            compactions: None,
+            max_compaction_ratio_percent: None,
         }
     }
 }
@@ -332,7 +348,15 @@ struct Captured {
     cached_tokens: u64,
     completion: Option<String>,
     approvals: Vec<bool>,
+    compactions: Vec<CompactionRecord>,
     events: Vec<TrajectoryEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CompactionRecord {
+    before_tokens: usize,
+    after_tokens: usize,
+    strategy: String,
 }
 
 struct EvalOutput {
@@ -497,6 +521,15 @@ impl Output for EvalOutput {
     }
 
     fn compaction(&self, before: usize, after: usize, strategy: &str) {
+        self.captured
+            .lock()
+            .expect("eval capture mutex poisoned")
+            .compactions
+            .push(CompactionRecord {
+                before_tokens: before,
+                after_tokens: after,
+                strategy: strategy.into(),
+            });
         self.push(
             "compaction",
             None,
@@ -602,6 +635,8 @@ impl Output for EvalOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScenarioResult {
+    #[serde(default = "default_report_model")]
+    model: String,
     id: String,
     description: String,
     tags: Vec<String>,
@@ -617,6 +652,8 @@ struct ScenarioResult {
     reasoning_tokens: u64,
     cached_tokens: u64,
     cost_microusd: u64,
+    #[serde(default)]
+    compactions: Vec<CompactionRecord>,
     completion: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent_error: Option<String>,
@@ -641,6 +678,24 @@ struct ReportSummary {
     reasoning_tokens: u64,
     cached_tokens: u64,
     cost_microusd: u64,
+    #[serde(default)]
+    compactions: u64,
+    #[serde(default)]
+    compaction_before_tokens: u64,
+    #[serde(default)]
+    compaction_after_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compaction_ratio_percent: Option<u64>,
+}
+
+fn default_report_model() -> String {
+    "unknown".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ModelSummary {
+    model: String,
+    summary: ReportSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -669,6 +724,8 @@ struct EvalReport {
     model: String,
     repeat: usize,
     summary: ReportSummary,
+    #[serde(default)]
+    model_summaries: Vec<ModelSummary>,
     scenarios: Vec<ScenarioResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     comparison: Option<BaselineComparison>,
@@ -817,21 +874,37 @@ pub async fn run(live_config: Option<ProviderConfig>, options: &EvalOptions) -> 
     }
 
     let suite_hash = sha256_hex(serde_yaml::to_string(&suite)?.as_bytes());
+    let model_configs = match (&live_config, options.mode) {
+        (Some(config), EvalMode::Live) if !options.models.is_empty() => options
+            .models
+            .iter()
+            .map(|model| {
+                let mut config = config.clone();
+                config.model = model.clone();
+                Some(config)
+            })
+            .collect::<Vec<_>>(),
+        (config, _) => vec![config.clone()],
+    };
     let semaphore = Arc::new(tokio::sync::Semaphore::new(options.parallel));
     let mut tasks = tokio::task::JoinSet::new();
-    for (case_index, case) in selected.into_iter().cloned().enumerate() {
-        for repetition in 1..=options.repeat {
-            let permit = semaphore.clone().acquire_owned().await?;
-            let case = case.clone();
-            let defaults = suite.defaults.clone();
-            let options = options.clone();
-            let live_config = live_config.clone();
-            tasks.spawn(async move {
-                let _permit = permit;
-                let order = case_index * options.repeat + repetition;
-                let result = run_case(case, repetition, defaults, live_config, options).await;
-                (order, result)
-            });
+    for (model_index, model_config) in model_configs.iter().cloned().enumerate() {
+        for (case_index, case) in selected.iter().cloned().cloned().enumerate() {
+            for repetition in 1..=options.repeat {
+                let permit = semaphore.clone().acquire_owned().await?;
+                let case = case.clone();
+                let defaults = suite.defaults.clone();
+                let options = options.clone();
+                let live_config = model_config.clone();
+                let cases_per_model = selected.len() * options.repeat;
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    let order =
+                        model_index * cases_per_model + case_index * options.repeat + repetition;
+                    let result = run_case(case, repetition, defaults, live_config, options).await;
+                    (order, result)
+                });
+            }
         }
     }
 
@@ -843,10 +916,14 @@ pub async fn run(live_config: Option<ProviderConfig>, options: &EvalOptions) -> 
     ordered.sort_by_key(|(order, _)| *order);
     let scenarios: Vec<_> = ordered.into_iter().map(|(_, result)| result).collect();
 
-    let model = live_config
-        .as_ref()
-        .map(|config| config.model.clone())
-        .unwrap_or_else(|| "scripted-v1".into());
+    let model = if model_configs.len() == 1 {
+        model_configs[0]
+            .as_ref()
+            .map(|config| config.model.clone())
+            .unwrap_or_else(|| "scripted-v1".into())
+    } else {
+        "matrix".into()
+    };
     let provider = live_config
         .as_ref()
         .map(|config| format!("{:?}", config.kind))
@@ -863,6 +940,7 @@ pub async fn run(live_config: Option<ProviderConfig>, options: &EvalOptions) -> 
         model,
         repeat: options.repeat,
         summary: summarize(&scenarios),
+        model_summaries: summarize_by_model(&scenarios),
         scenarios,
         comparison: None,
     };
@@ -918,6 +996,16 @@ fn validate_options(options: &EvalOptions) -> Result<()> {
     if options.keep_failed_workspace && options.artifacts.is_none() {
         bail!("--keep-failed-workspace requires --artifacts <dir>");
     }
+    if options.mode == EvalMode::Offline && !options.models.is_empty() {
+        bail!("--model is only valid with --mode live");
+    }
+    if options.models.iter().any(|model| model.trim().is_empty()) {
+        bail!("--model must not be empty");
+    }
+    let unique: BTreeSet<_> = options.models.iter().collect();
+    if unique.len() != options.models.len() {
+        bail!("--model values must be unique");
+    }
     Ok(())
 }
 
@@ -963,6 +1051,7 @@ fn validate_suite(suite: &EvalSuite, mode: EvalMode) -> Result<()> {
             .keys()
             .chain(case.base64_files.keys())
             .chain(case.expect.expected_files.keys())
+            .chain(case.expect.file_contains.keys())
             .chain(case.expect.deleted_files.iter())
         {
             validate_relative_path(path)
@@ -1019,9 +1108,14 @@ async fn run_case(
     live_config: Option<ProviderConfig>,
     options: EvalOptions,
 ) -> Result<ScenarioResult> {
+    let model = live_config
+        .as_ref()
+        .map(|config| config.model.clone())
+        .unwrap_or_else(|| "scripted-v1".into());
     eprintln!(
-        "[{} #{}] {} — {}",
+        "[{}:{} #{}] {} — {}",
         options.mode.as_str(),
+        model,
         repetition,
         case.id,
         case.description
@@ -1136,6 +1230,7 @@ async fn run_case(
             artifacts,
             &case,
             repetition,
+            &model,
             &captured,
             provider_source.offline_snapshot().as_ref(),
             vision_source
@@ -1153,7 +1248,7 @@ async fn run_case(
             .expect("validated artifacts requirement");
         let target = artifacts.join("failed-workspaces").join(format!(
             "{}-{}-{}",
-            safe_name(&case.id),
+            format!("{}-{}", safe_name(&model), safe_name(&case.id)),
             repetition,
             uuid::Uuid::new_v4().simple()
         ));
@@ -1171,6 +1266,7 @@ async fn run_case(
         captured.tool_calls.len()
     );
     Ok(ScenarioResult {
+        model,
         id: case.id,
         description: case.description,
         tags: case.tags,
@@ -1186,6 +1282,7 @@ async fn run_case(
         reasoning_tokens: captured.reasoning_tokens,
         cached_tokens: captured.cached_tokens,
         cost_microusd,
+        compactions: captured.compactions,
         completion: captured.completion,
         agent_error,
         trajectory_path: trajectory_path.map(|path| path.to_string_lossy().into_owned()),
@@ -1433,6 +1530,15 @@ fn verify_case(
             failures.push(format!("completion did not contain '{fragment}'"));
         }
     }
+    for fragment in &case.expect.completion_not_contains {
+        if captured
+            .completion
+            .as_deref()
+            .is_some_and(|completion| contains_folded(completion, fragment))
+        {
+            failures.push(format!("completion unexpectedly contained '{fragment}'"));
+        }
+    }
     for tool in &case.expect.required_tools {
         if !captured.tool_calls.iter().any(|call| &call.name == tool) {
             failures.push(format!("required tool '{tool}' was not called"));
@@ -1496,6 +1602,29 @@ fn verify_case(
             ));
         }
     }
+    if let Some(expected) = case.expect.compactions {
+        if captured.compactions.len() != expected {
+            failures.push(format!(
+                "expected {expected} compaction(s), observed {}",
+                captured.compactions.len()
+            ));
+        }
+    }
+    if let Some(max_percent) = case.expect.max_compaction_ratio_percent {
+        for compaction in &captured.compactions {
+            let ratio = if compaction.before_tokens == 0 {
+                0
+            } else {
+                compaction.after_tokens.saturating_mul(100) / compaction.before_tokens
+            } as u64;
+            if ratio > max_percent {
+                failures.push(format!(
+                    "compaction ratio was {ratio}% ({} -> {} tokens), above {max_percent}%",
+                    compaction.before_tokens, compaction.after_tokens
+                ));
+            }
+        }
+    }
     if let Some(provider) = provider {
         for fragment in &case.expect.request_contains {
             let found = provider.requests.iter().any(|request| {
@@ -1526,11 +1655,37 @@ fn verify_case(
     for (path, contents) in &case.expect.expected_files {
         expected.insert(path.clone(), contents.as_bytes().to_vec());
     }
-    if &expected != after {
+    for (path, fragments) in &case.expect.file_contains {
+        match after
+            .get(path)
+            .and_then(|contents| std::str::from_utf8(contents).ok())
+        {
+            Some(contents) => {
+                for fragment in fragments {
+                    if !contains_folded(contents, fragment) {
+                        failures.push(format!("file '{path}' did not contain '{fragment}'"));
+                    }
+                }
+            }
+            None => failures.push(format!("file '{path}' was missing or not UTF-8")),
+        }
+    }
+    let flexible_paths: BTreeSet<_> = case.expect.file_contains.keys().collect();
+    let expected_strict: BTreeMap<_, _> = expected
+        .iter()
+        .filter(|(path, _)| !flexible_paths.contains(path))
+        .collect();
+    let after_strict: BTreeMap<_, _> = after
+        .iter()
+        .filter(|(path, _)| !flexible_paths.contains(path))
+        .collect();
+    if expected_strict != after_strict {
         let paths: BTreeSet<_> = expected
             .keys()
             .chain(after.keys())
-            .filter(|path| expected.get(*path) != after.get(*path))
+            .filter(|path| {
+                !flexible_paths.contains(path) && expected.get(*path) != after.get(*path)
+            })
             .cloned()
             .collect();
         failures.push(format!(
@@ -1609,19 +1764,25 @@ fn write_trajectory(
     artifacts: &Path,
     case: &EvalCase,
     repetition: usize,
+    model: &str,
     captured: &Captured,
     provider: Option<&ScriptedProviderSnapshot>,
     vision_provider: Option<&ScriptedProviderSnapshot>,
 ) -> Result<PathBuf> {
     let dir = artifacts.join("trajectories");
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{}-{repetition}.jsonl", safe_name(&case.id)));
+    let path = dir.join(format!(
+        "{}-{}-{repetition}.jsonl",
+        safe_name(model),
+        safe_name(&case.id)
+    ));
     let mut lines = String::new();
     lines.push_str(&serde_json::to_string(&json!({
         "schema": TRAJECTORY_SCHEMA,
         "sequence": 0,
         "kind": "metadata",
         "case_id": case.id,
+        "model": model,
         "repetition": repetition,
         "provider_requests": provider,
         "vision_provider_requests": vision_provider,
@@ -1637,6 +1798,16 @@ fn write_trajectory(
 
 fn summarize(results: &[ScenarioResult]) -> ReportSummary {
     let passed = results.iter().filter(|result| result.passed).count();
+    let compaction_before_tokens = results
+        .iter()
+        .flat_map(|result| &result.compactions)
+        .map(|compaction| compaction.before_tokens as u64)
+        .sum::<u64>();
+    let compaction_after_tokens = results
+        .iter()
+        .flat_map(|result| &result.compactions)
+        .map(|compaction| compaction.after_tokens as u64)
+        .sum::<u64>();
     ReportSummary {
         cases: results
             .iter()
@@ -1662,7 +1833,35 @@ fn summarize(results: &[ScenarioResult]) -> ReportSummary {
         reasoning_tokens: results.iter().map(|result| result.reasoning_tokens).sum(),
         cached_tokens: results.iter().map(|result| result.cached_tokens).sum(),
         cost_microusd: results.iter().map(|result| result.cost_microusd).sum(),
+        compactions: results
+            .iter()
+            .map(|result| result.compactions.len() as u64)
+            .sum(),
+        compaction_before_tokens,
+        compaction_after_tokens,
+        compaction_ratio_percent: (compaction_before_tokens > 0)
+            .then_some(compaction_after_tokens.saturating_mul(100) / compaction_before_tokens),
     }
+}
+
+fn summarize_by_model(results: &[ScenarioResult]) -> Vec<ModelSummary> {
+    let models = results
+        .iter()
+        .map(|result| result.model.as_str())
+        .collect::<BTreeSet<_>>();
+    models
+        .into_iter()
+        .map(|model| ModelSummary {
+            model: model.into(),
+            summary: summarize(
+                &results
+                    .iter()
+                    .filter(|result| result.model == model)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
+        })
+        .collect()
 }
 
 fn compare_reports(
@@ -1703,22 +1902,32 @@ fn compare_reports(
     let baseline_passes: HashMap<_, _> = baseline
         .scenarios
         .iter()
-        .map(|result| ((result.id.clone(), result.repetition), result.passed))
+        .map(|result| {
+            (
+                (result.model.clone(), result.id.clone(), result.repetition),
+                result.passed,
+            )
+        })
         .collect();
     let current_passes: HashMap<_, _> = current
         .scenarios
         .iter()
-        .map(|result| ((result.id.clone(), result.repetition), result.passed))
+        .map(|result| {
+            (
+                (result.model.clone(), result.id.clone(), result.repetition),
+                result.passed,
+            )
+        })
         .collect();
     let regressions = baseline_passes
         .iter()
         .filter(|(key, passed)| **passed && current_passes.get(*key) == Some(&false))
-        .map(|((id, repetition), _)| format!("{id}#{repetition}"))
+        .map(|((model, id, repetition), _)| format!("{model}:{id}#{repetition}"))
         .collect();
     let improvements = baseline_passes
         .iter()
         .filter(|(key, passed)| !**passed && current_passes.get(*key) == Some(&true))
-        .map(|((id, repetition), _)| format!("{id}#{repetition}"))
+        .map(|((model, id, repetition), _)| format!("{model}:{id}#{repetition}"))
         .collect();
     let mut threshold_failures = Vec::new();
     if let Some(percent) = options.max_token_regression_percent {
@@ -1933,6 +2142,97 @@ mod tests {
                 "missing built-in coverage tag {required}"
             );
         }
+    }
+
+    #[test]
+    fn live_compaction_suite_requires_real_compaction_for_every_case() {
+        let suite: EvalSuite = serde_yaml::from_str(LIVE_COMPACTION_SUITE).unwrap();
+        validate_suite(&suite, EvalMode::Live).unwrap();
+        assert_eq!(suite.cases.len(), 1);
+        for case in &suite.cases {
+            assert_eq!(case.expect.compactions, Some(1));
+            assert!(case.expect.max_compaction_ratio_percent.is_some());
+            assert!(case.script.is_empty());
+            assert!(case.actions.len() >= 5);
+            for tool in ["search", "read", "python", "write", "edit"] {
+                assert!(case.expect.required_tools.iter().any(|name| name == tool));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn live_compaction_fixtures_cross_the_real_compaction_threshold() {
+        let suite: EvalSuite = serde_yaml::from_str(LIVE_COMPACTION_SUITE).unwrap();
+        for mut case in suite.cases {
+            case.actions = vec![
+                EvalAction::Compact,
+                EvalAction::Send {
+                    prompt: "Finish the threshold probe.".into(),
+                    guidance: vec![],
+                    allow_error: false,
+                },
+            ];
+            case.allowed_tools = vec!["attempt_completion".into()];
+            case.expect = EvalExpectation {
+                completion_contains: vec!["THRESHOLD_OK".into()],
+                required_tools: vec!["attempt_completion".into()],
+                compactions: Some(1),
+                max_compaction_ratio_percent: Some(80),
+                ..EvalExpectation::default()
+            };
+            case.script = vec![
+                serde_json::from_value(json!({
+                    "content": "Compacted benchmark history while preserving the latest facts and task state."
+                }))
+                .unwrap(),
+                serde_json::from_value(json!({
+                    "tool_calls": [{
+                        "id": "done-1",
+                        "name": "attempt_completion",
+                        "arguments": {"result": "THRESHOLD_OK"}
+                    }]
+                }))
+                .unwrap(),
+            ];
+
+            let id = case.id.clone();
+            let result = run_case(
+                case,
+                1,
+                suite.defaults.clone(),
+                None,
+                EvalOptions::default(),
+            )
+            .await
+            .unwrap();
+            assert!(result.passed, "{id}: {:?}", result.failures);
+            assert_eq!(result.compactions.len(), 1, "{id}");
+            let compaction = &result.compactions[0];
+            assert!(compaction.after_tokens < compaction.before_tokens, "{id}");
+        }
+    }
+
+    #[test]
+    fn model_matrix_is_live_only_and_unique() {
+        let offline = EvalOptions {
+            models: vec!["model-a".into()],
+            ..EvalOptions::default()
+        };
+        assert!(validate_options(&offline).is_err());
+
+        let live = EvalOptions {
+            mode: EvalMode::Live,
+            models: vec!["model-a".into(), "model-b".into()],
+            ..EvalOptions::default()
+        };
+        validate_options(&live).unwrap();
+
+        let duplicate = EvalOptions {
+            mode: EvalMode::Live,
+            models: vec!["model-a".into(), "model-a".into()],
+            ..EvalOptions::default()
+        };
+        assert!(validate_options(&duplicate).is_err());
     }
 
     #[test]
