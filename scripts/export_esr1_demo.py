@@ -682,8 +682,11 @@ def build_assets() -> None:
 
 
 def cleanup_old_seed_files() -> None:
+    keep_manifests = {f"{m}.json" for _, m, _, _ in SESSIONS}
+    # The memory demo is produced by export_memory_demo.py, not this script.
+    keep_manifests.add("manifest_memory_01_long_context.json")
     for p in SEED.glob("manifest_*.json"):
-        if p.name not in {f"{m}.json" for _, m, _, _ in SESSIONS}:
+        if p.name not in keep_manifests:
             p.unlink()
             print("removed", p.name)
     for p in SEED.glob("assets_*.tar.gz"):

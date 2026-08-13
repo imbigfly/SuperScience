@@ -200,17 +200,22 @@ Keep `--parallel 1` for an initial smoke so rate limits are comparable. Add
 and execute every case through the production loop with a scripted provider;
 they never require an API key.
 
-The same long-context notebook is also bundled as an Example-project demo
+The same long-context scenario is also bundled as an Example-project demo
 (`seed/manifest_memory_01_long_context.json`). Open **Example project**,
 right-click **Long-context memory demo**, and choose **Copy to a project…**
 to materialize the transcript (and `.wisp/memory` notes) in a real workspace.
-The opening assistant turn is the only place that locks `QC_THRESHOLD=0.047`
-and `COHORT=WISP-HCC-2024-G`. Later turns expand to roughly half a million
-estimated tokens — enough to cross the 80% compact line on 256K windows, and
-still a large buried prefix on 1M windows so a manual `/compact` folds that
-first answer out of the protected tail. Continue with a live model:
-`/compact`, then ask what the first answer locked, or ask about study
-`TS-999-QX` to exercise `search_memory`.
+The transcript is a complete GSE153250 ESR1-knockdown RNA-seq analysis
+session recorded live with the wisp CLI (58 turns, ~104K estimated tokens;
+see `scripts/export_memory_demo.py`). The opening assistant turn locks the
+analysis decision (`GENE_FILTER`, `PRIMARY_CONTRAST`, `FDR_CUTOFF`); the
+session then runs QC, PCA, exploratory DE, sensitivity checks, figures, and
+report drafts, so a manual `/compact` installs the semantic checkpoint and
+folds the opening away whenever the configured context window is ~110K or
+smaller (the fold gate is 60% of the window). Continue with a live model:
+`/compact`, then ask what the first
+answer locked, or ask which sample was flagged for low assignment (`siNT_1`)
+to exercise `search_memory` against the confirmed notes — including a
+distractor ChIP-seq pilot (`GSE180386`).
 
 ### Custom suites
 
