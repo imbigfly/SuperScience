@@ -1080,17 +1080,14 @@ pub(crate) fn session_model_label(
     )
 }
 
-/// Effective effort for the active conversation. A value loaded from the
-/// frame wins; before that IPC read completes, fall back to the bound profile.
-pub(crate) fn session_reasoning_effort(
-    models: &[ModelProfile],
+/// The profile a session resolves to right now: bound profile → active →
+/// first chat model. Shared by the effort/window getters and the composer
+/// effort dropdown.
+pub(crate) fn session_profile<'a>(
+    models: &'a [ModelProfile],
     session_models: &HashMap<String, String>,
-    session_efforts: &HashMap<String, String>,
     session_id: Option<&str>,
-) -> String {
-    if let Some(effort) = session_id.and_then(|id| session_efforts.get(id)) {
-        return effort.clone();
-    }
+) -> Option<&'a ModelProfile> {
     let bound = session_id.and_then(|id| session_models.get(id));
     models
         .iter()
@@ -1101,6 +1098,23 @@ pub(crate) fn session_reasoning_effort(
                 .find(|model| model.active && model.is_chat_model())
         })
         .or_else(|| models.iter().find(|model| model.is_chat_model()))
+}
+
+/// Effective effort for the active conversation. A value loaded from the
+/// frame wins; before that IPC read completes, fall back to the bound profile.
+/// An empty stored value means "no override" (inherit the profile again).
+pub(crate) fn session_reasoning_effort(
+    models: &[ModelProfile],
+    session_models: &HashMap<String, String>,
+    session_efforts: &HashMap<String, String>,
+    session_id: Option<&str>,
+) -> String {
+    if let Some(effort) = session_id.and_then(|id| session_efforts.get(id)) {
+        if !effort.is_empty() {
+            return effort.clone();
+        }
+    }
+    session_profile(models, session_models, session_id)
         .map(|model| model.reasoning_effort.clone())
         .unwrap_or_default()
 }
@@ -1130,15 +1144,7 @@ pub(crate) fn session_context_window(
     if bound.is_some_and(|id| id.starts_with("acp:")) {
         return None;
     }
-    models
-        .iter()
-        .find(|model| model.is_chat_model() && bound == Some(&model.id))
-        .or_else(|| {
-            models
-                .iter()
-                .find(|model| model.active && model.is_chat_model())
-        })
-        .or_else(|| models.iter().find(|model| model.is_chat_model()))
+    session_profile(models, session_models, session_id)
         .map(|model| effective_context_window(model.context_window))
 }
 
@@ -1206,6 +1212,21 @@ mod session_context_window_tests {
         );
         assert_eq!(models[0].reasoning_effort, "max");
         assert_eq!(models[1].reasoning_effort, "max");
+    }
+
+    #[test]
+    fn empty_effort_override_inherits_profile_again() {
+        let mut bound = profile("b", true, 128_000);
+        bound.reasoning_effort = "max".into();
+        let models = vec![bound];
+        let bindings = HashMap::from([("s1".to_string(), "b".to_string())]);
+        // Legacy rows and a just-cleared override both surface as "".
+        let efforts = HashMap::from([("s1".to_string(), String::new())]);
+
+        assert_eq!(
+            session_reasoning_effort(&models, &bindings, &efforts, Some("s1")),
+            "max"
+        );
     }
 
     #[test]

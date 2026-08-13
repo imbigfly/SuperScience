@@ -37,6 +37,9 @@ conversations. The reasoning-effort selector in the same menu is also scoped to
 the current conversation: changing it overrides that conversation's model
 profile without editing the profile or affecting other conversations. A new
 conversation inherits the reasoning effort configured on its model profile.
+The selector lists the effort levels the bound model family is documented to
+support (same curated list as the model form in Settings), and choosing
+"default" clears the conversation override so it follows the profile again.
 
 Model profiles describe model access and capabilities for the **built-in Wisp
 agent**. External coding agents (Codex / Claude via ACP) are configured under

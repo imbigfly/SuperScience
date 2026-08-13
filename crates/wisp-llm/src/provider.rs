@@ -147,7 +147,8 @@ pub struct ProviderConfig {
     pub anthropic_version: String,
     /// Cap on output tokens per turn.
     pub max_tokens: u64,
-    /// OpenAI reasoning effort (`reasoning.effort` / `reasoning_effort`). None = provider default.
+    /// Reasoning effort: `reasoning.effort` / `reasoning_effort` for OpenAI,
+    /// `output_config.effort` for Anthropic. None = provider default.
     pub reasoning_effort: Option<String>,
     /// HTTP proxy override. `None`/empty = follow system/env proxy settings;
     /// `"none"` = force a direct connection; otherwise a proxy URL

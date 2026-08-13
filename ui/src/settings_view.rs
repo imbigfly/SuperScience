@@ -445,31 +445,77 @@ fn settings_provider_defaults(provider: &str) -> (&'static str, &'static str) {
 
 /// Every effort value any supported provider understands; shown when the
 /// model is not in the curated table below.
-const ALL_EFFORT_VALUES: &[&str] = &[
+pub(crate) const ALL_EFFORT_VALUES: &[&str] = &[
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
 
-/// Curated reasoning-effort support per model family. `None` = unknown model
-/// (full list + "can't verify" hint); `Some(&[])` = the parameter is never
-/// sent for this provider, so only "default" makes sense.
+/// Curated reasoning-effort support per model family, per vendor docs as of
+/// 2026-08 (OpenAI reasoning guide, Anthropic effort docs, xAI reasoning
+/// docs, DeepSeek/Moonshot/Alibaba API references). `None` = unknown model
+/// (full list + "can't verify" hint); `Some(&[])` = the provider rejects the
+/// parameter for this model, so only "default" makes sense.
 /// ponytail: name-pattern table — no provider exposes a capability-discovery
-/// API for this; extend as new families matter.
-pub(crate) fn known_effort_values(provider: &str, model: &str) -> Option<&'static [&'static str]> {
-    if settings_provider_value(provider) == "anthropic" {
-        // anthropic.rs never forwards reasoning_effort.
-        return Some(&[]);
-    }
-    let m = model.to_ascii_lowercase();
-    if m.contains("codex-max") {
-        Some(&["low", "medium", "high", "xhigh"])
-    } else if m.contains("gpt-5.1") {
+/// API for this; extend as new families matter. Keep longer patterns above
+/// their shorter siblings ("claude-opus-4-5" before "claude-opus").
+pub(crate) fn known_effort_values(
+    _provider: &str,
+    model: &str,
+) -> Option<&'static [&'static str]> {
+    // Users write model names loosely ("opus-4.8", "claude-opus-4-8"), so
+    // match on a normalized form and don't require the vendor prefix.
+    let m = model.to_ascii_lowercase().replace(['.', '_'], "-");
+    if m.contains("gpt-5-pro") {
+        Some(&["high"])
+    } else if m.contains("codex-max") {
+        Some(&["none", "low", "medium", "high", "xhigh"])
+    } else if m.contains("gpt-5-1") {
         Some(&["none", "low", "medium", "high"])
+    } else if m.contains("gpt-5-6") {
+        Some(&["none", "low", "medium", "high", "xhigh", "max"])
+    } else if m.contains("gpt-5-2")
+        || m.contains("gpt-5-3")
+        || m.contains("gpt-5-4")
+        || m.contains("gpt-5-5")
+    {
+        Some(&["none", "low", "medium", "high", "xhigh"])
     } else if m.contains("gpt-5") {
         Some(&["minimal", "low", "medium", "high"])
+    } else if m.starts_with("o1-mini") || m.starts_with("o1-preview") {
+        Some(&[])
     } else if m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") {
+        Some(&["low", "medium", "high"])
+    } else if m.contains("opus-4-5") {
+        Some(&["low", "medium", "high"])
+    } else if m.contains("sonnet-4-5") || m.contains("haiku") {
+        // These reject the effort parameter with a 400.
+        Some(&[])
+    } else if m.contains("opus-4-6")
+        || m.contains("sonnet-4-6")
+        || m.contains("mythos-preview")
+    {
+        Some(&["low", "medium", "high", "max"])
+    } else if m.contains("opus")
+        || m.contains("sonnet")
+        || m.contains("fable")
+        || m.contains("mythos")
+    {
+        Some(&["low", "medium", "high", "xhigh", "max"])
+    } else if m.contains("grok-4-6") || m.contains("grok-4-20") {
+        Some(&["low", "medium", "high", "xhigh"])
+    } else if m.contains("grok-4") {
         Some(&["low", "medium", "high"])
     } else if m.contains("grok") {
         Some(&["low", "high"])
+    } else if m.contains("deepseek-v4") {
+        // medium/xhigh are silently down-mapped to high; don't offer them.
+        Some(&["low", "high", "max"])
+    } else if m.contains("kimi-k3") {
+        Some(&["low", "high", "max"])
+    } else if m.contains("kimi-k2") {
+        // k2.x only toggles thinking on/off; no effort parameter.
+        Some(&[])
+    } else if m.contains("qwen3-8-max") {
+        Some(&["low", "medium", "xhigh"])
     } else {
         None
     }
@@ -483,21 +529,72 @@ mod effort_values_tests {
     fn maps_families_and_leaves_unknown_open() {
         assert_eq!(
             known_effort_values("anthropic", "claude-sonnet-5"),
+            Some(&["low", "medium", "high", "xhigh", "max"][..])
+        );
+        assert_eq!(
+            known_effort_values("anthropic", "claude-opus-4-5"),
+            Some(&["low", "medium", "high"][..])
+        );
+        assert_eq!(
+            known_effort_values("anthropic", "claude-sonnet-4-6"),
+            Some(&["low", "medium", "high", "max"][..])
+        );
+        assert_eq!(
+            known_effort_values("anthropic", "claude-haiku-4-5"),
+            Some(&[][..])
+        );
+        assert_eq!(
+            known_effort_values("anthropic", "claude-sonnet-4-5"),
             Some(&[][..])
         );
         assert_eq!(
             known_effort_values("openai", "gpt-5.1-codex-max"),
-            Some(&["low", "medium", "high", "xhigh"][..])
+            Some(&["none", "low", "medium", "high", "xhigh"][..])
         );
         assert_eq!(
             known_effort_values("openai_responses", "gpt-5.1"),
             Some(&["none", "low", "medium", "high"][..])
         );
         assert_eq!(
+            known_effort_values("openai_responses", "gpt-5.6"),
+            Some(&["none", "low", "medium", "high", "xhigh", "max"][..])
+        );
+        assert_eq!(
+            known_effort_values("openai", "gpt-5-pro"),
+            Some(&["high"][..])
+        );
+        assert_eq!(
             known_effort_values("openai", "o3-mini"),
             Some(&["low", "medium", "high"][..])
         );
-        assert_eq!(known_effort_values("openai", "deepseek-v4-pro"), None);
+        assert_eq!(known_effort_values("openai", "o1-mini"), Some(&[][..]));
+        // Loose user spelling (no vendor prefix, dots) matches the same family.
+        assert_eq!(
+            known_effort_values("anthropic", "opus-4.8"),
+            Some(&["low", "medium", "high", "xhigh", "max"][..])
+        );
+        assert_eq!(
+            known_effort_values("openai", "grok-4.6"),
+            Some(&["low", "medium", "high", "xhigh"][..])
+        );
+        assert_eq!(
+            known_effort_values("openai", "grok-4"),
+            Some(&["low", "medium", "high"][..])
+        );
+        assert_eq!(
+            known_effort_values("openai", "deepseek-v4-pro"),
+            Some(&["low", "high", "max"][..])
+        );
+        assert_eq!(
+            known_effort_values("openai", "kimi-k3"),
+            Some(&["low", "high", "max"][..])
+        );
+        assert_eq!(known_effort_values("openai", "kimi-k2.5"), Some(&[][..]));
+        assert_eq!(
+            known_effort_values("openai", "qwen3.8-max-preview"),
+            Some(&["low", "medium", "xhigh"][..])
+        );
+        assert_eq!(known_effort_values("openai", "some-future-model"), None);
     }
 }
 

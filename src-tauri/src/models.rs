@@ -545,13 +545,17 @@ pub async fn session_label(store: &wisp_store::Store, frame_id: &str) -> String 
 
 /// Effective reasoning effort for a conversation: an explicit frame override
 /// wins, otherwise the bound model profile supplies its configured default.
+/// An empty stored override (written by older builds for "provider default")
+/// counts as no override, so the profile default applies again.
 pub async fn session_reasoning_effort(
     store: &wisp_store::Store,
     frame_id: &str,
     profile_default: &str,
 ) -> String {
     if let Ok(Some(effort)) = store.frame_reasoning_effort(frame_id).await {
-        return effort;
+        if !effort.is_empty() {
+            return effort;
+        }
     }
     profile_default.to_string()
 }
@@ -1153,9 +1157,16 @@ pub async fn set_session_reasoning_effort(
         Some(&session_id),
     )
     .await?;
+    // Empty effort clears the override: the session inherits the bound model
+    // profile again instead of pinning "provider default" forever.
+    let override_value = if effort.is_empty() {
+        None
+    } else {
+        Some(effort)
+    };
     state
         .store
-        .set_frame_reasoning_effort(&session_id, &project.id, Some(effort))
+        .set_frame_reasoning_effort(&session_id, &project.id, override_value)
         .await
         .map_err(|error| error.to_string())?;
     crate::clear_session_agent(&state, &session_id).await;
@@ -1289,6 +1300,40 @@ mod tests {
         assert_eq!(session_reasoning_effort(&store, "a", "max").await, "high");
         assert_eq!(session_reasoning_effort(&store, "b", "max").await, "max");
         assert_eq!(profile_llm(&store, "m1").await.unwrap().5, "max");
+        drop(store);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn cleared_or_empty_session_override_inherits_profile() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_session_reasoning_clear_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        store.create_project("p", "project", "").await.unwrap();
+        store.create_frame("a", "p", "OPERON", "m1").await.unwrap();
+        store.create_frame("b", "p", "OPERON", "m1").await.unwrap();
+
+        store
+            .set_frame_reasoning_effort("a", "p", Some("high"))
+            .await
+            .unwrap();
+        assert_eq!(session_reasoning_effort(&store, "a", "max").await, "high");
+        // Clearing the override (selecting "default" in the composer) makes
+        // the session follow the profile default again.
+        store
+            .set_frame_reasoning_effort("a", "p", None)
+            .await
+            .unwrap();
+        assert_eq!(session_reasoning_effort(&store, "a", "max").await, "max");
+        // Legacy rows hold Some("") for "provider default"; they must not pin
+        // the session away from the profile either.
+        store
+            .set_frame_reasoning_effort("b", "p", Some(""))
+            .await
+            .unwrap();
+        assert_eq!(session_reasoning_effort(&store, "b", "max").await, "max");
         drop(store);
         let _ = std::fs::remove_file(&tmp);
     }

@@ -64,6 +64,7 @@ use session_modals::{
     SessionTransferOverlayState, TurnUndoOverlay, TurnUndoOverlayState,
 };
 use settings_view::{DeleteConfirm, SettingsView, SettingsViewState};
+use settings_view::{known_effort_values, ALL_EFFORT_VALUES};
 use sidebar::{Sidebar, SidebarState};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -11598,8 +11599,8 @@ fn App() -> impl IntoView {
                                                     <select class="model-menu-effort-select"
                                                         on:change=move |ev| {
                                                             let v = dom_value(&ev);
-                                                            let effort = if v == "default" { String::new() } else { v };
                                                             let Some(session_id) = active_session.get_untracked() else { return; };
+                                                            let effort = if v == "default" { String::new() } else { v };
                                                             spawn_local(async move {
                                                                 let arg = to_value(&serde_json::json!({
                                                                     "sessionId": session_id.clone(),
@@ -11607,31 +11608,67 @@ fn App() -> impl IntoView {
                                                                 })).unwrap();
                                                                 if invoke_checked("set_session_reasoning_effort", arg).await.is_ok() {
                                                                     session_reasoning_efforts.update(|efforts| {
-                                                                        efforts.insert(session_id, effort);
+                                                                        if effort.is_empty() {
+                                                                            // Cleared override: inherit the
+                                                                            // bound profile again.
+                                                                            efforts.remove(&session_id);
+                                                                        } else {
+                                                                            efforts.insert(session_id, effort);
+                                                                        }
                                                                     });
                                                                 }
                                                             });
                                                         }>
-                                                        <option value="default"
-                                                            prop:selected=move || session_reasoning_effort(
-                                                                &models.get(),
-                                                                &session_model_ids.get(),
-                                                                &session_reasoning_efforts.get(),
-                                                                active_session.get().as_deref(),
-                                                            ).is_empty()>
-                                                            {move || t(locale.get(), "settings.reasoning_effort.default")}
-                                                        </option>
-                                                        {["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].into_iter().map(|lvl| view! {
-                                                            <option value=lvl
-                                                                prop:selected=move || session_reasoning_effort(
-                                                                    &models.get(),
-                                                                    &session_model_ids.get(),
-                                                                    &session_reasoning_efforts.get(),
-                                                                    active_session.get().as_deref(),
-                                                                ) == lvl>
-                                                                {lvl}
-                                                            </option>
-                                                        }).collect_view()}
+                                                        {move || {
+                                                            let models = models.get();
+                                                            let session_models = session_model_ids.get();
+                                                            let efforts = session_reasoning_efforts.get();
+                                                            let session_id = active_session.get();
+                                                            let current = session_reasoning_effort(
+                                                                &models,
+                                                                &session_models,
+                                                                &efforts,
+                                                                session_id.as_deref(),
+                                                            );
+                                                            let mut values: Vec<String> = session_profile(
+                                                                &models,
+                                                                &session_models,
+                                                                session_id.as_deref(),
+                                                            )
+                                                            .map(|profile| {
+                                                                known_effort_values(&profile.provider, &profile.model)
+                                                                    .unwrap_or(ALL_EFFORT_VALUES)
+                                                            })
+                                                            .unwrap_or(ALL_EFFORT_VALUES)
+                                                            .iter()
+                                                            .map(|v| v.to_string())
+                                                            .collect();
+                                                            // Keep a stored override visible even when the
+                                                            // curated list for this model doesn't include it.
+                                                            if !current.is_empty() && !values.iter().any(|v| v == &current) {
+                                                                values.push(current.clone());
+                                                            }
+                                                            // The select shows the effective effort:
+                                                            // an inherited profile value is displayed
+                                                            // as-is; "default" is selected only when
+                                                            // nothing is configured anywhere.
+                                                            let default_selected = current.is_empty();
+                                                            view! {
+                                                                <option value="default"
+                                                                    prop:selected=default_selected>
+                                                                    {move || t(locale.get(), "settings.reasoning_effort.default")}
+                                                                </option>
+                                                                {values.into_iter().map(|lvl| {
+                                                                    let selected = !default_selected && lvl == current;
+                                                                    view! {
+                                                                        <option value=lvl.clone()
+                                                                            prop:selected=selected>
+                                                                            {lvl}
+                                                                        </option>
+                                                                    }
+                                                                }).collect_view()}
+                                                            }
+                                                        }}
                                                     </select>
                                                 </div>
                                             })}
