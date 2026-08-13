@@ -304,7 +304,26 @@ fn App() -> impl IntoView {
     let conversation_outlines =
         create_rw_signal::<HashMap<String, Vec<SessionOutlineItem>>>(HashMap::new());
     let conversation_outline_open = create_rw_signal(false);
+    let conversation_outline_mounted = create_rw_signal(false);
     let conversation_outline_selected = create_rw_signal::<Option<usize>>(None);
+    create_effect(move |_| {
+        if conversation_outline_open.get() {
+            conversation_outline_mounted.set(true);
+            return;
+        }
+        if !conversation_outline_mounted.get_untracked() {
+            return;
+        }
+        set_timeout(
+            move || {
+                if !conversation_outline_open.get_untracked() {
+                    conversation_outline_mounted.set(false);
+                }
+            },
+            // Keep mounted through `--motion-duration-medium` so the close animation can play.
+            std::time::Duration::from_millis(280),
+        );
+    });
     let busy = create_rw_signal(false);
     let turn_undo_dialog = create_rw_signal::<Option<TurnUndoDialog>>(None);
     let turn_undo_busy = create_rw_signal(false);
@@ -10379,74 +10398,106 @@ fn App() -> impl IntoView {
             {move || {
                 let rows = conversation_outline.get();
                 (!rows.is_empty()).then(|| {
-                    if conversation_outline_open.get() {
-                        let count = rows.len().to_string();
-                        let entries = rows
-                            .iter()
-                            .enumerate()
-                            .map(|(position, entry)| {
-                                let target = entry.user_index;
-                                let before_seq =
-                                    rows.get(position + 1).and_then(|next| next.seq);
-                                let clean = user_message_presentation(&entry.text).body;
-                                let label = if clean.is_empty() {
-                                    t(locale.get(), "outline.attachment")
-                                } else {
-                                    clean
-                                };
-                                let aria_label = label.clone();
-                                let title = label.clone();
-                                let sent_at = entry.sent_at.filter(|timestamp| *timestamp > 0);
-                                view! {
-                                    <button
-                                        type="button"
-                                        class="conversation-outline-item"
-                                        class:active=move || conversation_outline_selected.get() == Some(target)
-                                        aria-label=aria_label
-                                        title=title
-                                        prop:disabled=move || {
-                                            if !busy.get() {
-                                                return false;
+                    let count = rows.len().to_string();
+                    let entries = rows
+                        .iter()
+                        .enumerate()
+                        .map(|(position, entry)| {
+                            let target = entry.user_index;
+                            let before_seq =
+                                rows.get(position + 1).and_then(|next| next.seq);
+                            let clean = user_message_presentation(&entry.text).body;
+                            let label = if clean.is_empty() {
+                                t(locale.get(), "outline.attachment")
+                            } else {
+                                clean
+                            };
+                            let aria_label = label.clone();
+                            let title = label.clone();
+                            let sent_at = entry.sent_at.filter(|timestamp| *timestamp > 0);
+                            view! {
+                                <button
+                                    type="button"
+                                    class="conversation-outline-item"
+                                    class:active=move || conversation_outline_selected.get() == Some(target)
+                                    aria-label=aria_label
+                                    title=title
+                                    prop:disabled=move || {
+                                        if !busy.get() {
+                                            return false;
+                                        }
+                                        !loaded_conversation_user_range
+                                            .get()
+                                            .contains(&target)
+                                    }
+                                    on:click=move |_| {
+                                        jump_to_conversation_outline.call((target, before_seq));
+                                    }
+                                >
+                                    <span class="conversation-outline-number" aria-hidden="true">
+                                        {target + 1}
+                                    </span>
+                                    <span class="conversation-outline-copy">
+                                        <span class="conversation-outline-text">{label}</span>
+                                        {sent_at.map(|timestamp| {
+                                            let compact = format_message_time(timestamp);
+                                            view! {
+                                                <time
+                                                    class="conversation-outline-time"
+                                                    data-timestamp=timestamp.to_string()
+                                                    title=move || tf(
+                                                        locale.get(),
+                                                        "msg.sent_at",
+                                                        &[("time", &format_message_datetime(timestamp, locale.get()))],
+                                                    )
+                                                >
+                                                    {compact}
+                                                </time>
                                             }
-                                            !loaded_conversation_user_range
-                                                .get()
-                                                .contains(&target)
-                                        }
-                                        on:click=move |_| {
-                                            jump_to_conversation_outline.call((target, before_seq));
-                                        }
-                                    >
-                                        <span class="conversation-outline-number" aria-hidden="true">
-                                            {target + 1}
-                                        </span>
-                                        <span class="conversation-outline-copy">
-                                            <span class="conversation-outline-text">{label}</span>
-                                            {sent_at.map(|timestamp| {
-                                                let compact = format_message_time(timestamp);
-                                                view! {
-                                                    <time
-                                                        class="conversation-outline-time"
-                                                        data-timestamp=timestamp.to_string()
-                                                        title=move || tf(
-                                                            locale.get(),
-                                                            "msg.sent_at",
-                                                            &[("time", &format_message_datetime(timestamp, locale.get()))],
-                                                        )
-                                                    >
-                                                        {compact}
-                                                    </time>
-                                                }
-                                            })}
-                                        </span>
-                                    </button>
-                                }
-                            })
-                            .collect_view();
-                        view! {
+                                        })}
+                                    </span>
+                                </button>
+                            }
+                        })
+                        .collect_view();
+                    let stride = (rows.len() + 27) / 28;
+                    let marks = rows
+                        .iter()
+                        .step_by(stride.max(1))
+                        .map(|entry| {
+                            let width = 45 + entry.text.chars().count().min(40);
+                            let target = entry.user_index;
+                            view! {
+                                <span
+                                    class="conversation-outline-mark"
+                                    class:active=move || conversation_outline_selected.get() == Some(target)
+                                    style=format!("width:{width}%")
+                                ></span>
+                            }
+                        })
+                        .collect_view();
+                    view! {
+                        <button
+                            type="button"
+                            class="conversation-outline-toggle"
+                            class:is-hidden=move || conversation_outline_mounted.get()
+                            data-testid="conversation-outline-toggle"
+                            title=move || t(locale.get(), "outline.show")
+                            aria-label=move || t(locale.get(), "outline.show")
+                            aria-expanded=move || conversation_outline_open.get().to_string()
+                            aria-hidden=move || conversation_outline_mounted.get().to_string()
+                            on:click=move |_| conversation_outline_open.set(true)
+                        >
+                            <span class="conversation-outline-marks" aria-hidden="true">{marks}</span>
+                        </button>
+                        {conversation_outline_mounted.get().then(|| view! {
                             <nav
                                 class="conversation-outline-panel"
+                                class:is-open=move || conversation_outline_open.get()
                                 data-testid="conversation-outline"
                                 aria-label=move || t(locale.get(), "outline.title")
+                                aria-hidden=move || (!conversation_outline_open.get()).to_string()
+                                prop:inert=move || !conversation_outline_open.get()
                             >
                                 <header>
                                     <div>
@@ -10465,39 +10516,7 @@ fn App() -> impl IntoView {
                                 </header>
                                 <div class="conversation-outline-list">{entries}</div>
                             </nav>
-                        }
-                        .into_view()
-                    } else {
-                        let stride = (rows.len() + 27) / 28;
-                        let marks = rows
-                            .iter()
-                            .step_by(stride.max(1))
-                            .map(|entry| {
-                                let width = 45 + entry.text.chars().count().min(40);
-                                let target = entry.user_index;
-                                view! {
-                                    <span
-                                        class="conversation-outline-mark"
-                                        class:active=move || conversation_outline_selected.get() == Some(target)
-                                        style=format!("width:{width}%")
-                                    ></span>
-                                }
-                            })
-                            .collect_view();
-                        view! {
-                            <button
-                                type="button"
-                                class="conversation-outline-toggle"
-                                data-testid="conversation-outline-toggle"
-                                title=move || t(locale.get(), "outline.show")
-                                aria-label=move || t(locale.get(), "outline.show")
-                                aria-expanded="false"
-                                on:click=move |_| conversation_outline_open.set(true)
-                            >
-                                <span class="conversation-outline-marks" aria-hidden="true">{marks}</span>
-                            </button>
-                        }
-                        .into_view()
+                        })}
                     }
                 })
             }}
