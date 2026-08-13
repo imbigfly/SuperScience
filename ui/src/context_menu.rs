@@ -235,6 +235,7 @@ pub enum SessionAction {
         id: String,
         pinned: bool,
     },
+    ReloadProjectRules(String),
     Transfer {
         id: String,
         mode: SessionTransferMode,
@@ -293,6 +294,7 @@ pub fn session_menu(
     is_branch: bool,
     branch_merged: bool,
     _has_branch_family: bool,
+    stale_prompt: bool,
     locale: Locale,
 ) -> CtxMenu {
     let mut items = vec![item(
@@ -306,6 +308,13 @@ pub fn session_menu(
             i18n::t(locale, "ctx.open_session"),
             session_id.to_string(),
         ));
+        if stale_prompt {
+            items.push(item(
+                "reloadProjectRules",
+                i18n::t(locale, "ctx.reload_rules"),
+                session_id.to_string(),
+            ));
+        }
         if is_branch && !branch_merged {
             items.push(item(
                 "mergeSessionBranch",
@@ -498,6 +507,7 @@ pub fn build(
         let branch_merged = ses.get_attribute("data-branch-merged").as_deref() == Some("true");
         let has_branch_family =
             ses.get_attribute("data-session-family").as_deref() == Some("true");
+        let stale_prompt = ses.get_attribute("data-session-stale").as_deref() == Some("true");
         return Some(session_menu(
             x,
             y,
@@ -507,6 +517,7 @@ pub fn build(
             is_branch,
             branch_merged,
             has_branch_family,
+            stale_prompt,
             locale,
         ));
     }
@@ -803,6 +814,9 @@ pub fn session_action(action: &str, payload: &str) -> Option<SessionAction> {
         }
         "mergeSessionBranch" if !payload.is_empty() => {
             Some(SessionAction::MergeBranch(payload.to_string()))
+        }
+        "reloadProjectRules" if !payload.is_empty() => {
+            Some(SessionAction::ReloadProjectRules(payload.to_string()))
         }
         "renameSession" if !payload.is_empty() => {
             let (id, title) = payload.split_once('\u{1e}')?;

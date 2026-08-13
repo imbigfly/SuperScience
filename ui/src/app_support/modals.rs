@@ -42,6 +42,7 @@ pub(crate) enum UiConfirm {
     DeleteFolder(String),
     DeleteSessions(Vec<String>),
     DeleteFileEntry { path: String, is_dir: bool },
+    ReloadProjectRules(String),
 }
 
 #[derive(Clone)]
