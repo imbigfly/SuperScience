@@ -1213,7 +1213,9 @@ test("ACP turn maps config, overlapping tools, plan, usage, and exact permission
   });
   await expect(permission).toHaveCount(0);
   const contextTrigger = page.getByTestId("context-usage-trigger");
-  await expect(contextTrigger).toContainText("15%");
+  await expect(contextTrigger).toHaveText("");
+  await expect.poll(() => contextTrigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-76.5deg");
   await expect(page.locator(".topbar .hint")).toHaveCount(0);
   await contextTrigger.click();
   const contextPanel = page.getByTestId("context-usage-panel");
