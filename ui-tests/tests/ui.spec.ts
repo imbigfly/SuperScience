@@ -904,9 +904,11 @@ test("reasoning effort stays scoped to the current conversation", async ({ page 
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 
   await page.locator(".model-picker-btn").click();
-  const effort = page.locator(".model-menu-effort-select");
-  await expect(effort).toHaveValue("max");
-  await effort.selectOption("high");
+  const effortTrigger = page.locator(".model-menu-effort-trigger");
+  const effortValue = page.locator(".model-menu-effort-value");
+  await expect(effortValue).toHaveText("max");
+  await effortTrigger.click();
+  await page.locator(".model-menu-effort-option[data-effort='high']").click();
   await expect.poll(() => lastInvokeArgs(page, "set_session_reasoning_effort")).toMatchObject({
     sessionId: "s-model-a",
     effort: "high",
@@ -916,21 +918,38 @@ test("reasoning effort stays scoped to the current conversation", async ({ page 
 
   await page.locator('[data-session-id="s-model-b"]').click();
   await page.locator(".model-picker-btn").click();
-  await expect(page.locator(".model-menu-effort-select")).toHaveValue("low");
+  await expect(page.locator(".model-menu-effort-value")).toHaveText("low");
   await page.locator(".model-menu-backdrop").click();
 
   await page.locator('[data-session-id="s-model-a"]').click();
   await page.locator(".model-picker-btn").click();
-  await expect(page.locator(".model-menu-effort-select")).toHaveValue("high");
+  await expect(page.locator(".model-menu-effort-value")).toHaveText("high");
 
   // "default" clears the override: the session follows the bound profile
   // (opus-4.8 defaults to max) instead of pinning "provider default".
-  await effort.selectOption("default");
+  await effortTrigger.click();
+  await page.locator(".model-menu-effort-option[data-effort='default']").click();
   await expect.poll(() => lastInvokeArgs(page, "set_session_reasoning_effort")).toMatchObject({
     sessionId: "s-model-a",
     effort: "",
   });
-  await expect(page.locator(".model-menu-effort-select")).toHaveValue("max");
+  await expect(page.locator(".model-menu-effort-value")).toHaveText("max");
+});
+
+test("effort options close on Escape before the model menu", async ({ page }) => {
+  await enterApp(page, "/?mockSessionModels=1");
+  await page.locator('[data-session-id="s-model-a"]').click();
+  await page.locator(".model-picker-btn").click();
+  await page.locator(".model-menu-effort-trigger").click();
+  await expect(page.locator(".model-menu-effort-options")).toBeVisible();
+
+  // One Escape closes only the effort options; the model menu stays open.
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".model-menu-effort-options")).toHaveCount(0);
+  await expect(page.locator(".model-menu")).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".model-menu")).toHaveCount(0);
 });
 
 test("Settings Models page can open ACP Agents dialog", async ({ page }) => {

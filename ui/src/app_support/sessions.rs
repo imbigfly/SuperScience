@@ -181,6 +181,7 @@ mod branch_nesting_tests {
             branched_from: branched_from.map(Into::into),
             pinned: false,
             branch_state: branched_from.map(|_| "active".into()),
+            stale_prompt: false,
         }
     }
 
