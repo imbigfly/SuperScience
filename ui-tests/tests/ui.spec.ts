@@ -6271,13 +6271,41 @@ test("UI font size setting scales chat message body text", async ({ page }) => {
   await expect(page.getByText("FX细胞")).toBeVisible({ timeout: 10_000 });
   const bodyFontSize = () => page.locator(".msg.assistant .body.md").first()
     .evaluate((el) => getComputedStyle(el).fontSize);
+  const composerFontSize = () => composer(page)
+    .evaluate((el) => getComputedStyle(el).fontSize);
   expect(await bodyFontSize()).toBe("15px");
+  expect(await composerFontSize()).toBe("14px");
 
   await openSettingsSection(page, "Appearance");
   await page.getByRole("slider", { name: "UI font size" }).fill("18");
   await page.getByRole("button", { name: "Back to app" }).click();
 
   await expect.poll(bodyFontSize).toBe("19px");
+  await expect.poll(composerFontSize).toBe("18px");
+});
+
+test("UI font size setting scales Chinese chat markdown and composer", async ({ page }) => {
+  await page.goto("/?mockLocale=zh");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "新建会话" })).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh");
+  await composer(page).fill("MDLIST");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByText("FX细胞")).toBeVisible({ timeout: 10_000 });
+  const bodyFontSize = () => page.locator(".msg.assistant .body.md").first()
+    .evaluate((el) => getComputedStyle(el).fontSize);
+  const composerFontSize = () => composer(page)
+    .evaluate((el) => getComputedStyle(el).fontSize);
+  expect(await bodyFontSize()).toBe("15.5px");
+  expect(await composerFontSize()).toBe("14px");
+
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "外观", exact: true }).click();
+  await page.getByRole("slider", { name: "UI 字号" }).fill("18");
+  await page.getByRole("button", { name: "返回应用" }).click();
+
+  await expect.poll(bodyFontSize).toBe("19.5px");
+  await expect.poll(composerFontSize).toBe("18px");
 });
 
 test("vision assignment keeps model fields and stored key placeholder untouched", async ({ page }) => {
