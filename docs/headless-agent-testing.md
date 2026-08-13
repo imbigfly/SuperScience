@@ -167,7 +167,7 @@ provider snapshot:
 1. **Compression without forgetting.** Manual `/compact` and auto-compaction
    bury locked identifiers (`QC_THRESHOLD=0.047`, `COHORT=WISP-HCC-2024-G`)
    only in folded assistant turns. After production semantic compaction the
-   model must write those values without reading the archive. The scenario
+   model must report those values without reading the archive. The scenario
    must actually compact, shrink to at most 80% of its original token
    estimate, and finish through `attempt_completion`.
 2. **Retrieval.** Facts exist only in `.wisp/memory/*.md`. The model must

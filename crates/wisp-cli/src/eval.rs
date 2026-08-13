@@ -2304,10 +2304,6 @@ mod tests {
         .unwrap()
     }
 
-    fn scripted_write(id: &str, path: &str, content: &str) -> ScriptedCompletion {
-        scripted_tool(id, "write", json!({ "path": path, "content": content }))
-    }
-
     fn scripted_complete(id: &str, result: &str) -> ScriptedCompletion {
         scripted_tool(id, "attempt_completion", json!({ "result": result }))
     }
@@ -2385,8 +2381,11 @@ mod tests {
                 "{strategy}"
             );
             assert!(
-                !case.expect.file_contains.is_empty(),
-                "{strategy} must persist recall to a file"
+                case.expect
+                    .completion_contains
+                    .iter()
+                    .any(|fragment| fragment.contains("QC_THRESHOLD")),
+                "{strategy} must assert recall of locked identifiers"
             );
         }
         assert!(
@@ -2458,11 +2457,6 @@ mod tests {
                 scripted_summary(
                     "Locked identifiers are QC_THRESHOLD=0.047 and COHORT=WISP-HCC-2024-G.",
                 ),
-                scripted_write(
-                    "write-1",
-                    "artifacts/recall.md",
-                    "QC_THRESHOLD=0.047\nCOHORT=WISP-HCC-2024-G\n",
-                ),
                 scripted_complete(
                     "done-1",
                     "RECALL_COMPLETE\nQC_THRESHOLD=0.047\nCOHORT=WISP-HCC-2024-G",
@@ -2470,43 +2464,21 @@ mod tests {
             ],
             "memory-retrieval-ignores-distractors" => vec![
                 scripted_search("search-1", "TS-999-QX QC threshold"),
-                scripted_write(
-                    "write-1",
-                    "artifacts/memory-hit.md",
-                    "THRESHOLD=347\nSTUDY=TS-999-QX\n",
-                ),
                 scripted_complete("done-1", "MEMORY_HIT\nTHRESHOLD=347\nSTUDY=TS-999-QX"),
             ],
             "memory-retrieval-cjk" => vec![
                 scripted_search("search-1", "单细胞爆内存"),
-                scripted_write(
-                    "write-1",
-                    "artifacts/memory-cjk.md",
-                    "FIX=backed\nTOKEN=WISP-CJK-BACKED-17\n",
-                ),
                 scripted_complete("done-1", "MEMORY_HIT\nTOKEN=WISP-CJK-BACKED-17\nbacked"),
             ],
             "memory-durable-after-restart" => vec![
                 scripted_complete("done-1", "READY"),
                 scripted_search("search-1", "atlas normalization"),
-                scripted_write(
-                    "write-1",
-                    "artifacts/memory-durable.md",
-                    "NORM=CPM with log1p\nTOKEN=CPM-log1p-WISP-55\n",
-                ),
                 scripted_complete("done-2", "MEMORY_HIT\nTOKEN=CPM-log1p-WISP-55"),
             ],
-            "stage-rules-and-injection-reach-the-model" => vec![
-                scripted_write(
-                    "write-1",
-                    "artifacts/stage.md",
-                    "RULE_TOKEN=WISP-71\nUSER_TOKEN=WISP-72\nFORMAT=WISP-PARQUET-88\n",
-                ),
-                scripted_complete(
-                    "done-1",
-                    "STAGE_OK\nRULE_TOKEN=WISP-71\nUSER_TOKEN=WISP-72\nFORMAT=WISP-PARQUET-88",
-                ),
-            ],
+            "stage-rules-and-injection-reach-the-model" => vec![scripted_complete(
+                "done-1",
+                "STAGE_OK\nRULE_TOKEN=WISP-71\nUSER_TOKEN=WISP-72\nFORMAT=WISP-PARQUET-88",
+            )],
             other => panic!("no offline script for live memory case {other}"),
         }
     }
