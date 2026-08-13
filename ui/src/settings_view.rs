@@ -1,11 +1,11 @@
 use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanelState};
 use crate::app_support::{
     allow_drop, build_conn_json, close_details_ancestor, compose_icon, conn_form_from_row,
-    context_capability_summary, drag_session_id, focus_element_soon,
-    format_relative_time, join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form,
-    quick_action_label, reviewer_backend_key, reviewer_backend_label,
-    reviewer_missing_acp_profile_id, set_reviewer_backend, settings_section_label,
-    settings_subpage_label, skill_matches_filter, start_session_drag, CRED_GROUPS,
+    context_capability_summary, drag_session_id, focus_element_soon, format_relative_time,
+    join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form, quick_action_label,
+    reviewer_backend_key, reviewer_backend_label, reviewer_missing_acp_profile_id,
+    set_reviewer_backend, settings_section_label, settings_subpage_label, skill_matches_filter,
+    start_session_drag, CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
@@ -5429,7 +5429,10 @@ mod model_limit_tests {
     fn known_model_limits_reports_documented_ceiling() {
         // Longer prefixes win: glm-5.2 must not resolve through glm-5.
         assert_eq!(known_model_limits("GLM-5.2"), Some((131_072, 1_000_000)));
-        assert_eq!(known_model_limits("deepseek-v4-pro"), Some((384_000, 1_000_000)));
+        assert_eq!(
+            known_model_limits("deepseek-v4-pro"),
+            Some((384_000, 1_000_000))
+        );
         assert_eq!(known_model_limits("totally-unknown"), None);
     }
 }

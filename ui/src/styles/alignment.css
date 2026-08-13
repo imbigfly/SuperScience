@@ -115,6 +115,11 @@
 .message-branch-link:hover { border-color: var(--border-active); color: var(--text); }
 .message-branch-link > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-branch-link svg { width: 14px; height: 14px; }
+.exploration-message-card { align-items: flex-start; border-color: color-mix(in srgb, var(--border) 72%, var(--clay)); background: color-mix(in srgb, var(--bg-elev) 94%, var(--clay)); }
+.exploration-message-card > span:first-child { display: inline-flex; flex: 0 0 auto; margin-top: 1px; color: var(--clay); }
+.message-exploration-copy { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; text-align: left; }
+.message-exploration-copy strong { overflow: hidden; color: var(--text); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.message-exploration-copy > span { overflow: hidden; color: var(--text-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .message-branch-entry .branch-merge-card { position: relative; width: calc(100% - 18px); min-height: 32px; margin-left: 18px; gap: 8px; padding: 6px 9px; border-color: var(--border); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg-elev) 72%, transparent); box-shadow: none; color: var(--text-muted); }
 .message-branch-entry .branch-merge-card::before { position: absolute; top: -6px; left: -12px; width: 9px; height: 16px; border-bottom: 1px solid var(--border-strong); border-left: 1px solid var(--border-strong); border-radius: 0 0 0 6px; content: ""; pointer-events: none; }
 .message-branch-entry .branch-merge-card:hover { border-color: var(--border-active); background: var(--bg-hover); color: var(--text); }

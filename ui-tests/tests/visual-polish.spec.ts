@@ -167,7 +167,21 @@ test("assistant markdown rejoins bare list markers and wraps at word boundaries"
   await enterApp(page);
   // `- ` alone on a line with the item text on the next line used to render an
   // orphan bullet dot above a flush-left paragraph.
-  const payload = "coords:\n\n- 450 = x\n- \nTb1 15,248,784 y\n";
+  const payload = [
+    "coords:",
+    "",
+    "**Module results** (Seurat 5):",
+    "",
+    "- 450 = x",
+    "- ",
+    "",
+    "Tb1 15,248,784 y",
+    "  - [QC violin](plots/qc.png)",
+    "",
+    "    (threshold lines included)",
+    "  - [PCA scatter](plots/pca.png) 、 [PCA elbow](plots/elbow.png)",
+    "",
+  ].join("\n");
   await page.locator(".composer-inner textarea").first().fill(payload);
   await page.getByRole("button", { name: "Send" }).click();
 
@@ -175,6 +189,42 @@ test("assistant markdown rejoins bare list markers and wraps at word boundaries"
   await expect(body).toContainText("Tb1 15,248,784 y", { timeout: 10_000 });
   await expect(body.locator("li", { hasText: "Tb1 15,248,784 y" })).toHaveCount(1);
   await expect(body.locator("li:empty")).toHaveCount(0);
+
+  const listLayout = await body.locator("li", { hasText: "Tb1 15,248,784 y" }).first()
+    .evaluate((el) => {
+      const cs = getComputedStyle(el);
+      const nested = el.querySelector("li");
+      return {
+        display: cs.display,
+        marker: cs.listStyleType,
+        nestedMarker: nested ? getComputedStyle(nested).listStyleType : "",
+      };
+    });
+  expect(listLayout).toEqual({ display: "list-item", marker: "disc", nestedMarker: "circle" });
+
+  const sectionLead = body.locator("p", { hasText: "Module results" });
+  await expect(sectionLead.locator("strong")).toBeVisible();
+  expect(await sectionLead.locator("strong").evaluate((el) => getComputedStyle(el).borderLeftWidth))
+    .toBe("3px");
+
+  const links = body.locator('a[href="plots/pca.png"], a[href="plots/elbow.png"]');
+  await expect(links).toHaveCount(2);
+  const linkBoxes = await links.evaluateAll((els) => els.map((el) => {
+    const rect = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    return { top: Math.round(rect.top), width: rect.width, display: cs.display };
+  }));
+  expect(linkBoxes[0].top).toBe(linkBoxes[1].top);
+  expect(linkBoxes.every((box) => box.width < 240 && box.display === "inline")).toBe(true);
+
+  const descriptionGap = await body.locator("li", { hasText: "QC violin" }).first()
+    .evaluate((el) => {
+      const link = el.querySelector("a")?.getBoundingClientRect();
+      const detail = Array.from(el.querySelectorAll("p"))
+        .find((p) => p.textContent?.includes("threshold"))?.getBoundingClientRect();
+      return link && detail ? detail.top - link.bottom : 999;
+    });
+  expect(descriptionGap).toBeLessThan(12);
 
   // `overflow-wrap: anywhere` from `.msg .body` must not win on markdown bodies:
   // it splits inline code chips mid-token (`file.p|y`) even at normal break points.

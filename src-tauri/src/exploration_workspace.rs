@@ -183,6 +183,109 @@ impl PersistentExplorationWorkspace {
         Ok(snapshot)
     }
 
+    /// Remove a resolved snapshot's app-data manifest. Callers must first
+    /// verify that the snapshot no longer has a database owner.
+    pub(crate) fn remove_snapshot_manifest(&self, snapshot_id: &str) -> Result<(), String> {
+        validate_component("snapshot id", snapshot_id)?;
+        let path = self.manifest_root()?.join(format!("{snapshot_id}.json"));
+        remove_owned_regular_file(&path, "workspace snapshot manifest")
+    }
+
+    /// Remove an unreferenced content-addressed snapshot blob. Callers must
+    /// compute references from the surviving database-owned manifests first.
+    pub(crate) fn remove_snapshot_blob(&self, checksum: &str) -> Result<(), String> {
+        let path = self.blob_path(checksum)?;
+        remove_owned_regular_file(&path, "workspace snapshot blob")?;
+        if let Some(prefix) = path.parent() {
+            let _ = std::fs::remove_dir(prefix);
+        }
+        Ok(())
+    }
+
+    /// Retry removal of containers that were safely moved out of their
+    /// canonical location but remained locked during a previous disposal.
+    /// Only app-owned names with two valid UUID/components are eligible.
+    pub(crate) fn sweep_disposal_quarantine(&self) -> Result<(), String> {
+        let explorations_root = self.explorations_root()?;
+        let mut errors = Vec::new();
+        for project_entry in
+            std::fs::read_dir(&explorations_root).map_err(|error| error.to_string())?
+        {
+            let project_entry = match project_entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    errors.push(error.to_string());
+                    continue;
+                }
+            };
+            let project_name = project_entry.file_name();
+            let Some(project_name) = project_name.to_str() else {
+                continue;
+            };
+            if validate_component("project key", project_name).is_err() {
+                continue;
+            }
+            let metadata = match std::fs::symlink_metadata(project_entry.path()) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    errors.push(error.to_string());
+                    continue;
+                }
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                continue;
+            }
+            let entries = match std::fs::read_dir(project_entry.path()) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    errors.push(error.to_string());
+                    continue;
+                }
+            };
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        errors.push(error.to_string());
+                        continue;
+                    }
+                };
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else {
+                    continue;
+                };
+                if !is_disposal_quarantine_name(name) {
+                    continue;
+                }
+                let metadata = match std::fs::symlink_metadata(entry.path()) {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        errors.push(error.to_string());
+                        continue;
+                    }
+                };
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    errors.push(format!(
+                        "refusing non-directory exploration quarantine: {}",
+                        entry.path().display()
+                    ));
+                    continue;
+                }
+                if let Err(error) = std::fs::remove_dir_all(entry.path()) {
+                    errors.push(format!("{}: {error}", entry.path().display()));
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "some exploration quarantine directories could not be removed: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+
     fn scan_options(&self, cancel: Option<Arc<AtomicBool>>) -> WorkspaceScanOptions {
         WorkspaceScanOptions {
             excluded_relative_prefixes: vec![
@@ -628,15 +731,6 @@ impl PersistentExplorationWorkspace {
         Ok(snapshot)
     }
 
-    pub(crate) fn snapshot_delta(
-        base: &WorkspaceSnapshot,
-        after: &WorkspaceSnapshot,
-    ) -> Result<Vec<FileDelta>, String> {
-        base.verify_manifest()?;
-        after.verify_manifest()?;
-        Ok(diff_entries(&base.entries, &after.entries, true))
-    }
-
     fn materialize_entry(
         &self,
         workspace_root: &Path,
@@ -807,6 +901,19 @@ fn validate_entries(entries: &[WorkspaceSnapshotEntry]) -> Result<(), String> {
     Ok(())
 }
 
+fn remove_owned_regular_file(path: &Path, label: &str) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!("{label} is not a regular file"));
+            }
+            std::fs::remove_file(path).map_err(|error| format!("cannot remove {label}: {error}"))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("cannot inspect {label}: {error}")),
+    }
+}
+
 fn entries_equivalent(before: &WorkspaceSnapshotEntry, after: &WorkspaceSnapshotEntry) -> bool {
     before.path == after.path
         && before.size_bytes == after.size_bytes
@@ -814,9 +921,24 @@ fn entries_equivalent(before: &WorkspaceSnapshotEntry, after: &WorkspaceSnapshot
         && before.executable == after.executable
         && before.materialization == after.materialization
         && before.recoverable == after.recoverable
-        && (before.materialization == SnapshotMaterialization::Blob
-            || (before.reference_uri == after.reference_uri
-                && before.modified_unix_millis == after.modified_unix_millis))
+        && match before.materialization {
+            SnapshotMaterialization::Blob => true,
+            // A local weak reference can be copied into an exploration
+            // workspace before it is used. Its absolute path then necessarily
+            // changes from the mainline root to the private workspace root;
+            // the stable identity is its workspace-relative path plus the
+            // weak size/mtime fingerprint checked above and here.
+            SnapshotMaterialization::Reference => {
+                before.modified_unix_millis == after.modified_unix_millis
+            }
+            // Remote and unsupported references do not have a safe local
+            // workspace-relative identity, so their target remains part of
+            // the fingerprint.
+            SnapshotMaterialization::RemoteReference | SnapshotMaterialization::Unsupported => {
+                before.reference_uri == after.reference_uri
+                    && before.modified_unix_millis == after.modified_unix_millis
+            }
+        }
 }
 
 fn diff_entries(
@@ -898,6 +1020,18 @@ fn validate_component(label: &str, value: &str) -> Result<(), String> {
         return Err(format!("invalid {label}"));
     }
     Ok(())
+}
+
+fn is_disposal_quarantine_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('.') else {
+        return false;
+    };
+    let Some((exploration_id, disposal_id)) = rest.split_once(".disposing-") else {
+        return false;
+    };
+    validate_component("exploration id", exploration_id).is_ok()
+        && uuid::Uuid::parse_str(exploration_id).is_ok()
+        && uuid::Uuid::parse_str(disposal_id).is_ok()
 }
 
 fn validate_checksum(checksum: &str) -> Result<(), String> {
@@ -1338,6 +1472,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolved_snapshot_storage_removal_is_scoped_and_idempotent() {
+        let (base, project, app_data) = roots("snapshot_cleanup");
+        std::fs::write(project.join("keep.txt"), b"keep").unwrap();
+        let backend = PersistentExplorationWorkspace::new(app_data);
+        let snapshot = backend.checkpoint(&project).await.unwrap();
+        let checksum = snapshot.entries[0].checksum.as_deref().unwrap();
+        let manifest = backend
+            .manifest_root()
+            .unwrap()
+            .join(format!("{}.json", snapshot.id));
+        let blob = backend.blob_path(checksum).unwrap();
+
+        backend.remove_snapshot_manifest(&snapshot.id).unwrap();
+        backend.remove_snapshot_blob(checksum).unwrap();
+        assert!(!manifest.exists());
+        assert!(!blob.exists());
+        assert!(project.join("keep.txt").exists());
+        backend.remove_snapshot_manifest(&snapshot.id).unwrap();
+        backend.remove_snapshot_blob(checksum).unwrap();
+        assert!(backend.remove_snapshot_manifest("../escape").is_err());
+        assert!(backend.remove_snapshot_blob("not-a-checksum").is_err());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn startup_sweep_removes_only_strict_disposal_quarantines() {
+        let (base, _project, app_data) = roots("quarantine");
+        let backend = PersistentExplorationWorkspace::new(app_data);
+        let project_root = backend
+            .explorations_root()
+            .unwrap()
+            .join("0123456789abcdef");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let exploration_id = uuid::Uuid::new_v4();
+        let disposal_id = uuid::Uuid::new_v4();
+        let quarantine = project_root.join(format!(".{exploration_id}.disposing-{disposal_id}"));
+        let creating = project_root.join(format!(
+            ".{exploration_id}.creating-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let forged = project_root.join(format!(".{exploration_id}.disposing-not-a-uuid"));
+        std::fs::create_dir_all(quarantine.join("workspace")).unwrap();
+        std::fs::create_dir_all(&creating).unwrap();
+        std::fs::create_dir_all(&forged).unwrap();
+        std::fs::write(quarantine.join("workspace/result.txt"), b"private").unwrap();
+
+        backend.sweep_disposal_quarantine().unwrap();
+
+        assert!(!quarantine.exists());
+        assert!(creating.exists());
+        assert!(forged.exists());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
     async fn entry_limit_and_case_collisions_fail_deterministically() {
         let (base, project, app_data) = roots("validation");
         let collision_nodes = vec![
@@ -1462,7 +1651,7 @@ mod tests {
     }
 
     #[test]
-    fn referenced_file_fingerprint_includes_modified_time() {
+    fn referenced_file_fingerprint_ignores_workspace_root_but_includes_modified_time() {
         let before = WorkspaceSnapshotEntry {
             path: "large.bin".into(),
             size_bytes: DEFAULT_BLOB_LIMIT + 1,
@@ -1474,7 +1663,27 @@ mod tests {
             modified_unix_millis: Some(10),
         };
         let mut after = before.clone();
+        after.reference_uri = Some("/private/exploration/workspace/large.bin".into());
+        assert!(entries_equivalent(&before, &after));
+
         after.modified_unix_millis = Some(11);
+        assert!(!entries_equivalent(&before, &after));
+    }
+
+    #[test]
+    fn unsupported_reference_fingerprint_still_includes_its_target() {
+        let before = WorkspaceSnapshotEntry {
+            path: "large-link".into(),
+            size_bytes: 0,
+            checksum: None,
+            executable: false,
+            materialization: SnapshotMaterialization::Unsupported,
+            reference_uri: Some("first-target".into()),
+            recoverable: false,
+            modified_unix_millis: Some(10),
+        };
+        let mut after = before.clone();
+        after.reference_uri = Some("second-target".into());
         assert!(!entries_equivalent(&before, &after));
     }
 }

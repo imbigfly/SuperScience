@@ -28,10 +28,14 @@ test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct 
   const group = page.getByTestId("sidebar-explorations");
   await expect(group).toBeVisible();
   await expect(group.locator(".side-exploration")).toHaveCount(2);
-  await expect(page.getByTestId("start-exploration")).toHaveCount(0);
+  const cards = page.getByTestId("exploration-message-card");
+  await expect(cards).toHaveCount(2);
+  await expect(cards.nth(0)).toContainText("Exploration A");
+  await expect(cards.nth(1)).toContainText("Exploration B");
+  await expect(page.getByTestId("start-exploration")).toBeVisible();
   await expect(page.locator(".msg-branch-btn").last()).toBeVisible();
 
-  await group.locator('[data-exploration-id="exploration-a"]').click();
+  await cards.nth(0).click();
   await expect(page.getByText("Exploration A result")).toBeVisible();
   await expect(page.getByTestId("exploration-banner")).toContainText("Exploration A");
 
@@ -49,6 +53,76 @@ test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct 
   await expect(diff).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(diff).toBeHidden();
+
+  await page.locator('[data-session-id="exploration-mainline"]').click();
+  const mainlineCards = page.getByTestId("exploration-message-card");
+  await mainlineCards.nth(1).click();
+  await expect(page.getByText("Exploration B result")).toBeVisible();
+  await expect(page.getByTestId("exploration-banner")).toContainText("Exploration B");
+});
+
+test("an exploration round banner and checkpoint cards stay scoped to its source session", async ({ page }) => {
+  await page.goto("/?mockExplorations=1&mockOtherExplorationSession=1");
+  await page.locator(".proj-card-main").first().click();
+
+  await page.locator('[data-session-id="exploration-mainline"]').click();
+  await expect(page.getByTestId("mainline-exploration-banner")).toBeVisible();
+  await expect(page.getByTestId("exploration-message-card")).toHaveCount(2);
+
+  await page.locator('[data-session-id="session-b"]').click();
+  await expect(page.getByTestId("mainline-exploration-banner")).toBeHidden();
+  await expect(page.getByTestId("exploration-banner")).toBeHidden();
+  await expect(page.getByTestId("exploration-message-card")).toHaveCount(0);
+});
+
+test("exploration cards expose right-click actions and selecting opens guarded promotion", async ({ page }) => {
+  await enterExplorationProject(page);
+
+  const candidate = page
+    .getByTestId("sidebar-explorations")
+    .locator('[data-exploration-id="exploration-a"]');
+  await candidate.click({ button: "right" });
+  const menu = page.locator(".ctx-menu").first();
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("button", { name: "Open exploration", exact: true })).toBeVisible();
+  await expect(menu.getByRole("button", { name: "Select as mainline", exact: true })).toBeVisible();
+  await expect(menu.getByRole("button", { name: "View diff", exact: true })).toBeVisible();
+  await expect(menu.getByRole("button", { name: "Discard", exact: true })).toBeVisible();
+  await expect(menu.getByRole("button", { name: "Archive", exact: true })).toHaveCount(0);
+  await expect(menu.getByRole("button", { name: "Restore", exact: true })).toHaveCount(0);
+
+  await menu.getByRole("button", { name: "Select as mainline", exact: true }).click();
+  const diff = page.getByTestId("exploration-diff-overlay");
+  await expect(diff).toBeVisible();
+  await expect(diff).toContainText("Exploration changes");
+  await expect.poll(() => lastInvokeArgs(page, "promote_exploration")).toBeNull();
+  await diff.getByRole("button", { name: "Set as mainline", exact: true }).click();
+  await expect(page.getByTestId("exploration-confirm-overlay")).toBeVisible();
+});
+
+test("discard permanently removes the exploration instead of leaving an unwritable tombstone", async ({ page }) => {
+  await enterExplorationProject(page);
+  const candidate = page
+    .getByTestId("sidebar-explorations")
+    .locator('[data-exploration-id="exploration-a"]');
+  await candidate.click();
+  await expect(page.getByText("Exploration A result")).toBeVisible();
+
+  await candidate.click({ button: "right" });
+  await page.locator(".ctx-menu").first().getByRole("button", { name: "Discard", exact: true }).click();
+  const diff = page.getByTestId("exploration-diff-overlay");
+  await expect(diff).toBeVisible();
+  await diff.getByRole("button", { name: "Discard", exact: true }).click();
+  await page.getByTestId("exploration-confirm-action").click();
+
+  await expect(page.getByText("Mainline result")).toBeVisible();
+  await expect(page.getByText("Exploration A result")).toHaveCount(0);
+  await expect(page.locator('[data-exploration-id="exploration-a"]')).toHaveCount(0);
+  await expect(page.getByText("Discarded exploration", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("exploration-message-card")).toHaveCount(1);
+  await expect.poll(() => lastInvokeArgs(page, "discard_exploration")).toMatchObject({
+    explorationId: "exploration-a",
+  });
 });
 
 test("conversation branches appear at their checkpoint and expose merge-back actions", async ({ page }) => {
@@ -185,25 +259,63 @@ test("branch summaries can be regenerated or revised with explicit guidance", as
   );
 });
 
-test("starting a new exploration is hidden while the feature is incomplete", async ({ page }) => {
+test("the latest completed native reply starts an isolated exploration", async ({ page }) => {
   await enterExplorationProject(page);
-  await expect(page.getByTestId("start-exploration")).toHaveCount(0);
+  const start = page.getByTestId("start-exploration");
+  await expect(start).toBeEnabled();
+  await start.click();
+  const overlay = page.getByTestId("exploration-start-overlay");
+  await expect(overlay).toBeVisible();
+  await overlay.locator("input").fill("Third candidate");
+  await overlay.getByRole("button", { name: "Create exploration" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__startExplorationCalls?.at(-1))).toMatchObject({
+    sourceFrameId: "exploration-mainline",
+    turnIndex: 0,
+    name: "Third candidate",
+  });
+  await expect(page.getByText("New exploration result")).toBeVisible();
+  await expect(page.locator('[data-session-id="exploration-frame-created-3"]')).toHaveCount(0);
+  await expect(page.getByText("Untitled session", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("sidebar-explorations").locator(".side-exploration")).toHaveCount(3);
 });
 
-test("a new conversation remains available while an exploration is active", async ({ page }) => {
+test("mainline stays frozen and can abandon the complete exploration round", async ({ page }) => {
+  await enterExplorationProject(page);
+  const mainline = page.locator('[data-session-id="exploration-mainline"]');
+  await expect(page.locator("#composer-input")).toBeDisabled();
+  await expect(page.locator("#composer-input")).toHaveAttribute(
+    "placeholder",
+    "Mainline is frozen while this exploration round is unresolved",
+  );
+  await mainline.click({ button: "right" });
+  await expect(page.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Abandon exploration", exact: true }).click();
+  await expect(page.locator(".confirm-modal")).toContainText("permanently remove every exploration");
+  await page.locator(".confirm-modal").getByRole("button", { name: "Abandon exploration" }).click();
+  await expect(page.getByTestId("sidebar-explorations")).toHaveCount(0);
+  await expect(page.locator("#composer-input")).toBeEnabled();
+  await expect.poll(() => lastInvokeArgs(page, "abandon_exploration_round")).toMatchObject({
+    sourceFrameId: "exploration-mainline",
+  });
+});
+
+test("exploration candidates remain writable while mainline is frozen", async ({ page }) => {
   await enterExplorationProject(page);
   await page
     .getByTestId("sidebar-explorations")
     .locator('[data-exploration-id="exploration-a"]')
     .click();
   await expect(page.getByTestId("exploration-banner")).toContainText("Exploration A");
-
-  await page.getByRole("button", { name: "New session", exact: true }).click();
-
   await expect(page.locator("#composer-input")).toBeEnabled();
-  await expect(page.getByTestId("mainline-exploration-banner")).toContainText(
-    "Other conversations remain available with read-only project tools",
-  );
+  await expect(page.getByTestId("start-exploration")).toHaveCount(0);
+  await expect(page.locator(".msg-branch-btn")).toHaveCount(0);
+  await expect(page.locator('.user-bubble [title="Branch"]')).toHaveCount(0);
+  const userMessage = page.locator(".user-bubble").first();
+  await userMessage.click({ button: "right" });
+  await expect(page.getByRole("button", { name: "Branch to new conversation", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await page.locator(".send-menu-toggle").click();
+  await expect(page.getByRole("button", { name: "Branch to new conversation", exact: true })).toHaveCount(0);
 });
 
 test("user messages offer the mature branch flow from the context menu", async ({ page }) => {
@@ -215,13 +327,13 @@ test("user messages offer the mature branch flow from the context menu", async (
   await userMessage.click({ button: "right" });
   const branch = page.getByRole("button", { name: "Branch to new conversation", exact: true });
   await expect(branch).toBeVisible();
-  await expect(page.getByRole("button", { name: "Start exploration", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start exploration", exact: true })).toHaveCount(1);
   await branch.click();
   await expect(page.locator("#composer-input")).toHaveValue("");
   await expect(page.getByText("Legacy method", { exact: true })).toHaveCount(0);
 });
 
-test("promotion adopts one exploration, archives its sibling, and discard leaves mainline intact", async ({ page }) => {
+test("promotion merges one exploration into the original mainline and discards the round", async ({ page }) => {
   await enterExplorationProject(page);
   const group = page.getByTestId("sidebar-explorations");
 
@@ -230,21 +342,11 @@ test("promotion adopts one exploration, archives its sibling, and discard leaves
   await page.getByTestId("exploration-diff-overlay").getByRole("button", { name: "Set as mainline" }).click();
   await page.getByTestId("exploration-confirm-action").click();
 
-  await expect(page.getByText("Exploration A result")).toBeVisible();
+  await expect(page.getByText("Mainline result")).toBeVisible();
+  await expect(page.locator('[data-session-id="exploration-mainline"]')).toHaveCount(1);
+  await expect(page.locator('[data-session-id="exploration-frame-a"]')).toHaveCount(0);
   await expect(page.getByTestId("mainline-exploration-banner")).toBeHidden();
   await expect(page.locator("#composer-input")).toBeEnabled();
-  const adoptedGroup = page.getByTestId("sidebar-explorations");
-  await expect(adoptedGroup.locator('[data-exploration-id="exploration-b"]')).toHaveAttribute("data-exploration-status", "archived");
-  await adoptedGroup.locator('[data-exploration-id="exploration-b"]').click();
-  await expect(page.getByText("Exploration B result")).toBeVisible();
-  await expect(page.locator("#composer-input")).toBeDisabled();
-  await page.getByTestId("exploration-banner").getByRole("button", { name: "View diff" }).click();
-  await expect(page.getByTestId("exploration-promotion-blocked")).toContainText("mainline no longer matches");
-  await expect(page.getByTestId("exploration-promote")).toBeDisabled();
-
-  await page.getByRole("button", { name: "Discard", exact: true }).last().click();
-  await expect(page.getByTestId("exploration-confirm-overlay")).toBeVisible();
-  await page.getByTestId("exploration-confirm-action").click();
-  await expect(page.getByText("Exploration A result")).toBeVisible();
-  await expect(page.locator('[data-exploration-id="exploration-b"]')).toHaveAttribute("data-exploration-status", "discarded");
+  await expect(page.locator('[data-exploration-id="exploration-b"]')).toHaveCount(0);
+  await expect(page.getByTestId("sidebar-explorations")).toHaveCount(0);
 });

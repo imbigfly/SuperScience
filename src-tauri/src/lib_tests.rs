@@ -14,13 +14,49 @@ use super::{
     reclaim_unconsumed_cutin, resolve_acp_artifact_references, resolve_composer_references,
     resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
     should_hide_app_on_macos_close, should_persist_ui_event, user_message_start, AgentEvent,
-    ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem, SessionRuntime,
-    SkillInfo, StartupReport, StartupTimeline, MAX_PENDING_UI_EVENT_BYTES,
-    UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
+    ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, ProjectActivityLocks,
+    QueuedItem, SessionRuntime, SkillInfo, StartupReport, StartupTimeline,
+    MAX_PENDING_UI_EVENT_BYTES, UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
+
+#[tokio::test]
+async fn exploration_creation_shares_project_activity_but_serializes_round_initialization() {
+    let locks = Arc::new(ProjectActivityLocks::default());
+    let running_candidate = locks.project("project").read_owned().await;
+    let first_creation = locks.exploration_creation("project").lock_owned().await;
+
+    let waiting_locks = locks.clone();
+    let second_creation = tokio::spawn(async move {
+        let _activity = waiting_locks
+            .project("project")
+            .try_read_owned()
+            .expect("a sibling exploration may share project activity");
+        let _creation = waiting_locks
+            .exploration_creation("project")
+            .lock_owned()
+            .await;
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !second_creation.is_finished(),
+        "checkpoint initialization must remain serialized"
+    );
+
+    drop(first_creation);
+    tokio::time::timeout(std::time::Duration::from_secs(1), second_creation)
+        .await
+        .expect("the second creation should wait instead of reporting ProjectBusy")
+        .unwrap();
+    assert!(
+        locks.project("project").try_write_owned().is_err(),
+        "round settlement must stay exclusive while a candidate is active"
+    );
+    drop(running_candidate);
+    assert!(locks.project("project").try_write_owned().is_ok());
+}
 
 #[tokio::test]
 async fn native_confirmation_waits_for_an_explicit_response() {

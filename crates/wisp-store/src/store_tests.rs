@@ -1640,6 +1640,47 @@ async fn branched_from_survives_listing() {
 }
 
 #[tokio::test]
+async fn main_session_cannot_be_deleted_until_its_conversation_branches_are_deleted() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_branch_delete_guard_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_project("target", "target", "").await.unwrap();
+    for id in ["main", "branch"] {
+        store.create_frame(id, "p", "OPERON", "m").await.unwrap();
+        store
+            .append_message(id, 1, &Message::user(id))
+            .await
+            .unwrap();
+    }
+    store
+        .set_session_branch_point("branch", "main", 0, "before_user")
+        .await
+        .unwrap();
+
+    let error = store.delete_session("main", "p").await.unwrap_err();
+    assert!(error.to_string().contains("session_has_branches"));
+    let move_error = store
+        .move_session_to_project("main", "p", "target", "moved-main")
+        .await
+        .unwrap_err();
+    assert!(move_error.to_string().contains("session_has_branches"));
+    assert_eq!(
+        store.frame_project_id("main").await.unwrap().as_deref(),
+        Some("p")
+    );
+
+    store.delete_session("branch", "p").await.unwrap();
+    store.delete_session("main", "p").await.unwrap();
+    assert!(store.frame_project_id("main").await.unwrap().is_none());
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
 async fn legacy_branch_lineage_is_not_treated_as_a_mergeable_branch() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_legacy_branch_{}.sqlite",
@@ -2355,14 +2396,22 @@ async fn global_composer_search_carries_project_and_session_metadata() {
         .await
         .unwrap();
     store
-        .save_artifact(
-            "a2",
-            "p2",
-            "f2",
-            "beta.csv",
-            "text/csv",
-            "/tmp/beta/results/beta.csv",
-        )
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: "a2".into(),
+            project_id: "p2".into(),
+            root_frame_id: "f2".into(),
+            filename: "beta.csv".into(),
+            content_type: "text/csv".into(),
+            storage_path: "/tmp/beta/.wisp/artifacts/sha256/beta.csv".into(),
+            logical_key: Some("path:results/beta.csv".into()),
+            size_bytes: None,
+            checksum: None,
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::Reference,
+            capture_timing: ArtifactCaptureTiming::Unknown,
+        })
         .await
         .unwrap();
 
@@ -2380,14 +2429,13 @@ async fn global_composer_search_carries_project_and_session_metadata() {
             .len(),
         0
     );
-    assert_eq!(
-        store
-            .search_artifacts(None, "beta", 20, None)
-            .await
-            .unwrap()[0]
-            .id,
-        "a2"
-    );
+    let beta = store
+        .search_artifacts(None, "beta", 20, None)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(beta.id, "a2");
+    assert_eq!(beta.logical_path.as_deref(), Some("results/beta.csv"));
 
     let sessions = store
         .search_sessions(None, "result", 20, None, None)
@@ -3221,6 +3269,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             GLOBAL_MEMORIES_MIGRATION.to_string(),
             SESSION_REASONING_EFFORT_MIGRATION.to_string(),
             SESSION_BRANCH_MERGE_MIGRATION.to_string(),
+            EXPLORATION_PROMOTION_RECOVERY_MIGRATION.to_string(),
         ]
     );
 
@@ -6555,6 +6604,72 @@ async fn create_exploration_checkpoint_fixture(store: &Store) {
 }
 
 #[tokio::test]
+async fn current_exploration_checkpoint_ignores_settled_rounds() {
+    let (store, tmp) = exploration_store_fixture("settled-checkpoint").await;
+    create_exploration_checkpoint_fixture(&store).await;
+
+    // Older databases could retain a terminal exploration tombstone. It must not
+    // make a later exploration round reuse that round's stale checkpoint.
+    let mut connection = store.pool.acquire().await.unwrap();
+    sqlx::query("PRAGMA ignore_check_constraints = ON")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO explorations(\
+           id,checkpoint_id,frame_id,name,status,workspace_dir,workspace_backend,\
+           scope_generation,warnings_json,created_at,updated_at\
+         ) VALUES('settled','checkpoint','branch','Settled','discarded','/tmp/settled',\
+                  'copy',0,'[]',2,2)",
+    )
+    .execute(&mut *connection)
+    .await
+    .unwrap();
+    sqlx::query("PRAGMA ignore_check_constraints = OFF")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    drop(connection);
+
+    assert!(store
+        .current_exploration_checkpoint_for_source("p", "main", "family", 0)
+        .await
+        .unwrap()
+        .is_none());
+
+    sqlx::query("DELETE FROM explorations WHERE id='settled'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store
+        .create_exploration(&Exploration {
+            id: "current".into(),
+            checkpoint_id: "checkpoint".into(),
+            frame_id: "branch".into(),
+            name: "Current round".into(),
+            status: ExplorationStatus::Creating,
+            workspace_dir: "/tmp/current".into(),
+            workspace_backend: "copy".into(),
+            scope_generation: 0,
+            warnings_json: "[]".into(),
+            created_at: 3,
+            updated_at: 3,
+        })
+        .await
+        .unwrap();
+
+    let current = store
+        .current_exploration_checkpoint_for_source("p", "main", "family", 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.id, "checkpoint");
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
 async fn exploration_scope_state_machine_and_generations_are_isolated() {
     let (store, tmp) = exploration_store_fixture("scope").await;
     create_exploration_checkpoint_fixture(&store).await;
@@ -6571,9 +6686,6 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
             warnings_json: "[]".into(),
             created_at: 2,
             updated_at: 2,
-            promoted_at: None,
-            archived_at: None,
-            discarded_at: None,
         })
         .await
         .unwrap();
@@ -6591,6 +6703,7 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
     let summaries = store.list_project_explorations("p").await.unwrap();
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].source_frame_id, "main");
+    assert_eq!(summaries[0].checkpoint_user_index, 0);
     assert_eq!(summaries[0].isolation_summary_json, r#"{"level":"full"}"#);
     let frame_scope: Option<String> =
         sqlx::query_scalar("SELECT exploration_id FROM frames WHERE id='branch'")
@@ -6627,24 +6740,6 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
         .await
         .unwrap());
     assert!(store.project_mainline_is_frozen("p").await.unwrap());
-    assert!(store
-        .transition_exploration(
-            "explore",
-            ExplorationStatus::Active,
-            ExplorationStatus::Archived,
-        )
-        .await
-        .unwrap());
-    assert!(!store.project_mainline_is_frozen("p").await.unwrap());
-    assert!(!store.mainline_frame_is_frozen("main").await.unwrap());
-    assert!(store
-        .transition_exploration(
-            "explore",
-            ExplorationStatus::Archived,
-            ExplorationStatus::Active,
-        )
-        .await
-        .unwrap());
     assert!(store.project_mainline_is_frozen("p").await.unwrap());
     assert!(store.mainline_frame_is_frozen("main").await.unwrap());
     assert!(store
@@ -6660,54 +6755,44 @@ async fn exploration_scope_state_machine_and_generations_are_isolated() {
         .transition_exploration(
             "explore",
             ExplorationStatus::Promoting,
-            ExplorationStatus::Promoted,
+            ExplorationStatus::Failed,
         )
         .await
         .unwrap());
-    assert!(!store.project_mainline_is_frozen("p").await.unwrap());
+    assert!(store.project_mainline_is_frozen("p").await.unwrap());
     assert!(store
         .transition_exploration(
             "explore",
-            ExplorationStatus::Promoted,
+            ExplorationStatus::Failed,
             ExplorationStatus::Active,
         )
         .await
         .is_err());
     assert!(store.bump_state_generation(&branch_scope).await.is_err());
-
-    assert!(!store
-        .compare_and_swap_exploration_mainline("family", "wrong", 0, "branch")
-        .await
-        .unwrap());
-    assert!(store
-        .compare_and_swap_exploration_mainline("family", "main", 0, "branch")
-        .await
-        .unwrap());
     let family = store
         .get_exploration_family("family")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(family.mainline_frame_id, "branch");
-    assert_eq!(family.generation, 1);
-    assert_eq!(
-        store.list_project_explorations("p").await.unwrap()[0].source_frame_id,
-        "branch",
-        "sidebar grouping follows the family's adopted mainline frame"
-    );
-    assert!(!store
-        .compare_and_swap_exploration_mainline("family", "main", 0, "branch")
-        .await
-        .unwrap());
+    assert_eq!(family.mainline_frame_id, "main");
+    assert_eq!(family.generation, 0);
 
     store.pool.close().await;
     let _ = std::fs::remove_file(tmp);
 }
 
 #[tokio::test]
-async fn exploration_promotion_transaction_adopts_frame_and_artifact_head_together() {
+async fn exploration_promotion_merges_into_original_main_and_discards_candidate() {
     let (store, tmp) = exploration_store_fixture("promotion").await;
     create_exploration_checkpoint_fixture(&store).await;
+    store
+        .append_message("branch", 1, &Message::user("compare approaches"))
+        .await
+        .unwrap();
+    store
+        .append_message("branch", 2, &Message::assistant("stable checkpoint"))
+        .await
+        .unwrap();
     store
         .create_exploration(&Exploration {
             id: "explore".into(),
@@ -6721,9 +6806,6 @@ async fn exploration_promotion_transaction_adopts_frame_and_artifact_head_togeth
             warnings_json: "[]".into(),
             created_at: 2,
             updated_at: 2,
-            promoted_at: None,
-            archived_at: None,
-            discarded_at: None,
         })
         .await
         .unwrap();
@@ -6733,6 +6815,34 @@ async fn exploration_promotion_transaction_adopts_frame_and_artifact_head_togeth
             ExplorationStatus::Creating,
             ExplorationStatus::Active,
         )
+        .await
+        .unwrap();
+    store
+        .append_message("branch", 3, &Message::user("try selected approach"))
+        .await
+        .unwrap();
+    store
+        .append_message("branch", 4, &Message::assistant("selected result"))
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event(
+            "branch",
+            1,
+            r#"{"kind":"User","frame_id":"branch","text":"try selected approach"}"#,
+        )
+        .await
+        .unwrap();
+    store
+        .create_frame("ordinary-branch", "p", "OPERON", "model")
+        .await
+        .unwrap();
+    store
+        .set_session_branch_point("ordinary-branch", "main", 0, "after_response")
+        .await
+        .unwrap();
+    store
+        .append_message("ordinary-branch", 1, &Message::user("ordinary branch"))
         .await
         .unwrap();
     let branch_version = store
@@ -6781,18 +6891,15 @@ async fn exploration_promotion_transaction_adopts_frame_and_artifact_head_togeth
         .unwrap();
 
     assert_eq!(
-        store.frame_state_scope("branch").await.unwrap(),
+        store.frame_state_scope("main").await.unwrap(),
         Some(StateScope::mainline("p"))
     );
-    assert_eq!(
-        store
-            .get_exploration_family("family")
-            .await
-            .unwrap()
-            .unwrap()
-            .mainline_frame_id,
-        "branch"
-    );
+    assert!(store.frame_state_scope("branch").await.unwrap().is_none());
+    assert!(store
+        .get_exploration_family("family")
+        .await
+        .unwrap()
+        .is_none());
     assert_eq!(
         store
             .get_artifact_head("p", MAINLINE_SCOPE_KEY, "path:result.txt")
@@ -6802,14 +6909,41 @@ async fn exploration_promotion_transaction_adopts_frame_and_artifact_head_togeth
             .artifact_version_id,
         branch_version
     );
+    assert_eq!(store.get_exploration("explore").await.unwrap(), None);
     assert_eq!(
         store
-            .get_exploration("explore")
+            .load_messages_with_seq("main")
             .await
             .unwrap()
+            .into_iter()
+            .map(|(seq, message)| (seq, message.content.as_text()))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, "compare approaches".into()),
+            (2, "stable checkpoint".into()),
+            (3, "try selected approach".into()),
+            (4, "selected result".into()),
+        ]
+    );
+    assert!(store.load_messages("branch").await.unwrap().is_empty());
+    let mut sessions = store.list_sessions("p").await.unwrap();
+    sessions.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[0].0, "main");
+    assert_eq!(sessions[0].1, "compare approaches");
+    assert_eq!(sessions[0].4, None);
+    assert_eq!(sessions[1].0, "ordinary-branch");
+    assert_eq!(sessions[1].1, "ordinary branch");
+    assert_eq!(sessions[1].4.as_deref(), Some("main"));
+    assert_eq!(
+        store
+            .list_session_branches("main", "p")
+            .await
             .unwrap()
-            .status,
-        ExplorationStatus::Promoted
+            .into_iter()
+            .map(|branch| branch.id)
+            .collect::<Vec<_>>(),
+        vec!["ordinary-branch".to_string()]
     );
     assert_eq!(
         store
@@ -6821,6 +6955,317 @@ async fn exploration_promotion_transaction_adopts_frame_and_artifact_head_togeth
         ExplorationPromotionStatus::MetadataCommitted
     );
     assert_eq!(store.project_state_generation("p").await.unwrap(), 1);
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn exploration_promotion_recovery_migration_removes_legacy_cascade() {
+    let (store, tmp) = exploration_store_fixture("promotion-recovery-migration").await;
+    sqlx::query("DROP INDEX ix_exploration_promotions_exploration")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE exploration_promotions")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE exploration_promotions (\
+           id TEXT PRIMARY KEY,\
+           exploration_id TEXT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,\
+           expected_guard_hash TEXT NOT NULL,status TEXT NOT NULL,diff_json TEXT NOT NULL,\
+           journal_path TEXT,error TEXT,started_at INTEGER NOT NULL,committed_at INTEGER\
+         )",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS ix_exploration_promotions_exploration \
+         ON exploration_promotions(exploration_id,started_at DESC)",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+        .bind(EXPLORATION_PROMOTION_RECOVERY_MIGRATION)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+
+    let repaired = Store::open(&tmp).await.unwrap();
+    let foreign_key_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_foreign_key_list('exploration_promotions')",
+    )
+    .fetch_one(&repaired.pool)
+    .await
+    .unwrap();
+    assert_eq!(foreign_key_count, 0);
+
+    create_exploration_checkpoint_fixture(&repaired).await;
+    repaired
+        .create_exploration(&Exploration {
+            id: "explore".into(),
+            checkpoint_id: "checkpoint".into(),
+            frame_id: "branch".into(),
+            name: "Promote after migration".into(),
+            status: ExplorationStatus::Creating,
+            workspace_dir: "/tmp/explorations/explore/workspace".into(),
+            workspace_backend: "snapshot".into(),
+            scope_generation: 0,
+            warnings_json: "[]".into(),
+            created_at: 2,
+            updated_at: 2,
+        })
+        .await
+        .unwrap();
+    repaired
+        .transition_exploration(
+            "explore",
+            ExplorationStatus::Creating,
+            ExplorationStatus::Active,
+        )
+        .await
+        .unwrap();
+    repaired
+        .create_exploration_promotion(&ExplorationPromotion {
+            id: "promotion".into(),
+            exploration_id: "explore".into(),
+            expected_guard_hash: "e".repeat(64),
+            status: ExplorationPromotionStatus::Prepared,
+            diff_json: r#"{"files":[]}"#.into(),
+            journal_path: Some("exploration-promotions/promotion/journal.json".into()),
+            error: None,
+            started_at: 3,
+            committed_at: None,
+        })
+        .await
+        .unwrap();
+    repaired
+        .transition_exploration(
+            "explore",
+            ExplorationStatus::Active,
+            ExplorationStatus::Promoting,
+        )
+        .await
+        .unwrap();
+    repaired
+        .transition_exploration_promotion(
+            "promotion",
+            ExplorationPromotionStatus::Prepared,
+            ExplorationPromotionStatus::FilesApplied,
+            None,
+        )
+        .await
+        .unwrap();
+    repaired
+        .commit_exploration_promotion_metadata("promotion")
+        .await
+        .unwrap();
+    assert!(repaired.get_exploration("explore").await.unwrap().is_none());
+    assert_eq!(
+        repaired
+            .get_exploration_promotion("promotion")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ExplorationPromotionStatus::MetadataCommitted
+    );
+
+    repaired.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn abandoning_exploration_round_discards_every_candidate_and_releases_mainline() {
+    let (store, tmp) = exploration_store_fixture("abandon-round").await;
+    store.create_project("target", "target", "").await.unwrap();
+    create_exploration_checkpoint_fixture(&store).await;
+    for (id, frame_id, created_at) in [("first", "branch", 2), ("second", "branch-two", 3)] {
+        if frame_id != "branch" {
+            store
+                .create_frame(frame_id, "p", "OPERON", "model")
+                .await
+                .unwrap();
+        }
+        store
+            .create_exploration(&Exploration {
+                id: id.into(),
+                checkpoint_id: "checkpoint".into(),
+                frame_id: frame_id.into(),
+                name: id.into(),
+                status: ExplorationStatus::Creating,
+                workspace_dir: format!("/tmp/explorations/{id}/workspace"),
+                workspace_backend: "snapshot".into(),
+                scope_generation: 0,
+                warnings_json: "[]".into(),
+                created_at,
+                updated_at: created_at,
+            })
+            .await
+            .unwrap();
+        store
+            .transition_exploration(id, ExplorationStatus::Creating, ExplorationStatus::Active)
+            .await
+            .unwrap();
+    }
+    store.discard_exploration_scope("first").await.unwrap();
+    assert!(store.get_exploration("first").await.unwrap().is_none());
+    assert!(store.frame_project_id("branch").await.unwrap().is_none());
+    assert!(store.project_mainline_is_frozen("p").await.unwrap());
+    assert_eq!(store.list_project_explorations("p").await.unwrap().len(), 1);
+    let delete_error = store.delete_session("main", "p").await.unwrap_err();
+    assert!(delete_error
+        .to_string()
+        .contains("exploration_mainline_frozen"));
+    let move_error = store
+        .move_session_to_project("main", "p", "target", "moved-main")
+        .await
+        .unwrap_err();
+    assert!(move_error
+        .to_string()
+        .contains("exploration_mainline_frozen"));
+
+    let candidates = store.abandon_exploration_round("second").await.unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert!(!store.project_mainline_is_frozen("p").await.unwrap());
+    assert!(store
+        .list_project_explorations("p")
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .get_exploration_family("family")
+        .await
+        .unwrap()
+        .is_none());
+    store.delete_session("main", "p").await.unwrap();
+    assert!(store.frame_project_id("main").await.unwrap().is_none());
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn discarding_exploration_purges_all_private_records() {
+    let (store, tmp) = exploration_store_fixture("discard-purge").await;
+    create_exploration_checkpoint_fixture(&store).await;
+    store
+        .create_exploration(&Exploration {
+            id: "explore".into(),
+            checkpoint_id: "checkpoint".into(),
+            frame_id: "branch".into(),
+            name: "Discard me".into(),
+            status: ExplorationStatus::Creating,
+            workspace_dir: "/tmp/explorations/explore/workspace".into(),
+            workspace_backend: "snapshot".into(),
+            scope_generation: 0,
+            warnings_json: "[]".into(),
+            created_at: 2,
+            updated_at: 2,
+        })
+        .await
+        .unwrap();
+    store
+        .transition_exploration(
+            "explore",
+            ExplorationStatus::Creating,
+            ExplorationStatus::Active,
+        )
+        .await
+        .unwrap();
+    store
+        .append_message("branch", 1, &Message::user("private analysis"))
+        .await
+        .unwrap();
+    let version_id = store
+        .save_artifact_version(&exploration_test_artifact(
+            "artifact-private",
+            "branch",
+            "path:private.txt",
+            "private.txt",
+        ))
+        .await
+        .unwrap();
+    let mut run = RunRecord::new("run-private", "p", "local", "Private run", "command");
+    run.frame_id = Some("branch".into());
+    run.status = RunStatus::Succeeded;
+    store.create_run(&run).await.unwrap();
+    let decision = ResearchNode::new(
+        "decision-private",
+        "p",
+        ResearchNodeKind::Decision,
+        "Private decision",
+    )
+    .unwrap();
+    store
+        .save_research_node_in_scope(&decision, &StateScope::exploration("p", "explore"))
+        .await
+        .unwrap();
+    store
+        .save_external_resource_in_scope(
+            &ExternalResource {
+                id: "resource-private".into(),
+                project_id: "p".into(),
+                kind: "dataset".into(),
+                uri: "doi:10.0000/private".into(),
+                version: Some("v1".into()),
+                checksum: Some("e".repeat(64)),
+                size_bytes: Some(4),
+                license: None,
+                visibility: "restricted".into(),
+                access_instructions: None,
+                accessed_at: Some(1),
+                created_at: 1,
+                updated_at: 1,
+            },
+            &StateScope::exploration("p", "explore"),
+        )
+        .await
+        .unwrap();
+
+    store.discard_exploration_scope("explore").await.unwrap();
+
+    assert!(store.get_exploration("explore").await.unwrap().is_none());
+    assert!(store.frame_project_id("branch").await.unwrap().is_none());
+    assert!(store.load_messages("branch").await.unwrap().is_empty());
+    assert!(store
+        .get_artifact("artifact-private")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get_artifact_version(&version_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store.get_run("run-private").await.unwrap().is_none());
+    assert!(store
+        .research_graph_owned_by_exploration("explore")
+        .await
+        .unwrap()
+        .nodes
+        .is_empty());
+    assert!(store
+        .list_external_resources_owned_by_exploration("explore")
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .list_exploration_effects("explore")
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .list_artifact_heads("p", "explore")
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(store.frame_message_head("main").await.unwrap(), 2);
 
     store.pool.close().await;
     let _ = std::fs::remove_file(tmp);
@@ -6843,9 +7288,6 @@ async fn exploration_artifact_heads_keep_same_logical_key_private() {
             warnings_json: "[]".into(),
             created_at: 2,
             updated_at: 2,
-            promoted_at: None,
-            archived_at: None,
-            discarded_at: None,
         })
         .await
         .unwrap();
@@ -7266,5 +7708,40 @@ async fn exploration_migration_repairs_partial_legacy_state() {
         .unwrap();
 
     repaired.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn exploration_schema_has_no_retained_discard_state() {
+    let (store, tmp) = exploration_store_fixture("no-archive").await;
+    let columns = sqlx::query("PRAGMA table_info(explorations)")
+        .fetch_all(&store.pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.try_get::<String, _>("name").unwrap())
+        .collect::<std::collections::HashSet<_>>();
+    assert!(!columns.contains("archived_at"));
+    assert!(!columns.contains("promoted_at"));
+    assert!(!columns.contains("discarded_at"));
+
+    create_exploration_checkpoint_fixture(&store).await;
+    for status in ["archived", "promoted", "discarded"] {
+        let error = sqlx::query(
+            "INSERT INTO explorations(\
+               id,checkpoint_id,frame_id,name,status,workspace_dir,workspace_backend,\
+               scope_generation,warnings_json,created_at,updated_at\
+             ) VALUES(?, 'checkpoint','branch','Retired state',?,'/tmp/retired',\
+                      'copy',0,'[]',1,1)",
+        )
+        .bind(status)
+        .bind(status)
+        .execute(&store.pool)
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("CHECK constraint failed"));
+    }
+
+    store.pool.close().await;
     let _ = std::fs::remove_file(tmp);
 }

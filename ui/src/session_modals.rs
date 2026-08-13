@@ -871,7 +871,9 @@ pub(crate) enum ExplorationOverlay {
         source_frame_id: String,
         turn_index: usize,
     },
-    Preview { exploration_id: String },
+    Preview {
+        exploration_id: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -889,7 +891,9 @@ enum ExplorationConfirm {
         exploration_id: String,
         expected_guard_hash: String,
     },
-    Discard { exploration_id: String },
+    Discard {
+        exploration_id: String,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -906,10 +910,7 @@ fn exploration_status(locale: Locale, status: &str) -> String {
     let key = match status {
         "creating" => "exploration.status_creating",
         "active" => "exploration.status_active",
-        "archived" => "exploration.status_archived",
         "promoting" => "exploration.status_promoting",
-        "promoted" => "exploration.status_promoted",
-        "discarded" => "exploration.status_discarded",
         _ => "exploration.status_failed",
     };
     t(locale, key)
@@ -1079,8 +1080,6 @@ pub(crate) fn ExplorationOverlayView(
     state: ExplorationOverlayState,
     on_start: Callback<(String, usize, String)>,
     on_promote: Callback<(String, String)>,
-    on_archive: Callback<String>,
-    on_restore: Callback<String>,
     on_discard: Callback<String>,
 ) -> impl IntoView {
     let ExplorationOverlayState {
@@ -1142,8 +1141,6 @@ pub(crate) fn ExplorationOverlayView(
             }
             ExplorationOverlay::Preview { exploration_id } => {
                 let current = preview.get();
-                let id_for_archive = exploration_id.clone();
-                let id_for_restore = exploration_id.clone();
                 let id_for_discard = exploration_id.clone();
                 view! {
                     <div class="overlay exploration-overlay" data-testid="exploration-diff-overlay">
@@ -1195,14 +1192,7 @@ pub(crate) fn ExplorationOverlayView(
                                         {move || exploration_diff_body(locale.get(), tab.get(), &current)}
                                     </div>
                                     <div class="row exploration-actions">
-                                        {if status == "archived" {
-                                            view! { <button type="button" disabled=move || busy.get()
-                                                on:click=move |_| on_restore.call(id_for_restore.clone())>{move || t(locale.get(), "exploration.restore")}</button> }.into_view()
-                                        } else if status == "active" {
-                                            view! { <button type="button" disabled=move || busy.get()
-                                                on:click=move |_| on_archive.call(id_for_archive.clone())>{move || t(locale.get(), "exploration.archive")}</button> }.into_view()
-                                        } else { view! {}.into_view() }}
-                                        {matches!(status.as_str(), "active" | "archived").then(|| view! {
+                                        {(status == "active").then(|| view! {
                                             <button type="button" class="danger-text" disabled=move || busy.get()
                                                 on:click=move |_| confirm.set(Some(ExplorationConfirm::Discard { exploration_id: id_for_discard.clone() }))>
                                                 {move || t(locale.get(), "exploration.discard")}

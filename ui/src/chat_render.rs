@@ -365,7 +365,10 @@ mod steps_title_tests {
 
     #[test]
     fn folds_the_run_duration_into_settled_step_counts() {
-        assert_eq!(steps_title(Locale::En, false, false, None, 1, None), "Ran 1 step");
+        assert_eq!(
+            steps_title(Locale::En, false, false, None, 1, None),
+            "Ran 1 step"
+        );
         assert_eq!(
             steps_title(Locale::En, false, false, None, 1, Some("2s")),
             "Ran 1 step · 2s"
@@ -391,11 +394,25 @@ mod steps_title_tests {
     #[test]
     fn explains_when_a_completed_tool_is_waiting_on_the_model() {
         assert_eq!(
-            steps_title(Locale::En, false, true, Some("The model is consulting its neurons…"), 1, None),
+            steps_title(
+                Locale::En,
+                false,
+                true,
+                Some("The model is consulting its neurons…"),
+                1,
+                None
+            ),
             "The model is consulting its neurons…"
         );
         assert_eq!(
-            steps_title(Locale::Zh, false, true, Some("模型正在和神经元商量…"), 1, None),
+            steps_title(
+                Locale::Zh,
+                false,
+                true,
+                Some("模型正在和神经元商量…"),
+                1,
+                None
+            ),
             "模型正在和神经元商量…"
         );
     }
@@ -442,15 +459,18 @@ pub(crate) fn render_steps_group(
             })
             .flatten();
         let waiting_for_model = live
-            && indices.iter().rev().filter_map(|index| items.get(*index)).find(|item| {
-                !matches!(item, ChatItem::Usage { .. } | ChatItem::Compaction { .. })
-            }).is_some_and(|item| match item {
-                ChatItem::Tool { ok: Some(_), .. } => true,
-                ChatItem::AcpTool { status, .. } => {
-                    status != "pending" && status != "in_progress"
-                }
-                _ => false,
-            });
+            && indices
+                .iter()
+                .rev()
+                .filter_map(|index| items.get(*index))
+                .find(|item| !matches!(item, ChatItem::Usage { .. } | ChatItem::Compaction { .. }))
+                .is_some_and(|item| match item {
+                    ChatItem::Tool { ok: Some(_), .. } => true,
+                    ChatItem::AcpTool { status, .. } => {
+                        status != "pending" && status != "in_progress"
+                    }
+                    _ => false,
+                });
         (n_tools, total_ms, now_line, waiting_for_model)
     });
     let total_ms =
@@ -464,16 +484,21 @@ pub(crate) fn render_steps_group(
         .then(|| total_label.clone())
         .flatten();
     let meta_label = inline_time.is_none().then_some(total_label).flatten();
-    let model_wait_variant =
-        group_id.bytes().fold(0usize, |sum, byte| sum + byte as usize) % 4;
+    let model_wait_variant = group_id
+        .bytes()
+        .fold(0usize, |sum, byte| sum + byte as usize)
+        % 4;
     let title = move || {
         let model_wait_message = waiting_for_model.then(|| {
-            t(locale.get(), match model_wait_variant {
-                0 => "chat.model_wait_1",
-                1 => "chat.model_wait_2",
-                2 => "chat.model_wait_3",
-                _ => "chat.model_wait_4",
-            })
+            t(
+                locale.get(),
+                match model_wait_variant {
+                    0 => "chat.model_wait_1",
+                    1 => "chat.model_wait_2",
+                    2 => "chat.model_wait_3",
+                    _ => "chat.model_wait_4",
+                },
+            )
         });
         steps_title(
             locale.get(),

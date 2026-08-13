@@ -467,8 +467,8 @@ mod transcript_render_window_tests {
 #[cfg(test)]
 mod conversation_outline_tests {
     use super::{
-        conversation_outline_target_is_loaded, merge_conversation_outline,
-        owning_user_turn_index, transcript_item_timestamp, turn_duration_ms, user_turn_index,
+        conversation_outline_target_is_loaded, merge_conversation_outline, owning_user_turn_index,
+        transcript_item_timestamp, turn_duration_ms, user_turn_index,
     };
     use crate::dto::{ChatItem, SessionOutlineItem};
 

@@ -67,9 +67,10 @@ pub(crate) fn StreamingAssistantMessage(
                 return;
             }
 
-            let delay = std::time::Duration::from_millis(
-                streaming_markdown_commit_interval_ms(text_len, recent_parse_cost_ms.get()),
-            );
+            let delay = std::time::Duration::from_millis(streaming_markdown_commit_interval_ms(
+                text_len,
+                recent_parse_cost_ms.get(),
+            ));
             let callback_handle = Rc::clone(&commit_handle);
             let callback_active = Rc::clone(&active);
             match leptos::set_timeout_with_handle(
@@ -105,7 +106,8 @@ pub(crate) fn StreamingAssistantMessage(
         let recent_parse_cost_ms = Rc::clone(&recent_parse_cost_ms);
         move |_| {
             let started_at = js_sys::Date::now();
-            let project_root = project.and_then(|project| project.get().map(|project| project.root));
+            let project_root =
+                project.and_then(|project| project.get().map(|project| project.root));
             let html = enrich_md_html(
                 md_to_html(&rendered_text.get()),
                 &[],
@@ -726,17 +728,13 @@ pub(crate) fn AssistantMessage(
     explore_turn_index: usize,
     on_explore: Callback<usize>,
 ) -> impl IntoView {
-    // Exploration creation is intentionally hidden for now; keep the inputs in
-    // the component API while callers are migrated to the stable branch flow.
-    let _ = (show_explore, can_explore, explore_turn_index, on_explore);
     let locale = use_locale();
     let arts_for_html = artifacts.clone();
     let resources_for_html = resources.clone();
     let text_for_html = text.clone();
     let project = use_context::<ReadSignal<Option<ProjectInfo>>>();
     let html = create_memo(move |_| {
-        let project_root = project
-            .and_then(|project| project.get().map(|project| project.root));
+        let project_root = project.and_then(|project| project.get().map(|project| project.root));
         enrich_md_html(
             md_to_html(&text_for_html),
             &arts_for_html,
@@ -908,6 +906,17 @@ pub(crate) fn AssistantMessage(
                 >
                     {compose_icon("review")}
                 </button>
+                {move || show_explore.get().then(|| view! { <button
+                    type="button"
+                    class="msg-icon-btn msg-explore-btn"
+                    data-testid="start-exploration"
+                    title=move || t(locale.get(), "exploration.start")
+                    aria-label=move || t(locale.get(), "exploration.start")
+                    disabled=move || !can_explore.get()
+                    on:click=move |_| on_explore.call(explore_turn_index)
+                >
+                    {compose_icon("flask")}
+                </button> })}
                 {move || can_branch.get().then(|| view! { <button
                     type="button"
                     class="msg-icon-btn msg-branch-btn"
@@ -1293,9 +1302,18 @@ mod streaming_markdown_tests {
         // Once measured, actual work rather than answer length controls the
         // cadence: cheap large Markdown remains fluid; expensive small
         // Markdown yields more main-thread time.
-        assert_eq!(streaming_markdown_commit_interval_ms(512_000, Some(4.0)), 50);
-        assert_eq!(streaming_markdown_commit_interval_ms(1_000, Some(40.0)), 240);
-        assert_eq!(streaming_markdown_commit_interval_ms(1_000, Some(400.0)), 1_200);
+        assert_eq!(
+            streaming_markdown_commit_interval_ms(512_000, Some(4.0)),
+            50
+        );
+        assert_eq!(
+            streaming_markdown_commit_interval_ms(1_000, Some(40.0)),
+            240
+        );
+        assert_eq!(
+            streaming_markdown_commit_interval_ms(1_000, Some(400.0)),
+            1_200
+        );
     }
 }
 

@@ -2707,7 +2707,7 @@ impl AgentDelegator for NativeDelegator {
             .list_artifacts(&child_frame_id)
             .await?
             .into_iter()
-            .map(|(id, name, kind, path, _)| AgentArtifact {
+            .map(|(id, name, kind, path, _, _)| AgentArtifact {
                 id,
                 name,
                 kind,
@@ -3473,7 +3473,7 @@ async fn run_acp_request(
         .list_artifacts(child_frame_id)
         .await?
         .into_iter()
-        .map(|(id, name, kind, path, _)| AgentArtifact {
+        .map(|(id, name, kind, path, _, _)| AgentArtifact {
             id,
             name,
             kind,

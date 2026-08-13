@@ -41,6 +41,7 @@ pub(crate) enum UiConfirm {
     EnableFullPermission,
     DeleteFolder(String),
     DeleteSessions(Vec<String>),
+    AbandonExploration(String),
     DeleteFileEntry { path: String, is_dir: bool },
     ReloadProjectRules(String),
 }

@@ -10,8 +10,8 @@
 
 1. `ExplorationCheckpoint` 冻结一个已完成会话边界，以及该边界对应的文件、ArtifactVersion、终态 Run、Decision/Research Graph 和模型上下文引用。
 2. `Exploration` 拥有持久、独立、可写的工作区；分支产生的项目记录都带 `exploration_id`，普通主线查询不会看到它们。
-3. 主线仍等于检查点时，`PromotionOperation` 通过项目级独占锁、重新校验、可恢复文件日志和一个 SQLite 事务，把成功探索 fast-forward 为主线。
-4. 主线已前进时，后端必须拒绝一键晋升；MVP 只展示差异和允许重新探索，不实现对话或文件自动合并。
+3. 探索轮持续冻结 source main 和 Wisp 管理的主线项目写入；只有采用某个候选或显式放弃整轮才能解除冻结。
+4. `PromotionOperation` 通过项目级独占锁、重新校验、可恢复文件日志和一个 SQLite 事务，把成功探索的增量 fast-forward 回原 main，并清理包括所选探索在内的全部候选；显式放弃则不合并增量，仅清理全部候选。
 
 第一阶段仅保证“从当前已完成主线头创建探索”。当前系统没有逐轮完整文件快照，不能可靠重建升级前任意历史轮次的项目状态；任意历史轮次将在后续通过逐轮 `ProjectStateRevision` 实现，不能用现有 `turn_file_undo` 假装可恢复。
 
@@ -32,9 +32,9 @@
 
 - **开始探索**：从一个一致性检查点派生独立试验。
 - **主线**：当前被项目采用的会话和项目状态。
-- **设为主线 / 采用此探索**：仅在主线未前进时执行 fast-forward。
-- **归档探索**：保留只读历史和工作区。
+- **设为主线 / 采用此探索**：选择一个候选成为崭新的 main，并清理同轮其他探索产物。
 - **丢弃探索**：删除探索私有工作区和私有记录；不得修改主线。
+- **放弃探索**：从 source main 的右键菜单结算整轮；保留原 main，删除所有探索及其私有产物。
 
 产品文案不使用“自动合并”描述晋升。
 
@@ -45,18 +45,13 @@ stateDiagram-v2
     [*] --> Creating
     Creating --> Active: 检查点和工作区就绪
     Creating --> Failed: 创建失败并回滚
-    Active --> Archived: 用户归档
-    Archived --> Active: 用户恢复
     Active --> Promoting: 重新校验通过
-    Promoting --> Promoted: 文件和元数据提交
+    Promoting --> [*]: 增量并回原 main 后硬删除
     Promoting --> Active: 预检或应用失败并回滚
-    Active --> Discarded: 用户确认丢弃
-    Archived --> Discarded: 用户确认丢弃
-    Promoted --> [*]
-    Discarded --> [*]
+    Active --> [*]: 用户确认后硬删除
 ```
 
-`Promoted` 和 `Discarded` 是终态。未采用探索不会因为另一个探索晋升而自动删除。
+丢弃没有持久化终态，也不保留 tombstone。把一个候选设为主线时，只将它在冻结点之后的增量并回原 main；同轮所有探索（包括所选探索）都会永久删除，其私有记录、对话、隔离工作区、快照 manifest 和上下文归档一并清理。
 
 ## 范围
 
@@ -66,9 +61,9 @@ stateDiagram-v2
 - 小型和普通项目文件的完整隔离，包括未跟踪文件和 `.wisp/memory`。
 - 分支内新增/修改 Artifact、终态 Run、Decision/Research Graph 记录的隔离。
 - 文件、Artifact、Run、Decision 和外部副作用差异预览。
-- 主线未前进时的可恢复 fast-forward。
-- 主线已前进时明确拒绝。
-- 归档和丢弃探索。
+- 冻结 source main 和所有 Wisp 管理的主线项目写入。
+- 可恢复 fast-forward，以及失败时不提前解除冻结。
+- 单独丢弃探索和显式放弃完整探索轮。
 - macOS、Windows 和 Linux/WSL 的显式文件策略；自动测试不依赖真实 SSH、WSL、GPU 或网络。
 
 ### 非目标
@@ -115,11 +110,9 @@ stateDiagram-v2
 mainline 从 checkpoint source 更新为被采用 frame。这样后续可以从新主线继续探索，
 而不是靠侧栏当前选中项猜测哪条会话是主线。
 
-同一 family generation 中处于 `creating`、`active` 或 `promoting` 的候选构成当前探索轮。
-当前轮存在时，Wisp 冻结探索源 conversation，以及主线 workspace、Memory、Artifact、Runtime
-和新任务入口的写入。其他 conversation 仍可创建并记录消息，但只能使用只读项目工具。
-`archived` 不继续持有冻结：用户归档或丢弃全部候选即表示放弃本轮。
-晋升一个候选时，同轮其他活动候选在同一元数据事务内自动归档；旧 generation 的候选不能恢复。
+同一 family generation 中仍然存在的 `creating`、`active`、`promoting` 或 `failed` 候选构成当前探索轮。只要该 generation 未被结算，source main conversation、workspace、Memory、Artifact、Runtime 和新的项目写入口都保持冻结；其他普通 conversation 仅允许讨论和只读检查。被丢弃的候选立即从该集合和持久化存储中消失。
+
+候选失败或单独丢弃只改变候选自身，不推进 family generation，因此不能解除冻结。只有两条结算路径会推进 generation：晋升一个候选时采用该 frame 为新 main，并在同一元数据事务中永久清理同轮其他候选；放弃整轮时保留原 main，并在同一元数据事务中永久清理全部候选。
 
 ### 2. `ExplorationScope`
 
@@ -230,7 +223,7 @@ MVP 对超过物化阈值且未显式复制的大文件给出“部分隔离”�
 
 上下文压缩归档不能继续只依赖绝对路径字符串。新增 `context_archives` 注册表和逻辑引用（例如 `wisp-history:<id>`），读取时按当前 `WorkingProject.root` 解析。创建探索时复制/共享归档 blob；旧绝对路径 tombstone 仅在迁移路径中受控重写。
 
-晋升后不把消息重新复制回 source frame。被采用的探索 frame 本身成为该探索族的新主线 frame；它已经包含 `A → B → C → D2 → E2`。旧 source frame 保留为历史祖先，其他探索继续保持私有。
+晋升后 source frame 保持原 ID 和侧栏位置。只把所选探索在检查点之后新增的消息、UI events 和相关对话记录迁回 source frame，使其从 `A → B → C` 变成 `A → B → C → D2 → E2`；克隆的检查点前缀不会重复写入。所选探索与同轮其他探索的记录、frame、对话和私有数据全部硬删除，不保留 discarded tombstone。原 main 已有的普通对话分支继续挂在同一个 source frame 下。
 
 ### 6. 主线 guard
 
@@ -253,8 +246,8 @@ referenced large/remote resource fingerprint hash
 变更就会错误地阻止晋升。文件系统可能被外部编辑器修改，所以晋升仍必须重新扫描
 manifest，不能只信 generation。
 
-探索轮开启后，source frame 的新增消息由统一写 guard 直接拒绝。外部编辑器和 Wisp 进程外的
-写入无法由应用锁住，因此文件 manifest 复核仍是晋升的最终安全边界。
+探索轮开启后，统一写 guard 直接拒绝 source frame 新消息、分支创建、移动和删除，并拒绝 Wisp 管理的主线项目写入。带普通对话分支的 main 也不能删除，必须先删除分支。
+外部编辑器和 Wisp 进程外的写入无法由应用锁住，因此文件 manifest 复核仍是晋升的最终安全边界。文件 guard 按所选探索实际改动的路径求交集：同路径变化阻止晋升；非重叠路径属于其他会话或外部生产者，既不进入冲突预览，也不阻止晋升，并在应用探索补丁时原样保留。
 
 ### 7. 差异模型
 
@@ -271,7 +264,7 @@ pub struct ExplorationDiff {
 }
 ```
 
-文件差异是 checkpoint → exploration；晋升资格另行比较 checkpoint → current mainline。UI 不能把“探索有差异”和“主线有冲突”混成一个状态。
+文件差异是 checkpoint → exploration；晋升资格另行比较 checkpoint → current mainline，并只保留与 exploration 差异路径相交的主线变化。UI 不能把“探索有差异”和“主线有冲突”混成一个状态，也不能把无关项目文件归到当前探索。
 
 ### 8. 外部副作用
 
@@ -329,10 +322,7 @@ CREATE TABLE explorations (
     scope_generation INTEGER NOT NULL DEFAULT 0,
     warnings_json TEXT NOT NULL DEFAULT '[]',
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    promoted_at INTEGER,
-    archived_at INTEGER,
-    discarded_at INTEGER
+    updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE workspace_snapshots (
@@ -405,7 +395,7 @@ Artifact 就会在 SQLite 唯一约束处失败。
 `exploration_families.generation` 保存会话主线指针的 CAS 版本；
 `explorations.scope_generation` 只追踪该探索覆盖层。三者不可混用。
 
-项目导出/同步的 MVP 策略是：只导出主线和已晋升记录；活跃/归档探索默认不进入普通项目快照，并在 UI 明示。探索专用导出属于后续工作。
+项目导出/同步的 MVP 策略是：只导出主线记录；探索默认不进入普通项目快照，并在 UI 明示。探索专用导出属于后续工作。
 
 ## 后端命令
 
@@ -417,9 +407,8 @@ open_exploration(exploration_id)
 preview_exploration_diff(exploration_id)
 preview_exploration_promotion(exploration_id)
 promote_exploration(exploration_id, expected_guard_hash)
-archive_exploration(exploration_id)
-restore_exploration(exploration_id)
 discard_exploration(exploration_id)
+abandon_exploration_round(source_frame_id)
 ```
 
 `create_exploration_checkpoint` 和 `create_exploration` 可以在 UI 中表现为一个动作，但后端分开有利于多个探索共享同一检查点和失败恢复。
@@ -434,12 +423,12 @@ discard_exploration(exploration_id)
 
 1. 获取已有 `project_activity` 的项目级独占写锁，阻止新 turn、同步、删除和第二个晋升。
 2. 拒绝 source/branch 的运行中 turn、队列、活动 Run 和未完成 Artifact capture。
-3. 重算主线 guard；不同则返回结构化 `MainlineAdvanced`，不写任何内容。
-4. 计算 base/current/exploration 三份 manifest，逐文件预检 checksum、大小、大小写冲突和 Windows 可替换性。
+3. 重算会话和结构化项目状态 guard；不同则返回结构化 `MainlineAdvanced`，不写任何内容。
+4. 计算 base/current/exploration 三份 manifest；仅将 current 与 exploration 同路径的变化视为文件冲突，并逐个晋升文件预检 checksum、大小、大小写冲突和 Windows 可替换性。非重叠 current 文件不进入 journal，也不被覆盖或删除。
 5. 在 app data 创建 promotion journal、待写临时文件和回滚清单，状态置为 `prepared`。
 6. 用同目录临时文件 + rename 应用 add/modify；删除先移动到 journal trash。每一步记录并 fsync，状态置为 `files_applied`。
-7. 在一个 SQLite 事务内：采用探索 Artifact heads；把探索 Run/Decision/Resource 变为主线可见；CAS 更新 `ExplorationFamily.mainline_frame_id`；把探索 frame 设为新主线；自动归档同 generation 的其他活动候选；更新探索状态和 mainline generation；把 promotion 置为 `metadata_committed`。
-8. 驱逐 source/branch 的缓存 Agent、Runtime、Memory 和 skill index，用稳定主线 root 重建新主线 frame；状态置为 `committed`。
+7. 在一个 SQLite 事务内：采用探索 Artifact heads；把探索 Run/Decision/Resource 的所属 frame 改回 source main 并设为主线可见；只迁移检查点之后的探索消息和 UI events；CAS 递增 family generation 但保持 `ExplorationFamily.mainline_frame_id` 不变；永久丢弃并清理包括所选探索在内的全部候选；把 promotion 置为 `metadata_committed`。
+8. 驱逐 source/branch 的缓存 Agent、Runtime、Memory 和 skill index，用稳定主线 root 重建原 source frame；状态置为 `committed`。
 9. 异步清理 rollback 数据。探索工作区在提交验证完成前不删除。
 
 启动恢复：
@@ -462,13 +451,14 @@ discard_exploration(exploration_id)
 ### 主线
 
 - 有活跃探索时显示“主线检查点已用于 N 个探索”，并禁用主线输入框、发送和其他 Wisp 写入口。
-- banner 明确给出结束冻结的两条路径：晋升一个候选，或归档/丢弃全部候选。
+- banner 明确给出解除冻结的两条路径：选择一个候选，或右键 source main 放弃整轮。
+- source main 的右键菜单隐藏删除并提供“放弃探索”；普通 main 有对话分支时也隐藏删除。
 - 外部文件变化无法被 UI 锁住，晋升时仍以后端扫描为准。
 
 ### 探索
 
 - 会话顶部显示探索名称、基线时间、隔离等级和不可恢复副作用提示。
-- 操作包括“查看差异”“设为主线”“归档”“丢弃”。
+- 操作包括“查看差异”“设为主线”“丢弃”。
 - 右侧 Files/Artifacts/Runs/Graph 都以 `StateView::Exploration` 查询。
 
 ### 差异与拒绝
@@ -523,12 +513,13 @@ AcpExplorationUnsupported
 | 同文件互不影响 | 不使用 hard link；各自物化可写文件 |
 | 文件和 Artifact 不泄漏 | `WorkingProject.root` + `artifact_heads.scope_key` + `exploration_id` |
 | 切回主线不变 | 主线 root/heads 从未切换，普通查询排除探索 |
-| 主线未前进可采用 | guard 相同才进入 promotion |
+| 冻结期间可采用 | guard 相同才进入 promotion，事务提交前不解除冻结 |
 | 对话、上下文、文件、Artifact 同时采用 | 采用探索 frame + 文件 journal + 单 SQLite 元数据事务 |
 | 未选内容不进上下文 | frame 和 StateView 均按 exploration 过滤 |
 | 晋升后直接继续 | 采用 frame 本身，驱逐旧 runtime 后从持久消息重建 |
-| 主线前进时拒绝 | message seq + generation + manifest/hash 复核 |
-| 丢弃不影响主线 | 只处理探索私有 rows/root，路径严格校验 |
+| 外部状态变化时拒绝 | message seq + generation + manifest/hash 复核 |
+| 单独丢弃不影响主线 | 只处理候选私有 rows/root，不推进 family generation |
+| 放弃整轮恢复原 main | 原 main 不删除；清理所有候选后推进 generation |
 
 ## 已知限制与后续
 

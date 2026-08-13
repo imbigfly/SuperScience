@@ -147,6 +147,7 @@ const GLOBAL_MEMORIES_MIGRATION: &str = "0039_global_memories";
 const GLOBAL_MEMORIES_MIGRATION_SQL: &str = include_str!("../migrations/0039_global_memories.sql");
 const SESSION_REASONING_EFFORT_MIGRATION: &str = "0040_session_reasoning_effort";
 const SESSION_BRANCH_MERGE_MIGRATION: &str = "0041_session_branch_merge";
+const EXPLORATION_PROMOTION_RECOVERY_MIGRATION: &str = "0042_exploration_promotion_recovery";
 
 #[derive(Clone)]
 pub struct Store {
@@ -578,6 +579,72 @@ impl Store {
             .await?;
             Self::record_migration(pool, SESSION_BRANCH_MERGE_MIGRATION).await?;
         }
+        if !Self::migration_applied(pool, EXPLORATION_PROMOTION_RECOVERY_MIGRATION).await? {
+            Self::apply_exploration_promotion_recovery(pool).await?;
+            Self::record_migration(pool, EXPLORATION_PROMOTION_RECOVERY_MIGRATION).await?;
+        }
+        Ok(())
+    }
+
+    /// Promotion recovery must outlive the exploration row that is hard
+    /// deleted by a successful metadata commit. Early exploration builds used
+    /// `ON DELETE CASCADE` here, which removed the recovery row just before the
+    /// transaction advanced it to `metadata_committed`.
+    async fn apply_exploration_promotion_recovery(pool: &SqlitePool) -> Result<()> {
+        let table_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+             WHERE type='table' AND name='exploration_promotions')",
+        )
+        .fetch_one(pool)
+        .await?;
+        if !table_exists {
+            return Ok(());
+        }
+        let foreign_key_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_foreign_key_list('exploration_promotions')",
+        )
+        .fetch_one(pool)
+        .await?;
+        if foreign_key_count == 0 {
+            return Ok(());
+        }
+
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query("DROP INDEX IF EXISTS ix_exploration_promotions_exploration")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "CREATE TABLE exploration_promotions_recovery (\
+               id TEXT PRIMARY KEY, exploration_id TEXT NOT NULL,\
+               expected_guard_hash TEXT NOT NULL, status TEXT NOT NULL,\
+               diff_json TEXT NOT NULL, journal_path TEXT, error TEXT,\
+               started_at INTEGER NOT NULL, committed_at INTEGER\
+             )",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO exploration_promotions_recovery(\
+               id,exploration_id,expected_guard_hash,status,diff_json,journal_path,error,\
+               started_at,committed_at)\
+             SELECT id,exploration_id,expected_guard_hash,status,diff_json,journal_path,error,\
+                    started_at,committed_at FROM exploration_promotions",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE exploration_promotions")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("ALTER TABLE exploration_promotions_recovery RENAME TO exploration_promotions")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS ix_exploration_promotions_exploration \
+             ON exploration_promotions(exploration_id,started_at DESC)",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 

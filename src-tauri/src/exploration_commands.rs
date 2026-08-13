@@ -6,7 +6,7 @@ use crate::exploration_workspace::{
     ExplorationWorkspaceBackend, PersistentExplorationWorkspace, WorkspaceSnapshot,
 };
 use crate::{load_skill_index, ActiveProject, AppState, MemoryManager};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,8 +14,8 @@ use tauri::{State, WebviewWindow};
 use wisp_store::{
     ArtifactHead, ContextArchiveRecord, Exploration, ExplorationBaselineArtifactHead,
     ExplorationBaselineEntity, ExplorationCheckpoint, ExplorationFamily, ExplorationStatus,
-    ExplorationSummary, ProjectStateRevisionSummary, StateScope, Store, WorkspaceSnapshotRecord,
-    AGENT_WORKFLOW_COMPLETION_TOOL, MAINLINE_SCOPE_KEY,
+    ExplorationSummary, StateScope, Store, WorkspaceSnapshotRecord, AGENT_WORKFLOW_COMPLETION_TOOL,
+    MAINLINE_SCOPE_KEY,
 };
 
 const ERR_SOURCE_BUSY: &str = "exploration_source_busy";
@@ -24,10 +24,32 @@ const ERR_SOURCE_INCOMPLETE: &str = "exploration_source_incomplete";
 const ERR_ACTIVE_RUN: &str = "exploration_active_run";
 const ERR_HISTORY_UNAVAILABLE: &str = "exploration_history_unavailable";
 const ERR_NOT_WRITABLE: &str = "exploration_not_writable";
+const ERR_ROUND_ACTIVE: &str = "exploration_round_active";
 const ERR_MAINLINE_FROZEN: &str = "exploration_mainline_frozen";
 
 fn coded_error(code: &str, message: impl AsRef<str>) -> String {
     format!("{code}: {}", message.as_ref())
+}
+
+/// Native Wisp renders a successful `attempt_completion` result as the final
+/// assistant bubble. Persisted history keeps that result as a Tool message and
+/// may append synthetic results for skipped sibling calls after it. Validate
+/// the latest user turn using the same visible completion semantics instead of
+/// requiring the physical tail row to be Assistant.
+fn latest_native_turn_is_complete(messages: &[wisp_llm::Message]) -> bool {
+    let Some(turn_start) = messages.iter().rposition(|message| {
+        message.role == wisp_llm::Role::User
+            && message.tool_name.as_deref() != Some(AGENT_WORKFLOW_COMPLETION_TOOL)
+            && !message.content.as_text().trim().is_empty()
+    }) else {
+        return false;
+    };
+    messages[turn_start + 1..].iter().any(|message| {
+        (message.role == wisp_llm::Role::Assistant && message.tool_calls.is_empty())
+            || (message.role == wisp_llm::Role::Tool
+                && message.tool_name.as_deref() == Some("attempt_completion")
+                && !message.content.as_text().trim().is_empty())
+    })
 }
 
 #[derive(Clone)]
@@ -44,14 +66,6 @@ struct CheckpointSource {
     context_archive_id: String,
     artifact_heads: Vec<ArtifactHead>,
     entities: Vec<ExplorationBaselineEntity>,
-    messages: Vec<wisp_llm::Message>,
-}
-
-#[derive(Deserialize)]
-struct ContextArchivePayload {
-    schema_version: u32,
-    frame_id: String,
-    message_head: i64,
     messages: Vec<wisp_llm::Message>,
 }
 
@@ -120,11 +134,7 @@ impl ExplorationService {
             .load_messages(source_frame_id)
             .await
             .map_err(|error| error.to_string())?;
-        if current_messages.is_empty()
-            || !current_messages.last().is_some_and(|message| {
-                message.role == wisp_llm::Role::Assistant && message.tool_calls.is_empty()
-            })
-        {
+        if !latest_native_turn_is_complete(&current_messages) {
             return Err(coded_error(
                 ERR_SOURCE_INCOMPLETE,
                 "the source must end at a completed assistant turn",
@@ -175,17 +185,6 @@ impl ExplorationService {
                 "explorations can only start from the current completed turn",
             ));
         }
-        let revision = self
-            .store
-            .project_state_revision_for_turn(source_frame_id, selected_turn_index)
-            .await
-            .map_err(|error| error.to_string())?;
-        if selected_turn_index != current_turn_index && revision.is_none() {
-            return Err(coded_error(
-                ERR_HISTORY_UNAVAILABLE,
-                "this turn predates immutable project-state history; start from the latest turn instead",
-            ));
-        }
         let (_, workspace_dir) = self
             .store
             .get_project(project_id)
@@ -224,116 +223,85 @@ impl ExplorationService {
                 }
             }
         };
-        let source = if let Some(revision) = revision {
-            if revision.project_id != project_id {
-                return Err(coded_error(
-                    ERR_HISTORY_UNAVAILABLE,
-                    "project-state revision belongs to another project",
-                ));
-            }
-            let snapshot_record = self
-                .store
-                .get_workspace_snapshot_record(&revision.workspace_snapshot_id)
-                .await
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| {
-                    coded_error(ERR_HISTORY_UNAVAILABLE, "workspace revision is missing")
-                })?;
-            let snapshot = self
-                .workspace_backend()
-                .load_snapshot(&revision.workspace_snapshot_id)?;
-            if snapshot_record.project_id != project_id
-                || snapshot_record.manifest_sha256 != revision.workspace_manifest_sha256
-                || snapshot.manifest_sha256 != revision.workspace_manifest_sha256
-            {
-                return Err(coded_error(
-                    ERR_HISTORY_UNAVAILABLE,
-                    "workspace revision failed integrity verification",
-                ));
-            }
-            let messages = read_context_archive_messages(
-                &self.store,
-                &self.app_data,
-                &revision.context_archive_id,
+        if let Some(existing) = self
+            .store
+            .current_exploration_checkpoint_for_source(
+                project_id,
                 source_frame_id,
-                revision.message_seq,
+                &family.id,
+                family.generation,
             )
-            .await?;
-            CheckpointSource {
-                message_head: revision.message_seq,
-                ui_event_head: revision.ui_event_seq,
-                state_generation: revision.state_generation,
-                snapshot,
-                context_archive_id: revision.context_archive_id,
-                artifact_heads: serde_json::from_str(&revision.artifact_heads_json)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            // The first candidate freezes the entire round. Later candidates
+            // must clone that exact checkpoint even if an external process
+            // changed the live workspace, because Wisp cannot redefine an
+            // already-open round's baseline.
+            return Ok(existing);
+        }
+        // Exploration V2 snapshots the live current head only when the user
+        // explicitly starts an exploration. Ordinary completed turns no
+        // longer pay the workspace snapshot cost or create hidden history.
+        let state_generation = self
+            .store
+            .project_state_generation(project_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let snapshot = self.workspace_backend().checkpoint(&project_root).await?;
+        self.store
+            .create_workspace_snapshot(&WorkspaceSnapshotRecord {
+                id: snapshot.id.clone(),
+                project_id: project_id.to_string(),
+                manifest_json: serde_json::to_string(&snapshot)
                     .map_err(|error| error.to_string())?,
-                entities: serde_json::from_str(&revision.entities_json)
-                    .map_err(|error| error.to_string())?,
-                messages,
-            }
-        } else {
-            let state_generation = self
+                manifest_sha256: snapshot.manifest_sha256.clone(),
+                created_at: snapshot.created_at,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let archive_id = uuid::Uuid::new_v4().to_string();
+        let archive_relative =
+            PathBuf::from("exploration-contexts").join(format!("{archive_id}.json"));
+        let archive_path = self.app_data.join(&archive_relative);
+        write_context_archive(
+            &self.app_data,
+            &archive_path,
+            source_frame_id,
+            current_message_head,
+            &current_messages,
+        )?;
+        let archive_bytes = std::fs::read(&archive_path).map_err(|error| error.to_string())?;
+        self.store
+            .create_context_archive(&ContextArchiveRecord {
+                id: archive_id.clone(),
+                project_id: project_id.to_string(),
+                frame_id: source_frame_id.to_string(),
+                storage_path: archive_relative.to_string_lossy().replace('\\', "/"),
+                checksum: hex::encode(Sha256::digest(&archive_bytes)),
+                created_at: now,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let source = CheckpointSource {
+            message_head: current_message_head,
+            ui_event_head: current_ui_event_head,
+            state_generation,
+            snapshot,
+            context_archive_id: archive_id,
+            artifact_heads: self
                 .store
-                .project_state_generation(project_id)
+                .list_artifact_heads(project_id, MAINLINE_SCOPE_KEY)
                 .await
-                .map_err(|error| error.to_string())?;
-            let snapshot = self.workspace_backend().checkpoint(&project_root).await?;
-            self.store
-                .create_workspace_snapshot(&WorkspaceSnapshotRecord {
-                    id: snapshot.id.clone(),
-                    project_id: project_id.to_string(),
-                    manifest_json: serde_json::to_string(&snapshot)
-                        .map_err(|error| error.to_string())?,
-                    manifest_sha256: snapshot.manifest_sha256.clone(),
-                    created_at: snapshot.created_at,
-                })
+                .map_err(|error| error.to_string())?,
+            entities: self
+                .store
+                .snapshot_mainline_entities(project_id)
                 .await
-                .map_err(|error| error.to_string())?;
-            let archive_id = uuid::Uuid::new_v4().to_string();
-            let archive_relative =
-                PathBuf::from("exploration-contexts").join(format!("{archive_id}.json"));
-            let archive_path = self.app_data.join(&archive_relative);
-            write_context_archive(
-                &self.app_data,
-                &archive_path,
-                source_frame_id,
-                current_message_head,
-                &current_messages,
-            )?;
-            let archive_bytes = std::fs::read(&archive_path).map_err(|error| error.to_string())?;
-            self.store
-                .create_context_archive(&ContextArchiveRecord {
-                    id: archive_id.clone(),
-                    project_id: project_id.to_string(),
-                    frame_id: source_frame_id.to_string(),
-                    storage_path: archive_relative.to_string_lossy().replace('\\', "/"),
-                    checksum: hex::encode(Sha256::digest(&archive_bytes)),
-                    created_at: now,
-                })
-                .await
-                .map_err(|error| error.to_string())?;
-            CheckpointSource {
-                message_head: current_message_head,
-                ui_event_head: current_ui_event_head,
-                state_generation,
-                snapshot,
-                context_archive_id: archive_id,
-                artifact_heads: self
-                    .store
-                    .list_artifact_heads(project_id, MAINLINE_SCOPE_KEY)
-                    .await
-                    .map_err(|error| error.to_string())?,
-                entities: self
-                    .store
-                    .snapshot_mainline_entities(project_id)
-                    .await
-                    .map_err(|error| error.to_string())?,
-                messages: current_messages,
-            }
+                .map_err(|error| error.to_string())?,
+            messages: current_messages,
         };
-        if !source.messages.last().is_some_and(|message| {
-            message.role == wisp_llm::Role::Assistant && message.tool_calls.is_empty()
-        }) {
+        if !latest_native_turn_is_complete(&source.messages) {
             return Err(coded_error(
                 ERR_SOURCE_INCOMPLETE,
                 "the selected revision does not end at a completed assistant turn",
@@ -499,72 +467,18 @@ impl ExplorationService {
             let _ = backend.dispose(&workspace).await;
             return Err(coded_error(ERR_HISTORY_UNAVAILABLE, error));
         }
-        let revision = self
-            .store
-            .project_state_revision_for_boundary(
-                &checkpoint.source_frame_id,
-                checkpoint.source_message_seq,
-                &checkpoint.workspace_snapshot_id,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        let (clone_message_head, archived_messages) = if let Some(revision) = revision.as_ref() {
-            let archived_messages = read_context_archive_messages(
-                &self.store,
-                &self.app_data,
-                &revision.context_archive_id,
-                &checkpoint.source_frame_id,
-                revision.message_seq,
-            )
-            .await?;
-            let current = self
-                .store
-                .load_messages_with_seq(&checkpoint.source_frame_id)
-                .await
-                .map_err(|error| error.to_string())?;
-            let current_head = current.last().map_or(0, |(seq, _)| *seq);
-            let current_prefix = current
-                .iter()
-                .take_while(|(seq, _)| *seq <= checkpoint.source_message_seq)
-                .map(|(_, message)| message.clone())
-                .collect::<Vec<_>>();
-            let prefix_matches = serde_json::to_vec(&current_prefix)
-                .map_err(|error| error.to_string())?
-                == serde_json::to_vec(&archived_messages).map_err(|error| error.to_string())?;
-            if current_head >= checkpoint.source_message_seq && prefix_matches {
-                (checkpoint.source_message_seq, None)
-            } else {
-                (current_head, Some(archived_messages))
-            }
-        } else {
-            (checkpoint.source_message_seq, None)
-        };
         if let Err(error) = self
             .store
             .clone_exploration_frame(
                 &checkpoint.source_frame_id,
                 &frame_id,
-                clone_message_head,
+                checkpoint.source_message_seq,
                 checkpoint.source_ui_event_seq,
             )
             .await
         {
             let _ = backend.dispose(&workspace).await;
             return Err(coded_error(ERR_HISTORY_UNAVAILABLE, error.to_string()));
-        }
-        if let Some(archived_messages) = archived_messages {
-            if let Err(error) = self
-                .store
-                .replace_exploration_clone_history(&frame_id, &archived_messages)
-                .await
-            {
-                let _ = self
-                    .store
-                    .delete_session(&frame_id, &checkpoint.project_id)
-                    .await;
-                let _ = backend.dispose(&workspace).await;
-                return Err(coded_error(ERR_HISTORY_UNAVAILABLE, error.to_string()));
-            }
         }
         if let Err(error) = self
             .store
@@ -593,9 +507,6 @@ impl ExplorationService {
                 .map_err(|error| error.to_string())?,
             created_at: now,
             updated_at: now,
-            promoted_at: None,
-            archived_at: None,
-            discarded_at: None,
         };
         if let Err(error) = self.store.create_exploration(&exploration).await {
             let _ = self
@@ -667,50 +578,6 @@ pub(crate) fn write_context_archive(
     let temporary = root.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
     std::fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
     std::fs::rename(&temporary, destination).map_err(|error| error.to_string())
-}
-
-async fn read_context_archive_messages(
-    store: &Store,
-    app_data: &Path,
-    archive_id: &str,
-    expected_frame_id: &str,
-    expected_message_head: i64,
-) -> Result<Vec<wisp_llm::Message>, String> {
-    let archive = store
-        .get_context_archive(archive_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "checkpoint context archive is missing".to_string())?;
-    if archive.frame_id != expected_frame_id {
-        return Err("checkpoint context archive belongs to another conversation".into());
-    }
-    let relative = Path::new(&archive.storage_path);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        return Err("checkpoint context archive has an unsafe storage path".into());
-    }
-    let source = app_data.join(relative);
-    let metadata = std::fs::symlink_metadata(&source).map_err(|error| error.to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("checkpoint context archive is not a regular file".into());
-    }
-    let bytes = std::fs::read(source).map_err(|error| error.to_string())?;
-    if hex::encode(Sha256::digest(&bytes)) != archive.checksum {
-        return Err("checkpoint context archive failed integrity verification".into());
-    }
-    let payload: ContextArchivePayload =
-        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    if payload.schema_version != 1
-        || payload.frame_id != expected_frame_id
-        || payload.message_head != expected_message_head
-        || payload.messages.is_empty()
-    {
-        return Err("checkpoint context archive boundary does not match its revision".into());
-    }
-    Ok(payload.messages)
 }
 
 async fn materialize_checkpoint_context_archive(
@@ -863,10 +730,7 @@ pub(crate) async fn working_project_for_frame(
                 .await
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "Exploration not found".to_string())?;
-            if matches!(
-                exploration.status,
-                ExplorationStatus::Discarded | ExplorationStatus::Failed
-            ) {
+            if exploration.status == ExplorationStatus::Failed {
                 return Err(coded_error(
                     ERR_NOT_WRITABLE,
                     "this exploration is no longer available",
@@ -924,7 +788,7 @@ pub(crate) async fn require_writable_scope(
             {
                 return Err(coded_error(
                     ERR_MAINLINE_FROZEN,
-                    "the mainline is frozen until an exploration is promoted or every candidate is archived or discarded",
+                    "the mainline is frozen until an exploration is selected or the complete round is abandoned",
                 ));
             }
         }
@@ -946,9 +810,9 @@ pub(crate) async fn require_writable_scope(
     Ok(())
 }
 
-/// Conversation turns are narrower than project mutations. The exploration
-/// source transcript stays immutable, while unrelated mainline conversations
-/// may continue under a read-only project-tool gate.
+/// A live exploration round owns the project mainline. Its exact source
+/// transcript is immutable. Other ordinary conversations may continue to
+/// chat, but return `true` so their project-mutating tools are withheld.
 pub(crate) async fn conversation_project_write_locked(
     store: &Store,
     scope: &StateScope,
@@ -964,7 +828,7 @@ pub(crate) async fn conversation_project_write_locked(
                 {
                     return Err(coded_error(
                         ERR_MAINLINE_FROZEN,
-                        "the exploration source conversation is frozen until an exploration is promoted or every candidate is archived or discarded",
+                        "the exploration source mainline is frozen until the round is resolved",
                     ));
                 }
             }
@@ -991,15 +855,16 @@ pub(crate) async fn reject_private_exploration_project_mutation(
         .map_err(|error| error.to_string())?
     {
         return Err(format!(
-            "exploration_project_mutation_blocked: {action} is unavailable while this project has active or archived private explorations."
+            "exploration_project_mutation_blocked: {action} is unavailable while this project has an unresolved exploration round."
         ));
     }
     Ok(())
 }
 
-/// Starts a candidate from one immutable checkpoint while holding the project
-/// write lock. This closes the gap between checkpoint creation and the first
-/// exploration becoming the owner of the mainline.
+/// Starts the first candidate under the project's exclusive activity lock so
+/// its snapshot cannot race project writes. Later candidates use a shared lock,
+/// allowing sibling exploration turns to keep running. The short creation gate
+/// makes every candidate in the round reuse one immutable baseline.
 #[tauri::command]
 pub(crate) async fn start_exploration(
     state: State<'_, AppState>,
@@ -1019,7 +884,20 @@ pub(crate) async fn start_exploration(
     if owner.project_id() != active.id || !matches!(owner, StateScope::Mainline { .. }) {
         return Err("Source conversation does not belong to the active mainline".into());
     }
-    let _activity = state.begin_project_exclusive_activity(&active.id)?;
+    let _creation = state.begin_exploration_creation(&active.id).await;
+    let round_already_active = state
+        .store
+        .mainline_frame_is_frozen(&source_frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let (_shared_activity, _exclusive_activity) = if round_already_active {
+        (Some(state.begin_project_activity(&active.id)?), None)
+    } else {
+        (
+            None,
+            Some(state.begin_project_exclusive_activity(&active.id)?),
+        )
+    };
     if state
         .store
         .project_has_current_exploration_for_other_source(&active.id, &source_frame_id)
@@ -1027,7 +905,7 @@ pub(crate) async fn start_exploration(
         .map_err(|error| error.to_string())?
     {
         return Err(coded_error(
-            ERR_MAINLINE_FROZEN,
+            ERR_ROUND_ACTIVE,
             "finish the current exploration round before starting from another conversation",
         ));
     }
@@ -1054,31 +932,6 @@ pub(crate) async fn start_exploration(
     state.set_active(window.label(), project);
     state.set_active_frame(window.label(), Some(exploration.frame_id.clone()));
     Ok(exploration)
-}
-
-#[tauri::command]
-pub(crate) async fn list_project_state_revisions(
-    state: State<'_, AppState>,
-    window: WebviewWindow,
-    frame_id: String,
-    turn_start: i64,
-    turn_end: i64,
-) -> Result<Vec<ProjectStateRevisionSummary>, String> {
-    let scope = state
-        .store
-        .frame_state_scope(&frame_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| coded_error(ERR_HISTORY_UNAVAILABLE, "conversation not found"))?;
-    let active = state.active(window.label());
-    if scope.project_id() != active.id || !matches!(scope, StateScope::Mainline { .. }) {
-        return Ok(Vec::new());
-    }
-    state
-        .store
-        .list_project_state_revision_summaries(&frame_id, turn_start, turn_end)
-        .await
-        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1112,173 +965,157 @@ pub(crate) async fn open_exploration(
     Ok(exploration)
 }
 
+/// Explicitly resolve the current round without selecting a winner. The
+/// original mainline stays untouched; every candidate scope is purged before
+/// the family generation advances and releases the freeze.
 #[tauri::command]
-pub(crate) async fn archive_exploration(
+pub(crate) async fn abandon_exploration_round(
     state: State<'_, AppState>,
     terminals: State<'_, crate::terminal_sessions::TerminalManager>,
-    exploration_id: String,
-) -> Result<Exploration, String> {
-    let exploration = state
+    window: WebviewWindow,
+    source_frame_id: String,
+) -> Result<(), String> {
+    let owner = state
         .store
-        .get_exploration(&exploration_id)
+        .frame_state_scope(&source_frame_id)
         .await
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Exploration not found".to_string())?;
-    let checkpoint = state
+        .ok_or_else(|| "Mainline conversation not found".to_string())?;
+    let StateScope::Mainline { project_id } = owner else {
+        return Err("Only a mainline conversation can abandon an exploration round".into());
+    };
+    let summaries = state
         .store
-        .get_exploration_checkpoint(&exploration.checkpoint_id)
+        .list_project_explorations(&project_id)
         .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| coded_error(ERR_HISTORY_UNAVAILABLE, "checkpoint not found"))?;
-    let running_frames = state.running_turns.lock().await.clone();
-    for frame_id in &running_frames {
-        if matches!(
-            state
+        .map_err(|error| error.to_string())?;
+    let selected = summaries
+        .iter()
+        .find(|summary| summary.source_frame_id == source_frame_id)
+        .map(|summary| summary.exploration.clone())
+        .ok_or_else(|| "No current exploration round belongs to this mainline".to_string())?;
+    let candidates = state
+        .store
+        .list_exploration_round_candidates(&selected.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let workspace_backend = PersistentExplorationWorkspace::new(state.app_data.clone());
+    let mut snapshots = Vec::new();
+    let mut context_archives = Vec::new();
+    for candidate in &candidates {
+        if let Some(checkpoint) = state
+            .store
+            .get_exploration_checkpoint(&candidate.checkpoint_id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            if let Ok(snapshot) = workspace_backend.load_snapshot(&checkpoint.workspace_snapshot_id)
+            {
+                snapshots.push(snapshot);
+            }
+            if let Some(archive) = state
                 .store
-                .frame_state_scope(frame_id)
+                .get_context_archive(&checkpoint.context_archive_id)
                 .await
-                .map_err(|error| error.to_string())?,
-            Some(StateScope::Exploration {
-                exploration_id: running,
-                ..
-            }) if running == exploration_id
-        ) {
-            return Err(coded_error(
-                ERR_SOURCE_BUSY,
-                "wait for exploration turns to finish before archiving",
-            ));
+                .map_err(|error| error.to_string())?
+            {
+                if !context_archives
+                    .iter()
+                    .any(|existing: &ContextArchiveRecord| existing.id == archive.id)
+                {
+                    context_archives.push(archive);
+                }
+            }
         }
     }
-    let _activity = state.begin_project_exclusive_activity(&checkpoint.project_id)?;
-    if terminals.has_running(&checkpoint.project_id, &exploration_id) {
+    let _exclusive = state.begin_project_exclusive_activity(&project_id)?;
+
+    let running_frames = state.running_turns.lock().await.clone();
+    if running_frames.contains(&source_frame_id)
+        || candidates
+            .iter()
+            .any(|candidate| running_frames.contains(&candidate.frame_id))
+    {
         return Err(coded_error(
             ERR_SOURCE_BUSY,
-            "close the exploration terminal before archiving",
+            "wait for mainline and exploration turns to finish before abandoning the round",
+        ));
+    }
+    crate::exploration_promotion::ensure_no_queued_turns(
+        state.inner(),
+        std::iter::once(&source_frame_id)
+            .chain(candidates.iter().map(|candidate| &candidate.frame_id)),
+    )
+    .await?;
+    if terminals.has_running(&project_id, MAINLINE_SCOPE_KEY)
+        || candidates
+            .iter()
+            .any(|candidate| terminals.has_running(&project_id, &candidate.id))
+    {
+        return Err(coded_error(
+            ERR_SOURCE_BUSY,
+            "close mainline and exploration terminals before abandoning the round",
         ));
     }
     if state
         .store
-        .exploration_has_active_runs(&exploration_id)
+        .project_has_active_runs(&project_id)
         .await
         .map_err(|error| error.to_string())?
+        || futures_util::future::try_join_all(candidates.iter().map(|candidate| async {
+            state
+                .store
+                .exploration_has_active_runs(&candidate.id)
+                .await
+                .map_err(|error| error.to_string())
+        }))
+        .await?
+        .into_iter()
+        .any(|active| active)
     {
         return Err(coded_error(
             ERR_ACTIVE_RUN,
-            "finish or cancel exploration Runs before archiving",
+            "finish or cancel mainline and exploration Runs before abandoning the round",
         ));
     }
-    if !state
-        .store
-        .transition_exploration(
-            &exploration_id,
-            ExplorationStatus::Active,
-            ExplorationStatus::Archived,
-        )
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        return Err("Exploration is not active".into());
-    }
-    state
-        .store
-        .get_exploration(&exploration_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Exploration not found".to_string())
-}
 
-#[tauri::command]
-pub(crate) async fn restore_exploration(
-    state: State<'_, AppState>,
-    terminals: State<'_, crate::terminal_sessions::TerminalManager>,
-    exploration_id: String,
-) -> Result<Exploration, String> {
-    let exploration = state
-        .store
-        .get_exploration(&exploration_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Exploration not found".to_string())?;
-    if exploration.status != ExplorationStatus::Archived {
-        return Err("Exploration is not archived".into());
-    }
-    let checkpoint = state
-        .store
-        .get_exploration_checkpoint(&exploration.checkpoint_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| coded_error(ERR_HISTORY_UNAVAILABLE, "checkpoint not found"))?;
-    let _activity = state.begin_project_exclusive_activity(&checkpoint.project_id)?;
-    if state
-        .store
-        .project_has_current_exploration_for_other_source(
-            &checkpoint.project_id,
-            &checkpoint.source_frame_id,
-        )
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        return Err(coded_error(
-            ERR_MAINLINE_FROZEN,
-            "finish the current exploration round before restoring this candidate",
-        ));
-    }
-    if terminals.has_running(&checkpoint.project_id, MAINLINE_SCOPE_KEY) {
-        return Err(coded_error(
-            ERR_SOURCE_BUSY,
-            "close the mainline terminal before restoring an exploration",
-        ));
-    }
-    let family = state
-        .store
-        .get_exploration_family(&checkpoint.family_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| coded_error(ERR_HISTORY_UNAVAILABLE, "exploration family not found"))?;
-    let message_head = state
-        .store
-        .frame_message_head(&checkpoint.source_frame_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    let ui_event_head = state
-        .store
-        .frame_ui_event_head(&checkpoint.source_frame_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    let state_generation = state
-        .store
-        .project_state_generation(&checkpoint.project_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    if family.mainline_frame_id != checkpoint.source_frame_id
-        || family.generation != checkpoint.source_family_generation
-        || message_head != checkpoint.source_frame_head_seq
-        || ui_event_head != checkpoint.source_ui_event_seq
-        || state_generation != checkpoint.source_state_generation
-    {
-        return Err(coded_error(
-            ERR_HISTORY_UNAVAILABLE,
-            "this exploration belongs to an older mainline and cannot be restored",
-        ));
-    }
-    if !state
-        .store
-        .transition_exploration(
-            &exploration_id,
-            ExplorationStatus::Archived,
-            ExplorationStatus::Active,
-        )
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        return Err("Exploration is not archived".into());
+    for candidate in &candidates {
+        state
+            .runtime_manager
+            .stop_scope(&project_id, &candidate.id)
+            .await;
+        terminals.stop_scope(&project_id, &candidate.id);
     }
     state
         .store
-        .get_exploration(&exploration_id)
+        .abandon_exploration_round(&selected.id)
         .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Exploration not found".to_string())
+        .map_err(|error| error.to_string())?;
+    {
+        let mut sessions = state.sessions.lock().await;
+        for candidate in &candidates {
+            sessions.remove(&candidate.frame_id);
+        }
+    }
+    if let Ok(mut allowed) = state.full_permission_sessions.write() {
+        for candidate in &candidates {
+            allowed.remove(&candidate.frame_id);
+        }
+    }
+    for candidate in &candidates {
+        crate::approval_commands::cancel_pending_confirmation(&state, &candidate.frame_id);
+        state.remove_notification_window(&candidate.frame_id);
+    }
+    crate::exploration_promotion::ExplorationPromotionService::new(
+        state.store.clone(),
+        state.app_data.clone(),
+    )
+    .dispose_resolved_round_workspaces(&candidates, &snapshots, &context_archives)
+    .await;
+    let (project, _, _) = crate::project_commands::load_active_project(&state, &project_id).await?;
+    state.set_active(window.label(), project);
+    state.set_active_frame(window.label(), Some(source_frame_id));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1340,6 +1177,55 @@ mod tests {
             .await
             .unwrap();
         (ExplorationService::new(store, app_data), base, project)
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_candidates_share_one_checkpoint() {
+        let (service, base, _) = fixture("concurrent_create").await;
+        let locks = Arc::new(crate::ProjectActivityLocks::default());
+
+        let create = |name: &'static str| {
+            let service = service.clone();
+            let locks = locks.clone();
+            tokio::spawn(async move {
+                let _creation = locks.exploration_creation("p").lock_owned().await;
+                let round_already_active = service
+                    .store
+                    .mainline_frame_is_frozen("main")
+                    .await
+                    .unwrap();
+                let (_shared_activity, _exclusive_activity) = if round_already_active {
+                    (Some(locks.project("p").read_owned().await), None)
+                } else {
+                    (None, Some(locks.project("p").write_owned().await))
+                };
+                let checkpoint = service.create_checkpoint("p", "main").await.unwrap();
+                service
+                    .create_exploration(&checkpoint.id, name)
+                    .await
+                    .unwrap()
+            })
+        };
+        let (first, second) = tokio::join!(create("First"), create("Second"));
+        let first = first.unwrap();
+        let second = second.unwrap();
+
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.frame_id, second.frame_id);
+        assert_ne!(first.workspace_dir, second.workspace_dir);
+        assert_eq!(first.checkpoint_id, second.checkpoint_id);
+        assert_eq!(
+            service
+                .store
+                .list_exploration_round_candidates(&first.id)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[tokio::test]
@@ -1422,34 +1308,31 @@ mod tests {
             )
             .await
             .unwrap();
-        crate::project_state_revisions::record_completed_mainline_turn(
-            &service.store,
-            &service.app_data,
-            "p",
-            "main",
-            &project,
-            None,
-        )
-        .await
-        .unwrap()
-        .unwrap();
         let checkpoint = service.create_checkpoint("p", "main").await.unwrap();
         let first = service
             .create_exploration(&checkpoint.id, "First")
             .await
             .unwrap();
-        let frozen = require_writable_scope(&service.store, &StateScope::mainline("p"))
+        let nested_error = service
+            .create_checkpoint("p", &first.frame_id)
             .await
             .unwrap_err();
-        assert!(frozen.starts_with(ERR_MAINLINE_FROZEN));
-        let source_frozen = conversation_project_write_locked(
+        assert!(nested_error
+            .contains("checkpoints must be created from the current mainline conversation"));
+        assert!(
+            require_writable_scope(&service.store, &StateScope::mainline("p"))
+                .await
+                .unwrap_err()
+                .starts_with(ERR_MAINLINE_FROZEN)
+        );
+        assert!(conversation_project_write_locked(
             &service.store,
             &StateScope::mainline("p"),
             Some("main"),
         )
         .await
-        .unwrap_err();
-        assert!(source_frozen.starts_with(ERR_MAINLINE_FROZEN));
+        .unwrap_err()
+        .starts_with(ERR_MAINLINE_FROZEN));
         assert!(conversation_project_write_locked(
             &service.store,
             &StateScope::mainline("p"),
@@ -1472,6 +1355,21 @@ mod tests {
         .unwrap());
         let repeated_checkpoint = service.create_checkpoint("p", "main").await.unwrap();
         assert_eq!(repeated_checkpoint.id, checkpoint.id);
+        std::fs::write(
+            project.join("external-after-freeze.txt"),
+            b"external change",
+        )
+        .unwrap();
+        let frozen_checkpoint = service.create_checkpoint("p", "main").await.unwrap();
+        assert_eq!(frozen_checkpoint.id, checkpoint.id);
+        let frozen_snapshot = service
+            .workspace_backend()
+            .load_snapshot(&frozen_checkpoint.workspace_snapshot_id)
+            .unwrap();
+        assert!(!frozen_snapshot
+            .entries
+            .iter()
+            .any(|entry| entry.path == "external-after-freeze.txt"));
         let second = service
             .create_exploration(&repeated_checkpoint.id, "Second")
             .await
@@ -1861,7 +1759,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn checkpoint_requires_completed_native_head_and_no_active_run() {
+    async fn checkpoint_accepts_completion_tool_head_and_rejects_active_run() {
         let (service, base, _) = fixture("guards").await;
         service
             .store
@@ -1875,9 +1773,27 @@ mod tests {
             .starts_with(ERR_SOURCE_INCOMPLETE));
         service
             .store
-            .append_message("main", 4, &wisp_llm::Message::assistant("done"))
+            .append_message(
+                "main",
+                4,
+                &wisp_llm::Message::tool("complete-1", "attempt_completion", "completed analysis"),
+            )
             .await
             .unwrap();
+        service
+            .store
+            .append_message(
+                "main",
+                5,
+                &wisp_llm::Message::tool(
+                    "skipped-1",
+                    "shell",
+                    "Skipped because attempt_completion ended the turn.",
+                ),
+            )
+            .await
+            .unwrap();
+        service.create_checkpoint("p", "main").await.unwrap();
         let mut run = wisp_store::RunRecord::new("run", "p", "local", "Run", "command");
         run.frame_id = Some("main".into());
         run.status = wisp_store::RunStatus::Running;
