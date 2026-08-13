@@ -34,8 +34,11 @@
 
 set -e
 
+# Note: readlink -f resolves the ~/.cargo/bin/wasm-bindgen symlink back to the
+# repo, so SCRIPT_DIR is the repo's scripts/ dir. The real cli lives next to
+# the symlink in ~/.cargo/bin (per the install steps above), not in SCRIPT_DIR.
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-REAL="${WASM_BINDGEN_REAL:-$SCRIPT_DIR/wasm-bindgen.real}"
+REAL="${WASM_BINDGEN_REAL:-$HOME/.cargo/bin/wasm-bindgen.real}"
 STRIP="${WASM_BINDGEN_STRIP:-$SCRIPT_DIR/strip_reference_types.py}"
 
 # Find the positional input wasm argument (last non-flag arg).
