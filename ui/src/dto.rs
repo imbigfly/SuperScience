@@ -1717,8 +1717,8 @@ impl Default for Settings {
         Self {
             provider: "openai".into(),
             api_url: "https://api.deepseek.com".into(),
-            model: "deepseek-v4-pro".into(),
-            label: "deepseek-v4-pro".into(),
+            model: "deepseek-v4-flash".into(),
+            label: "deepseek-v4-flash".into(),
             has_api_key: false,
             locale: Locale::En.code().into(),
             workspace_dir: String::new(),

@@ -213,7 +213,7 @@ The `wisp-science` headless CLI uses environment variables and supports API prov
 ```powershell
 $env:WISP_PROVIDER = "openai"           # openai, openai_responses, or anthropic
 $env:WISP_API_URL  = "https://api.deepseek.com"
-$env:WISP_MODEL    = "deepseek-v4-pro"
+$env:WISP_MODEL    = "deepseek-v4-flash"
 $env:WISP_API_KEY  = "<your provider key>"
 cargo run -p wisp-cli
 ```

@@ -409,7 +409,7 @@ macOS / Linux：
 ```bash
 export WISP_PROVIDER="openai"            # openai / openai_responses / anthropic
 export WISP_API_URL="https://api.deepseek.com"
-export WISP_MODEL="deepseek-v4-pro"
+export WISP_MODEL="deepseek-v4-flash"
 export WISP_API_KEY="<your-provider-key>"
 ```
 
@@ -418,7 +418,7 @@ Windows PowerShell：
 ```powershell
 $env:WISP_PROVIDER = "openai"
 $env:WISP_API_URL  = "https://api.deepseek.com"
-$env:WISP_MODEL    = "deepseek-v4-pro"
+$env:WISP_MODEL    = "deepseek-v4-flash"
 $env:WISP_API_KEY  = "<your-provider-key>"
 ```
 
