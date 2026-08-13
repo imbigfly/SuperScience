@@ -2508,6 +2508,7 @@ button.workflow-graph-port.output.active {
 .memory-empty-icon { display: inline-flex; color: var(--text-faint); }
 .memory-empty-icon svg { width: 20px; height: 20px; }
 .memory-global-timing { margin: -6px 2px 8px; padding: 0; }
+.memory-global-heading .settings-add-btn { margin-left: auto; padding: 4px 10px; font-size: 12px; }
 .memory-clear-btn {
   font: inherit;
   font-size: 13px;

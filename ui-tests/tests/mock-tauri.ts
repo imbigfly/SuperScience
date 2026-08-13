@@ -3720,6 +3720,14 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               scope: String(arg("scope") ?? "project"),
             };
           }
+          case "create_global_memory": {
+            const memory = {
+              id: `global-memory-${globalMemories.length + 1}`,
+              content: String(arg("content") ?? ""),
+            };
+            globalMemories.unshift(memory);
+            return memory;
+          }
           case "update_global_memory": {
             const existing = globalMemories.find(
               (memory) => memory.id === String(arg("id") ?? ""),

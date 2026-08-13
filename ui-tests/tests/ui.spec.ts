@@ -692,6 +692,27 @@ test("Memory settings show and forget global habits", async ({ page }) => {
   await expect(page.getByText(/older chat history may still affect this session/)).toBeVisible();
 });
 
+test("Memory settings can add a global habit", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Memory");
+
+  const global = page.getByTestId("global-memories");
+  await expect(global).toContainText("Prefer SI units across projects.");
+  await page.getByTestId("global-memory-add").click();
+  const editor = page.getByTestId("global-memory-editor");
+  await expect(editor.getByRole("textbox", { name: "Memory" })).toHaveValue("");
+  await editor.getByRole("textbox", { name: "Memory" }).fill("Always plot with ggplot2.");
+  await editor.getByRole("button", { name: "Save global habit" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "create_global_memory")).toMatchObject({
+    content: "Always plot with ggplot2.",
+  });
+  await expect(global).toContainText("Always plot with ggplot2.");
+  await expect(global.locator(".global-memory-content").first()).toHaveText(
+    "Always plot with ggplot2.",
+  );
+  await expect(page.getByText(/Global habit added/)).toBeVisible();
+});
+
 test("Memory settings can browse another project's notes without switching workspace", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Memory");
