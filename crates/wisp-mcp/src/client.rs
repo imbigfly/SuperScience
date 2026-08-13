@@ -6,11 +6,12 @@
 //! `tools/call`. Each remote tool is exposed to the agent as a
 //! [`wisp_tools::Tool`] via [`McpTool`].
 
+use crate::process_tree::ProcessTree;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout};
@@ -19,6 +20,10 @@ use tokio::sync::Mutex;
 /// Hard cap on a single stdio JSON-RPC exchange, matching the HTTP transport's
 /// request timeout. Without it a hung server blocks the agent turn forever.
 const STDIO_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const STDIO_SHUTDOWN_EOF_GRACE: std::time::Duration = std::time::Duration::from_millis(100);
+const STDIO_SHUTDOWN_TERM_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+const STDIO_SHUTDOWN_KILL_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+const STDIO_SHUTDOWN_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Path to the vendored bio-tools MCP servers bundled with the app.
 pub fn bundled_bio_tools_dir() -> Option<PathBuf> {
@@ -121,9 +126,13 @@ struct JsonRpcError {
 
 enum Transport {
     Stdio {
-        stdin: Arc<Mutex<ChildStdin>>,
+        stdin: Arc<Mutex<Option<ChildStdin>>>,
         stdout: Arc<Mutex<BufReader<ChildStdout>>>,
-        child: Mutex<tokio::process::Child>,
+        child: Mutex<Option<tokio::process::Child>>,
+        process_tree: ProcessTree,
+        closing: AtomicBool,
+        terminated: AtomicBool,
+        shutdown_lock: Mutex<()>,
         next_id: AtomicU64,
     },
     Http(HttpTransport),
@@ -169,6 +178,37 @@ pub struct McpClient {
     transport: Transport,
 }
 
+struct RequestCancellation<'a> {
+    process_tree: &'a ProcessTree,
+    child: &'a Mutex<Option<tokio::process::Child>>,
+    closing: &'a AtomicBool,
+    armed: bool,
+}
+
+impl RequestCancellation<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RequestCancellation<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.closing.store(true, Ordering::SeqCst);
+            if let Err(error) = self.process_tree.terminate_forcefully() {
+                tracing::warn!(%error, "failed to terminate cancelled MCP process tree");
+            }
+            // No await is legal in Drop. Taking the Child invokes the existing
+            // kill_on_drop guard and hands Unix reaping to Tokio's orphan
+            // queue. If explicit shutdown already owns this lock, that path is
+            // responsible for the bounded wait/reap instead.
+            if let Ok(mut child) = self.child.try_lock() {
+                child.take();
+            }
+        }
+    }
+}
+
 fn bio_tools_command(
     python: &std::path::Path,
     run_server: &std::path::Path,
@@ -199,7 +239,12 @@ impl McpClient {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         wisp_tools::process::hide_console_async(&mut cmd);
+        ProcessTree::configure(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| anyhow!("spawn MCP server: {e}"))?;
+        let process_tree = ProcessTree::attach(&child).map_err(|error| {
+            let _ = child.start_kill();
+            anyhow!("attach MCP server process tree: {error}")
+        })?;
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
         let stderr = child.stderr.take();
@@ -232,9 +277,13 @@ impl McpClient {
 
         let client = Self {
             transport: Transport::Stdio {
-                stdin: Arc::new(Mutex::new(stdin)),
+                stdin: Arc::new(Mutex::new(Some(stdin))),
                 stdout: Arc::new(Mutex::new(BufReader::new(stdout))),
-                child: Mutex::new(child),
+                child: Mutex::new(Some(child)),
+                process_tree,
+                closing: AtomicBool::new(false),
+                terminated: AtomicBool::new(false),
+                shutdown_lock: Mutex::new(()),
                 next_id: AtomicU64::new(1),
             },
         };
@@ -256,9 +305,7 @@ impl McpClient {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let tail = stderr_tail.lock().await.clone();
             let tail = tail.trim();
-            if let Transport::Stdio { child, .. } = &client.transport {
-                let _ = child.lock().await.kill().await;
-            }
+            let _ = client.shutdown().await;
             if tail.is_empty() {
                 return Err(e);
             }
@@ -318,9 +365,16 @@ impl McpClient {
             Transport::Stdio {
                 stdin,
                 stdout,
+                child,
+                process_tree,
+                closing,
+                terminated,
+                shutdown_lock,
                 next_id,
-                ..
             } => {
+                if closing.load(Ordering::SeqCst) {
+                    return Err(anyhow!("MCP stdio connection is shutting down"));
+                }
                 let id = next_id.fetch_add(1, Ordering::SeqCst);
                 let req = JsonRpcReq {
                     jsonrpc: "2.0",
@@ -333,6 +387,9 @@ impl McpClient {
                     // send
                     {
                         let mut w = stdin.lock().await;
+                        let w = w
+                            .as_mut()
+                            .ok_or_else(|| anyhow!("MCP server stdin is closed"))?;
                         w.write_all(val.to_string().as_bytes()).await?;
                         w.write_all(b"\n").await?;
                         w.flush().await?;
@@ -359,12 +416,41 @@ impl McpClient {
                         }
                     }
                 };
+                let mut cancellation = RequestCancellation {
+                    process_tree,
+                    child,
+                    closing,
+                    armed: true,
+                };
                 match tokio::time::timeout(STDIO_REQUEST_TIMEOUT, exchange).await {
-                    Ok(res) => res,
-                    Err(_) => Err(anyhow!(
-                        "MCP stdio request '{method}' timed out after {}s",
-                        STDIO_REQUEST_TIMEOUT.as_secs()
-                    )),
+                    Ok(Ok(result)) => {
+                        cancellation.disarm();
+                        Ok(result)
+                    }
+                    Ok(Err(error)) => {
+                        cancellation.disarm();
+                        Err(error)
+                    }
+                    Err(_) => {
+                        cancellation.disarm();
+                        let cleanup = shutdown_stdio(
+                            stdin,
+                            child,
+                            process_tree,
+                            closing,
+                            terminated,
+                            shutdown_lock,
+                        )
+                        .await;
+                        let message = format!(
+                            "MCP stdio request '{method}' timed out after {}s",
+                            STDIO_REQUEST_TIMEOUT.as_secs()
+                        );
+                        match cleanup {
+                            Ok(()) => Err(anyhow!(message)),
+                            Err(error) => Err(anyhow!("{message}; shutdown failed: {error}")),
+                        }
+                    }
                 }
             }
             Transport::Http(h) => {
@@ -433,6 +519,9 @@ impl McpClient {
             Transport::Stdio { stdin, .. } => {
                 let val = json!({ "jsonrpc": "2.0", "method": method, "params": params });
                 let mut w = stdin.lock().await;
+                let w = w
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("MCP server stdin is closed"))?;
                 w.write_all(val.to_string().as_bytes()).await?;
                 w.write_all(b"\n").await?;
                 w.flush().await?;
@@ -518,6 +607,149 @@ impl McpClient {
         let run_server = dir.join("run_server.py");
         let cmd = bio_tools_command(python, &run_server, pkg, envs);
         Self::launch_with_command(cmd).await
+    }
+
+    /// Stop this MCP connection and, for stdio transports, its complete child
+    /// process tree. Safe to call repeatedly. Drop remains a forceful safety
+    /// net for owners that cannot await this method.
+    pub async fn shutdown(&self) -> Result<()> {
+        match &self.transport {
+            Transport::Stdio {
+                stdin,
+                child,
+                process_tree,
+                closing,
+                terminated,
+                shutdown_lock,
+                ..
+            } => {
+                shutdown_stdio(
+                    stdin,
+                    child,
+                    process_tree,
+                    closing,
+                    terminated,
+                    shutdown_lock,
+                )
+                .await
+            }
+            Transport::Http(_) => Ok(()),
+        }
+    }
+}
+
+impl Drop for McpClient {
+    fn drop(&mut self) {
+        if let Transport::Stdio {
+            process_tree,
+            closing,
+            ..
+        } = &self.transport
+        {
+            closing.store(true, Ordering::SeqCst);
+            let _ = process_tree.terminate_forcefully();
+        }
+    }
+}
+
+async fn shutdown_stdio(
+    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    child: &Mutex<Option<tokio::process::Child>>,
+    process_tree: &ProcessTree,
+    closing: &AtomicBool,
+    terminated: &AtomicBool,
+    shutdown_lock: &Mutex<()>,
+) -> Result<()> {
+    closing.store(true, Ordering::SeqCst);
+    let _shutdown = match tokio::time::timeout(STDIO_SHUTDOWN_LOCK_WAIT, shutdown_lock.lock()).await
+    {
+        Ok(guard) => guard,
+        Err(_) => {
+            // A prior shutdown normally completes within 2.6s. Never let a
+            // stalled caller make App exit unbounded; the tree-wide kill is
+            // synchronous even though this path cannot own/reap `child`.
+            process_tree.terminate_forcefully()?;
+            return Err(anyhow!("timed out waiting for concurrent MCP shutdown"));
+        }
+    };
+    if terminated.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    // A cancelled request may still be unwinding while holding this mutex, and
+    // a blocked write must never make App exit unbounded. Close stdin only when
+    // immediately available; otherwise continue to the bounded tree signals.
+    if let Ok(mut stdin) = stdin.try_lock() {
+        stdin.take();
+    }
+    let mut child = child.lock().await;
+
+    #[cfg(unix)]
+    {
+        signal_unix_tree_before_reap(process_tree).await?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        if wait_for_process_tree(&mut child, process_tree, STDIO_SHUTDOWN_EOF_GRACE).await? {
+            process_tree.disarm();
+            terminated.store(true, Ordering::SeqCst);
+            return Ok(());
+        }
+        process_tree.terminate_gracefully()?;
+        if wait_for_process_tree(&mut child, process_tree, STDIO_SHUTDOWN_TERM_GRACE).await? {
+            process_tree.disarm();
+            terminated.store(true, Ordering::SeqCst);
+            return Ok(());
+        }
+        process_tree.terminate_forcefully()?;
+    }
+
+    if !wait_for_process_tree(&mut child, process_tree, STDIO_SHUTDOWN_KILL_WAIT).await? {
+        // Keep the FORCE_SENT state: it prohibits any later numeric PGID
+        // signal while still allowing a repeated shutdown to poll/reap the
+        // actual tree instead of reporting a false success.
+        return Err(anyhow!(
+            "MCP server process tree did not exit after forceful shutdown"
+        ));
+    }
+    process_tree.disarm();
+    terminated.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn signal_unix_tree_before_reap(process_tree: &ProcessTree) -> Result<()> {
+    // This helper deliberately cannot access Child. Keeping the process-group
+    // leader's PID occupied as a zombie, if it exits during either grace
+    // period, makes numeric PGID reuse impossible before SIGKILL. Once the
+    // force state is recorded, ProcessTree will never signal that PGID again
+    // and the caller may safely reap/poll.
+    tokio::time::sleep(STDIO_SHUTDOWN_EOF_GRACE).await;
+    process_tree.terminate_gracefully()?;
+    tokio::time::sleep(STDIO_SHUTDOWN_TERM_GRACE).await;
+    process_tree.terminate_forcefully()?;
+    Ok(())
+}
+
+async fn wait_for_process_tree(
+    child: &mut Option<tokio::process::Child>,
+    process_tree: &ProcessTree,
+    timeout: std::time::Duration,
+) -> Result<bool> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(child) = child.as_mut() {
+            let _ = child.try_wait()?;
+        }
+        if !process_tree.is_running()? {
+            child.take();
+            return Ok(true);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
 

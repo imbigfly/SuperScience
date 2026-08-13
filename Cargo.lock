@@ -7214,11 +7214,13 @@ version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "libc",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
  "wisp-llm",
  "wisp-paths",
  "wisp-tools",
