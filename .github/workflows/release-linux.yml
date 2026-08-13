@@ -124,7 +124,7 @@ jobs:
       - name: Verify both architectures published deb and AppImage
         run: |
           set -euo pipefail
-          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > assets.txt
+          gh release view "$RELEASE_TAG" -R "${{ github.repository }}" --json assets --jq '.assets[].name' > assets.txt
           cat assets.txt
           debs=$(grep -c '\.deb$' assets.txt || true)
           appimages=$(grep -c '\.AppImage$' assets.txt || true)
