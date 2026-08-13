@@ -922,6 +922,15 @@ test("reasoning effort stays scoped to the current conversation", async ({ page 
   await page.locator('[data-session-id="s-model-a"]').click();
   await page.locator(".model-picker-btn").click();
   await expect(page.locator(".model-menu-effort-select")).toHaveValue("high");
+
+  // "default" clears the override: the session follows the bound profile
+  // (opus-4.8 defaults to max) instead of pinning "provider default".
+  await effort.selectOption("default");
+  await expect.poll(() => lastInvokeArgs(page, "set_session_reasoning_effort")).toMatchObject({
+    sessionId: "s-model-a",
+    effort: "",
+  });
+  await expect(page.locator(".model-menu-effort-select")).toHaveValue("max");
 });
 
 test("Settings Models page can open ACP Agents dialog", async ({ page }) => {

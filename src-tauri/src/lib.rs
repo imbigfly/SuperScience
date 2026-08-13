@@ -1799,7 +1799,7 @@ struct Settings {
     /// Max output tokens per LLM turn. 0 = provider default.
     #[serde(default)]
     max_tokens: u64,
-    /// OpenAI reasoning effort (none/minimal/low/medium/high/xhigh). Empty = provider default.
+    /// Reasoning effort (none/minimal/low/medium/high/xhigh/max/ultra, model-dependent). Empty = provider default.
     #[serde(default)]
     reasoning_effort: String,
     /// LLM HTTP proxy. Empty = follow system/env proxy; `none` = force direct;

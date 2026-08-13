@@ -3052,7 +3052,14 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "set_session_reasoning_effort": {
             const sessionId = String(arg("sessionId") ?? "");
-            sessionReasoningEfforts[sessionId] = String(arg("effort") ?? "");
+            const effort = String(arg("effort") ?? "");
+            // Empty effort clears the override; the session inherits the
+            // bound profile again (mirrors src-tauri models.rs).
+            if (effort === "") {
+              delete sessionReasoningEfforts[sessionId];
+            } else {
+              sessionReasoningEfforts[sessionId] = effort;
+            }
             return null;
           }
           case "get_project_info":
