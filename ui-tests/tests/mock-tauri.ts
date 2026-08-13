@@ -3098,7 +3098,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 builtin: true,
                 managed: true,
                 managed_by: plugin.display_name,
-                dir: "/plugins/motif/skills/motif-for-claude-science",
+                dir: "/plugins/motif/skills/hypothesis-review",
               })),
             ];
           case "reload_skills": {
@@ -3124,7 +3124,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 builtin: true,
                 managed: true,
                 managed_by: plugin.display_name,
-                dir: "/plugins/motif/skills/motif-for-claude-science",
+                dir: "/plugins/motif/skills/hypothesis-review",
               })),
             ];
           }

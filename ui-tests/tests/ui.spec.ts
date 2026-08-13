@@ -6884,6 +6884,7 @@ test("plugin settings diagnose, launch, install, and remove a feature plugin", a
   });
   await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
     message: expect.stringContaining("Its skill guidance is attached to this message"),
+    // The managed Skill fixture lives under the different hypothesis-review slug.
     references: [{ kind: "skill", name: "motif-for-claude-science" }],
   });
   await expect(page.locator(".settings-page")).toHaveCount(0);
