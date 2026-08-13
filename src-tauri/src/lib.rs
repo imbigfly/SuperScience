@@ -7829,6 +7829,7 @@ pub fn run() {
             plugins::remove_plugin,
             seed::list_demos_cmd,
             seed::load_demo_cmd,
+            seed::copy_demo_to_project_cmd,
             approval_commands::confirm_response,
             approval_commands::list_approval_grants,
             approval_commands::get_session_full_permission,

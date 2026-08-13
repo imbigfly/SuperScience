@@ -6769,6 +6769,7 @@ fn App() -> impl IntoView {
         let session_transfer_error = session_transfer_error;
         let project_info = project_info;
         let proj_list = proj_list;
+        let demos = demos;
         let folder_modal = folder_modal;
         let folder_modal_input = folder_modal_input;
         let ui_confirm = ui_confirm;
@@ -7064,6 +7065,44 @@ fn App() -> impl IntoView {
                 }
                 return;
             }
+            if let Some(context_menu::DemoAction::CopyToProject(id)) =
+                context_menu::demo_action(&action, &payload)
+            {
+                let title = demos
+                    .get()
+                    .into_iter()
+                    .find(|demo| demo.id == id)
+                    .map(|demo| demo.title)
+                    .unwrap_or_else(|| id.clone());
+                session_transfer_error.set(None);
+                session_transfer.set(Some(SessionTransfer {
+                    id,
+                    title,
+                    mode: SessionTransferMode::Copy,
+                    target_project_id: String::new(),
+                    from_demo: true,
+                }));
+                spawn_local(async move {
+                    let value = invoke("list_projects", JsValue::UNDEFINED).await;
+                    if let Ok(list) =
+                        serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(value)
+                    {
+                        let default_target = list
+                            .first()
+                            .map(|project| project.id.clone())
+                            .unwrap_or_default();
+                        proj_list.set(list);
+                        session_transfer.update(|transfer| {
+                            if let Some(transfer) = transfer {
+                                if transfer.target_project_id.is_empty() {
+                                    transfer.target_project_id = default_target;
+                                }
+                            }
+                        });
+                    }
+                });
+                return;
+            }
             if let Some(act) = context_menu::session_action(&action, &payload) {
                 match act {
                     context_menu::SessionAction::Open(id) => open_session.call(id),
@@ -7140,6 +7179,7 @@ fn App() -> impl IntoView {
                             title,
                             mode,
                             target_project_id: String::new(),
+                            from_demo: false,
                         }));
                         let active_project_id = project_info
                             .get()
@@ -8119,7 +8159,9 @@ fn App() -> impl IntoView {
         });
     });
 
-    let save_session_transfer = move |_| {
+    let save_session_transfer = {
+        let open_project_transition = open_project_transition;
+        move |_| {
         let Some(transfer) = session_transfer.get() else {
             return;
         };
@@ -8135,6 +8177,36 @@ fn App() -> impl IntoView {
         session_transfer_busy.set(true);
         session_transfer_error.set(None);
         spawn_local(async move {
+            if transfer.from_demo {
+                let args = to_value(&serde_json::json!({
+                    "id": transfer.id,
+                    "targetProjectId": transfer.target_project_id,
+                }))
+                .unwrap();
+                match invoke_checked("copy_demo_to_project", args).await {
+                    Ok(value) => {
+                        let session_id =
+                            serde_wasm_bindgen::from_value::<String>(value).unwrap_or_default();
+                        status.set(tf(
+                            locale.get(),
+                            "session.copy_demo_success",
+                            &[("project", &target_name)],
+                        ));
+                        session_transfer.set(None);
+                        session_transfer_busy.set(false);
+                        if !session_id.is_empty() {
+                            open_project_transition
+                                .call((transfer.target_project_id, Some(session_id)));
+                        }
+                    }
+                    Err(error) => {
+                        session_transfer_error
+                            .set(Some(localize_backend(locale.get(), &js_error_text(error))));
+                        session_transfer_busy.set(false);
+                    }
+                }
+                return;
+            }
             let args = to_value(&serde_json::json!({
                 "id": transfer.id,
                 "targetProjectId": transfer.target_project_id,
@@ -8174,6 +8246,7 @@ fn App() -> impl IntoView {
             }
             session_transfer_busy.set(false);
         });
+        }
     };
 
     let palette_open_session = {
@@ -8850,6 +8923,15 @@ fn App() -> impl IntoView {
             })
             open_library=Callback::new(move |_| show_library.set(true))
             load_demo=Callback::new(load_demo)
+            open_demo_actions=Callback::new(move |(ev, id, title): (web_sys::MouseEvent, String, String)| {
+                ctx_menu.set(Some(context_menu::demo_menu(
+                    ev.client_x() as f64,
+                    ev.client_y() as f64,
+                    &id,
+                    &title,
+                    locale.get(),
+                )));
+            })
             load_session=load_session
             open_exploration=open_exploration
             open_exploration_actions=Callback::new(move |(ev, id, status): (web_sys::MouseEvent, String, String)| {

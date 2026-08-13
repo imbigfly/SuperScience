@@ -171,6 +171,7 @@ button.side-item.ses.selecting { padding-right: 10px; }
 .side-folder:focus-within .folder-actions { opacity: 1; }
 .session-actions:hover, .session-actions:focus-visible,
 .folder-actions:hover, .folder-actions:focus-visible { color: var(--text); background: var(--bg-input); }
+.session-actions svg { width: 14px; height: 14px; }
 .session-actions.selection-hidden { display: none; }
 .side-item.active { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-sm); }
 @keyframes ses-spin { to { transform: rotate(360deg); } }

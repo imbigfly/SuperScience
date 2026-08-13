@@ -46,6 +46,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { id: "manifest_esr1_03_rnaseq", title: "Connect to the remote compute host, locate the FASTQ data for GSE153250" },
     { id: "manifest_esr1_04_downstream", title: "Based on the upstream Counts data from GSE153250, perform transcriptome" },
     { id: "manifest_esr1_05_hypotheses", title: "Based on the Counts data from our study, along with the differential e" },
+    { id: "manifest_memory_01_long_context", title: "Long-context memory demo — compact, then ask what the first answer locked." },
   ];
   const runSummary = (run: any) => {
     const stdout = String(run.stdout_tail ?? "");
@@ -1746,6 +1747,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return demos;
           case "load_demo":
             return demo;
+          case "copy_demo_to_project":
+            return `copied-${String(arg("id") ?? "demo")}`;
           case "load_session":
             if (mockExplorationFlow && String(arg("id") ?? "").startsWith("exploration-")) {
               activeMockFrame = String(arg("id"));
@@ -4709,6 +4712,7 @@ export function parallelMock(): void {
         switch (cmd) {
           case "list_demos": return [];
           case "load_demo": return { id: "x", title: "x", request: "x", response: "x" };
+          case "copy_demo_to_project": return `copied-${String(arg("id") ?? "demo")}`;
           case "load_session": {
             const delay = Number((window as any).__parallelLoadDelayMs ?? 0);
             if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));

@@ -272,6 +272,43 @@ test("Example project shows bundled demos as read-only transcripts", async ({ pa
   expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
 });
 
+test("Example project demos can be copied into a workspace", async ({ page }) => {
+  await page.goto("/");
+  await page.getByText("Example project").click();
+  await expect(page.getByTestId("demo-read-only")).toBeVisible();
+
+  const demo = page.locator(".side-item.ses", { hasText: "Long-context memory demo" });
+  await expect(demo).toBeVisible();
+  await demo.click({ button: "right" });
+  const menu = page.locator(".ctx-menu");
+  await expect(menu.getByRole("button", { name: "Copy to a project…", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(page.getByTestId("demo-read-only")).toBeVisible();
+
+  await demo.click({ button: "right" });
+  await menu.getByRole("button", { name: "Copy to a project…", exact: true }).click();
+  const transfer = page.locator(".session-transfer-modal");
+  await expect(transfer).toBeVisible();
+  await expect(transfer.getByRole("heading", { name: "Copy demo to a project" })).toBeVisible();
+  await expect(transfer.locator("select")).toHaveValue("default");
+  await page.keyboard.press("Escape");
+  await expect(transfer).toHaveCount(0);
+  await expect(page.getByTestId("demo-read-only")).toBeVisible();
+
+  await demo.click({ button: "right" });
+  await page.getByRole("button", { name: "Copy to a project…", exact: true }).click();
+  await page.locator(".session-transfer-modal").getByRole("button", { name: "Copy", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => {
+    const calls = ((window as any).__sendInvokeLog ?? []).filter((call: any) => call.cmd === "copy_demo_to_project");
+    const args = calls.at(-1)?.args;
+    return args instanceof Map ? Object.fromEntries(args) : args;
+  })).toMatchObject({
+    id: "manifest_memory_01_long_context",
+    targetProjectId: "default",
+  });
+});
+
 test("send streams a mocked assistant reply", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await enterApp(page);

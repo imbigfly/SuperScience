@@ -29,12 +29,13 @@ impl SessionTransferMode {
 }
 
 #[derive(Clone)]
-pub(crate) struct SessionTransfer {
-    pub(crate) id: String,
-    pub(crate) title: String,
-    pub(crate) mode: SessionTransferMode,
-    pub(crate) target_project_id: String,
-}
+    pub(crate) struct SessionTransfer {
+        pub(crate) id: String,
+        pub(crate) title: String,
+        pub(crate) mode: SessionTransferMode,
+        pub(crate) target_project_id: String,
+        pub(crate) from_demo: bool,
+    }
 
 #[derive(Clone)]
 pub(crate) enum UiConfirm {

@@ -200,6 +200,16 @@ Keep `--parallel 1` for an initial smoke so rate limits are comparable. Add
 and execute every case through the production loop with a scripted provider;
 they never require an API key.
 
+The same long-context notebook is also bundled as an Example-project demo
+(`seed/manifest_memory_01_long_context.json`). Open **Example project**,
+right-click **Long-context memory demo**, and choose **Copy to a project…**
+to materialize the transcript (and `.wisp/memory` notes) in a real workspace.
+The opening assistant turn is the only place that locks `QC_THRESHOLD=0.047`
+and `COHORT=WISP-HCC-2024-G`; later turns are long filler so a manual
+`/compact` folds that first answer out of the protected tail. Continue with a
+live model: `/compact`, then ask what the first answer locked, or ask about
+study `TS-999-QX` to exercise `search_memory`.
+
 ### Custom suites
 
 Pass a YAML or JSON file with `--suite`. The top-level schema is

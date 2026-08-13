@@ -41,14 +41,17 @@ pub(crate) fn SessionTransferOverlay(
                 .get()
                 .map(|project| project.id)
                 .unwrap_or_default();
+            let include_active = transfer.from_demo;
             let targets = proj_list
                 .get()
                 .into_iter()
-                .filter(|project| project.id != active_project_id)
+                .filter(|project| include_active || project.id != active_project_id)
                 .collect::<Vec<_>>();
             let has_target = !targets.is_empty() && !transfer.target_project_id.is_empty();
             let target_project_id = transfer.target_project_id.clone();
-            let title_key = if transfer.mode == SessionTransferMode::Copy {
+            let title_key = if transfer.from_demo {
+                "session.copy_demo_title"
+            } else if transfer.mode == SessionTransferMode::Copy {
                 "session.copy_title"
             } else {
                 "session.move_title"
@@ -58,11 +61,21 @@ pub(crate) fn SessionTransferOverlay(
             } else {
                 "session.move_action"
             };
+            let hint_key = if transfer.from_demo {
+                "session.copy_demo_hint"
+            } else {
+                "session.transfer_hint"
+            };
+            let empty_key = if transfer.from_demo {
+                "session.no_target_project_demo"
+            } else {
+                "session.no_target_project"
+            };
             view! {
             <div class="overlay">
                 <div class="modal session-transfer-modal">
                     <h2>{move || t(locale.get(), title_key)}</h2>
-                    <div class="hint">{tf(locale.get(), "session.transfer_hint", &[("title", &transfer.title)])}</div>
+                    <div class="hint">{tf(locale.get(), hint_key, &[("title", &transfer.title)])}</div>
                     <label>
                         {move || t(locale.get(), "session.target_project")}
                         <select
@@ -84,7 +97,7 @@ pub(crate) fn SessionTransferOverlay(
                         </select>
                     </label>
                     {(!has_target).then(|| view! {
-                        <div class="hint session-transfer-error">{move || t(locale.get(), "session.no_target_project")}</div>
+                        <div class="hint session-transfer-error">{move || t(locale.get(), empty_key)}</div>
                     })}
                     {move || session_transfer_error.get().map(|error| view! {
                         <div class="hint session-transfer-error">{error}</div>
