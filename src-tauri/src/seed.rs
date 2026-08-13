@@ -534,37 +534,49 @@ mod tests {
             memory.items.len()
         );
         assert_eq!(memory.items[0].role, "user");
-        assert!(memory.items[0].text.contains("FIRST_QUESTION"));
+        assert!(memory.items[0].text.contains("GSE153250"));
         assert_eq!(memory.items[1].role, "assistant");
-        assert!(memory.items[1].text.contains("FIRST_ANSWER"));
-        assert!(memory.items[1].text.contains("QC_THRESHOLD=0.047"));
-        assert!(memory.items[1].text.contains("COHORT=WISP-HCC-2024-G"));
-        for item in &memory.items[2..] {
+        assert!(memory.items[1].text.contains("GENE_FILTER="));
+        assert!(memory.items[1].text.contains("PRIMARY_CONTRAST="));
+        assert!(memory.items[1].text.contains("FDR_CUTOFF=0.05"));
+        // The recorded conversation legitimately reuses the locked values when
+        // applying them (turn 2) and in the proposed memory note (turn 6), so
+        // they are not exclusive to the opening turn. What must hold: the
+        // exact GENE_FILTER phrasing stays out of the protected recent tail,
+        // so a full post-compact recall has to come from the checkpoint.
+        let gene_filter = "GENE_FILTER=keep genes with CPM > 1 in at least 6 samples";
+        assert!(memory.items[1].text.contains(gene_filter));
+        for item in &memory.items[memory.items.len().saturating_sub(20)..] {
             assert!(
-                !item.text.contains("QC_THRESHOLD=0.047"),
-                "locked identifiers must live only in the first answer so /compact can bury them"
-            );
-            assert!(
-                !item.text.contains("FIRST_ANSWER"),
-                "later turns must not repeat the first-answer marker"
+                !item.text.contains(gene_filter),
+                "the exact GENE_FILTER phrasing must not survive in the recent tail"
             );
         }
-        assert!(memory
+        let last_user = memory
             .items
             .iter()
-            .any(|item| item.text.contains("RECENT_NOTE")));
+            .rev()
+            .find(|item| item.role == "user")
+            .expect("a user item");
+        assert!(last_user
+            .text
+            .contains("do not restate the opening locked decision"));
         let chars: usize = memory.items.iter().map(|item| item.text.len()).sum();
         assert!(
-            chars > 1_500_000,
-            "expanded notebook should fill a 256K-class window, got {chars} chars"
+            chars > 300_000,
+            "expanded transcript should carry the full recorded session, got {chars} chars"
         );
         let tokens: usize = demo_items_to_messages(&memory.items)
             .iter()
             .map(wisp_core::ContextManager::estimated_tokens)
             .sum();
+        // The transcript is a real recorded session (~104K estimated tokens,
+        // ~70K after safe pruning), so a manual /compact installs the semantic
+        // checkpoint once the configured window is ~110K or smaller (the fold
+        // gate is 60% of the window).
         assert!(
-            tokens > 400_000,
-            "estimated tokens should exceed a 256k 80% compact line and remain large on 1M, got {tokens}"
+            tokens > 80_000,
+            "estimated tokens should exceed a ~110K-class 60% fold gate, got {tokens}"
         );
         assert!(memory.request.contains("Long-context memory demo"));
     }
@@ -594,18 +606,18 @@ mod tests {
 
         let messages = store.load_messages(&session_id).await.unwrap();
         assert!(messages.len() > 100);
-        assert!(messages[0].content.as_text().contains("FIRST_QUESTION"));
-        assert!(messages[1].content.as_text().contains("FIRST_ANSWER"));
-        assert!(messages[1].content.as_text().contains("QC_THRESHOLD=0.047"));
+        assert!(messages[0].content.as_text().contains("GSE153250"));
+        assert!(messages[1].content.as_text().contains("GENE_FILTER="));
+        assert!(messages[1].content.as_text().contains("FDR_CUTOFF=0.05"));
         let tokens: usize = messages
             .iter()
             .map(wisp_core::ContextManager::estimated_tokens)
             .sum();
         assert!(
-            tokens > 400_000,
-            "copied session too short for 256K/1M compact tests: {tokens}"
+            tokens > 80_000,
+            "copied session too short to exercise a real fold: {tokens}"
         );
-        assert!(workspace.join(".wisp/memory/2025-06-01.md").is_file());
+        assert!(workspace.join(".wisp/memory/2026-08-13.md").is_file());
         assert!(workspace.join(".wisp/memory/2025-05-20.md").is_file());
         assert!(workspace.join("AGENTS.md").is_file());
         assert!(workspace.join(".wisp/WISP.md").is_file());

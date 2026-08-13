@@ -46,7 +46,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { id: "manifest_esr1_03_rnaseq", title: "Connect to the remote compute host, locate the FASTQ data for GSE153250" },
     { id: "manifest_esr1_04_downstream", title: "Based on the upstream Counts data from GSE153250, perform transcriptome" },
     { id: "manifest_esr1_05_hypotheses", title: "Based on the Counts data from our study, along with the differential e" },
-    { id: "manifest_memory_01_long_context", title: "Long-context memory demo — compact, then ask what the first answer locked." },
+    { id: "manifest_memory_01_long_context", title: "Long-context memory demo — GSE153250 ESR1-knockdown RNA-seq" },
   ];
   const runSummary = (run: any) => {
     const stdout = String(run.stdout_tail ?? "");
