@@ -299,11 +299,7 @@ test("Example project demos can be copied into a workspace", async ({ page }) =>
   await demo.click({ button: "right" });
   await page.getByRole("button", { name: "Copy to a project…", exact: true }).click();
   await page.locator(".session-transfer-modal").getByRole("button", { name: "Copy", exact: true }).click();
-  await expect.poll(() => page.evaluate(() => {
-    const calls = ((window as any).__sendInvokeLog ?? []).filter((call: any) => call.cmd === "copy_demo_to_project");
-    const args = calls.at(-1)?.args;
-    return args instanceof Map ? Object.fromEntries(args) : args;
-  })).toMatchObject({
+  await expect.poll(() => lastInvokeArgs(page, "copy_demo_to_project")).toMatchObject({
     id: "manifest_memory_01_long_context",
     targetProjectId: "default",
   });

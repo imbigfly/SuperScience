@@ -62,6 +62,10 @@ cases:
     tags: [shell, execution]
     prompt: Use the shell to print the portable marker HEADLESS_OK.
     allowed_tools: [shell, attempt_completion]
+    # Windows CI runners can spend far longer than the 15s default spawning the
+    # first powershell process (Defender scans the fresh debug binary), so give
+    # this case the same headroom as the shell tool's own 60s timeout.
+    limits: {timeout_ms: 60000}
     script:
       - tool_calls:
           - {id: shell-1, name: shell, arguments: {cmd: "echo HEADLESS_OK"}}
