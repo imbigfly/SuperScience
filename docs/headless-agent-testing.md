@@ -76,6 +76,44 @@ provider. Live mode requires the normal `WISP_API_KEY`, `WISP_PROVIDER`, and
 `WISP_MODEL` environment variables. Scripted steps are ignored in live mode;
 live suites should use tolerant semantic assertions rather than exact prose.
 
+### Memory and compaction dataset
+
+`crates/wisp-cli/eval-suites/memory-v1.yaml` is a deterministic offline
+dataset for the memory mechanism. It verifies three axes:
+
+1. **Compression without forgetting.** One scenario per compaction trigger
+   mode — `auto` (80% boundary before a model call), `manual` (`/compact`
+   action), and `overflow` (a scripted provider context-overflow error forces
+   one recovery compaction and a retry). Each seeds early facts buried under
+   bulk filler, requires exactly that strategy, requires real shrinkage via
+   `max_compaction_ratio_percent`, and asserts through `final_request_contains`
+   / `final_request_not_contains` that the post-compaction request still
+   carries the early facts, the `[context summary checkpoint]`, the
+   `wisp-history:` archive pointer, and the recent tail, while the folded
+   filler is gone.
+2. **Retrieval correctness.** `search_memory` scenarios over seeded
+   `.wisp/memory/*.md` notes: multi-query fan-out that must return the right
+   chunk and exclude distractors, CJK matching, an explicit empty-result miss,
+   and the setting gate (the tool is not registered while memory is disabled).
+3. **Stage loading.** Session-start rules (`AGENTS.md` + `.wisp/WISP.md` in
+   the system prompt), per-turn ephemeral host injection reaching the provider
+   request, injections *not* surviving a restart as durable history, and
+   durable project notes remaining retrievable after a restart.
+
+```bash
+cargo run -p wisp-cli -- eval --suite crates/wisp-cli/eval-suites/memory-v1.yaml
+```
+
+The suite also runs inside `cargo test -p wisp-cli` so regressions surface in
+the normal workspace test run. Case knobs added for this dataset:
+`memory_enabled` registers the production `search_memory` tool, and
+`runtime_injections` mirrors the host's per-turn global-memory injection.
+Expectation knobs: `compaction_strategies` pins the exact ordered trigger
+modes, and `final_request_contains` / `final_request_not_contains` assert on
+the last provider request only — sharper than `request_contains` after a
+compaction or restart. Scripted steps may fail deterministically with
+`api_error: {status, body}` to exercise provider error paths.
+
 ### Cross-model compaction benchmark
 
 The repository includes `crates/wisp-cli/eval-suites/live-compaction-v1.yaml`

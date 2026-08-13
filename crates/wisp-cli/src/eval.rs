@@ -22,6 +22,8 @@ const TRAJECTORY_SCHEMA: &str = "wisp.agent-trajectory.v1";
 const BUILTIN_SUITE: &str = include_str!("../eval-suites/offline-v1.yaml");
 #[cfg(test)]
 const LIVE_COMPACTION_SUITE: &str = include_str!("../eval-suites/live-compaction-v1.yaml");
+#[cfg(test)]
+const MEMORY_SUITE: &str = include_str!("../eval-suites/memory-v1.yaml");
 const DEFAULT_MAX_CONTEXT: usize = 128_000;
 const DEFAULT_MAX_ROUNDS: usize = 12;
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
@@ -190,6 +192,15 @@ struct EvalCase {
     fixture_runtimes: bool,
     #[serde(default)]
     fixture_mcp: BTreeMap<String, String>,
+    /// Register the project-memory `search_memory` tool, mirroring the host's
+    /// memory setting. Seed notes with `files` under `.wisp/memory/*.md`.
+    #[serde(default)]
+    memory_enabled: bool,
+    /// Ephemeral host context injected before the first send, mirroring the
+    /// desktop host's per-turn global-memory injection. Injections are not
+    /// durable history: a `restart` action drops them.
+    #[serde(default)]
+    runtime_injections: Vec<String>,
     #[serde(default)]
     context_seed: Vec<SeedMessage>,
     #[serde(default)]
@@ -270,12 +281,25 @@ struct EvalExpectation {
     tool_args: Vec<ToolArgumentExpectation>,
     #[serde(default)]
     request_contains: Vec<String>,
+    /// Fragments the last provider request must contain. Sharper than
+    /// `request_contains` after compaction or restart: it proves retention in
+    /// the final working context rather than anywhere in the run.
+    #[serde(default)]
+    final_request_contains: Vec<String>,
+    /// Fragments the last provider request must not contain, e.g. folded
+    /// filler after compaction or an ephemeral injection after restart.
+    #[serde(default)]
+    final_request_not_contains: Vec<String>,
     #[serde(default)]
     approvals: Option<usize>,
     #[serde(default)]
     remaining_script: Option<usize>,
     #[serde(default)]
     compactions: Option<usize>,
+    /// Exact ordered list of observed compaction strategies
+    /// (`auto`, `overflow`, `manual`).
+    #[serde(default)]
+    compaction_strategies: Vec<String>,
     #[serde(default)]
     max_compaction_ratio_percent: Option<u64>,
 }
@@ -299,9 +323,12 @@ impl Default for EvalExpectation {
             tool_order: Vec::new(),
             tool_args: Vec::new(),
             request_contains: Vec::new(),
+            final_request_contains: Vec::new(),
+            final_request_not_contains: Vec::new(),
             approvals: None,
             remaining_script: None,
             compactions: None,
+            compaction_strategies: Vec::new(),
             max_compaction_ratio_percent: None,
         }
     }
@@ -1159,6 +1186,12 @@ async fn run_case(
         agent.set_auto_compact(enabled);
     }
     seed_context(&mut agent.ctx, &case.context_seed)?;
+    // Mirror the host's per-turn global-memory injection: ephemeral user
+    // context placed before the next durable user request.
+    for injection in &case.runtime_injections {
+        agent.ctx.inject_user(injection);
+    }
+    agent.ctx.prefix_runtime_injections_to_user();
 
     let cancel = Arc::new(AtomicBool::new(false));
     if let Some(delay) = case.cancel_after_ms {
@@ -1353,7 +1386,7 @@ fn build_agent(
     let skill_paths = vec![root.join(".wisp").join("skills")];
     let skills = Arc::new(SkillIndex::load(&skill_paths));
     let memory = Arc::new(MemoryManager::new(root));
-    let mut registry = wisp_core::build_registry(skills.clone(), memory, false);
+    let mut registry = wisp_core::build_registry(skills.clone(), memory, case.memory_enabled);
     registry.add(Box::new(wisp_tools::ask_user::AskUserTool));
     for (name, result) in &case.fixture_mcp {
         registry.add(Box::new(FixtureMcpTool {
@@ -1610,6 +1643,24 @@ fn verify_case(
             ));
         }
     }
+    if !case.expect.compaction_strategies.is_empty() {
+        let observed = captured
+            .compactions
+            .iter()
+            .map(|compaction| compaction.strategy.as_str())
+            .collect::<Vec<_>>();
+        let expected = case
+            .expect
+            .compaction_strategies
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if observed != expected {
+            failures.push(format!(
+                "expected compaction strategies {expected:?}, observed {observed:?}"
+            ));
+        }
+    }
     if let Some(max_percent) = case.expect.max_compaction_ratio_percent {
         for compaction in &captured.compactions {
             let ratio = if compaction.before_tokens == 0 {
@@ -1626,19 +1677,47 @@ fn verify_case(
         }
     }
     if let Some(provider) = provider {
+        fn request_has_fragment(request: &wisp_llm::ScriptedRequest, fragment: &str) -> bool {
+            request.messages.iter().any(|message| {
+                contains_folded(&message.content.as_text(), fragment)
+                    || message
+                        .reasoning
+                        .as_deref()
+                        .is_some_and(|value| contains_folded(value, fragment))
+            })
+        }
         for fragment in &case.expect.request_contains {
-            let found = provider.requests.iter().any(|request| {
-                request.messages.iter().any(|message| {
-                    contains_folded(&message.content.as_text(), fragment)
-                        || message
-                            .reasoning
-                            .as_deref()
-                            .is_some_and(|value| contains_folded(value, fragment))
-                })
-            });
-            if !found {
+            if !provider
+                .requests
+                .iter()
+                .any(|request| request_has_fragment(request, fragment))
+            {
                 failures.push(format!("no provider request contained '{fragment}'"));
             }
+        }
+        let final_expectations = !case.expect.final_request_contains.is_empty()
+            || !case.expect.final_request_not_contains.is_empty();
+        match provider.requests.last() {
+            Some(request) => {
+                for fragment in &case.expect.final_request_contains {
+                    if !request_has_fragment(request, fragment) {
+                        failures.push(format!(
+                            "the final provider request did not contain '{fragment}'"
+                        ));
+                    }
+                }
+                for fragment in &case.expect.final_request_not_contains {
+                    if request_has_fragment(request, fragment) {
+                        failures.push(format!(
+                            "the final provider request unexpectedly contained '{fragment}'"
+                        ));
+                    }
+                }
+            }
+            None if final_expectations => {
+                failures.push("no provider request was recorded for final-request checks".into())
+            }
+            None => {}
         }
         let expected_remaining = case.expect.remaining_script.unwrap_or(0);
         if provider.remaining_completions != expected_remaining {
@@ -2213,6 +2292,81 @@ mod tests {
     }
 
     #[test]
+    fn memory_suite_is_valid_and_covers_every_memory_axis() {
+        let suite: EvalSuite = serde_yaml::from_str(MEMORY_SUITE).unwrap();
+        validate_suite(&suite, EvalMode::Offline).unwrap();
+        let tags: BTreeSet<_> = suite
+            .cases
+            .iter()
+            .flat_map(|case| case.tags.iter().map(String::as_str))
+            .collect();
+        for required in [
+            "compaction",
+            "auto",
+            "manual",
+            "overflow",
+            "retrieval",
+            "cjk",
+            "gating",
+            "stage",
+            "injection",
+            "restart",
+        ] {
+            assert!(
+                tags.contains(required),
+                "missing memory coverage tag {required}"
+            );
+        }
+        // Every compaction trigger mode asserts its strategy, real shrinkage,
+        // and that folded filler no longer reaches the final request.
+        for strategy in ["auto", "manual", "overflow"] {
+            let case = suite
+                .cases
+                .iter()
+                .find(|case| case.expect.compaction_strategies == vec![strategy.to_string()])
+                .unwrap_or_else(|| panic!("no case pins the '{strategy}' compaction strategy"));
+            assert_eq!(case.expect.compactions, Some(1), "{strategy}");
+            assert!(
+                case.expect.max_compaction_ratio_percent.is_some(),
+                "{strategy}"
+            );
+            assert!(
+                !case.expect.final_request_not_contains.is_empty(),
+                "{strategy}"
+            );
+        }
+        assert!(
+            suite.cases.iter().any(|case| case.memory_enabled),
+            "retrieval cases must exercise the enabled memory registry"
+        );
+        assert!(
+            suite
+                .cases
+                .iter()
+                .any(|case| !case.runtime_injections.is_empty()),
+            "stage cases must exercise per-turn injection"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_suite_cases_pass_offline() {
+        let suite: EvalSuite = serde_yaml::from_str(MEMORY_SUITE).unwrap();
+        for case in suite.cases {
+            let id = case.id.clone();
+            let result = run_case(
+                case,
+                1,
+                suite.defaults.clone(),
+                None,
+                EvalOptions::default(),
+            )
+            .await
+            .unwrap();
+            assert!(result.passed, "{id}: {:?}", result.failures);
+        }
+    }
+
+    #[test]
     fn model_matrix_is_live_only_and_unique() {
         let offline = EvalOptions {
             models: vec!["model-a".into()],
@@ -2277,6 +2431,8 @@ mod tests {
             explore_script: vec![],
             fixture_runtimes: false,
             fixture_mcp: BTreeMap::new(),
+            memory_enabled: false,
+            runtime_injections: vec![],
             context_seed: vec![],
             approval: EvalApproval::default(),
             plan_mode: false,

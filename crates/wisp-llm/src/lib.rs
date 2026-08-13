@@ -26,6 +26,6 @@ pub use provider::{
 pub use provider::{LlmError, Result};
 pub use routed::RoutedProvider;
 pub use scripted::{
-    ScriptedCompletion, ScriptedProvider, ScriptedProviderSnapshot, ScriptedRequest,
-    ScriptedToolCall,
+    ScriptedApiError, ScriptedCompletion, ScriptedProvider, ScriptedProviderSnapshot,
+    ScriptedRequest, ScriptedToolCall,
 };
