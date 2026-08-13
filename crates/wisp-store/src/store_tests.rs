@@ -6551,6 +6551,72 @@ async fn create_exploration_checkpoint_fixture(store: &Store) {
 }
 
 #[tokio::test]
+async fn current_exploration_checkpoint_ignores_settled_rounds() {
+    let (store, tmp) = exploration_store_fixture("settled-checkpoint").await;
+    create_exploration_checkpoint_fixture(&store).await;
+
+    // Older databases could retain a terminal exploration tombstone. It must not
+    // make a later exploration round reuse that round's stale checkpoint.
+    let mut connection = store.pool.acquire().await.unwrap();
+    sqlx::query("PRAGMA ignore_check_constraints = ON")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO explorations(\
+           id,checkpoint_id,frame_id,name,status,workspace_dir,workspace_backend,\
+           scope_generation,warnings_json,created_at,updated_at\
+         ) VALUES('settled','checkpoint','branch','Settled','discarded','/tmp/settled',\
+                  'copy',0,'[]',2,2)",
+    )
+    .execute(&mut *connection)
+    .await
+    .unwrap();
+    sqlx::query("PRAGMA ignore_check_constraints = OFF")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    drop(connection);
+
+    assert!(store
+        .current_exploration_checkpoint_for_source("p", "main", "family", 0)
+        .await
+        .unwrap()
+        .is_none());
+
+    sqlx::query("DELETE FROM explorations WHERE id='settled'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store
+        .create_exploration(&Exploration {
+            id: "current".into(),
+            checkpoint_id: "checkpoint".into(),
+            frame_id: "branch".into(),
+            name: "Current round".into(),
+            status: ExplorationStatus::Creating,
+            workspace_dir: "/tmp/current".into(),
+            workspace_backend: "copy".into(),
+            scope_generation: 0,
+            warnings_json: "[]".into(),
+            created_at: 3,
+            updated_at: 3,
+        })
+        .await
+        .unwrap();
+
+    let current = store
+        .current_exploration_checkpoint_for_source("p", "main", "family", 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.id, "checkpoint");
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
 async fn exploration_scope_state_machine_and_generations_are_isolated() {
     let (store, tmp) = exploration_store_fixture("scope").await;
     create_exploration_checkpoint_fixture(&store).await;

@@ -852,7 +852,8 @@ impl Store {
              WHERE checkpoint.project_id=? AND checkpoint.source_frame_id=? \
                AND checkpoint.family_id=? AND checkpoint.source_family_generation=? \
                AND EXISTS(SELECT 1 FROM explorations exploration \
-                          WHERE exploration.checkpoint_id=checkpoint.id) \
+                          WHERE exploration.checkpoint_id=checkpoint.id \
+                            AND exploration.status IN ('creating','active','promoting','failed')) \
              ORDER BY checkpoint.created_at DESC,checkpoint.id DESC LIMIT 1",
         )
         .bind(project_id)
