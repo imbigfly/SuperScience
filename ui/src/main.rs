@@ -11537,6 +11537,42 @@ fn App() -> impl IntoView {
                             })}
                         </div>
                         <div class="composer-buttons">
+                            {move || active_context_usage.get().map(|snapshot| {
+                                let pct = context_percent(snapshot.used, snapshot.max);
+                                let gauge_angle = -90.0 + pct as f64 * 0.9;
+                                view! {
+                                    <button type="button" class="context-usage-trigger"
+                                        data-testid="context-usage-trigger"
+                                        style=format!("--context-gauge-angle:{gauge_angle:.1}deg")
+                                        title=move || t(locale.get(), "context_usage.open")
+                                        aria-label=move || t(locale.get(), "context_usage.open")
+                                        aria-expanded=move || context_usage_open.get().to_string()
+                                        aria-controls="context-usage-panel"
+                                        on:click=move |event| {
+                                            event.stop_propagation();
+                                            let opening = !context_usage_open.get_untracked();
+                                            context_usage_open.set(opening);
+                                            if opening && active_acp_agent_id.get_untracked().is_none()
+                                                && context_usage_details.get_untracked().is_none()
+                                            {
+                                                if let Some(session_id) = active_session.get_untracked() {
+                                                    spawn_local(async move {
+                                                        let arg = to_value(&serde_json::json!({
+                                                            "sessionId": session_id,
+                                                        })).unwrap();
+                                                        if let Ok(value) = invoke_checked("get_context_usage_details", arg).await {
+                                                            if let Ok(details) = from_value::<ContextUsageDetails>(value) {
+                                                                context_usage_details.set(Some(details));
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                            }
+                                        }>
+                                        {compose_icon("gauge")}
+                                    </button>
+                                }
+                            })}
                             {move || (!models.get().is_empty() || !acp_agents.get().is_empty()).then(|| view! {
                                 <div class="model-picker">
                                     <button type="button" class="model-picker-btn" class:active=move || model_menu_open.get()
@@ -12061,40 +12097,9 @@ fn App() -> impl IntoView {
                             }
                         }}</div>
                         {move || active_context_usage.get().map(|snapshot| {
-                            let pct = context_percent(snapshot.used, snapshot.max);
                             let panel_snapshot = snapshot.clone();
                             view! {
                                 <div class="context-usage-wrap">
-                                    <button type="button" class="context-usage-trigger"
-                                        data-testid="context-usage-trigger"
-                                        title=move || t(locale.get(), "context_usage.open")
-                                        aria-label=move || t(locale.get(), "context_usage.open")
-                                        aria-expanded=move || context_usage_open.get().to_string()
-                                        aria-controls="context-usage-panel"
-                                        on:click=move |event| {
-                                            event.stop_propagation();
-                                            let opening = !context_usage_open.get_untracked();
-                                            context_usage_open.set(opening);
-                                            if opening && active_acp_agent_id.get_untracked().is_none()
-                                                && context_usage_details.get_untracked().is_none()
-                                            {
-                                                if let Some(session_id) = active_session.get_untracked() {
-                                                    spawn_local(async move {
-                                                        let arg = to_value(&serde_json::json!({
-                                                            "sessionId": session_id,
-                                                        })).unwrap();
-                                                        if let Ok(value) = invoke_checked("get_context_usage_details", arg).await {
-                                                            if let Ok(details) = from_value::<ContextUsageDetails>(value) {
-                                                                context_usage_details.set(Some(details));
-                                                            }
-                                                        }
-                                                    });
-                                                }
-                                            }
-                                        }>
-                                        {compose_icon("gauge")}
-                                        <span>{format!("{pct}%")}</span>
-                                    </button>
                                     {move || context_usage_open.get().then(|| {
                                         let snapshot = panel_snapshot.clone();
                                         let loc = locale.get();

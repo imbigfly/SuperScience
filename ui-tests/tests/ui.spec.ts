@@ -2034,7 +2034,18 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toContainText("62%");
+  await expect(trigger).toHaveText("");
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-34.2deg");
+  await expect.poll(() => trigger.locator("svg path").first().evaluate((el) =>
+    getComputedStyle(el).transform)).not.toBe("none");
+  const [triggerBox, modelBox] = await Promise.all([
+    trigger.boundingBox(),
+    page.locator(".model-picker-btn").boundingBox(),
+  ]);
+  expect(triggerBox).not.toBeNull();
+  expect(modelBox).not.toBeNull();
+  expect(triggerBox!.x + triggerBox!.width).toBeLessThanOrEqual(modelBox!.x);
   await expect(page.locator(".topbar .hint")).toHaveCount(0);
 
   await trigger.click();
@@ -2085,7 +2096,9 @@ test("legacy native usage totals fall back to Conversation, not Agent-managed", 
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toContainText("20%");
+  await expect(trigger).toHaveText("");
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-72.0deg");
   await trigger.click();
   const panel = page.getByTestId("context-usage-panel");
   await expect(panel).toBeVisible();
@@ -2102,7 +2115,8 @@ test("context usage limit follows the session's current model", async ({ page })
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toContainText("62%");
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-34.2deg");
   await trigger.click();
   await expect(page.getByTestId("context-usage-panel")).toContainText("~79.9K / 128K Tokens");
   await page.keyboard.press("Escape");
@@ -2113,7 +2127,8 @@ test("context usage limit follows the session's current model", async ({ page })
   await page.getByTestId("model-switch-confirm")
     .getByRole("button", { name: "Yes, switch" }).click();
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
-  await expect(trigger).toContainText("40%");
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-54.0deg");
   await trigger.click();
   await expect(page.getByTestId("context-usage-panel")).toContainText("~79.9K / 200K Tokens");
 });

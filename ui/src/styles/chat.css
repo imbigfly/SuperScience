@@ -1204,15 +1204,20 @@ details.tool:not([open]) > summary.head .run-dot { animation: tool-pulse 1.1s ea
    idle composer reads as a clean input rather than a help panel. */
 .composer-hint { min-width: 0; padding: 0 2px 0 54px; font-size: 11px; line-height: 1.35; color: var(--text-faint); user-select: none; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity .15s ease; }
 .composer-inner:focus-within .composer-hint, .composer-inner:hover .composer-hint { opacity: 1; }
-.context-usage-wrap { display: flex; align-items: center; justify-content: flex-end; }
+.context-usage-wrap { display: contents; }
 .context-usage-trigger {
-  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 2px;
+  display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 28px; height: 32px; padding: 0;
   border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--text-faint);
-  font: 11px/1 var(--font-ui); font-variant-numeric: tabular-nums; cursor: pointer;
+  cursor: pointer;
   transition: color .12s ease, background .12s ease;
 }
 .context-usage-trigger:hover, .context-usage-trigger[aria-expanded="true"] { color: var(--text); background: var(--surface-hover); }
-.context-usage-trigger svg { width: 15px; height: 15px; }
+.context-usage-trigger svg { width: 18px; height: 18px; }
+.context-usage-trigger svg path:first-child {
+  transform-box: view-box; transform-origin: 12px 14px;
+  transform: rotate(var(--context-gauge-angle, -90deg));
+  transition: transform .2s var(--motion-ease-standard);
+}
 .context-usage-backdrop { position: fixed; inset: 0; z-index: 70; background: transparent; }
 .context-usage-panel {
   --context-system: #7c7e7d;
