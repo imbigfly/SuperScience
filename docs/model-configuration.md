@@ -217,3 +217,8 @@ $env:WISP_MODEL    = "deepseek-v4-pro"
 $env:WISP_API_KEY  = "<your provider key>"
 cargo run -p wisp-cli
 ```
+
+The full CLI environment-variable table, eval/RPC commands, and bundled MCP
+launch flags are in [development](development.md). Desktop setup, including
+ACP agents and remote MCP connections, is in
+[basic configuration](basic-configuration.md).

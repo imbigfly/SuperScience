@@ -209,6 +209,8 @@ https://mcp.notion.com/mcp
 
 选择 OAuth 后，点击 **测试**或**保存**会在浏览器中打开授权页。OAuth Token 保存在操作系统密钥环中；删除连接会清除对应凭据。连接配置改动对新会话生效。
 
+实时网页搜索可再添加一个远程 URL：`https://search.parallel.ai/mcp`，认证方式选 **无**。Parallel Search MCP 免费，无需账号或 API Key。
+
 ## 7. 配置 ACP
 
 ACP（Agent Client Protocol）用于运行已经安装在本机的外部 Agent。它与 HTTP 模型配置相互独立，并且当前只支持本地 stdio。
