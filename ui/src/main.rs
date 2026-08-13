@@ -11600,10 +11600,10 @@ fn App() -> impl IntoView {
                                                                 <span class="model-menu-text">
                                                                     <span class="model-menu-label">{m.label.clone()}</span>
                                                                     {show_sub.then(|| view! { <span class="model-menu-sub">{m.model.clone()}</span> })}
+                                                                    {(!effort.is_empty()).then(|| view! {
+                                                                        <span class="model-menu-effort-tag">{effort}</span>
+                                                                    })}
                                                                 </span>
-                                                                {(!effort.is_empty()).then(|| view! {
-                                                                    <span class="model-menu-effort-tag">{effort}</span>
-                                                                })}
                                                                 {is_active.then(|| view! { <span class="model-menu-check">"✓"</span> })}
                                                             </button>
                                                             <button type="button" class="model-menu-effort-edit"
@@ -11691,7 +11691,7 @@ fn App() -> impl IntoView {
                                                 })
                                             })}
                                             {move || (!acp_agents.get().is_empty()).then(|| view! {
-                                                <div class="compose-group-label">"ACP Agents"</div>
+                                                <div class="compose-group-label model-menu-acp-label">"ACP"</div>
                                                 {acp_agents.get().into_iter().map(|agent| {
                                                     let id = agent.id.clone();
                                                     let active = active_acp_agent_id.get().as_deref() == Some(agent.id.as_str());

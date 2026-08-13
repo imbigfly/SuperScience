@@ -967,17 +967,27 @@ test("model selection stays bound to its conversation", async ({ page }) => {
 test("model effort is revealed on hover and saved to the model profile", async ({ page }) => {
   await enterApp(page, "/?mockSessionModels=1");
   await page.locator(".model-picker-btn").click();
+  await page.mouse.move(0, 0);
 
-  // Effort stays out of the resting menu, then appears at the right on hover.
+  // Effort has no resting layout box, then overlays the model info on hover.
   const opusRow = page.locator(".model-menu-row", { hasText: "opus-4.8" });
   const deepseekRow = page.locator(".model-menu-row", { hasText: "deepseek-v4-pro" });
   await expect(opusRow.locator(".model-menu-effort-tag")).toBeHidden();
   await expect(deepseekRow.locator(".model-menu-effort-tag")).toBeHidden();
+  expect(await opusRow.locator(".model-menu-effort-tag").boundingBox()).toBeNull();
   await opusRow.hover();
   await expect(opusRow.locator(".model-menu-effort-tag")).toHaveText("max");
   await expect(opusRow.locator(".model-menu-effort-tag")).toBeVisible();
   await expect(opusRow.locator(".model-menu-effort-edit")).toBeVisible();
   await expect(opusRow.locator(".model-menu-effort-edit svg")).toHaveCount(0);
+  const [effortBox, textBox] = await Promise.all([
+    opusRow.locator(".model-menu-effort-tag").boundingBox(),
+    opusRow.locator(".model-menu-text").boundingBox(),
+  ]);
+  expect(effortBox).not.toBeNull();
+  expect(textBox).not.toBeNull();
+  expect(effortBox!.x).toBeGreaterThanOrEqual(textBox!.x);
+  expect(effortBox!.x + effortBox!.width).toBeLessThanOrEqual(textBox!.x + textBox!.width + 1);
 
   await opusRow.locator(".model-menu-effort-edit").click();
   const flyout = page.locator(".model-menu-effort-flyout[data-effort-for='opus']");
@@ -1013,6 +1023,25 @@ test("model effort is revealed on hover and saved to the model profile", async (
     profile: { id: "opus", reasoning_effort: "" },
   });
   await expect(opusRow.locator(".model-menu-effort-tag")).toHaveCount(0);
+});
+
+test("model picker uses a compact left-aligned ACP group label", async ({ page }) => {
+  await enterApp(page);
+  await page.locator(".model-picker-btn").click();
+
+  const label = page.locator(".model-menu-acp-label");
+  const acpRowLabel = page.locator(".model-menu-row", { hasText: "Test ACP Agent" })
+    .locator(".model-menu-label");
+  await expect(label).toHaveText("ACP");
+  await expect(label).not.toContainText("Agents");
+  const [labelBox, rowLabelBox, labelPadding] = await Promise.all([
+    label.boundingBox(),
+    acpRowLabel.boundingBox(),
+    label.evaluate((el) => Number.parseFloat(getComputedStyle(el).paddingLeft)),
+  ]);
+  expect(labelBox).not.toBeNull();
+  expect(rowLabelBox).not.toBeNull();
+  expect(Math.abs(labelBox!.x + labelPadding - rowLabelBox!.x)).toBeLessThanOrEqual(1);
 });
 
 test("Chinese reasoning effort title does not duplicate the English label", async ({ page }) => {
