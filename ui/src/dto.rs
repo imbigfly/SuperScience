@@ -1997,6 +1997,9 @@ pub(crate) struct SessionInfo {
     pub(crate) pinned: bool,
     #[serde(default)]
     pub(crate) branch_state: Option<String>,
+    /// Persisted system prompt lags AGENTS.md / WISP.md; sidebar offers reload.
+    #[serde(default)]
+    pub(crate) stale_prompt: bool,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]

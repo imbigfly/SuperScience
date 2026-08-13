@@ -362,6 +362,7 @@ pub(super) async fn list_sessions_page(
                 .is_some_and(|state| state != "orphaned")
                 .then_some(branched_from)
                 .flatten(),
+            stale_prompt: false,
             id,
             title,
             ts,
@@ -379,17 +380,111 @@ pub(super) async fn list_sessions_page(
                     .is_some_and(|state| state != "orphaned")
                     .then_some(branched_from)
                     .flatten(),
+                stale_prompt: false,
                 id,
                 title,
                 ts,
                 folder_id,
             }),
     );
+    let frame_ids: Vec<String> = items.iter().map(|item| item.id.clone()).collect();
+    let stale = stale_prompt_frames(&state.store, &ap.root, &frame_ids).await;
+    for item in &mut items {
+        item.stale_prompt = stale.contains(&item.id);
+    }
     Ok(SessionPage {
         items,
         next_cursor,
         running_ids: running.into_iter().collect(),
     })
+}
+
+/// Frames whose persisted system prompt was built from AGENTS.md / WISP.md
+/// contents that differ from the files on disk. Undecidable prompts (missing
+/// or legacy layout) are never flagged.
+async fn stale_prompt_frames(
+    store: &Store,
+    root: &std::path::Path,
+    frame_ids: &[String],
+) -> HashSet<String> {
+    let expected = wisp_core::SystemPrompt::new(root, &wisp_skills::SkillIndex::default(), None)
+        .rules_section();
+    let Ok(stored) = store.load_system_messages(frame_ids).await else {
+        return HashSet::new();
+    };
+    stored
+        .into_iter()
+        .filter(|(_, json)| {
+            serde_json::from_str::<wisp_llm::Content>(json)
+                .ok()
+                .map(|content| content.as_text())
+                .and_then(|text| wisp_core::SystemPrompt::extract_rules_section(&text))
+                .is_some_and(|section| section != expected)
+        })
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Rebuild a session's persisted system prompt with the current AGENTS.md /
+/// WISP.md contents. Only the rules section is spliced; every other section
+/// (skills guidance, delegation/plan-mode/specialist additions) is preserved.
+/// The cached agent is dropped so the next turn rebuilds from the new prompt,
+/// which invalidates the provider's prompt cache for one turn.
+#[tauri::command]
+pub(super) async fn reload_project_rules(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    frame_id: String,
+) -> Result<bool, String> {
+    let ap = state.active(window.label());
+    let owner = state
+        .store
+        .frame_project_id(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if owner.as_deref() != Some(ap.id.as_str()) {
+        return Err("Session does not belong to the active project.".into());
+    }
+    let runtime = state.sessions.lock().await.get(&frame_id).cloned();
+    if let Some(rt) = &runtime {
+        if rt.workflow.clone().try_lock_owned().is_err() {
+            return Err(
+                "This session is running a turn; reload the rules after it finishes.".into(),
+            );
+        }
+    }
+    let stored = state
+        .store
+        .load_system_messages(std::slice::from_ref(&frame_id))
+        .await
+        .map_err(|error| error.to_string())?;
+    let Some(json) = stored.get(&frame_id) else {
+        return Err("This session has no persisted system prompt yet.".into());
+    };
+    let text = serde_json::from_str::<wisp_llm::Content>(json)
+        .map(|content| content.as_text())
+        .map_err(|error| error.to_string())?;
+    let rules = wisp_core::SystemPrompt::new(&ap.root, &wisp_skills::SkillIndex::default(), None)
+        .rules_section();
+    let Some(updated) = wisp_core::SystemPrompt::replace_rules_section(&text, &rules) else {
+        return Err(
+            "This session's prompt predates the rules layout and cannot be reloaded.".into(),
+        );
+    };
+    if updated == text {
+        return Ok(false);
+    }
+    let changed = state
+        .store
+        .replace_system_message(&frame_id, &wisp_llm::Message::system(updated))
+        .await
+        .map_err(|error| error.to_string())?;
+    if changed {
+        if let Some(rt) = &runtime {
+            *rt.agent.lock().await = None;
+        }
+    }
+    Ok(changed)
 }
 
 #[tauri::command]

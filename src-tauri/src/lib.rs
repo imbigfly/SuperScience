@@ -822,6 +822,10 @@ struct SessionInfo {
     pinned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     branch_state: Option<String>,
+    /// The session's persisted system prompt was built from older
+    /// AGENTS.md / WISP.md contents; the sidebar offers a rules reload.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    stale_prompt: bool,
 }
 
 const SESSION_HISTORY_PAGE_SIZE: usize = 100;
@@ -7747,6 +7751,7 @@ pub fn run() {
             exploration_promotion::promote_exploration,
             exploration_promotion::discard_exploration,
             session_commands::list_sessions_page,
+            session_commands::reload_project_rules,
             runtime_commands::list_execution_contexts,
             runtime_commands::list_runtimes,
             runtime_commands::inspect_runtime,

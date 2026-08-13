@@ -188,13 +188,19 @@ cargo run -p wisp-cli -- run "Summarize the files in this project"
 cargo run -p wisp-cli -- run --output jsonl "Summarize the files in this project"
 ```
 
-The CLI also ships a repeatable agent regression suite (six fixed file tasks,
-JSON report, pass/fail plus latency/token deltas against a baseline):
+The CLI also ships a deterministic, API-key-free agent conformance suite with
+versioned trajectories, lifecycle/capability cases, budgets, filtering,
+parallel repeats, and baseline regression thresholds:
 
 ```bash
 cargo run -p wisp-cli -- eval --save baseline.json
 cargo run -p wisp-cli -- eval --compare baseline.json --save current.json
 ```
+
+For a long-lived controller, `wisp-science rpc` provides a versioned JSONL
+stdin/stdout protocol with correlated approvals and cancellation. See
+[Headless agent testing](docs/headless-agent-testing.md) for suite authoring,
+artifact schemas, limits, and the RPC contract.
 
 ### ACP agents (optional)
 

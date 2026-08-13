@@ -7174,6 +7174,9 @@ fn App() -> impl IntoView {
                             }
                         });
                     }
+                    context_menu::SessionAction::ReloadProjectRules(id) => {
+                        ui_confirm.set(Some(UiConfirm::ReloadProjectRules(id)));
+                    }
                     context_menu::SessionAction::Delete(id) => {
                         ui_confirm.set(Some(UiConfirm::DeleteSessions(vec![id])));
                     }
@@ -8857,7 +8860,7 @@ fn App() -> impl IntoView {
             delete_sessions=Callback::new(move |ids: Vec<String>| {
                 ui_confirm.set(Some(UiConfirm::DeleteSessions(ids)));
             })
-            open_session_actions=Callback::new(move |(ev, id, title, pinned, is_branch, branch_merged, has_branch_family, has_exploration_round): (web_sys::MouseEvent, String, String, bool, bool, bool, bool, bool)| {
+            open_session_actions=Callback::new(move |(ev, id, title, pinned, is_branch, branch_merged, has_branch_family, has_exploration_round, stale_prompt): (web_sys::MouseEvent, String, String, bool, bool, bool, bool, bool, bool)| {
                 ctx_menu.set(Some(context_menu::session_menu(
                     ev.client_x() as f64,
                     ev.client_y() as f64,
@@ -8868,6 +8871,7 @@ fn App() -> impl IntoView {
                     branch_merged,
                     has_branch_family,
                     has_exploration_round,
+                    stale_prompt,
                     locale.get(),
                 )));
             })
@@ -12230,11 +12234,11 @@ fn App() -> impl IntoView {
                                         } else {
                                             None
                                         };
-                                        let workspace_path = a.location.clone();
-                                        let file_click = file.clone();
-                                        let context_path = workspace_path.clone().or_else(|| {
+                                        let workspace_path = a.location.clone().or_else(|| {
                                             file.as_ref().map(|(path, _)| path.clone())
-                                        }).unwrap_or_default();
+                                        });
+                                        let file_click = file.clone();
+                                        let context_path = workspace_path.clone().unwrap_or_default();
                                         let context_location = context_path.clone();
                                         let name_click = name.clone();
                                         let publication_source = db_artifacts.get().iter()
@@ -13584,6 +13588,7 @@ fn App() -> impl IntoView {
                     if *is_dir { "files.delete_directory_confirm" } else { "files.delete_file_confirm" },
                     &[("path", path)],
                 ),
+                UiConfirm::ReloadProjectRules(_) => t(locale.get(), "session.reload_rules_hint").to_string(),
             };
             let action_key = match &action {
                 UiConfirm::EnableFullPermission => "full_permission.confirm_action",
@@ -13592,6 +13597,7 @@ fn App() -> impl IntoView {
                 UiConfirm::AbandonExploration(_) => "exploration.abandon",
                 UiConfirm::DeleteFileEntry { is_dir: true, .. } => "files.delete_directory",
                 UiConfirm::DeleteFileEntry { is_dir: false, .. } => "files.delete_file",
+                UiConfirm::ReloadProjectRules(_) => "session.reload_rules_action",
             };
             view! {
             <div class="overlay">
@@ -13698,6 +13704,24 @@ fn App() -> impl IntoView {
                                             }
                                             Err(error) => show_toast(&localize_backend(
                                                 locale.get_untracked(),
+                                                &js_error_text(error),
+                                            )),
+                                        }
+                                    });
+                                }
+                                UiConfirm::ReloadProjectRules(id) => {
+                                    let loc = locale.get_untracked();
+                                    spawn_local(async move {
+                                        let arg = to_value(&serde_json::json!({ "frameId": id })).unwrap();
+                                        match invoke_checked("reload_project_rules", arg).await {
+                                            Ok(value) => {
+                                                if value.as_bool().unwrap_or(false) {
+                                                    show_toast(&t(loc, "session.reload_rules_done"));
+                                                }
+                                                refresh_session_history();
+                                            }
+                                            Err(error) => show_toast(&localize_backend(
+                                                loc,
                                                 &js_error_text(error),
                                             )),
                                         }

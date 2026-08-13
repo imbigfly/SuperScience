@@ -1,19 +1,37 @@
 mod eval;
+mod rpc;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use std::collections::VecDeque;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use wisp_core::{Agent, MemoryManager, Output};
-use wisp_llm::ProviderConfig;
+use wisp_llm::{Message, ProviderConfig, ToolCall};
 use wisp_skills::SkillIndex;
 
 const HELP: &str = "Built-in commands:\n  /q, /quit       Quit\n  /n, /new        Start a new session (old session is backed up)\n  /c, /compact    Compact the context (full history is archived to .wisp/history/ first)\n  /h, /help       Show this help";
+const EVENT_SCHEMA: &str = "wisp.agent-event.v1";
 const USAGE: &str = "Usage:
   wisp-science
   wisp-science run [--output console|jsonl] <prompt>
-  wisp-science eval [--save report.json] [--compare baseline.json]
+  wisp-science rpc
+  wisp-science eval [--mode offline|live] [--suite suite.yaml] [options]
   wisp-science dev
+
+Eval defaults to the built-in deterministic offline suite and requires no API key.
+Use --mode live for a real configured model. Common options:
+  --case ID                 Run one case (repeatable)
+  --tag TAG                 Require a case tag (repeatable)
+  --repeat N                Repeat every selected case
+  --parallel N              Maximum concurrent cases
+  --timeout-ms N            Per-case wall-time timeout
+  --artifacts DIR           Write trajectory JSONL files
+  --keep-failed-workspace   Preserve failed workspaces under --artifacts
+  --save REPORT             Save the JSON report
+  --compare BASELINE        Compare against an eval v1 report
+  --min-pass-rate PERCENT   Required attempt pass rate (default 100)
 
 With no command, wisp-science starts the interactive terminal.";
 
@@ -24,10 +42,8 @@ enum CliCommand {
         prompt: String,
         output: OutputFormat,
     },
-    Eval {
-        save: Option<PathBuf>,
-        compare: Option<PathBuf>,
-    },
+    Eval(eval::EvalOptions),
+    Rpc,
     Dev,
     Help,
 }
@@ -48,7 +64,7 @@ fn parse_output(value: &str) -> Result<OutputFormat> {
 }
 
 fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliCommand> {
-    let mut args = args.into_iter();
+    let mut args = args.into_iter().collect::<Vec<_>>().into_iter();
     let Some(command) = args.next() else {
         return Ok(CliCommand::Interactive);
     };
@@ -59,6 +75,12 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliCommand> {
                 bail!("dev does not accept arguments");
             }
             Ok(CliCommand::Dev)
+        }
+        "rpc" => {
+            if args.next().is_some() {
+                bail!("rpc does not accept arguments");
+            }
+            Ok(CliCommand::Rpc)
         }
         "-h" | "--help" | "help" => Ok(CliCommand::Help),
         "run" => {
@@ -94,25 +116,91 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliCommand> {
             })
         }
         "eval" => {
-            let mut save = None;
-            let mut compare = None;
+            let mut options = eval::EvalOptions::default();
             while let Some(arg) = args.next() {
-                let target = match arg.as_str() {
-                    "--save" => &mut save,
-                    "--compare" => &mut compare,
-                    _ => bail!("unknown eval option '{arg}'"),
+                let value = |args: &mut std::vec::IntoIter<String>| -> Result<String> {
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))
                 };
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("{arg} requires a path"))?;
-                if target.replace(PathBuf::from(value)).is_some() {
-                    bail!("{arg} may only be specified once");
+                match arg.as_str() {
+                    "--mode" => options.mode = eval::EvalMode::parse(&value(&mut args)?)?,
+                    "--suite" => replace_path(&mut options.suite, &arg, value(&mut args)?)?,
+                    "--save" => replace_path(&mut options.save, &arg, value(&mut args)?)?,
+                    "--compare" => replace_path(&mut options.compare, &arg, value(&mut args)?)?,
+                    "--artifacts" => replace_path(&mut options.artifacts, &arg, value(&mut args)?)?,
+                    "--case" => options.cases.push(value(&mut args)?),
+                    "--tag" => options.tags.push(value(&mut args)?),
+                    "--repeat" => options.repeat = parse_usize(&arg, &value(&mut args)?)?,
+                    "--parallel" => options.parallel = parse_usize(&arg, &value(&mut args)?)?,
+                    "--timeout-ms" => {
+                        options.timeout_ms = Some(parse_u64(&arg, &value(&mut args)?)?)
+                    }
+                    "--max-tool-calls" => {
+                        options.max_tool_calls = Some(parse_u64(&arg, &value(&mut args)?)?)
+                    }
+                    "--max-input-tokens" => {
+                        options.max_input_tokens = Some(parse_u64(&arg, &value(&mut args)?)?)
+                    }
+                    "--max-duration-ms" => {
+                        options.max_duration_ms = Some(parse_u64(&arg, &value(&mut args)?)?)
+                    }
+                    "--max-cost-microusd" => {
+                        options.max_cost_microusd = Some(parse_u64(&arg, &value(&mut args)?)?)
+                    }
+                    "--input-cost-microusd-per-million" => {
+                        options.input_cost_microusd_per_million =
+                            parse_u64(&arg, &value(&mut args)?)?
+                    }
+                    "--output-cost-microusd-per-million" => {
+                        options.output_cost_microusd_per_million =
+                            parse_u64(&arg, &value(&mut args)?)?
+                    }
+                    "--reasoning-cost-microusd-per-million" => {
+                        options.reasoning_cost_microusd_per_million =
+                            parse_u64(&arg, &value(&mut args)?)?
+                    }
+                    "--max-token-regression-percent" => {
+                        options.max_token_regression_percent =
+                            Some(parse_percent(&arg, &value(&mut args)?)?)
+                    }
+                    "--max-round-regression" => {
+                        options.max_round_regression = Some(parse_u64(&arg, &value(&mut args)?)?)
+                    }
+                    "--min-pass-rate" => {
+                        options.min_pass_rate_percent = parse_percent(&arg, &value(&mut args)?)?
+                    }
+                    "--keep-failed-workspace" => options.keep_failed_workspace = true,
+                    "--allow-regressions" => options.allow_regressions = true,
+                    _ => bail!("unknown eval option '{arg}'"),
                 }
             }
-            Ok(CliCommand::Eval { save, compare })
+            Ok(CliCommand::Eval(options))
         }
         _ => bail!("unknown command '{command}'\n\n{USAGE}"),
     }
+}
+
+fn replace_path(target: &mut Option<PathBuf>, option: &str, value: String) -> Result<()> {
+    if target.replace(PathBuf::from(value)).is_some() {
+        bail!("{option} may only be specified once");
+    }
+    Ok(())
+}
+
+fn parse_u64(option: &str, value: &str) -> Result<u64> {
+    value
+        .parse()
+        .with_context(|| format!("{option} requires a non-negative integer"))
+}
+
+fn parse_usize(option: &str, value: &str) -> Result<usize> {
+    value
+        .parse()
+        .with_context(|| format!("{option} requires a non-negative integer"))
+}
+
+fn parse_percent(option: &str, value: &str) -> Result<u64> {
+    parse_u64(option, value.trim_end_matches('%'))
 }
 
 struct CliOutput;
@@ -263,6 +351,14 @@ impl Output for CliOutput {
             self.reset()
         );
     }
+
+    fn compaction_started(&self, strategy: &str) {
+        println!(
+            "{}[compact {strategy}] preparing checkpoint...{}",
+            self.yellow(),
+            self.reset()
+        );
+    }
     fn compaction(&self, before: usize, after: usize, strategy: &str) {
         println!(
             "{}[compact {}] {} → {} (-{}){}",
@@ -305,16 +401,33 @@ impl Output for CliOutput {
 
 struct JsonlOutput<W> {
     writer: Mutex<W>,
+    sequence: AtomicU64,
+    session_id: String,
+    turn_id: String,
+    pending_calls: Mutex<VecDeque<ToolCall>>,
+    active_call_ids: Mutex<VecDeque<String>>,
 }
 
 impl<W: Write + Send> JsonlOutput<W> {
     fn new(writer: W) -> Self {
         Self {
             writer: Mutex::new(writer),
+            sequence: AtomicU64::new(0),
+            session_id: uuid::Uuid::new_v4().to_string(),
+            turn_id: uuid::Uuid::new_v4().to_string(),
+            pending_calls: Mutex::new(VecDeque::new()),
+            active_call_ids: Mutex::new(VecDeque::new()),
         }
     }
 
-    fn emit(&self, event: serde_json::Value) {
+    fn emit(&self, mut event: serde_json::Value) {
+        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
+        if let Some(object) = event.as_object_mut() {
+            object.insert("schema".into(), EVENT_SCHEMA.into());
+            object.insert("sequence".into(), sequence.into());
+            object.insert("session_id".into(), self.session_id.clone().into());
+            object.insert("turn_id".into(), self.turn_id.clone().into());
+        }
         let Ok(mut writer) = self.writer.lock() else {
             return;
         };
@@ -362,16 +475,41 @@ impl<W: Write + Send> Output for JsonlOutput<W> {
     }
 
     fn tool_call(&self, name: &str, preview: &str) {
+        let call = self.pending_calls.lock().ok().and_then(|mut calls| {
+            calls
+                .iter()
+                .position(|call| call.function.name == name)
+                .and_then(|index| calls.remove(index))
+        });
+        let (call_id, arguments) = call
+            .map(|call| {
+                let arguments = call.args_value();
+                (Some(call.id), Some(arguments))
+            })
+            .unwrap_or_default();
+        if let Some(call_id) = &call_id {
+            if let Ok(mut active) = self.active_call_ids.lock() {
+                active.push_back(call_id.clone());
+            }
+        }
         self.emit(serde_json::json!({
             "type": "tool_call",
+            "call_id": call_id,
             "name": name,
+            "arguments": arguments,
             "preview": preview,
         }));
     }
 
     fn tool_result(&self, name: &str, ok: bool, content: &str, duration_ms: u64) {
+        let call_id = self
+            .active_call_ids
+            .lock()
+            .ok()
+            .and_then(|mut ids| ids.pop_front());
         self.emit(serde_json::json!({
             "type": "tool_result",
+            "call_id": call_id,
             "name": name,
             "ok": ok,
             "content": content,
@@ -399,6 +537,13 @@ impl<W: Write + Send> Output for JsonlOutput<W> {
             "cached_tokens": cached,
             "context_tokens": ctx_tokens,
             "max_context_tokens": max_context,
+        }));
+    }
+
+    fn compaction_started(&self, strategy: &str) {
+        self.emit(serde_json::json!({
+            "type": "compaction_started",
+            "strategy": strategy,
         }));
     }
 
@@ -451,6 +596,23 @@ impl<W: Write + Send> Output for JsonlOutput<W> {
             "approved": false,
         }));
         false
+    }
+
+    fn on_message(&self, message: &Message) {
+        if !message.tool_calls.is_empty() {
+            if let Ok(mut calls) = self.pending_calls.lock() {
+                calls.extend(message.tool_calls.iter().cloned());
+            }
+        }
+        self.emit(serde_json::json!({
+            "type": "message",
+            "role": message.role,
+            "content": message.content,
+            "reasoning": message.reasoning,
+            "tool_call_id": message.tool_call_id,
+            "tool_name": message.tool_name,
+            "tool_calls": message.tool_calls,
+        }));
     }
 }
 
@@ -581,10 +743,11 @@ async fn main() -> Result<()> {
     }
     let jsonl = matches!(
         &command,
-        CliCommand::Run {
-            output: OutputFormat::Jsonl,
-            ..
-        }
+        CliCommand::Rpc
+            | CliCommand::Run {
+                output: OutputFormat::Jsonl,
+                ..
+            }
     );
 
     tracing_subscriber::fmt()
@@ -593,23 +756,32 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    if let CliCommand::Eval(options) = &command {
+        let live_config = if options.mode == eval::EvalMode::Live {
+            Some(provider_config()?)
+        } else {
+            None
+        };
+        return eval::run(live_config, options).await;
+    }
     let cfg = match provider_config() {
         Ok(cfg) => cfg,
         Err(error) => {
-            if jsonl {
+            if command == CliCommand::Rpc {
+                rpc::startup_error(&error);
+            } else if jsonl {
                 JsonlOutput::new(std::io::stdout()).error(&error);
             }
             return Err(error);
         }
     };
-    if let CliCommand::Eval { save, compare } = &command {
-        return eval::run(cfg, save.as_deref(), compare.as_deref()).await;
-    }
     let root = match std::env::current_dir() {
         Ok(root) => root,
         Err(error) => {
             let error = anyhow::Error::from(error);
-            if jsonl {
+            if command == CliCommand::Rpc {
+                rpc::startup_error(&error);
+            } else if jsonl {
                 JsonlOutput::new(std::io::stdout()).error(&error);
             }
             return Err(error);
@@ -731,6 +903,11 @@ async fn main() -> Result<()> {
     }
 
     let out = CliOutput;
+    if command == CliCommand::Rpc {
+        let result = rpc::serve(agent).await;
+        runtime_manager.shutdown_all().await;
+        return result;
+    }
     if let CliCommand::Run { prompt, output } = command {
         let result = match output {
             OutputFormat::Console => {
@@ -835,6 +1012,7 @@ mod tests {
     fn parses_interactive_and_dev_commands() {
         assert_eq!(command(&[]).unwrap(), CliCommand::Interactive);
         assert_eq!(command(&["dev"]).unwrap(), CliCommand::Dev);
+        assert_eq!(command(&["rpc"]).unwrap(), CliCommand::Rpc);
         assert_eq!(command(&["--help"]).unwrap(), CliCommand::Help);
     }
 
@@ -885,6 +1063,9 @@ mod tests {
 
     #[test]
     fn parses_eval_paths_and_rejects_duplicate_options() {
+        let mut expected = eval::EvalOptions::default();
+        expected.save = Some(PathBuf::from("current.json"));
+        expected.compare = Some(PathBuf::from("baseline.json"));
         assert_eq!(
             command(&[
                 "eval",
@@ -894,15 +1075,12 @@ mod tests {
                 "baseline.json"
             ])
             .unwrap(),
-            CliCommand::Eval {
-                save: Some(PathBuf::from("current.json")),
-                compare: Some(PathBuf::from("baseline.json")),
-            }
+            CliCommand::Eval(expected)
         );
         assert!(command(&["eval", "--save"])
             .unwrap_err()
             .to_string()
-            .contains("requires a path"));
+            .contains("requires a value"));
         assert!(command(&["eval", "--save", "one", "--save", "two"])
             .unwrap_err()
             .to_string()
@@ -933,6 +1111,39 @@ mod tests {
         assert_eq!(events[3]["duration_ms"], 12);
         assert_eq!(events[4]["input_tokens"], 10);
         assert_eq!(events[5]["approved"], false);
-        assert_eq!(events[6], serde_json::json!({"type": "done", "ok": true}));
+        assert_eq!(events[6]["type"], "done");
+        assert_eq!(events[6]["ok"], true);
+        for (sequence, event) in events.iter().enumerate() {
+            assert_eq!(event["schema"], EVENT_SCHEMA);
+            assert_eq!(event["sequence"], sequence);
+            assert!(event["session_id"].is_string());
+            assert!(event["turn_id"].is_string());
+        }
+    }
+
+    #[test]
+    fn jsonl_output_correlates_full_tool_calls_and_results() {
+        let output = JsonlOutput::new(Vec::new());
+        let mut message = Message::assistant("");
+        message.tool_calls.push(ToolCall {
+            id: "call-42".into(),
+            kind: "function".into(),
+            function: wisp_llm::FunctionCall {
+                name: "read".into(),
+                arguments: serde_json::json!({"path": "notes.txt"}).to_string(),
+            },
+        });
+        output.on_message(&message);
+        output.tool_call("read", "notes.txt");
+        output.tool_result("read", true, "contents", 3);
+
+        let events: Vec<serde_json::Value> = String::from_utf8(output.into_inner())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events[1]["call_id"], "call-42");
+        assert_eq!(events[1]["arguments"]["path"], "notes.txt");
+        assert_eq!(events[2]["call_id"], "call-42");
     }
 }

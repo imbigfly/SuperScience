@@ -70,6 +70,7 @@ pub(super) fn Sidebar(
         bool,
         bool,
         bool,
+        bool,
     )>,
     open_folder_actions: Callback<(web_sys::MouseEvent, String, String)>,
     open_capabilities: Callback<web_sys::MouseEvent>,
@@ -431,6 +432,7 @@ pub(super) fn Sidebar(
                         let title_actions = title.clone();
                         let show_actions = open_session_actions.clone();
                         let pinned = s.pinned;
+                        let stale_prompt = s.stale_prompt;
                         let branch_merged = matches!(
                             s.branch_state.as_deref(),
                             Some("merged" | "orphaned")
@@ -454,6 +456,7 @@ pub(super) fn Sidebar(
                                     data-session-id=id_attr
                                     data-session-title=title_attr
                                     data-session-pinned=if pinned { "true" } else { "false" }
+                                    data-session-stale=if stale_prompt { "true" } else { "false" }
                                     data-session-branch=if is_branch { "true" } else { "false" }
                                     data-session-family=if has_branch_family { "true" } else { "false" }
                                     data-exploration-round=if has_exploration_round { "true" } else { "false" }
@@ -502,6 +505,10 @@ pub(super) fn Sidebar(
                                         <span class="session-branch-icon" aria-hidden="true">{compose_icon("branch")}</span>
                                     })}
                                     <span class="ses-title">{title}</span>
+                                    {stale_prompt.then(|| view! {
+                                        <span class="ses-stale" aria-hidden="true"
+                                            title=move || t(loc, "session.rules_stale")>{compose_icon("sync")}</span>
+                                    })}
                                 </button>
                                 <button type="button" class="session-actions"
                                     class:selection-hidden=move || selecting_sessions.get()
@@ -511,7 +518,7 @@ pub(super) fn Sidebar(
                                     on:click=move |ev: web_sys::MouseEvent| {
                                         ev.prevent_default();
                                         ev.stop_propagation();
-                                        show_actions.call((ev, id_actions.clone(), title_actions.clone(), pinned, is_branch, branch_merged, has_branch_family, has_exploration_round));
+                                        show_actions.call((ev, id_actions.clone(), title_actions.clone(), pinned, is_branch, branch_merged, has_branch_family, has_exploration_round, stale_prompt));
                                     }>"⋯"</button>
                             </div>
                         }.into_view()

@@ -38,6 +38,7 @@ pub(crate) fn refresh_sessions(
                         branched_from: None,
                         pinned: false,
                         branch_state: None,
+                        stale_prompt: false,
                     });
                 page.items.insert(0, draft);
             }

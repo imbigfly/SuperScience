@@ -120,6 +120,56 @@ impl Agent {
         }
     }
 
+    /// Construct an Agent from host-supplied runtime parts.
+    ///
+    /// Headless tests and embedding hosts use this boundary to inject a
+    /// deterministic provider and an exact tool registry while exercising the
+    /// production agent loop. The caller owns any extra tools (such as
+    /// `explore`), context seeding, and session persistence policy.
+    pub fn from_parts(
+        provider: Box<dyn Provider>,
+        vision_provider: Option<Box<dyn Provider>>,
+        tools: Registry,
+        ctx: ContextManager,
+        root: PathBuf,
+        max_iter: usize,
+        session_path: PathBuf,
+    ) -> Self {
+        Self {
+            provider,
+            vision_provider,
+            tools,
+            ctx,
+            root,
+            max_iter,
+            session_path,
+        }
+    }
+
+    /// Convenience form of [`Self::from_parts`] that loads the conventional
+    /// `.wisp/session.json` path and starts a context with `max_context`.
+    pub fn with_provider(
+        provider: Box<dyn Provider>,
+        vision_provider: Option<Box<dyn Provider>>,
+        tools: Registry,
+        root: PathBuf,
+        max_context: usize,
+        max_iter: usize,
+    ) -> Self {
+        let session_path = root.join(".wisp").join("session.json");
+        let mut ctx = ContextManager::new(max_context);
+        ctx.load(&session_path);
+        Self::from_parts(
+            provider,
+            vision_provider,
+            tools,
+            ctx,
+            root,
+            max_iter,
+            session_path,
+        )
+    }
+
     /// Seed a fresh system prompt or refresh its catalog-free skills section.
     pub fn seed_system_prompt(&mut self, skills: &SkillIndex, compute_hosts: Option<String>) {
         let system_prompt = SystemPrompt::new(&self.root, skills, compute_hosts);

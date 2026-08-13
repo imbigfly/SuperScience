@@ -7151,18 +7151,22 @@ name = "wisp-cli"
 version = "1.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "dirs 5.0.1",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "tokio",
  "tracing-subscriber",
+ "uuid",
  "wisp-core",
  "wisp-llm",
  "wisp-mcp",
  "wisp-runtime",
  "wisp-skills",
+ "wisp-tools",
 ]
 
 [[package]]

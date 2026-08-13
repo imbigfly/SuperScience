@@ -829,6 +829,54 @@ impl Store {
         Ok(())
     }
 
+    /// Rewrite a frame's persisted system prompt (the first `system` message)
+    /// in place, e.g. to reload AGENTS.md / WISP.md into a long-lived session.
+    /// Unlike `replace_messages`, other messages and resource links are
+    /// untouched. Returns false when the frame has no system message.
+    pub async fn replace_system_message(&self, frame_id: &str, msg: &Message) -> Result<bool> {
+        let content = serde_json::to_string(&msg.content)?;
+        let updated = sqlx::query(
+            "UPDATE messages SET content=? WHERE frame_id=? AND role='system' \
+             AND seq=(SELECT MIN(seq) FROM messages WHERE frame_id=? AND role='system')",
+        )
+        .bind(content)
+        .bind(frame_id)
+        .bind(frame_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Batch-load each frame's persisted system prompt content (JSON), keyed
+    /// by frame id. Frames without a system message are absent from the map.
+    pub async fn load_system_messages(
+        &self,
+        frame_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let mut map = std::collections::HashMap::new();
+        if frame_ids.is_empty() {
+            return Ok(map);
+        }
+        let mut qb: sqlx::QueryBuilder<'_, sqlx::Sqlite> = sqlx::QueryBuilder::new(
+            "SELECT frame_id, content FROM messages m WHERE role='system' \
+             AND seq=(SELECT MIN(seq) FROM messages WHERE frame_id=m.frame_id AND role='system') \
+             AND frame_id IN (",
+        );
+        let mut separated = qb.separated(", ");
+        for id in frame_ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        let rows: Vec<(String, String)> = qb
+            .build_query_as::<(String, String)>()
+            .fetch_all(&self.pool)
+            .await?;
+        for (frame_id, content) in rows {
+            map.insert(frame_id, content);
+        }
+        Ok(map)
+    }
+
     pub async fn message_count(&self, frame_id: &str) -> Result<i64> {
         Ok(
             sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE frame_id=?")

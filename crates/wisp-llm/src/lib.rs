@@ -15,6 +15,7 @@ pub mod openai;
 pub mod provider;
 pub mod responses;
 pub mod routed;
+pub mod scripted;
 
 pub use message::{
     Completion, Content, FunctionCall, ImageUrl, Message, Part, Role, ToolCall, ToolSchema, Usage,
@@ -24,3 +25,7 @@ pub use provider::{
 };
 pub use provider::{LlmError, Result};
 pub use routed::RoutedProvider;
+pub use scripted::{
+    ScriptedCompletion, ScriptedProvider, ScriptedProviderSnapshot, ScriptedRequest,
+    ScriptedToolCall,
+};

@@ -639,7 +639,7 @@ impl Store {
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "CREATE INDEX ix_exploration_promotions_exploration \
+            "CREATE INDEX IF NOT EXISTS ix_exploration_promotions_exploration \
              ON exploration_promotions(exploration_id,started_at DESC)",
         )
         .execute(&mut *tx)

@@ -134,6 +134,59 @@ async fn roundtrip() {
 }
 
 #[tokio::test]
+async fn replace_and_load_system_message() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_sysprompt_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p1", "proj", "").await.unwrap();
+    store.create_frame("f1", "p1", "OPERON", "m").await.unwrap();
+    store.create_frame("f2", "p1", "OPERON", "m").await.unwrap();
+    store
+        .append_message("f1", 1, &Message::system("old prompt"))
+        .await
+        .unwrap();
+    store
+        .append_message("f1", 2, &Message::user("hello"))
+        .await
+        .unwrap();
+    // f2 has no system message.
+    store
+        .append_message("f2", 1, &Message::user("no system"))
+        .await
+        .unwrap();
+
+    let map = store
+        .load_system_messages(&["f1".into(), "f2".into(), "missing".into()])
+        .await
+        .unwrap();
+    assert_eq!(map.len(), 1, "only f1 has a system message: {map:?}");
+    let content: wisp_llm::Content = serde_json::from_str(&map["f1"]).unwrap();
+    assert_eq!(content.as_text(), "old prompt");
+
+    assert!(store
+        .replace_system_message("f1", &Message::system("new prompt"))
+        .await
+        .unwrap());
+    let msgs = store.load_messages("f1").await.unwrap();
+    assert_eq!(msgs[0].content.as_text(), "new prompt");
+    assert_eq!(
+        msgs[1].content.as_text(),
+        "hello",
+        "other messages untouched"
+    );
+    assert!(
+        !store
+            .replace_system_message("f2", &Message::system("nope"))
+            .await
+            .unwrap(),
+        "frames without a system message report false"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
 async fn token_usage_folds_usage_events_into_root_sessions() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_store_token_usage_{}.sqlite",
@@ -6930,7 +6983,7 @@ async fn exploration_promotion_recovery_migration_removes_legacy_cascade() {
     .await
     .unwrap();
     sqlx::query(
-        "CREATE INDEX ix_exploration_promotions_exploration \
+        "CREATE INDEX IF NOT EXISTS ix_exploration_promotions_exploration \
          ON exploration_promotions(exploration_id,started_at DESC)",
     )
     .execute(&store.pool)
