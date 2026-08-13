@@ -106,9 +106,10 @@ pub(crate) fn ProjectsScreen(
     // still mounted. If the user navigated elsewhere during the background
     // import, the normal initial load refreshes it when they return.
     create_effect(move |_| {
-        if project_transfer.get().is_some_and(|transfer| {
-            transfer.direction == "import" && transfer.is_complete()
-        }) {
+        if project_transfer
+            .get()
+            .is_some_and(|transfer| transfer.direction == "import" && transfer.is_complete())
+        {
             reload();
         }
     });
@@ -321,9 +322,7 @@ pub(crate) fn ProjectsScreen(
                 Err(error) => {
                     let message = localize_backend(locale.get_untracked(), &js_error_text(error));
                     project_transfer.set(Some(ProjectTransferProgress::failed(
-                        "import",
-                        None,
-                        message,
+                        "import", None, message,
                     )));
                 }
             }

@@ -1737,16 +1737,13 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "exploration.history_unavailable") => Some("Explorations can only start from the current completed turn."),
         (Locale::En, "exploration.default_name") => Some("Exploration {n}"),
         (Locale::En, "exploration.start_title") => Some("Start an isolated exploration"),
-        (Locale::En, "exploration.start_hint") => Some("This copies the current completed mainline state into a persistent, isolated workspace. It is separate from a normal conversation branch."),
+        (Locale::En, "exploration.start_hint") => Some("This snapshots the current completed mainline state into an isolated local workspace. Each candidate may create multiple files and is separate from a normal conversation branch."),
         (Locale::En, "exploration.name") => Some("Exploration name"),
         (Locale::En, "exploration.create") => Some("Create exploration"),
         (Locale::En, "exploration.group") => Some("Explorations"),
         (Locale::En, "exploration.status_creating") => Some("Creating"),
         (Locale::En, "exploration.status_active") => Some("Active"),
-        (Locale::En, "exploration.status_archived") => Some("Archived"),
         (Locale::En, "exploration.status_promoting") => Some("Promoting"),
-        (Locale::En, "exploration.status_promoted") => Some("Mainline"),
-        (Locale::En, "exploration.status_discarded") => Some("Discarded"),
         (Locale::En, "exploration.status_failed") => Some("Failed"),
         (Locale::En, "exploration.isolation_full") => Some("Fully isolated"),
         (Locale::En, "exploration.isolation_partial") => Some("Partially isolated"),
@@ -1754,13 +1751,15 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "exploration.mainline_label") => Some("Mainline checkpoint"),
         (Locale::En, "exploration.external_warning_short") => Some("external effects are not rolled back"),
         (Locale::En, "exploration.view_diff") => Some("View diff"),
+        (Locale::En, "exploration.open") => Some("Open exploration"),
+        (Locale::En, "exploration.select_as_mainline") => Some("Select as mainline"),
         (Locale::En, "exploration.promote") => Some("Set as mainline"),
-        (Locale::En, "exploration.archive") => Some("Archive"),
-        (Locale::En, "exploration.restore") => Some("Restore"),
         (Locale::En, "exploration.discard") => Some("Discard"),
-        (Locale::En, "exploration.mainline_count") => Some("The current round has {n} active explorations"),
-        (Locale::En, "exploration.mainline_warning") => Some("Project writes and the source conversation are frozen. Other conversations remain available with read-only project tools; promote one exploration, or archive or discard every candidate, to resume writes."),
-        (Locale::En, "exploration.mainline_frozen_placeholder") => Some("Exploration source conversation is frozen"),
+        (Locale::En, "exploration.abandon") => Some("Abandon exploration"),
+        (Locale::En, "exploration.abandon_confirm_body") => Some("Keep the original mainline and permanently remove every exploration in this round, including private files, artifacts, runs, and research records? External operations already performed cannot be rolled back."),
+        (Locale::En, "exploration.mainline_count") => Some("The current round has {n} exploration candidates"),
+        (Locale::En, "exploration.mainline_warning") => Some("Mainline is frozen until you select one exploration or explicitly abandon the complete round."),
+        (Locale::En, "exploration.mainline_frozen_placeholder") => Some("Mainline is frozen while this exploration round is unresolved"),
         (Locale::En, "exploration.read_only_placeholder") => Some("This exploration is read-only"),
         (Locale::En, "exploration.start_another") => Some("Start another"),
         (Locale::En, "exploration.diff_title") => Some("Exploration changes"),
@@ -1774,7 +1773,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "exploration.diff_branch_changes") => Some("Exploration changes"),
         (Locale::En, "exploration.diff_mainline_changes") => Some("Mainline changes since checkpoint"),
         (Locale::En, "exploration.promote_confirm_title") => Some("Set this exploration as mainline?"),
-        (Locale::En, "exploration.promote_confirm_body") => Some("The exploration conversation, files, artifacts, runs, decisions, and resource records will become the new mainline. Other candidates from this round will be archived."),
+        (Locale::En, "exploration.promote_confirm_body") => Some("The exploration conversation, files, artifacts, runs, decisions, and resource records will become the new mainline. Every other candidate from this round and its private files and records will be permanently removed."),
         (Locale::En, "exploration.discard_confirm_title") => Some("Discard this exploration?"),
         (Locale::En, "exploration.discard_confirm_body") => Some("Its private workspace and records will be removed. External operations already performed cannot be rolled back."),
         (Locale::En, "msg.edit_confirm_title") => Some("Rewind to this message?"),
@@ -3850,10 +3849,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "exploration.group") => Some("探索"),
         (Locale::Zh, "exploration.status_creating") => Some("创建中"),
         (Locale::Zh, "exploration.status_active") => Some("进行中"),
-        (Locale::Zh, "exploration.status_archived") => Some("已归档"),
         (Locale::Zh, "exploration.status_promoting") => Some("正在设为主线"),
-        (Locale::Zh, "exploration.status_promoted") => Some("主线"),
-        (Locale::Zh, "exploration.status_discarded") => Some("已丢弃"),
         (Locale::Zh, "exploration.status_failed") => Some("失败"),
         (Locale::Zh, "exploration.isolation_full") => Some("完全隔离"),
         (Locale::Zh, "exploration.isolation_partial") => Some("部分隔离"),
@@ -3861,13 +3857,15 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "exploration.mainline_label") => Some("主线检查点"),
         (Locale::Zh, "exploration.external_warning_short") => Some("外部副作用不会回滚"),
         (Locale::Zh, "exploration.view_diff") => Some("查看差异"),
+        (Locale::Zh, "exploration.open") => Some("打开探索"),
+        (Locale::Zh, "exploration.select_as_mainline") => Some("选定为主线"),
         (Locale::Zh, "exploration.promote") => Some("设为主线"),
-        (Locale::Zh, "exploration.archive") => Some("归档"),
-        (Locale::Zh, "exploration.restore") => Some("恢复"),
         (Locale::Zh, "exploration.discard") => Some("丢弃"),
-        (Locale::Zh, "exploration.mainline_count") => Some("当前探索轮有 {n} 个活跃候选"),
-        (Locale::Zh, "exploration.mainline_warning") => Some("项目写入和探索源对话已冻结；其他对话仍可使用只读项目工具。晋升一个探索，或归档、丢弃全部候选后即可恢复写入。"),
-        (Locale::Zh, "exploration.mainline_frozen_placeholder") => Some("探索源对话已冻结"),
+        (Locale::Zh, "exploration.abandon") => Some("放弃探索"),
+        (Locale::Zh, "exploration.abandon_confirm_body") => Some("保留原 main，并永久删除本轮所有探索及其私有文件、Artifact、Run 和研究记录？已经执行的外部操作无法回滚。"),
+        (Locale::Zh, "exploration.mainline_count") => Some("当前探索轮有 {n} 个候选"),
+        (Locale::Zh, "exploration.mainline_warning") => Some("选择一个探索或明确放弃整轮探索之前，main 将保持冻结。"),
+        (Locale::Zh, "exploration.mainline_frozen_placeholder") => Some("探索轮尚未确定，main 已冻结"),
         (Locale::Zh, "exploration.read_only_placeholder") => Some("此探索为只读状态"),
         (Locale::Zh, "exploration.start_another") => Some("再建一个探索"),
         (Locale::Zh, "exploration.diff_title") => Some("探索差异"),
@@ -3881,7 +3879,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "exploration.diff_branch_changes") => Some("探索相对检查点的变化"),
         (Locale::Zh, "exploration.diff_mainline_changes") => Some("检查点之后的主线变化"),
         (Locale::Zh, "exploration.promote_confirm_title") => Some("将这个探索设为主线？"),
-        (Locale::Zh, "exploration.promote_confirm_body") => Some("探索中的对话、文件、Artifact、运行、决策和资源记录会成为新主线；同轮其他候选会自动归档。"),
+        (Locale::Zh, "exploration.promote_confirm_body") => Some("探索中的对话、文件、Artifact、运行、决策和资源记录会成为新主线；同轮其他候选及其私有文件和记录会被永久清理。"),
         (Locale::Zh, "exploration.discard_confirm_title") => Some("丢弃这个探索？"),
         (Locale::Zh, "exploration.discard_confirm_body") => Some("它的私有工作区和记录会被移除；已经执行的外部操作无法回滚。"),
         (Locale::Zh, "msg.edit_confirm_title") => Some("回溯到这条消息？"),
@@ -4320,8 +4318,26 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
             t(locale, "err.cred_env_invalid")
         }
         "Credential value is required." => t(locale, "err.cred_value_required"),
+        m if m.starts_with("exploration_round_active:") => {
+            if locale == Locale::Zh {
+                "另一个主线会话已有当前探索轮；请先结束该轮探索。".to_string()
+            } else {
+                "Another mainline conversation already owns the current exploration round. Finish that round first.".to_string()
+            }
+        }
         m if m.starts_with("exploration_mainline_frozen:") => {
-            t(locale, "exploration.mainline_warning")
+            if locale == Locale::Zh {
+                "当前 main 已冻结；请选择一个探索，或从 main 的右键菜单放弃整轮探索。".to_string()
+            } else {
+                "Mainline is frozen. Select an exploration, or abandon the complete round from mainline's context menu.".to_string()
+            }
+        }
+        m if m.starts_with("session_has_branches:") => {
+            if locale == Locale::Zh {
+                "该 main 仍有对话分支；请先删除分支。".to_string()
+            } else {
+                "This main conversation still has branches. Delete the branches first.".to_string()
+            }
         }
         m if m.starts_with("SSH connection succeeded, but the environment probe could not read") => {
             if locale == Locale::Zh {

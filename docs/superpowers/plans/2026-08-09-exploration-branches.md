@@ -141,11 +141,13 @@ cargo fmt --all -- --check
 - 修改文件浏览、Artifact、Runtime、Run、Research Graph、Reader/Composer 引用命令，让它们接收或解析 `StateView`。
 - 修改 `crates/wisp-store/src/artifacts.rs`：new writes 更新 scope-aware `artifact_heads`；读取 exact version，不使用项目级 latest 猜测。
 - 修改 `crates/wisp-store/src/runs.rs`、Research Graph store/module 和 ExternalResource 写入，加入 `exploration_id` 过滤。
-- 修改 `crates/wisp-store/src/project_transfer.rs` 和 Tauri project sync/export 查询：普通项目快照只包含主线/已晋升状态，并明确报告被排除的探索数量。
+- 修改 `crates/wisp-store/src/project_transfer.rs` 和 Tauri project sync/export 查询：普通项目快照只包含主线记录，并明确报告被排除的探索数量。
 - Exploration frame 使用独立 `MemoryManager` 和 branch root skill index。
 - system message 用探索 root 重新生成，重新应用 Specialist、Delegation/Plan 配置；不复制 source runtime。
 - 新 compaction 使用 `context_archives` 逻辑引用；为旧绝对路径增加受控兼容解析。
 - MVP 明确拒绝 ACP exploration、历史非 head checkpoint、活跃 turn/Run 和未 scope-aware 的项目级写命令。
+- 探索轮冻结 source main 的消息、分支创建、移动和删除；其他普通 conversation 只允许讨论和只读检查，ACP 绑定会话在冻结期间直接拒绝 turn。
+- 普通 main 存在对话分支时禁止删除，必须先删除分支。
 - 活跃探索内的 project sync/export/import/delete/settings mutation 返回稳定错误码。
 
 ### 命令
@@ -155,8 +157,8 @@ create_exploration_checkpoint
 create_exploration
 list_explorations
 open_exploration
-archive_exploration
-restore_exploration
+discard_exploration
+abandon_exploration_round
 ```
 
 ### 测试
@@ -193,8 +195,10 @@ cd ../ui-tests && npx playwright test --grep "exploration"
 - 实现 promotion journal、staging、逐文件原子替换、trash rollback 和启动恢复。
 - 在一个 Store transaction 中采用 Artifact heads、Run/Decision/Resource、探索 frame 和 generation。
 - 晋升后驱逐 source/selected exploration 的 Agent、runtime、Memory/skill cache，用主线 root 重建。
-- 实现 `discard_exploration`：先检查无活动 turn/Run，再标记终态，最后只清理探索私有目录/记录。
-- 未采用探索保持 active/archived；晋升不隐式删除。
+- 实现 `discard_exploration`：先检查无活动 turn/Run，再硬删除探索私有目录、对话和记录，不保留终态卡片。
+- 晋升在同一个元数据事务中永久丢弃并清理同轮所有未采用候选。
+- 实现 `abandon_exploration_round`：检查同轮无活动 turn/队列/终端/Run，原子清理全部候选并推进 family generation，但保留原 main。
+- 失败或单独丢弃一个候选都不得解除仍有其他候选的 main 冻结。
 
 ### 命令
 
@@ -203,20 +207,23 @@ preview_exploration_diff
 preview_exploration_promotion
 promote_exploration
 discard_exploration
+abandon_exploration_round
 ```
 
 ### 测试
 
-- mainline unchanged 时，探索新增/修改/删除文件和 Artifact head 一起采用。
-- 被采用 frame 成为新主线，重建 Agent 后下一轮直接看到探索上下文。
+- mainline 被 Wisp 冻结且外部状态未变化时，探索新增/修改/删除文件和 Artifact head 一起采用。
+- 原 main frame ID 和普通分支关系保持不变，所选探索在检查点后的上下文被迁回原 main，重建 Agent 后下一轮直接看到探索上下文。
 - 其他探索的消息、Artifact、Run、Decision 不进入主线查询或 prompt。
-- source frame 新消息、主线文件外部修改、mainline Artifact/Run/Decision 改动分别触发 `MainlineAdvanced`。
+- source frame 新消息由统一 guard 拒绝；所选探索涉及的同路径主线文件被外部进程修改时触发 `MainlineAdvanced`，非重叠文件保持原样且不进入冲突预览。
 - preview 后、commit 前主线变化仍被锁内二次校验拒绝。
 - branch/reference 大文件 fingerprint 改变时拒绝。
 - 活跃 turn、queued turn、Run、sync 和第二个 promotion 都阻止晋升。
 - 对每个 journal 阶段注入失败，验证回滚或启动恢复到确定状态。
 - Windows 目标文件占用、rename 失败、case collision 不破坏主线。
 - 丢弃探索 A 后主线和探索 B 文件/记录校验和不变。
+- 单独丢弃一个候选后，只要同轮仍有候选，main 就继续冻结；显式放弃整轮后原 main 恢复可写且所有探索产物被清理。
+- source main 和带普通对话分支的 main 均不能被删除；结算探索或先删除分支后才允许删除。
 - 路径校验阻止删除 mainline root、HOME、app-data root 或非直接子目录。
 
 ### 验证
@@ -235,8 +242,9 @@ cargo fmt --all -- --check
 
 - 在完成轮次菜单加入“开始探索”，保留现有“分支”。
 - 侧栏在 source session 下展示 exploration group、状态和隔离等级。
-- Exploration header/banner 增加“查看差异”“设为主线”“归档”“丢弃”。
-- 主线 banner 显示活跃探索数量和继续主线会失去 fast-forward 资格的确认。
+- Exploration header/banner 增加“查看差异”“设为主线”“丢弃”。
+- 主线 banner 显示探索数量、冻结原因，以及“选择候选”或“放弃探索”两条结算路径。
+- source main 右键菜单提供“放弃探索”，探索未结算时和普通 main 有分支时均隐藏删除。
 - 新增差异/晋升/丢弃 dialog，展示 Files、Artifacts、Runs、Decisions、External effects。
 - 修改 `ui/src/dto.rs`、`ui/src/app_support/settings.rs`、`ui/src/main.rs`、`ui/src/session_modals.rs`、`ui/src/sidebar.rs`、i18n 和对应 CSS；按实际责任边界放置，不为缩短大文件做无关拆分。
 - 修改 `ui-tests/tests/mock-tauri.ts` 构造两个探索及差异状态。
@@ -246,10 +254,10 @@ cargo fmt --all -- --check
 
 1. 从当前主线节点创建探索 A、B。
 2. 打开 A/B 时 Files 和 Artifact 列表互不相同；切回主线保持原样。
-3. 主线未前进时 A 可设为主线，采用后 transcript 和 Artifact 同步切换。
+3. 冻结的 source main 不能发送或删除；A 可设为主线，采用后 transcript 和 Artifact 同步切换，并清理 B。
 4. B 内容不出现在主线。
-5. 主线继续一轮后 A 的“设为主线”显示拒绝原因和两侧差异。
-6. 丢弃 B 不影响主线。
+5. 单独丢弃一个候选后，只要仍有其他候选，就不解除 source main 冻结。
+6. 从 source main 右键选择“放弃探索”后清理 A/B，并恢复原 main 可写。
 7. 每个 dialog 打开后立即按一次 Escape，只关闭最上层，父 overlay 保持。
 8. 紧凑窗口中的差异 dialog/Inspector drawer 可用。
 9. 中英文文案都不把晋升称为通用 merge。
@@ -269,7 +277,7 @@ cd ../ui-tests && npm ci && npx playwright test
 - Windows 项目：重复上述流程，包含空格/中文路径和被占用文件的失败提示。
 - Git dirty + untracked 项目：确认无需 stash/commit 即可创建探索，主线 Git index 未改变。
 - 创建远程 Run：确认外部副作用警告，丢弃后远程作业不会被声称回滚。
-- 重启应用：活跃探索、归档探索和 promotion recovery 状态保持正确。
+- 重启应用：活跃探索和 promotion recovery 状态保持正确。
 
 ## PR 6：任意历史轮次检查点（MVP 后）
 

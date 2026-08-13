@@ -65,17 +65,13 @@ CREATE TABLE IF NOT EXISTS explorations (
     frame_id          TEXT NOT NULL UNIQUE REFERENCES frames(id) ON DELETE CASCADE,
     name              TEXT NOT NULL,
     status            TEXT NOT NULL
-                          CHECK(status IN ('creating','active','archived','promoting',
-                                           'promoted','discarded','failed')),
+                          CHECK(status IN ('creating','active','promoting','failed')),
     workspace_dir     TEXT NOT NULL,
     workspace_backend TEXT NOT NULL,
     scope_generation  INTEGER NOT NULL DEFAULT 0,
     warnings_json     TEXT NOT NULL DEFAULT '[]',
     created_at        INTEGER NOT NULL,
-    updated_at        INTEGER NOT NULL,
-    promoted_at       INTEGER,
-    archived_at       INTEGER,
-    discarded_at      INTEGER
+    updated_at        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_explorations_checkpoint_status
     ON explorations(checkpoint_id, status, created_at);
@@ -124,7 +120,7 @@ CREATE INDEX IF NOT EXISTS ix_exploration_effects_exploration
 
 CREATE TABLE IF NOT EXISTS exploration_promotions (
     id                  TEXT PRIMARY KEY,
-    exploration_id      TEXT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+    exploration_id      TEXT NOT NULL,
     expected_guard_hash TEXT NOT NULL,
     status              TEXT NOT NULL,
     diff_json           TEXT NOT NULL,

@@ -75,7 +75,9 @@ mod quick_action_routing_tests {
             LITERATURE_RESEARCH_ACTION_ID,
             false,
         )));
-        assert!(!quick_action_uses_current_conversation(&action("custom", true)));
+        assert!(!quick_action_uses_current_conversation(&action(
+            "custom", true
+        )));
     }
 
     #[test]
@@ -508,7 +510,15 @@ pub(crate) fn ActionPalette(
                 "project preferences config 项目 设置",
                 true,
             ),
-            ("skills", "grid", "command.skills", general, "", "manage skill 管理 技能", true),
+            (
+                "skills",
+                "grid",
+                "command.skills",
+                general,
+                "",
+                "manage skill 管理 技能",
+                true,
+            ),
             (
                 "projects",
                 "folder",
@@ -518,7 +528,15 @@ pub(crate) fn ActionPalette(
                 "open switch project 打开 切换 项目",
                 false,
             ),
-            ("library", "star", "command.library", navigate.clone(), "", "favorites collection 收藏 库", false),
+            (
+                "library",
+                "star",
+                "command.library",
+                navigate.clone(),
+                "",
+                "favorites collection 收藏 库",
+                false,
+            ),
             (
                 "toggle-sidebar",
                 "panel",
@@ -537,8 +555,24 @@ pub(crate) fn ActionPalette(
                 "open outputs results 产物 结果",
                 true,
             ),
-            ("notebook", "doc", "command.notebook", navigate.clone(), "", "open notebook 笔记本", true),
-            ("files", "doc", "command.files", navigate.clone(), "", "open browser files 文件 浏览", true),
+            (
+                "notebook",
+                "doc",
+                "command.notebook",
+                navigate.clone(),
+                "",
+                "open notebook 笔记本",
+                true,
+            ),
+            (
+                "files",
+                "doc",
+                "command.files",
+                navigate.clone(),
+                "",
+                "open browser files 文件 浏览",
+                true,
+            ),
             (
                 "provenance",
                 "copy",
@@ -566,7 +600,15 @@ pub(crate) fn ActionPalette(
                 "ask side chat 侧边 对话",
                 true,
             ),
-            ("close-panel", "panel", "command.close_panel", navigate, "", "hide right panel 关闭 右侧", true),
+            (
+                "close-panel",
+                "panel",
+                "command.close_panel",
+                navigate,
+                "",
+                "hide right panel 关闭 右侧",
+                true,
+            ),
             (
                 "theme-light",
                 "gear",
@@ -630,9 +672,33 @@ pub(crate) fn ActionPalette(
                 "font code decrease smaller 字体 代码 缩小",
                 false,
             ),
-            ("star-us", "star", "command.star_us", help.clone(), "", "github star", false),
-            ("docs", "doc", "menu.docs", help.clone(), "", "documentation readme help 文档 帮助", false),
-            ("issues", "bubble", "menu.issues", help, "", "github issue bug feedback report 问题 反馈 报告", false),
+            (
+                "star-us",
+                "star",
+                "command.star_us",
+                help.clone(),
+                "",
+                "github star",
+                false,
+            ),
+            (
+                "docs",
+                "doc",
+                "menu.docs",
+                help.clone(),
+                "",
+                "documentation readme help 文档 帮助",
+                false,
+            ),
+            (
+                "issues",
+                "bubble",
+                "menu.issues",
+                help,
+                "",
+                "github issue bug feedback report 问题 反馈 报告",
+                false,
+            ),
         ];
         let q = query.get().trim().to_lowercase();
         entries

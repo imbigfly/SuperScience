@@ -206,16 +206,14 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     warnings_json: "[]",
     created_at: createdAt,
     updated_at: createdAt,
-    promoted_at: null,
-    archived_at: null,
-    discarded_at: null,
   });
   let mockExplorations: any[] = mockExplorationFlow
     ? [
-        { exploration: makeMockExploration("exploration-a", "exploration-frame-a", "Exploration A", 2001), source_frame_id: "exploration-mainline", isolation_summary_json: '{"partial":false}' },
-        { exploration: makeMockExploration("exploration-b", "exploration-frame-b", "Exploration B", 2002), source_frame_id: "exploration-mainline", isolation_summary_json: '{"partial":true}' },
+        { exploration: makeMockExploration("exploration-a", "exploration-frame-a", "Exploration A", 2001), source_frame_id: "exploration-mainline", checkpoint_user_index: 0, isolation_summary_json: '{"partial":false}' },
+        { exploration: makeMockExploration("exploration-b", "exploration-frame-b", "Exploration B", 2002), source_frame_id: "exploration-mainline", checkpoint_user_index: 0, isolation_summary_json: '{"partial":true}' },
       ]
     : [];
+  let mockExplorationRoundResolved = false;
   const explorationTranscript = (frameId: string) => {
     const suffix = frameId === "exploration-mainline" ? "Mainline result" : frameId.endsWith("-a") ? "Exploration A result" : frameId.endsWith("-b") ? "Exploration B result" : "New exploration result";
     const branches = frameId === "exploration-mainline" && mockBranchFlow
@@ -1988,18 +1986,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             };
           }
           case "list_project_explorations":
-            return mockExplorations.map((item) => ({
+            return mockExplorations.filter((item) =>
+              !mockExplorationRoundResolved || item.exploration.status !== "discarded").map((item) => ({
               ...item,
               exploration: { ...item.exploration },
             }));
-          case "list_project_state_revisions":
-            if (String(arg("frameId")) !== "exploration-mainline") return [];
-            return mockHistoricalExploration
-              ? [
-                  { frame_id: "exploration-mainline", turn_index: 0 },
-                  { frame_id: "exploration-mainline", turn_index: 2 },
-                ]
-              : [{ frame_id: "exploration-mainline", turn_index: 0 }];
           case "start_exploration": {
             ((window as any).__startExplorationCalls ??= []).push({
               sourceFrameId: arg("sourceFrameId"),
@@ -2013,6 +2004,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             mockExplorations.push({
               exploration,
               source_frame_id: String(arg("sourceFrameId") ?? "exploration-mainline"),
+              checkpoint_user_index: Number(arg("turnIndex") ?? 0),
               isolation_summary_json: '{"partial":false}',
             });
             activeMockFrame = frameId;
@@ -2026,39 +2018,31 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "preview_exploration_promotion":
             return mockExplorationPreview(String(arg("explorationId")));
-          case "archive_exploration":
-          case "restore_exploration": {
-            const row = mockExplorations.find((item) => item.exploration.id === arg("explorationId"));
-            if (!row) throw new Error("Exploration not found");
-            row.exploration.status = cmd === "archive_exploration" ? "archived" : "active";
-            row.exploration.updated_at += 1;
-            return { ...row.exploration };
-          }
           case "promote_exploration": {
             const id = String(arg("explorationId"));
             const preview = mockExplorationPreview(id);
             if (!preview.eligibility.eligible) throw new Error("MainlineAdvanced: the mainline no longer matches this exploration checkpoint");
             const row = mockExplorations.find((item) => item.exploration.id === id)!;
-            row.exploration.status = "promoted";
-            row.exploration.promoted_at = 2200;
-            const adoptedFrame = row.exploration.frame_id;
-            mockSessions.splice(0, mockSessions.length, { id: adoptedFrame, title: row.exploration.name, ts: 2200, running: false });
-            for (const item of mockExplorations) {
-              item.source_frame_id = adoptedFrame;
-              if (item.exploration.id !== id && item.exploration.status === "active") {
-                item.exploration.status = "archived";
-                item.exploration.archived_at = 2200;
-              }
-            }
+            const adoptedFrame = row.source_frame_id;
+            const mainline = mockSessions.find((item) => item.id === adoptedFrame);
+            if (mainline) mainline.ts = 2200;
+            mockExplorations = mockExplorations.filter((item) => item.source_frame_id !== adoptedFrame);
             activeMockFrame = adoptedFrame;
-            return { exploration: { ...row.exploration }, promotionId: `promotion-${id}`, adoptedFrameId: adoptedFrame };
+            mockExplorationRoundResolved = true;
+            return { mainlineFrameId: adoptedFrame };
           }
           case "discard_exploration": {
             const row = mockExplorations.find((item) => item.exploration.id === arg("explorationId"));
             if (!row) throw new Error("Exploration not found");
-            row.exploration.status = "discarded";
-            row.exploration.discarded_at = 2300;
-            return { ...row.exploration };
+            mockExplorations = mockExplorations.filter((item) => item.exploration.id !== row.exploration.id);
+            return null;
+          }
+          case "abandon_exploration_round": {
+            const sourceFrameId = String(arg("sourceFrameId"));
+            mockExplorations = mockExplorations.filter((item) => item.source_frame_id !== sourceFrameId);
+            mockExplorationRoundResolved = true;
+            activeMockFrame = sourceFrameId;
+            return null;
           }
           case "list_codex_sessions":
             return mockCodexSessions.map((item) => ({ ...item }));
@@ -3888,6 +3872,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             };
           case "list_artifacts":
             return mockPublication ? [artifacts[1]] : [];
+          case "download_artifact":
+            return null;
           case "side_chat": {
             const question = String(arg("question") ?? "");
             if (question === "SIDESCROLLTEST") {

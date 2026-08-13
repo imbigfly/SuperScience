@@ -220,6 +220,7 @@ fn text_from_code_block(el: &web_sys::Element) -> Option<String> {
 #[derive(Clone, PartialEq)]
 pub enum SessionAction {
     Open(String),
+    AbandonExploration(String),
     Delete(String),
     DeleteBranch(String),
     MergeBranch(String),
@@ -239,6 +240,14 @@ pub enum SessionAction {
         id: String,
         mode: SessionTransferMode,
     },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExplorationAction {
+    Open(String),
+    SelectAsMainline(String),
+    ViewDiff(String),
+    Discard(String),
 }
 
 #[derive(Clone, PartialEq)]
@@ -292,7 +301,8 @@ pub fn session_menu(
     pinned: bool,
     is_branch: bool,
     branch_merged: bool,
-    _has_branch_family: bool,
+    has_branch_family: bool,
+    has_exploration_round: bool,
     locale: Locale,
 ) -> CtxMenu {
     let mut items = vec![item(
@@ -310,6 +320,13 @@ pub fn session_menu(
             items.push(item(
                 "mergeSessionBranch",
                 i18n::t(locale, "branch.merge"),
+                session_id.to_string(),
+            ));
+        }
+        if has_exploration_round && !is_branch {
+            items.push(item(
+                "abandonExplorationRound",
+                i18n::t(locale, "exploration.abandon"),
                 session_id.to_string(),
             ));
         }
@@ -354,21 +371,57 @@ pub fn session_menu(
             i18n::t(locale, "ctx.export_debug_request"),
             session_id.to_string(),
         ));
-        items.push(item(
-            if is_branch {
-                "deleteSessionBranch"
-            } else {
-                "deleteSession"
-            },
-            i18n::t(
-                locale,
+        if is_branch || (!has_branch_family && !has_exploration_round) {
+            items.push(item(
                 if is_branch {
-                    "branch.delete"
+                    "deleteSessionBranch"
                 } else {
-                    "ctx.delete_session"
+                    "deleteSession"
                 },
-            ),
-            session_id.to_string(),
+                i18n::t(
+                    locale,
+                    if is_branch {
+                        "branch.delete"
+                    } else {
+                        "ctx.delete_session"
+                    },
+                ),
+                session_id.to_string(),
+            ));
+        }
+    }
+    CtxMenu { x, y, items }
+}
+
+pub fn exploration_menu(
+    x: f64,
+    y: f64,
+    exploration_id: &str,
+    status: &str,
+    locale: Locale,
+) -> CtxMenu {
+    let mut items = vec![item(
+        "openExploration",
+        i18n::t(locale, "exploration.open"),
+        exploration_id.to_string(),
+    )];
+    if status == "active" {
+        items.push(item(
+            "selectExplorationAsMainline",
+            i18n::t(locale, "exploration.select_as_mainline"),
+            exploration_id.to_string(),
+        ));
+    }
+    items.push(item(
+        "viewExplorationDiff",
+        i18n::t(locale, "exploration.view_diff"),
+        exploration_id.to_string(),
+    ));
+    if matches!(status, "active" | "failed") {
+        items.push(item(
+            "discardExploration",
+            i18n::t(locale, "exploration.discard"),
+            exploration_id.to_string(),
         ));
     }
     CtxMenu { x, y, items }
@@ -496,8 +549,9 @@ pub fn build(
         let is_branch = ses.get_attribute("data-session-branch").as_deref() == Some("true")
             || ses.class_list().contains("message-branch-link");
         let branch_merged = ses.get_attribute("data-branch-merged").as_deref() == Some("true");
-        let has_branch_family =
-            ses.get_attribute("data-session-family").as_deref() == Some("true");
+        let has_branch_family = ses.get_attribute("data-session-family").as_deref() == Some("true");
+        let has_exploration_round =
+            ses.get_attribute("data-exploration-round").as_deref() == Some("true");
         return Some(session_menu(
             x,
             y,
@@ -507,6 +561,7 @@ pub fn build(
             is_branch,
             branch_merged,
             has_branch_family,
+            has_exploration_round,
             locale,
         ));
     }
@@ -794,9 +849,44 @@ mod session_branch_action_tests {
     }
 }
 
+#[cfg(test)]
+mod exploration_action_tests {
+    use super::{exploration_action, ExplorationAction};
+
+    #[test]
+    fn parses_exploration_context_actions() {
+        assert_eq!(
+            exploration_action("selectExplorationAsMainline", "exploration-1"),
+            Some(ExplorationAction::SelectAsMainline("exploration-1".into()))
+        );
+        assert_eq!(
+            exploration_action("discardExploration", "exploration-1"),
+            Some(ExplorationAction::Discard("exploration-1".into()))
+        );
+        assert_eq!(exploration_action("discardExploration", ""), None);
+    }
+}
+
+pub fn exploration_action(action: &str, payload: &str) -> Option<ExplorationAction> {
+    if payload.is_empty() {
+        return None;
+    }
+    let id = payload.to_string();
+    match action {
+        "openExploration" => Some(ExplorationAction::Open(id)),
+        "selectExplorationAsMainline" => Some(ExplorationAction::SelectAsMainline(id)),
+        "viewExplorationDiff" => Some(ExplorationAction::ViewDiff(id)),
+        "discardExploration" => Some(ExplorationAction::Discard(id)),
+        _ => None,
+    }
+}
+
 pub fn session_action(action: &str, payload: &str) -> Option<SessionAction> {
     match action {
         "openSession" if !payload.is_empty() => Some(SessionAction::Open(payload.to_string())),
+        "abandonExplorationRound" if !payload.is_empty() => {
+            Some(SessionAction::AbandonExploration(payload.to_string()))
+        }
         "deleteSession" if !payload.is_empty() => Some(SessionAction::Delete(payload.to_string())),
         "deleteSessionBranch" if !payload.is_empty() => {
             Some(SessionAction::DeleteBranch(payload.to_string()))
@@ -1050,6 +1140,7 @@ pub fn ContextMenuPortal(
                                 | "deleteFolder"
                                 | "deleteWorkspaceFile"
                                 | "deleteWorkspaceDirectory"
+                                | "discardExploration"
                         );
                         view! {
                             <button

@@ -72,11 +72,12 @@ pub(crate) fn artifact_meta(a: &Artifact, locale: Locale) -> String {
         ),
         PreviewData::File { path, kind } => {
             let path = a.location.as_deref().unwrap_or(path);
+            let visible_path = a.location.as_deref().unwrap_or(path);
             if kind == "fasta" {
                 t(locale, "artifact.kind.fasta").into()
             } else if kind == "msa" {
                 t(locale, "artifact.kind.msa").into()
-            } else if let Some(parent) = path.rsplit(['/', '\\']).nth(1) {
+            } else if let Some(parent) = visible_path.rsplit(['/', '\\']).nth(1) {
                 if parent.is_empty() {
                     tf(locale, "artifact.meta.file", &[("kind", kind)])
                 } else {
@@ -1251,7 +1252,7 @@ pub(crate) fn artifact_preview(a: &Artifact, dom_id: String, locale: Locale) -> 
                 .into_view()
         }
         PreviewData::File { path, kind } => view! {
-            <p class="rp-path hint">{path.clone()}</p>
+            <p class="rp-path hint">{a.location.clone().unwrap_or_else(|| path.clone())}</p>
             <div class="rp-file-preview" data-file-path=path.clone()>
                 <WorkspaceFilePreview dom_id=dom_id path=path.clone() kind=kind.clone() />
             </div>
@@ -1301,6 +1302,13 @@ pub(crate) fn opens_in_modal(kind: &str) -> bool {
 /// Remote-preview paths go out as the ssh:// spelling `download_file` already
 /// understands, so the modal's download button works for remote files too.
 pub(crate) fn download_artifact(path: String) {
+    if let Some(id) = artifact_id_path(&path).map(str::to_owned) {
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
+            let _ = invoke("download_artifact", arg).await;
+        });
+        return;
+    }
     let path = match remote_file_path(&path) {
         Some((context_id, remote_path)) => {
             match crate::context_menu::remote_file_download_uri(context_id, remote_path) {

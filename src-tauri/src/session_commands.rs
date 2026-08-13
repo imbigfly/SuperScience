@@ -17,9 +17,9 @@ pub(super) async fn new_session(
         .await?
         .0;
     let _project_activity = state.begin_project_activity(&ap.id)?;
-    // An exploration freezes project state, not the ability to open a fresh
-    // conversation. Turns in the new mainline frame are restricted to
-    // read-only project tools until the exploration round finishes.
+    // A fresh conversation may still be used for discussion and read-only
+    // inspection; its mutating project tools remain withheld until the
+    // current exploration round is explicitly resolved.
     let id = create_session_frame(&state.store, &ap.id).await?;
     state.set_active(window.label(), ap);
     state.set_active_frame(window.label(), Some(id.clone()));
@@ -41,6 +41,13 @@ pub(super) async fn branch_session(
         .0;
     let _project_activity = state.begin_project_activity(&ap.id)?;
     if let Some(source) = session_id.as_deref().filter(|s| !s.is_empty()) {
+        let scope = state
+            .store
+            .frame_state_scope(source)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Session state scope was not found.".to_string())?;
+        exploration_commands::require_writable_scope(&state.store, &scope).await?;
         if state
             .store
             .session_branch_state(source)
@@ -58,10 +65,7 @@ pub(super) async fn branch_session(
                 .map_err(|error| error.to_string())?,
             Some(wisp_store::StateScope::Exploration { .. })
         ) {
-            return Err(
-                "Legacy conversation branches cannot escape an exploration; create another exploration from its checkpoint instead."
-                    .into(),
-            );
+            return Err("Conversation branches cannot be created inside an exploration.".into());
         }
     }
     // Copying conversation history does not change the frozen workspace.
@@ -609,7 +613,17 @@ pub(super) async fn delete_session(
                 .into(),
         );
     }
-    exploration_commands::require_writable_scope(&state.store, &scope).await?;
+    let _project_write_locked =
+        exploration_commands::conversation_project_write_locked(&state.store, &scope, Some(&id))
+            .await?;
+    if state
+        .store
+        .session_has_conversation_branches(&id, &ap.id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err("session_has_branches: delete its branches before deleting main".into());
+    }
     let runtime = state.sessions.lock().await.get(&id).cloned();
     if let Some(rt) = runtime.as_ref() {
         rt.deleted.store(true, Ordering::SeqCst);

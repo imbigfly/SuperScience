@@ -57,10 +57,20 @@ pub(super) fn Sidebar(
     load_demo: Callback<DemoInfo>,
     load_session: Callback<String>,
     open_exploration: Callback<Exploration>,
+    open_exploration_actions: Callback<(web_sys::MouseEvent, String, String)>,
     load_older_sessions: Callback<()>,
     move_sessions_to: Callback<(Vec<String>, Option<String>)>,
     delete_sessions: Callback<Vec<String>>,
-    open_session_actions: Callback<(web_sys::MouseEvent, String, String, bool, bool, bool, bool)>,
+    open_session_actions: Callback<(
+        web_sys::MouseEvent,
+        String,
+        String,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+    )>,
     open_folder_actions: Callback<(web_sys::MouseEvent, String, String)>,
     open_capabilities: Callback<web_sys::MouseEvent>,
     open_settings: Callback<web_sys::MouseEvent>,
@@ -379,6 +389,10 @@ pub(super) fn Sidebar(
                         })
                         .flatten()
                         .collect::<HashSet<_>>();
+                    let exploration_source_ids = exploration_rows
+                        .iter()
+                        .map(|row| row.source_frame_id.clone())
+                        .collect::<HashSet<_>>();
                     let (list, branch_kids) = nest_branch_sessions(&list);
                     let group = group_by.get();
                     // Whether any folder exists — used to keep the "ungrouped" drop
@@ -388,6 +402,7 @@ pub(super) fn Sidebar(
                     let item = move |s: &SessionInfo| {
                         let is_branch = s.branch_state.is_some();
                         let has_branch_family = branch_family_ids.contains(&s.id);
+                        let has_exploration_round = exploration_source_ids.contains(&s.id);
                         let id = s.id.clone();
                         let id_active = id.clone();
                         let id_attr = id.clone();
@@ -441,6 +456,7 @@ pub(super) fn Sidebar(
                                     data-session-pinned=if pinned { "true" } else { "false" }
                                     data-session-branch=if is_branch { "true" } else { "false" }
                                     data-session-family=if has_branch_family { "true" } else { "false" }
+                                    data-exploration-round=if has_exploration_round { "true" } else { "false" }
                                     data-branch-merged=if branch_merged { "true" } else { "false" }
                                     on:click=move |_| {
                                         if selecting_sessions.get_untracked() {
@@ -495,7 +511,7 @@ pub(super) fn Sidebar(
                                     on:click=move |ev: web_sys::MouseEvent| {
                                         ev.prevent_default();
                                         ev.stop_propagation();
-                                        show_actions.call((ev, id_actions.clone(), title_actions.clone(), pinned, is_branch, branch_merged, has_branch_family));
+                                        show_actions.call((ev, id_actions.clone(), title_actions.clone(), pinned, is_branch, branch_merged, has_branch_family, has_exploration_round));
                                     }>"⋯"</button>
                             </div>
                         }.into_view()
@@ -510,13 +526,12 @@ pub(super) fn Sidebar(
                     let exploration_item = move |summary: &ExplorationSummary| {
                         let exploration = summary.exploration.clone();
                         let exploration_for_open = exploration.clone();
+                        let exploration_id_for_actions = exploration.id.clone();
+                        let exploration_status_for_actions = exploration.status.clone();
                         let frame_id = exploration.frame_id.clone();
                         let title = exploration.name.clone();
                         let status_key = match exploration.status.as_str() {
                             "active" => "exploration.status_active",
-                            "archived" => "exploration.status_archived",
-                            "promoted" => "exploration.status_promoted",
-                            "discarded" => "exploration.status_discarded",
                             "promoting" => "exploration.status_promoting",
                             "creating" => "exploration.status_creating",
                             _ => "exploration.status_failed",
@@ -533,6 +548,15 @@ pub(super) fn Sidebar(
                                 data-exploration-id=exploration.id.clone()
                                 data-exploration-status=exploration.status.clone()
                                 title=title.clone()
+                                on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                    ev.prevent_default();
+                                    ev.stop_propagation();
+                                    open_exploration_actions.call((
+                                        ev,
+                                        exploration_id_for_actions.clone(),
+                                        exploration_status_for_actions.clone(),
+                                    ));
+                                }
                                 on:click=move |_| open.call(exploration_for_open.clone())>
                                 <span class="exploration-kind-icon" aria-hidden="true">{compose_icon("flask")}</span>
                                 <span class="side-exploration-copy">

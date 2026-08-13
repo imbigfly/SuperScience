@@ -623,9 +623,7 @@ pub(crate) fn scroll_picker_item(selector: &str, index: usize) {
 
 #[cfg(test)]
 mod mention_tests {
-    use super::{
-        active_composer_trigger, composer_picker_accepts_edit, ComposerPickerMode,
-    };
+    use super::{active_composer_trigger, composer_picker_accepts_edit, ComposerPickerMode};
 
     #[test]
     fn detects_trigger_at_the_caret() {
@@ -679,11 +677,7 @@ mod mention_tests {
             "insertFromComposition",
         ] {
             assert!(composer_picker_accepts_edit(
-                input_type,
-                None,
-                None,
-                3,
-                true
+                input_type, None, None, 3, true
             ));
         }
         assert!(!composer_picker_accepts_edit(
@@ -736,6 +730,7 @@ mod upload_attachment_tests {
                 session_title: None,
                 size_bytes: None,
                 origin: None,
+                logical_path: None,
             }),
             filename: Some(name),
             error: None,

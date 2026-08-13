@@ -146,11 +146,7 @@ impl ProjectTransferProgress {
         }
     }
 
-    pub(crate) fn failed(
-        direction: &str,
-        project_id: Option<String>,
-        error: String,
-    ) -> Self {
+    pub(crate) fn failed(direction: &str, project_id: Option<String>, error: String) -> Self {
         Self {
             direction: direction.into(),
             stage: "failed".into(),
@@ -1306,6 +1302,8 @@ pub(crate) struct ArtifactInfo {
     pub(crate) size_bytes: Option<i64>,
     #[serde(default)]
     pub(crate) origin: Option<String>,
+    #[serde(default)]
+    pub(crate) logical_path: Option<String>,
 }
 
 /// Immutable item in the app-global library database. Source names are
@@ -2053,15 +2051,13 @@ pub(crate) struct Exploration {
     pub(crate) warnings_json: String,
     pub(crate) created_at: i64,
     pub(crate) updated_at: i64,
-    pub(crate) promoted_at: Option<i64>,
-    pub(crate) archived_at: Option<i64>,
-    pub(crate) discarded_at: Option<i64>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExplorationSummary {
     pub(crate) exploration: Exploration,
     pub(crate) source_frame_id: String,
+    pub(crate) checkpoint_user_index: usize,
     pub(crate) isolation_summary_json: String,
 }
 
@@ -2071,10 +2067,8 @@ impl ExplorationSummary {
             .ok()
             .and_then(|value| value.get("partial").and_then(serde_json::Value::as_bool))
             != Some(true)
-            && serde_json::from_str::<Vec<serde_json::Value>>(
-                &self.exploration.warnings_json,
-            )
-            .map_or(true, |warnings| warnings.is_empty())
+            && serde_json::from_str::<Vec<serde_json::Value>>(&self.exploration.warnings_json)
+                .map_or(true, |warnings| warnings.is_empty())
     }
 }
 
@@ -2169,9 +2163,7 @@ pub(crate) struct ExplorationPromotionPreview {
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ExplorationPromotionResult {
-    pub(crate) exploration: Exploration,
-    pub(crate) promotion_id: String,
-    pub(crate) adopted_frame_id: String,
+    pub(crate) mainline_frame_id: String,
 }
 
 /// One Codex CLI or Claude Code conversation offered by the import modal.

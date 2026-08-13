@@ -483,6 +483,21 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
 }
 
 impl Store {
+    pub async fn session_has_conversation_branches(
+        &self,
+        frame_id: &str,
+        project_id: &str,
+    ) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM frames WHERE project_id=? AND parent_frame_id=id \
+             AND exploration_id IS NULL AND branched_from=?)",
+        )
+        .bind(project_id)
+        .bind(frame_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     pub async fn list_project_frame_ids(&self, project_id: &str) -> Result<Vec<String>> {
         let rows: Vec<(String,)> =
             sqlx::query_as("SELECT id FROM frames WHERE project_id=? ORDER BY id")
@@ -1571,6 +1586,29 @@ impl Store {
         if exists.is_none() {
             anyhow::bail!("Session not found");
         }
+        if self
+            .session_has_conversation_branches(frame_id, project_id)
+            .await?
+        {
+            anyhow::bail!("session_has_branches: delete its branches before deleting main");
+        }
+        let owns_current_exploration: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM explorations exploration \
+             JOIN exploration_checkpoints checkpoint ON checkpoint.id=exploration.checkpoint_id \
+             JOIN exploration_families family ON family.id=checkpoint.family_id \
+             WHERE checkpoint.project_id=? AND checkpoint.source_frame_id=? \
+               AND checkpoint.source_frame_id=family.mainline_frame_id \
+               AND checkpoint.source_family_generation=family.generation)",
+        )
+        .bind(project_id)
+        .bind(frame_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if owns_current_exploration {
+            anyhow::bail!(
+                "exploration_mainline_frozen: abandon or select an exploration before deleting main"
+            );
+        }
         let mut tx = self.begin_write().await?;
         delete_session_rows(&mut tx, frame_id).await?;
         tx.commit().await?;
@@ -1630,6 +1668,32 @@ impl Store {
         }
         if new_frame_id.trim().is_empty() {
             anyhow::bail!("New session id cannot be empty");
+        }
+
+        if remove_source {
+            if self
+                .session_has_conversation_branches(frame_id, source_project_id)
+                .await?
+            {
+                anyhow::bail!("session_has_branches: delete its branches before moving main");
+            }
+            let owns_current_exploration: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM explorations exploration \
+                 JOIN exploration_checkpoints checkpoint ON checkpoint.id=exploration.checkpoint_id \
+                 JOIN exploration_families family ON family.id=checkpoint.family_id \
+                 WHERE checkpoint.project_id=? AND checkpoint.source_frame_id=? \
+                   AND checkpoint.source_frame_id=family.mainline_frame_id \
+                   AND checkpoint.source_family_generation=family.generation)",
+            )
+            .bind(source_project_id)
+            .bind(frame_id)
+            .fetch_one(&self.pool)
+            .await?;
+            if owns_current_exploration {
+                anyhow::bail!(
+                    "exploration_mainline_frozen: abandon or select an exploration before moving main"
+                );
+            }
         }
 
         let mut tx = self.begin_write().await?;

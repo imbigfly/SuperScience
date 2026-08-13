@@ -57,7 +57,6 @@ mod plan_mode;
 mod plugins;
 mod project_commands;
 mod project_reader;
-mod project_state_revisions;
 mod project_sync;
 mod project_transfer;
 mod publication_capsule;
@@ -495,6 +494,8 @@ struct ArtifactInfo {
     size_bytes: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logical_path: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -2153,6 +2154,35 @@ struct ActiveProject {
     memory: Arc<MemoryManager>,
 }
 
+#[derive(Default)]
+struct ProjectActivityLocks {
+    projects: StdMutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
+    /// Serialize candidate creation per project so concurrent requests share
+    /// one frozen checkpoint and cannot open competing rounds from different
+    /// source conversations.
+    exploration_creation: StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl ProjectActivityLocks {
+    fn project(&self, project_id: &str) -> Arc<tokio::sync::RwLock<()>> {
+        self.projects
+            .lock()
+            .unwrap()
+            .entry(project_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::RwLock::new(())))
+            .clone()
+    }
+
+    fn exploration_creation(&self, project_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.exploration_creation
+            .lock()
+            .unwrap()
+            .entry(project_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+}
+
 struct AppState {
     app_data: PathBuf,
     store: Store,
@@ -2180,7 +2210,7 @@ struct AppState {
     completion_dispatches: tokio::sync::Mutex<HashSet<String>>,
     /// Read-locked for the lifetime of project tasks; manual sync takes the
     /// write lock so task start and snapshot creation cannot race.
-    project_activity: StdMutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
+    project_activity: ProjectActivityLocks,
     /// Advisory leases for local project resources used by parallel built-in
     /// conversations. External editors remain outside this in-process boundary.
     resource_leases: resource_leases::ProjectResourceCoordinator,
@@ -2222,12 +2252,7 @@ struct AppState {
 
 impl AppState {
     fn project_activity(&self, project_id: &str) -> Arc<tokio::sync::RwLock<()>> {
-        self.project_activity
-            .lock()
-            .unwrap()
-            .entry(project_id.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::RwLock::new(())))
-            .clone()
+        self.project_activity.project(project_id)
     }
     fn begin_project_activity(
         &self,
@@ -2247,6 +2272,15 @@ impl AppState {
         self.project_activity(project_id)
             .try_write_owned()
             .map_err(|_| "ProjectBusy: another project operation is still active".into())
+    }
+    async fn begin_exploration_creation(
+        &self,
+        project_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.project_activity
+            .exploration_creation(project_id)
+            .lock_owned()
+            .await
     }
     /// Snapshot a window's active project. Falls back to the "main" window's
     /// project (always initialized at startup) for un-scoped or early calls.
@@ -5944,24 +5978,6 @@ async fn send_message_inner(
     // After the persist flush so the seen snapshot covers the final messages.
     mark_seen_if_viewed(state, &frame_id).await;
 
-    if result.is_ok() {
-        if let Err(error) = project_state_revisions::record_completed_mainline_turn(
-            &state.store,
-            &state.app_data,
-            &ap.id,
-            &frame_id,
-            &ap.root,
-            Some(rt.cancel.clone()),
-        )
-        .await
-        {
-            // Revision capture is durability metadata. A failed snapshot must
-            // not turn an otherwise successful model response into an error;
-            // the UI will mark that historical turn unavailable instead.
-            tracing::warn!("project state revision capture failed: {error}");
-        }
-    }
-
     match result {
         Ok(_) => {
             emit_agent_event(
@@ -7566,7 +7582,7 @@ pub fn run() {
                 acp_asks: tokio::sync::Mutex::new(HashMap::new()),
                 running_turns: tokio::sync::Mutex::new(HashSet::new()),
                 completion_dispatches: tokio::sync::Mutex::new(HashSet::new()),
-                project_activity: StdMutex::new(HashMap::new()),
+                project_activity: ProjectActivityLocks::default(),
                 resource_leases: resource_leases::ProjectResourceCoordinator::default(),
                 active_frame: std::sync::RwLock::new(HashMap::new()),
                 notification_window: std::sync::RwLock::new(HashMap::new()),
@@ -7725,10 +7741,8 @@ pub fn run() {
             session_commands::merge_session_branch_summary,
             exploration_commands::start_exploration,
             exploration_commands::list_project_explorations,
-            exploration_commands::list_project_state_revisions,
             exploration_commands::open_exploration,
-            exploration_commands::archive_exploration,
-            exploration_commands::restore_exploration,
+            exploration_commands::abandon_exploration_round,
             exploration_promotion::preview_exploration_promotion,
             exploration_promotion::promote_exploration,
             exploration_promotion::discard_exploration,
@@ -7856,6 +7870,7 @@ pub fn run() {
             session_commands::search_sessions,
             artifact_commands::read_artifact,
             artifact_commands::read_artifact_bytes,
+            artifact_commands::download_artifact,
             artifact_commands::read_artifact_version,
             artifact_commands::read_artifact_version_bytes,
             artifact_commands::missing_files,

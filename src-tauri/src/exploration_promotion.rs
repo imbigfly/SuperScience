@@ -3,6 +3,7 @@
 use crate::exploration_workspace::{
     ExplorationWorkspaceBackend, FileDelta, FileDeltaKind, MaterializedWorkspace,
     PersistentExplorationWorkspace, SnapshotMaterialization, WorkspaceSnapshot,
+    WorkspaceSnapshotEntry,
 };
 use crate::{project_commands, AppState};
 use serde::{Deserialize, Serialize};
@@ -13,9 +14,9 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use tauri::State;
 use wisp_store::{
-    ArtifactHead, Exploration, ExplorationEffect, ExplorationPromotion, ExplorationPromotionStatus,
-    ExplorationStatus, ExternalResource, ResearchEdge, ResearchNode, ResearchNodeKind, RunRecord,
-    Store, MAINLINE_SCOPE_KEY,
+    ArtifactHead, ArtifactMaterialization, Exploration, ExplorationEffect, ExplorationPromotion,
+    ExplorationPromotionStatus, ExplorationStatus, ExternalResource, ResearchEdge, ResearchNode,
+    ResearchNodeKind, RunRecord, StateScope, Store, MAINLINE_SCOPE_KEY,
 };
 
 const ERR_MAINLINE_ADVANCED: &str = "MainlineAdvanced";
@@ -88,19 +89,17 @@ pub(crate) struct ExplorationPromotionPreview {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ExplorationPromotionResult {
-    pub exploration: Exploration,
-    pub promotion_id: String,
-    pub adopted_frame_id: String,
+    pub mainline_frame_id: String,
 }
 
 #[derive(Clone)]
-struct ExplorationPromotionService {
+pub(crate) struct ExplorationPromotionService {
     store: Store,
     app_data: PathBuf,
 }
 
 impl ExplorationPromotionService {
-    fn new(store: Store, app_data: PathBuf) -> Self {
+    pub(crate) fn new(store: Store, app_data: PathBuf) -> Self {
         Self { store, app_data }
     }
 
@@ -138,8 +137,11 @@ impl ExplorationPromotionService {
         let backend = self.workspace_backend();
         let base = backend.load_snapshot(&checkpoint.workspace_snapshot_id)?;
         let branch_root = validated_exploration_root(&exploration, &base, &self.app_data)?;
-        let files = backend.diff(&base, &branch_root).await?;
-        let mainline_files = backend.diff(&base, &project_root).await?;
+        let files =
+            seal_added_local_references(backend.diff(&base, &branch_root).await?, &branch_root)
+                .await?;
+        let mainline_files =
+            conflicting_mainline_file_changes(&files, backend.diff(&base, &project_root).await?);
 
         let baseline_heads = self
             .store
@@ -348,6 +350,13 @@ impl ExplorationPromotionService {
             .ok_or_else(|| coded(ERR_NOT_PROMOTABLE, "project not found"))?;
         let project_root = dunce::canonicalize(workspace_dir)
             .map_err(|error| format!("cannot resolve project root: {error}"))?;
+        let mut journal_files = preview.diff.files.clone();
+        self.append_artifact_storage_deltas(
+            &preview.exploration,
+            &project_root,
+            &mut journal_files,
+        )
+        .await?;
         let promotion_id = uuid::Uuid::new_v4().to_string();
         let mut journal = match PromotionJournal::prepare(
             &self.app_data,
@@ -355,7 +364,7 @@ impl ExplorationPromotionService {
             &checkpoint.project_id,
             &preview.exploration,
             &project_root,
-            &preview.diff.files,
+            &journal_files,
         ) {
             Ok(journal) => journal,
             Err(error) => {
@@ -469,18 +478,274 @@ impl ExplorationPromotionService {
         }
         if let Err(error) = journal.finish_commit() {
             tracing::warn!(promotion_id = %promotion_id, %error, "promotion committed but journal cleanup is incomplete");
+        } else if let Err(error) = self.store.delete_exploration_promotion(&promotion_id).await {
+            tracing::warn!(promotion_id = %promotion_id, %error, "promotion cleanup record could not be removed");
         }
-        let exploration = self
-            .store
-            .get_exploration(&preview.exploration.id)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "promoted exploration disappeared".to_string())?;
         Ok(ExplorationPromotionResult {
-            adopted_frame_id: exploration.frame_id.clone(),
-            exploration,
-            promotion_id,
+            mainline_frame_id: checkpoint.source_frame_id,
         })
+    }
+
+    /// Artifact snapshots live under the exploration's internal `.wisp`
+    /// directory, which is deliberately absent from the user-facing workspace
+    /// diff. Copy every selected private snapshot through the same rollback
+    /// journal before its workspace is disposed.
+    async fn append_artifact_storage_deltas(
+        &self,
+        exploration: &Exploration,
+        project_root: &Path,
+        files: &mut Vec<FileDelta>,
+    ) -> Result<(), String> {
+        let branch_root = dunce::canonicalize(&exploration.workspace_dir)
+            .map_err(|error| format!("cannot resolve exploration workspace: {error}"))?;
+        let versions = self
+            .store
+            .list_artifact_versions_owned_by_exploration(&exploration.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        for version in versions {
+            let storage_path = Path::new(&version.storage_path);
+            if storage_path.is_absolute() {
+                let canonical = dunce::canonicalize(storage_path)
+                    .map_err(|error| format!("cannot resolve private Artifact storage: {error}"))?;
+                if canonical.starts_with(&branch_root) {
+                    return Err(coded(
+                        ERR_NOT_PROMOTABLE,
+                        "a private Artifact would retain an exploration workspace path",
+                    ));
+                }
+                continue;
+            }
+            validate_relative_path(&version.storage_path)?;
+            if files
+                .iter()
+                .any(|delta| delta.path == version.storage_path && delta.after.is_some())
+            {
+                // A normal project file already travels through the journal;
+                // Artifact metadata may be legacy and lack its own checksum.
+                continue;
+            }
+            let size = version
+                .size_bytes
+                .and_then(|size| u64::try_from(size).ok())
+                .ok_or_else(|| {
+                    coded(
+                        ERR_NOT_PROMOTABLE,
+                        "a private Artifact snapshot has no valid size",
+                    )
+                })?;
+            let checksum = version.checksum.clone().ok_or_else(|| {
+                coded(
+                    ERR_NOT_PROMOTABLE,
+                    "a private Artifact snapshot has no checksum",
+                )
+            })?;
+            let source = safe_join(&branch_root, &version.storage_path)?;
+            verify_regular_file(&source, size, &checksum)?;
+            if version.materialization != ArtifactMaterialization::Snapshot {
+                let target = safe_join(project_root, &version.storage_path)?;
+                if verify_regular_file(&target, size, &checksum).is_ok() {
+                    continue;
+                }
+                return Err(coded(
+                    ERR_NOT_PROMOTABLE,
+                    "a private Artifact reference would be lost with the exploration workspace",
+                ));
+            }
+            let after = WorkspaceSnapshotEntry {
+                path: version.storage_path.clone(),
+                size_bytes: size,
+                checksum: Some(checksum.clone()),
+                executable: false,
+                materialization: SnapshotMaterialization::Blob,
+                reference_uri: None,
+                recoverable: true,
+                modified_unix_millis: None,
+            };
+            if files.iter().any(|delta| delta.path == version.storage_path) {
+                return Err(coded(
+                    ERR_NOT_PROMOTABLE,
+                    "an Artifact snapshot conflicts with the promoted workspace file set",
+                ));
+            }
+            let target = safe_join(project_root, &version.storage_path)?;
+            match std::fs::symlink_metadata(&target) {
+                Ok(metadata) => {
+                    if metadata.file_type().is_symlink() || !metadata.is_file() {
+                        return Err(coded(
+                            ERR_NOT_PROMOTABLE,
+                            "an Artifact snapshot target is not a regular file",
+                        ));
+                    }
+                    verify_regular_file(&target, size, &checksum)?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    files.push(FileDelta {
+                        path: version.storage_path,
+                        kind: FileDeltaKind::Added,
+                        before: None,
+                        after: Some(after),
+                    });
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn dispose_resolved_round_workspaces(
+        &self,
+        candidates: &[Exploration],
+        snapshots: &[WorkspaceSnapshot],
+        context_archives: &[wisp_store::ContextArchiveRecord],
+    ) {
+        let backend = self.workspace_backend();
+        for candidate in candidates {
+            let Some(snapshot) = snapshots
+                .iter()
+                .find(|snapshot| candidate.workspace_dir.contains(&snapshot.project_key))
+            else {
+                tracing::warn!(exploration_id = %candidate.id, "cannot clean exploration workspace without its captured snapshot");
+                continue;
+            };
+            let root = match validated_exploration_root(candidate, &snapshot, &self.app_data) {
+                Ok(root) => root,
+                Err(error) => {
+                    // A previously cleaned workspace is the desired terminal
+                    // state; every other validation failure remains visible.
+                    if !Path::new(&candidate.workspace_dir).exists() {
+                        continue;
+                    }
+                    tracing::warn!(exploration_id = %candidate.id, %error, "refusing unsafe exploration workspace cleanup");
+                    continue;
+                }
+            };
+            let workspace = MaterializedWorkspace {
+                exploration_id: candidate.id.clone(),
+                project_key: snapshot.project_key.clone(),
+                snapshot_id: snapshot.id.clone(),
+                root,
+            };
+            if let Err(error) = backend.dispose(&workspace).await {
+                // Metadata and mainline files are already committed. A locked
+                // Windows file must not roll those back; startup/manual cleanup
+                // can safely retry the canonical workspace path later.
+                tracing::warn!(exploration_id = %candidate.id, %error, "exploration workspace cleanup is incomplete");
+            }
+        }
+        self.dispose_resolved_round_metadata(snapshots).await;
+        for archive in context_archives {
+            self.dispose_context_archive(archive).await;
+        }
+    }
+
+    async fn dispose_resolved_round_metadata(&self, snapshots: &[WorkspaceSnapshot]) {
+        let mut surviving_blobs = BTreeSet::new();
+        let mut blob_cleanup_safe = true;
+        match self.store.list_workspace_snapshot_manifests().await {
+            Ok(manifests) => {
+                for manifest in manifests {
+                    match serde_json::from_str::<WorkspaceSnapshot>(&manifest) {
+                        Ok(snapshot) => surviving_blobs.extend(
+                            snapshot.entries.into_iter().filter_map(|entry| {
+                                (entry.materialization == SnapshotMaterialization::Blob)
+                                    .then_some(entry.checksum)
+                                    .flatten()
+                            }),
+                        ),
+                        Err(error) => {
+                            blob_cleanup_safe = false;
+                            tracing::warn!(%error, "cannot parse retained workspace snapshot; preserving exploration blobs");
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                // Without a complete retained reference set, blob deletion is
+                // unsafe. Manifests and context archives are still uniquely
+                // owned by the resolved checkpoints and can be removed.
+                blob_cleanup_safe = false;
+                tracing::warn!(%error, "cannot load retained workspace snapshots; preserving exploration blobs");
+            }
+        }
+
+        let backend = self.workspace_backend();
+        for snapshot in snapshots {
+            if self
+                .store
+                .get_workspace_snapshot_record(&snapshot.id)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                continue;
+            }
+            if let Err(error) = backend.remove_snapshot_manifest(&snapshot.id) {
+                tracing::warn!(snapshot_id = %snapshot.id, %error, "exploration snapshot manifest cleanup is incomplete");
+            }
+            for checksum in snapshot.entries.iter().filter_map(|entry| {
+                (entry.materialization == SnapshotMaterialization::Blob)
+                    .then_some(entry.checksum.as_deref())
+                    .flatten()
+            }) {
+                if blob_cleanup_safe && !surviving_blobs.contains(checksum) {
+                    if let Err(error) = backend.remove_snapshot_blob(checksum) {
+                        tracing::warn!(%checksum, %error, "exploration snapshot blob cleanup is incomplete");
+                    }
+                }
+            }
+        }
+    }
+
+    async fn dispose_context_archive(&self, archive: &wisp_store::ContextArchiveRecord) {
+        match self.store.get_context_archive(&archive.id).await {
+            Ok(Some(_)) => return,
+            Err(error) => {
+                tracing::warn!(archive_id = %archive.id, %error, "cannot verify context archive ownership before cleanup");
+                return;
+            }
+            Ok(None) => {}
+        }
+        let relative = Path::new(&archive.storage_path);
+        let components = relative
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(value) => value.to_str(),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if relative.is_absolute()
+            || components.len() != 2
+            || components[0] != "exploration-contexts"
+            || components[1] != format!("{}.json", archive.id)
+        {
+            tracing::warn!(archive_id = %archive.id, "refusing unsafe exploration context archive cleanup");
+            return;
+        }
+        let root = self.app_data.join("exploration-contexts");
+        let Ok(root_metadata) = std::fs::symlink_metadata(&root) else {
+            return;
+        };
+        if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+            tracing::warn!(archive_id = %archive.id, "exploration context archive root is not a real directory");
+            return;
+        }
+        let path = root.join(components[1]);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => {
+                if let Err(error) = std::fs::remove_file(&path) {
+                    tracing::warn!(archive_id = %archive.id, %error, "exploration context archive cleanup is incomplete");
+                }
+            }
+            Ok(_) => {
+                tracing::warn!(archive_id = %archive.id, "refusing non-file exploration context archive cleanup")
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(archive_id = %archive.id, %error, "cannot inspect exploration context archive for cleanup")
+            }
+        }
     }
 
     async fn rollback_failed_promotion(
@@ -568,17 +833,52 @@ pub(crate) async fn promote_exploration(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| coded(ERR_NOT_PROMOTABLE, "checkpoint not found"))?;
     let _exclusive = state.begin_project_exclusive_activity(&checkpoint.project_id)?;
-    if terminals.has_running(&checkpoint.project_id, MAINLINE_SCOPE_KEY)
-        || terminals.has_running(&checkpoint.project_id, &exploration_id)
+    let round_candidates = state
+        .store
+        .list_exploration_round_candidates(&exploration_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let service = ExplorationPromotionService::new(state.store.clone(), state.app_data.clone());
+    let round_snapshots = load_round_snapshots(&service, &round_candidates).await;
+    let round_context_archives = load_round_context_archives(&service, &round_candidates).await;
+    let preflight = service.preview(&exploration_id).await?;
+    if !preflight.eligibility.eligible {
+        return Err(coded(
+            preflight
+                .eligibility
+                .code
+                .as_deref()
+                .unwrap_or(ERR_NOT_PROMOTABLE),
+            "exploration is not eligible for fast-forward promotion",
+        ));
+    }
+    if preflight.eligibility.expected_guard_hash != expected_guard_hash {
+        return Err(coded(
+            ERR_WORKSPACE_CHANGED,
+            "the promotion preview is stale; preview the exploration again",
+        ));
+    }
+    let running_frames = state.running_turns.lock().await.clone();
+    if running_frames.contains(&checkpoint.source_frame_id)
+        || round_candidates
+            .iter()
+            .any(|candidate| running_frames.contains(&candidate.frame_id))
     {
         return Err(coded(
             ERR_EXPLORATION_BUSY,
-            "close mainline and exploration terminals before promotion",
+            "wait for mainline and exploration turns to finish before promotion",
+        ));
+    }
+    if terminals.has_running(&checkpoint.project_id, MAINLINE_SCOPE_KEY) {
+        return Err(coded(
+            ERR_EXPLORATION_BUSY,
+            "close the mainline terminal before promotion",
         ));
     }
     ensure_no_queued_turns(
         state.inner(),
-        [&checkpoint.source_frame_id, &exploration.frame_id],
+        std::iter::once(&checkpoint.source_frame_id)
+            .chain(round_candidates.iter().map(|candidate| &candidate.frame_id)),
     )
     .await?;
     if state
@@ -586,39 +886,66 @@ pub(crate) async fn promote_exploration(
         .project_has_active_runs(&checkpoint.project_id)
         .await
         .map_err(|error| error.to_string())?
-        || state
-            .store
-            .exploration_has_active_runs(&exploration_id)
-            .await
-            .map_err(|error| error.to_string())?
+        || futures_util::future::try_join_all(round_candidates.iter().map(|candidate| async {
+            state
+                .store
+                .exploration_has_active_runs(&candidate.id)
+                .await
+                .map_err(|error| error.to_string())
+        }))
+        .await?
+        .into_iter()
+        .any(|active| active)
     {
         return Err(coded(
             ERR_EXPLORATION_BUSY,
             "active mainline or exploration Runs block promotion",
         ));
     }
-    let service = ExplorationPromotionService::new(state.store.clone(), state.app_data.clone());
     let result = service
         .promote_locked(&exploration_id, &expected_guard_hash)
         .await?;
-
     state
         .runtime_manager
         .stop_scope(&checkpoint.project_id, MAINLINE_SCOPE_KEY)
         .await;
-    state
-        .runtime_manager
-        .stop_scope(&checkpoint.project_id, &exploration_id)
-        .await;
+    for candidate in &round_candidates {
+        state
+            .runtime_manager
+            .stop_scope(&checkpoint.project_id, &candidate.id)
+            .await;
+        terminals.stop_scope(&checkpoint.project_id, &candidate.id);
+    }
     {
         let mut sessions = state.sessions.lock().await;
         sessions.remove(&checkpoint.source_frame_id);
-        sessions.remove(&result.adopted_frame_id);
+        for candidate in &round_candidates {
+            sessions.remove(&candidate.frame_id);
+        }
+    }
+    if let Ok(mut allowed) = state.full_permission_sessions.write() {
+        for candidate in &round_candidates {
+            allowed.remove(&candidate.frame_id);
+        }
+    }
+    for candidate in &round_candidates {
+        crate::approval_commands::cancel_pending_confirmation(&state, &candidate.frame_id);
+        state.remove_notification_window(&candidate.frame_id);
+    }
+    service
+        .dispose_resolved_round_workspaces(
+            &round_candidates,
+            &round_snapshots,
+            &round_context_archives,
+        )
+        .await;
+    if let Err(error) = service.workspace_backend().sweep_disposal_quarantine() {
+        tracing::warn!(%error, "cannot sweep quarantined exploration workspaces after promotion");
     }
     let (project, _, _) =
         project_commands::load_active_project(&state, &checkpoint.project_id).await?;
     state.set_active(window.label(), project);
-    state.set_active_frame(window.label(), Some(result.adopted_frame_id.clone()));
+    state.set_active_frame(window.label(), Some(result.mainline_frame_id.clone()));
     Ok(result)
 }
 
@@ -628,7 +955,7 @@ pub(crate) async fn discard_exploration(
     terminals: State<'_, crate::terminal_sessions::TerminalManager>,
     window: tauri::WebviewWindow,
     exploration_id: String,
-) -> Result<Exploration, String> {
+) -> Result<(), String> {
     let exploration = state
         .store
         .get_exploration(&exploration_id)
@@ -641,7 +968,31 @@ pub(crate) async fn discard_exploration(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| coded(ERR_NOT_PROMOTABLE, "checkpoint not found"))?;
+    let context_archive = state
+        .store
+        .get_context_archive(&checkpoint.context_archive_id)
+        .await
+        .map_err(|error| error.to_string())?;
     let _exclusive = state.begin_project_exclusive_activity(&checkpoint.project_id)?;
+    let running_frames = state.running_turns.lock().await.clone();
+    for frame_id in &running_frames {
+        if matches!(
+            state
+                .store
+                .frame_state_scope(frame_id)
+                .await
+                .map_err(|error| error.to_string())?,
+            Some(StateScope::Exploration {
+                exploration_id: running,
+                ..
+            }) if running == exploration_id
+        ) {
+            return Err(coded(
+                ERR_EXPLORATION_BUSY,
+                "wait for exploration turns to finish before discarding",
+            ));
+        }
+    }
     if terminals.has_running(&checkpoint.project_id, &exploration_id) {
         return Err(coded(
             ERR_EXPLORATION_BUSY,
@@ -660,13 +1011,10 @@ pub(crate) async fn discard_exploration(
             "finish or cancel exploration Runs before discarding",
         ));
     }
-    if !matches!(
-        exploration.status,
-        ExplorationStatus::Active | ExplorationStatus::Archived
-    ) {
+    if exploration.status != ExplorationStatus::Active {
         return Err(coded(
             ERR_NOT_PROMOTABLE,
-            "only an active or archived exploration can be discarded",
+            "only an active exploration can be discarded",
         ));
     }
     let snapshot = PersistentExplorationWorkspace::new(state.app_data.clone())
@@ -674,42 +1022,48 @@ pub(crate) async fn discard_exploration(
     let validated_root = validated_exploration_root(&exploration, &snapshot, &state.app_data)?;
     let workspace = MaterializedWorkspace {
         exploration_id: exploration.id.clone(),
-        project_key: snapshot.project_key,
-        snapshot_id: snapshot.id,
+        project_key: snapshot.project_key.clone(),
+        snapshot_id: snapshot.id.clone(),
         root: validated_root,
     };
-    let expected = exploration.status;
-    if !state
-        .store
-        .transition_exploration(&exploration_id, expected, ExplorationStatus::Discarded)
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        return Err(coded(
-            ERR_NOT_PROMOTABLE,
-            "exploration status changed before discard",
-        ));
-    }
     state
         .runtime_manager
         .stop_scope(&checkpoint.project_id, &exploration_id)
         .await;
     state.sessions.lock().await.remove(&exploration.frame_id);
-    PersistentExplorationWorkspace::new(state.app_data.clone())
+    if let Ok(mut allowed) = state.full_permission_sessions.write() {
+        allowed.remove(&exploration.frame_id);
+    }
+    crate::approval_commands::cancel_pending_confirmation(&state, &exploration.frame_id);
+    state.remove_notification_window(&exploration.frame_id);
+    state
+        .store
+        .discard_exploration_scope(&exploration_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Err(error) = PersistentExplorationWorkspace::new(state.app_data.clone())
         .dispose(&workspace)
-        .await?;
+        .await
+    {
+        // The database scope is already permanently discarded. A Windows
+        // file lock may delay physical removal; startup retries canonical and
+        // quarantined containers without making the discard appear undone.
+        tracing::warn!(exploration_id = %exploration_id, %error, "discarded exploration workspace cleanup is incomplete");
+    }
+    let cleanup = ExplorationPromotionService::new(state.store.clone(), state.app_data.clone());
+    cleanup
+        .dispose_resolved_round_metadata(std::slice::from_ref(&snapshot))
+        .await;
+    if let Some(archive) = context_archive.as_ref() {
+        cleanup.dispose_context_archive(archive).await;
+    }
     if state.active_frame(window.label()).as_deref() == Some(exploration.frame_id.as_str()) {
         let (project, _, _) =
             project_commands::load_active_project(&state, &checkpoint.project_id).await?;
         state.set_active(window.label(), project);
         state.set_active_frame(window.label(), Some(checkpoint.source_frame_id));
     }
-    state
-        .store
-        .get_exploration(&exploration_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "discarded exploration disappeared".to_string())
+    Ok(())
 }
 
 pub(crate) async fn recover_incomplete_promotions(store: &Store, app_data: &Path) {
@@ -732,18 +1086,23 @@ pub(crate) async fn recover_incomplete_promotions(store: &Store, app_data: &Path
                 continue;
             }
         };
-        if promotion.status == ExplorationPromotionStatus::MetadataCommitted
-            && !journal_path.is_file()
+        if matches!(
+            promotion.status,
+            ExplorationPromotionStatus::MetadataCommitted | ExplorationPromotionStatus::Committed
+        ) && !journal_path.is_file()
             && !journal_path.with_file_name("journal.prev").is_file()
         {
-            let _ = store
-                .transition_exploration_promotion(
-                    &promotion.id,
-                    ExplorationPromotionStatus::MetadataCommitted,
-                    ExplorationPromotionStatus::Committed,
-                    Some("journal cleanup completed before restart"),
-                )
-                .await;
+            if promotion.status == ExplorationPromotionStatus::MetadataCommitted {
+                let _ = store
+                    .transition_exploration_promotion(
+                        &promotion.id,
+                        ExplorationPromotionStatus::MetadataCommitted,
+                        ExplorationPromotionStatus::Committed,
+                        Some("journal cleanup completed before restart"),
+                    )
+                    .await;
+            }
+            let _ = store.delete_exploration_promotion(&promotion.id).await;
             continue;
         }
         let mut journal = match PromotionJournal::load(&journal_path, store).await {
@@ -797,10 +1156,24 @@ pub(crate) async fn recover_incomplete_promotions(store: &Store, app_data: &Path
                     .await;
                 if let Err(error) = journal.finish_commit() {
                     tracing::warn!(promotion_id = %promotion.id, %error, "promotion recovered but journal cleanup is incomplete");
+                } else {
+                    let _ = store.delete_exploration_promotion(&promotion.id).await;
+                }
+            }
+            ExplorationPromotionStatus::Committed => {
+                if let Err(error) = journal.finish_commit() {
+                    tracing::warn!(promotion_id = %promotion.id, %error, "promotion cleanup retry is incomplete");
+                } else {
+                    let _ = store.delete_exploration_promotion(&promotion.id).await;
                 }
             }
             _ => {}
         }
+    }
+    if let Err(error) =
+        PersistentExplorationWorkspace::new(app_data.to_path_buf()).sweep_disposal_quarantine()
+    {
+        tracing::warn!(%error, "cannot sweep quarantined exploration workspaces");
     }
 }
 
@@ -822,6 +1195,63 @@ pub(crate) async fn ensure_no_queued_turns<'a>(
         }
     }
     Ok(())
+}
+
+async fn load_round_snapshots(
+    service: &ExplorationPromotionService,
+    candidates: &[Exploration],
+) -> Vec<WorkspaceSnapshot> {
+    let backend = service.workspace_backend();
+    let mut snapshots = Vec::new();
+    for candidate in candidates {
+        let Ok(Some(checkpoint)) = service
+            .store
+            .get_exploration_checkpoint(&candidate.checkpoint_id)
+            .await
+        else {
+            continue;
+        };
+        let Ok(snapshot) = backend.load_snapshot(&checkpoint.workspace_snapshot_id) else {
+            continue;
+        };
+        if !snapshots
+            .iter()
+            .any(|existing: &WorkspaceSnapshot| existing.id == snapshot.id)
+        {
+            snapshots.push(snapshot);
+        }
+    }
+    snapshots
+}
+
+async fn load_round_context_archives(
+    service: &ExplorationPromotionService,
+    candidates: &[Exploration],
+) -> Vec<wisp_store::ContextArchiveRecord> {
+    let mut archives = Vec::new();
+    for candidate in candidates {
+        let Ok(Some(checkpoint)) = service
+            .store
+            .get_exploration_checkpoint(&candidate.checkpoint_id)
+            .await
+        else {
+            continue;
+        };
+        let Ok(Some(archive)) = service
+            .store
+            .get_context_archive(&checkpoint.context_archive_id)
+            .await
+        else {
+            continue;
+        };
+        if !archives
+            .iter()
+            .any(|existing: &wisp_store::ContextArchiveRecord| existing.id == archive.id)
+        {
+            archives.push(archive);
+        }
+    }
+    archives
 }
 
 fn changed_artifact_keys(
@@ -888,6 +1318,24 @@ fn changed_entity_keys(
         .collect()
 }
 
+/// The project directory can be shared by multiple conversations and external
+/// programs. Only a live change to a path selected by this exploration can
+/// make its patch unsafe to apply. Unrelated paths stay owned by their current
+/// producer and are deliberately absent from both the blocker and the preview.
+fn conflicting_mainline_file_changes(
+    exploration_files: &[FileDelta],
+    mainline_files: Vec<FileDelta>,
+) -> Vec<FileDelta> {
+    let selected_paths = exploration_files
+        .iter()
+        .map(|delta| delta.path.to_lowercase())
+        .collect::<BTreeSet<_>>();
+    mainline_files
+        .into_iter()
+        .filter(|delta| selected_paths.contains(&delta.path.to_lowercase()))
+        .collect()
+}
+
 fn stable_heads(heads: &[ArtifactHead]) -> Vec<(&str, &str, &str)> {
     heads
         .iter()
@@ -903,12 +1351,106 @@ fn stable_heads(heads: &[ArtifactHead]) -> Vec<(&str, &str, &str)> {
 
 fn has_changed_external_reference(files: &[FileDelta]) -> bool {
     files.iter().any(|delta| {
-        delta
-            .before
-            .iter()
-            .chain(delta.after.iter())
-            .any(|entry| entry.materialization != SnapshotMaterialization::Blob)
+        !is_sealed_added_local_reference(delta)
+            && delta
+                .before
+                .iter()
+                .chain(delta.after.iter())
+                .any(|entry| entry.materialization != SnapshotMaterialization::Blob)
     })
+}
+
+fn is_sealed_added_local_reference(delta: &FileDelta) -> bool {
+    delta.kind == FileDeltaKind::Added
+        && delta.before.is_none()
+        && delta.after.as_ref().is_some_and(|entry| {
+            entry.materialization == SnapshotMaterialization::Reference
+                && entry.checksum.is_some()
+                && entry.reference_uri.is_some()
+        })
+}
+
+/// A file created inside an exploration is not an external dependency merely
+/// because it exceeds the checkpoint blob budget. Seal new local references
+/// with a content checksum during preflight so the rollback journal can copy
+/// and verify them like any other promoted file. Existing weak references and
+/// unsupported/remote targets remain blockers because the checkpoint does not
+/// contain a recoverable baseline for them.
+async fn seal_added_local_references(
+    files: Vec<FileDelta>,
+    branch_root: &Path,
+) -> Result<Vec<FileDelta>, String> {
+    let branch_root = branch_root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        files
+            .into_iter()
+            .map(|mut delta| {
+                if delta.kind != FileDeltaKind::Added || delta.before.is_some() {
+                    return delta;
+                }
+                let Some(after) = delta
+                    .after
+                    .as_ref()
+                    .filter(|entry| entry.materialization == SnapshotMaterialization::Reference)
+                else {
+                    return delta;
+                };
+                let Ok(source) = safe_join(&branch_root, &after.path) else {
+                    return delta;
+                };
+                let Ok(checksum) = hash_stable_local_reference(&source, after) else {
+                    return delta;
+                };
+                let mut sealed = after.clone();
+                sealed.checksum = Some(checksum);
+                delta.after = Some(sealed);
+                delta
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| format!("local exploration output sealing task failed: {error}"))
+}
+
+fn hash_stable_local_reference(
+    path: &Path,
+    expected: &WorkspaceSnapshotEntry,
+) -> Result<String, String> {
+    verify_local_reference_metadata(path, expected)?;
+    let checksum = hash_file(path)?;
+    verify_local_reference_metadata(path, expected)?;
+    Ok(checksum)
+}
+
+fn verify_local_reference_metadata(
+    path: &Path,
+    expected: &WorkspaceSnapshotEntry,
+) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() != expected.size_bytes
+        || expected
+            .modified_unix_millis
+            .is_some_and(|expected_modified| {
+                file_modified_unix_millis(&metadata) != Some(expected_modified)
+            })
+    {
+        return Err(format!(
+            "local exploration output changed while sealing: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn file_modified_unix_millis(metadata: &std::fs::Metadata) -> Option<u64> {
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
 }
 
 fn validated_exploration_root(
@@ -932,7 +1474,11 @@ fn validated_exploration_root(
     if canonical != canonical_expected {
         return Err("exploration workspace canonical path mismatch".into());
     }
-    Ok(canonical)
+    // Keep the canonical equality check for safety, but return the persisted
+    // lexical path. The workspace backend compares that exact path before its
+    // quarantine rename; Windows canonicalization may otherwise change the
+    // path representation even when both resolve to the same directory.
+    Ok(stored)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -982,11 +1528,12 @@ impl PromotionJournal {
         let mut entries = Vec::new();
         for (index, delta) in deltas.iter().enumerate() {
             validate_relative_path(&delta.path)?;
-            if delta
-                .before
-                .iter()
-                .chain(delta.after.iter())
-                .any(|entry| entry.materialization != SnapshotMaterialization::Blob)
+            if !is_sealed_added_local_reference(delta)
+                && delta
+                    .before
+                    .iter()
+                    .chain(delta.after.iter())
+                    .any(|entry| entry.materialization != SnapshotMaterialization::Blob)
             {
                 return Err(coded(
                     ERR_EXTERNAL_REFERENCE_CHANGED,
@@ -1480,7 +2027,163 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn promotion_adopts_one_complete_scope_and_archives_sibling() {
+    async fn promotion_seals_and_merges_a_large_local_output() {
+        const LARGE_FILE_SIZE: u64 = 32 * 1024 * 1024 + 1;
+        let (creator, store, base, project, app_data) = fixture("large_local_output").await;
+        let checkpoint = creator.create_checkpoint("p", "main").await.unwrap();
+        let exploration = creator
+            .create_exploration(&checkpoint.id, "Large output")
+            .await
+            .unwrap();
+        let branch_root = PathBuf::from(&exploration.workspace_dir);
+        let output = branch_root.join("large-result.bin");
+        {
+            let file = File::create(&output).unwrap();
+            file.set_len(LARGE_FILE_SIZE).unwrap();
+        }
+
+        let promotion = ExplorationPromotionService::new(store, app_data);
+        let preview = promotion.preview(&exploration.id).await.unwrap();
+        assert!(preview.eligibility.eligible, "{:?}", preview.eligibility);
+        let delta = preview
+            .diff
+            .files
+            .iter()
+            .find(|delta| delta.path == "large-result.bin")
+            .unwrap();
+        assert_eq!(delta.kind, FileDeltaKind::Added);
+        assert_eq!(
+            delta.after.as_ref().unwrap().materialization,
+            SnapshotMaterialization::Reference
+        );
+        assert!(delta.after.as_ref().unwrap().checksum.is_some());
+
+        promotion
+            .promote_locked(&exploration.id, &preview.eligibility.expected_guard_hash)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(project.join("large-result.bin"))
+                .unwrap()
+                .len(),
+            LARGE_FILE_SIZE
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn promotion_ignores_unrelated_workspace_changes_after_the_checkpoint() {
+        const LARGE_FILE_SIZE: u64 = 32 * 1024 * 1024 + 1;
+        let (creator, store, base, project, app_data) =
+            fixture("unrelated_workspace_changes").await;
+        std::fs::write(project.join("previous-session.txt"), b"checkpoint value").unwrap();
+        File::create(project.join("large-previous-output.bin"))
+            .unwrap()
+            .set_len(LARGE_FILE_SIZE)
+            .unwrap();
+        let checkpoint = creator.create_checkpoint("p", "main").await.unwrap();
+        let exploration = creator
+            .create_exploration(&checkpoint.id, "Independent result")
+            .await
+            .unwrap();
+        std::fs::write(
+            PathBuf::from(&exploration.workspace_dir).join("branch-result.txt"),
+            b"selected exploration",
+        )
+        .unwrap();
+
+        // These live-project changes do not overlap the selected exploration.
+        // Promotion must preserve them instead of treating the whole project
+        // directory as one all-or-nothing conversation-owned snapshot.
+        std::fs::write(project.join("previous-session.txt"), b"external value").unwrap();
+        std::fs::remove_file(project.join("remove.txt")).unwrap();
+        std::fs::write(project.join("other-session.txt"), b"keep me").unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(project.join("large-previous-output.bin"))
+            .unwrap()
+            .write_all(b"x")
+            .unwrap();
+
+        let promotion = ExplorationPromotionService::new(store, app_data);
+        let preview = promotion.preview(&exploration.id).await.unwrap();
+        assert_eq!(
+            preview
+                .diff
+                .files
+                .iter()
+                .map(|delta| (delta.path.as_str(), &delta.kind))
+                .collect::<Vec<_>>(),
+            vec![("branch-result.txt", &FileDeltaKind::Added)]
+        );
+        assert!(preview.mainline_changes.files.is_empty());
+        assert!(preview.eligibility.eligible, "{:?}", preview.eligibility);
+
+        // A new unrelated output after the preview does not stale the guard.
+        std::fs::write(project.join("late-other-session.txt"), b"also keep me").unwrap();
+
+        promotion
+            .promote_locked(&exploration.id, &preview.eligibility.expected_guard_hash)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(project.join("branch-result.txt")).unwrap(),
+            b"selected exploration"
+        );
+        assert_eq!(
+            std::fs::read(project.join("previous-session.txt")).unwrap(),
+            b"external value"
+        );
+        assert_eq!(
+            std::fs::read(project.join("other-session.txt")).unwrap(),
+            b"keep me"
+        );
+        assert_eq!(
+            std::fs::read(project.join("late-other-session.txt")).unwrap(),
+            b"also keep me"
+        );
+        assert!(!project.join("remove.txt").exists());
+        assert_eq!(
+            std::fs::metadata(project.join("large-previous-output.bin"))
+                .unwrap()
+                .len(),
+            LARGE_FILE_SIZE + 1
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn changed_baseline_reference_still_blocks_promotion() {
+        const LARGE_FILE_SIZE: u64 = 32 * 1024 * 1024 + 1;
+        let (creator, store, base, project, app_data) = fixture("changed_weak_reference").await;
+        File::create(project.join("large-input.bin"))
+            .unwrap()
+            .set_len(LARGE_FILE_SIZE)
+            .unwrap();
+        let checkpoint = creator.create_checkpoint("p", "main").await.unwrap();
+        let exploration = creator
+            .create_exploration(&checkpoint.id, "Changed input")
+            .await
+            .unwrap();
+        let branch_input = PathBuf::from(&exploration.workspace_dir).join("large-input.bin");
+        let mut file = File::create(branch_input).unwrap();
+        file.set_len(LARGE_FILE_SIZE).unwrap();
+        file.write_all(b"changed").unwrap();
+
+        let preview = ExplorationPromotionService::new(store, app_data)
+            .preview(&exploration.id)
+            .await
+            .unwrap();
+        assert!(!preview.eligibility.eligible);
+        assert_eq!(
+            preview.eligibility.code.as_deref(),
+            Some(ERR_EXTERNAL_REFERENCE_CHANGED)
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn promotion_merges_one_complete_scope_and_purges_sibling() {
         let (creator, store, base, project, app_data) = fixture("adopt").await;
         baseline_artifact(&store).await;
         let checkpoint = creator.create_checkpoint("p", "main").await.unwrap();
@@ -1492,11 +2195,67 @@ mod tests {
             .create_exploration(&checkpoint.id, "Sibling")
             .await
             .unwrap();
+        store
+            .append_message(
+                &selected.frame_id,
+                3,
+                &wisp_llm::Message::user("try selected approach"),
+            )
+            .await
+            .unwrap();
+        store
+            .append_message(
+                &selected.frame_id,
+                4,
+                &wisp_llm::Message::assistant("selected result"),
+            )
+            .await
+            .unwrap();
+        store
+            .append_session_ui_event(
+                &selected.frame_id,
+                1,
+                &format!(
+                    r#"{{"kind":"User","frame_id":"{}","text":"try selected approach"}}"#,
+                    selected.frame_id
+                ),
+            )
+            .await
+            .unwrap();
         let selected_root = PathBuf::from(&selected.workspace_dir);
         std::fs::write(selected_root.join("baseline.txt"), b"selected value").unwrap();
         std::fs::write(selected_root.join("added.txt"), b"new result").unwrap();
         std::fs::remove_file(selected_root.join("remove.txt")).unwrap();
         let selected_artifact_id = branch_artifact(&store, &selected, "selected-version").await;
+        let hidden_artifact_source = selected_root.join("hidden-artifact.txt");
+        std::fs::write(&hidden_artifact_source, b"durable artifact bytes").unwrap();
+        let hidden_capture = crate::snapshot_store::capture_file(
+            &selected_root,
+            &hidden_artifact_source,
+            crate::snapshot_store::SnapshotPolicy::Always,
+        )
+        .unwrap();
+        std::fs::remove_file(&hidden_artifact_source).unwrap();
+        let hidden_storage_path = hidden_capture.storage_path.clone();
+        store
+            .save_artifact_version(&ArtifactVersionDraft {
+                version_id: Some("hidden-artifact-version".into()),
+                artifact_id: "hidden-artifact".into(),
+                project_id: "p".into(),
+                root_frame_id: selected.frame_id.clone(),
+                filename: "hidden-artifact.txt".into(),
+                content_type: "text/plain".into(),
+                storage_path: hidden_capture.storage_path,
+                logical_key: Some("path:hidden-artifact.txt".into()),
+                size_bytes: Some(i64::try_from(hidden_capture.size_bytes).unwrap()),
+                checksum: Some(hidden_capture.checksum),
+                producing_run_id: None,
+                env_snapshot_hash: None,
+                materialization: ArtifactMaterialization::Snapshot,
+                capture_timing: ArtifactCaptureTiming::AtCreation,
+            })
+            .await
+            .unwrap();
 
         let mut run = RunRecord::new("selected-run", "p", "local", "Selected run", "command");
         run.frame_id = Some(selected.frame_id.clone());
@@ -1555,12 +2314,42 @@ mod tests {
             )
             .await
             .unwrap();
+        let sibling_artifact_id = branch_artifact(&store, &sibling, "sibling-version").await;
+        let mut sibling_run = RunRecord::new("sibling-run", "p", "local", "Sibling run", "command");
+        sibling_run.frame_id = Some(sibling.frame_id.clone());
+        sibling_run.status = RunStatus::Succeeded;
+        store.create_run(&sibling_run).await.unwrap();
+        store
+            .save_external_resource_in_scope(
+                &ExternalResource {
+                    id: "sibling-resource".into(),
+                    project_id: "p".into(),
+                    kind: "dataset".into(),
+                    uri: "doi:10.0000/sibling".into(),
+                    version: Some("v1".into()),
+                    checksum: Some("b".repeat(64)),
+                    size_bytes: Some(10),
+                    license: None,
+                    visibility: "restricted".into(),
+                    access_instructions: None,
+                    accessed_at: Some(1),
+                    created_at: 1,
+                    updated_at: 1,
+                },
+                &StateScope::exploration("p", sibling.id.clone()),
+            )
+            .await
+            .unwrap();
 
         let promotion = ExplorationPromotionService::new(store.clone(), app_data.clone());
+        let round_snapshots =
+            load_round_snapshots(&promotion, &[selected.clone(), sibling.clone()]).await;
+        let round_context_archives =
+            load_round_context_archives(&promotion, &[selected.clone(), sibling.clone()]).await;
         let preview = promotion.preview(&selected.id).await.unwrap();
         assert!(preview.eligibility.eligible, "{:?}", preview.eligibility);
         assert_eq!(preview.diff.files.len(), 3);
-        assert_eq!(preview.diff.artifacts.len(), 1);
+        assert_eq!(preview.diff.artifacts.len(), 2);
         assert_eq!(preview.diff.runs.len(), 1);
         assert_eq!(preview.diff.decisions, vec![decision.clone()]);
         assert_eq!(preview.diff.external_resources.len(), 1);
@@ -1568,6 +2357,30 @@ mod tests {
             .promote_locked(&selected.id, &preview.eligibility.expected_guard_hash)
             .await
             .unwrap();
+        promotion
+            .dispose_resolved_round_workspaces(
+                &[selected.clone(), sibling.clone()],
+                &round_snapshots,
+                &round_context_archives,
+            )
+            .await;
+
+        assert!(round_snapshots.iter().all(|snapshot| !app_data
+            .join("exploration-snapshots/manifests")
+            .join(format!("{}.json", snapshot.id))
+            .exists()));
+        assert!(round_context_archives
+            .iter()
+            .all(|archive| !app_data.join(&archive.storage_path).exists()));
+        assert!(round_snapshots
+            .iter()
+            .flat_map(|snapshot| snapshot.entries.iter())
+            .filter_map(|entry| entry.checksum.as_deref())
+            .all(|checksum| !app_data
+                .join("exploration-snapshots/blobs/sha256")
+                .join(&checksum[..2])
+                .join(checksum)
+                .exists()));
 
         assert_eq!(
             std::fs::read(project.join("baseline.txt")).unwrap(),
@@ -1586,6 +2399,15 @@ mod tests {
             .unwrap();
         assert_eq!(mainline_head.artifact_id, selected_artifact_id);
         assert_eq!(mainline_head.artifact_version_id, "selected-version");
+        assert_eq!(
+            std::fs::read(project.join(&hidden_storage_path)).unwrap(),
+            b"durable artifact bytes"
+        );
+        assert!(store
+            .get_artifact_version("hidden-artifact-version")
+            .await
+            .unwrap()
+            .is_some());
         assert_eq!(
             store
                 .list_runs_by_project("p")
@@ -1607,59 +2429,101 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+        assert_eq!(result.mainline_frame_id, "main");
+        assert!(store
+            .frame_state_scope(&selected.frame_id)
+            .await
+            .unwrap()
+            .is_none());
         assert_eq!(
-            store.frame_state_scope(&selected.frame_id).await.unwrap(),
+            store.frame_state_scope("main").await.unwrap(),
             Some(StateScope::mainline("p"))
         );
-        assert_eq!(
-            store.frame_state_scope(&sibling.frame_id).await.unwrap(),
-            Some(StateScope::exploration("p", sibling.id.clone()))
-        );
-        assert_eq!(
-            store
-                .get_exploration(&sibling.id)
-                .await
-                .unwrap()
-                .unwrap()
-                .status,
-            ExplorationStatus::Archived
-        );
-        assert_eq!(
-            store
-                .get_exploration_family(&checkpoint.family_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .mainline_frame_id,
-            selected.frame_id
-        );
-        assert_eq!(
-            store
-                .get_exploration_promotion(&result.promotion_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .status,
-            ExplorationPromotionStatus::Committed
-        );
-        assert!(!app_data
-            .join("exploration-promotions")
-            .join(&result.promotion_id)
-            .exists());
+        assert!(store.get_exploration(&selected.id).await.unwrap().is_none());
+        assert!(store
+            .load_messages(&selected.frame_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.frame_message_head("main").await.unwrap(), 4);
+        assert_eq!(store.frame_ui_event_head("main").await.unwrap(), 1);
+        let selected_run = store.get_run("selected-run").await.unwrap().unwrap();
+        assert_eq!(selected_run.frame_id.as_deref(), Some("main"));
+        let selected_artifact = store
+            .get_artifact(&selected_artifact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected_artifact.3, "main");
+        assert!(store
+            .frame_state_scope(&sibling.frame_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store.get_exploration(&sibling.id).await.unwrap().is_none());
+        assert!(store
+            .load_messages(&sibling.frame_id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .get_artifact(&sibling_artifact_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_artifact_version("sibling-version")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store.get_run("sibling-run").await.unwrap().is_none());
+        assert!(store
+            .research_graph_owned_by_exploration(&sibling.id)
+            .await
+            .unwrap()
+            .nodes
+            .is_empty());
+        assert!(store
+            .list_external_resources_owned_by_exploration(&sibling.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .list_exploration_effects(&sibling.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .list_artifact_heads("p", &sibling.id)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(!selected_root.exists());
+        assert!(!sibling_root.exists());
+        assert!(store
+            .get_exploration_family(&checkpoint.family_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .list_project_explorations("p")
+            .await
+            .unwrap()
+            .is_empty());
         store
             .append_message(
-                &result.adopted_frame_id,
-                3,
+                &result.mainline_frame_id,
+                5,
                 &wisp_llm::Message::user("continue"),
             )
             .await
             .unwrap();
         assert_eq!(
             store
-                .frame_message_head(&result.adopted_frame_id)
+                .frame_message_head(&result.mainline_frame_id)
                 .await
                 .unwrap(),
-            3
+            5
         );
 
         let _ = std::fs::remove_dir_all(base);
@@ -1691,7 +2555,17 @@ mod tests {
 
         let refreshed = promotion.preview(&exploration.id).await.unwrap();
         assert!(refreshed.eligibility.eligible);
-        std::fs::write(project.join("baseline.txt"), b"advanced").unwrap();
+        // An unrelated project path may be updated by another conversation;
+        // only a competing change to the exploration's selected path blocks.
+        std::fs::write(project.join("baseline.txt"), b"advanced elsewhere").unwrap();
+        let unrelated = promotion.preview(&exploration.id).await.unwrap();
+        assert!(
+            unrelated.eligibility.eligible,
+            "{:?}",
+            unrelated.eligibility
+        );
+        assert!(unrelated.mainline_changes.files.is_empty());
+        std::fs::write(project.join("branch.txt"), b"competing value").unwrap();
         let advanced = promotion.preview(&exploration.id).await.unwrap();
         assert!(!advanced.eligibility.eligible);
         assert_eq!(

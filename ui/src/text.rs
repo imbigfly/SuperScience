@@ -319,10 +319,12 @@ fn find_backtick_run(s: &str, n: usize) -> Option<usize> {
 /// Models sometimes drop the item text onto the line after a bare list marker
 /// (`- \nTb1 ...`). CommonMark reads that as an empty item plus a paragraph,
 /// which renders as an orphan bullet dot followed by flush-left text. Rejoin
-/// the two lines when the next line is plain prose at the marker's indent;
-/// indented continuations already attach correctly, and real block starts
-/// (fences, headings, quotes, tables, other list items, thematic breaks) are
-/// left alone, as is anything inside fenced code.
+/// the two lines when the next line is plain prose at the marker's indent. A
+/// single accidental blank line is tolerated as well; an intentionally empty
+/// item followed by two blank lines remains untouched. Indented continuations
+/// already attach correctly, and real block starts (fences, headings, quotes,
+/// tables, other list items, thematic breaks) are left alone, as is anything
+/// inside fenced code.
 fn rejoin_empty_list_markers(src: &str) -> std::borrow::Cow<'_, str> {
     let mut out = String::with_capacity(src.len());
     let mut changed = false;
@@ -357,15 +359,38 @@ fn rejoin_empty_list_markers(src: &str) -> std::borrow::Cow<'_, str> {
             continue;
         };
         let next_line = next.trim_end_matches(['\r', '\n']);
-        if !is_plain_continuation(next_line, indent) {
+        let (continuation, skip_blank) = if is_plain_continuation(next_line, indent) {
+            (*next, false)
+        } else if next_line.trim().is_empty() {
+            let mut lookahead = lines.clone();
+            lookahead.next();
+            match lookahead.next() {
+                Some(after_blank)
+                    if is_plain_continuation(
+                        after_blank.trim_end_matches(['\r', '\n']),
+                        indent,
+                    ) =>
+                {
+                    (after_blank, true)
+                }
+                _ => {
+                    out.push_str(chunk);
+                    continue;
+                }
+            }
+        } else {
             out.push_str(chunk);
             continue;
-        }
+        };
+        let continuation_line = continuation.trim_end_matches(['\r', '\n']);
         changed = true;
         out.push_str(line.trim_end_matches([' ', '\t']));
         out.push(' ');
-        out.push_str(next_line.trim_start());
-        out.push_str(&next[next_line.len()..]);
+        out.push_str(continuation_line.trim_start());
+        out.push_str(&continuation[continuation_line.len()..]);
+        if skip_blank {
+            lines.next();
+        }
         lines.next();
     }
     if changed {
@@ -1268,8 +1293,8 @@ pub(crate) fn file_kind(path: &str) -> Option<&'static str> {
         "docx" => "docx",
         "xlsx" => "xlsx",
         "pptx" => "pptx",
-        "doc" | "docm" | "odt" | "rtf" | "epub" | "xls" | "xlsm" | "xlsb" | "ods"
-        | "ppt" | "pps" | "pot" | "pptm" | "ppsx" | "ppsm" | "odp" => "document",
+        "doc" | "docm" | "odt" | "rtf" | "epub" | "xls" | "xlsm" | "xlsb" | "ods" | "ppt"
+        | "pps" | "pot" | "pptm" | "ppsx" | "ppsm" | "odp" => "document",
         // ponytail: LaTeX sources open as plain text, not code. The vendored
         // highlight.js is the common bundle with no `latex` grammar, and asking
         // it for one throws; the `latex` preview kind is KaTeX for inline
@@ -1385,6 +1410,18 @@ mod md_catalog_tests {
     }
 
     #[test]
+    fn rejoins_a_bare_marker_across_one_accidental_blank_line() {
+        let html = md_to_html("- QC passed\n-\n\nNormalize → PCA\n");
+        assert!(html.contains("<li>Normalize → PCA</li>"), "{html}");
+        assert!(!html.contains("<li></li>"), "{html}");
+
+        // Two blank lines are enough to preserve an intentionally empty item
+        // and a separate paragraph.
+        let html = md_to_html("- QC passed\n-\n\n\nSeparate paragraph\n");
+        assert!(html.contains("<li></li>"), "{html}");
+    }
+
+    #[test]
     fn leaves_block_starts_and_code_fences_untouched() {
         // Indented continuations already attach to the item; do not rejoin.
         let src = "- a\n- \n  b\n";
@@ -1392,9 +1429,10 @@ mod md_catalog_tests {
         // A bare marker followed by another item keeps its (empty) meaning.
         let html = md_to_html("- a\n-\n- b\n");
         assert!(html.contains("<li></li>"), "{html}");
-        // Blank and whitespace-only lines do not rejoin either.
+        // One blank line is repaired, but a whitespace-only continuation plus
+        // another blank remains an intentional separation.
         for next in ["", "  ", " \t"] {
-            let html = md_to_html(&format!("- \n{next}\nb\n"));
+            let html = md_to_html(&format!("- \n{next}\n\nb\n"));
             assert!(html.contains("<li></li>"), "{next:?}: {html}");
         }
         // Thematic breaks, headings, quotes and tables are not item text.

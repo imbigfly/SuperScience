@@ -375,6 +375,27 @@ fn strip_trailing_list_marker(before: &str) -> &str {
     }
 }
 
+/// Malformed model Markdown can place the separator between two resource
+/// links in its own paragraph (`link\n\n、\n\nlink`). Once the links become
+/// compact resource chips that paragraph creates a conspicuous empty row (or
+/// a lone backtick). Fold only punctuation-only paragraphs back into the
+/// surrounding paragraph; ordinary prose and intentional paragraph breaks
+/// remain untouched.
+fn collapse_orphan_separator_paragraphs(mut html: String) -> String {
+    for (paragraph, replacement) in [
+        ("<p>、</p>", " 、 "),
+        ("<p>，</p>", "， "),
+        ("<p>,</p>", ", "),
+        ("<p>`</p>", " "),
+    ] {
+        let needle = format!("</p>\n{paragraph}\n<p>");
+        while html.contains(&needle) {
+            html = html.replacen(&needle, replacement, 1);
+        }
+    }
+    html
+}
+
 fn html_attr(tag: &str, name: &str) -> Option<String> {
     let needle = format!(r#"{name}=""#);
     let start = tag.find(&needle)? + needle.len();
@@ -491,6 +512,7 @@ pub(crate) fn enrich_md_html(
     html = wrap_code_filenames_as_art_refs(html, arts);
     html = wrap_inline_workspace_paths(html, project_root);
     html = strip_list_markers_before_art_refs(&html);
+    html = collapse_orphan_separator_paragraphs(html);
     html = html.replace("<pre><code", "<pre class=\"md-code\"><code");
     html = wrap_markdown_code_blocks_with_copy_controls(html, locale);
     html = wrap_markdown_tables_with_copy_controls(html, locale);
@@ -626,6 +648,19 @@ mod art_ref_marker_tests {
     fn keeps_dashes_that_are_part_of_prose() {
         let html = r#"see range 1 - <button type="button" class="art-ref" data-art-idx="0">x.csv</button>"#;
         assert_eq!(strip_list_markers_before_art_refs(html), html);
+    }
+
+    #[test]
+    fn folds_orphan_resource_separators_without_touching_prose() {
+        let html = "<ul>\n<li><p><a href=\"a.png\">A</a></p>\n<p>、</p>\n<p><a href=\"b.png\">B</a></p></li>\n</ul>\n<p>`code` stays</p>";
+        let out = collapse_orphan_separator_paragraphs(html.into());
+        assert!(out.contains(r#"<p><a href="a.png">A</a> 、 <a href="b.png">B</a></p>"#));
+        assert!(out.contains("<p>`code` stays</p>"));
+        assert!(!out.contains("<p>、</p>"));
+
+        let html = "<p><a href=\"a.png\">A</a></p>\n<p>`</p>\n<p><a href=\"b.png\">B</a></p>";
+        let out = collapse_orphan_separator_paragraphs(html.into());
+        assert_eq!(out, r#"<p><a href="a.png">A</a> <a href="b.png">B</a></p>"#);
     }
 
     #[test]
