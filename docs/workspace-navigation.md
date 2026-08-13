@@ -25,7 +25,8 @@ A conversation's system prompt — including `AGENTS.md` and the project **Agent
 context** (`.wisp/WISP.md`) — is assembled once when the conversation starts
 and kept stable for its lifetime, so edits apply only to new conversations.
 When the files on disk no longer match a conversation's persisted prompt, the
-sidebar marks that conversation with a small sync icon. Right-click it and
+sidebar marks that conversation with a circular-refresh icon in the left status
+slot (the same gutter used for running and waiting-for-you). Right-click it and
 choose **Reload project rules…** to rebuild its system prompt from the current
 files. The reload takes effect on the next turn and leaves the chat history
 untouched; because the prompt prefix changes, the provider's prompt cache for

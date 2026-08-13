@@ -118,10 +118,6 @@
   font-size: 13px; color: var(--text-muted); white-space: nowrap;
 }
 .side-item:hover { background: var(--bg-elev); color: var(--text); }
-/* Status dots stay hidden at rest; only running/attention sessions light one up,
-   so the idle list reads as plain titles. Opacity (not display) keeps row geometry
-   stable when a run starts or finishes. */
-.side-item .dot { position: relative; width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; overflow: hidden; opacity: 0; transition: opacity .15s ease; }
 button.side-item { width: 100%; text-align: left; background: transparent; border: 1px solid transparent; font: inherit; font-size: 13px; cursor: pointer; }
 button.side-item.ses { cursor: pointer; user-select: none; padding-right: 34px; }
 button.side-item.ses.selecting { padding-right: 10px; }
@@ -131,17 +127,32 @@ button.side-item.ses.selecting { padding-right: 10px; }
 }
 .session-select-mark svg { width: 11px; height: 11px; }
 .side-item.ses.selecting .session-select-mark { display: inline-flex; }
-.side-item.ses.selecting .dot { display: none; }
+.side-item.ses.selecting .ses-status { display: none; }
 .side-item.ses.selected { background: var(--clay-soft); border-color: var(--clay); color: var(--text); }
 .side-item.ses.selected .session-select-mark { background: var(--clay); border-color: var(--clay); color: var(--on-clay); }
 .session-branch-icon { display: inline-flex; flex: 0 0 auto; color: var(--clay); }
 .session-branch-icon svg { width: 15px; height: 15px; }
 .side-item.ses.selecting .session-branch-icon { display: none; }
-/* Marks sessions whose persisted system prompt lags AGENTS.md / WISP.md. */
-.ses-stale { display: inline-flex; flex: 0 0 auto; color: var(--text-faint); }
-.ses-stale svg { width: 13px; height: 13px; }
-.side-item.ses:hover .ses-stale, .side-item.ses.active .ses-stale { color: var(--clay); }
-.side-item.ses.selecting .ses-stale { display: none; }
+/* Left status slot holds geometry at rest. Running is a comet ring,
+   attention a circle-alert, stale a circular refresh — never a raw color dot. */
+.ses-status {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex: 0 0 auto;
+}
+.ses-status svg { width: 16px; height: 16px; }
+.ses-live, .ses-attention, .ses-stale {
+  display: none; align-items: center; justify-content: center;
+  position: absolute; inset: 0;
+}
+.side-item.ses.running:not(.attention) .ses-live { display: inline-flex; }
+.side-item.ses.attention .ses-attention { display: inline-flex; }
+.side-item.ses.stale:not(.running):not(.attention) .ses-stale { display: inline-flex; }
+.ses-live { color: var(--ok); filter: drop-shadow(0 0 5px color-mix(in srgb, var(--ok) 50%, transparent)); }
+.ses-live svg { animation: ses-spin 1.05s linear infinite; }
+.ses-attention { color: var(--warn); filter: drop-shadow(0 0 4px color-mix(in srgb, var(--warn) 45%, transparent)); }
+.ses-attention svg { animation: ses-breathe 1.8s ease-in-out infinite; }
+.ses-stale { color: var(--clay); filter: drop-shadow(0 0 4px color-mix(in srgb, var(--clay) 40%, transparent)); }
 .side-item-wrap { position: relative; min-width: 0; }
 /* Row menus are revealed only on hover/keyboard focus — including the active
    session — so the list reads as plain titles at rest. Opacity (not display)
@@ -164,29 +175,13 @@ button.side-item.ses.selecting { padding-right: 10px; }
 .folder-actions:hover, .folder-actions:focus-visible { color: var(--text); background: var(--bg-input); }
 .session-actions.selection-hidden { display: none; }
 .side-item.active { background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-sm); }
-/* Working indicator: glowing dot with a traveling sheen (reference: Claude's
-   shimmering "thinking" light). Attention (awaiting approval #327) shares the
-   motion in warning color and outranks running. */
-.side-item.ses.running .dot, .side-item.ses.attention .dot { opacity: 1; animation: dot-breathe 1.6s ease-in-out infinite; }
-.side-item.ses.running .dot { background: var(--ok); box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 55%, transparent); }
-.side-item.ses.attention .dot { background: var(--warn); box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 55%, transparent); }
-.side-item.ses.running .dot::after, .side-item.ses.attention .dot::after {
-  content: ""; position: absolute; inset: -1px;
-  background: linear-gradient(105deg, transparent 25%, rgba(255, 255, 255, .9) 50%, transparent 75%);
-  background-size: 250% 100%;
-  animation: dot-sheen 1.25s linear infinite;
-}
-@keyframes dot-breathe {
-  0%, 100% { transform: scale(.86); }
-  50% { transform: scale(1.08); }
-}
-@keyframes dot-sheen {
-  from { background-position: 120% 0; }
-  to { background-position: -90% 0; }
+@keyframes ses-spin { to { transform: rotate(360deg); } }
+@keyframes ses-breathe {
+  0%, 100% { transform: scale(.92); opacity: .82; }
+  50% { transform: scale(1); opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .side-item.ses.running .dot, .side-item.ses.attention .dot { animation: none; }
-  .side-item.ses.running .dot::after, .side-item.ses.attention .dot::after { display: none; }
+  .ses-live svg, .ses-attention svg { animation: none; }
 }
 .ses-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .side-exploration-group {
@@ -323,7 +318,7 @@ button.side-item.ses.selecting { padding-right: 10px; }
     padding-left: 8px;
     padding-right: 8px;
   }
-  .sidebar .side-item .dot { margin: 0; }
+  .sidebar .side-item .ses-status { margin: 0; }
   .sidebar .side-folder { min-height: 32px; }
   .sidebar .side-folder > svg { margin: 0; }
   .sidebar .side-folder-sessions { padding-left: 0; }

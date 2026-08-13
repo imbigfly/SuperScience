@@ -2284,7 +2284,26 @@ test("stale project rules can be reloaded from the session context menu", async 
   await enterApp(page, "/?mockStaleRules=1");
   const stale = page.locator(".side-item.ses", { hasText: "Outdated rules chat" });
   await expect(stale).toBeVisible({ timeout: 10_000 });
-  await expect(stale.locator(".ses-stale")).toBeVisible();
+  await expect(stale).toHaveClass(/stale/);
+  const staleMark = stale.locator(".ses-stale");
+  await expect(staleMark).toBeVisible();
+  await expect(staleMark.locator("svg")).toBeVisible();
+  await expect(staleMark).toHaveAttribute("title", /context outdated/i);
+  await expect(stale.locator(".ses-live")).toBeHidden();
+  await expect(stale.locator(".ses-attention")).toBeHidden();
+  const markBeforeTitle = await stale.evaluate((el) => {
+    const mark = el.querySelector(".ses-stale");
+    const title = el.querySelector(".ses-title");
+    const status = el.querySelector(".ses-status");
+    return !!(
+      mark &&
+      title &&
+      status &&
+      status.contains(mark) &&
+      (mark.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING)
+    );
+  });
+  expect(markBeforeTitle).toBe(true);
 
   // A fresh session has no marker and no reload menu item.
   await newSessionButton(page).click();
@@ -7249,8 +7268,12 @@ test("awaiting approval marks the session dot and requests a desktop notificatio
   await composer(page).fill("NEEDCONFIRM");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByRole("button", { name: "Allow once" })).toBeVisible({ timeout: 10_000 });
-  // The waiting state shows on the sidebar session row.
-  await expect(page.locator(".side-item.ses.attention")).toHaveCount(1);
+  // The waiting state shows on the sidebar session row as a circle-alert icon.
+  const waiting = page.locator(".side-item.ses.attention");
+  await expect(waiting).toHaveCount(1);
+  await expect(waiting.locator(".ses-attention")).toBeVisible();
+  await expect(waiting.locator(".ses-attention svg")).toBeVisible();
+  await expect(waiting.locator(".ses-live")).toBeHidden();
   // The UI asked the backend for a desktop notification carrying the session
   // title (the backend decides visibility from window focus + settings).
   await expect.poll(async () => page.evaluate(() => {

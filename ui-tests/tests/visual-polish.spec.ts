@@ -125,7 +125,7 @@ test("session row menu button is hidden until hover or keyboard focus", async ({
   await expect.poll(opacity).toBe("1");
 });
 
-test("session status dot is hidden at rest and shimmers while running", async ({ page }) => {
+test("session status spinner is hidden at rest and rotates while running", async ({ page }) => {
   await page.addInitScript(parallelMock);
   await enterApp(page);
   // parallelMock holds Done for ~5s; the sidebar running indicator shows once the
@@ -136,19 +136,19 @@ test("session status dot is hidden at rest and shimmers while running", async ({
   await page.locator(".sidebar").getByRole("button", { name: "New session" }).click();
 
   const session = page.locator(".side-item.ses", { hasText: "dot-shimmer" });
-  const dot = session.locator(".dot");
+  const live = session.locator(".ses-live");
   await expect(session).toHaveClass(/running/);
 
-  // Running: dot visible with a glow and a sheen overlay.
-  await expect.poll(() => dot.evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
-  const glow = await dot.evaluate((el) => getComputedStyle(el).boxShadow);
-  expect(glow).not.toBe("none");
-  const sheen = await dot.evaluate((el) => getComputedStyle(el, "::after").backgroundImage);
-  expect(sheen).toContain("linear-gradient");
+  await expect(live).toBeVisible();
+  await expect(live.locator("svg")).toBeVisible();
+  await expect.poll(() => live.evaluate((el) => getComputedStyle(el).display)).not.toBe("none");
+  const spin = await live.locator("svg").evaluate((el) => getComputedStyle(el).animationName);
+  expect(spin).toContain("ses-spin");
+  const glow = await live.evaluate((el) => getComputedStyle(el).filter);
+  expect(glow).toContain("drop-shadow");
 
-  // Idle again: the dot fades out completely once the turn finishes.
   await expect(session).not.toHaveClass(/running/, { timeout: 15_000 });
-  await expect.poll(() => dot.evaluate((el) => getComputedStyle(el).opacity)).toBe("0");
+  await expect.poll(() => live.evaluate((el) => getComputedStyle(el).display)).toBe("none");
 });
 
 test("follow-up suggestions sit on the canvas without a panel fill", async ({ page }) => {
