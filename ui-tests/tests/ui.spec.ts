@@ -326,6 +326,23 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await expect(page.locator(".copy-toast")).toHaveText("Copied");
 });
 
+test("sending a follow-up hides suggestions before the User event arrives", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("hello there");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  const followUps = page.getByTestId("follow-up-questions");
+  await expect(followUps.getByRole("button")).toHaveCount(4);
+
+  await page.evaluate(() => {
+    (window as any).__userEventDelayMs = 800;
+  });
+  await composer(page).fill("how to read this figure");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("how to read this figure")).toBeVisible();
+  await expect(followUps).toHaveCount(0, { timeout: 300 });
+});
+
 test("completed turns propose editable memory and require confirmation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("summarize this project convention");
