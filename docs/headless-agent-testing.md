@@ -205,10 +205,12 @@ The same long-context notebook is also bundled as an Example-project demo
 right-click **Long-context memory demo**, and choose **Copy to a project…**
 to materialize the transcript (and `.wisp/memory` notes) in a real workspace.
 The opening assistant turn is the only place that locks `QC_THRESHOLD=0.047`
-and `COHORT=WISP-HCC-2024-G`; later turns are long filler so a manual
-`/compact` folds that first answer out of the protected tail. Continue with a
-live model: `/compact`, then ask what the first answer locked, or ask about
-study `TS-999-QX` to exercise `search_memory`.
+and `COHORT=WISP-HCC-2024-G`. Later turns expand to roughly half a million
+estimated tokens — enough to cross the 80% compact line on 256K windows, and
+still a large buried prefix on 1M windows so a manual `/compact` folds that
+first answer out of the protected tail. Continue with a live model:
+`/compact`, then ask what the first answer locked, or ask about study
+`TS-999-QX` to exercise `search_memory`.
 
 ### Custom suites
 

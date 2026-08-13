@@ -20,7 +20,7 @@ use crate::resource_refs;
 use crate::AppState;
 
 const MAX_SEED_REPEAT: usize = 200;
-const MAX_SEED_PAD: usize = 32;
+const MAX_SEED_PAD: usize = 64;
 
 /// Bundled demo manifests (`seed/`).
 pub fn bundled_dir() -> Option<PathBuf> {
@@ -555,16 +555,16 @@ mod tests {
             .any(|item| item.text.contains("RECENT_NOTE")));
         let chars: usize = memory.items.iter().map(|item| item.text.len()).sum();
         assert!(
-            chars > 150_000,
-            "expanded notebook should be long enough to fold the first answer, got {chars} chars"
+            chars > 1_500_000,
+            "expanded notebook should fill a 256K-class window, got {chars} chars"
         );
         let tokens: usize = demo_items_to_messages(&memory.items)
             .iter()
             .map(wisp_core::ContextManager::estimated_tokens)
             .sum();
         assert!(
-            tokens > 25_000,
-            "estimated tokens should exceed a 32k 80% compact threshold, got {tokens}"
+            tokens > 400_000,
+            "estimated tokens should exceed a 256k 80% compact line and remain large on 1M, got {tokens}"
         );
         assert!(memory.request.contains("Long-context memory demo"));
     }
@@ -602,8 +602,8 @@ mod tests {
             .map(wisp_core::ContextManager::estimated_tokens)
             .sum();
         assert!(
-            tokens > 25_000,
-            "copied session too short to compact: {tokens}"
+            tokens > 400_000,
+            "copied session too short for 256K/1M compact tests: {tokens}"
         );
         assert!(workspace.join(".wisp/memory/2025-06-01.md").is_file());
         assert!(workspace.join(".wisp/memory/2025-05-20.md").is_file());

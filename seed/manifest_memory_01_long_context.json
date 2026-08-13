@@ -9,7 +9,7 @@
       "request": "Long-context memory demo — compact, then ask what the first answer locked."
     },
     "output_data": {
-      "response": "Copy this demo into a real project, run /compact, then ask what the first answer locked. Locked identifiers appear only in that opening assistant turn (QC_THRESHOLD and COHORT). Later notebook filler is long enough to push that first answer out of the protected tail. On copy, .wisp/memory notes for study TS-999-QX are written into the target workspace so search_memory can be tested next.",
+      "response": "Copy this demo into a real project, run /compact, then ask what the first answer locked. Locked identifiers appear only in that opening assistant turn (QC_THRESHOLD and COHORT). Later notebook filler is sized for 256K–1M context windows so that first answer sits far outside the protected tail. On copy, .wisp/memory notes for study TS-999-QX are written into the target workspace so search_memory can be tested next.",
       "items": [],
       "context_seed": [
         {
@@ -23,37 +23,37 @@
         {
           "role": "user",
           "repeat": 40,
-          "pad": 8,
+          "pad": 64,
           "text": "Sample accession continued for the current intake: tube IDs, freeze-thaw counts, courier delays, and freezer map updates were logged. These operational notes are not a substitute for the opening analysis decision. "
         },
         {
           "role": "assistant",
           "repeat": 40,
-          "pad": 8,
+          "pad": 64,
           "text": "Accession log retained. I will keep tracking logistics, kit lots, and chain of custody without treating this later filler as the authoritative result from the opening analysis. "
         },
         {
           "role": "user",
           "repeat": 40,
-          "pad": 8,
+          "pad": 64,
           "text": "Sequencing occupancy, lane swaps, and index-hopping checks were reviewed for this week. Exploratory plots used temporary palettes and do not revise the first analysis. "
         },
         {
           "role": "assistant",
           "repeat": 40,
-          "pad": 8,
+          "pad": 64,
           "text": "Sequencing review retained. I will distinguish later operational chatter from the original locked identifiers and will not restate them unless you ask. "
         },
         {
           "role": "user",
           "repeat": 40,
-          "pad": 8,
+          "pad": 64,
           "text": "Clinical metadata review covered consent versions, visit windows, and blinded labels. Intermediate observations stay provisional until someone asks to recover the opening decision. "
         },
         {
           "role": "assistant",
           "repeat": 40,
-          "pad": 8,
+          "pad": 64,
           "text": "Metadata review retained. I will keep the recent notebook distinct from the first analysis and wait for an explicit recall question before bringing that opening decision back. "
         },
         {
