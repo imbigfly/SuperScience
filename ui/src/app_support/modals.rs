@@ -44,6 +44,7 @@ pub(crate) enum UiConfirm {
     AbandonExploration(String),
     DeleteFileEntry { path: String, is_dir: bool },
     ReloadProjectRules(String),
+    SaveAgentContext,
 }
 
 #[derive(Clone)]

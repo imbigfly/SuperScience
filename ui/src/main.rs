@@ -738,6 +738,7 @@ fn App() -> impl IntoView {
     let proj_list = create_rw_signal::<Vec<ProjectSummary>>(vec![]);
     let show_proj_settings = create_rw_signal(false);
     let proj_settings = create_rw_signal(ProjectSettings::default());
+    let proj_settings_baseline = create_rw_signal(ProjectSettings::default());
     let proj_settings_busy = create_rw_signal(false);
 
     // Session history (left sidebar).
@@ -7936,12 +7937,13 @@ fn App() -> impl IntoView {
         spawn_local(async move {
             let v = invoke("get_project_settings", JsValue::UNDEFINED).await;
             if let Ok(s) = serde_wasm_bindgen::from_value::<ProjectSettings>(v) {
+                proj_settings_baseline.set(s.clone());
                 proj_settings.set(s);
                 show_proj_settings.set(true);
             }
         });
     };
-    let save_proj_settings = move |_| {
+    let commit_proj_settings = move || {
         if proj_settings_busy.get() {
             return;
         }
@@ -7964,6 +7966,15 @@ fn App() -> impl IntoView {
                 }
             }
         });
+    };
+    let save_proj_settings = move |_| {
+        let form = proj_settings.get();
+        let baseline = proj_settings_baseline.get();
+        if form.agent_context.trim() != baseline.agent_context.trim() {
+            ui_confirm.set(Some(UiConfirm::SaveAgentContext));
+            return;
+        }
+        commit_proj_settings();
     };
 
     let move_sessions_to = {
@@ -8267,6 +8278,7 @@ fn App() -> impl IntoView {
         spawn_local(async move {
             let v = invoke("get_project_settings", JsValue::UNDEFINED).await;
             if let Ok(s) = serde_wasm_bindgen::from_value::<ProjectSettings>(v) {
+                proj_settings_baseline.set(s.clone());
                 proj_settings.set(s);
                 show_proj_settings.set(true);
             }
@@ -13589,6 +13601,7 @@ fn App() -> impl IntoView {
                     &[("path", path)],
                 ),
                 UiConfirm::ReloadProjectRules(_) => t(locale.get(), "session.reload_rules_hint").to_string(),
+                UiConfirm::SaveAgentContext => t(locale.get(), "proj_settings.agent_context_confirm").to_string(),
             };
             let action_key = match &action {
                 UiConfirm::EnableFullPermission => "full_permission.confirm_action",
@@ -13598,6 +13611,7 @@ fn App() -> impl IntoView {
                 UiConfirm::DeleteFileEntry { is_dir: true, .. } => "files.delete_directory",
                 UiConfirm::DeleteFileEntry { is_dir: false, .. } => "files.delete_file",
                 UiConfirm::ReloadProjectRules(_) => "session.reload_rules_action",
+                UiConfirm::SaveAgentContext => "proj_settings.agent_context_confirm_action",
             };
             view! {
             <div class="overlay">
@@ -13709,24 +13723,6 @@ fn App() -> impl IntoView {
                                         }
                                     });
                                 }
-                                UiConfirm::ReloadProjectRules(id) => {
-                                    let loc = locale.get_untracked();
-                                    spawn_local(async move {
-                                        let arg = to_value(&serde_json::json!({ "frameId": id })).unwrap();
-                                        match invoke_checked("reload_project_rules", arg).await {
-                                            Ok(value) => {
-                                                if value.as_bool().unwrap_or(false) {
-                                                    show_toast(&t(loc, "session.reload_rules_done"));
-                                                }
-                                                refresh_session_history();
-                                            }
-                                            Err(error) => show_toast(&localize_backend(
-                                                loc,
-                                                &js_error_text(error),
-                                            )),
-                                        }
-                                    });
-                                }
                                 UiConfirm::DeleteFileEntry { path, is_dir } => {
                                     spawn_local(async move {
                                         let arg = to_value(&serde_json::json!({ "path": path.clone() })).unwrap();
@@ -13757,6 +13753,21 @@ fn App() -> impl IntoView {
                                             )),
                                         }
                                     });
+                                }
+                                UiConfirm::ReloadProjectRules(id) => {
+                                    spawn_local(async move {
+                                        let arg = to_value(&serde_json::json!({ "frameId": id })).unwrap();
+                                        match invoke_checked("reload_project_rules", arg).await {
+                                            Ok(_) => refresh_session_history(),
+                                            Err(error) => show_toast(&localize_backend(
+                                                locale.get_untracked(),
+                                                &js_error_text(error),
+                                            )),
+                                        }
+                                    });
+                                }
+                                UiConfirm::SaveAgentContext => {
+                                    commit_proj_settings();
                                 }
                             }
                         }>{move || t(locale.get(), action_key)}</button>

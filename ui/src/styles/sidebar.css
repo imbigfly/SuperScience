@@ -134,25 +134,23 @@ button.side-item.ses.selecting { padding-right: 10px; }
 .session-branch-icon svg { width: 15px; height: 15px; }
 .side-item.ses.selecting .session-branch-icon { display: none; }
 /* Left status slot holds geometry at rest. Running is a comet ring,
-   attention a circle-alert, stale a circular refresh — never a raw color dot. */
+   attention a circle-alert — never a raw color dot. */
 .ses-status {
   position: relative;
   display: inline-flex; align-items: center; justify-content: center;
   width: 16px; height: 16px; flex: 0 0 auto;
 }
 .ses-status svg { width: 16px; height: 16px; }
-.ses-live, .ses-attention, .ses-stale {
+.ses-live, .ses-attention {
   display: none; align-items: center; justify-content: center;
   position: absolute; inset: 0;
 }
 .side-item.ses.running:not(.attention) .ses-live { display: inline-flex; }
 .side-item.ses.attention .ses-attention { display: inline-flex; }
-.side-item.ses.stale:not(.running):not(.attention) .ses-stale { display: inline-flex; }
 .ses-live { color: var(--ok); filter: drop-shadow(0 0 5px color-mix(in srgb, var(--ok) 50%, transparent)); }
 .ses-live svg { animation: ses-spin 1.05s linear infinite; }
 .ses-attention { color: var(--warn); filter: drop-shadow(0 0 4px color-mix(in srgb, var(--warn) 45%, transparent)); }
 .ses-attention svg { animation: ses-breathe 1.8s ease-in-out infinite; }
-.ses-stale { color: var(--clay); filter: drop-shadow(0 0 4px color-mix(in srgb, var(--clay) 40%, transparent)); }
 .side-item-wrap { position: relative; min-width: 0; }
 /* Row menus are revealed only on hover/keyboard focus — including the active
    session — so the list reads as plain titles at rest. Opacity (not display)

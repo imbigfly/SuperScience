@@ -2284,35 +2284,16 @@ test("stale project rules can be reloaded from the session context menu", async 
   await enterApp(page, "/?mockStaleRules=1");
   const stale = page.locator(".side-item.ses", { hasText: "Outdated rules chat" });
   await expect(stale).toBeVisible({ timeout: 10_000 });
-  await expect(stale).toHaveClass(/stale/);
-  const staleMark = stale.locator(".ses-stale");
-  await expect(staleMark).toBeVisible();
-  await expect(staleMark.locator("svg")).toBeVisible();
-  await expect(staleMark).toHaveAttribute("title", /context outdated/i);
-  await expect(stale.locator(".ses-live")).toBeHidden();
-  await expect(stale.locator(".ses-attention")).toBeHidden();
-  const markBeforeTitle = await stale.evaluate((el) => {
-    const mark = el.querySelector(".ses-stale");
-    const title = el.querySelector(".ses-title");
-    const status = el.querySelector(".ses-status");
-    return !!(
-      mark &&
-      title &&
-      status &&
-      status.contains(mark) &&
-      (mark.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING)
-    );
-  });
-  expect(markBeforeTitle).toBe(true);
+  await expect(stale).toHaveAttribute("data-session-stale", "true");
+  await expect(stale.locator(".ses-stale")).toHaveCount(0);
 
-  // A fresh session has no marker and no reload menu item.
+  // A fresh session has no reload menu item.
   await newSessionButton(page).click();
   await composer(page).fill("fresh rules chat");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("echo:fresh rules chat")).toBeVisible({ timeout: 10_000 });
   const fresh = page.locator(".side-item.ses", { hasText: "fresh rules chat" });
   await expect(fresh).toBeVisible({ timeout: 10_000 });
-  await expect(fresh.locator(".ses-stale")).toHaveCount(0);
   await fresh.click({ button: "right" });
   await expect(page.locator(".ctx-menu")).toBeVisible();
   await expect(
@@ -2346,7 +2327,8 @@ test("stale project rules can be reloaded from the session context menu", async 
   })).toMatchObject({
     frameId: "stale-session",
   });
-  await expect(stale.locator(".ses-stale")).toHaveCount(0);
+  await expect(page.locator(".copy-toast")).toHaveCount(0);
+  await expect(stale).toHaveAttribute("data-session-stale", "false");
 });
 
 test("session context menu near the window bottom stays fully visible (#650)", async ({ page }) => {
@@ -3632,6 +3614,37 @@ test("text entries keep the native context menu", async ({ page }) => {
     expect(defaultPrevented).toBe(false);
     await expect(page.locator(".ctx-menu")).toHaveCount(0);
   }
+});
+
+test("saving a changed agent context asks for confirmation", async ({ page }) => {
+  await enterApp(page);
+  await page.locator(".proj-switch").click();
+  await page.getByRole("button", { name: "Project settings" }).click();
+
+  const settings = page.locator(".proj-settings-modal");
+  await expect(settings).toBeVisible();
+  await settings.locator("textarea.ps-ctx").fill("Prefer the project UI setting.");
+  await settings.getByRole("button", { name: "Save", exact: true }).click();
+
+  const confirm = page.locator(".confirm-modal");
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText(".wisp/WISP.md");
+  await expect(confirm).toContainText("Existing conversations");
+  await page.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  await expect(settings).toBeVisible();
+  await expect.poll(() => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "update_project")
+  )).toBe(false);
+
+  await settings.getByRole("button", { name: "Save", exact: true }).click();
+  await confirm.getByRole("button", { name: "Save agent context", exact: true }).click();
+  await expect.poll(() => lastInvokeArgs(page, "update_project")).toMatchObject({
+    name: "wisp-science",
+    agentContext: "Prefer the project UI setting.",
+  });
+  await expect(settings).toHaveCount(0);
+  await expect(page.locator(".copy-toast")).toHaveCount(0);
 });
 
 test("center structure and FASTA previews fill the available height", async ({ page }) => {

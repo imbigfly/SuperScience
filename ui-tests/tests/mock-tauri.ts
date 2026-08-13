@@ -130,6 +130,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     memory_file_count: 2,
     has_api_key: true,
   };
+  let projectAgentContext = "";
   const query = new URLSearchParams(window.location.search);
   const mockPlanFlow = query.get("mockPlanFlow");
   const mockPublication = query.get("mockPublication");
@@ -3062,7 +3063,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               "Generate a literature landscape visualization",
             ];
           case "get_project_settings":
-            return { name: project.name, description: "", agent_context: "" };
+            return { name: project.name, description: "", agent_context: projectAgentContext };
+          case "update_project": {
+            const nextName = String(arg("name") ?? project.name);
+            if (nextName.trim()) project.name = nextName.trim();
+            projectAgentContext = String(arg("agentContext") ?? arg("agent_context") ?? "");
+            return null;
+          }
           case "get_onboarding_state":
             return mockOnboarding ? { show: true, has_api_key: false } : { show: false, has_api_key: true };
           case "get_capabilities":

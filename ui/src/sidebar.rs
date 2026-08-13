@@ -441,7 +441,6 @@ pub(super) fn Sidebar(
                             <div class="side-item-wrap">
                                 <button type="button" class="side-item ses"
                                     class:pinned=pinned
-                                    class:stale=stale_prompt
                                     class:branch-session=is_branch
                                     title=title_tooltip
                                     class:active=move || active_session.get().as_deref() == Some(id_active.as_str())
@@ -508,10 +507,6 @@ pub(super) fn Sidebar(
                                         <span class="ses-attention" title=move || t(locale.get(), "sess_status.needs_you")>
                                             {compose_icon("circle-alert")}
                                         </span>
-                                        {stale_prompt.then(|| view! {
-                                            <span class="ses-stale"
-                                                title=move || t(loc, "sess_status.stale")>{compose_icon("context-stale")}</span>
-                                        })}
                                     </span>
                                     {is_branch.then(|| view! {
                                         <span class="session-branch-icon" aria-hidden="true">{compose_icon("branch")}</span>
