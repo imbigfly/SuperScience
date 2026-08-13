@@ -518,7 +518,6 @@ fn App() -> impl IntoView {
         conversation_outline_selected.set(None);
     });
     let session_model_ids = create_rw_signal::<HashMap<String, String>>(HashMap::new());
-    let session_reasoning_efforts = create_rw_signal::<HashMap<String, String>>(HashMap::new());
     let acp_agents = create_rw_signal::<Vec<AcpAgentProfile>>(vec![]);
     let active_acp_agent_id = create_rw_signal::<Option<String>>(None);
     let acp_context_usage =
@@ -593,12 +592,54 @@ fn App() -> impl IntoView {
     let project_transition_target = Rc::new(RefCell::new(None::<String>));
     let project_open_gate = Rc::new(RefCell::new(ProjectOpenGate::default()));
     let model_menu_open = create_rw_signal(false);
-    let effort_menu_open = create_rw_signal(false);
-    // The effort picker lives inside the model menu; collapse it with the menu.
+    // Per-model effort flyout inside the model menu: (model id, left, top) in
+    // viewport coordinates. Rendered `position: fixed` so the menu's scroll
+    // box doesn't clip it.
+    let effort_menu_for = create_rw_signal(None::<(String, f64, f64)>);
+    // The effort flyout lives inside the model menu; collapse it with the menu.
     create_effect(move |_| {
         if !model_menu_open.get() {
-            effort_menu_open.set(false);
+            effort_menu_for.set(None);
         }
+    });
+    // Persist a reasoning-effort default onto the model profile itself
+    // (Cursor-style per-model effort). Sessions without an explicit override
+    // inherit the new default on their next turn.
+    let apply_model_effort = Callback::new(move |(id, effort): (String, String)| {
+        effort_menu_for.set(None);
+        let Some(profile) = models.get_untracked().into_iter().find(|m| m.id == id) else {
+            return;
+        };
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({
+                "profile": {
+                    "id": profile.id,
+                    "label": profile.label,
+                    "provider": profile.provider,
+                    "api_url": profile.api_url,
+                    "model": profile.model,
+                    "max_tokens": profile.max_tokens,
+                    "context_window": profile.context_window,
+                    "reasoning_effort": effort,
+                    "supports_vision": profile.supports_vision,
+                    "use_for_vision": profile.use_for_vision,
+                    "use_for_image_generation": profile.use_for_image_generation,
+                },
+                // No key field: the backend keeps the stored key.
+                "key": Option::<String>::None,
+                "useForVision": profile.use_for_vision,
+                "useForImageGeneration": profile.use_for_image_generation,
+            }))
+            .unwrap();
+            match invoke_checked("save_model", arg).await {
+                Ok(v) => {
+                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
+                        models.set(list);
+                    }
+                }
+                Err(err) => show_warning_toast(&js_error_text(err)),
+            }
+        });
     });
     let model_switch_confirm = create_rw_signal::<Option<(String, String, bool)>>(None);
     let status = create_rw_signal(String::new());
@@ -777,16 +818,6 @@ fn App() -> impl IntoView {
                     if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
                         session_model_ids.update(|models| {
                             models.insert(session_id.clone(), model_id);
-                        });
-                    }
-                }
-            }
-            let args = to_value(&serde_json::json!({ "sessionId": session_id.clone() })).unwrap();
-            if let Ok(value) = invoke_checked("get_session_reasoning_effort", args).await {
-                if let Some(effort) = value.as_string() {
-                    if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
-                        session_reasoning_efforts.update(|efforts| {
-                            efforts.insert(session_id, effort);
                         });
                     }
                 }
@@ -7552,9 +7583,9 @@ fn App() -> impl IntoView {
             specialist_menu_open.set(false);
             return;
         }
-        if effort_menu_open.get() {
+        if effort_menu_for.get().is_some() {
             ev.prevent_default();
-            effort_menu_open.set(false);
+            effort_menu_for.set(None);
             return;
         }
         if model_menu_open.get() {
@@ -11501,7 +11532,9 @@ fn App() -> impl IntoView {
                                     </button>
                                     {move || model_menu_open.get().then(|| view! {
                                         <div class="model-menu-backdrop" on:click=move |_| model_menu_open.set(false)></div>
-                                        <div class="model-menu" on:click=move |_| effort_menu_open.set(false)>
+                                        <div class="model-menu"
+                                            on:click=move |_| effort_menu_for.set(None)
+                                            on:scroll=move |_| effort_menu_for.set(None)>
                                             {move || {
                                                 let list = models.get();
                                                 let selected = active_session.get().and_then(|session_id| {
@@ -11516,6 +11549,10 @@ fn App() -> impl IntoView {
                                                     let is_active = !acp_selected
                                                         && selected.as_deref().map_or(m.active, |id| id == m.id);
                                                     let show_sub = !m.model.is_empty() && m.model != m.label;
+                                                    let effort = m.reasoning_effort.clone();
+                                                    let effort_id = m.id.clone();
+                                                    let effort_id_open = m.id.clone();
+                                                    let effort_id_expanded = m.id.clone();
                                                     view! {
                                                         <div class="model-menu-row" class:active=is_active>
                                                             <button type="button" class="model-menu-pick"
@@ -11544,12 +11581,89 @@ fn App() -> impl IntoView {
                                                                     <span class="model-menu-label">{m.label.clone()}</span>
                                                                     {show_sub.then(|| view! { <span class="model-menu-sub">{m.model.clone()}</span> })}
                                                                 </span>
+                                                                {(!effort.is_empty()).then(|| view! {
+                                                                    <span class="model-menu-effort-tag">{effort}</span>
+                                                                })}
                                                                 {is_active.then(|| view! { <span class="model-menu-check">"✓"</span> })}
+                                                            </button>
+                                                            <button type="button" class="model-menu-effort-edit"
+                                                                class:open=move || effort_menu_for.get().as_ref().is_some_and(|(open_id, _, _)| open_id == &effort_id_open)
+                                                                title=move || t(locale.get(), "settings.reasoning_effort")
+                                                                attr:aria-expanded=move || if effort_menu_for.get().as_ref().is_some_and(|(open_id, _, _)| open_id == &effort_id_expanded) { "true" } else { "false" }
+                                                                on:click=move |ev| {
+                                                                    ev.stop_propagation();
+                                                                    if effort_menu_for.get_untracked().as_ref().is_some_and(|(open_id, _, _)| open_id == &effort_id) {
+                                                                        effort_menu_for.set(None);
+                                                                        return;
+                                                                    }
+                                                                    let Some(el) = ev.target().and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok()) else { return; };
+                                                                    let rect = el.get_bounding_client_rect();
+                                                                    let menu_left = el
+                                                                        .closest(".model-menu")
+                                                                        .ok()
+                                                                        .flatten()
+                                                                        .map(|menu| menu.get_bounding_client_rect().left())
+                                                                        .unwrap_or(rect.left());
+                                                                    // Keep in sync with the flyout width in chat.css.
+                                                                    const FLYOUT_WIDTH: f64 = 200.0;
+                                                                    // Generous height allowance (default + every known level + label)
+                                                                    // so the flyout never runs past the viewport bottom.
+                                                                    const FLYOUT_MAX_HEIGHT: f64 = 340.0;
+                                                                    let left = (menu_left - FLYOUT_WIDTH - 6.0).max(8.0);
+                                                                    let viewport_h = web_sys::window()
+                                                                        .and_then(|w| w.inner_height().ok())
+                                                                        .and_then(|h| h.as_f64())
+                                                                        .unwrap_or(800.0);
+                                                                    let top = (rect.top() - 4.0).clamp(8.0, (viewport_h - FLYOUT_MAX_HEIGHT - 8.0).max(8.0));
+                                                                    effort_menu_for.set(Some((effort_id.clone(), left, top)));
+                                                                }>
+                                                                <span class="model-menu-effort-edit-label">{move || t(locale.get(), "menu.edit")}</span>
+                                                                {compose_icon("chevron-down")}
                                                             </button>
                                                         </div>
                                                     }
                                                 }).collect_view()
                                             }}
+                                            {move || effort_menu_for.get().and_then(|(id, left, top)| {
+                                                let profile = models.get().into_iter().find(|m| m.id == id)?;
+                                                let current = profile.reasoning_effort.clone();
+                                                let mut values: Vec<String> = known_effort_values(&profile.provider, &profile.model)
+                                                    .unwrap_or(ALL_EFFORT_VALUES)
+                                                    .iter()
+                                                    .map(|v| v.to_string())
+                                                    .collect();
+                                                // Keep a stored value visible even when the curated list
+                                                // for this model doesn't include it.
+                                                if !current.is_empty() && !values.iter().any(|v| v == &current) {
+                                                    values.push(current.clone());
+                                                }
+                                                let default_selected = current.is_empty();
+                                                let style = format!("left:{left:.0}px;top:{top:.0}px");
+                                                let default_id = id.clone();
+                                                Some(view! {
+                                                    <div class="model-menu-effort-flyout" style=style data-effort-for=id.clone()
+                                                        on:click=|ev| ev.stop_propagation()>
+                                                        <div class="model-menu-effort-flyout-label">{move || t(locale.get(), "settings.reasoning_effort")}</div>
+                                                        <button type="button" class="model-menu-effort-option" data-effort="default"
+                                                            on:click=move |_| apply_model_effort.call((default_id.clone(), String::new()))>
+                                                            <span class="model-menu-effort-option-label">{move || t(locale.get(), "settings.reasoning_effort.default")}</span>
+                                                            {default_selected.then(|| view! { <span class="model-menu-effort-check">{compose_icon("check")}</span> })}
+                                                        </button>
+                                                        {values.into_iter().map(|lvl| {
+                                                            let selected = !default_selected && lvl == current;
+                                                            let pick = lvl.clone();
+                                                            let option_id = id.clone();
+                                                            view! {
+                                                                <button type="button" class="model-menu-effort-option" data-effort=lvl.clone()
+                                                                    on:click=move |_| apply_model_effort.call((option_id.clone(), pick.clone()))>
+                                                                    <span class="model-menu-effort-option-label">{lvl}</span>
+                                                                    {selected.then(|| view! { <span class="model-menu-effort-check">{compose_icon("check")}</span> })}
+                                                                </button>
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                })
+                                            })}
                                             {move || (!acp_agents.get().is_empty()).then(|| view! {
                                                 <div class="compose-group-label">"ACP Agents"</div>
                                                 {acp_agents.get().into_iter().map(|agent| {
@@ -11785,112 +11899,6 @@ fn App() -> impl IntoView {
                                                         }).collect_view()}
                                                     </div>
                                                 })
-                                            })}
-                                            {move || active_acp_agent_id.get().is_none().then(|| {
-                                                let apply_effort = Rc::new(move |v: String| {
-                                                    effort_menu_open.set(false);
-                                                    let Some(session_id) = active_session.get_untracked() else { return; };
-                                                    let effort = if v == "default" { String::new() } else { v };
-                                                    spawn_local(async move {
-                                                        let arg = to_value(&serde_json::json!({
-                                                            "sessionId": session_id.clone(),
-                                                            "effort": effort.clone(),
-                                                        })).unwrap();
-                                                        if invoke_checked("set_session_reasoning_effort", arg).await.is_ok() {
-                                                            session_reasoning_efforts.update(|efforts| {
-                                                                if effort.is_empty() {
-                                                                    // Cleared override: inherit the
-                                                                    // bound profile again.
-                                                                    efforts.remove(&session_id);
-                                                                } else {
-                                                                    efforts.insert(session_id, effort);
-                                                                }
-                                                            });
-                                                        }
-                                                    });
-                                                });
-                                                let current_effort = move || {
-                                                    let models = models.get();
-                                                    let session_models = session_model_ids.get();
-                                                    let efforts = session_reasoning_efforts.get();
-                                                    let session_id = active_session.get();
-                                                    session_reasoning_effort(
-                                                        &models,
-                                                        &session_models,
-                                                        &efforts,
-                                                        session_id.as_deref(),
-                                                    )
-                                                };
-                                                view! {
-                                                <div class="model-menu-effort" on:click=|ev| ev.stop_propagation()>
-                                                    <button type="button" class="model-menu-effort-trigger"
-                                                        class:open=move || effort_menu_open.get()
-                                                        attr:aria-expanded=move || if effort_menu_open.get() { "true" } else { "false" }
-                                                        on:click=move |_| effort_menu_open.update(|o| *o = !*o)>
-                                                        <span class="model-menu-effort-label">{move || t(locale.get(), "settings.reasoning_effort")}</span>
-                                                        <span class="model-menu-effort-value">{move || {
-                                                            let current = current_effort();
-                                                            // The trigger shows the effective effort:
-                                                            // an inherited profile value is displayed
-                                                            // as-is; the default label appears only
-                                                            // when nothing is configured anywhere.
-                                                            if current.is_empty() {
-                                                                t(locale.get(), "settings.reasoning_effort.default").to_string()
-                                                            } else {
-                                                                current
-                                                            }
-                                                        }}</span>
-                                                        <span class="model-menu-effort-chev">{compose_icon("chevron-down")}</span>
-                                                    </button>
-                                                    {move || effort_menu_open.get().then(|| {
-                                                        let current = current_effort();
-                                                        let models = models.get();
-                                                        let session_models = session_model_ids.get();
-                                                        let session_id = active_session.get();
-                                                        let mut values: Vec<String> = session_profile(
-                                                            &models,
-                                                            &session_models,
-                                                            session_id.as_deref(),
-                                                        )
-                                                        .map(|profile| {
-                                                            known_effort_values(&profile.provider, &profile.model)
-                                                                .unwrap_or(ALL_EFFORT_VALUES)
-                                                        })
-                                                        .unwrap_or(ALL_EFFORT_VALUES)
-                                                        .iter()
-                                                        .map(|v| v.to_string())
-                                                        .collect();
-                                                        // Keep a stored override visible even when the
-                                                        // curated list for this model doesn't include it.
-                                                        if !current.is_empty() && !values.iter().any(|v| v == &current) {
-                                                            values.push(current.clone());
-                                                        }
-                                                        let default_selected = current.is_empty();
-                                                        let apply_default = apply_effort.clone();
-                                                        view! {
-                                                            <div class="model-menu-effort-options">
-                                                                <button type="button" class="model-menu-effort-option" data-effort="default"
-                                                                    on:click=move |_| apply_default("default".to_string())>
-                                                                    <span class="model-menu-effort-option-label">{move || t(locale.get(), "settings.reasoning_effort.default")}</span>
-                                                                    {default_selected.then(|| view! { <span class="model-menu-effort-check">{compose_icon("check")}</span> })}
-                                                                </button>
-                                                                {values.into_iter().map(|lvl| {
-                                                                    let selected = !default_selected && lvl == current;
-                                                                    let apply = apply_effort.clone();
-                                                                    let pick = lvl.clone();
-                                                                    view! {
-                                                                        <button type="button" class="model-menu-effort-option" data-effort=lvl.clone()
-                                                                            on:click=move |_| apply(pick.clone())>
-                                                                            <span class="model-menu-effort-option-label">{lvl}</span>
-                                                                            {selected.then(|| view! { <span class="model-menu-effort-check">{compose_icon("check")}</span> })}
-                                                                        </button>
-                                                                    }
-                                                                }).collect_view()}
-                                                            </div>
-                                                        }
-                                                    })}
-                                                </div>
-                                                }
                                             })}
                                             <button type="button" class="model-menu-add" on:click=move |_| {
                                                 model_menu_open.set(false);

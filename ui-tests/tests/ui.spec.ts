@@ -947,59 +947,57 @@ test("model selection stays bound to its conversation", async ({ page }) => {
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 });
 
-test("reasoning effort stays scoped to the current conversation", async ({ page }) => {
+test("model effort is shown per row and saved to the model profile", async ({ page }) => {
   await enterApp(page, "/?mockSessionModels=1");
-  await page.locator('[data-session-id="s-model-a"]').click();
-
   await page.locator(".model-picker-btn").click();
-  await page.getByRole("button", { name: /opus-4\.8/ }).click();
-  await page.getByTestId("model-switch-confirm")
-    .getByRole("button", { name: "Yes, switch" }).click();
-  await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 
-  await page.locator(".model-picker-btn").click();
-  const effortTrigger = page.locator(".model-menu-effort-trigger");
-  const effortValue = page.locator(".model-menu-effort-value");
-  await expect(effortValue).toHaveText("max");
-  await effortTrigger.click();
-  await page.locator(".model-menu-effort-option[data-effort='high']").click();
-  await expect.poll(() => lastInvokeArgs(page, "set_session_reasoning_effort")).toMatchObject({
-    sessionId: "s-model-a",
-    effort: "high",
+  // Each chat model row shows its own configured effort.
+  const opusRow = page.locator(".model-menu-row", { hasText: "opus-4.8" });
+  const deepseekRow = page.locator(".model-menu-row", { hasText: "deepseek-v4-pro" });
+  await expect(opusRow.locator(".model-menu-effort-tag")).toHaveText("max");
+  await expect(deepseekRow.locator(".model-menu-effort-tag")).toHaveText("low");
+
+  await opusRow.locator(".model-menu-effort-edit").click();
+  const flyout = page.locator(".model-menu-effort-flyout[data-effort-for='opus']");
+  await expect(flyout).toBeVisible();
+  // The stored value carries the check mark.
+  await expect(
+    flyout.locator(".model-menu-effort-option[data-effort='max'] .model-menu-effort-check"),
+  ).toBeVisible();
+  await flyout.locator(".model-menu-effort-option[data-effort='high']").click();
+
+  // The effort is written onto the model profile, not the conversation.
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toMatchObject({
+    profile: { id: "opus", reasoning_effort: "high" },
   });
-  await expect.poll(() => lastInvokeArgs(page, "save_model")).toBeNull();
-  await page.locator(".model-menu-backdrop").click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_reasoning_effort")).toBeNull();
 
-  await page.locator('[data-session-id="s-model-b"]').click();
-  await page.locator(".model-picker-btn").click();
-  await expect(page.locator(".model-menu-effort-value")).toHaveText("low");
-  await page.locator(".model-menu-backdrop").click();
+  // The flyout closes, the menu stays open, and the row shows the new value.
+  await expect(page.locator(".model-menu-effort-flyout")).toHaveCount(0);
+  await expect(page.locator(".model-menu")).toBeVisible();
+  await expect(opusRow.locator(".model-menu-effort-tag")).toHaveText("high");
 
-  await page.locator('[data-session-id="s-model-a"]').click();
-  await page.locator(".model-picker-btn").click();
-  await expect(page.locator(".model-menu-effort-value")).toHaveText("high");
-
-  // "default" clears the override: the session follows the bound profile
-  // (opus-4.8 defaults to max) instead of pinning "provider default".
-  await effortTrigger.click();
-  await page.locator(".model-menu-effort-option[data-effort='default']").click();
-  await expect.poll(() => lastInvokeArgs(page, "set_session_reasoning_effort")).toMatchObject({
-    sessionId: "s-model-a",
-    effort: "",
+  // "default" clears the profile value again.
+  await opusRow.locator(".model-menu-effort-edit").click();
+  await flyout.locator(".model-menu-effort-option[data-effort='default']").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toMatchObject({
+    profile: { id: "opus", reasoning_effort: "" },
   });
-  await expect(page.locator(".model-menu-effort-value")).toHaveText("max");
+  await expect(opusRow.locator(".model-menu-effort-tag")).toHaveCount(0);
 });
 
-test("effort options close on Escape before the model menu", async ({ page }) => {
+test("effort flyout closes on Escape before the model menu", async ({ page }) => {
   await enterApp(page, "/?mockSessionModels=1");
-  await page.locator('[data-session-id="s-model-a"]').click();
   await page.locator(".model-picker-btn").click();
-  await page.locator(".model-menu-effort-trigger").click();
-  await expect(page.locator(".model-menu-effort-options")).toBeVisible();
+  await page
+    .locator(".model-menu-row", { hasText: "opus-4.8" })
+    .locator(".model-menu-effort-edit")
+    .click();
+  await expect(page.locator(".model-menu-effort-flyout")).toBeVisible();
 
-  // One Escape closes only the effort options; the model menu stays open.
+  // One Escape closes only the flyout; the model menu stays open.
   await page.keyboard.press("Escape");
-  await expect(page.locator(".model-menu-effort-options")).toHaveCount(0);
+  await expect(page.locator(".model-menu-effort-flyout")).toHaveCount(0);
   await expect(page.locator(".model-menu")).toBeVisible();
 
   await page.keyboard.press("Escape");
