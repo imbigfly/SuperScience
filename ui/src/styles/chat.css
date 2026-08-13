@@ -393,12 +393,14 @@
 .conversation-outline-panel.is-open {
   opacity: 1; visibility: visible; pointer-events: auto; transform: none;
   transition-delay: 0s;
+  animation: motion-drawer-in var(--motion-duration-medium) var(--motion-ease-decelerate) both;
 }
 @media (prefers-reduced-motion: reduce) {
   .conversation-outline-toggle,
   .conversation-outline-toggle.is-hidden,
   .conversation-outline-panel,
   .conversation-outline-panel.is-open {
+    animation: none;
     transition: none;
   }
 }

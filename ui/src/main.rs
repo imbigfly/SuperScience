@@ -304,7 +304,26 @@ fn App() -> impl IntoView {
     let conversation_outlines =
         create_rw_signal::<HashMap<String, Vec<SessionOutlineItem>>>(HashMap::new());
     let conversation_outline_open = create_rw_signal(false);
+    let conversation_outline_mounted = create_rw_signal(false);
     let conversation_outline_selected = create_rw_signal::<Option<usize>>(None);
+    create_effect(move |_| {
+        if conversation_outline_open.get() {
+            conversation_outline_mounted.set(true);
+            return;
+        }
+        if !conversation_outline_mounted.get_untracked() {
+            return;
+        }
+        set_timeout(
+            move || {
+                if !conversation_outline_open.get_untracked() {
+                    conversation_outline_mounted.set(false);
+                }
+            },
+            // Keep mounted through `--motion-duration-medium` so the close animation can play.
+            std::time::Duration::from_millis(280),
+        );
+    });
     let busy = create_rw_signal(false);
     let turn_undo_dialog = create_rw_signal::<Option<TurnUndoDialog>>(None);
     let turn_undo_busy = create_rw_signal(false);
@@ -10429,41 +10448,43 @@ fn App() -> impl IntoView {
                         <button
                             type="button"
                             class="conversation-outline-toggle"
-                            class:is-hidden=move || conversation_outline_open.get()
+                            class:is-hidden=move || conversation_outline_mounted.get()
                             data-testid="conversation-outline-toggle"
                             title=move || t(locale.get(), "outline.show")
                             aria-label=move || t(locale.get(), "outline.show")
                             aria-expanded=move || conversation_outline_open.get().to_string()
-                            aria-hidden=move || conversation_outline_open.get().to_string()
+                            aria-hidden=move || conversation_outline_mounted.get().to_string()
                             on:click=move |_| conversation_outline_open.set(true)
                         >
                             <span class="conversation-outline-marks" aria-hidden="true">{marks}</span>
                         </button>
-                        <nav
-                            class="conversation-outline-panel"
-                            class:is-open=move || conversation_outline_open.get()
-                            data-testid="conversation-outline"
-                            aria-label=move || t(locale.get(), "outline.title")
-                            aria-hidden=move || (!conversation_outline_open.get()).to_string()
-                            prop:inert=move || !conversation_outline_open.get()
-                        >
-                            <header>
-                                <div>
-                                    <strong>{move || t(locale.get(), "outline.title")}</strong>
-                                    <span>{move || tf(locale.get(), "outline.questions_n", &[("n", &count)])}</span>
-                                </div>
-                                <button
-                                    type="button"
-                                    class="icon-btn"
-                                    title=move || t(locale.get(), "outline.hide")
-                                    aria-label=move || t(locale.get(), "outline.hide")
-                                    on:click=move |_| conversation_outline_open.set(false)
-                                >
-                                    {compose_icon("close")}
-                                </button>
-                            </header>
-                            <div class="conversation-outline-list">{entries}</div>
-                        </nav>
+                        {conversation_outline_mounted.get().then(|| view! {
+                            <nav
+                                class="conversation-outline-panel"
+                                class:is-open=move || conversation_outline_open.get()
+                                data-testid="conversation-outline"
+                                aria-label=move || t(locale.get(), "outline.title")
+                                aria-hidden=move || (!conversation_outline_open.get()).to_string()
+                                prop:inert=move || !conversation_outline_open.get()
+                            >
+                                <header>
+                                    <div>
+                                        <strong>{move || t(locale.get(), "outline.title")}</strong>
+                                        <span>{move || tf(locale.get(), "outline.questions_n", &[("n", &count)])}</span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        class="icon-btn"
+                                        title=move || t(locale.get(), "outline.hide")
+                                        aria-label=move || t(locale.get(), "outline.hide")
+                                        on:click=move |_| conversation_outline_open.set(false)
+                                    >
+                                        {compose_icon("close")}
+                                    </button>
+                                </header>
+                                <div class="conversation-outline-list">{entries}</div>
+                            </nav>
+                        })}
                     }
                 })
             }}
