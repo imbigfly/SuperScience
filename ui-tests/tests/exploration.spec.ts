@@ -46,7 +46,11 @@ test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct 
   await diff.getByRole("tab", { name: /Artifacts/ }).click();
   await expect(page.getByTestId("exploration-diff-body")).toContainText("exploration-a/result");
   await diff.getByRole("button", { name: "Set as mainline" }).click();
-  await expect(page.getByTestId("exploration-confirm-overlay")).toBeVisible();
+  const confirm = page.getByTestId("exploration-confirm-overlay");
+  await expect(confirm).toBeVisible();
+  const confirmZ = Number(await confirm.evaluate((el) => getComputedStyle(el).zIndex));
+  const diffZ = Number(await diff.evaluate((el) => getComputedStyle(el).zIndex));
+  expect(confirmZ).toBeGreaterThan(diffZ);
 
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("exploration-confirm-overlay")).toBeHidden();
@@ -113,6 +117,7 @@ test("discard permanently removes the exploration instead of leaving an unwritab
   const diff = page.getByTestId("exploration-diff-overlay");
   await expect(diff).toBeVisible();
   await diff.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(page.getByTestId("exploration-confirm-overlay")).toBeVisible();
   await page.getByTestId("exploration-confirm-action").click();
 
   await expect(page.getByText("Mainline result")).toBeVisible();
@@ -340,6 +345,7 @@ test("promotion merges one exploration into the original mainline and discards t
   await group.locator('[data-exploration-id="exploration-a"]').click();
   await page.getByTestId("exploration-banner").getByRole("button", { name: "View diff" }).click();
   await page.getByTestId("exploration-diff-overlay").getByRole("button", { name: "Set as mainline" }).click();
+  await expect(page.getByTestId("exploration-confirm-overlay")).toBeVisible();
   await page.getByTestId("exploration-confirm-action").click();
 
   await expect(page.getByText("Mainline result")).toBeVisible();
