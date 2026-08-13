@@ -627,6 +627,29 @@ pub(super) async fn confirm_turn_memory(
 }
 
 #[tauri::command]
+pub(super) async fn create_global_memory(
+    state: State<'_, AppState>,
+    content: String,
+) -> Result<wisp_store::GlobalMemory, String> {
+    let content = bounded_confirmed_memory(&content)?;
+    let now = chrono::Utc::now().timestamp();
+    let memory = wisp_store::GlobalMemory {
+        id: Uuid::new_v4().to_string(),
+        content,
+        source_frame_id: None,
+        source_turn_index: None,
+        created_at: now,
+        updated_at: now,
+    };
+    state
+        .store
+        .insert_global_memory(&memory)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(memory)
+}
+
+#[tauri::command]
 pub(super) async fn update_global_memory(
     state: State<'_, AppState>,
     id: String,

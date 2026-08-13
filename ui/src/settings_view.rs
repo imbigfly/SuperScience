@@ -3853,7 +3853,17 @@ pub(super) fn SettingsView(
                                     })
                                 }}
                             </div>
-                            <div class="conn-group-label">{move || t(locale.get(), "memory.global_scope")}</div>
+                            <div class="cred-group-heading memory-global-heading">
+                                <span class="conn-group-label">{move || t(locale.get(), "memory.global_scope")}</span>
+                                <button type="button" class="settings-add-btn memory-global-add-btn"
+                                    data-testid="global-memory-add"
+                                    disabled=move || global_memory_busy.get()
+                                    on:click=move |_| {
+                                        global_memory_edit_id.set(Some(String::new()));
+                                        global_memory_editor.set(String::new());
+                                        memory_msg.set(None);
+                                    }>{move || t(locale.get(), "memory.global_add")}</button>
+                            </div>
                             <p class="model-empty-hint memory-global-timing">
                                 {move || t(locale.get(), "memory.global_timing_hint")}
                             </p>
@@ -3888,6 +3898,34 @@ pub(super) fn SettingsView(
                                                     }
                                                     global_memory_busy.set(true);
                                                     spawn_local(async move {
+                                                        if id.is_empty() {
+                                                            let arg = to_value(&serde_json::json!({
+                                                                "content": content.clone(),
+                                                            })).unwrap();
+                                                            match invoke_checked("create_global_memory", arg).await {
+                                                                Ok(value) => {
+                                                                    match serde_wasm_bindgen::from_value::<GlobalMemory>(value) {
+                                                                        Ok(memory) => {
+                                                                            memory_view.update(|view| {
+                                                                                if let Some(view) = view {
+                                                                                    view.global_memories.insert(0, memory);
+                                                                                }
+                                                                            });
+                                                                            global_memory_edit_id.set(None);
+                                                                            global_memory_editor.set(String::new());
+                                                                            memory_msg.set(Some((true, t(
+                                                                                locale.get_untracked(),
+                                                                                "memory.global_created",
+                                                                            ).into())));
+                                                                        }
+                                                                        Err(error) => memory_msg.set(Some((false, error.to_string()))),
+                                                                    }
+                                                                }
+                                                                Err(error) => memory_msg.set(Some((false, js_error_text(error)))),
+                                                            }
+                                                            global_memory_busy.set(false);
+                                                            return;
+                                                        }
                                                         let arg = to_value(&serde_json::json!({
                                                             "id": id.clone(),
                                                             "content": content.clone(),
