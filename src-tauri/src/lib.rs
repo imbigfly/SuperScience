@@ -1414,6 +1414,20 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                 locations: None,
                 resources: Vec::new(),
             }),
+            AgentEvent::Error { message, .. } => items.push(UiItem {
+                role: "assistant".into(),
+                text: format!("Error: {message}"),
+                tool_name: None,
+                ok: None,
+                duration_ms: None,
+                input: None,
+                model_name: None,
+                call_id: None,
+                kind: None,
+                status: None,
+                locations: None,
+                resources: Vec::new(),
+            }),
             AgentEvent::Text { delta, .. } | AgentEvent::Reasoning { delta, .. } => {
                 let role = if matches!(event, AgentEvent::Text { .. }) {
                     "assistant"
@@ -1686,6 +1700,43 @@ async fn append_ui_event(store: &Store, frame_id: &str, seq: &mut i64, event: Ag
     }
 }
 
+/// Terminal turn events are emitted after the streaming/persistence workers
+/// have drained so they cannot overtake buffered text. Persist them on that
+/// same boundary before publishing them to the UI; otherwise a failed turn is
+/// visible live but absent from every later diagnostic export.
+async fn persist_and_emit_terminal_event(
+    state: &AppState,
+    app: &AppHandle,
+    frame_id: &str,
+    event: AgentEvent,
+) {
+    debug_assert!(matches!(
+        event,
+        AgentEvent::Done { .. } | AgentEvent::Error { .. }
+    ));
+    match state.store.next_session_ui_event_seq(frame_id).await {
+        Ok(mut seq) => append_ui_event(&state.store, frame_id, &mut seq, event.clone()).await,
+        Err(error) => tracing::warn!("load terminal UI event sequence failed: {error}"),
+    }
+    emit_agent_event(app, event);
+}
+
+/// Keep the raw terminal records intact for support bundles. Historical
+/// archives may have no such records because older builds did not persist
+/// Done/Error; an empty list is therefore valid and backward-compatible.
+fn terminal_ui_events(events: &[String]) -> Vec<serde_json::Value> {
+    events
+        .iter()
+        .filter_map(|event| serde_json::from_str::<serde_json::Value>(event).ok())
+        .filter(|event| {
+            matches!(
+                event.get("kind").and_then(serde_json::Value::as_str),
+                Some("Done" | "Error")
+            )
+        })
+        .collect()
+}
+
 async fn persist_ui_events(
     store: Store,
     frame_id: String,
@@ -1855,7 +1906,9 @@ const fn default_resume_last_session() -> bool {
     true
 }
 
-/// Drop cached per-session agents so the next turn picks up new model settings.
+/// Invalidate cached per-session agents so the next turn picks up new model
+/// settings. A busy runtime remembers the invalidation until its current turn
+/// releases the agent lock; it must never silently lose a settings change.
 async fn clear_idle_agents(state: &AppState) {
     let runtimes = state
         .sessions
@@ -1865,18 +1918,14 @@ async fn clear_idle_agents(state: &AppState) {
         .cloned()
         .collect::<Vec<_>>();
     for rt in runtimes {
-        if let Ok(mut guard) = rt.agent.try_lock() {
-            *guard = None;
-        }
+        rt.invalidate_cached_agent();
     }
 }
 
 async fn clear_session_agent(state: &AppState, frame_id: &str) {
     let runtime = state.sessions.lock().await.get(frame_id).cloned();
     if let Some(runtime) = runtime {
-        if let Ok(mut guard) = runtime.agent.try_lock() {
-            *guard = None;
-        }
+        runtime.invalidate_cached_agent();
     }
 }
 
@@ -1976,6 +2025,11 @@ struct BootstrapStatus {
 /// concurrently on independent mutexes.
 struct SessionRuntime {
     agent: tokio::sync::Mutex<Option<Agent>>,
+    /// A settings/model invalidation that raced a running turn. The current
+    /// turn keeps its original provider; the next lock owner rebuilds from the
+    /// newly persisted settings before dispatching another request.
+    agent_config_generation: std::sync::atomic::AtomicU64,
+    cached_agent_generation: std::sync::atomic::AtomicU64,
     /// Serializes an entire user workflow (primary turn + automatic review +
     /// correction), not merely one model turn.
     workflow: Arc<tokio::sync::Mutex<()>>,
@@ -2017,6 +2071,8 @@ impl SessionRuntime {
     fn new() -> Self {
         Self {
             agent: tokio::sync::Mutex::new(None),
+            agent_config_generation: std::sync::atomic::AtomicU64::new(0),
+            cached_agent_generation: std::sync::atomic::AtomicU64::new(0),
             workflow: Arc::new(tokio::sync::Mutex::new(())),
             cancel: Arc::new(AtomicBool::new(false)),
             deleted: AtomicBool::new(false),
@@ -2027,6 +2083,31 @@ impl SessionRuntime {
             mcp_app_contexts: StdMutex::new(HashMap::new()),
             queued: StdMutex::new(Vec::new()),
             draining: AtomicBool::new(false),
+        }
+    }
+    fn invalidate_cached_agent(&self) {
+        let generation = self
+            .agent_config_generation
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
+        if let Ok(mut guard) = self.agent.try_lock() {
+            *guard = None;
+            // Record exactly the generation cleared while holding the lock. If
+            // another invalidation raced us, its newer generation remains
+            // different and the next turn still rebuilds.
+            self.cached_agent_generation
+                .store(generation, Ordering::SeqCst);
+        }
+    }
+    fn discard_stale_agent(&self, guard: &mut Option<Agent>) -> bool {
+        let generation = self.agent_config_generation.load(Ordering::SeqCst);
+        if generation != self.cached_agent_generation.load(Ordering::SeqCst) {
+            *guard = None;
+            self.cached_agent_generation
+                .store(generation, Ordering::SeqCst);
+            true
+        } else {
+            false
         }
     }
     fn last_seq(&self) -> i64 {
@@ -2676,6 +2757,8 @@ fn should_persist_ui_event(event: &AgentEvent) -> bool {
             | AgentEvent::Stdout { .. }
             | AgentEvent::Usage { .. }
             | AgentEvent::Compaction { .. }
+            | AgentEvent::Done { .. }
+            | AgentEvent::Error { .. }
     )
 }
 
@@ -5138,50 +5221,37 @@ async fn send_message_inner(
                 }
                 state.running_turns.lock().await.remove(&frame_id);
                 mark_seen_if_viewed(state, &frame_id).await;
-                emit_agent_event(
+                persist_and_emit_terminal_event(
+                    state,
                     &app,
+                    &frame_id,
                     AgentEvent::Done {
                         frame_id: frame_id.clone(),
                         stop_reason: Some(_stop_reason),
                     },
-                );
+                )
+                .await;
                 return Ok(frame_id);
             }
             Err(error) => {
                 state.running_turns.lock().await.remove(&frame_id);
                 mark_seen_if_viewed(state, &frame_id).await;
-                emit_agent_event(
+                persist_and_emit_terminal_event(
+                    state,
                     &app,
+                    &frame_id,
                     AgentEvent::Error {
-                        frame_id,
+                        frame_id: frame_id.clone(),
                         message: error.clone(),
                     },
-                );
+                )
+                .await;
                 // ACP prompt submission always accepts the user turn first
                 // (except early validation). Resume is always mid-turn.
                 return Err(client_turn_error(true, &error));
             }
         }
     }
-    let vision_cfg = build_vision_provider_config(&state.store).await;
-
-    let fallback_max_context = state
-        .store
-        .get_setting("max_context")
-        .await
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1_000_000);
-    let max_iter = state
-        .store
-        .get_setting("max_iter")
-        .await
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_MAX_ITER);
-
     // Resolve the target session frame: an explicit id wins, else lazily create
     // one (mirrors the legacy first-send behavior). The frame id is what every
     // streamed event carries, so the UI can route by session.
@@ -5207,18 +5277,9 @@ async fn send_message_inner(
     }
     // Deliberately no set_active_frame here: see the `AppState::active_frame`
     // doc — a turn writing view state races the user's session/project switch.
-
-    let session_profile_id = models::session_profile_id(&state.store, &frame_id).await;
-    let model_label = models::session_label(&state.store, &frame_id).await;
-    let specialist = specialists::session_specialist(&state.store, &frame_id).await;
-    let max_context = match &specialist {
-        Some(specialist) => specialists::specialist_context_window(&state.store, specialist).await,
-        None => models::profile_context_window(&state.store, &session_profile_id)
-            .await
-            .unwrap_or(fallback_max_context as u64),
-    }
-    .try_into()
-    .unwrap_or(fallback_max_context);
+    // A workflow reference is itself an accepted capability request. Persist it
+    // before a Guide message can be consumed by the current loop; provider
+    // profile reads below still wait for the next workflow boundary.
     if references.as_ref().is_some_and(|references| {
         references
             .iter()
@@ -5227,45 +5288,6 @@ async fn send_message_inner(
         delegation_runtime::save_session_delegation_enabled(&state.store, &ap.id, &frame_id, true)
             .await?;
     }
-    let delegation_enabled =
-        delegation_runtime::session_delegation_enabled(&state.store, &frame_id).await;
-    let plan_mode_enabled = plan_mode::session_plan_mode(&state.store, &frame_id).await;
-    let (provider, api_url, model, api_key, max_tokens, reasoning_effort) = match &specialist {
-        Some(spec) if !spec.model_id.trim().is_empty() => {
-            specialists::specialist_llm(&state.store, spec).await
-        }
-        _ => load_session_settings(&state.store, &frame_id).await,
-    };
-    let cfg = build_provider_config(
-        &provider,
-        &api_url,
-        &api_key,
-        &model,
-        max_tokens,
-        &reasoning_effort,
-    )?;
-    let primary_supports_vision = models::supports_vision(
-        &state.store,
-        specialist
-            .as_ref()
-            .map(|specialist| specialist.model_id.as_str())
-            .filter(|id| !id.trim().is_empty())
-            .or(Some(session_profile_id.as_str())),
-    )
-    .await;
-    let attached_images = if resume {
-        Vec::new()
-    } else {
-        load_image_attachments(
-            state,
-            &app,
-            &frame_id,
-            &ap.id,
-            &ap.root,
-            attachments.as_deref().unwrap_or_default(),
-        )
-        .await?
-    };
 
     // Route on accepted send, not on eventual execution. In particular, a
     // follow-up queued behind a long turn must become the target immediately.
@@ -5318,11 +5340,83 @@ async fn send_message_inner(
         }
     }
     let mut guard = rt.agent.lock().await;
+    rt.discard_stale_agent(&mut guard);
     let _progress_subscription =
         progress_observer_id.and_then(|id| channels::activate_progress_observer(id, &frame_id));
     if rt.deleted.load(Ordering::SeqCst) {
         return Err("This session was deleted while the turn was queued.".into());
     }
+    // Resolve all provider-dependent settings only after this workflow owns the
+    // session. A queued follow-up may have been accepted before the previous
+    // turn ended; reading its profile earlier would rebuild the invalidated
+    // Agent with the model that was selected at enqueue time.
+    let vision_cfg = build_vision_provider_config(&state.store).await;
+    let fallback_max_context = state
+        .store
+        .get_setting("max_context")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1_000_000);
+    let max_iter = state
+        .store
+        .get_setting("max_iter")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_ITER);
+    let session_profile_id = models::session_profile_id(&state.store, &frame_id).await;
+    let model_label = models::session_label(&state.store, &frame_id).await;
+    let specialist = specialists::session_specialist(&state.store, &frame_id).await;
+    let max_context = match &specialist {
+        Some(specialist) => specialists::specialist_context_window(&state.store, specialist).await,
+        None => models::profile_context_window(&state.store, &session_profile_id)
+            .await
+            .unwrap_or(fallback_max_context as u64),
+    }
+    .try_into()
+    .unwrap_or(fallback_max_context);
+    let delegation_enabled =
+        delegation_runtime::session_delegation_enabled(&state.store, &frame_id).await;
+    let plan_mode_enabled = plan_mode::session_plan_mode(&state.store, &frame_id).await;
+    let (provider, api_url, model, api_key, max_tokens, reasoning_effort) = match &specialist {
+        Some(spec) if !spec.model_id.trim().is_empty() => {
+            specialists::specialist_llm(&state.store, spec).await
+        }
+        _ => load_session_settings(&state.store, &frame_id).await,
+    };
+    let cfg = build_provider_config(
+        &provider,
+        &api_url,
+        &api_key,
+        &model,
+        max_tokens,
+        &reasoning_effort,
+    )?;
+    let primary_supports_vision = models::supports_vision(
+        &state.store,
+        specialist
+            .as_ref()
+            .map(|specialist| specialist.model_id.as_str())
+            .filter(|id| !id.trim().is_empty())
+            .or(Some(session_profile_id.as_str())),
+    )
+    .await;
+    let attached_images = if resume {
+        Vec::new()
+    } else {
+        load_image_attachments(
+            state,
+            &app,
+            &frame_id,
+            &ap.id,
+            &ap.root,
+            attachments.as_deref().unwrap_or_default(),
+        )
+        .await?
+    };
     if guard.is_some()
         && state
             .store
@@ -5602,23 +5696,29 @@ async fn send_message_inner(
                     .map_err(|error| error.to_string())?;
                 append_ui_event(&state.store, &frame_id, &mut event_seq, event.clone()).await;
                 emit_agent_event(&app, event);
-                emit_agent_event(
+                persist_and_emit_terminal_event(
+                    state,
                     &app,
+                    &frame_id,
                     AgentEvent::Done {
                         frame_id: frame_id.clone(),
                         stop_reason: Some("compact".into()),
                     },
-                );
+                )
+                .await;
                 return Ok(frame_id);
             }
             Err(e) => {
-                emit_agent_event(
+                persist_and_emit_terminal_event(
+                    state,
                     &app,
+                    &frame_id,
                     AgentEvent::Error {
                         frame_id: frame_id.clone(),
                         message: e.clone(),
                     },
-                );
+                )
+                .await;
                 return Err(e);
             }
         }
@@ -5984,24 +6084,30 @@ async fn send_message_inner(
 
     match result {
         Ok(_) => {
-            emit_agent_event(
+            persist_and_emit_terminal_event(
+                state,
                 &app,
+                &frame_id,
                 AgentEvent::Done {
                     frame_id: frame_id.clone(),
                     stop_reason: None,
                 },
-            );
+            )
+            .await;
             Ok(frame_id)
         }
         Err(e) => {
             let message = format!("{e}");
-            emit_agent_event(
+            persist_and_emit_terminal_event(
+                state,
                 &app,
+                &frame_id,
                 AgentEvent::Error {
                     frame_id: frame_id.clone(),
                     message: message.clone(),
                 },
-            );
+            )
+            .await;
             Err(client_turn_error(turn_started, &message))
         }
     }

@@ -20,6 +20,9 @@ Transcript artifact detection normalizes common assistant shorthand such as `fig
 - `transcript.md`: readable user/assistant/reasoning/tool transcript.
 - `messages.json`: raw persisted messages, preserving `tool_calls`.
 - `tool-calls.json`: normalized tool calls with matched tool results.
+- `terminal-events.json`: persisted turn completion/failure boundaries, including
+  provider errors such as gateway timeouts. Older sessions can export an empty
+  list because earlier app versions did not retain these events.
 - `artifacts/`: copied artifact files, including images.
 - `provenance/`: provenance JSON for artifact paths with recorded lineage.
 
