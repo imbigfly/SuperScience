@@ -729,6 +729,19 @@ fn plugin_view(
     enabled: bool,
 ) -> Result<PluginView, String> {
     let manifest = NormalizedPluginManifest::from_installation(&installation)?;
+    let skill_names = manifest
+        .skills
+        .iter()
+        .map(|skill_path| {
+            let relative = validate_relative_path(skill_path, "plugin skill path")?;
+            let skill_file = Path::new(&installation.install_root)
+                .join(relative)
+                .join("SKILL.md");
+            wisp_skills::parse_skill_file(&skill_file)
+                .map(|skill| skill.name)
+                .map_err(|error| format!("parse plugin skill '{skill_path}': {error}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let commands = manifest
         .mcp_servers
         .iter()
@@ -769,13 +782,7 @@ fn plugin_view(
         trust_state: installation.trust_state,
         enabled,
         skill_count: manifest.skills.len(),
-        skill_names: manifest
-            .skills
-            .iter()
-            .filter_map(|path| path.trim_end_matches('/').rsplit('/').next())
-            .filter(|name| !name.is_empty())
-            .map(str::to_string)
-            .collect(),
+        skill_names,
         mcp_server_count: manifest.mcp_servers.len(),
         commands,
         runtime_status,
@@ -1294,6 +1301,27 @@ mod tests {
         std::fs::write(root.join("server/server.mjs"), "// fixture").unwrap();
     }
 
+    fn plugin_installation(
+        root: &Path,
+        manifest: &NormalizedPluginManifest,
+    ) -> wisp_store::PluginInstallation {
+        wisp_store::PluginInstallation {
+            plugin_id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            display_name: manifest.display_name.clone(),
+            description: manifest.description.clone(),
+            author: manifest.author.clone(),
+            license: manifest.license.clone(),
+            source_uri: root.to_string_lossy().to_string(),
+            install_root: root.to_string_lossy().to_string(),
+            archive_sha256: "a".repeat(64),
+            manifest_json: serde_json::to_string(manifest).unwrap(),
+            trust_state: "checksum_verified".into(),
+            installed_at: 0,
+            updated_at: 0,
+        }
+    }
+
     #[test]
     fn claude_plugin_is_normalized_without_executing_it() {
         let root = std::env::temp_dir().join(format!("wisp-plugin-{}", uuid::Uuid::new_v4()));
@@ -1373,6 +1401,59 @@ mod tests {
         assert_eq!(view.runtime_status, "unavailable");
         assert_eq!(view.runtime_errors.len(), 1);
         assert!(view.runtime_errors[0].contains("wisp-definitely-missing-runtime"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plugin_view_uses_public_skill_name_instead_of_directory_slug() {
+        let root =
+            std::env::temp_dir().join(format!("wisp-plugin-skill-name-{}", uuid::Uuid::new_v4()));
+        fixture(&root);
+        std::fs::rename(
+            root.join("skills/motif"),
+            root.join("skills/hypothesis-review"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("skills/hypothesis-review/SKILL.md"),
+            "---\nname: personal-lab-hypothesis-review\ndescription: Test\n---\n# Review",
+        )
+        .unwrap();
+        let manifest = parse_manifest(&root).unwrap();
+        let installation = plugin_installation(&root, &manifest);
+
+        let view = plugin_view(installation, false).unwrap();
+
+        assert_eq!(view.skill_names, vec!["personal-lab-hypothesis-review"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plugin_view_fails_closed_for_invalid_skill_path() {
+        let root =
+            std::env::temp_dir().join(format!("wisp-plugin-skill-path-{}", uuid::Uuid::new_v4()));
+        fixture(&root);
+        let mut manifest = parse_manifest(&root).unwrap();
+        manifest.skills = vec!["../outside".into()];
+
+        let error = plugin_view(plugin_installation(&root, &manifest), false).unwrap_err();
+
+        assert!(error.contains("plugin skill path must stay inside the plugin directory"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plugin_view_fails_closed_for_unparseable_skill() {
+        let root =
+            std::env::temp_dir().join(format!("wisp-plugin-skill-parse-{}", uuid::Uuid::new_v4()));
+        fixture(&root);
+        std::fs::write(root.join("skills/motif/SKILL.md"), "not frontmatter").unwrap();
+        let manifest = parse_manifest(&root).unwrap();
+
+        let error = plugin_view(plugin_installation(&root, &manifest), false).unwrap_err();
+
+        assert!(error.contains("parse plugin skill 'skills/motif'"));
+        assert!(error.contains("SKILL.md has no frontmatter"));
         let _ = std::fs::remove_dir_all(root);
     }
 
