@@ -989,16 +989,41 @@ test("model effort is revealed on hover and saved to the model profile", async (
   expect(effortBox!.x).toBeGreaterThanOrEqual(textBox!.x);
   expect(effortBox!.x + effortBox!.width).toBeLessThanOrEqual(textBox!.x + textBox!.width + 1);
 
+  const menuBoxBefore = await page.locator(".model-menu").boundingBox();
   await opusRow.locator(".model-menu-effort-edit").click();
   const flyout = page.locator(".model-menu-effort-flyout[data-effort-for='opus']");
   await expect(flyout).toBeVisible();
+  await expect.poll(() => flyout.evaluate((el) => el.parentElement?.classList.contains("model-picker"))).toBe(true);
   const [menuBox, flyoutBox] = await Promise.all([
     page.locator(".model-menu").boundingBox(),
     flyout.boundingBox(),
   ]);
   expect(menuBox).not.toBeNull();
   expect(flyoutBox).not.toBeNull();
-  expect(flyoutBox!.x).toBeGreaterThan(menuBox!.x);
+  expect(menuBoxBefore).not.toBeNull();
+  expect(menuBox!.x).toBeLessThan(menuBoxBefore!.x);
+  expect(flyoutBox!.x).toBeGreaterThanOrEqual(menuBox!.x + menuBox!.width + 5);
+  expect(flyoutBox!.x + flyoutBox!.width).toBeLessThanOrEqual(page.viewportSize()!.width - 7);
+
+  // Switching editors while the first flyout is open keeps the same stable
+  // right-side anchor instead of recalculating from the already shifted menu.
+  await deepseekRow.hover();
+  await deepseekRow.locator(".model-menu-effort-edit").click();
+  const deepseekFlyout = page.locator(".model-menu-effort-flyout");
+  await expect(deepseekFlyout).toBeVisible();
+  await expect(deepseekFlyout).not.toHaveAttribute("data-effort-for", "opus");
+  const [switchedMenuBox, switchedFlyoutBox] = await Promise.all([
+    page.locator(".model-menu").boundingBox(),
+    deepseekFlyout.boundingBox(),
+  ]);
+  expect(switchedMenuBox).not.toBeNull();
+  expect(switchedFlyoutBox).not.toBeNull();
+  expect(Math.abs(switchedMenuBox!.x - menuBox!.x)).toBeLessThanOrEqual(1.5);
+  expect(switchedFlyoutBox!.x).toBeGreaterThanOrEqual(switchedMenuBox!.x + switchedMenuBox!.width + 5);
+
+  await opusRow.hover();
+  await opusRow.locator(".model-menu-effort-edit").click();
+  await expect(flyout).toBeVisible();
   // The stored value carries the check mark.
   await expect(
     flyout.locator(".model-menu-effort-option[data-effort='max'] .model-menu-effort-check"),
