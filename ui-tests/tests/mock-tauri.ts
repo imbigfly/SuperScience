@@ -146,12 +146,16 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockOnboarding = query.get("mockOnboarding") === "1";
   const mockSyncUnconfigured = query.get("mockSyncUnconfigured") === "1";
   const mockExplorationFlow = query.get("mockExplorations") === "1";
+  const mockOtherExplorationSession = query.get("mockOtherExplorationSession") === "1";
   const mockBranchFlow = query.get("mockBranches") === "1";
   const mockHistoricalExploration = query.get("mockHistoricalExploration") === "1";
   let mockLocale = query.get("mockLocale") === "zh" ? "zh" : "en";
   const mockSessions: any[] = mockExplorationFlow
     ? [
         { id: "exploration-mainline", title: "Mainline analysis", ts: 2100, running: false },
+        ...(mockOtherExplorationSession
+          ? [{ id: "session-b", title: "Unrelated analysis", ts: 2095, running: false }]
+          : []),
         ...(mockBranchFlow
           ? [{ id: "conversation-branch", title: "Branch: alternate analysis", ts: 2090, running: false, branched_from: "exploration-mainline", branch_state: "active" }]
           : []),

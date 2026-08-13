@@ -9537,14 +9537,16 @@ fn App() -> impl IntoView {
                                 </section>
                             }.into_view())
                         } else {
-                            let active_count = rows.len();
-                            let can_start_another = rows.iter().any(|row| {
-                                row.source_frame_id == frame_id
-                                    && matches!(
-                                        row.exploration.status.as_str(),
-                                        "creating" | "active" | "promoting"
-                                    )
-                            });
+                            let active_count = rows
+                                .iter()
+                                .filter(|row| {
+                                    row.source_frame_id == frame_id
+                                        && matches!(
+                                            row.exploration.status.as_str(),
+                                            "creating" | "active" | "promoting"
+                                        )
+                                })
+                                .count();
                             let latest_turn_index = items.with(|rows| {
                                 rows.iter()
                                     .filter(|item| matches!(item, ChatItem::User(_)))
@@ -9560,9 +9562,7 @@ fn App() -> impl IntoView {
                                         <strong>{tf(locale.get(), "exploration.mainline_count", &[("n", &active_count.to_string())])}</strong>
                                         <span>{t(locale.get(), "exploration.mainline_warning")}</span>
                                     </div>
-                                    {can_start_another.then(|| view! {
-                                        <button type="button" on:click=move |_| start_exploration_from_head.call(latest_turn_index)>{t(locale.get(), "exploration.start_another")}</button>
-                                    })}
+                                    <button type="button" on:click=move |_| start_exploration_from_head.call(latest_turn_index)>{t(locale.get(), "exploration.start_another")}</button>
                                 </section>
                             }.into_view())
                         }

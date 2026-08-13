@@ -61,6 +61,20 @@ test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct 
   await expect(page.getByTestId("exploration-banner")).toContainText("Exploration B");
 });
 
+test("an exploration round banner and checkpoint cards stay scoped to its source session", async ({ page }) => {
+  await page.goto("/?mockExplorations=1&mockOtherExplorationSession=1");
+  await page.locator(".proj-card-main").first().click();
+
+  await page.locator('[data-session-id="exploration-mainline"]').click();
+  await expect(page.getByTestId("mainline-exploration-banner")).toBeVisible();
+  await expect(page.getByTestId("exploration-message-card")).toHaveCount(2);
+
+  await page.locator('[data-session-id="session-b"]').click();
+  await expect(page.getByTestId("mainline-exploration-banner")).toBeHidden();
+  await expect(page.getByTestId("exploration-banner")).toBeHidden();
+  await expect(page.getByTestId("exploration-message-card")).toHaveCount(0);
+});
+
 test("exploration cards expose right-click actions and selecting opens guarded promotion", async ({ page }) => {
   await enterExplorationProject(page);
 
