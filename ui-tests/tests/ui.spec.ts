@@ -7767,8 +7767,10 @@ test("conversation outline loads and jumps to an older user question", async ({ 
   await toggle.click();
   const outline = page.getByTestId("conversation-outline");
   await expect(outline).toBeVisible();
+  await expect(outline).toHaveClass(/is-open/);
   await page.keyboard.press("Escape");
-  await expect(outline).toHaveCount(0);
+  await expect(outline).toBeHidden();
+  await expect(outline).not.toHaveClass(/is-open/);
   await expect(toggle).toBeVisible();
 
   await toggle.click();
@@ -7804,7 +7806,7 @@ test("conversation outline loads and jumps to an older user question", async ({ 
   })).toBe(true);
 
   await page.getByRole("button", { name: "Hide conversation outline" }).click();
-  await expect(outline).toHaveCount(0);
+  await expect(outline).toBeHidden();
   await expect(toggle).toBeVisible();
 });
 

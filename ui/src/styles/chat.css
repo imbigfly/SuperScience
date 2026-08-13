@@ -361,6 +361,15 @@
   overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--bg-elev) 92%, transparent); color: var(--text-faint);
   box-shadow: var(--shadow-sm); backdrop-filter: blur(8px); cursor: pointer;
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard),
+    visibility 0s;
+}
+.conversation-outline-toggle.is-hidden {
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform: translateY(-50%) translateX(6px);
+  transition-delay: 0s, 0s, var(--motion-duration-fast);
 }
 .conversation-outline-toggle:hover, .conversation-outline-toggle:focus-visible {
   border-color: var(--border-strong); color: var(--text-muted); background: var(--bg-elev);
@@ -374,6 +383,24 @@
   overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--bg-elev) 96%, transparent);
   box-shadow: 0 14px 42px rgba(0,0,0,.16); backdrop-filter: blur(12px);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform: translate3d(var(--motion-distance-md), 0, 0);
+  transition:
+    opacity var(--motion-duration-medium) var(--motion-ease-decelerate),
+    transform var(--motion-duration-medium) var(--motion-ease-decelerate),
+    visibility 0s var(--motion-duration-medium);
+}
+.conversation-outline-panel.is-open {
+  opacity: 1; visibility: visible; pointer-events: auto; transform: none;
+  transition-delay: 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .conversation-outline-toggle,
+  .conversation-outline-toggle.is-hidden,
+  .conversation-outline-panel,
+  .conversation-outline-panel.is-open {
+    transition: none;
+  }
 }
 .conversation-outline-panel > header {
   display: flex; min-height: 52px; flex: 0 0 auto; align-items: center; gap: 10px;
