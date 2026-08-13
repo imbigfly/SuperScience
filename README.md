@@ -161,6 +161,12 @@ Thanks to everyone who filed issues, sent PRs, and used Wisp on real projects.
   <a href="https://github.com/chewice"><img src="https://avatars.githubusercontent.com/u/244145152?v=4&amp;s=96" width="64" height="64" alt="@chewice" title="@chewice"></a>
   <a href="https://github.com/XuuChen"><img src="https://avatars.githubusercontent.com/u/99383234?v=4&amp;s=96" width="64" height="64" alt="@XuuChen" title="@XuuChen"></a>
   <a href="https://github.com/fei0810"><img src="https://avatars.githubusercontent.com/u/17489298?v=4&amp;s=96" width="64" height="64" alt="@fei0810" title="@fei0810"></a>
+  <a href="https://github.com/Zac-lzh"><img src="https://avatars.githubusercontent.com/u/223252975?v=4&amp;s=96" width="64" height="64" alt="@Zac-lzh" title="@Zac-lzh"></a>
+  <a href="https://github.com/mugpeng"><img src="https://avatars.githubusercontent.com/u/52995448?v=4&amp;s=96" width="64" height="64" alt="@mugpeng" title="@mugpeng"></a>
+  <a href="https://github.com/ChrisLou-bioinfo"><img src="https://avatars.githubusercontent.com/u/34942834?v=4&amp;s=96" width="64" height="64" alt="@ChrisLou-bioinfo" title="@ChrisLou-bioinfo"></a>
+  <a href="https://github.com/georgeatparallel"><img src="https://avatars.githubusercontent.com/u/297992784?v=4&amp;s=96" width="64" height="64" alt="@georgeatparallel" title="@georgeatparallel"></a>
+  <a href="https://github.com/liufahui005"><img src="https://avatars.githubusercontent.com/u/188657823?v=4&amp;s=96" width="64" height="64" alt="@liufahui005" title="@liufahui005"></a>
+  <a href="https://github.com/portos-wang"><img src="https://avatars.githubusercontent.com/u/246403081?v=4&amp;s=96" width="64" height="64" alt="@portos-wang" title="@portos-wang"></a>
 </p>
 
 Windows code signing by [SignPath.io](https://signpath.io), certificate by the
