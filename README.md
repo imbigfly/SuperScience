@@ -271,6 +271,13 @@ into every model request.
 or **Save** — either opens Notion's authorization page in your browser. OAuth
 tokens stay in the OS keyring; deleting the connection removes its credential.
 
+### Remote MCP (Parallel Search example)
+
+For live web search and URL fetching, add another **Remote URL** connection,
+enter `https://search.parallel.ai/mcp`, set **Authentication** to **None**, and
+**Test** or **Save**. Parallel Search MCP is free and requires no account or
+API key.
+
 ## Bundled demos
 
 `seed/` ships five pre-baked ESR1 / GSE153250 examples in research order: find

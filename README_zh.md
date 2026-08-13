@@ -224,6 +224,12 @@ Agent 先用 `search_mcp_tools` 发现匹配的工具，再通过 `use_mcp_tool`
 **保存**——两者都会在浏览器中打开 Notion 授权页。OAuth 令牌保存在系统密钥
 环中，不会写入项目数据库；删除连接即清除对应凭据。
 
+### 远程 MCP（Parallel Search 示例）
+
+如需实时网页搜索和 URL 内容提取，请再添加一个**远程 URL**连接，填写
+`https://search.parallel.ai/mcp`，将**认证方式**设为**无**，然后点击**测试**或
+**保存**。Parallel Search MCP 免费且无需账号或 API Key。
+
 ## 内置演示
 
 `seed/` 提供五个按研究叙事排序的 ESR1 / GSE153250 示例：查找数据 → 查看样本/
