@@ -49,6 +49,7 @@ pub(crate) fn StreamingAssistantMessage(
     let commit_handle = Rc::new(Cell::new(None::<TimeoutHandle>));
     let active = Rc::new(Cell::new(true));
     let recent_parse_cost_ms = Rc::new(Cell::new(None::<f64>));
+    let project = use_context::<ReadSignal<Option<ProjectInfo>>>();
 
     create_render_effect({
         let commit_handle = Rc::clone(&commit_handle);
@@ -66,9 +67,10 @@ pub(crate) fn StreamingAssistantMessage(
                 return;
             }
 
-            let delay = std::time::Duration::from_millis(
-                streaming_markdown_commit_interval_ms(text_len, recent_parse_cost_ms.get()),
-            );
+            let delay = std::time::Duration::from_millis(streaming_markdown_commit_interval_ms(
+                text_len,
+                recent_parse_cost_ms.get(),
+            ));
             let callback_handle = Rc::clone(&commit_handle);
             let callback_active = Rc::clone(&active);
             match leptos::set_timeout_with_handle(
@@ -104,7 +106,15 @@ pub(crate) fn StreamingAssistantMessage(
         let recent_parse_cost_ms = Rc::clone(&recent_parse_cost_ms);
         move |_| {
             let started_at = js_sys::Date::now();
-            let html = enrich_md_html(md_to_html(&rendered_text.get()), &[], &[], locale.get());
+            let project_root =
+                project.and_then(|project| project.get().map(|project| project.root));
+            let html = enrich_md_html(
+                md_to_html(&rendered_text.get()),
+                &[],
+                &[],
+                locale.get(),
+                project_root.as_deref(),
+            );
             let elapsed = (js_sys::Date::now() - started_at).max(0.0);
             let smoothed = recent_parse_cost_ms
                 .get()
@@ -183,6 +193,15 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "plan" => view! { <path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6l1 1 2-2"/><path d="M3 12l1 1 2-2"/><path d="M3 18l1 1 2-2"/> }.into_view(),
         "chat" => view! { <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 10h8"/><path d="M8 14h5"/> }.into_view(),
         "branch" => view! { <path d="M6 3v6a4 4 0 0 0 4 4h8"/><path d="M18 7v12"/><path d="M14 15l4 4 4-4"/><circle cx="6" cy="3" r="2"/> }.into_view(),
+        "flask" => view! { <path d="M10 2v7.3"/><path d="M14 9.3V2"/><path d="M8.5 2h7"/><path d="m10 9.3-6.5 10.8a1 1 0 0 0 .9 1.5h15.2a1 1 0 0 0 .9-1.5L14 9.3"/><path d="M6.5 16h11"/> }.into_view(),
+        "arrow-left" => view! { <path d="M19 12H5"/><path d="m12 19-7-7 7-7"/> }.into_view(),
+        "folder-plus" => view! { <path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/> }.into_view(),
+        "book" => view! { <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/> }.into_view(),
+        "gear" => view! { <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/> }.into_view(),
+        "bubble" => view! { <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/> }.into_view(),
+        "sparkles" => view! { <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/> }.into_view(),
+        "undo" => view! { <path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v1"/> }.into_view(),
+        "panel" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/> }.into_view(),
         "chevron-down" => view! { <path d="m6 9 6 6 6-6"/> }.into_view(),
         "chevron-left" => view! { <path d="m15 18-6-6 6-6"/> }.into_view(),
         "chevron-right" => view! { <path d="m9 18 6-6-6-6"/> }.into_view(),
@@ -190,6 +209,8 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "download" => view! { <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/> }.into_view(),
         "upload" => view! { <path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/> }.into_view(),
         "sync" => view! { <path d="M20 7h-9"/><path d="m16 3 4 4-4 4"/><path d="M4 17h9"/><path d="m8 21-4-4 4-4"/> }.into_view(),
+        "loader" => view! { <circle cx="12" cy="12" r="9" opacity="0.16"/><path d="M21 12a9 9 0 0 0-9-9"/><path d="M21 12a9 9 0 0 0-5.2-8.2" opacity="0.4"/> }.into_view(),
+        "circle-alert" => view! { <circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/> }.into_view(),
         "pin" => view! { <path d="M12 17v5"/><path d="M5 17h14"/><path d="m6 3 1 7-3 4h16l-3-4 1-7Z"/> }.into_view(),
         "link" => view! { <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/> }.into_view(),
         "bell" => view! { <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/> }.into_view(),
@@ -209,6 +230,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "doc" => view! { <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/> }.into_view(),
         "image" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/> }.into_view(),
         "review" => view! { <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/> }.into_view(),
+        "memory" => view! { <path d="M12 2a7 7 0 0 0-7 7v2a4 4 0 0 0-2 3.46V18a2 2 0 0 0 2 2h3"/><path d="M12 2a7 7 0 0 1 7 7v2a4 4 0 0 1 2 3.46V18a2 2 0 0 1-2 2h-3"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M12 17v5"/> }.into_view(),
         "gauge" => view! { <path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/> }.into_view(),
         "controls" => view! { <path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/> }.into_view(),
         "adjustments" => view! { <path d="M4 7h9"/><path d="M17 7h3"/><circle cx="15" cy="7" r="2"/><path d="M4 17h3"/><path d="M11 17h9"/><circle cx="9" cy="17" r="2"/> }.into_view(),
@@ -234,7 +256,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
     };
     let size = if matches!(
         kind,
-        "chevron" | "chevron-down" | "chevron-left" | "chevron-right"
+        "chevron" | "chevron-down" | "chevron-left" | "chevron-right" | "arrow-left"
     ) {
         "16"
     } else {
@@ -528,6 +550,7 @@ pub(crate) fn UserMessage(
     ui_index: usize,
     busy: ReadSignal<bool>,
     can_modify: bool,
+    can_branch: Signal<bool>,
     on_copy: Callback<String>,
     on_edit: Callback<usize>,
     on_branch: Callback<usize>,
@@ -630,7 +653,8 @@ pub(crate) fn UserMessage(
     })
     .collect_view();
     view! {
-        <div class="user-bubble">
+        <div class="user-bubble"
+            data-branch-ui-index=can_branch.get_untracked().then(|| ui_index.to_string())>
             {has_images.then(|| view! { <div class="user-attachment-images">{image_cards}</div> })}
             {has_files.then(|| view! { <div class="user-attachment-files">{file_cards}</div> })}
             {has_context.then(|| view! { <div class="user-context-cards">{context_cards}</div> })}
@@ -679,6 +703,8 @@ pub(crate) fn UserMessage(
                         title=move || t(locale.get(), "msg.edit")
                         on:click=move |_| on_edit.call(ui_index)
                     >{move || t(locale.get(), "msg.edit")}</button>
+                })}
+                {move || can_branch.get().then(|| view! {
                     <button
                         type="button"
                         class="msg-btn"
@@ -702,7 +728,11 @@ pub(crate) fn AssistantMessage(
     on_artifact: Callback<usize>,
     on_file: Callback<ModalArtifact>,
     on_copy: Callback<String>,
+    on_memory: Callback<()>,
     on_review: Callback<()>,
+    on_branch: Callback<usize>,
+    can_branch: Signal<bool>,
+    show_actions: Signal<bool>,
     can_undo: Signal<bool>,
     on_undo: Callback<usize>,
     show_explore: Signal<bool>,
@@ -714,12 +744,15 @@ pub(crate) fn AssistantMessage(
     let arts_for_html = artifacts.clone();
     let resources_for_html = resources.clone();
     let text_for_html = text.clone();
+    let project = use_context::<ReadSignal<Option<ProjectInfo>>>();
     let html = create_memo(move |_| {
+        let project_root = project.and_then(|project| project.get().map(|project| project.root));
         enrich_md_html(
             md_to_html(&text_for_html),
             &arts_for_html,
             &resources_for_html,
             locale.get(),
+            project_root.as_deref(),
         )
     });
     let hid = unique_dom_id("md");
@@ -862,28 +895,20 @@ pub(crate) fn AssistantMessage(
                     </div>
                 </div>
             })}
-            <div class="msg-actions">
-                {move || show_explore.get().then(|| view! {
-                    <button
-                        type="button"
-                        class="msg-icon-btn msg-explore-btn"
-                        data-testid="start-exploration"
-                        disabled=move || !can_explore.get()
-                        title=move || t(
-                            locale.get(),
-                            if can_explore.get() {
-                                "exploration.start"
-                            } else {
-                                "exploration.history_unavailable"
-                            },
-                        )
-                        aria-label=move || t(locale.get(), "exploration.start")
-                        on:click=move |_| on_explore.call(explore_turn_index)
-                    >
-                        {compose_icon("branch")}
-                        <span>{move || t(locale.get(), "exploration.start")}</span>
-                    </button>
-                })}
+            {move || {
+                let text_for_disabled = text_for_disabled.clone();
+                let text_for_click_copy = text_for_click_copy.clone();
+                show_actions.get().then(move || view! { <div class="msg-actions">
+                <button
+                    type="button"
+                    class="msg-icon-btn msg-memory-btn"
+                    data-testid="remember-turn"
+                    title=move || t(locale.get(), "msg.memory")
+                    aria-label=move || t(locale.get(), "msg.memory")
+                    on:click=move |_| on_memory.call(())
+                >
+                    {compose_icon("memory")}
+                </button>
                 <button
                     type="button"
                     class="msg-icon-btn msg-review-btn"
@@ -892,8 +917,27 @@ pub(crate) fn AssistantMessage(
                     on:click=move |_| on_review.call(())
                 >
                     {compose_icon("review")}
-                    <span>{move || t(locale.get(), "msg.review")}</span>
                 </button>
+                {move || show_explore.get().then(|| view! { <button
+                    type="button"
+                    class="msg-icon-btn msg-explore-btn"
+                    data-testid="start-exploration"
+                    title=move || t(locale.get(), "exploration.start")
+                    aria-label=move || t(locale.get(), "exploration.start")
+                    disabled=move || !can_explore.get()
+                    on:click=move |_| on_explore.call(explore_turn_index)
+                >
+                    {compose_icon("flask")}
+                </button> })}
+                {move || can_branch.get().then(|| view! { <button
+                    type="button"
+                    class="msg-icon-btn msg-branch-btn"
+                    title=move || t(locale.get(), "msg.branch")
+                    aria-label=move || t(locale.get(), "msg.branch")
+                    on:click=move |_| on_branch.call(source_item)
+                >
+                    {compose_icon("branch")}
+                </button> })}
                 <button
                     type="button"
                     class="msg-icon-btn"
@@ -902,7 +946,7 @@ pub(crate) fn AssistantMessage(
                     disabled=move || text_for_disabled.trim().is_empty()
                     on:click=move |_| on_copy.call(text_for_click_copy.clone())
                 >
-                    <span class="gi copy" aria-hidden="true"></span>
+                    {compose_icon("copy")}
                 </button>
                 {move || can_undo.get().then(|| view! {
                     <button
@@ -912,10 +956,10 @@ pub(crate) fn AssistantMessage(
                         aria-label=move || t(locale.get(), "msg.undo")
                         on:click=move |_| on_undo.call(source_item)
                     >
-                        <span class="gi undo" aria-hidden="true"></span>
+                        {compose_icon("undo")}
                     </button>
                 })}
-            </div>
+            </div> })}}
         </div>
     }
 }
@@ -1270,9 +1314,18 @@ mod streaming_markdown_tests {
         // Once measured, actual work rather than answer length controls the
         // cadence: cheap large Markdown remains fluid; expensive small
         // Markdown yields more main-thread time.
-        assert_eq!(streaming_markdown_commit_interval_ms(512_000, Some(4.0)), 50);
-        assert_eq!(streaming_markdown_commit_interval_ms(1_000, Some(40.0)), 240);
-        assert_eq!(streaming_markdown_commit_interval_ms(1_000, Some(400.0)), 1_200);
+        assert_eq!(
+            streaming_markdown_commit_interval_ms(512_000, Some(4.0)),
+            50
+        );
+        assert_eq!(
+            streaming_markdown_commit_interval_ms(1_000, Some(40.0)),
+            240
+        );
+        assert_eq!(
+            streaming_markdown_commit_interval_ms(1_000, Some(400.0)),
+            1_200
+        );
     }
 }
 

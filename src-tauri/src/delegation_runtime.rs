@@ -167,7 +167,12 @@ pub(crate) async fn set_session_delegation_enabled(
     let (project, scope) =
         crate::exploration_commands::working_project_for_frame(&state, &session_id).await?;
     let _activity = state.begin_project_activity(&project.id)?;
-    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
+    let _project_write_locked = crate::exploration_commands::conversation_project_write_locked(
+        &state.store,
+        &scope,
+        Some(&session_id),
+    )
+    .await?;
     save_session_delegation_enabled(&state.store, &project.id, &session_id, enabled).await?;
     crate::clear_idle_agents(&state).await;
     Ok(enabled)
@@ -1725,7 +1730,6 @@ async fn persisted_successful_steps(
     let mut completed = Vec::new();
     for attempt in latest
         .into_values()
-        .into_iter()
         .filter(|attempt| attempt.status == AgentWorkflowAttemptStatus::Succeeded)
     {
         let Some(raw) = attempt.response_json else {
@@ -2703,7 +2707,7 @@ impl AgentDelegator for NativeDelegator {
             .list_artifacts(&child_frame_id)
             .await?
             .into_iter()
-            .map(|(id, name, kind, path, _)| AgentArtifact {
+            .map(|(id, name, kind, path, _, _)| AgentArtifact {
                 id,
                 name,
                 kind,
@@ -3469,7 +3473,7 @@ async fn run_acp_request(
         .list_artifacts(child_frame_id)
         .await?
         .into_iter()
-        .map(|(id, name, kind, path, _)| AgentArtifact {
+        .map(|(id, name, kind, path, _, _)| AgentArtifact {
             id,
             name,
             kind,
@@ -4459,7 +4463,6 @@ fn acp_text(payload: &Value) -> Option<&str> {
     payload
         .get("content")
         .and_then(|content| content.get("text"))
-        .and_then(|content| content.get("text"))
         .and_then(Value::as_str)
         .or_else(|| payload.get("text").and_then(Value::as_str))
 }
@@ -4489,6 +4492,23 @@ mod tests {
     fn bounded_values_snap_to_utf8_boundaries() {
         assert_eq!(bounded_text("a中b", 2), "a…");
         assert_eq!(bounded_json(&json!({"text": "中"}), 11), "{\"text\":\"…");
+    }
+
+    #[test]
+    fn acp_text_reads_standard_agent_message_chunk_payload() {
+        let payload = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+                "type": "text",
+                "text": "reviewed result"
+            }
+        });
+
+        assert_eq!(acp_text(&payload), Some("reviewed result"));
+        assert_eq!(
+            acp_text(&json!({"text": "legacy result"})),
+            Some("legacy result")
+        );
     }
 
     async fn dynamic_fixture() -> (Store, std::path::PathBuf) {

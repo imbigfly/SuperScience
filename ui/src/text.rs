@@ -196,7 +196,11 @@ pub(crate) fn md_document_to_html(src: &str) -> String {
 
 fn preprocess_markdown(src: &str) -> std::borrow::Cow<'_, str> {
     let src = rewrite_image_tags(src);
-    match normalize_math_delimiters(src.as_ref()) {
+    let src = match normalize_math_delimiters(src.as_ref()) {
+        std::borrow::Cow::Borrowed(_) => src,
+        std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s),
+    };
+    match rejoin_empty_list_markers(src.as_ref()) {
         std::borrow::Cow::Borrowed(_) => src,
         std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s),
     }
@@ -310,6 +314,149 @@ fn find_backtick_run(s: &str, n: usize) -> Option<usize> {
         from = at + run;
     }
     None
+}
+
+/// Models sometimes drop the item text onto the line after a bare list marker
+/// (`- \nTb1 ...`). CommonMark reads that as an empty item plus a paragraph,
+/// which renders as an orphan bullet dot followed by flush-left text. Rejoin
+/// the two lines when the next line is plain prose at the marker's indent. A
+/// single accidental blank line is tolerated as well; an intentionally empty
+/// item followed by two blank lines remains untouched. Indented continuations
+/// already attach correctly, and real block starts (fences, headings, quotes,
+/// tables, other list items, thematic breaks) are left alone, as is anything
+/// inside fenced code.
+fn rejoin_empty_list_markers(src: &str) -> std::borrow::Cow<'_, str> {
+    let mut out = String::with_capacity(src.len());
+    let mut changed = false;
+    let mut fence: Option<(char, usize)> = None;
+    let mut lines = src.split_inclusive('\n').peekable();
+    while let Some(chunk) = lines.next() {
+        let line = chunk.trim_end_matches(['\r', '\n']);
+        let stripped = line.trim_start();
+        let mark = stripped.chars().next().filter(|c| matches!(c, '`' | '~'));
+        let run = mark.map_or(0, |m| stripped.chars().take_while(|&c| c == m).count());
+        match fence {
+            Some((m, n)) => {
+                out.push_str(chunk);
+                if mark == Some(m) && run >= n && stripped[run..].trim().is_empty() {
+                    fence = None;
+                }
+                continue;
+            }
+            None if run >= 3 => {
+                out.push_str(chunk);
+                fence = Some((mark.unwrap(), run));
+                continue;
+            }
+            None => {}
+        }
+        let Some(indent) = bare_list_marker_indent(line) else {
+            out.push_str(chunk);
+            continue;
+        };
+        let Some(next) = lines.peek() else {
+            out.push_str(chunk);
+            continue;
+        };
+        let next_line = next.trim_end_matches(['\r', '\n']);
+        let (continuation, skip_blank) = if is_plain_continuation(next_line, indent) {
+            (*next, false)
+        } else if next_line.trim().is_empty() {
+            let mut lookahead = lines.clone();
+            lookahead.next();
+            match lookahead.next() {
+                Some(after_blank)
+                    if is_plain_continuation(
+                        after_blank.trim_end_matches(['\r', '\n']),
+                        indent,
+                    ) =>
+                {
+                    (after_blank, true)
+                }
+                _ => {
+                    out.push_str(chunk);
+                    continue;
+                }
+            }
+        } else {
+            out.push_str(chunk);
+            continue;
+        };
+        let continuation_line = continuation.trim_end_matches(['\r', '\n']);
+        changed = true;
+        out.push_str(line.trim_end_matches([' ', '\t']));
+        out.push(' ');
+        out.push_str(continuation_line.trim_start());
+        out.push_str(&continuation[continuation_line.len()..]);
+        if skip_blank {
+            lines.next();
+        }
+        lines.next();
+    }
+    if changed {
+        std::borrow::Cow::Owned(out)
+    } else {
+        std::borrow::Cow::Borrowed(src)
+    }
+}
+
+/// Indent of a line holding only a list marker (`-`, `*`, `+`, `1.`, `1)`) plus
+/// trailing whitespace, or None. Indents past three spaces are code blocks.
+fn bare_list_marker_indent(line: &str) -> Option<usize> {
+    let stripped = line.trim_start_matches(' ');
+    let indent = line.len() - stripped.len();
+    if indent > 3 {
+        return None;
+    }
+    let marker = stripped.trim_end_matches([' ', '\t']);
+    let bare_bullet = matches!(marker, "-" | "*" | "+");
+    let bare_enum = marker.strip_suffix(['.', ')']).is_some_and(|digits| {
+        !digits.is_empty() && digits.len() <= 9 && digits.bytes().all(|b| b.is_ascii_digit())
+    });
+    (bare_bullet || bare_enum).then_some(indent)
+}
+
+/// True when `line` is plain prose that belongs to a preceding bare list
+/// marker, not a block start of its own.
+fn is_plain_continuation(line: &str, marker_indent: usize) -> bool {
+    if line.starts_with('\t') {
+        return false;
+    }
+    let stripped = line.trim_start_matches(' ');
+    if stripped.is_empty() || line.len() - stripped.len() > marker_indent {
+        return false;
+    }
+    let t = line.trim_start();
+    if t.is_empty() {
+        return false; // whitespace-only line
+    }
+    if t.starts_with("```") || t.starts_with("~~~") {
+        return false; // fenced code
+    }
+    let first = t.chars().next().unwrap();
+    if matches!(first, '#' | '>' | '|' | '<') {
+        return false; // heading / blockquote / table row / raw HTML
+    }
+    if matches!(first, '-' | '*' | '+') {
+        let rest = &t[1..];
+        if rest.is_empty() || rest.starts_with([' ', '\t']) {
+            return false; // another list item
+        }
+    }
+    if first.is_ascii_digit() {
+        let digits = t.bytes().take_while(|b| b.is_ascii_digit()).count();
+        let rest = &t[digits..];
+        if rest.starts_with(['.', ')']) && rest[1..].starts_with([' ', '\t']) {
+            return false; // ordered list item
+        }
+    }
+    if matches!(first, '-' | '*' | '_') {
+        let compact: String = t.chars().filter(|c| !matches!(c, ' ' | '\t')).collect();
+        if compact.len() >= 3 && compact.chars().all(|c| c == first) {
+            return false; // thematic break
+        }
+    }
+    true
 }
 
 /// Treat leading YAML front matter like normal Markdown tooling does: metadata
@@ -561,8 +708,9 @@ pub(crate) fn artifact_group_key(a: &crate::dto::Artifact, project_root: &str) -
     use crate::dto::PreviewData;
     match &a.data {
         PreviewData::File { path, .. } => {
-            let relative = artifact_workspace_path(path, project_root);
-            let outside_workspace_absolute = relative == path.trim().replace('\\', "/")
+            let display_path = a.location.as_deref().unwrap_or(path);
+            let relative = artifact_workspace_path(display_path, project_root);
+            let outside_workspace_absolute = relative == display_path.trim().replace('\\', "/")
                 && (relative.starts_with('/')
                     || relative.as_bytes().get(1) == Some(&b':')
                     || relative.contains("://"));
@@ -617,6 +765,7 @@ mod artifact_group_tests {
                 path: path.into(),
                 kind: "image".into(),
             },
+            location: None,
             source_item: 0,
             superseded: false,
         }
@@ -643,6 +792,26 @@ mod artifact_group_tests {
         assert_eq!(artifact_group_key(&outside, r"D:\project"), "results/");
         let remote = file("ssh://gpu/work/results/plot.png");
         assert_eq!(artifact_group_key(&remote, r"D:\project"), "results/");
+    }
+
+    #[test]
+    fn registered_artifact_groups_by_workspace_location_not_snapshot_path() {
+        let snapshot = Artifact {
+            id: "artifact-1".into(),
+            name: "report.md".into(),
+            kind: "markdown",
+            data: PreviewData::File {
+                path: ".wisp/artifacts/sha256/aa/report.md".into(),
+                kind: "markdown".into(),
+            },
+            location: Some("results/report.md".into()),
+            source_item: 0,
+            superseded: false,
+        };
+        assert_eq!(
+            artifact_group_key(&snapshot, r"D:\project"),
+            "results/"
+        );
     }
 
     #[test]
@@ -1124,8 +1293,8 @@ pub(crate) fn file_kind(path: &str) -> Option<&'static str> {
         "docx" => "docx",
         "xlsx" => "xlsx",
         "pptx" => "pptx",
-        "doc" | "docm" | "odt" | "rtf" | "epub" | "xls" | "xlsm" | "xlsb" | "ods"
-        | "ppt" | "pps" | "pot" | "pptm" | "ppsx" | "ppsm" | "odp" => "document",
+        "doc" | "docm" | "odt" | "rtf" | "epub" | "xls" | "xlsm" | "xlsb" | "ods" | "ppt"
+        | "pps" | "pot" | "pptm" | "ppsx" | "ppsm" | "odp" => "document",
         // ponytail: LaTeX sources open as plain text, not code. The vendored
         // highlight.js is the common bundle with no `latex` grammar, and asking
         // it for one throws; the `latex` preview kind is KaTeX for inline
@@ -1221,6 +1390,60 @@ mod md_catalog_tests {
         runtime_language, strip_ansi, tool_card_label, user_message_presentation, NbOutput,
         MAX_NB_OUTPUT_BYTES, MAX_NB_TOTAL_OUTPUT_BYTES,
     };
+
+    #[test]
+    fn rejoins_text_dropped_after_a_bare_list_marker() {
+        // The screenshot case: `- ` alone on a line, item text on the next.
+        let html = md_to_html("- 450 = x\n- \nTb1 15,248,784 y\n");
+        assert!(html.contains("<li>Tb1 15,248,784 y</li>"), "{html}");
+        assert!(!html.contains("<li></li>"), "{html}");
+    }
+
+    #[test]
+    fn rejoins_bare_ordered_markers_and_keeps_lazy_continuation() {
+        let html = md_to_html("1. a\n2.\nb\n");
+        assert!(html.contains("<li>b</li>"), "{html}");
+        assert!(!html.contains("<li></li>"), "{html}");
+        // A wrapped line after the rejoined item stays inside the item.
+        let html = md_to_html("- \nlong item\ntail\n");
+        assert!(html.contains("<li>long item\ntail</li>"), "{html}");
+    }
+
+    #[test]
+    fn rejoins_a_bare_marker_across_one_accidental_blank_line() {
+        let html = md_to_html("- QC passed\n-\n\nNormalize → PCA\n");
+        assert!(html.contains("<li>Normalize → PCA</li>"), "{html}");
+        assert!(!html.contains("<li></li>"), "{html}");
+
+        // Two blank lines are enough to preserve an intentionally empty item
+        // and a separate paragraph.
+        let html = md_to_html("- QC passed\n-\n\n\nSeparate paragraph\n");
+        assert!(html.contains("<li></li>"), "{html}");
+    }
+
+    #[test]
+    fn leaves_block_starts_and_code_fences_untouched() {
+        // Indented continuations already attach to the item; do not rejoin.
+        let src = "- a\n- \n  b\n";
+        assert_eq!(md_to_html(src), "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n");
+        // A bare marker followed by another item keeps its (empty) meaning.
+        let html = md_to_html("- a\n-\n- b\n");
+        assert!(html.contains("<li></li>"), "{html}");
+        // One blank line is repaired, but a whitespace-only continuation plus
+        // another blank remains an intentional separation.
+        for next in ["", "  ", " \t"] {
+            let html = md_to_html(&format!("- \n{next}\n\nb\n"));
+            assert!(html.contains("<li></li>"), "{next:?}: {html}");
+        }
+        // Thematic breaks, headings, quotes and tables are not item text.
+        for next in ["---", "# h", "> q", "| a | b |"] {
+            let html = md_to_html(&format!("- \n{next}\n"));
+            assert!(html.contains("<li></li>"), "{next}: {html}");
+        }
+        // Bare markers inside fenced code are data, not list syntax.
+        let src = "```\n-\nfoo\n```\n";
+        assert_eq!(md_to_html(src), "<pre><code>-\nfoo\n</code></pre>\n");
+    }
 
     #[test]
     fn decodes_percent_encoded_windows_href() {

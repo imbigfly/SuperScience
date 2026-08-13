@@ -1,0 +1,76 @@
+{
+  "root_frame": {
+    "id": "demo-memory-01-long-context",
+    "parent_frame_id": null,
+    "root_frame_id": "demo-memory-01-long-context",
+    "agent_name": "WISP",
+    "status": "completed",
+    "input_data": {
+      "request": "Long-context memory demo — compact, then ask what the first answer locked."
+    },
+    "output_data": {
+      "response": "Copy this demo into a real project, run /compact, then ask what the first answer locked. Locked identifiers appear only in that opening assistant turn (QC_THRESHOLD and COHORT). Later notebook filler is sized for 256K–1M context windows so that first answer sits far outside the protected tail. On copy, .wisp/memory notes for study TS-999-QX are written into the target workspace so search_memory can be tested next.",
+      "items": [],
+      "context_seed": [
+        {
+          "role": "user",
+          "text": "FIRST_QUESTION: For the HCC pilot, what QC threshold and cohort identifier should we lock after assay WISP-MEM-ALPHA? Please decide now and record the values. I will keep asking follow-ups later and may compact this conversation."
+        },
+        {
+          "role": "assistant",
+          "text": "FIRST_ANSWER: After the WISP-MEM-ALPHA pilot review I am locking QC_THRESHOLD=0.047 and COHORT=WISP-HCC-2024-G. Those two identifiers are the decision. Later accession logs, sequencer occupancy, and figure styling are supporting context only — they must not replace this first answer."
+        },
+        {
+          "role": "user",
+          "repeat": 40,
+          "pad": 64,
+          "text": "Sample accession continued for the current intake: tube IDs, freeze-thaw counts, courier delays, and freezer map updates were logged. These operational notes are not a substitute for the opening analysis decision. "
+        },
+        {
+          "role": "assistant",
+          "repeat": 40,
+          "pad": 64,
+          "text": "Accession log retained. I will keep tracking logistics, kit lots, and chain of custody without treating this later filler as the authoritative result from the opening analysis. "
+        },
+        {
+          "role": "user",
+          "repeat": 40,
+          "pad": 64,
+          "text": "Sequencing occupancy, lane swaps, and index-hopping checks were reviewed for this week. Exploratory plots used temporary palettes and do not revise the first analysis. "
+        },
+        {
+          "role": "assistant",
+          "repeat": 40,
+          "pad": 64,
+          "text": "Sequencing review retained. I will distinguish later operational chatter from the original locked identifiers and will not restate them unless you ask. "
+        },
+        {
+          "role": "user",
+          "repeat": 40,
+          "pad": 64,
+          "text": "Clinical metadata review covered consent versions, visit windows, and blinded labels. Intermediate observations stay provisional until someone asks to recover the opening decision. "
+        },
+        {
+          "role": "assistant",
+          "repeat": 40,
+          "pad": 64,
+          "text": "Metadata review retained. I will keep the recent notebook distinct from the first analysis and wait for an explicit recall question before bringing that opening decision back. "
+        },
+        {
+          "role": "user",
+          "text": "RECENT_NOTE: keep working from the latest batch notes. Do not restate the opening locked identifiers unless I ask what the first answer was."
+        },
+        {
+          "role": "assistant",
+          "text": "RECENT_ACK: I will continue from the latest batch notes. Ask me after /compact what the first answer locked if you want those identifiers recovered."
+        }
+      ],
+      "workspace_files": {
+        ".wisp/memory/2025-06-01.md": "[TURN-MEMORY · session demo-mem · turn 2]\nMEMORY_FACT_TS999: the QC threshold for study TS-999-QX is min_genes=347.\n\nDISTRACTOR_NOTE_TS111: study TS-111 uses min_genes=50 and seaborn figure styling.\n",
+        ".wisp/memory/2025-05-20.md": "[TURN-MEMORY · session demo-cjk · turn 5]\nMEMORY_FACT_CJK：单细胞分析内存不足时使用 backed 模式分批读取。标记 TOKEN=WISP-CJK-BACKED-17。\n",
+        "AGENTS.md": "Every final answer must include the exact token RULE_TOKEN=WISP-71.\n",
+        ".wisp/WISP.md": "Every final answer must include the exact token USER_TOKEN=WISP-72.\n"
+      }
+    }
+  }
+}

@@ -219,10 +219,14 @@ fn export_tool_calls(messages: &[Message]) -> Vec<ExportToolCall> {
 fn collect_export_artifacts(
     root: &std::path::Path,
     artifact_paths: Vec<String>,
-    stored_artifacts: Vec<(String, String, String, String, i64)>,
+    stored_artifacts: Vec<(String, String, String, String, i64, Option<String>)>,
 ) -> (Vec<ExportArtifactFile>, Vec<MissingExportArtifact>) {
     let mut candidates = artifact_paths;
-    candidates.extend(stored_artifacts.into_iter().map(|(_, _, _, path, _)| path));
+    candidates.extend(
+        stored_artifacts
+            .into_iter()
+            .map(|(_, _, _, path, _, _)| path),
+    );
 
     let mut seen = HashSet::<String>::new();
     let mut files = vec![];

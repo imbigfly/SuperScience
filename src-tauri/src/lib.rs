@@ -58,7 +58,6 @@ mod plan_mode;
 mod plugins;
 mod project_commands;
 mod project_reader;
-mod project_state_revisions;
 mod project_sync;
 mod project_transfer;
 mod publication_capsule;
@@ -91,6 +90,7 @@ mod ssh_guard;
 mod ssh_hosts;
 mod ssh_master;
 mod terminal_sessions;
+mod turn_memory;
 mod turn_undo;
 mod workspace_manifest;
 mod workspace_scan;
@@ -480,6 +480,8 @@ struct ArtifactInfo {
     name: String,
     kind: String,
     path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location: Option<String>,
     ts: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     project_id: Option<String>,
@@ -493,6 +495,8 @@ struct ArtifactInfo {
     size_bytes: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logical_path: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -817,6 +821,12 @@ struct SessionInfo {
     running: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pinned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch_state: Option<String>,
+    /// The session's persisted system prompt was built from older
+    /// AGENTS.md / WISP.md contents; the sidebar offers a rules reload.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    stale_prompt: bool,
 }
 
 const SESSION_HISTORY_PAGE_SIZE: usize = 100;
@@ -846,6 +856,9 @@ struct SessionTranscriptPage {
     user_offset: usize,
     outline: Vec<SessionOutlineItem>,
     presentations: Vec<SessionPresentation>,
+    branches: Vec<superscience_store::SessionBranchLink>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch_state: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1792,7 +1805,7 @@ struct Settings {
     /// Max output tokens per LLM turn. 0 = provider default.
     #[serde(default)]
     max_tokens: u64,
-    /// OpenAI reasoning effort (none/minimal/low/medium/high/xhigh). Empty = provider default.
+    /// Reasoning effort (none/minimal/low/medium/high/xhigh/max/ultra, model-dependent). Empty = provider default.
     #[serde(default)]
     reasoning_effort: String,
     /// LLM HTTP proxy. Empty = follow system/env proxy; `none` = force direct;
@@ -2146,6 +2159,35 @@ struct ActiveProject {
     memory: Arc<MemoryManager>,
 }
 
+#[derive(Default)]
+struct ProjectActivityLocks {
+    projects: StdMutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
+    /// Serialize candidate creation per project so concurrent requests share
+    /// one frozen checkpoint and cannot open competing rounds from different
+    /// source conversations.
+    exploration_creation: StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl ProjectActivityLocks {
+    fn project(&self, project_id: &str) -> Arc<tokio::sync::RwLock<()>> {
+        self.projects
+            .lock()
+            .unwrap()
+            .entry(project_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::RwLock::new(())))
+            .clone()
+    }
+
+    fn exploration_creation(&self, project_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.exploration_creation
+            .lock()
+            .unwrap()
+            .entry(project_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+}
+
 struct AppState {
     app_data: PathBuf,
     store: Store,
@@ -2173,7 +2215,7 @@ struct AppState {
     completion_dispatches: tokio::sync::Mutex<HashSet<String>>,
     /// Read-locked for the lifetime of project tasks; manual sync takes the
     /// write lock so task start and snapshot creation cannot race.
-    project_activity: StdMutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
+    project_activity: ProjectActivityLocks,
     /// Advisory leases for local project resources used by parallel built-in
     /// conversations. External editors remain outside this in-process boundary.
     resource_leases: resource_leases::ProjectResourceCoordinator,
@@ -2215,12 +2257,7 @@ struct AppState {
 
 impl AppState {
     fn project_activity(&self, project_id: &str) -> Arc<tokio::sync::RwLock<()>> {
-        self.project_activity
-            .lock()
-            .unwrap()
-            .entry(project_id.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::RwLock::new(())))
-            .clone()
+        self.project_activity.project(project_id)
     }
     fn begin_project_activity(
         &self,
@@ -2240,6 +2277,15 @@ impl AppState {
         self.project_activity(project_id)
             .try_write_owned()
             .map_err(|_| "ProjectBusy: another project operation is still active".into())
+    }
+    async fn begin_exploration_creation(
+        &self,
+        project_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.project_activity
+            .exploration_creation(project_id)
+            .lock_owned()
+            .await
     }
     /// Snapshot a window's active project. Falls back to the "main" window's
     /// project (always initialized at startup) for un-scoped or early calls.
@@ -2461,6 +2507,9 @@ struct TauriOutput {
     /// Built-in plan mode for this session, read once per turn. ACP-bound
     /// frames never set it — their plan mode lives on the agent side.
     plan_mode: bool,
+    /// Project state is frozen by an active isolated exploration. The
+    /// conversation remains usable, but mutating tools fail closed.
+    project_write_locked: bool,
     approval_grants: Arc<StdMutex<ApprovalGrants>>,
     /// Shared live set so enabling Full Permission can take effect during a
     /// running turn, including while it is approaching an approval boundary.
@@ -2828,6 +2877,9 @@ impl Output for TauriOutput {
     }
     fn plan_mode(&self) -> bool {
         self.plan_mode
+    }
+    fn project_write_locked(&self) -> bool {
+        self.project_write_locked
     }
     fn on_message(&self, msg: &Message) {
         if msg.role == superscience_llm::Role::User {
@@ -3409,24 +3461,26 @@ async fn load_session_settings(
     frame_id: &str,
 ) -> (String, String, String, String, u64, String) {
     let profile_id = models::session_profile_id(store, frame_id).await;
-    let (provider, api_url, model, api_key, max_tokens, reasoning_effort) =
+    let (provider, api_url, model, api_key, max_tokens, profile_reasoning_effort) =
         match models::profile_llm(store, &profile_id).await {
             Some(config) => config,
             None => {
                 let (provider, api_url, model, api_key) = load_settings(store).await;
                 let (max_tokens, reasoning_effort) = models::active_llm_advanced(store).await;
-                return (
+                (
                     provider,
                     api_url,
                     model,
                     api_key,
                     max_tokens,
                     reasoning_effort,
-                );
+                )
             }
         };
     let (provider, api_url, model, api_key) =
         resolve_model_settings(provider, api_url, model, api_key);
+    let reasoning_effort =
+        models::session_reasoning_effort(store, frame_id, &profile_reasoning_effort).await;
     (
         provider,
         api_url,
@@ -4876,6 +4930,18 @@ async fn send_message_inner(
     // run the turn in the owner project — never error out on a mismatch or,
     // worse, run tools in a stranger's workspace (#182, #194).
     if let Some(id) = session_id.as_deref().filter(|id| !id.is_empty()) {
+        if matches!(
+            state
+                .store
+                .session_branch_state(id)
+                .await
+                .map_err(|error| error.to_string())?,
+            Some("merged" | "orphaned")
+        ) {
+            return Err(
+                "This conversation branch is frozen and cannot accept new messages.".into(),
+            );
+        }
         let (working_project, scope) =
             exploration_commands::working_project_for_frame(state, id).await?;
         ap = working_project;
@@ -4885,7 +4951,12 @@ async fn send_message_inner(
     let frame_scope = explicit_scope
         .clone()
         .unwrap_or_else(|| superscience_store::StateScope::mainline(ap.id.clone()));
-    exploration_commands::require_writable_scope(&state.store, &frame_scope).await?;
+    let project_write_locked = exploration_commands::conversation_project_write_locked(
+        &state.store,
+        &frame_scope,
+        session_id.as_deref().filter(|id| !id.is_empty()),
+    )
+    .await?;
     let saved_binding = match session_id.as_deref().filter(|id| !id.is_empty()) {
         Some(id) => state
             .store
@@ -4899,6 +4970,12 @@ async fn send_message_inner(
         .is_some_and(|id| !id.trim().is_empty())
         || saved_binding.is_some()
     {
+        if project_write_locked {
+            return Err(
+                "exploration_mainline_frozen: ACP conversations cannot enforce the exploration read-only project lock; use the built-in Agent or finish the exploration round first."
+                    .into(),
+            );
+        }
         if matches!(
             explicit_scope.as_ref(),
             Some(superscience_store::StateScope::Exploration { .. })
@@ -4947,6 +5024,9 @@ async fn send_message_inner(
         let skills = active_skill_index(&state.store, &ap).await;
         let mut injected_context =
             resolve_composer_references(&state.store, refs, &frame_id, &ap.root, &skills).await?;
+        if let Some(memory) = memory_commands::global_memory_runtime_injection(&state.store).await {
+            injected_context.push(memory);
+        }
         if let Some(context) = runtime.mcp_app_context_injection() {
             injected_context.push(context);
         }
@@ -5266,9 +5346,10 @@ async fn send_message_inner(
             vision_cfg.clone(),
         );
         agent.set_auto_compact(load_auto_compact_enabled(&state.store).await);
-        if specialist
-            .as_ref()
-            .is_some_and(|specialist| specialist.id == "scientific_illustrator")
+        if !project_write_locked
+            && specialist
+                .as_ref()
+                .is_some_and(|specialist| specialist.id == "scientific_illustrator")
         {
             std::fs::create_dir_all(ap.root.join("figures"))
                 .map_err(|error| format!("Failed to prepare figures directory: {error}"))?;
@@ -5500,7 +5581,7 @@ async fn send_message_inner(
                     &app,
                     AgentEvent::Done {
                         frame_id: frame_id.clone(),
-                        stop_reason: None,
+                        stop_reason: Some("compact".into()),
                     },
                 );
                 return Ok(frame_id);
@@ -5534,10 +5615,18 @@ async fn send_message_inner(
         .map(|delivery| delivery.id)
         .collect::<Vec<_>>();
     agent.ctx.clear_runtime_injections();
+    if let Some(memory) = memory_commands::global_memory_runtime_injection(&state.store).await {
+        agent.ctx.inject_user(memory);
+    }
     if let Some(injection) =
         exploration_commands::exploration_runtime_injection(&ap.root, &frame_scope)?
     {
         agent.ctx.inject_user(injection);
+    }
+    if project_write_locked {
+        agent.ctx.inject_user(
+            "An active isolated exploration has frozen project state for possible promotion. This separate mainline conversation remains available for normal discussion and read-only inspection, but project-mutating tools are unavailable. Do not attempt to write files, run commands or jobs, change project records, or call mutating external tools until the exploration round finishes.",
+        );
     }
     if !resume {
         if let Some(context) = rt.mcp_app_context_injection() {
@@ -5559,6 +5648,10 @@ async fn send_message_inner(
         {
             agent.ctx.inject_user(injection);
         }
+        // Context resolved before the turn belongs before the user's actual
+        // request. Observations and review corrections injected later remain
+        // at the tail.
+        agent.ctx.prefix_runtime_injections_to_user();
     }
     if rt.cancel.load(Ordering::SeqCst) {
         return Err("Turn was cancelled before it started.".into());
@@ -5751,6 +5844,7 @@ async fn send_message_inner(
         awaiting_confirm: state.awaiting_confirm.clone(),
         approvals: state.approvals.clone(),
         plan_mode: plan_mode_enabled,
+        project_write_locked,
         approval_grants: state.approval_grants.clone(),
         full_permission_sessions: state.full_permission_sessions.clone(),
         persist: Some(persist_tx),
@@ -5788,7 +5882,6 @@ async fn send_message_inner(
     *rt.interrupted_turn_start.lock().unwrap() =
         (result.is_err() && rt.cancel.load(Ordering::SeqCst)).then_some(turn_start);
     if result.is_ok() {
-        agent.ctx.clear_runtime_injections();
         if !completion_delivery_ids.is_empty() {
             let _ = state
                 .store
@@ -5800,7 +5893,7 @@ async fn send_message_inner(
             .is_some_and(|specialist| specialist.id == "reviewer");
         if !resume && !is_reviewer && load_auto_review_enabled(&state.store).await {
             automatic_review(
-                &state,
+                state,
                 &app,
                 &frame_id,
                 &model_label,
@@ -5812,6 +5905,9 @@ async fn send_message_inner(
             .await;
         }
     }
+    // Keep the turn-start snapshot through a possible automatic correction;
+    // clear it only after the whole visual turn reaches a terminal outcome.
+    agent.ctx.clear_runtime_injections();
     state.running_turns.lock().await.remove(&frame_id);
 
     // Close the persist channel and wait for the task to flush; its final seq is
@@ -5859,25 +5955,7 @@ async fn send_message_inner(
     let turn_started = resume || agent.ctx.messages.len() > turn_start;
     drop(guard);
     // After the persist flush so the seen snapshot covers the final messages.
-    mark_seen_if_viewed(&state, &frame_id).await;
-
-    if result.is_ok() {
-        if let Err(error) = project_state_revisions::record_completed_mainline_turn(
-            &state.store,
-            &state.app_data,
-            &ap.id,
-            &frame_id,
-            &ap.root,
-            Some(rt.cancel.clone()),
-        )
-        .await
-        {
-            // Revision capture is durability metadata. A failed snapshot must
-            // not turn an otherwise successful model response into an error;
-            // the UI will mark that historical turn unavailable instead.
-            tracing::warn!("project state revision capture failed: {error}");
-        }
-    }
+    mark_seen_if_viewed(state, &frame_id).await;
 
     match result {
         Ok(_) => {
@@ -5983,7 +6061,12 @@ async fn enqueue_turn(
     let (project, scope) =
         exploration_commands::working_project_for_frame(&state, &session_id).await?;
     let _project_activity = state.begin_project_activity(&project.id)?;
-    exploration_commands::require_writable_scope(&state.store, &scope).await?;
+    let _project_write_locked = exploration_commands::conversation_project_write_locked(
+        &state.store,
+        &scope,
+        Some(&session_id),
+    )
+    .await?;
     let rt = {
         let mut sessions = state.sessions.lock().await;
         sessions
@@ -6744,8 +6827,7 @@ async fn generate_follow_up_questions(
 
 fn branch_title(raw: Option<&str>) -> Option<String> {
     let t = raw.map(str::trim).filter(|s| !s.is_empty())?;
-    let short: String = t.chars().take(64).collect();
-    Some(format!("Branch: {short}"))
+    Some(t.chars().take(64).collect())
 }
 
 #[tauri::command]
@@ -7484,7 +7566,7 @@ pub fn run() {
                 acp_asks: tokio::sync::Mutex::new(HashMap::new()),
                 running_turns: tokio::sync::Mutex::new(HashSet::new()),
                 completion_dispatches: tokio::sync::Mutex::new(HashSet::new()),
-                project_activity: StdMutex::new(HashMap::new()),
+                project_activity: ProjectActivityLocks::default(),
                 resource_leases: resource_leases::ProjectResourceCoordinator::default(),
                 active_frame: std::sync::RwLock::new(HashMap::new()),
                 notification_window: std::sync::RwLock::new(HashMap::new()),
@@ -7638,17 +7720,19 @@ pub fn run() {
             scratch_commands::start_scratch_chat,
             scratch_commands::close_scratch_chat,
             session_commands::branch_session,
+            session_commands::preview_session_branch_merge,
+            session_commands::summarize_session_branch_merge,
+            session_commands::merge_session_branch_summary,
             exploration_commands::start_exploration,
             exploration_commands::list_project_explorations,
-            exploration_commands::list_project_state_revisions,
             exploration_commands::open_exploration,
-            exploration_commands::archive_exploration,
-            exploration_commands::restore_exploration,
+            exploration_commands::abandon_exploration_round,
             exploration_promotion::preview_exploration_promotion,
             exploration_promotion::promote_exploration,
             exploration_promotion::discard_exploration,
             feedback::send_feedback_email,
             session_commands::list_sessions_page,
+            session_commands::reload_project_rules,
             runtime_commands::list_execution_contexts,
             runtime_commands::list_runtimes,
             runtime_commands::inspect_runtime,
@@ -7726,6 +7810,7 @@ pub fn run() {
             plugins::remove_plugin,
             seed::list_demos_cmd,
             seed::load_demo_cmd,
+            seed::copy_demo_to_project_cmd,
             approval_commands::confirm_response,
             approval_commands::list_approval_grants,
             approval_commands::get_session_full_permission,
@@ -7748,10 +7833,12 @@ pub fn run() {
             desktop_lifecycle::set_pet_window_visible,
             models::list_models,
             models::get_session_model,
+            models::get_session_reasoning_effort,
             models::save_model,
             models::remove_model,
             models::reorder_models,
             models::set_active_model,
+            models::set_session_reasoning_effort,
             settings_commands::validate_settings,
             list_dir,
             create_file,
@@ -7770,6 +7857,7 @@ pub fn run() {
             session_commands::search_sessions,
             artifact_commands::read_artifact,
             artifact_commands::read_artifact_bytes,
+            artifact_commands::download_artifact,
             artifact_commands::read_artifact_version,
             artifact_commands::read_artifact_version_bytes,
             artifact_commands::missing_files,
@@ -7791,6 +7879,13 @@ pub fn run() {
             app_commands::get_capabilities,
             memory_commands::get_memory_view,
             memory_commands::set_memory_enabled,
+            memory_commands::get_auto_failure_analysis_settings,
+            memory_commands::set_auto_failure_analysis_settings,
+            memory_commands::propose_turn_memory,
+            memory_commands::confirm_turn_memory,
+            memory_commands::create_global_memory,
+            memory_commands::update_global_memory,
+            memory_commands::delete_global_memory,
             settings_commands::get_auto_review_enabled,
             settings_commands::set_auto_review_enabled,
             settings_commands::get_update_check_enabled,

@@ -29,15 +29,15 @@ use agent_workflows::{
 use app_overlays::{
     ContextRecoveryOverlay, ContextRecoveryOverlayState, ProjectExportPrompt,
     ProjectExportPromptState, ProjectTransferOverlay, ProjectTransferOverlayState,
-    SshConnectivityOverlay, SshConnectivityOverlayState, UpdateCheckOverlay,
-    UpdateCheckOverlayState,
+    SshConnectivityOverlay, SshConnectivityOverlayState, TurnMemoryOverlay, TurnMemoryOverlayState,
+    UpdateCheckOverlay, UpdateCheckOverlayState,
 };
 use bindings::{
-    attach_chat_autoscroll, clear_selection, close_mcp_app, force_chat_bottom, invoke,
-    invoke_checked, invoke_timeout, is_mac, is_windows, jump_chat_to_item, jump_chat_to_last_user,
-    jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
-    native_drop_in_composer, open_external_url, pasted_image_count, preserve_chat_prepend_position,
-    preview_selection, schedule_chat_follow, cancel_saved_marks_apply, set_saved_marks,
+    attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection, close_mcp_app,
+    force_chat_bottom, invoke, invoke_checked, invoke_timeout, is_mac, is_windows,
+    jump_chat_to_item, jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
+    listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_image_count,
+    preserve_chat_prepend_position, preview_selection, schedule_chat_follow, set_saved_marks,
     CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use capabilities_home::{CapabilityAction, CapabilityPanel};
@@ -60,14 +60,15 @@ use publication::{PublicationEvidenceSource, PublicationWorkspaceModal};
 use research::{refresh_research_graph, ResearchGraphModal};
 use serde_wasm_bindgen::{from_value, to_value};
 use session_modals::{
-    EditConfirmOverlay, EditConfirmOverlayState, FileEntryOverlay, FileEntryOverlayState,
-    ExplorationOverlay, ExplorationOverlayState, ExplorationOverlayView,
-    FolderModalOverlay, FolderModalOverlayState, ModelSwitchConfirmOverlay,
-    ModelSwitchConfirmOverlayState, ProjSettingsOverlay, ProjSettingsOverlayState,
-    RenameSessionOverlay, RenameSessionOverlayState, SessionTransferOverlay,
-    SessionTransferOverlayState, TurnUndoOverlay, TurnUndoOverlayState,
+    BranchMergeDetailOverlay, BranchMergeOverlay, BranchMergeOverlayState, EditConfirmOverlay,
+    EditConfirmOverlayState, ExplorationOverlay, ExplorationOverlayState, ExplorationOverlayView,
+    FileEntryOverlay, FileEntryOverlayState, FolderModalOverlay, FolderModalOverlayState,
+    ModelSwitchConfirmOverlay, ModelSwitchConfirmOverlayState, ProjSettingsOverlay,
+    ProjSettingsOverlayState, RenameSessionOverlay, RenameSessionOverlayState,
+    SessionTransferOverlay, SessionTransferOverlayState, TurnUndoOverlay, TurnUndoOverlayState,
 };
 use settings_view::{DeleteConfirm, SettingsView, SettingsViewState};
+use settings_view::{known_effort_values, ALL_EFFORT_VALUES};
 use sidebar::{Sidebar, SidebarState};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -88,9 +89,12 @@ const NO_API_KEY_MARK: &str = "No API key set";
 const HOME_SEARCH_PROJECT_LIMIT: usize = 6;
 const HOME_SEARCH_ARTIFACT_LIMIT: usize = 8;
 const HOME_SEARCH_SESSION_LIMIT: usize = 6;
-const TRANSCRIPT_RENDER_TURNS: usize = 40;
+const TRANSCRIPT_RENDER_TURNS: usize = 20;
 const TRANSCRIPT_WINDOW_STEP: usize = 20;
+const TRANSCRIPT_LIVE_TRIM_TURNS: usize = TRANSCRIPT_RENDER_TURNS + TRANSCRIPT_WINDOW_STEP;
 const CENTER_PANE_MIN_WIDTH: f64 = 360.0;
+const CENTER_CHAT_MIN_WIDTH: f64 = 320.0;
+const CENTER_DOCUMENT_MIN_WIDTH: f64 = 240.0;
 const RIGHT_PANE_MIN_WIDTH: f64 = 320.0;
 const RIGHT_PANE_MAX_WIDTH: f64 = 900.0;
 const PANE_RESIZER_WIDTH: f64 = 5.0;
@@ -164,6 +168,76 @@ pub(crate) use chat_render::*;
 use mcp_app::*;
 use runtime_views::*;
 
+#[allow(clippy::too_many_arguments)]
+fn request_turn_memory_proposal(
+    session_id: String,
+    turn_index: Option<usize>,
+    automatic: bool,
+    proposal: RwSignal<Option<TurnMemoryProposal>>,
+    editor: RwSignal<String>,
+    scope: RwSignal<String>,
+    replace_id: RwSignal<String>,
+    loading: RwSignal<HashSet<String>>,
+    error: RwSignal<Option<String>>,
+    status: RwSignal<String>,
+    locale: RwSignal<Locale>,
+) {
+    if loading.with_untracked(|ids| ids.contains(&session_id)) {
+        return;
+    }
+    loading.update(|ids| {
+        ids.insert(session_id.clone());
+    });
+    if !automatic {
+        status.set(t(locale.get_untracked(), "memory.proposal.generating"));
+    }
+    spawn_local(async move {
+        let args = to_value(&serde_json::json!({
+            "sessionId": session_id.clone(),
+            "turnIndex": turn_index,
+            "automatic": automatic,
+        }))
+        .unwrap();
+        match invoke_checked("propose_turn_memory", args).await {
+            Ok(value) => match from_value::<Option<TurnMemoryProposal>>(value) {
+                Ok(Some(next)) if proposal.get_untracked().is_none() => {
+                    editor.set(next.content.clone());
+                    scope.set(next.scope.clone());
+                    replace_id.set(String::new());
+                    error.set(None);
+                    proposal.set(Some(next));
+                    status.set(t(locale.get_untracked(), "memory.proposal.ready"));
+                }
+                Ok(_) => {
+                    if !automatic {
+                        status.set(t(locale.get_untracked(), "memory.proposal.none"));
+                    }
+                }
+                Err(parse_error) => {
+                    status.set(tf(
+                        locale.get_untracked(),
+                        "memory.proposal.failed",
+                        &[("msg", &parse_error.to_string())],
+                    ));
+                }
+            },
+            Err(invoke_error) => {
+                status.set(tf(
+                    locale.get_untracked(),
+                    "memory.proposal.failed",
+                    &[(
+                        "msg",
+                        &localize_backend(locale.get_untracked(), &js_error_text(invoke_error)),
+                    )],
+                ));
+            }
+        }
+        loading.update(|ids| {
+            ids.remove(&session_id);
+        });
+    });
+}
+
 #[component]
 fn App() -> impl IntoView {
     let locale = create_rw_signal(Locale::default());
@@ -175,7 +249,16 @@ fn App() -> impl IntoView {
     create_effect(move |_| apply_palette_modes(&light_palette.get(), &dark_palette.get()));
     let ui_font_size = create_rw_signal(load_ui_font_size());
     let code_font_size = create_rw_signal(load_code_font_size());
-    create_effect(move |_| apply_font_sizes(ui_font_size.get(), code_font_size.get()));
+    let ui_font_family = create_rw_signal(load_ui_font_family());
+    let code_font_family = create_rw_signal(load_code_font_family());
+    create_effect(move |_| {
+        apply_font_prefs(
+            ui_font_size.get(),
+            code_font_size.get(),
+            &ui_font_family.get(),
+            &code_font_family.get(),
+        )
+    });
     let selection_popup_enabled = create_rw_signal(load_selection_popup_enabled());
     create_effect(move |_| save_selection_popup_enabled(selection_popup_enabled.get()));
     let send_with_modifier = create_rw_signal(load_send_with_modifier());
@@ -254,6 +337,13 @@ fn App() -> impl IntoView {
     let memory_selected = create_rw_signal(None::<String>);
     let memory_editor = create_rw_signal(String::new());
     let memory_msg = create_rw_signal(None::<(bool, String)>);
+    let turn_memory_proposal = create_rw_signal(None::<TurnMemoryProposal>);
+    let turn_memory_editor = create_rw_signal(String::new());
+    let turn_memory_scope = create_rw_signal(String::from("project"));
+    let turn_memory_replace_id = create_rw_signal(String::new());
+    let turn_memory_loading = create_rw_signal(HashSet::<String>::new());
+    let turn_memory_busy = create_rw_signal(false);
+    let turn_memory_error = create_rw_signal(None::<String>);
     let conns_view = create_rw_signal(None::<ConnView>);
     let connectors = create_rw_signal(None::<ConnectorsView>);
     let approval_grants = create_rw_signal(Vec::<ApprovalGrantRow>::new());
@@ -289,40 +379,74 @@ fn App() -> impl IntoView {
     let sync_actions_available = create_rw_signal(false);
     let pet_status = create_rw_signal(PetStatus::default());
     let run_records = create_rw_signal::<Vec<RunSummary>>(vec![]);
+    // A transcript row is remounted when a later turn changes its keyed
+    // projection. Keep explicit Run-card dismissals above the card component
+    // so a dismissed terminal Run cannot flash back during that remount.
+    let dismissed_run_cards = create_rw_signal::<HashSet<String>>(HashSet::new());
     // Configured model profiles + the composer's bottom-right picker state.
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
     let active_session = create_rw_signal::<Option<String>>(None);
+    // The stopping toast is foreground UI owned by the session where Stop was
+    // clicked. The backend cancellation may continue after navigation, but its
+    // modal state must not follow the user into another conversation or block
+    // that conversation's own Stop action.
+    create_effect(move |_| {
+        let active = active_session.get();
+        let stopping = stopping_session.get();
+        if stopping.is_some() && active != stopping {
+            stopping_session.set(None);
+        }
+    });
     let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
+    let active_branch_state = create_rw_signal::<Option<String>>(None);
+    create_effect(move |_| {
+        let active = active_session.get();
+        let state = active.and_then(|id| {
+            sessions.with(|rows| {
+                rows.iter()
+                    .find(|session| session.id == id)
+                    .and_then(|session| session.branch_state.clone())
+            })
+        });
+        active_branch_state.set(state);
+    });
+    let conversation_branches =
+        create_rw_signal::<HashMap<String, Vec<SessionBranchLink>>>(HashMap::new());
     let explorations = create_rw_signal::<Vec<ExplorationSummary>>(vec![]);
+    // Exploration frames are intentionally absent from the ordinary session
+    // query. Keep their ids separately so a sidebar refresh never mistakes the
+    // active exploration for a newly-created, untitled conversation draft.
+    let exploration_frames = create_rw_signal::<HashSet<String>>(HashSet::new());
+    create_effect(move |_| {
+        exploration_frames.set(
+            explorations
+                .get()
+                .into_iter()
+                .map(|row| row.exploration.frame_id)
+                .collect(),
+        );
+    });
     let mainline_frozen = create_memo(move |_| {
         active_session.get().is_some_and(|frame_id| {
-            explorations.with(|rows| {
-                let viewing_exploration = rows
-                    .iter()
-                    .any(|row| {
-                        row.exploration.frame_id == frame_id
-                            && row.exploration.status != "promoted"
-                    });
-                !viewing_exploration
-                    && rows.iter().any(|row| {
-                        matches!(
-                            row.exploration.status.as_str(),
-                            "creating" | "active" | "promoting"
-                        )
-                    })
-            })
+            explorations.with(|rows| rows.iter().any(|row| row.source_frame_id == frame_id))
+        })
+    });
+    let active_is_exploration = create_memo(move |_| {
+        active_session.get().is_some_and(|frame_id| {
+            explorations.with(|rows| rows.iter().any(|row| row.exploration.frame_id == frame_id))
         })
     });
     let composer_scope_locked = create_memo(move |_| {
         active_session.get().is_some_and(|frame_id| {
             explorations.with(|rows| {
                 rows.iter()
-                    .find(|row| {
-                        row.exploration.frame_id == frame_id
-                            && row.exploration.status != "promoted"
-                    })
+                    .find(|row| row.exploration.frame_id == frame_id)
                     .is_some_and(|row| row.exploration.status != "active")
             }) || mainline_frozen.get()
+                || matches!(
+                    active_branch_state.get().as_deref(),
+                    Some("merged" | "orphaned")
+                )
         })
     });
     let exploration_overlay = create_rw_signal::<Option<ExplorationOverlay>>(None);
@@ -399,6 +523,7 @@ fn App() -> impl IntoView {
         conversation_outline_selected.set(None);
     });
     let session_model_ids = create_rw_signal::<HashMap<String, String>>(HashMap::new());
+    let session_reasoning_efforts = create_rw_signal::<HashMap<String, String>>(HashMap::new());
     let acp_agents = create_rw_signal::<Vec<AcpAgentProfile>>(vec![]);
     let active_acp_agent_id = create_rw_signal::<Option<String>>(None);
     let acp_context_usage =
@@ -461,6 +586,7 @@ fn App() -> impl IntoView {
         refresh_session_library(session_library_items, active_session.read_only());
     });
     let project_info = create_rw_signal::<Option<ProjectInfo>>(None);
+    provide_context(project_info.read_only());
     let demo_mode = create_rw_signal(false); // true = the synthetic "Example project" is open
     let scratch_open = create_rw_signal(false); // ephemeral scratch chat overlay
     let show_feedback = create_rw_signal(false);
@@ -473,6 +599,13 @@ fn App() -> impl IntoView {
     let project_transition_target = Rc::new(RefCell::new(None::<String>));
     let project_open_gate = Rc::new(RefCell::new(ProjectOpenGate::default()));
     let model_menu_open = create_rw_signal(false);
+    let effort_menu_open = create_rw_signal(false);
+    // The effort picker lives inside the model menu; collapse it with the menu.
+    create_effect(move |_| {
+        if !model_menu_open.get() {
+            effort_menu_open.set(false);
+        }
+    });
     let model_switch_confirm = create_rw_signal::<Option<(String, String, bool)>>(None);
     let status = create_rw_signal(String::new());
     let compaction_active = create_rw_signal(false);
@@ -618,6 +751,7 @@ fn App() -> impl IntoView {
     let proj_list = create_rw_signal::<Vec<ProjectSummary>>(vec![]);
     let show_proj_settings = create_rw_signal(false);
     let proj_settings = create_rw_signal(ProjectSettings::default());
+    let proj_settings_baseline = create_rw_signal(ProjectSettings::default());
     let proj_settings_busy = create_rw_signal(false);
 
     // Session history (left sidebar).
@@ -630,6 +764,7 @@ fn App() -> impl IntoView {
             running,
             session_history_cursor,
             active_session,
+            exploration_frames,
         )
     };
     let folders = create_rw_signal::<Vec<FolderInfo>>(vec![]);
@@ -643,16 +778,24 @@ fn App() -> impl IntoView {
         };
         spawn_local(async move {
             let args = to_value(&serde_json::json!({ "sessionId": session_id.clone() })).unwrap();
-            let Ok(value) = invoke_checked("get_session_model", args).await else {
-                return;
-            };
-            let Some(model_id) = value.as_string() else {
-                return;
-            };
-            if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
-                session_model_ids.update(|models| {
-                    models.insert(session_id, model_id);
-                });
+            if let Ok(value) = invoke_checked("get_session_model", args).await {
+                if let Some(model_id) = value.as_string() {
+                    if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
+                        session_model_ids.update(|models| {
+                            models.insert(session_id.clone(), model_id);
+                        });
+                    }
+                }
+            }
+            let args = to_value(&serde_json::json!({ "sessionId": session_id.clone() })).unwrap();
+            if let Ok(value) = invoke_checked("get_session_reasoning_effort", args).await {
+                if let Some(effort) = value.as_string() {
+                    if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
+                        session_reasoning_efforts.update(|efforts| {
+                            efforts.insert(session_id, effort);
+                        });
+                    }
+                }
             }
         });
     });
@@ -1035,6 +1178,10 @@ fn App() -> impl IntoView {
     // hiding it. Same session, same history — only the layout moves.
     let center_split = create_rw_signal(false);
     let center_split_on = create_memo(move |_| center_split.get() && center_file_open.get());
+    let center_chat_w = create_rw_signal(None::<f64>);
+    let center_split_dragging = create_rw_signal(false);
+    let center_split_drag_start_x = create_rw_signal(0.0_f64);
+    let center_split_drag_start_w = create_rw_signal(0.0_f64);
     // Runtime binding for R/Python previews: file path -> execution context id.
     // The language comes from the extension, so the context is the whole binding.
     // In-memory on purpose — a runtime dies with the app, so a binding that
@@ -1132,26 +1279,11 @@ fn App() -> impl IntoView {
         refresh_file_search(file_query, file_search_hits);
     });
 
-    let open_resource = Callback::new(move |(path, name, kind): ModalArtifact| {
-        if opens_in_modal(&kind) {
-            modal_artifact.set(Some((path, name, kind)));
-            return;
-        }
-        let tab = CenterFileTab::new(path.clone(), name, kind);
-        center_files.update(|files| {
-            if !files.iter().any(|file| file.path == path) {
-                files.push(tab.clone());
-            }
-        });
-        center_file.set(Some(path));
-        show_projects.set(false);
-    });
-
     let on_artifact_select = Callback::new(move |idx: usize| {
         let arts = artifacts.get();
         if let Some(a) = arts.get(idx) {
             if let PreviewData::File { path, kind } = &a.data {
-                open_resource.call((path.clone(), a.name.clone(), kind.clone()));
+                modal_artifact.set(Some((path.clone(), a.name.clone(), kind.clone())));
             } else {
                 ensure_right_tab(RightTab::Artifacts, show_right, open_right_tabs, right_tab);
                 sel_artifact.set(idx);
@@ -1161,7 +1293,7 @@ fn App() -> impl IntoView {
     });
 
     let on_file_link = Callback::new(move |resource: ModalArtifact| {
-        open_resource.call(resource);
+        modal_artifact.set(Some(resource));
     });
 
     // Inline @ artifact, # session, and / skill or Workflow pickers all share one cursor
@@ -1643,7 +1775,29 @@ fn App() -> impl IntoView {
         focus_composer();
         spawn_local(async move {
             let arg = to_value(&tauri_args::rewind_session(&sid, user_idx)).unwrap();
-            let _ = invoke("rewind_session", arg).await;
+            if invoke_checked("rewind_session", arg).await.is_ok() {
+                if let Some(id) = sid.filter(|id| !id.is_empty()) {
+                    let loaded = invoke(
+                        "load_session",
+                        to_value(&serde_json::json!({ "id": id.clone() })).unwrap(),
+                    )
+                    .await;
+                    if let Ok(page) = serde_wasm_bindgen::from_value::<LoadedSessionPage>(loaded) {
+                        conversation_branches.update(|branches| {
+                            branches.insert(id.clone(), page.branches.clone());
+                        });
+                        active_branch_state.set(page.branch_state.clone());
+                        let mut chats = page
+                            .items
+                            .into_iter()
+                            .map(LoadedItem::into_chat)
+                            .collect::<Vec<_>>();
+                        settle_question_cards(&mut chats);
+                        items.set(chats);
+                    }
+                    refresh_session_history();
+                }
+            }
         });
     };
     // Streaming deltas are buffered and flushed on a timer (~20 fps) instead of
@@ -1743,7 +1897,24 @@ fn App() -> impl IntoView {
                 });
                 refresh_transcript_projections(&frame_id);
             }
-            AgentEvent::MessageBoundary { .. } => {}
+            AgentEvent::MessageBoundary { frame_id, seq } => {
+                let needs_seq = conversation_outlines_cb.with_untracked(|outlines| {
+                    outlines
+                        .get(&frame_id)
+                        .and_then(|outline| outline.last())
+                        .is_some_and(|entry| entry.seq.is_none())
+                });
+                if needs_seq {
+                    conversation_outlines_cb.update(|outlines| {
+                        if let Some(entry) = outlines
+                            .get_mut(&frame_id)
+                            .and_then(|outline| outline.last_mut())
+                        {
+                            entry.seq = Some(seq);
+                        }
+                    });
+                }
+            }
             AgentEvent::Resources {
                 frame_id,
                 resources,
@@ -1974,7 +2145,10 @@ fn App() -> impl IntoView {
                 set_pet_activity(&frame_id, "running");
                 queue(frame_id, PendingDelta::Stdout(chunk));
             }
-            AgentEvent::Done { frame_id } => {
+            AgentEvent::Done {
+                frame_id,
+                stop_reason,
+            } => {
                 finish_compaction(&frame_id);
                 flush_now();
                 conversation_outlines_cb.update(|outlines| {
@@ -1986,10 +2160,43 @@ fn App() -> impl IntoView {
                     }
                 });
                 notify_desktop(&frame_id, "done", "");
+                let outline = conversation_outlines_cb
+                    .with_untracked(|outlines| outlines.get(&frame_id).cloned())
+                    .unwrap_or_default();
+                let mut page = transcript_pages
+                    .with_untracked(|pages| pages.get(&frame_id).copied())
+                    .unwrap_or_default();
+                let mut trimmed = false;
                 route_items(active_cb, items_cb, transcripts_cb, &frame_id, |items| {
                     strip_approval_pending(items);
                     settle_plan_cards(items);
+                    let Some((first_item, dropped_turns)) = transcript_tail_trim_point(
+                        items,
+                        TRANSCRIPT_LIVE_TRIM_TURNS,
+                        TRANSCRIPT_RENDER_TURNS,
+                    ) else {
+                        return;
+                    };
+                    let user_offset = page.user_offset.saturating_add(dropped_turns);
+                    let Some(before_seq) = outline
+                        .iter()
+                        .find(|entry| entry.user_index == user_offset)
+                        .and_then(|entry| entry.seq)
+                    else {
+                        return;
+                    };
+                    items.drain(..first_item);
+                    page.next_before_seq = Some(before_seq);
+                    page.user_offset = user_offset;
+                    page.loading = false;
+                    page.window_user_start = usize::MAX;
+                    trimmed = true;
                 });
+                if trimmed {
+                    transcript_pages.update(|pages| {
+                        pages.insert(frame_id.clone(), page);
+                    });
+                }
                 refresh_transcript_projections(&frame_id);
                 approval_cb.update(|s| {
                     s.remove(&frame_id);
@@ -2000,17 +2207,34 @@ fn App() -> impl IntoView {
                     stopping_session.set(None);
                 }
                 refresh_session_history();
-                let has_final_answer = if active_cb.get_untracked().as_deref()
-                    == Some(frame_id.as_str())
+                if stop_reason
+                    .as_deref()
+                    .is_none_or(|reason| reason == "end_turn")
                 {
-                    items_cb.with_untracked(|items| latest_turn_has_final_answer(items))
-                } else {
-                    transcripts_cb.with_untracked(|transcripts| {
-                        transcripts
-                            .get(&frame_id)
-                            .is_some_and(|items| latest_turn_has_final_answer(items))
-                    })
-                };
+                    request_turn_memory_proposal(
+                        frame_id.clone(),
+                        None,
+                        true,
+                        turn_memory_proposal,
+                        turn_memory_editor,
+                        turn_memory_scope,
+                        turn_memory_replace_id,
+                        turn_memory_loading,
+                        turn_memory_error,
+                        status_cb,
+                        locale_cb,
+                    );
+                }
+                let has_final_answer =
+                    if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                        items_cb.with_untracked(|items| latest_turn_has_final_answer(items))
+                    } else {
+                        transcripts_cb.with_untracked(|transcripts| {
+                            transcripts
+                                .get(&frame_id)
+                                .is_some_and(|items| latest_turn_has_final_answer(items))
+                        })
+                    };
                 if settings.get_untracked().follow_up_questions && has_final_answer {
                     let generation = follow_up_generation.try_update(|generations| {
                         let generation = generations.entry(frame_id.clone()).or_default();
@@ -2729,6 +2953,10 @@ fn App() -> impl IntoView {
             status.set("ACP protocol v1 does not support branching a bound session.".into());
             return;
         }
+        if active_is_exploration.get() && action == ComposerSendAction::BranchNew {
+            status.set("Conversation branches cannot be created inside an exploration.".into());
+            return;
+        }
         let branch = action == ComposerSendAction::BranchNew;
         let queued = !branch && active.as_ref().is_some_and(|id| running.get().contains(id));
         // Queue (#433): a plain send into a busy session parks behind the
@@ -2799,6 +3027,7 @@ fn App() -> impl IntoView {
                     &active,
                     Some(message.trim()),
                     None,
+                    Some("after_response"),
                 ))
                 .unwrap();
                 match invoke("branch_session", args).await.as_string() {
@@ -3230,15 +3459,24 @@ fn App() -> impl IntoView {
         let composer_references = composer_references;
         let transcripts = transcripts;
         move |ui_index: usize| {
+            if active_branch_state.get_untracked().is_some()
+                || active_is_exploration.get_untracked()
+            {
+                return;
+            }
             let Some((user_idx, draft, prefix_items)) = items.with(|list| {
-                let user_idx = user_message_index(list, ui_index)?;
-                let ChatItem::User(text) = list.get(ui_index)? else {
+                let user_ui_index = list
+                    .iter()
+                    .take(ui_index.saturating_add(1))
+                    .rposition(|item| matches!(item, ChatItem::User(_)))?;
+                let user_idx = user_message_index(list, user_ui_index)?;
+                let ChatItem::User(text) = list.get(user_ui_index)? else {
                     return None;
                 };
                 Some((
                     user_idx,
                     composer_text_from_user_message(text),
-                    list.iter().take(ui_index).cloned().collect::<Vec<_>>(),
+                    list.iter().take(user_ui_index).cloned().collect::<Vec<_>>(),
                 ))
             }) else {
                 return;
@@ -3256,10 +3494,19 @@ fn App() -> impl IntoView {
             composer_references.set(vec![]);
             composer_quotes.set(vec![]);
             spawn_local(async move {
+                let checkpoint_kind = if matches!(
+                    items.with_untracked(|rows| rows.get(ui_index).cloned()),
+                    Some(ChatItem::User(_))
+                ) {
+                    "before_user"
+                } else {
+                    "after_response"
+                };
                 let arg = to_value(&tauri_args::branch_session(
                     &sid,
                     Some(draft.as_str()),
                     Some(user_idx),
+                    Some(checkpoint_kind),
                 ))
                 .unwrap();
                 let Some(id) = invoke("branch_session", arg).await.as_string() else {
@@ -3267,6 +3514,22 @@ fn App() -> impl IntoView {
                     status.set(t(loc, "status.send_failed").into());
                     return;
                 };
+                if let Some(source_id) = sid.clone() {
+                    conversation_branches.update(|branches| {
+                        branches
+                            .entry(source_id.clone())
+                            .or_default()
+                            .push(SessionBranchLink {
+                                id: id.clone(),
+                                title: draft.clone(),
+                                source_session_id: source_id,
+                                checkpoint_user_index: user_idx,
+                                checkpoint_kind: checkpoint_kind.into(),
+                                merged: false,
+                                merge_summary: None,
+                            });
+                    });
+                }
                 let loaded = invoke(
                     "load_session",
                     to_value(&serde_json::json!({ "id": id.clone() })).unwrap(),
@@ -3311,8 +3574,13 @@ fn App() -> impl IntoView {
                         pages.insert(id.clone(), page_state);
                     });
                 }
-                input.set(draft);
+                // A conversation branch inherits the selected checkpoint but
+                // starts a fresh task. Reusing the source prompt here made the
+                // branch feel like destructive rewind and invited an
+                // accidental duplicate send.
+                input.set(String::new());
                 active_session.set(Some(id));
+                active_branch_state.set(Some("active".into()));
                 refresh_session_history();
                 focus_composer();
             });
@@ -4245,10 +4513,7 @@ fn App() -> impl IntoView {
                 let text = tf(
                     loc,
                     "err.max_tokens_ceiling",
-                    &[
-                        ("model", form.model.trim()),
-                        ("max", &ceiling.to_string()),
-                    ],
+                    &[("model", form.model.trim()), ("max", &ceiling.to_string())],
                 );
                 model_form_msg.set(Some((false, text)));
                 return;
@@ -4744,6 +5009,11 @@ fn App() -> impl IntoView {
         );
         let is_running = running.get().contains(&id);
         active_session.set(Some(id.clone()));
+        active_branch_state.set(sessions.with_untracked(|rows| {
+            rows.iter()
+                .find(|session| session.id == id)
+                .and_then(|session| session.branch_state.clone())
+        }));
         if is_running {
             // Mid-stream: render the cached transcript immediately, but still
             // reconcile the separately persisted Plan claim/status. This keeps
@@ -4773,6 +5043,10 @@ fn App() -> impl IntoView {
             .await;
             if let Ok(page) = serde_wasm_bindgen::from_value::<LoadedSessionPage>(v) {
                 let presentations = page.presentations.clone();
+                conversation_branches.update(|branches| {
+                    branches.insert(id.clone(), page.branches.clone());
+                });
+                active_branch_state.set(page.branch_state.clone());
                 conversation_outlines.update(|outlines| {
                     outlines.insert(id.clone(), page.outline.clone());
                 });
@@ -4864,6 +5138,12 @@ fn App() -> impl IntoView {
         let Some(source_frame_id) = active_session.get_untracked() else {
             return;
         };
+        if explorations.with_untracked(|rows| {
+            rows.iter()
+                .any(|row| row.exploration.frame_id == source_frame_id)
+        }) {
+            return;
+        }
         let number = explorations.with_untracked(|rows| {
             rows.iter()
                 .filter(|row| row.source_frame_id == source_frame_id)
@@ -4884,39 +5164,44 @@ fn App() -> impl IntoView {
     });
     let create_exploration_from_overlay = {
         let load_session = load_session.clone();
-        Callback::new(move |(source_frame_id, turn_index, name): (String, usize, String)| {
-            if exploration_busy.get_untracked() {
-                return;
-            }
-            exploration_busy.set(true);
-            exploration_error.set(None);
-            let load_session = load_session.clone();
-            spawn_local(async move {
-                let args = to_value(&tauri_args::start_exploration(
-                    &source_frame_id,
-                    Some(turn_index),
-                    &name,
-                ))
-                .unwrap();
-                match invoke_checked("start_exploration", args).await {
-                    Ok(value) => match from_value::<Exploration>(value) {
-                        Ok(exploration) => {
-                            exploration_overlay.set(None);
-                            exploration_name.set(String::new());
-                            refresh_explorations(explorations);
-                            refresh_session_history();
-                            load_session.call(exploration.frame_id);
-                        }
-                        Err(error) => exploration_error.set(Some(error.to_string())),
-                    },
-                    Err(error) => exploration_error.set(Some(localize_backend(
-                        locale.get_untracked(),
-                        &js_error_text(error),
-                    ))),
+        Callback::new(
+            move |(source_frame_id, turn_index, name): (String, usize, String)| {
+                if exploration_busy.get_untracked() {
+                    return;
                 }
-                exploration_busy.set(false);
-            });
-        })
+                exploration_busy.set(true);
+                exploration_error.set(None);
+                let load_session = load_session.clone();
+                spawn_local(async move {
+                    let args = to_value(&tauri_args::start_exploration(
+                        &source_frame_id,
+                        Some(turn_index),
+                        &name,
+                    ))
+                    .unwrap();
+                    match invoke_checked("start_exploration", args).await {
+                        Ok(value) => match from_value::<Exploration>(value) {
+                            Ok(exploration) => {
+                                exploration_frames.update(|frames| {
+                                    frames.insert(exploration.frame_id.clone());
+                                });
+                                exploration_overlay.set(None);
+                                exploration_name.set(String::new());
+                                refresh_explorations(explorations);
+                                refresh_session_history();
+                                load_session.call(exploration.frame_id);
+                            }
+                            Err(error) => exploration_error.set(Some(error.to_string())),
+                        },
+                        Err(error) => exploration_error.set(Some(localize_backend(
+                            locale.get_untracked(),
+                            &js_error_text(error),
+                        ))),
+                    }
+                    exploration_busy.set(false);
+                });
+            },
+        )
     };
     let promote_exploration_from_overlay = {
         let load_session = load_session.clone();
@@ -4932,9 +5217,21 @@ fn App() -> impl IntoView {
                         Ok(result) => {
                             exploration_overlay.set(None);
                             exploration_preview.set(None);
+                            let resolved_frames = explorations.with_untracked(|rows| {
+                                rows.iter()
+                                    .filter(|row| row.source_frame_id == result.mainline_frame_id)
+                                    .map(|row| row.exploration.frame_id.clone())
+                                    .collect::<HashSet<_>>()
+                            });
+                            exploration_frames.update(|frames| {
+                                frames.retain(|frame_id| !resolved_frames.contains(frame_id));
+                            });
+                            explorations.update(|rows| {
+                                rows.retain(|row| row.source_frame_id != result.mainline_frame_id);
+                            });
                             refresh_explorations(explorations);
                             refresh_session_history();
-                            load_session.call(result.adopted_frame_id);
+                            load_session.call(result.mainline_frame_id);
                         }
                         Err(error) => exploration_error.set(Some(error.to_string())),
                     },
@@ -4944,7 +5241,9 @@ fn App() -> impl IntoView {
                             &js_error_text(error),
                         )));
                         let args = to_value(&tauri_args::exploration(&exploration_id)).unwrap();
-                        if let Ok(value) = invoke_checked("preview_exploration_promotion", args).await {
+                        if let Ok(value) =
+                            invoke_checked("preview_exploration_promotion", args).await
+                        {
                             if let Ok(value) = from_value::<ExplorationPromotionPreview>(value) {
                                 exploration_preview.set(Some(value));
                             }
@@ -4955,36 +5254,6 @@ fn App() -> impl IntoView {
             });
         })
     };
-    let change_exploration_status =
-        move |command: &'static str, exploration_id: String| {
-            exploration_busy.set(true);
-            exploration_error.set(None);
-            spawn_local(async move {
-                let args = to_value(&tauri_args::exploration(&exploration_id)).unwrap();
-                match invoke_checked(command, args).await {
-                    Ok(value) => match from_value::<Exploration>(value) {
-                        Ok(updated) => {
-                            exploration_preview.update(|preview| {
-                                if let Some(preview) = preview {
-                                    preview.exploration = updated;
-                                }
-                            });
-                            refresh_explorations(explorations);
-                        }
-                        Err(error) => exploration_error.set(Some(error.to_string())),
-                    },
-                    Err(error) => exploration_error.set(Some(localize_backend(
-                        locale.get_untracked(),
-                        &js_error_text(error),
-                    ))),
-                }
-                exploration_busy.set(false);
-            });
-        };
-    let archive_exploration_from_overlay =
-        Callback::new(move |id: String| change_exploration_status("archive_exploration", id));
-    let restore_exploration_from_overlay =
-        Callback::new(move |id: String| change_exploration_status("restore_exploration", id));
     let discard_exploration_from_overlay = {
         let load_session = load_session.clone();
         Callback::new(move |exploration_id: String| {
@@ -5154,8 +5423,7 @@ fn App() -> impl IntoView {
         let loc = locale.get_untracked();
         status.set(t(loc, "status.reviewing"));
         spawn_local(async move {
-            let arg =
-                to_value(&tauri_args::review_session(&Some(session_id.clone()))).unwrap();
+            let arg = to_value(&tauri_args::review_session(&Some(session_id.clone()))).unwrap();
             if let Err(err) = invoke_checked("review_session", arg).await {
                 status.set(tf(
                     loc,
@@ -5167,6 +5435,22 @@ fn App() -> impl IntoView {
                 ids.remove(&session_id);
             });
         });
+    });
+
+    let request_turn_memory = Callback::new(move |(session_id, turn_index): (String, usize)| {
+        request_turn_memory_proposal(
+            session_id,
+            Some(turn_index),
+            false,
+            turn_memory_proposal,
+            turn_memory_editor,
+            turn_memory_scope,
+            turn_memory_replace_id,
+            turn_memory_loading,
+            turn_memory_error,
+            status,
+            locale,
+        );
     });
 
     let jump_to_conversation_outline =
@@ -5482,6 +5766,40 @@ fn App() -> impl IntoView {
         }
     };
 
+    let on_center_split_resize_start = move |ev: web_sys::MouseEvent| {
+        ev.prevent_default();
+        let width = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| {
+                document
+                    .query_selector(".center.split > .chat-stage")
+                    .ok()
+                    .flatten()
+            })
+            .map(|element| element.get_bounding_client_rect().width())
+            .unwrap_or(CENTER_CHAT_MIN_WIDTH);
+        center_chat_w.set(Some(width));
+        center_split_drag_start_w.set(width);
+        center_split_drag_start_x.set(ev.client_x() as f64);
+        center_split_dragging.set(true);
+    };
+    let on_center_split_resize_move = move |ev: web_sys::MouseEvent| {
+        if !center_split_dragging.get() {
+            return;
+        }
+        let center_width = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.query_selector(".center.split").ok().flatten())
+            .map(|element| element.get_bounding_client_rect().width())
+            .unwrap_or(CENTER_CHAT_MIN_WIDTH + CENTER_DOCUMENT_MIN_WIDTH + PANE_RESIZER_WIDTH);
+        let max_width = (center_width - CENTER_DOCUMENT_MIN_WIDTH - PANE_RESIZER_WIDTH)
+            .max(CENTER_CHAT_MIN_WIDTH);
+        let dx = center_split_drag_start_x.get() - ev.client_x() as f64;
+        center_chat_w.set(Some(
+            (center_split_drag_start_w.get() + dx).clamp(CENTER_CHAT_MIN_WIDTH, max_width),
+        ));
+    };
+
     let on_composer_resize_start = move |ev: web_sys::MouseEvent| {
         ev.prevent_default();
         composer_dragging.set(true);
@@ -5722,7 +6040,113 @@ fn App() -> impl IntoView {
     let file_entry_input = create_rw_signal(String::new());
     let file_entry_busy = create_rw_signal(false);
     let file_entry_error = create_rw_signal::<Option<String>>(None);
+    let branch_merge_open = create_rw_signal::<Option<String>>(None);
+    let branch_merge_preview = create_rw_signal::<Option<SessionBranchMergePreview>>(None);
+    let branch_merge_draft = create_rw_signal(String::new());
+    let branch_merge_busy = create_rw_signal(false);
+    let branch_merge_error = create_rw_signal::<Option<String>>(None);
+    let branch_merge_guidance_open = create_rw_signal(false);
+    let branch_merge_guidance = create_rw_signal(String::new());
+    let branch_merge_detail = create_rw_signal::<Option<(String, String)>>(None);
     let ui_confirm = create_rw_signal::<Option<UiConfirm>>(None);
+    let generate_branch_summary = Callback::new(
+        move |(id, expected_guard_hash, current_version, user_guidance): (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )| {
+            branch_merge_busy.set(true);
+            branch_merge_error.set(None);
+            spawn_local(async move {
+                let args = to_value(&serde_json::json!({
+                    "id": id.clone(),
+                    "expectedGuardHash": expected_guard_hash,
+                    "currentVersion": current_version,
+                    "userGuidance": user_guidance,
+                }))
+                .unwrap();
+                let summary = invoke_checked("summarize_session_branch_merge", args)
+                    .await
+                    .and_then(|value| {
+                        value.as_string().ok_or_else(|| {
+                            wasm_bindgen::JsValue::from_str("Branch summary returned invalid text.")
+                        })
+                    });
+                if branch_merge_open.get_untracked().as_deref() == Some(id.as_str()) {
+                    match summary {
+                        Ok(text) => branch_merge_draft.set(text),
+                        Err(error) => branch_merge_error.set(Some(localize_backend(
+                            locale.get_untracked(),
+                            &js_error_text(error),
+                        ))),
+                    }
+                    branch_merge_busy.set(false);
+                }
+            });
+        },
+    );
+    let merge_branch_summary = {
+        let load_main = load_session.clone();
+        Callback::new(
+            move |(id, expected_guard_hash, summary): (String, String, String)| {
+                branch_merge_busy.set(true);
+                branch_merge_error.set(None);
+                let load_main = load_main.clone();
+                let approved_summary = summary.clone();
+                spawn_local(async move {
+                    let args = to_value(&serde_json::json!({
+                        "id": id,
+                        "expectedGuardHash": expected_guard_hash,
+                        "summary": summary,
+                    }))
+                    .unwrap();
+                    match invoke_checked("merge_session_branch_summary", args).await {
+                        Ok(value) => match from_value::<SessionBranchMerge>(value) {
+                            Ok(result) => {
+                                conversation_branches.update(|by_source| {
+                                    if let Some(branches) =
+                                        by_source.get_mut(&result.main_session_id)
+                                    {
+                                        if let Some(branch) = branches
+                                            .iter_mut()
+                                            .find(|branch| branch.id == result.branch_session_id)
+                                        {
+                                            branch.merged = true;
+                                            branch.merge_summary = Some(approved_summary.clone());
+                                        }
+                                    }
+                                });
+                                sessions.update(|rows| {
+                                    if let Some(branch) = rows
+                                        .iter_mut()
+                                        .find(|session| session.id == result.branch_session_id)
+                                    {
+                                        branch.branch_state = Some("merged".into());
+                                    }
+                                });
+                                transcripts.update(|stored| {
+                                    stored.remove(&result.main_session_id);
+                                });
+                                branch_merge_open.set(None);
+                                branch_merge_preview.set(None);
+                                branch_merge_draft.set(String::new());
+                                refresh_session_history();
+                                load_main.call(result.main_session_id);
+                                show_toast(&t(locale.get_untracked(), "branch.merge_success"));
+                            }
+                            Err(error) => branch_merge_error.set(Some(error.to_string())),
+                        },
+                        Err(error) => branch_merge_error.set(Some(localize_backend(
+                            locale.get_untracked(),
+                            &js_error_text(error),
+                        ))),
+                    }
+                    branch_merge_busy.set(false);
+                });
+            },
+        )
+    };
     let full_permission_enabled = create_rw_signal(false);
     let full_permission_busy = create_rw_signal(false);
     let compose_menu_open = create_rw_signal(false);
@@ -5733,6 +6157,7 @@ fn App() -> impl IntoView {
     let hosts_attach_search = create_rw_signal(String::new());
     let specialist_menu_open = create_rw_signal(false);
     let auto_review_enabled = create_rw_signal(false);
+    let auto_failure_analysis = create_rw_signal(AutoFailureAnalysisSettings::default());
     let delegation_enabled = create_rw_signal(false);
     let delegation_setting_busy = create_rw_signal(false);
     let agent_completion = create_rw_signal(AgentCompletionSettings::default());
@@ -5914,6 +6339,27 @@ fn App() -> impl IntoView {
         if let Some(enabled) = value.as_bool() {
             auto_review_enabled.set(enabled);
         }
+    });
+    spawn_local(async move {
+        let value = invoke("get_auto_failure_analysis_settings", JsValue::UNDEFINED).await;
+        if let Ok(settings) = from_value::<AutoFailureAnalysisSettings>(value) {
+            auto_failure_analysis.set(settings);
+        }
+    });
+    let save_auto_failure_analysis = Callback::new(move |next: AutoFailureAnalysisSettings| {
+        let previous = auto_failure_analysis.get_untracked();
+        auto_failure_analysis.set(next);
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({ "settings": next })).unwrap();
+            match invoke_checked("set_auto_failure_analysis_settings", args).await {
+                Ok(value) => {
+                    if let Ok(saved) = from_value::<AutoFailureAnalysisSettings>(value) {
+                        auto_failure_analysis.set(saved);
+                    }
+                }
+                Err(_) => auto_failure_analysis.set(previous),
+            }
+        });
     });
     let ssh_hosts = create_rw_signal::<Vec<SshHost>>(vec![]);
     let selected_context_id = create_rw_signal::<Option<String>>(None);
@@ -6339,6 +6785,7 @@ fn App() -> impl IntoView {
         let session_transfer_error = session_transfer_error;
         let project_info = project_info;
         let proj_list = proj_list;
+        let demos = demos;
         let folder_modal = folder_modal;
         let folder_modal_input = folder_modal_input;
         let ui_confirm = ui_confirm;
@@ -6346,7 +6793,14 @@ fn App() -> impl IntoView {
         let artifacts = artifacts;
         let db_artifacts = db_artifacts;
         let attachments = attachments;
+        let branch_message_from_context_menu = branch_message.clone();
         Callback::new(move |(action, payload): (String, String)| {
+            if action == "branchMessage" {
+                if let Ok(ui_index) = payload.parse::<usize>() {
+                    branch_message_from_context_menu(ui_index);
+                }
+                return;
+            }
             if action == "quoteSelection" {
                 let (source, text) = payload
                     .split_once('\u{1e}')
@@ -6606,9 +7060,114 @@ fn App() -> impl IntoView {
                 }
                 return;
             }
+            if let Some(act) = context_menu::exploration_action(&action, &payload) {
+                match act {
+                    context_menu::ExplorationAction::Open(id) => {
+                        if let Some(exploration) = explorations.with_untracked(|rows| {
+                            rows.iter()
+                                .find(|row| row.exploration.id == id)
+                                .map(|row| row.exploration.clone())
+                        }) {
+                            open_exploration.call(exploration);
+                        }
+                    }
+                    context_menu::ExplorationAction::SelectAsMainline(id)
+                    | context_menu::ExplorationAction::ViewDiff(id) => {
+                        open_exploration_preview.call(id);
+                    }
+                    context_menu::ExplorationAction::Discard(id) => {
+                        open_exploration_preview.call(id);
+                    }
+                }
+                return;
+            }
+            if let Some(context_menu::DemoAction::CopyToProject(id)) =
+                context_menu::demo_action(&action, &payload)
+            {
+                let title = demos
+                    .get()
+                    .into_iter()
+                    .find(|demo| demo.id == id)
+                    .map(|demo| demo.title)
+                    .unwrap_or_else(|| id.clone());
+                session_transfer_error.set(None);
+                session_transfer.set(Some(SessionTransfer {
+                    id,
+                    title,
+                    mode: SessionTransferMode::Copy,
+                    target_project_id: String::new(),
+                    from_demo: true,
+                }));
+                spawn_local(async move {
+                    let value = invoke("list_projects", JsValue::UNDEFINED).await;
+                    if let Ok(list) =
+                        serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(value)
+                    {
+                        let default_target = list
+                            .first()
+                            .map(|project| project.id.clone())
+                            .unwrap_or_default();
+                        proj_list.set(list);
+                        session_transfer.update(|transfer| {
+                            if let Some(transfer) = transfer {
+                                if transfer.target_project_id.is_empty() {
+                                    transfer.target_project_id = default_target;
+                                }
+                            }
+                        });
+                    }
+                });
+                return;
+            }
             if let Some(act) = context_menu::session_action(&action, &payload) {
                 match act {
                     context_menu::SessionAction::Open(id) => open_session.call(id),
+                    context_menu::SessionAction::AbandonExploration(id) => {
+                        ui_confirm.set(Some(UiConfirm::AbandonExploration(id)));
+                    }
+                    context_menu::SessionAction::MergeBranch(id) => {
+                        branch_merge_open.set(Some(id.clone()));
+                        branch_merge_preview.set(None);
+                        branch_merge_draft.set(String::new());
+                        branch_merge_error.set(None);
+                        branch_merge_busy.set(false);
+                        branch_merge_guidance_open.set(false);
+                        branch_merge_guidance.set(String::new());
+                        spawn_local(async move {
+                            let args = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
+                            match invoke_checked("preview_session_branch_merge", args).await {
+                                Ok(value) => match from_value::<SessionBranchMergePreview>(value) {
+                                    Ok(result) => {
+                                        let guard_hash = result.guard_hash.clone();
+                                        if branch_merge_open.get_untracked().as_deref()
+                                            != Some(id.as_str())
+                                        {
+                                            return;
+                                        }
+                                        branch_merge_preview.set(Some(result));
+                                        generate_branch_summary.call((id, guard_hash, None, None));
+                                    }
+                                    Err(error) => {
+                                        if branch_merge_open.get_untracked().as_deref()
+                                            == Some(id.as_str())
+                                        {
+                                            branch_merge_error.set(Some(error.to_string()));
+                                        }
+                                    }
+                                },
+                                Err(error) => {
+                                    if branch_merge_open.get_untracked().as_deref()
+                                        == Some(id.as_str())
+                                    {
+                                        branch_merge_error.set(Some(localize_backend(
+                                            locale.get_untracked(),
+                                            &js_error_text(error),
+                                        )));
+                                    }
+                                }
+                            }
+                        });
+                    }
                     context_menu::SessionAction::Rename { id, title } => {
                         rename_session_input.set(title.clone());
                         rename_session_target.set(Some((id, title)));
@@ -6636,6 +7195,7 @@ fn App() -> impl IntoView {
                             title,
                             mode,
                             target_project_id: String::new(),
+                            from_demo: false,
                         }));
                         let active_project_id = project_info
                             .get()
@@ -6671,7 +7231,13 @@ fn App() -> impl IntoView {
                             }
                         });
                     }
+                    context_menu::SessionAction::ReloadProjectRules(id) => {
+                        ui_confirm.set(Some(UiConfirm::ReloadProjectRules(id)));
+                    }
                     context_menu::SessionAction::Delete(id) => {
+                        ui_confirm.set(Some(UiConfirm::DeleteSessions(vec![id])));
+                    }
+                    context_menu::SessionAction::DeleteBranch(id) => {
                         ui_confirm.set(Some(UiConfirm::DeleteSessions(vec![id])));
                     }
                 }
@@ -6738,6 +7304,16 @@ fn App() -> impl IntoView {
         if ev.key() != "Escape" || ev.default_prevented() || ime_composing(ev) {
             return;
         }
+        if turn_memory_proposal.get().is_some() {
+            ev.prevent_default();
+            if !turn_memory_busy.get() {
+                turn_memory_proposal.set(None);
+                turn_memory_editor.set(String::new());
+                turn_memory_replace_id.set(String::new());
+                turn_memory_error.set(None);
+            }
+            return;
+        }
         if context_recovery_dialog.get().is_some() {
             ev.prevent_default();
             if !context_recovery_busy.get() {
@@ -6789,6 +7365,21 @@ fn App() -> impl IntoView {
             return;
         }
 
+        if branch_merge_detail.get().is_some() {
+            ev.prevent_default();
+            branch_merge_detail.set(None);
+            return;
+        }
+        if branch_merge_open.get().is_some() {
+            ev.prevent_default();
+            if !branch_merge_busy.get() {
+                branch_merge_open.set(None);
+                branch_merge_preview.set(None);
+                branch_merge_draft.set(String::new());
+                branch_merge_error.set(None);
+            }
+            return;
+        }
         if exploration_overlay.get().is_some() {
             ev.prevent_default();
             if !exploration_busy.get() {
@@ -6975,6 +7566,11 @@ fn App() -> impl IntoView {
             specialist_menu_open.set(false);
             return;
         }
+        if effort_menu_open.get() {
+            ev.prevent_default();
+            effort_menu_open.set(false);
+            return;
+        }
         if model_menu_open.get() {
             ev.prevent_default();
             model_menu_open.set(false);
@@ -7016,6 +7612,11 @@ fn App() -> impl IntoView {
         if dragging.get() {
             ev.prevent_default();
             dragging.set(false);
+            return;
+        }
+        if center_split_dragging.get() {
+            ev.prevent_default();
+            center_split_dragging.set(false);
             return;
         }
         if composer_dragging.get() {
@@ -7614,12 +8215,13 @@ fn App() -> impl IntoView {
         spawn_local(async move {
             let v = invoke("get_project_settings", JsValue::UNDEFINED).await;
             if let Ok(s) = serde_wasm_bindgen::from_value::<ProjectSettings>(v) {
+                proj_settings_baseline.set(s.clone());
                 proj_settings.set(s);
                 show_proj_settings.set(true);
             }
         });
     };
-    let save_proj_settings = move |_| {
+    let commit_proj_settings = move || {
         if proj_settings_busy.get() {
             return;
         }
@@ -7642,6 +8244,15 @@ fn App() -> impl IntoView {
                 }
             }
         });
+    };
+    let save_proj_settings = move |_| {
+        let form = proj_settings.get();
+        let baseline = proj_settings_baseline.get();
+        if form.agent_context.trim() != baseline.agent_context.trim() {
+            ui_confirm.set(Some(UiConfirm::SaveAgentContext));
+            return;
+        }
+        commit_proj_settings();
     };
 
     let move_sessions_to = {
@@ -7786,7 +8397,9 @@ fn App() -> impl IntoView {
         });
     });
 
-    let save_session_transfer = move |_| {
+    let save_session_transfer = {
+        let open_project_transition = open_project_transition;
+        move |_| {
         let Some(transfer) = session_transfer.get() else {
             return;
         };
@@ -7802,6 +8415,36 @@ fn App() -> impl IntoView {
         session_transfer_busy.set(true);
         session_transfer_error.set(None);
         spawn_local(async move {
+            if transfer.from_demo {
+                let args = to_value(&serde_json::json!({
+                    "id": transfer.id,
+                    "targetProjectId": transfer.target_project_id,
+                }))
+                .unwrap();
+                match invoke_checked("copy_demo_to_project", args).await {
+                    Ok(value) => {
+                        let session_id =
+                            serde_wasm_bindgen::from_value::<String>(value).unwrap_or_default();
+                        status.set(tf(
+                            locale.get(),
+                            "session.copy_demo_success",
+                            &[("project", &target_name)],
+                        ));
+                        session_transfer.set(None);
+                        session_transfer_busy.set(false);
+                        if !session_id.is_empty() {
+                            open_project_transition
+                                .call((transfer.target_project_id, Some(session_id)));
+                        }
+                    }
+                    Err(error) => {
+                        session_transfer_error
+                            .set(Some(localize_backend(locale.get(), &js_error_text(error))));
+                        session_transfer_busy.set(false);
+                    }
+                }
+                return;
+            }
             let args = to_value(&serde_json::json!({
                 "id": transfer.id,
                 "targetProjectId": transfer.target_project_id,
@@ -7841,6 +8484,7 @@ fn App() -> impl IntoView {
             }
             session_transfer_busy.set(false);
         });
+        }
     };
 
     let palette_open_session = {
@@ -7893,9 +8537,7 @@ fn App() -> impl IntoView {
                     .get_untracked()
                     .is_some_and(|transfer| transfer.is_exporting_project(&project_id))
                 {
-                    status.set(
-                        t(locale.get_untracked(), "projects.transfer.export_locked").into(),
-                    );
+                    status.set(t(locale.get_untracked(), "projects.transfer.export_locked").into());
                     return;
                 }
                 if new_window {
@@ -7947,6 +8589,7 @@ fn App() -> impl IntoView {
         spawn_local(async move {
             let v = invoke("get_project_settings", JsValue::UNDEFINED).await;
             if let Ok(s) = serde_wasm_bindgen::from_value::<ProjectSettings>(v) {
+                proj_settings_baseline.set(s.clone());
                 proj_settings.set(s);
                 show_proj_settings.set(true);
             }
@@ -8087,32 +8730,27 @@ fn App() -> impl IntoView {
                         if value.is_null() {
                             return;
                         }
-                        let summary = serde_wasm_bindgen::from_value::<
-                            SessionArchiveImportSummary,
-                        >(value)
-                        .unwrap_or_default();
+                        let summary =
+                            serde_wasm_bindgen::from_value::<SessionArchiveImportSummary>(value)
+                                .unwrap_or_default();
                         let loc = locale.get_untracked();
                         let key = match summary.status.as_str() {
                             "imported" => "import.session_imported",
                             "updated" => "import.session_updated",
                             _ => "import.session_skipped",
                         };
-                        show_toast(&tf(
-                            loc,
-                            key,
-                            &[("n", &summary.message_count.to_string())],
-                        ));
+                        show_toast(&tf(loc, key, &[("n", &summary.message_count.to_string())]));
                         refresh_sessions(
                             sessions,
                             pending_turns,
                             running,
                             session_history_cursor,
                             active_session,
+                            exploration_frames,
                         );
                         refresh_folders(folders);
                         if summary.status != "skipped" && !summary.frame_id.is_empty() {
-                            open_project_transition
-                                .call((project.id, Some(summary.frame_id)));
+                            open_project_transition.call((project.id, Some(summary.frame_id)));
                         }
                     });
                 }
@@ -8161,10 +8799,10 @@ fn App() -> impl IntoView {
             "theme-light" => theme_mode.set("light".into()),
             "theme-dark" => theme_mode.set("dark".into()),
             "theme-system" => theme_mode.set("system".into()),
-            "font-ui-increase" => ui_font_size.update(|size| *size = (*size + 1).min(18)),
-            "font-ui-decrease" => ui_font_size.update(|size| *size = size.saturating_sub(1).max(12)),
-            "font-code-increase" => code_font_size.update(|size| *size = (*size + 1).min(18)),
-            "font-code-decrease" => code_font_size.update(|size| *size = size.saturating_sub(1).max(10)),
+            "font-ui-increase" => ui_font_size.update(|size| *size = (*size + 1).min(30)),
+            "font-ui-decrease" => ui_font_size.update(|size| *size = size.saturating_sub(1)),
+            "font-code-increase" => code_font_size.update(|size| *size = (*size + 1).min(30)),
+            "font-code-decrease" => code_font_size.update(|size| *size = size.saturating_sub(1)),
             _ => {}
         })
     };
@@ -8193,6 +8831,7 @@ fn App() -> impl IntoView {
                         "settings" => Some("settings"),
                         "import-codex" => Some("import-codex"),
                         "import-claude" => Some("import-claude"),
+                        "import-session" => Some("import-session"),
                         "project-settings" => Some("project-settings"),
                         "export-current-project" => Some("export-current-project"),
                         "skills" => Some("skills"),
@@ -8329,12 +8968,61 @@ fn App() -> impl IntoView {
         })
     });
 
+    let confirm_turn_memory = Callback::new(move |_: ()| {
+        let Some(draft) = turn_memory_proposal.get_untracked() else {
+            return;
+        };
+        let content = turn_memory_editor.get_untracked().trim().to_string();
+        if content.is_empty() {
+            turn_memory_error.set(Some(t(locale.get_untracked(), "memory.proposal.empty")));
+            return;
+        }
+        let scope = turn_memory_scope.get_untracked();
+        let global_scope = scope == "global";
+        let replace_id = global_scope
+            .then(|| turn_memory_replace_id.get_untracked())
+            .filter(|id| !id.trim().is_empty());
+        turn_memory_busy.set(true);
+        turn_memory_error.set(None);
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({
+                "sessionId": draft.session_id,
+                "turnIndex": draft.turn_index,
+                "scope": scope,
+                "content": content,
+                "replaceId": replace_id,
+            }))
+            .unwrap();
+            match invoke_checked("confirm_turn_memory", args).await {
+                Ok(_) => {
+                    turn_memory_proposal.set(None);
+                    turn_memory_editor.set(String::new());
+                    turn_memory_replace_id.set(String::new());
+                    show_toast(&t(
+                        locale.get_untracked(),
+                        if global_scope {
+                            "memory.proposal.saved_global"
+                        } else {
+                            "memory.proposal.saved"
+                        },
+                    ));
+                }
+                Err(error) => turn_memory_error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(error),
+                ))),
+            }
+            turn_memory_busy.set(false);
+        });
+    });
+
     view! {
         {is_windows().then(|| view! {
             <WindowTitlebar locale=locale has_current_project=has_current_project
                 on_action=palette_action.clone() />
         })}
-        <ActionPalette open=action_palette_open on_action=palette_action />
+        <ActionPalette open=action_palette_open has_current_project=has_current_project
+            on_action=palette_action />
         <CommandPalette open=command_palette_open current_project_id=palette_project_id
             on_open_project=command_palette_open_project on_open_session=command_palette_open_session on_open_artifact=palette_open_artifact
             on_command=palette_action
@@ -8350,6 +9038,18 @@ fn App() -> impl IntoView {
             })
         />
         <ProjectTransferOverlay state=ProjectTransferOverlayState { locale, project_transfer } />
+        <TurnMemoryOverlay
+            state=TurnMemoryOverlayState {
+                locale,
+                proposal: turn_memory_proposal,
+                editor: turn_memory_editor,
+                scope: turn_memory_scope,
+                replace_id: turn_memory_replace_id,
+                busy: turn_memory_busy,
+                error: turn_memory_error,
+            }
+            on_confirm=confirm_turn_memory
+        />
         <ProjectLanding
             state=ProjectLandingState {
                 show_projects, demo_mode, items, active_session, project_open_error,
@@ -8375,6 +9075,7 @@ fn App() -> impl IntoView {
                     running,
                     session_history_cursor,
                     active_session,
+                    exploration_frames,
                 );
                 refresh_folders(folders);
             })
@@ -8462,8 +9163,26 @@ fn App() -> impl IntoView {
             })
             open_library=Callback::new(move |_| show_library.set(true))
             load_demo=Callback::new(load_demo)
+            open_demo_actions=Callback::new(move |(ev, id, title): (web_sys::MouseEvent, String, String)| {
+                ctx_menu.set(Some(context_menu::demo_menu(
+                    ev.client_x() as f64,
+                    ev.client_y() as f64,
+                    &id,
+                    &title,
+                    locale.get(),
+                )));
+            })
             load_session=load_session
             open_exploration=open_exploration
+            open_exploration_actions=Callback::new(move |(ev, id, status): (web_sys::MouseEvent, String, String)| {
+                ctx_menu.set(Some(context_menu::exploration_menu(
+                    ev.client_x() as f64,
+                    ev.client_y() as f64,
+                    &id,
+                    &status,
+                    locale.get(),
+                )));
+            })
             load_older_sessions=Callback::new(move |_| load_older_sessions(
                 sessions,
                 pending_turns,
@@ -8475,13 +9194,18 @@ fn App() -> impl IntoView {
             delete_sessions=Callback::new(move |ids: Vec<String>| {
                 ui_confirm.set(Some(UiConfirm::DeleteSessions(ids)));
             })
-            open_session_actions=Callback::new(move |(ev, id, title, pinned): (web_sys::MouseEvent, String, String, bool)| {
+            open_session_actions=Callback::new(move |(ev, id, title, pinned, is_branch, branch_merged, has_branch_family, has_exploration_round, stale_prompt): (web_sys::MouseEvent, String, String, bool, bool, bool, bool, bool, bool)| {
                 ctx_menu.set(Some(context_menu::session_menu(
                     ev.client_x() as f64,
                     ev.client_y() as f64,
                     &id,
                     &title,
                     pinned,
+                    is_branch,
+                    branch_merged,
+                    has_branch_family,
+                    has_exploration_round,
+                    stale_prompt,
                     locale.get(),
                 )));
             })
@@ -8502,7 +9226,10 @@ fn App() -> impl IntoView {
 
         <div class="workspace-area">
         <div class="workspace-main">
-        <main class="center" class:split=move || center_split_on.get()>
+        <main class="center" class:split=move || center_split_on.get()
+            style=move || center_chat_w.get()
+                .map(|width| format!("--center-chat-width:{width}px"))
+                .unwrap_or_default()>
             <div class="topbar">
                 <div class="scratch-topbar">
                     <span class="scratch-title">{move || t(locale.get(), "scratch.title")}</span>
@@ -8710,7 +9437,7 @@ fn App() -> impl IntoView {
                                 *open = true;
                             }
                         });
-                    }><span class="gi panel"></span></button>
+                    }>{compose_icon("panel")}</button>
                 </div>
             </div>
 
@@ -8718,6 +9445,10 @@ fn App() -> impl IntoView {
                 center_files.get().into_iter().find(|file| file.path == path)
             }).map(|file| {
                 let path = file.path.clone();
+                let display_path = project_info
+                    .get()
+                    .and_then(|project| workspace_relative_path(&project.root, &path))
+                    .unwrap_or_else(|| path.replace('\\', "/"));
                 let revision = center_file_revisions.with(|revisions| {
                     revisions.get(&path).copied().unwrap_or_default()
                 });
@@ -8749,7 +9480,7 @@ fn App() -> impl IntoView {
                         data-preview-kind=kind.clone()
                         data-file-path=path.clone()>
                         <div class="center-file-head">
-                            <span>{if is_mcp_app { label } else { path.clone() }}</span>
+                            <span>{if is_mcp_app { label } else { display_path }}</span>
                             <div class="spacer"></div>
                             // Bind this script to a runtime. Whole-file execution
                             // and direct editing deliberately stay out of this
@@ -9110,6 +9841,9 @@ fn App() -> impl IntoView {
                     </div>
                 }
             })}
+            <div class="center-split-resizer" role="separator" aria-orientation="vertical"
+                aria-label=move || t(locale.get(), "center.resize_split")
+                on:mousedown=on_center_split_resize_start></div>
             <div class="chat-stage" class:center-hidden=move || center_file_open.get() && !center_split.get()>
             <div class="chat" id=CHAT_SCROLLER_ID
                 on:mouseup=move |ev| {
@@ -9143,7 +9877,7 @@ fn App() -> impl IntoView {
                             row.exploration.frame_id == frame_id
                                 && matches!(
                                     row.exploration.status.as_str(),
-                                    "creating" | "active" | "archived" | "promoting"
+                                    "creating" | "active" | "promoting"
                                 )
                         }).cloned() {
                             let isolation_key = if summary.isolation_is_full() {
@@ -9154,14 +9888,8 @@ fn App() -> impl IntoView {
                             let exploration = summary.exploration;
                             let id_for_diff = exploration.id.clone();
                             let id_for_promote = exploration.id.clone();
-                            let id_for_archive = exploration.id.clone();
-                            let id_for_restore = exploration.id.clone();
                             let id_for_discard = exploration.id.clone();
-                            let status_key = if exploration.status == "archived" {
-                                "exploration.status_archived"
-                            } else {
-                                "exploration.status_active"
-                            };
+                            let status_key = "exploration.status_active";
                             Some(view! {
                                 <section class="exploration-banner branch" data-testid="exploration-banner">
                                     <div class="exploration-banner-copy">
@@ -9173,30 +9901,22 @@ fn App() -> impl IntoView {
                                         <button type="button" on:click=move |_| open_exploration_preview.call(id_for_diff.clone())>{t(locale.get(), "exploration.view_diff")}</button>
                                         <button type="button" class="primary" disabled=exploration.status != "active"
                                             on:click=move |_| open_exploration_preview.call(id_for_promote.clone())>{t(locale.get(), "exploration.promote")}</button>
-                                        {if exploration.status == "archived" {
-                                            view! { <button type="button" on:click=move |_| restore_exploration_from_overlay.call(id_for_restore.clone())>{t(locale.get(), "exploration.restore")}</button> }.into_view()
-                                        } else {
-                                            view! { <button type="button" on:click=move |_| archive_exploration_from_overlay.call(id_for_archive.clone())>{t(locale.get(), "exploration.archive")}</button> }.into_view()
-                                        }}
                                         <button type="button" class="danger-text"
                                             on:click=move |_| open_exploration_preview.call(id_for_discard.clone())>{t(locale.get(), "exploration.discard")}</button>
                                     </div>
                                 </section>
                             }.into_view())
                         } else {
-                            let active_count = rows.iter().filter(|row| {
-                                matches!(
-                                    row.exploration.status.as_str(),
-                                    "creating" | "active" | "promoting"
-                                )
-                            }).count();
-                            let can_start_another = rows.iter().any(|row| {
-                                row.source_frame_id == frame_id
-                                    && matches!(
-                                        row.exploration.status.as_str(),
-                                        "creating" | "active" | "promoting"
-                                    )
-                            });
+                            let active_count = rows
+                                .iter()
+                                .filter(|row| {
+                                    row.source_frame_id == frame_id
+                                        && matches!(
+                                            row.exploration.status.as_str(),
+                                            "creating" | "active" | "promoting"
+                                        )
+                                })
+                                .count();
                             let latest_turn_index = items.with(|rows| {
                                 rows.iter()
                                     .filter(|item| matches!(item, ChatItem::User(_)))
@@ -9212,9 +9932,7 @@ fn App() -> impl IntoView {
                                         <strong>{tf(locale.get(), "exploration.mainline_count", &[("n", &active_count.to_string())])}</strong>
                                         <span>{t(locale.get(), "exploration.mainline_warning")}</span>
                                     </div>
-                                    {can_start_another.then(|| view! {
-                                        <button type="button" on:click=move |_| start_exploration_from_head.call(latest_turn_index)>{t(locale.get(), "exploration.start_another")}</button>
-                                    })}
+                                    <button type="button" on:click=move |_| start_exploration_from_head.call(latest_turn_index)>{t(locale.get(), "exploration.start_another")}</button>
                                 </section>
                             }.into_view())
                         }
@@ -9286,6 +10004,28 @@ fn App() -> impl IntoView {
                             // so that second update rebuilds callbacks which must target the
                             // newly active session (notably background approval cards).
                             let thread_session_id = active_session.get().unwrap_or_default();
+                            let branch_projection_revision = conversation_branches.with(|all| {
+                                all.get(&thread_session_id)
+                                    .into_iter()
+                                    .flatten()
+                                    .filter(|branch| branch.merged)
+                                    .count() as u64
+                            });
+                            // Inline exploration cards are projected into otherwise
+                            // immutable assistant rows. Include their identity and
+                            // status in the keyed-row fingerprint so hard deletion,
+                            // creation, or status changes remount the affected row.
+                            let exploration_projection_revision = explorations.with(|rows| {
+                                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                                rows.iter()
+                                    .filter(|row| row.source_frame_id == thread_session_id)
+                                    .for_each(|row| {
+                                        row.checkpoint_user_index.hash(&mut hasher);
+                                        row.exploration.id.hash(&mut hasher);
+                                        row.exploration.status.hash(&mut hasher);
+                                    });
+                                hasher.finish()
+                            });
                             let user_offset = transcript_pages
                                 .with(|pages| pages.get(&thread_session_id).copied())
                                 .map_or(0, |page| page.user_offset);
@@ -9429,6 +10169,8 @@ fn App() -> impl IntoView {
                                     fp ^= (commentary as u64) << 63;
                                     fp ^= (compact_assistant as u64) << 62;
                                     fp ^= timestamp.unwrap_or_default() as u64;
+                                    fp ^= branch_projection_revision.rotate_left(17);
+                                    fp ^= exploration_projection_revision.rotate_left(29);
                                     rows.push((thread_session_id.clone(), i, streaming_assistant || streaming_reasoning, fp, ThreadRow::Item {
                                         i,
                                         timestamp,
@@ -9497,6 +10239,7 @@ fn App() -> impl IntoView {
                                             clock=run_clock.read_only()
                                             tool_ok=None
                                             tool_output=String::new()
+                                            dismissed_runs=dismissed_run_cards
                                         />
                                     </div>
                                 }.into_view(),
@@ -9550,8 +10293,52 @@ fn App() -> impl IntoView {
                                         });
                                     let data_user_index =
                                         user_index.map(|index| index.to_string());
+                                    let branch_anchor = if matches!(&item, ChatItem::User(_)) {
+                                        user_index.map(|index| (index, "before_user"))
+                                    } else if matches!(&item, ChatItem::Assistant { .. }) {
+                                        explore_turn_index.map(|index| (index, "after_response"))
+                                    } else {
+                                        None
+                                    };
+                                    let message_branches = branch_anchor.map_or_else(Vec::new, |(index, kind)| {
+                                        conversation_branches.with(|all| {
+                                            all.get(&session_id)
+                                                .into_iter()
+                                                .flatten()
+                                                .filter(|branch| {
+                                                    branch.checkpoint_user_index == index
+                                                        && branch.checkpoint_kind == kind
+                                                })
+                                                .cloned()
+                                                .collect::<Vec<_>>()
+                                        })
+                                    });
+                                    let message_explorations = if matches!(&item, ChatItem::Assistant { .. }) {
+                                        explore_turn_index.map_or_else(Vec::new, |index| {
+                                            explorations.with(|rows| {
+                                                rows.iter()
+                                                    .filter(|row| {
+                                                        row.source_frame_id == session_id
+                                                            && row.checkpoint_user_index == index
+                                                    })
+                                                    .cloned()
+                                                    .collect::<Vec<_>>()
+                                            })
+                                        })
+                                    } else {
+                                        Vec::new()
+                                    };
                                     let can_undo = Signal::derive(move || {
-                                        !compact_assistant && undo_assistant_index.get() == Some(i)
+                                        !compact_assistant
+                                            && !matches!(active_branch_state.get().as_deref(), Some("merged" | "orphaned"))
+                                            && undo_assistant_index.get() == Some(i)
+                                    });
+                                    let show_actions = Signal::derive(move || !busy.get());
+                                    let can_branch = Signal::derive(move || {
+                                        active_branch_state.get().is_none()
+                                            && active_acp_agent_id.get().is_none()
+                                            && !active_is_exploration.get()
+                                            && !busy.get()
                                     });
                                     let show_explore = Signal::derive(move || {
                                         if compact_assistant
@@ -9563,10 +10350,14 @@ fn App() -> impl IntoView {
                                         let Some(frame_id) = active_session.get() else {
                                             return false;
                                         };
-                                        !explorations.with(|rows| {
+                                        let is_latest_completed = items.with(|rows| {
+                                            rows.iter().rposition(|item| {
+                                                matches!(item, ChatItem::Assistant { text, .. } if !text.trim().is_empty())
+                                            }) == Some(i)
+                                        });
+                                        is_latest_completed && !explorations.with(|rows| {
                                             rows.iter().any(|row| {
                                                 row.exploration.frame_id == frame_id
-                                                    && row.exploration.status != "promoted"
                                             })
                                         })
                                     });
@@ -9590,12 +10381,7 @@ fn App() -> impl IntoView {
                                         if !joins_current_round {
                                             return false;
                                         }
-                                        let is_latest_completed = items.with(|rows| {
-                                            rows.iter().rposition(|item| {
-                                                matches!(item, ChatItem::Assistant { text, .. } if !text.trim().is_empty())
-                                            }) == Some(i)
-                                        });
-                                        is_latest_completed
+                                        true
                                     });
                                     view! {
                                         <div class=class
@@ -9625,13 +10411,95 @@ fn App() -> impl IntoView {
                                             } else {
                                                 render_item(
                                                     i, &item, timestamp, &arts, on_artifact_select, on_file_link,
-                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant, active_acp_agent_id.get().is_none(), can_undo, show_explore, can_explore, edit_message, branch_message, undo_message, explore_turn_index.unwrap_or_default(), start_exploration_from_head, session_id,
-                                                    request_session_review, respond_confirm, on_resume, on_queue,
+                                                    run_records, run_clock.read_only(), busy.read_only(), compact_assistant,
+                                                    active_acp_agent_id.get().is_none()
+                                                        && !matches!(active_branch_state.get_untracked().as_deref(), Some("merged" | "orphaned")),
+                                                    can_branch, show_actions, can_undo, show_explore, can_explore, edit_message, branch_message, undo_message, explore_turn_index.unwrap_or_default(), start_exploration_from_head, session_id,
+                                                    request_turn_memory, request_session_review, respond_confirm, on_resume, on_queue,
                                                     step_disclosure_state,
                                                     plan_mode_active, plan_compat, on_plan_decision,
                                                     on_question_answer, jump_to_review_message,
+                                                    dismissed_run_cards,
+                                                    Callback::new(move |detail| branch_merge_detail.set(Some(detail))),
                                                 ).into_view()
                                             }}
+                                            {(!message_branches.is_empty() || !message_explorations.is_empty()).then(|| view! {
+                                                <div class="message-branch-links">
+                                                    {message_branches.into_iter().map(|branch| {
+                                                        let open = load_session.clone();
+                                                        let open_id = branch.id.clone();
+                                                        let merged = branch.merged;
+                                                        let merge_summary = branch.merge_summary.clone();
+                                                        let title = if branch.title.trim().is_empty() {
+                                                            t(locale.get(), "sidebar.untitled").to_string()
+                                                        } else {
+                                                            branch.title
+                                                        };
+                                                        let detail_title = title.clone();
+                                                        view! {
+                                                            <div class="message-branch-entry">
+                                                                <button type="button" class="message-branch-link"
+                                                                    data-testid="message-branch-link"
+                                                                    data-session-id=branch.id
+                                                                    data-session-title=title.clone()
+                                                                    data-session-branch="true"
+                                                                    data-session-family="true"
+                                                                    data-branch-merged=if merged { "true" } else { "false" }
+                                                                    on:click=move |_| open.call(open_id.clone())>
+                                                                    <span aria-hidden="true">{compose_icon("branch")}</span>
+                                                                    <span>{title}</span>
+                                                                </button>
+                                                                {merge_summary.map(|summary| {
+                                                                    let detail_summary = summary.clone();
+                                                                    view! {
+                                                                        <button type="button" class="branch-merge-card" data-testid="branch-merge-card"
+                                                                            on:click=move |_| branch_merge_detail.set(Some((detail_title.clone(), detail_summary.clone())))>
+                                                                            <span class="branch-merge-card-icon" aria-hidden="true">{compose_icon("check")}</span>
+                                                                            <span class="branch-merge-card-copy">
+                                                                                <strong>{t(locale.get(), "branch.merged_result")}</strong>
+                                                                            </span>
+                                                                            <span class="branch-merge-card-open">{compose_icon("chevron-right")}</span>
+                                                                        </button>
+                                                                    }
+                                                                })}
+                                                            </div>
+                                                        }
+                                                    }).collect_view()}
+                                                    {message_explorations.into_iter().map(|summary| {
+                                                        let isolation_is_full = summary.isolation_is_full();
+                                                        let exploration = summary.exploration;
+                                                        let exploration_for_open = exploration.clone();
+                                                        let open = open_exploration.clone();
+                                                        let status_key = match exploration.status.as_str() {
+                                                            "active" => "exploration.status_active",
+                                                            "promoting" => "exploration.status_promoting",
+                                                            "creating" => "exploration.status_creating",
+                                                            _ => "exploration.status_failed",
+                                                        };
+                                                        let isolation_key = if isolation_is_full {
+                                                            "exploration.isolation_full"
+                                                        } else {
+                                                            "exploration.isolation_partial"
+                                                        };
+                                                        view! {
+                                                            <div class="message-branch-entry message-exploration-entry">
+                                                                <button type="button" class="message-branch-link exploration-message-card"
+                                                                    data-testid="exploration-message-card"
+                                                                    data-exploration-id=exploration.id.clone()
+                                                                    data-exploration-status=exploration.status.clone()
+                                                                    title=exploration.name.clone()
+                                                                    on:click=move |_| open.call(exploration_for_open.clone())>
+                                                                    <span aria-hidden="true">{compose_icon("flask")}</span>
+                                                                    <span class="message-exploration-copy">
+                                                                        <strong>{exploration.name}</strong>
+                                                                        <span>{format!("{} · {}", t(locale.get(), status_key), t(locale.get(), isolation_key))}</span>
+                                                                    </span>
+                                                                </button>
+                                                            </div>
+                                                        }
+                                                    }).collect_view()}
+                                                </div>
+                                            })}
                                         </div>
                                     }.into_view()
                                 }
@@ -9937,7 +10805,8 @@ fn App() -> impl IntoView {
                         {t(locale.get(), "projects.example_read_only")}
                     </div>
                 })}
-                {move || stopping_session.get().is_some().then(|| view! {
+                {move || (active_session.get().is_some()
+                    && active_session.get() == stopping_session.get()).then(|| view! {
                     <div class="stopping-toast">
                         <span class="stopping-spinner"></span>
                         <div class="stopping-text">
@@ -10149,7 +11018,9 @@ fn App() -> impl IntoView {
                             on:keydown:undelegated=on_send
                             on:paste=on_paste
                             prop:placeholder=move || {
-                                if mainline_frozen.get() {
+                                if matches!(active_branch_state.get().as_deref(), Some("merged" | "orphaned")) {
+                                    t(locale.get(), "branch.frozen_placeholder").into()
+                                } else if mainline_frozen.get() {
                                     t(locale.get(), "exploration.mainline_frozen_placeholder").into()
                                 } else if composer_scope_locked.get() {
                                     t(locale.get(), "exploration.read_only_placeholder").into()
@@ -10226,7 +11097,7 @@ fn App() -> impl IntoView {
                                 class:active=move || compose_menu_open.get()
                                 title=move || t(locale.get(), "composer.add")
                                 on:click=move |_| compose_menu_open.update(|o| *o = !*o)>
-                                <span class="gi plus"></span>
+                                {compose_icon("plus")}
                             </button>
                             {move || compose_menu_open.get().then(|| view! {
                                 <div class="compose-backdrop" on:click=move |_| compose_menu_open.set(false)></div>
@@ -10571,6 +11442,46 @@ fn App() -> impl IntoView {
                                             <span class="toggle-track" aria-hidden="true"></span>
                                         </span>
                                     </label>
+                                    <label class="agent-menu-row">
+                                        <span>{move || t(locale.get(), "composer.auto_failure_analysis")}</span>
+                                        <span class="toggle agent-menu-toggle">
+                                            <input type="checkbox"
+                                                data-testid="auto-failure-analysis"
+                                                prop:checked=move || auto_failure_analysis.get().enabled
+                                                on:change=move |event| {
+                                                    let mut next = auto_failure_analysis.get_untracked();
+                                                    next.enabled = event_target_checked(&event);
+                                                    save_auto_failure_analysis.call(next);
+                                                } />
+                                            <span class="toggle-track" aria-hidden="true"></span>
+                                        </span>
+                                    </label>
+                                    {move || auto_failure_analysis.get().enabled.then(|| view! {
+                                        <label class="agent-menu-row agent-menu-setting">
+                                            <span>{move || t(locale.get(), "composer.failure_rate_threshold")}</span>
+                                            <input class="agent-menu-number" type="number" min="1" max="100" step="1"
+                                                data-testid="failure-rate-threshold"
+                                                prop:value=move || auto_failure_analysis.get().failure_rate_threshold.to_string()
+                                                on:change=move |event| {
+                                                    let Ok(value) = dom_value(&event).parse::<u8>() else { return; };
+                                                    let mut next = auto_failure_analysis.get_untracked();
+                                                    next.failure_rate_threshold = value;
+                                                    save_auto_failure_analysis.call(next);
+                                                } />
+                                        </label>
+                                        <label class="agent-menu-row agent-menu-setting">
+                                            <span>{move || t(locale.get(), "composer.minimum_failures")}</span>
+                                            <input class="agent-menu-number" type="number" min="1" max="100" step="1"
+                                                data-testid="minimum-failures"
+                                                prop:value=move || auto_failure_analysis.get().minimum_failures.to_string()
+                                                on:change=move |event| {
+                                                    let Ok(value) = dom_value(&event).parse::<u16>() else { return; };
+                                                    let mut next = auto_failure_analysis.get_untracked();
+                                                    next.minimum_failures = value;
+                                                    save_auto_failure_analysis.call(next);
+                                                } />
+                                        </label>
+                                    })}
                                     <button type="button" class="agent-menu-row" aria-haspopup="menu"
                                         on:click=move |_| {
                                             reviewer_model_menu_open.update(|open| *open = !*open);
@@ -10835,7 +11746,7 @@ fn App() -> impl IntoView {
                                     </button>
                                     {move || model_menu_open.get().then(|| view! {
                                         <div class="model-menu-backdrop" on:click=move |_| model_menu_open.set(false)></div>
-                                        <div class="model-menu">
+                                        <div class="model-menu" on:click=move |_| effort_menu_open.set(false)>
                                             {move || {
                                                 let list = models.get();
                                                 let selected = active_session.get().and_then(|session_id| {
@@ -11120,54 +12031,111 @@ fn App() -> impl IntoView {
                                                     </div>
                                                 })
                                             })}
-                                            {move || active_acp_agent_id.get().is_none().then(|| view! {
-                                                <div class="model-menu-effort" on:click=|ev| ev.stop_propagation()>
-                                                    <span class="model-menu-effort-label">{move || t(locale.get(), "settings.reasoning_effort")}</span>
-                                                    <select class="model-menu-effort-select"
-                                                        on:change=move |ev| {
-                                                            let v = dom_value(&ev);
-                                                            let effort = if v == "default" { String::new() } else { v };
-                                                            let Some(m) = models.get_untracked().into_iter().find(|m| m.active) else { return; };
-                                                            let profile = serde_json::json!({
-                                                                "id": m.id,
-                                                                "label": m.label,
-                                                                "provider": m.provider,
-                                                                "api_url": m.api_url,
-                                                                "model": m.model,
-                                                                "max_tokens": m.max_tokens,
-                                                                "reasoning_effort": effort,
-                                                                "supports_vision": m.supports_vision,
-                                                                "use_for_vision": m.use_for_vision,
-                                                                "use_for_image_generation": m.use_for_image_generation,
-                                                            });
-                                                            let use_for_vision = m.use_for_vision;
-                                                            let use_for_image_generation = m.use_for_image_generation;
-                                                            spawn_local(async move {
-                                                                let arg = to_value(&serde_json::json!({
-                                                                    "profile": profile,
-                                                                    "key": Option::<String>::None,
-                                                                    "useForVision": use_for_vision,
-                                                                    "useForImageGeneration": use_for_image_generation,
-                                                                })).unwrap();
-                                                                if let Ok(v) = invoke_checked("save_model", arg).await {
-                                                                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                                                                        models.set(list);
-                                                                    }
+                                            {move || active_acp_agent_id.get().is_none().then(|| {
+                                                let apply_effort = Rc::new(move |v: String| {
+                                                    effort_menu_open.set(false);
+                                                    let Some(session_id) = active_session.get_untracked() else { return; };
+                                                    let effort = if v == "default" { String::new() } else { v };
+                                                    spawn_local(async move {
+                                                        let arg = to_value(&serde_json::json!({
+                                                            "sessionId": session_id.clone(),
+                                                            "effort": effort.clone(),
+                                                        })).unwrap();
+                                                        if invoke_checked("set_session_reasoning_effort", arg).await.is_ok() {
+                                                            session_reasoning_efforts.update(|efforts| {
+                                                                if effort.is_empty() {
+                                                                    // Cleared override: inherit the
+                                                                    // bound profile again.
+                                                                    efforts.remove(&session_id);
+                                                                } else {
+                                                                    efforts.insert(session_id, effort);
                                                                 }
                                                             });
-                                                        }>
-                                                        <option value="default"
-                                                            prop:selected=move || models.get().iter().find(|m| m.active).map(|m| m.reasoning_effort.is_empty()).unwrap_or(true)>
-                                                            {move || t(locale.get(), "settings.reasoning_effort.default")}
-                                                        </option>
-                                                        {["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].into_iter().map(|lvl| view! {
-                                                            <option value=lvl
-                                                                prop:selected=move || models.get().iter().find(|m| m.active).is_some_and(|m| m.reasoning_effort == lvl)>
-                                                                {lvl}
-                                                            </option>
-                                                        }).collect_view()}
-                                                    </select>
+                                                        }
+                                                    });
+                                                });
+                                                let current_effort = move || {
+                                                    let models = models.get();
+                                                    let session_models = session_model_ids.get();
+                                                    let efforts = session_reasoning_efforts.get();
+                                                    let session_id = active_session.get();
+                                                    session_reasoning_effort(
+                                                        &models,
+                                                        &session_models,
+                                                        &efforts,
+                                                        session_id.as_deref(),
+                                                    )
+                                                };
+                                                view! {
+                                                <div class="model-menu-effort" on:click=|ev| ev.stop_propagation()>
+                                                    <button type="button" class="model-menu-effort-trigger"
+                                                        class:open=move || effort_menu_open.get()
+                                                        attr:aria-expanded=move || if effort_menu_open.get() { "true" } else { "false" }
+                                                        on:click=move |_| effort_menu_open.update(|o| *o = !*o)>
+                                                        <span class="model-menu-effort-label">{move || t(locale.get(), "settings.reasoning_effort")}</span>
+                                                        <span class="model-menu-effort-value">{move || {
+                                                            let current = current_effort();
+                                                            // The trigger shows the effective effort:
+                                                            // an inherited profile value is displayed
+                                                            // as-is; the default label appears only
+                                                            // when nothing is configured anywhere.
+                                                            if current.is_empty() {
+                                                                t(locale.get(), "settings.reasoning_effort.default").to_string()
+                                                            } else {
+                                                                current
+                                                            }
+                                                        }}</span>
+                                                        <span class="model-menu-effort-chev">{compose_icon("chevron-down")}</span>
+                                                    </button>
+                                                    {move || effort_menu_open.get().then(|| {
+                                                        let current = current_effort();
+                                                        let models = models.get();
+                                                        let session_models = session_model_ids.get();
+                                                        let session_id = active_session.get();
+                                                        let mut values: Vec<String> = session_profile(
+                                                            &models,
+                                                            &session_models,
+                                                            session_id.as_deref(),
+                                                        )
+                                                        .map(|profile| {
+                                                            known_effort_values(&profile.provider, &profile.model)
+                                                                .unwrap_or(ALL_EFFORT_VALUES)
+                                                        })
+                                                        .unwrap_or(ALL_EFFORT_VALUES)
+                                                        .iter()
+                                                        .map(|v| v.to_string())
+                                                        .collect();
+                                                        // Keep a stored override visible even when the
+                                                        // curated list for this model doesn't include it.
+                                                        if !current.is_empty() && !values.iter().any(|v| v == &current) {
+                                                            values.push(current.clone());
+                                                        }
+                                                        let default_selected = current.is_empty();
+                                                        let apply_default = apply_effort.clone();
+                                                        view! {
+                                                            <div class="model-menu-effort-options">
+                                                                <button type="button" class="model-menu-effort-option" data-effort="default"
+                                                                    on:click=move |_| apply_default("default".to_string())>
+                                                                    <span class="model-menu-effort-option-label">{move || t(locale.get(), "settings.reasoning_effort.default")}</span>
+                                                                    {default_selected.then(|| view! { <span class="model-menu-effort-check">{compose_icon("check")}</span> })}
+                                                                </button>
+                                                                {values.into_iter().map(|lvl| {
+                                                                    let selected = !default_selected && lvl == current;
+                                                                    let apply = apply_effort.clone();
+                                                                    let pick = lvl.clone();
+                                                                    view! {
+                                                                        <button type="button" class="model-menu-effort-option" data-effort=lvl.clone()
+                                                                            on:click=move |_| apply(pick.clone())>
+                                                                            <span class="model-menu-effort-option-label">{lvl}</span>
+                                                                            {selected.then(|| view! { <span class="model-menu-effort-check">{compose_icon("check")}</span> })}
+                                                                        </button>
+                                                                    }
+                                                                }).collect_view()}
+                                                            </div>
+                                                        }
+                                                    })}
                                                 </div>
+                                                }
                                             })}
                                             <button type="button" class="model-menu-add" on:click=move |_| {
                                                 model_menu_open.set(false);
@@ -11247,14 +12215,16 @@ fn App() -> impl IntoView {
                                             <span class="compose-item-icon">{compose_icon("chat")}</span>
                                             <span>{move || t(locale.get(), "composer.side_chat")}</span>
                                         </button>
-                                        <button type="button" class="send-mode-item"
-                                            on:click=move |_| {
-                                                send_mode_menu_open.set(false);
-                                                send.call(ComposerSendAction::BranchNew);
-                                            }>
-                                            <span class="compose-item-icon">{compose_icon("branch")}</span>
-                                            <span>{move || t(locale.get(), "composer.branch_session")}</span>
-                                        </button>
+                                        {move || (!active_is_exploration.get()).then(|| view! {
+                                            <button type="button" class="send-mode-item"
+                                                on:click=move |_| {
+                                                    send_mode_menu_open.set(false);
+                                                    send.call(ComposerSendAction::BranchNew);
+                                                }>
+                                                <span class="compose-item-icon">{compose_icon("branch")}</span>
+                                                <span>{move || t(locale.get(), "composer.branch_session")}</span>
+                                            </button>
+                                        })}
                                     </div>
                                 })}
                             </div>
@@ -11642,8 +12612,12 @@ fn App() -> impl IntoView {
                                         } else {
                                             None
                                         };
+                                        let workspace_path = a.location.clone().or_else(|| {
+                                            file.as_ref().map(|(path, _)| path.clone())
+                                        });
                                         let file_click = file.clone();
-                                        let context_path = file.as_ref().map(|(path, _)| path.clone()).unwrap_or_default();
+                                        let context_path = workspace_path.clone().unwrap_or_default();
+                                        let context_location = context_path.clone();
                                         let name_click = name.clone();
                                         let publication_source = db_artifacts.get().iter()
                                             .find(|artifact| artifact.id == a.id)
@@ -11654,6 +12628,7 @@ fn App() -> impl IntoView {
                                             });
                                         let tools = file.map(|(path, fkind)| {
                                         let (dl, vn) = (path.clone(), name.clone());
+                                        let workspace_path = workspace_path.clone();
                                         let publication_source = publication_source.clone();
                                         view! {
                                             <div class="rp-tile-tools">
@@ -11672,9 +12647,7 @@ fn App() -> impl IntoView {
                                                 let (mi, cx, cy) = artifact_menu.get()?;
                                                 (mi == i).then(|| {
                                                 let (p, n, k) = (path.clone(), vn.clone(), fkind.clone());
-                                                let (mv, sp, dw) = (p.clone(), p.clone(), p.clone());
-                                                let rv = p.clone();
-                                                let at = p.clone();
+                                                let (mv, dw) = (p.clone(), p.clone());
                                                 let oc = CenterFileTab::new(p.clone(), n.clone(), k.clone());
                                                 let (mvn, mvk) = (n.clone(), k.clone());
                                                 view! {
@@ -11695,19 +12668,29 @@ fn App() -> impl IntoView {
                                                                 center_file.set(Some(oc.path.clone()));
                                                             }>
                                                             {move || t(locale.get(), "center.open_file")}</button>
-                                                        <button type="button" class="rp-tile-menu-item"
-                                                            on:click=move |_| {
-                                                                artifact_menu.set(None);
-                                                                let _ = attach_ready_path(attachments, at.clone());
-                                                                focus_composer();
-                                                            }>
-                                                            {move || t(locale.get(), "ctx.attach_file")}</button>
-                                                        <button type="button" class="rp-tile-menu-item"
-                                                            on:click=move |_| {
-                                                                artifact_menu.set(None);
-                                                                reveal_in_files(&sp, file_source, file_cwd, file_query, file_entries, show_right, open_right_tabs, right_tab);
-                                                            }>
-                                                            {move || t(locale.get(), "artifact.reveal_in_files")}</button>
+                                                        {workspace_path.clone().map(|workspace_path| {
+                                                            let attach_path = workspace_path.clone();
+                                                            let reveal_path = workspace_path.clone();
+                                                            let manager_path = workspace_path;
+                                                            view! {
+                                                                <button type="button" class="rp-tile-menu-item"
+                                                                    on:click=move |_| {
+                                                                        artifact_menu.set(None);
+                                                                        let _ = attach_ready_path(attachments, attach_path.clone());
+                                                                        focus_composer();
+                                                                    }>
+                                                                    {move || t(locale.get(), "ctx.attach_file")}</button>
+                                                                <button type="button" class="rp-tile-menu-item"
+                                                                    on:click=move |_| {
+                                                                        artifact_menu.set(None);
+                                                                        reveal_in_files(&reveal_path, file_source, file_cwd, file_query, file_entries, show_right, open_right_tabs, right_tab);
+                                                                    }>
+                                                                    {move || t(locale.get(), "artifact.reveal_in_files")}</button>
+                                                                <button type="button" class="rp-tile-menu-item"
+                                                                    on:click=move |_| { artifact_menu.set(None); reveal_in_file_manager(manager_path.clone()); }>
+                                                                    {move || t(locale.get(), "ctx.reveal_in_manager")}</button>
+                                                            }
+                                                        })}
                                                         <button type="button" class="rp-tile-menu-item"
                                                             on:click=move |_| {
                                                                 artifact_menu.set(None);
@@ -11732,9 +12715,6 @@ fn App() -> impl IntoView {
                                                         <button type="button" class="rp-tile-menu-item"
                                                             on:click=move |_| { artifact_menu.set(None); download_artifact(dw.clone()); }>
                                                             {move || t(locale.get(), "artifact.download")}</button>
-                                                        <button type="button" class="rp-tile-menu-item"
-                                                            on:click=move |_| { artifact_menu.set(None); reveal_in_file_manager(rv.clone()); }>
-                                                            {move || t(locale.get(), "ctx.reveal_in_manager")}</button>
                                                     </div>
                                                 }
                                             })
@@ -11744,7 +12724,8 @@ fn App() -> impl IntoView {
                                     view! {
                                         <div class="rp-tile" class:active=move || sel_artifact.get() == i
                                             data-artifact-name=name.clone()
-                                            data-artifact-path=context_path>
+                                            data-artifact-path=context_path
+                                            data-artifact-location=context_location>
                                             <button type="button" class="rp-tile-main"
                                                 on:click=move |_| {
                                                     artifact_menu.set(None);
@@ -12863,6 +13844,12 @@ fn App() -> impl IntoView {
                 on:mouseup=move |_| dragging.set(false)></div>
         })}
 
+        {move || center_split_dragging.get().then(|| view! {
+            <div class="drag-overlay"
+                on:mousemove=on_center_split_resize_move
+                on:mouseup=move |_| center_split_dragging.set(false)></div>
+        })}
+
         {move || sidebar_dragging.get().then(|| view! {
             <div class="drag-overlay"
                 on:mousemove=on_sidebar_resize_move
@@ -12881,6 +13868,22 @@ fn App() -> impl IntoView {
                 on:mouseup=move |_| terminal_dragging.set(false)></div>
         })}
 
+        <BranchMergeOverlay
+            state=BranchMergeOverlayState {
+                locale,
+                open: branch_merge_open,
+                preview: branch_merge_preview,
+                draft: branch_merge_draft,
+                busy: branch_merge_busy,
+                error: branch_merge_error,
+                guidance_open: branch_merge_guidance_open,
+                guidance: branch_merge_guidance,
+            }
+            on_merge=merge_branch_summary
+            on_generate=generate_branch_summary
+        />
+        <BranchMergeDetailOverlay locale=locale detail=branch_merge_detail />
+
         <ExplorationOverlayView
             state=ExplorationOverlayState {
                 locale,
@@ -12892,8 +13895,6 @@ fn App() -> impl IntoView {
             }
             on_start=create_exploration_from_overlay
             on_promote=promote_exploration_from_overlay
-            on_archive=archive_exploration_from_overlay
-            on_restore=restore_exploration_from_overlay
             on_discard=discard_exploration_from_overlay
         />
 
@@ -12931,7 +13932,13 @@ fn App() -> impl IntoView {
         />
 
         <EditConfirmOverlay
-            state=EditConfirmOverlayState { locale, edit_confirm }
+            state=EditConfirmOverlayState {
+                locale,
+                edit_confirm,
+                can_branch: Signal::derive(move || {
+                    active_branch_state.get().is_none() && !active_is_exploration.get()
+                }),
+            }
             on_branch=Callback::new(branch_message)
             on_rewind=Callback::new(rewind_to_user_item)
         />
@@ -12953,18 +13960,24 @@ fn App() -> impl IntoView {
                     "session.delete_many_confirm",
                     &[("n", &ids.len().to_string())],
                 ),
+                UiConfirm::AbandonExploration(_) => t(locale.get(), "exploration.abandon_confirm_body").to_string(),
                 UiConfirm::DeleteFileEntry { path, is_dir } => tf(
                     locale.get(),
                     if *is_dir { "files.delete_directory_confirm" } else { "files.delete_file_confirm" },
                     &[("path", path)],
                 ),
+                UiConfirm::ReloadProjectRules(_) => t(locale.get(), "session.reload_rules_hint").to_string(),
+                UiConfirm::SaveAgentContext => t(locale.get(), "proj_settings.agent_context_confirm").to_string(),
             };
             let action_key = match &action {
                 UiConfirm::EnableFullPermission => "full_permission.confirm_action",
                 UiConfirm::DeleteFolder(_) => "ctx.delete_folder",
                 UiConfirm::DeleteSessions(_) => "ctx.delete_session",
+                UiConfirm::AbandonExploration(_) => "exploration.abandon",
                 UiConfirm::DeleteFileEntry { is_dir: true, .. } => "files.delete_directory",
                 UiConfirm::DeleteFileEntry { is_dir: false, .. } => "files.delete_file",
+                UiConfirm::ReloadProjectRules(_) => "session.reload_rules_action",
+                UiConfirm::SaveAgentContext => "proj_settings.agent_context_confirm_action",
             };
             view! {
             <div class="overlay">
@@ -13055,6 +14068,27 @@ fn App() -> impl IntoView {
                                         }
                                     });
                                 }
+                                UiConfirm::AbandonExploration(source_frame_id) => {
+                                    let load_session = load_session.clone();
+                                    spawn_local(async move {
+                                        let args = to_value(&serde_json::json!({
+                                            "sourceFrameId": source_frame_id.clone(),
+                                        })).unwrap();
+                                        match invoke_checked("abandon_exploration_round", args).await {
+                                            Ok(_) => {
+                                                exploration_overlay.set(None);
+                                                exploration_preview.set(None);
+                                                refresh_explorations(explorations);
+                                                refresh_session_history();
+                                                load_session.call(source_frame_id);
+                                            }
+                                            Err(error) => show_toast(&localize_backend(
+                                                locale.get_untracked(),
+                                                &js_error_text(error),
+                                            )),
+                                        }
+                                    });
+                                }
                                 UiConfirm::DeleteFileEntry { path, is_dir } => {
                                     spawn_local(async move {
                                         let arg = to_value(&serde_json::json!({ "path": path.clone() })).unwrap();
@@ -13085,6 +14119,21 @@ fn App() -> impl IntoView {
                                             )),
                                         }
                                     });
+                                }
+                                UiConfirm::ReloadProjectRules(id) => {
+                                    spawn_local(async move {
+                                        let arg = to_value(&serde_json::json!({ "frameId": id })).unwrap();
+                                        match invoke_checked("reload_project_rules", arg).await {
+                                            Ok(_) => refresh_session_history(),
+                                            Err(error) => show_toast(&localize_backend(
+                                                locale.get_untracked(),
+                                                &js_error_text(error),
+                                            )),
+                                        }
+                                    });
+                                }
+                                UiConfirm::SaveAgentContext => {
+                                    commit_proj_settings();
                                 }
                             }
                         }>{move || t(locale.get(), action_key)}</button>
@@ -13153,7 +14202,7 @@ fn App() -> impl IntoView {
         })}
         <SettingsView
             state=SettingsViewState {
-                locale, theme_mode, light_palette, dark_palette, ui_font_size, code_font_size, selection_popup_enabled, send_with_modifier, update_check_enabled, show_settings, settings_section, open_conn_key, channels_open, connectors, model_form,
+                locale, theme_mode, light_palette, dark_palette, ui_font_size, code_font_size, ui_font_family, code_font_family, selection_popup_enabled, send_with_modifier, update_check_enabled, show_settings, settings_section, open_conn_key, channels_open, connectors, model_form,
                 conn_form, memory_selected, specialist_form, settings, bootstrap, settings_message,
                 settings_busy, model_form_open, model_form_key, models, model_form_msg, show_acp_agents,
                 acp_agents, active_acp_agent_id, acp_form, acp_form_msg, acp_infos, specialists,

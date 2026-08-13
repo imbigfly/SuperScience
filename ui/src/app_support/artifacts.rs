@@ -175,6 +175,7 @@ pub(crate) fn assemble_artifacts(
                         name: tf(locale, "artifact.table", &[("n", &scan.tbl_n.to_string())]),
                         kind: "table",
                         data: PreviewData::Table(t.clone()),
+                        location: None,
                         source_item,
                         superseded: false,
                     });
@@ -187,6 +188,7 @@ pub(crate) fn assemble_artifacts(
                         name: format!("data-{}.csv", scan.csv_n),
                         kind: "csv",
                         data: PreviewData::Table(t.clone()),
+                        location: None,
                         source_item,
                         superseded: false,
                     });
@@ -198,6 +200,7 @@ pub(crate) fn assemble_artifacts(
                         name: format!("alignment-{}.fasta", scan.csv_n),
                         kind: "fasta",
                         data: PreviewData::Fasta(body.clone()),
+                        location: None,
                         source_item,
                         superseded: false,
                     });
@@ -217,6 +220,7 @@ pub(crate) fn assemble_artifacts(
                             tex: tex.clone(),
                             display: true,
                         },
+                        location: None,
                         source_item,
                         superseded: false,
                     });
@@ -243,6 +247,7 @@ pub(crate) fn assemble_artifacts(
                             path: path.clone(),
                             kind: kind.to_string(),
                         },
+                        location: None,
                         source_item,
                         superseded: false,
                     });
@@ -658,7 +663,7 @@ pub(crate) fn current_artifacts(
         }
         match &artifact.data {
             PreviewData::File { path, .. } => {
-                if missing_paths.contains(path) {
+                if missing_paths.contains(path) || hidden_artifact_path(path, project_root) {
                     continue;
                 }
                 let identity = artifact_file_identity(path, project_root);
@@ -672,10 +677,21 @@ pub(crate) fn current_artifacts(
     }
     current.reverse();
     for info in registered {
-        if !seen_files.insert(artifact_file_identity(&info.path, project_root)) {
+        let location = info
+            .location
+            .clone()
+            .unwrap_or_else(|| info.path.clone());
+        let visible_path = info
+            .logical_path
+            .as_deref()
+            .or(info.location.as_deref())
+            .unwrap_or(&info.path);
+        if hidden_artifact_path(visible_path, project_root)
+            || !seen_files.insert(artifact_file_identity(visible_path, project_root))
+        {
             continue;
         }
-        let kind = file_kind(&info.path)
+        let kind = file_kind(&location)
             .or_else(|| file_kind(&info.name))
             .unwrap_or("file");
         current.push(Artifact {
@@ -683,9 +699,13 @@ pub(crate) fn current_artifacts(
             name: info.name.clone(),
             kind,
             data: PreviewData::File {
-                path: info.path.clone(),
+                // Registered snapshots live under internal `.wisp` storage.
+                // The preview reads by Artifact id while grouping and labels
+                // continue to use the user-facing logical workspace path.
+                path: format!("artifact:{}", info.id),
                 kind: kind.to_string(),
             },
+            location: Some(visible_path.to_string()),
             // No transcript message produced these, so they never render as an
             // inline card under one (`artifacts_for_item` matches on this).
             source_item: usize::MAX,
@@ -693,6 +713,14 @@ pub(crate) fn current_artifacts(
         });
     }
     current
+}
+
+fn hidden_artifact_path(path: &str, project_root: &str) -> bool {
+    let visible = artifact_file_identity(path, project_root);
+    visible
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .any(|component| component.starts_with('.') && component != "." && component != "..")
 }
 
 #[cfg(test)]
@@ -952,6 +980,7 @@ mod artifact_scan_tests {
             name: name.into(),
             kind: "table".into(),
             path: path.into(),
+            location: None,
             ts: 0,
             project_id: None,
             project_name: None,
@@ -959,6 +988,7 @@ mod artifact_scan_tests {
             session_title: None,
             size_bytes: None,
             origin: None,
+            logical_path: None,
         }
     }
 
@@ -998,5 +1028,38 @@ mod artifact_scan_tests {
         );
         assert_eq!(current.len(), 1);
         assert_eq!(current[0].kind, "file");
+    }
+
+    #[test]
+    fn internal_snapshot_uses_logical_path_and_hidden_outputs_are_omitted() {
+        let mut visible = registered("db4", "plot.png", ".wisp/artifacts/sha256/aa/plot.png");
+        visible.logical_path = Some("results/figures/plot.png".into());
+        let mut hidden = registered(
+            "db5",
+            "private.csv",
+            ".wisp/artifacts/sha256/bb/private.csv",
+        );
+        hidden.logical_path = Some("results/.cache/private.csv".into());
+        let hidden_remote = registered(
+            "db6",
+            "remote-private.csv",
+            "ssh://gpu/home/research/.cache/remote-private.csv",
+        );
+
+        let current = current_artifacts(
+            &[],
+            &[visible, hidden, hidden_remote],
+            "/work/proj",
+            &HashSet::new(),
+        );
+        assert_eq!(current.len(), 1);
+        assert_eq!(
+            current[0].location.as_deref(),
+            Some("results/figures/plot.png")
+        );
+        assert!(matches!(
+            &current[0].data,
+            PreviewData::File { path, .. } if path == "artifact:db4"
+        ));
     }
 }

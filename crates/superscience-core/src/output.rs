@@ -97,6 +97,11 @@ pub trait Output: Send + Sync {
     fn plan_mode(&self) -> bool {
         false
     }
+    /// True when project state is temporarily frozen but the conversation may
+    /// continue with read-only tools.
+    fn project_write_locked(&self) -> bool {
+        false
+    }
     /// Fired once per message appended to the context during a turn (user,
     /// assistant, tool). Lets the host persist incrementally so a crash or a
     /// mid-turn "new session" doesn't lose the whole turn. Default: no-op.
@@ -177,6 +182,9 @@ impl<'a> superscience_tools::ToolEnv for ToolEnvAdapter<'a> {
     }
     fn plan_mode(&self) -> bool {
         self.out.plan_mode()
+    }
+    fn project_write_locked(&self) -> bool {
+        self.out.project_write_locked()
     }
     fn is_cancelled(&self) -> bool {
         self.cancel

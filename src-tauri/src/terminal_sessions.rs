@@ -250,6 +250,27 @@ impl TerminalManager {
             session.project_id == project_id && session.scope_key == scope_key && session.running()
         })
     }
+
+    /// Terminate and forget every terminal owned by one state scope. Promotion
+    /// uses this for losing exploration candidates before their workspaces are
+    /// quarantined and removed.
+    pub(crate) fn stop_scope(&self, project_id: &str, scope_key: &str) {
+        let targets = lock(&self.state)
+            .sessions
+            .iter()
+            .filter(|(_, session)| {
+                session.project_id == project_id && session.scope_key == scope_key
+            })
+            .map(|(id, session)| (id.clone(), Arc::clone(session)))
+            .collect::<Vec<_>>();
+        for (_, session) in &targets {
+            let _ = session.terminate();
+        }
+        let mut state = lock(&self.state);
+        for (id, _) in targets {
+            state.sessions.remove(&id);
+        }
+    }
 }
 
 fn spawn_session(

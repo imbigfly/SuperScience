@@ -118,6 +118,7 @@ pub(crate) fn review_message_ui_index(items: &[ChatItem], message_index: usize) 
             ChatItem::User(text) | ChatItem::Assistant { text, .. } | ChatItem::Reasoning(text) => {
                 !text.trim().is_empty()
             }
+            ChatItem::BranchMerge { text, .. } => !text.trim().is_empty(),
             ChatItem::Tool { name, .. } => name != "attempt_completion",
             ChatItem::AcpTool { .. } | ChatItem::Plan(_) | ChatItem::Question(_) => true,
             ChatItem::QueuedUser { .. }
@@ -379,9 +380,35 @@ pub(crate) fn transcript_render_window(
     (first_item..last_item, start, total)
 }
 
+/// Find the prefix that can be unloaded after a completed live turn. The
+/// durable transcript remains in SQLite; this only bounds the reactive rows
+/// that otherwise grow for as long as the app stays open.
+pub(crate) fn transcript_tail_trim_point(
+    items: &[ChatItem],
+    trim_above_user_turns: usize,
+    retain_user_turns: usize,
+) -> Option<(usize, usize)> {
+    if items
+        .iter()
+        .any(|item| matches!(item, ChatItem::QueuedUser { .. }))
+    {
+        return None;
+    }
+    let user_rows = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| matches!(item, ChatItem::User(_)).then_some(index))
+        .collect::<Vec<_>>();
+    if user_rows.len() <= trim_above_user_turns {
+        return None;
+    }
+    let dropped_turns = user_rows.len().saturating_sub(retain_user_turns.max(1));
+    Some((user_rows[dropped_turns], dropped_turns))
+}
+
 #[cfg(test)]
 mod transcript_render_window_tests {
-    use super::transcript_render_window;
+    use super::{transcript_render_window, transcript_tail_trim_point};
     use crate::dto::ChatItem;
 
     #[test]
@@ -406,13 +433,42 @@ mod transcript_render_window_tests {
         );
         assert_eq!(transcript_render_window(&items, 2, 2), (4..8, 2, 6));
     }
+
+    #[test]
+    fn trims_completed_live_history_in_page_sized_chunks() {
+        let mut items = (0..5)
+            .flat_map(|turn| {
+                [
+                    ChatItem::User(format!("question {turn}")),
+                    ChatItem::Reasoning(format!("reasoning {turn}")),
+                    ChatItem::Assistant {
+                        text: format!("answer {turn}"),
+                        model: None,
+                        resources: Vec::new(),
+                    },
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        let (first_item, dropped_turns) = transcript_tail_trim_point(&items, 4, 2).unwrap();
+        assert_eq!((first_item, dropped_turns), (9, 3));
+        items.drain(..first_item);
+        assert!(matches!(&items[0], ChatItem::User(text) if text == "question 3"));
+        assert_eq!(transcript_tail_trim_point(&items, 4, 2), None);
+
+        items.push(ChatItem::QueuedUser {
+            id: 1,
+            text: "queued".into(),
+        });
+        assert_eq!(transcript_tail_trim_point(&items, 1, 1), None);
+    }
 }
 
 #[cfg(test)]
 mod conversation_outline_tests {
     use super::{
-        conversation_outline_target_is_loaded, merge_conversation_outline,
-        owning_user_turn_index, transcript_item_timestamp, turn_duration_ms, user_turn_index,
+        conversation_outline_target_is_loaded, merge_conversation_outline, owning_user_turn_index,
+        transcript_item_timestamp, turn_duration_ms, user_turn_index,
     };
     use crate::dto::{ChatItem, SessionOutlineItem};
 

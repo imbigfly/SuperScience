@@ -131,6 +131,8 @@ impl OpenAiProvider {
                         .cloned()
                         .map(|mut tc| {
                             tc.function.name = openai_wire_tool_name(&tc.function.name).into();
+                            tc.function.arguments =
+                                crate::provider::valid_json_tool_arguments(&tc.function.arguments);
                             tc
                         })
                         .collect();
@@ -371,6 +373,44 @@ fn ensure_named_tool_calls(calls: &[ToolCall]) -> Result<()> {
     Ok(())
 }
 
+/// Detect an in-band error payload on an otherwise-healthy SSE stream and
+/// carry the upstream detail out as `LlmError::Api`, so the user sees the
+/// provider's actual reason instead of a generic "stream cut" message (#798).
+/// Shapes seen from compatible relays: `{"error":{"message":..,"code":..}}`,
+/// `{"error":"plain text"}`, and `{"type":"error","message":..}`. A `"error":
+/// null` field on a normal chunk is not an error. When the payload carries a
+/// numeric HTTP-like code, use it as the status so retry (429/5xx) and
+/// context-overflow (400) handling keep working; otherwise report the 200 the
+/// relay actually sent.
+fn in_band_stream_error(val: &Value) -> Option<LlmError> {
+    let err = val.get("error").filter(|e| !e.is_null());
+    if err.is_none() && val.get("type").and_then(Value::as_str) != Some("error") {
+        return None;
+    }
+    let detail = err.unwrap_or(val);
+    let message = detail
+        .as_str()
+        .or_else(|| detail.get("message").and_then(Value::as_str))
+        .or_else(|| val.get("message").and_then(Value::as_str))
+        .map(str::to_string)
+        .unwrap_or_else(|| detail.to_string());
+    let status = detail
+        .get("code")
+        .or_else(|| detail.get("status"))
+        .and_then(|code| match code {
+            Value::Number(n) => n.as_u64(),
+            Value::String(s) => s.parse().ok(),
+            _ => None,
+        })
+        .and_then(|code| u16::try_from(code).ok())
+        .filter(|code| (100..=599).contains(code))
+        .unwrap_or(200);
+    Some(LlmError::Api {
+        status,
+        body: message,
+    })
+}
+
 fn append_stream_content_delta(
     delta: &Value,
     content: &mut String,
@@ -488,10 +528,8 @@ impl Provider for OpenAiProvider {
                     // encode the failure as a normal `data:` payload and may
                     // still append `[DONE]`. Treating `[DONE]` alone as success
                     // in that case commits a partial answer and ends the turn.
-                    if val.get("error").is_some()
-                        || val.get("type").and_then(Value::as_str) == Some("error")
-                    {
-                        return Err(LlmError::Incomplete);
+                    if let Some(error) = in_band_stream_error(&val) {
+                        return Err(error);
                     }
                     // The final usage chunk carries an empty `choices` array, so
                     // parse usage before the choice guard would `continue` past it.
@@ -737,6 +775,8 @@ mod tests {
         );
     }
 
+    // #798: the upstream failure reason must survive to the user instead of
+    // collapsing into a generic "stream cut" message.
     #[tokio::test]
     async fn stream_rejects_in_band_error_even_when_relay_appends_done() {
         let (base_url, requests) = serve_responses(vec![(
@@ -753,9 +793,51 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, LlmError::Incomplete));
+        assert!(
+            matches!(&error, LlmError::Api { status: 200, body } if body == "upstream connection reset"),
+            "in-band error must carry the upstream message, got: {error}"
+        );
         assert_eq!(sink.text, ["partial"]);
         assert_eq!(requests.await.unwrap(), ["/chat/completions"]);
+    }
+
+    // #798: detail extraction across the payload shapes compatible relays use,
+    // without misreading `"error": null` on healthy chunks as a failure.
+    #[test]
+    fn in_band_stream_error_extracts_detail_and_spares_null_error_fields() {
+        let cases = [
+            (
+                json!({"error": {"message": "insufficient balance", "code": "1113"}}),
+                (200u16, "insufficient balance"),
+            ),
+            (
+                json!({"error": {"message": "rate limit reached", "code": 429}}),
+                (429, "rate limit reached"),
+            ),
+            (
+                json!({"error": "plain relay failure"}),
+                (200, "plain relay failure"),
+            ),
+            (
+                json!({"type": "error", "message": "upstream timeout"}),
+                (200, "upstream timeout"),
+            ),
+        ];
+        for (val, (want_status, want_body)) in cases {
+            match in_band_stream_error(&val) {
+                Some(LlmError::Api { status, body }) => {
+                    assert_eq!((status, body.as_str()), (want_status, want_body), "{val}");
+                }
+                other => panic!("{val} should be an Api error, got {other:?}"),
+            }
+        }
+        // A `"error": null` field beside normal deltas (some relays emit it on
+        // every chunk) must not fail the whole stream.
+        assert!(in_band_stream_error(
+            &json!({"error": null, "choices": [{"delta": {"content": "hi"}}]})
+        )
+        .is_none());
+        assert!(in_band_stream_error(&json!({"choices": []})).is_none());
     }
 
     #[tokio::test]
@@ -880,6 +962,44 @@ mod tests {
         let out = OpenAiProvider::sanitize(&msgs);
         assert_eq!(out[0]["tool_calls"].as_array().unwrap().len(), 1);
         assert_eq!(out[1]["tool_call_id"], "a");
+    }
+
+    // Context compaction truncates oversized arguments mid-string, and a
+    // `finish_reason: "length"` turn can persist a half-written call. Strict
+    // gateways re-parse history arguments and 400 ("Unterminated string") on
+    // such values, so the wire format must replace them with valid JSON.
+    #[test]
+    fn replaces_invalid_tool_arguments_with_empty_object() {
+        let mut truncated = call("a");
+        truncated.function.arguments =
+            "{\"path\":\"/tmp/long...[... tool arguments archived ...]".into();
+        let mut empty = call("b");
+        empty.function.arguments = String::new();
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![truncated, empty];
+        let msgs = vec![
+            asst,
+            Message::tool("a", "read", "ok"),
+            Message::tool("b", "read", "ok"),
+        ];
+        let out = OpenAiProvider::sanitize(&msgs);
+        let kept = out[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(kept[0]["function"]["arguments"], "{}");
+        assert_eq!(kept[1]["function"]["arguments"], "{}");
+    }
+
+    #[test]
+    fn keeps_valid_tool_arguments_verbatim() {
+        let mut valid = call("a");
+        valid.function.arguments = "{\"path\":\"/tmp/x\"}".into();
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![valid];
+        let msgs = vec![asst, Message::tool("a", "read", "ok")];
+        let out = OpenAiProvider::sanitize(&msgs);
+        assert_eq!(
+            out[0]["tool_calls"][0]["function"]["arguments"],
+            "{\"path\":\"/tmp/x\"}"
+        );
     }
 
     #[test]

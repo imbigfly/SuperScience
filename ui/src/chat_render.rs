@@ -8,7 +8,7 @@ use crate::text::{event_target_value, format_duration_ms, md_to_html, tool_card_
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// True for items whose `render_item` produces an empty view, so the thread
@@ -25,6 +25,7 @@ pub(crate) fn class_for(item: &ChatItem) -> &'static str {
         ChatItem::QueuedUser { .. } => "msg user queued",
         ChatItem::Assistant { text, .. } if text.starts_with("Error: ") => "tool-wrap",
         ChatItem::Assistant { .. } => "msg assistant",
+        ChatItem::BranchMerge { .. } => "branch-merge-card-row",
         ChatItem::Reasoning(_) => "msg reasoning",
         ChatItem::Tool { name, .. } if is_run_monitor_tool(name) => "tool-wrap run-monitor-wrap",
         ChatItem::Tool { name, .. } if is_image_generation_tool(name) => {
@@ -364,7 +365,10 @@ mod steps_title_tests {
 
     #[test]
     fn folds_the_run_duration_into_settled_step_counts() {
-        assert_eq!(steps_title(Locale::En, false, false, None, 1, None), "Ran 1 step");
+        assert_eq!(
+            steps_title(Locale::En, false, false, None, 1, None),
+            "Ran 1 step"
+        );
         assert_eq!(
             steps_title(Locale::En, false, false, None, 1, Some("2s")),
             "Ran 1 step · 2s"
@@ -390,11 +394,25 @@ mod steps_title_tests {
     #[test]
     fn explains_when_a_completed_tool_is_waiting_on_the_model() {
         assert_eq!(
-            steps_title(Locale::En, false, true, Some("The model is consulting its neurons…"), 1, None),
+            steps_title(
+                Locale::En,
+                false,
+                true,
+                Some("The model is consulting its neurons…"),
+                1,
+                None
+            ),
             "The model is consulting its neurons…"
         );
         assert_eq!(
-            steps_title(Locale::Zh, false, true, Some("模型正在和神经元商量…"), 1, None),
+            steps_title(
+                Locale::Zh,
+                false,
+                true,
+                Some("模型正在和神经元商量…"),
+                1,
+                None
+            ),
             "模型正在和神经元商量…"
         );
     }
@@ -441,15 +459,18 @@ pub(crate) fn render_steps_group(
             })
             .flatten();
         let waiting_for_model = live
-            && indices.iter().rev().filter_map(|index| items.get(*index)).find(|item| {
-                !matches!(item, ChatItem::Usage { .. } | ChatItem::Compaction { .. })
-            }).is_some_and(|item| match item {
-                ChatItem::Tool { ok: Some(_), .. } => true,
-                ChatItem::AcpTool { status, .. } => {
-                    status != "pending" && status != "in_progress"
-                }
-                _ => false,
-            });
+            && indices
+                .iter()
+                .rev()
+                .filter_map(|index| items.get(*index))
+                .find(|item| !matches!(item, ChatItem::Usage { .. } | ChatItem::Compaction { .. }))
+                .is_some_and(|item| match item {
+                    ChatItem::Tool { ok: Some(_), .. } => true,
+                    ChatItem::AcpTool { status, .. } => {
+                        status != "pending" && status != "in_progress"
+                    }
+                    _ => false,
+                });
         (n_tools, total_ms, now_line, waiting_for_model)
     });
     let total_ms =
@@ -463,16 +484,21 @@ pub(crate) fn render_steps_group(
         .then(|| total_label.clone())
         .flatten();
     let meta_label = inline_time.is_none().then_some(total_label).flatten();
-    let model_wait_variant =
-        group_id.bytes().fold(0usize, |sum, byte| sum + byte as usize) % 4;
+    let model_wait_variant = group_id
+        .bytes()
+        .fold(0usize, |sum, byte| sum + byte as usize)
+        % 4;
     let title = move || {
         let model_wait_message = waiting_for_model.then(|| {
-            t(locale.get(), match model_wait_variant {
-                0 => "chat.model_wait_1",
-                1 => "chat.model_wait_2",
-                2 => "chat.model_wait_3",
-                _ => "chat.model_wait_4",
-            })
+            t(
+                locale.get(),
+                match model_wait_variant {
+                    0 => "chat.model_wait_1",
+                    1 => "chat.model_wait_2",
+                    2 => "chat.model_wait_3",
+                    _ => "chat.model_wait_4",
+                },
+            )
         });
         steps_title(
             locale.get(),
@@ -1015,9 +1041,9 @@ pub(crate) fn RunMonitorCard(
     clock: ReadSignal<i64>,
     tool_ok: Option<bool>,
     tool_output: String,
+    dismissed_runs: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
     let locale = use_locale();
-    let dismissed = create_rw_signal(false);
     let fallback = serde_json::from_str::<RunRecord>(&tool_output).ok();
     let detail = create_rw_signal(fallback.clone());
     let lookup_id = run_id.clone();
@@ -1074,7 +1100,7 @@ pub(crate) fn RunMonitorCard(
     let env_open = create_rw_signal(false);
     view! {
         {move || {
-            if dismissed.get() {
+            if dismissed_runs.with(|ids| ids.contains(&run_id)) {
                 return view! {}.into_view();
             }
             let run = selected_run.get();
@@ -1145,7 +1171,7 @@ pub(crate) fn RunMonitorCard(
             let cancel_id = run.id.clone();
             let output_id = run.id.clone();
             view! {
-                <article class="run-monitor-card" data-testid="run-monitor-card" data-run-id=run.id>
+                <article class="run-monitor-card" data-testid="run-monitor-card" data-run-id=run.id.clone()>
                     <div class="run-monitor-head">
                         <span class="run-monitor-icon">{
                             if active {
@@ -1200,11 +1226,14 @@ pub(crate) fn RunMonitorCard(
                         })}
                         {dismissible.then(|| {
                             let tip = t(locale.get(), "runs.dismiss");
+                            let dismiss_id = run.id.clone();
                             view! {
                                 <button type="button" class="icon-btn run-monitor-dismiss"
                                     title=tip.clone()
                                     aria-label=tip
-                                    on:click=move |_| dismissed.set(true)
+                                    on:click=move |_| dismissed_runs.update(|ids| {
+                                        ids.insert(dismiss_id.clone());
+                                    })
                                 >{compose_icon("close")}</button>
                             }
                         })}
@@ -1271,6 +1300,8 @@ pub(crate) fn render_item(
     busy: ReadSignal<bool>,
     compact_assistant: bool,
     can_modify: bool,
+    can_branch: Signal<bool>,
+    show_actions: Signal<bool>,
     can_undo: Signal<bool>,
     show_explore: Signal<bool>,
     can_explore: Signal<bool>,
@@ -1280,6 +1311,7 @@ pub(crate) fn render_item(
     explore_turn_index: usize,
     on_explore: Callback<usize>,
     session_id: String,
+    on_memory: Callback<(String, usize)>,
     on_review: Callback<String>,
     on_approval: Callback<(String, bool, Option<String>, String)>,
     on_resume: Callback<usize>,
@@ -1290,6 +1322,8 @@ pub(crate) fn render_item(
     on_plan_decision: Callback<PlanDecision>,
     on_question_answer: Callback<(usize, Option<String>, String)>,
     on_review_jump: Callback<usize>,
+    dismissed_runs: RwSignal<HashSet<String>>,
+    on_branch_merge: Callback<(String, String)>,
 ) -> impl IntoView {
     let locale = use_locale();
     match item {
@@ -1300,6 +1334,7 @@ pub(crate) fn render_item(
                 ui_index=ui_index
                 busy=busy
                 can_modify=can_modify
+                can_branch=can_branch
                 on_copy=Callback::new(copy_text)
                 on_edit=Callback::new(on_edit)
                 on_branch=Callback::new(on_branch)
@@ -1344,7 +1379,15 @@ pub(crate) fn render_item(
             }.into_view()
         }
         ChatItem::Assistant { text, .. } if compact_assistant => {
-            let html = enrich_md_html(md_to_html(text), &[], &[], locale.get());
+            let project_root = use_context::<ReadSignal<Option<ProjectInfo>>>()
+                .and_then(|project| project.get().map(|project| project.root));
+            let html = enrich_md_html(
+                md_to_html(text),
+                &[],
+                &[],
+                locale.get(),
+                project_root.as_deref(),
+            );
             view! {
                 <div class="assistant-wrap">
                     <div class="body md compact-markdown"
@@ -1367,7 +1410,14 @@ pub(crate) fn render_item(
                 on_artifact=on_artifact
                 on_file=on_file
                 on_copy=Callback::new(copy_text)
+                on_memory=Callback::new({
+                    let session_id = session_id.clone();
+                    move |_| on_memory.call((session_id.clone(), explore_turn_index))
+                })
                 on_review=Callback::new(move |_| on_review.call(session_id.clone()))
+                on_branch=Callback::new(on_branch)
+                can_branch=can_branch
+                show_actions=show_actions
                 can_undo=can_undo
                 on_undo=on_undo
                 show_explore=show_explore
@@ -1376,6 +1426,25 @@ pub(crate) fn render_item(
                 on_explore=on_explore
             />
         }.into_view(),
+        ChatItem::BranchMerge { text, branch_title, .. } => {
+            let open_text = text.clone();
+            let title = if branch_title.trim().is_empty() {
+                t(locale.get(), "branch.merged_result")
+            } else {
+                branch_title.clone()
+            };
+            view! {
+                <button type="button" class="branch-merge-card" data-testid="branch-merge-card"
+                    on:click=move |_| on_branch_merge.call((title.clone(), open_text.clone()))>
+                    <span class="branch-merge-card-icon" aria-hidden="true">{compose_icon("branch")}</span>
+                    <span class="branch-merge-card-copy">
+                        <strong>{t(locale.get(), "branch.merged_result")}</strong>
+                        <span>{branch_title.clone()}</span>
+                    </span>
+                    <span class="branch-merge-card-open">{compose_icon("chevron-right")}</span>
+                </button>
+            }.into_view()
+        }
         ChatItem::Tool { name, .. } if name == "attempt_completion" => view! {}.into_view(),
         ChatItem::FileChanged(_) => view! {}.into_view(),
         ChatItem::Tool { name, ok, input, output, .. } if is_run_monitor_tool(name) => view! {
@@ -1385,6 +1454,7 @@ pub(crate) fn render_item(
                 clock=run_clock
                 tool_ok=*ok
                 tool_output=output.clone()
+                dismissed_runs=dismissed_runs
             />
         }.into_view(),
         ChatItem::Tool { name, ok, input, output, .. } if is_image_generation_tool(name) => view! {
@@ -1456,7 +1526,7 @@ pub(crate) fn render_item(
             );
             view! {
                 <div class="context-compaction-flag" class:auto=automatic data-testid="context-compaction-flag">
-                    <span class="gi doc" aria-hidden="true"></span>
+                    {compose_icon("doc")}
                     <span>{move || t(
                         locale.get(),
                         if automatic {

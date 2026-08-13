@@ -98,7 +98,7 @@ mod tests {
             .record_session_import("src-1", "f1", "/tmp/superscience-session-src-1.zip")
             .await
             .unwrap();
-        sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+        sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
             .bind(SESSION_IMPORTS_MIGRATION)
             .execute(&store.pool)
             .await

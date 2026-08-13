@@ -146,11 +146,7 @@ impl ProjectTransferProgress {
         }
     }
 
-    pub(crate) fn failed(
-        direction: &str,
-        project_id: Option<String>,
-        error: String,
-    ) -> Self {
+    pub(crate) fn failed(direction: &str, project_id: Option<String>, error: String) -> Self {
         Self {
             direction: direction.into(),
             stage: "failed".into(),
@@ -196,7 +192,10 @@ pub(crate) enum AgentEvent {
         frame_id: String,
         text: String,
     },
-    MessageBoundary {},
+    MessageBoundary {
+        frame_id: String,
+        seq: i64,
+    },
     Resources {
         frame_id: String,
         resources: Vec<MessageResource>,
@@ -265,7 +264,11 @@ pub(crate) enum AgentEvent {
         frame_id: String,
         chunk: String,
     },
-    Done { frame_id: String },
+    Done {
+        frame_id: String,
+        #[serde(default)]
+        stop_reason: Option<String>,
+    },
     Error {
         frame_id: String,
         message: String,
@@ -353,6 +356,11 @@ pub(crate) enum ChatItem {
         text: String,
         model: Option<String>,
         resources: Vec<MessageResource>,
+    },
+    BranchMerge {
+        text: String,
+        branch_id: String,
+        branch_title: String,
     },
     Reasoning(String),
     Tool {
@@ -528,6 +536,14 @@ impl ChatItem {
                 resources,
             } => {
                 (2u8, model, resources).hash(&mut h);
+                hash_text_sampled(&mut h, text);
+            }
+            Self::BranchMerge {
+                text,
+                branch_id,
+                branch_title,
+            } => {
+                (15u8, branch_id, branch_title).hash(&mut h);
                 hash_text_sampled(&mut h, text);
             }
             Self::Reasoning(s) => {
@@ -1060,6 +1076,45 @@ pub(crate) fn session_model_label(
     )
 }
 
+/// The profile a session resolves to right now: bound profile → active →
+/// first chat model. Shared by the effort/window getters and the composer
+/// effort dropdown.
+pub(crate) fn session_profile<'a>(
+    models: &'a [ModelProfile],
+    session_models: &HashMap<String, String>,
+    session_id: Option<&str>,
+) -> Option<&'a ModelProfile> {
+    let bound = session_id.and_then(|id| session_models.get(id));
+    models
+        .iter()
+        .find(|model| model.is_chat_model() && bound == Some(&model.id))
+        .or_else(|| {
+            models
+                .iter()
+                .find(|model| model.active && model.is_chat_model())
+        })
+        .or_else(|| models.iter().find(|model| model.is_chat_model()))
+}
+
+/// Effective effort for the active conversation. A value loaded from the
+/// frame wins; before that IPC read completes, fall back to the bound profile.
+/// An empty stored value means "no override" (inherit the profile again).
+pub(crate) fn session_reasoning_effort(
+    models: &[ModelProfile],
+    session_models: &HashMap<String, String>,
+    session_efforts: &HashMap<String, String>,
+    session_id: Option<&str>,
+) -> String {
+    if let Some(effort) = session_id.and_then(|id| session_efforts.get(id)) {
+        if !effort.is_empty() {
+            return effort.clone();
+        }
+    }
+    session_profile(models, session_models, session_id)
+        .map(|model| model.reasoning_effort.clone())
+        .unwrap_or_default()
+}
+
 /// Mirrors `models::effective_context_window` in src-tauri: a configured
 /// window below 4K counts as "unset" and falls back to 128K.
 pub(crate) fn effective_context_window(value: u64) -> u64 {
@@ -1085,15 +1140,7 @@ pub(crate) fn session_context_window(
     if bound.is_some_and(|id| id.starts_with("acp:")) {
         return None;
     }
-    models
-        .iter()
-        .find(|model| model.is_chat_model() && bound == Some(&model.id))
-        .or_else(|| {
-            models
-                .iter()
-                .find(|model| model.active && model.is_chat_model())
-        })
-        .or_else(|| models.iter().find(|model| model.is_chat_model()))
+    session_profile(models, session_models, session_id)
         .map(|model| effective_context_window(model.context_window))
 }
 
@@ -1114,7 +1161,7 @@ mod model_label_tests {
 
 #[cfg(test)]
 mod session_context_window_tests {
-    use super::{session_context_window, ModelProfile};
+    use super::{session_context_window, session_reasoning_effort, ModelProfile};
     use std::collections::HashMap;
 
     fn profile(id: &str, active: bool, context_window: u64) -> ModelProfile {
@@ -1142,6 +1189,39 @@ mod session_context_window_tests {
         assert_eq!(
             session_context_window(&models, &bindings, Some("s1")),
             Some(1_000_000)
+        );
+    }
+
+    #[test]
+    fn session_effort_override_wins_without_changing_profile() {
+        let mut active = profile("a", true, 128_000);
+        active.reasoning_effort = "max".into();
+        let mut bound = profile("b", false, 128_000);
+        bound.reasoning_effort = "max".into();
+        let models = vec![active, bound];
+        let bindings = HashMap::from([("s1".to_string(), "b".to_string())]);
+        let efforts = HashMap::from([("s1".to_string(), "high".to_string())]);
+
+        assert_eq!(
+            session_reasoning_effort(&models, &bindings, &efforts, Some("s1")),
+            "high"
+        );
+        assert_eq!(models[0].reasoning_effort, "max");
+        assert_eq!(models[1].reasoning_effort, "max");
+    }
+
+    #[test]
+    fn empty_effort_override_inherits_profile_again() {
+        let mut bound = profile("b", true, 128_000);
+        bound.reasoning_effort = "max".into();
+        let models = vec![bound];
+        let bindings = HashMap::from([("s1".to_string(), "b".to_string())]);
+        // Legacy rows and a just-cleared override both surface as "".
+        let efforts = HashMap::from([("s1".to_string(), String::new())]);
+
+        assert_eq!(
+            session_reasoning_effort(&models, &bindings, &efforts, Some("s1")),
+            "max"
         );
     }
 
@@ -1207,6 +1287,8 @@ pub(crate) struct ArtifactInfo {
     pub(crate) name: String,
     pub(crate) kind: String,
     pub(crate) path: String,
+    #[serde(default)]
+    pub(crate) location: Option<String>,
     pub(crate) ts: i64,
     #[serde(default)]
     pub(crate) project_id: Option<String>,
@@ -1220,6 +1302,8 @@ pub(crate) struct ArtifactInfo {
     pub(crate) size_bytes: Option<i64>,
     #[serde(default)]
     pub(crate) origin: Option<String>,
+    #[serde(default)]
+    pub(crate) logical_path: Option<String>,
 }
 
 /// Immutable item in the app-global library database. Source names are
@@ -1911,6 +1995,50 @@ pub(crate) struct SessionInfo {
     pub(crate) branched_from: Option<String>,
     #[serde(default)]
     pub(crate) pinned: bool,
+    #[serde(default)]
+    pub(crate) branch_state: Option<String>,
+    /// Persisted system prompt lags AGENTS.md / WISP.md; sidebar offers reload.
+    #[serde(default)]
+    pub(crate) stale_prompt: bool,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionBranchDeltaMessage {
+    pub(crate) seq: i64,
+    pub(crate) role: String,
+    pub(crate) text: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionBranchLink {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) source_session_id: String,
+    pub(crate) checkpoint_user_index: usize,
+    pub(crate) checkpoint_kind: String,
+    #[serde(default)]
+    pub(crate) merged: bool,
+    #[serde(default)]
+    pub(crate) merge_summary: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionBranchMergePreview {
+    pub(crate) main_session_id: String,
+    pub(crate) branch_session_id: String,
+    pub(crate) branch_title: String,
+    pub(crate) checkpoint_user_index: usize,
+    pub(crate) checkpoint_kind: String,
+    pub(crate) guard_hash: String,
+    pub(crate) new_message_count: usize,
+    pub(crate) messages: Vec<SessionBranchDeltaMessage>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionBranchMerge {
+    pub(crate) main_session_id: String,
+    pub(crate) branch_session_id: String,
+    pub(crate) summary_message_seq: i64,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1926,15 +2054,13 @@ pub(crate) struct Exploration {
     pub(crate) warnings_json: String,
     pub(crate) created_at: i64,
     pub(crate) updated_at: i64,
-    pub(crate) promoted_at: Option<i64>,
-    pub(crate) archived_at: Option<i64>,
-    pub(crate) discarded_at: Option<i64>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExplorationSummary {
     pub(crate) exploration: Exploration,
     pub(crate) source_frame_id: String,
+    pub(crate) checkpoint_user_index: usize,
     pub(crate) isolation_summary_json: String,
 }
 
@@ -1944,10 +2070,8 @@ impl ExplorationSummary {
             .ok()
             .and_then(|value| value.get("partial").and_then(serde_json::Value::as_bool))
             != Some(true)
-            && serde_json::from_str::<Vec<serde_json::Value>>(
-                &self.exploration.warnings_json,
-            )
-            .map_or(true, |warnings| warnings.is_empty())
+            && serde_json::from_str::<Vec<serde_json::Value>>(&self.exploration.warnings_json)
+                .map_or(true, |warnings| warnings.is_empty())
     }
 }
 
@@ -2042,9 +2166,7 @@ pub(crate) struct ExplorationPromotionPreview {
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ExplorationPromotionResult {
-    pub(crate) exploration: Exploration,
-    pub(crate) promotion_id: String,
-    pub(crate) adopted_frame_id: String,
+    pub(crate) mainline_frame_id: String,
 }
 
 /// One Codex CLI or Claude Code conversation offered by the import modal.
@@ -2129,6 +2251,10 @@ pub(crate) struct LoadedSessionPage {
     pub(crate) outline: Vec<SessionOutlineItem>,
     #[serde(default)]
     pub(crate) presentations: Vec<LoadedPresentation>,
+    #[serde(default)]
+    pub(crate) branches: Vec<SessionBranchLink>,
+    #[serde(default)]
+    pub(crate) branch_state: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -2163,6 +2289,11 @@ impl LoadedItem {
     pub(crate) fn into_chat(self) -> ChatItem {
         match self.role.as_str() {
             "user" => ChatItem::User(self.text),
+            "branch_merge" => ChatItem::BranchMerge {
+                text: self.text,
+                branch_id: self.input,
+                branch_title: self.tool_name.unwrap_or_default(),
+            },
             "reasoning" => ChatItem::Reasoning(self.text),
             "review" => serde_json::from_str(&self.text)
                 .map(ChatItem::Review)
@@ -2266,6 +2397,8 @@ pub(crate) struct Artifact {
     pub(crate) name: String,
     pub(crate) kind: &'static str,
     pub(crate) data: PreviewData,
+    /// Workspace-visible location when `data` points at an internal snapshot.
+    pub(crate) location: Option<String>,
     /// Transcript item that most recently produced or mentioned this artifact.
     pub(crate) source_item: usize,
     pub(crate) superseded: bool,
@@ -2664,6 +2797,45 @@ pub(crate) struct MemoryView {
     pub(crate) project_name: String,
     pub(crate) today_file: String,
     pub(crate) files: Vec<MemoryFile>,
+    #[serde(default)]
+    pub(crate) global_memories: Vec<GlobalMemory>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GlobalMemory {
+    pub(crate) id: String,
+    pub(crate) content: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AutoFailureAnalysisSettings {
+    pub(crate) enabled: bool,
+    pub(crate) failure_rate_threshold: u8,
+    pub(crate) minimum_failures: u16,
+}
+
+impl Default for AutoFailureAnalysisSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            failure_rate_threshold: 30,
+            minimum_failures: 2,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct TurnMemoryProposal {
+    pub(crate) session_id: String,
+    pub(crate) turn_index: usize,
+    pub(crate) scope: String,
+    pub(crate) content: String,
+    pub(crate) trigger: String,
+    pub(crate) tool_calls: usize,
+    pub(crate) failed_tool_calls: usize,
+    pub(crate) failure_rate: f64,
+    #[serde(default)]
+    pub(crate) global_memories: Vec<GlobalMemory>,
 }
 
 #[derive(Deserialize, Clone)]

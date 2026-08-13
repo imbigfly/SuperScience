@@ -1,11 +1,11 @@
 use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanelState};
 use crate::app_support::{
     allow_drop, build_conn_json, close_details_ancestor, compose_icon, conn_form_from_row,
-    context_capability_summary, drag_session_id, focus_element_soon,
-    format_relative_time, join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form,
-    quick_action_label, reviewer_backend_key, reviewer_backend_label,
-    reviewer_missing_acp_profile_id, set_reviewer_backend, settings_section_label,
-    settings_subpage_label, skill_matches_filter, start_session_drag, CRED_GROUPS,
+    context_capability_summary, drag_session_id, focus_element_soon, format_relative_time,
+    join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form, quick_action_label,
+    reviewer_backend_key, reviewer_backend_label, reviewer_missing_acp_profile_id,
+    set_reviewer_backend, settings_section_label, settings_subpage_label, skill_matches_filter,
+    start_session_drag, CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
@@ -445,31 +445,77 @@ fn settings_provider_defaults(provider: &str) -> (&'static str, &'static str) {
 
 /// Every effort value any supported provider understands; shown when the
 /// model is not in the curated table below.
-const ALL_EFFORT_VALUES: &[&str] = &[
+pub(crate) const ALL_EFFORT_VALUES: &[&str] = &[
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
 
-/// Curated reasoning-effort support per model family. `None` = unknown model
-/// (full list + "can't verify" hint); `Some(&[])` = the parameter is never
-/// sent for this provider, so only "default" makes sense.
+/// Curated reasoning-effort support per model family, per vendor docs as of
+/// 2026-08 (OpenAI reasoning guide, Anthropic effort docs, xAI reasoning
+/// docs, DeepSeek/Moonshot/Alibaba API references). `None` = unknown model
+/// (full list + "can't verify" hint); `Some(&[])` = the provider rejects the
+/// parameter for this model, so only "default" makes sense.
 /// ponytail: name-pattern table — no provider exposes a capability-discovery
-/// API for this; extend as new families matter.
-pub(crate) fn known_effort_values(provider: &str, model: &str) -> Option<&'static [&'static str]> {
-    if settings_provider_value(provider) == "anthropic" {
-        // anthropic.rs never forwards reasoning_effort.
-        return Some(&[]);
-    }
-    let m = model.to_ascii_lowercase();
-    if m.contains("codex-max") {
-        Some(&["low", "medium", "high", "xhigh"])
-    } else if m.contains("gpt-5.1") {
+/// API for this; extend as new families matter. Keep longer patterns above
+/// their shorter siblings ("claude-opus-4-5" before "claude-opus").
+pub(crate) fn known_effort_values(
+    _provider: &str,
+    model: &str,
+) -> Option<&'static [&'static str]> {
+    // Users write model names loosely ("opus-4.8", "claude-opus-4-8"), so
+    // match on a normalized form and don't require the vendor prefix.
+    let m = model.to_ascii_lowercase().replace(['.', '_'], "-");
+    if m.contains("gpt-5-pro") {
+        Some(&["high"])
+    } else if m.contains("codex-max") {
+        Some(&["none", "low", "medium", "high", "xhigh"])
+    } else if m.contains("gpt-5-1") {
         Some(&["none", "low", "medium", "high"])
+    } else if m.contains("gpt-5-6") {
+        Some(&["none", "low", "medium", "high", "xhigh", "max"])
+    } else if m.contains("gpt-5-2")
+        || m.contains("gpt-5-3")
+        || m.contains("gpt-5-4")
+        || m.contains("gpt-5-5")
+    {
+        Some(&["none", "low", "medium", "high", "xhigh"])
     } else if m.contains("gpt-5") {
         Some(&["minimal", "low", "medium", "high"])
+    } else if m.starts_with("o1-mini") || m.starts_with("o1-preview") {
+        Some(&[])
     } else if m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") {
+        Some(&["low", "medium", "high"])
+    } else if m.contains("opus-4-5") {
+        Some(&["low", "medium", "high"])
+    } else if m.contains("sonnet-4-5") || m.contains("haiku") {
+        // These reject the effort parameter with a 400.
+        Some(&[])
+    } else if m.contains("opus-4-6")
+        || m.contains("sonnet-4-6")
+        || m.contains("mythos-preview")
+    {
+        Some(&["low", "medium", "high", "max"])
+    } else if m.contains("opus")
+        || m.contains("sonnet")
+        || m.contains("fable")
+        || m.contains("mythos")
+    {
+        Some(&["low", "medium", "high", "xhigh", "max"])
+    } else if m.contains("grok-4-6") || m.contains("grok-4-20") {
+        Some(&["low", "medium", "high", "xhigh"])
+    } else if m.contains("grok-4") {
         Some(&["low", "medium", "high"])
     } else if m.contains("grok") {
         Some(&["low", "high"])
+    } else if m.contains("deepseek-v4") {
+        // medium/xhigh are silently down-mapped to high; don't offer them.
+        Some(&["low", "high", "max"])
+    } else if m.contains("kimi-k3") {
+        Some(&["low", "high", "max"])
+    } else if m.contains("kimi-k2") {
+        // k2.x only toggles thinking on/off; no effort parameter.
+        Some(&[])
+    } else if m.contains("qwen3-8-max") {
+        Some(&["low", "medium", "xhigh"])
     } else {
         None
     }
@@ -483,21 +529,72 @@ mod effort_values_tests {
     fn maps_families_and_leaves_unknown_open() {
         assert_eq!(
             known_effort_values("anthropic", "claude-sonnet-5"),
+            Some(&["low", "medium", "high", "xhigh", "max"][..])
+        );
+        assert_eq!(
+            known_effort_values("anthropic", "claude-opus-4-5"),
+            Some(&["low", "medium", "high"][..])
+        );
+        assert_eq!(
+            known_effort_values("anthropic", "claude-sonnet-4-6"),
+            Some(&["low", "medium", "high", "max"][..])
+        );
+        assert_eq!(
+            known_effort_values("anthropic", "claude-haiku-4-5"),
+            Some(&[][..])
+        );
+        assert_eq!(
+            known_effort_values("anthropic", "claude-sonnet-4-5"),
             Some(&[][..])
         );
         assert_eq!(
             known_effort_values("openai", "gpt-5.1-codex-max"),
-            Some(&["low", "medium", "high", "xhigh"][..])
+            Some(&["none", "low", "medium", "high", "xhigh"][..])
         );
         assert_eq!(
             known_effort_values("openai_responses", "gpt-5.1"),
             Some(&["none", "low", "medium", "high"][..])
         );
         assert_eq!(
+            known_effort_values("openai_responses", "gpt-5.6"),
+            Some(&["none", "low", "medium", "high", "xhigh", "max"][..])
+        );
+        assert_eq!(
+            known_effort_values("openai", "gpt-5-pro"),
+            Some(&["high"][..])
+        );
+        assert_eq!(
             known_effort_values("openai", "o3-mini"),
             Some(&["low", "medium", "high"][..])
         );
-        assert_eq!(known_effort_values("openai", "deepseek-v4-pro"), None);
+        assert_eq!(known_effort_values("openai", "o1-mini"), Some(&[][..]));
+        // Loose user spelling (no vendor prefix, dots) matches the same family.
+        assert_eq!(
+            known_effort_values("anthropic", "opus-4.8"),
+            Some(&["low", "medium", "high", "xhigh", "max"][..])
+        );
+        assert_eq!(
+            known_effort_values("openai", "grok-4.6"),
+            Some(&["low", "medium", "high", "xhigh"][..])
+        );
+        assert_eq!(
+            known_effort_values("openai", "grok-4"),
+            Some(&["low", "medium", "high"][..])
+        );
+        assert_eq!(
+            known_effort_values("openai", "deepseek-v4-pro"),
+            Some(&["low", "high", "max"][..])
+        );
+        assert_eq!(
+            known_effort_values("openai", "kimi-k3"),
+            Some(&["low", "high", "max"][..])
+        );
+        assert_eq!(known_effort_values("openai", "kimi-k2.5"), Some(&[][..]));
+        assert_eq!(
+            known_effort_values("openai", "qwen3.8-max-preview"),
+            Some(&["low", "medium", "xhigh"][..])
+        );
+        assert_eq!(known_effort_values("openai", "some-future-model"), None);
     }
 }
 
@@ -693,6 +790,8 @@ pub(super) struct SettingsViewState {
     pub(super) dark_palette: RwSignal<String>,
     pub(super) ui_font_size: RwSignal<u16>,
     pub(super) code_font_size: RwSignal<u16>,
+    pub(super) ui_font_family: RwSignal<String>,
+    pub(super) code_font_family: RwSignal<String>,
     pub(super) selection_popup_enabled: RwSignal<bool>,
     pub(super) send_with_modifier: RwSignal<bool>,
     pub(super) update_check_enabled: RwSignal<bool>,
@@ -797,6 +896,8 @@ pub(super) fn SettingsView(
         dark_palette,
         ui_font_size,
         code_font_size,
+        ui_font_family,
+        code_font_family,
         selection_popup_enabled,
         send_with_modifier,
         update_check_enabled,
@@ -861,9 +962,14 @@ pub(super) fn SettingsView(
     let acp_form_open = create_memo(move |_| acp_form.get().is_some());
     let memory_projects = create_rw_signal(Vec::<ProjectSummary>::new());
     let memory_project_menu_open = create_rw_signal(false);
+    let global_memory_edit_id = create_rw_signal(None::<String>);
+    let global_memory_editor = create_rw_signal(String::new());
+    let global_memory_busy = create_rw_signal(false);
     create_effect(move |_| {
         if settings_section.get() != "memory" {
             memory_project_menu_open.set(false);
+            global_memory_edit_id.set(None);
+            global_memory_editor.set(String::new());
             return;
         }
         spawn_local(async move {
@@ -933,6 +1039,26 @@ pub(super) fn SettingsView(
     let quick_action_form = create_rw_signal(None::<QuickAction>);
     let quick_action_busy = create_rw_signal(false);
     let quick_action_error = create_rw_signal(None::<String>);
+    // Specialist skill whitelist picker: search query + filtered results, so a
+    // large skill library never renders as an unbounded checkbox list.
+    let specialist_skill_query = create_rw_signal(String::new());
+    let specialist_filtered_skills = create_memo(move |_| {
+        let query = specialist_skill_query.get();
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        skills_list
+            .get()
+            .into_iter()
+            .filter(|s| {
+                s.name.to_lowercase().contains(&query)
+                    || s.description.to_lowercase().contains(&query)
+                    || s.scope.to_lowercase().contains(&query)
+                    || s.tags.iter().any(|tag| tag.to_lowercase().contains(&query))
+            })
+            .collect::<Vec<_>>()
+    });
     window_capture_escape(move || {
         if !show_settings.get_untracked() {
             return false;
@@ -2247,7 +2373,7 @@ pub(super) fn SettingsView(
                                             <span>{t(locale.get(), "appearance.ui_font_size_hint")}</span>
                                         </div>
                                         <label class="font-size-control">
-                                            <input type="range" min="12" max="18" step="1"
+                                            <input type="range" min="0" max="30" step="1"
                                                 aria-label=t(locale.get(), "appearance.ui_font_size")
                                                 prop:value=move || ui_font_size.get().to_string()
                                                 on:input=move |ev| ui_font_size.set(event_target_value(&ev).parse().unwrap_or(14)) />
@@ -2256,16 +2382,38 @@ pub(super) fn SettingsView(
                                     </div>
                                     <div class="appearance-config-row">
                                         <div>
+                                            <strong>{t(locale.get(), "appearance.ui_font_family")}</strong>
+                                            <span>{t(locale.get(), "appearance.ui_font_family_hint")}</span>
+                                        </div>
+                                        <input type="text" class="appearance-font-input" data-testid="appearance-ui-font"
+                                            aria-label=t(locale.get(), "appearance.ui_font_family")
+                                            placeholder="Inter"
+                                            prop:value=move || ui_font_family.get()
+                                            on:input=move |ev| ui_font_family.set(event_target_value(&ev)) />
+                                    </div>
+                                    <div class="appearance-config-row">
+                                        <div>
                                             <strong>{t(locale.get(), "appearance.code_font_size")}</strong>
                                             <span>{t(locale.get(), "appearance.code_font_size_hint")}</span>
                                         </div>
                                         <label class="font-size-control">
-                                            <input type="range" min="10" max="18" step="1"
+                                            <input type="range" min="0" max="30" step="1"
                                                 aria-label=t(locale.get(), "appearance.code_font_size")
                                                 prop:value=move || code_font_size.get().to_string()
                                                 on:input=move |ev| code_font_size.set(event_target_value(&ev).parse().unwrap_or(12)) />
                                             <output>{move || format!("{} px", code_font_size.get())}</output>
                                         </label>
+                                    </div>
+                                    <div class="appearance-config-row">
+                                        <div>
+                                            <strong>{t(locale.get(), "appearance.code_font_family")}</strong>
+                                            <span>{t(locale.get(), "appearance.code_font_family_hint")}</span>
+                                        </div>
+                                        <input type="text" class="appearance-font-input" data-testid="appearance-code-font"
+                                            aria-label=t(locale.get(), "appearance.code_font_family")
+                                            placeholder="JetBrains Mono"
+                                            prop:value=move || code_font_family.get()
+                                            on:input=move |ev| code_font_family.set(event_target_value(&ev)) />
                                     </div>
                                 </section>
                             }
@@ -3270,23 +3418,84 @@ pub(super) fn SettingsView(
                                             {move || specialist_form.get().filter(|f| f.skills.is_some()).map(|_| view! {
                                                 <span class="hint span-2">{move || t(locale.get(), "specialists.skills.whitelist_hint")}</span>
                                             })}
-                                            {move || {
-                                                let whitelist = specialist_form.get().and_then(|f| f.skills);
-                                                whitelist.map(|list| {
-                                                    let list = std::rc::Rc::new(list);
-                                                    view! {
-                                                        <div class="span-2 settings-form-grid">
-                                                            {move || skills_list.get().into_iter().map(|s| {
+                                            {move || specialist_form.get().is_some_and(|f| f.skills.is_some()).then(|| view! {
+                                                <div class="span-2 dynamic-skill-picker specialist-skill-picker" data-testid="specialist-skill-picker">
+                                                    {move || {
+                                                        let selected = specialist_form.get()
+                                                            .and_then(|f| f.skills)
+                                                            .unwrap_or_default();
+                                                        (!selected.is_empty()).then(|| view! {
+                                                            <div class="dynamic-skill-selected" data-testid="specialist-selected-skills">
+                                                                <For each=move || specialist_form.get()
+                                                                        .and_then(|f| f.skills)
+                                                                        .unwrap_or_default()
+                                                                    key=|name| name.clone()
+                                                                    children=move |name| {
+                                                                        let remove_name = name.clone();
+                                                                        view! {
+                                                                            <button type="button" data-testid="specialist-selected-skill"
+                                                                                aria-label=tf(
+                                                                                    locale.get(),
+                                                                                    "specialists.skills.remove",
+                                                                                    &[("skill", &remove_name)],
+                                                                                )
+                                                                                on:click=move |_| specialist_form.update(|o| if let Some(o) = o {
+                                                                                    if let Some(cur) = o.skills.as_mut() {
+                                                                                        cur.retain(|n| n != &remove_name);
+                                                                                    }
+                                                                                })>
+                                                                                <span>{name}</span>
+                                                                                {compose_icon("close")}
+                                                                            </button>
+                                                                        }
+                                                                    }
+                                                                />
+                                                            </div>
+                                                        })
+                                                    }}
+                                                    <input type="search" class="dynamic-skill-search"
+                                                        data-testid="specialist-skill-search"
+                                                        autocomplete="off"
+                                                        prop:value=move || specialist_skill_query.get()
+                                                        prop:placeholder=move || t(locale.get(), "specialists.skills.search")
+                                                        aria-label=move || t(locale.get(), "specialists.skills.search")
+                                                        on:input=move |ev| specialist_skill_query.set(event_target_value(&ev)) />
+                                                    <div class="dynamic-skill-results" data-testid="specialist-skill-results">
+                                                        {move || {
+                                                            if specialist_skill_query.get().trim().is_empty() {
+                                                                view! {
+                                                                    <span class="dynamic-skill-hint">{tf(
+                                                                        locale.get(),
+                                                                        "specialists.skills.search_hint",
+                                                                        &[("count", &skills_list.get().len().to_string())],
+                                                                    )}</span>
+                                                                }.into_view()
+                                                            } else if specialist_filtered_skills.get().is_empty() {
+                                                                view! {
+                                                                    <span class="dynamic-skill-hint">
+                                                                        {t(locale.get(), "specialists.skills.no_results")}
+                                                                    </span>
+                                                                }.into_view()
+                                                            } else {
+                                                                ().into_view()
+                                                            }
+                                                        }}
+                                                        <For each=move || specialist_filtered_skills.get()
+                                                            key=|s| s.name.clone()
+                                                            children=move |s| {
                                                                 let name = s.name.clone();
                                                                 let name_checked = name.clone();
-                                                                let checked = list.contains(&name);
                                                                 view! {
-                                                                    <label class="settings-check">
+                                                                    <label class="dynamic-skill-option" title=s.description.clone()
+                                                                        data-testid="specialist-skill-option">
                                                                         <input type="checkbox"
-                                                                            prop:checked=checked
+                                                                            prop:checked=move || specialist_form.get()
+                                                                                .and_then(|f| f.skills.clone())
+                                                                                .unwrap_or_default()
+                                                                                .contains(&name_checked)
                                                                             on:change=move |ev| {
                                                                                 let on = event_target_checked(&ev);
-                                                                                let name = name_checked.clone();
+                                                                                let name = name.clone();
                                                                                 specialist_form.update(|o| if let Some(o) = o {
                                                                                     let mut cur = o.skills.clone().unwrap_or_default();
                                                                                     if on {
@@ -3297,14 +3506,15 @@ pub(super) fn SettingsView(
                                                                                     o.skills = Some(cur);
                                                                                 });
                                                                             } />
-                                                                        <span>{name}</span>
+                                                                        <span>{s.name}</span>
+                                                                        <small>{s.scope}</small>
                                                                     </label>
                                                                 }
-                                                            }).collect_view()}
-                                                        </div>
-                                                    }
-                                                })
-                                            }}
+                                                            }
+                                                        />
+                                                    </div>
+                                                </div>
+                                            })}
                                         </div>
                                     </div>
                                     {move || model_form_msg.get().map(|(ok, text)| view! {
@@ -3337,6 +3547,7 @@ pub(super) fn SettingsView(
                                     <button type="button" on:click=move |ev| {
                                         close_details_ancestor(&ev);
                                         model_form_msg.set(None);
+                                        specialist_skill_query.set(String::new());
                                         specialist_form.set(Some(Specialist {
                                             id: String::new(),
                                             name: String::new(),
@@ -3365,6 +3576,7 @@ pub(super) fn SettingsView(
                                             <div class="settings-list-row settings-list-row-link"
                                                 on:click=move |_| {
                                                     model_form_msg.set(None);
+                                                    specialist_skill_query.set(String::new());
                                                     specialist_form.set(Some(edit.clone()));
                                                 }>
                                                 <div class="settings-list-main">
@@ -3391,6 +3603,7 @@ pub(super) fn SettingsView(
                                             <div class="settings-list-row settings-list-row-link"
                                                 on:click=move |_| {
                                                     model_form_msg.set(None);
+                                                    specialist_skill_query.set(String::new());
                                                     specialist_form.set(Some(edit.clone()));
                                                 }>
                                                 <div class="settings-list-main">
@@ -3611,6 +3824,7 @@ pub(super) fn SettingsView(
                                     </div>
                                 </div>
                                 <div class="settings-toolbar-actions memory-toolbar-actions">
+                                    <span class="memory-toggle-label">{move || t(locale.get(), "memory.enabled_label")}</span>
                                     <label class="toggle" title=move || t(locale.get(), "settings.nav.memory")>
                                         <input type="checkbox" prop:checked=move || memory_view.get().map(|v| v.enabled).unwrap_or(true)
                                             on:change=move |ev| {
@@ -3697,11 +3911,12 @@ pub(super) fn SettingsView(
                                         view! {
                                             <div class="settings-list-row settings-list-row-link"
                                                 on:click=move |_| load_memory_file.call(pick.clone())>
+                                                <span class="memory-note-icon" aria-hidden="true">{compose_icon("doc")}</span>
                                                 <div class="settings-list-main">
                                                     <span class="settings-list-title">{f.name.clone()}</span>
-                                                    <span class="settings-list-sub">{format_bytes(f.bytes)}</span>
                                                 </div>
                                                 <div class="settings-list-actions">
+                                                    <span class="memory-note-size">{format_bytes(f.bytes)}</span>
                                                     <span class="settings-list-chevron" aria-hidden="true">"›"</span>
                                                 </div>
                                             </div>
@@ -3711,7 +3926,181 @@ pub(super) fn SettingsView(
                                 {move || {
                                     let empty = memory_view.get().map(|v| v.files.is_empty()).unwrap_or(true);
                                     empty.then(|| view! {
-                                        <p class="model-empty-hint">{move || t(locale.get(), "memory.empty")}</p>
+                                        <div class="memory-empty">
+                                            <span class="memory-empty-icon" aria-hidden="true">{compose_icon("doc")}</span>
+                                            <span>{move || t(locale.get(), "memory.empty")}</span>
+                                        </div>
+                                    })
+                                }}
+                            </div>
+                            <div class="cred-group-heading memory-global-heading">
+                                <span class="conn-group-label">{move || t(locale.get(), "memory.global_scope")}</span>
+                                <button type="button" class="settings-add-btn memory-global-add-btn"
+                                    data-testid="global-memory-add"
+                                    disabled=move || global_memory_busy.get()
+                                    on:click=move |_| {
+                                        global_memory_edit_id.set(Some(String::new()));
+                                        global_memory_editor.set(String::new());
+                                        memory_msg.set(None);
+                                    }>{move || t(locale.get(), "memory.global_add")}</button>
+                            </div>
+                            <p class="model-empty-hint memory-global-timing">
+                                {move || t(locale.get(), "memory.global_timing_hint")}
+                            </p>
+                            {move || global_memory_edit_id.get().map(|id| {
+                                let save_id = id.clone();
+                                view! {
+                                    <div class="global-memory-editor" data-testid="global-memory-editor">
+                                        <textarea class="memory-editor-text"
+                                            aria-label=move || t(locale.get(), "memory.proposal.content")
+                                            prop:value=move || global_memory_editor.get()
+                                            disabled=move || global_memory_busy.get()
+                                            on:input=move |event| global_memory_editor.set(event_target_value(&event))></textarea>
+                                        <div class="row">
+                                            <button type="button"
+                                                disabled=move || global_memory_busy.get()
+                                                on:click=move |_| {
+                                                    global_memory_edit_id.set(None);
+                                                    global_memory_editor.set(String::new());
+                                                }>{move || t(locale.get(), "settings.cancel")}</button>
+                                            <button type="button" class="primary"
+                                                disabled=move || global_memory_busy.get()
+                                                    || global_memory_editor.get().trim().is_empty()
+                                                on:click=move |_| {
+                                                    let id = save_id.clone();
+                                                    let content = global_memory_editor.get_untracked().trim().to_string();
+                                                    if content.is_empty() {
+                                                        memory_msg.set(Some((false, t(
+                                                            locale.get_untracked(),
+                                                            "memory.proposal.empty",
+                                                        ).into())));
+                                                        return;
+                                                    }
+                                                    global_memory_busy.set(true);
+                                                    spawn_local(async move {
+                                                        if id.is_empty() {
+                                                            let arg = to_value(&serde_json::json!({
+                                                                "content": content.clone(),
+                                                            })).unwrap();
+                                                            match invoke_checked("create_global_memory", arg).await {
+                                                                Ok(value) => {
+                                                                    match serde_wasm_bindgen::from_value::<GlobalMemory>(value) {
+                                                                        Ok(memory) => {
+                                                                            memory_view.update(|view| {
+                                                                                if let Some(view) = view {
+                                                                                    view.global_memories.insert(0, memory);
+                                                                                }
+                                                                            });
+                                                                            global_memory_edit_id.set(None);
+                                                                            global_memory_editor.set(String::new());
+                                                                            memory_msg.set(Some((true, t(
+                                                                                locale.get_untracked(),
+                                                                                "memory.global_created",
+                                                                            ).into())));
+                                                                        }
+                                                                        Err(error) => memory_msg.set(Some((false, error.to_string()))),
+                                                                    }
+                                                                }
+                                                                Err(error) => memory_msg.set(Some((false, js_error_text(error)))),
+                                                            }
+                                                            global_memory_busy.set(false);
+                                                            return;
+                                                        }
+                                                        let arg = to_value(&serde_json::json!({
+                                                            "id": id.clone(),
+                                                            "content": content.clone(),
+                                                        })).unwrap();
+                                                        match invoke_checked("update_global_memory", arg).await {
+                                                            Ok(_) => {
+                                                                memory_view.update(|view| {
+                                                                    if let Some(view) = view {
+                                                                        if let Some(memory) = view.global_memories
+                                                                            .iter_mut()
+                                                                            .find(|memory| memory.id == id)
+                                                                        {
+                                                                            memory.content = content;
+                                                                        }
+                                                                    }
+                                                                });
+                                                                global_memory_edit_id.set(None);
+                                                                global_memory_editor.set(String::new());
+                                                                memory_msg.set(Some((true, t(
+                                                                    locale.get_untracked(),
+                                                                    "memory.global_updated",
+                                                                ).into())));
+                                                            }
+                                                            Err(error) => memory_msg.set(Some((false, js_error_text(error)))),
+                                                        }
+                                                        global_memory_busy.set(false);
+                                                    });
+                                                }>{move || t(locale.get(), "memory.global_save")}</button>
+                                        </div>
+                                    </div>
+                                }
+                            })}
+                            <div class="settings-list" data-testid="global-memories">
+                                <For each=move || memory_view.get().map(|v| v.global_memories).unwrap_or_default()
+                                    key=|memory| (memory.id.clone(), memory.content.clone()) let:memory>
+                                    {
+                                        let id = memory.id.clone();
+                                        let edit_id = memory.id.clone();
+                                        let edit_content = memory.content.clone();
+                                        view! {
+                                            <div class="settings-list-row">
+                                                <div class="settings-list-main">
+                                                    <span class="settings-list-title global-memory-content">{memory.content}</span>
+                                                </div>
+                                                <div class="settings-list-actions">
+                                                    <button type="button" class="settings-list-edit"
+                                                        aria-label=move || t(locale.get(), "memory.global_edit")
+                                                        title=move || t(locale.get(), "memory.global_edit")
+                                                        on:click=move |_| {
+                                                            global_memory_edit_id.set(Some(edit_id.clone()));
+                                                            global_memory_editor.set(edit_content.clone());
+                                                            memory_msg.set(None);
+                                                        }>{compose_icon("edit")}</button>
+                                                    <button type="button" class="settings-list-remove"
+                                                        aria-label=move || t(locale.get(), "memory.global_delete")
+                                                        title=move || t(locale.get(), "memory.global_delete")
+                                                        on:click=move |_| {
+                                                            let id = id.clone();
+                                                            spawn_local(async move {
+                                                                let arg = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
+                                                                match invoke_checked("delete_global_memory", arg).await {
+                                                                    Ok(_) => {
+                                                                        memory_view.update(|view| {
+                                                                            if let Some(view) = view {
+                                                                                view.global_memories.retain(|memory| memory.id != id);
+                                                                            }
+                                                                        });
+                                                                        if global_memory_edit_id.get_untracked().as_deref() == Some(id.as_str()) {
+                                                                            global_memory_edit_id.set(None);
+                                                                            global_memory_editor.set(String::new());
+                                                                        }
+                                                                        memory_msg.set(Some((true, t(
+                                                                            locale.get_untracked(),
+                                                                            "memory.global_deleted",
+                                                                        ).into())));
+                                                                    }
+                                                                    Err(error) => memory_msg.set(Some((false, js_error_text(error)))),
+                                                                }
+                                                            });
+                                                        }>{compose_icon("close")}</button>
+                                                </div>
+                                            </div>
+                                        }
+                                    }
+                                </For>
+                                {move || {
+                                    let empty = memory_view
+                                        .get()
+                                        .map(|view| view.global_memories.is_empty())
+                                        .unwrap_or(true);
+                                    empty.then(|| view! {
+                                        <div class="memory-empty">
+                                            <span class="memory-empty-icon" aria-hidden="true">{compose_icon("doc")}</span>
+                                            <span>{move || t(locale.get(), "memory.global_empty")}</span>
+                                        </div>
                                     })
                                 }}
                             </div>
@@ -5158,7 +5547,10 @@ mod model_limit_tests {
     fn known_model_limits_reports_documented_ceiling() {
         // Longer prefixes win: glm-5.2 must not resolve through glm-5.
         assert_eq!(known_model_limits("GLM-5.2"), Some((131_072, 1_000_000)));
-        assert_eq!(known_model_limits("deepseek-v4-pro"), Some((384_000, 1_000_000)));
+        assert_eq!(
+            known_model_limits("deepseek-v4-pro"),
+            Some((384_000, 1_000_000))
+        );
         assert_eq!(known_model_limits("totally-unknown"), None);
     }
 }

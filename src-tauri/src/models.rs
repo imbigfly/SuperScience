@@ -549,6 +549,23 @@ pub async fn session_label(store: &superscience_store::Store, frame_id: &str) ->
         .unwrap_or_default()
 }
 
+/// Effective reasoning effort for a conversation: an explicit frame override
+/// wins, otherwise the bound model profile supplies its configured default.
+/// An empty stored override (written by older builds for "provider default")
+/// counts as no override, so the profile default applies again.
+pub async fn session_reasoning_effort(
+    store: &superscience_store::Store,
+    frame_id: &str,
+    profile_default: &str,
+) -> String {
+    if let Ok(Some(effort)) = store.frame_reasoning_effort(frame_id).await {
+        if !effort.is_empty() {
+            return effort;
+        }
+    }
+    profile_default.to_string()
+}
+
 /// Key for a profile, falling back to the legacy `api_key` secret for the
 /// migrated "default" profile (so a not-yet-re-saved default still works).
 fn key_for(id: &str) -> String {
@@ -884,6 +901,30 @@ pub async fn get_session_model(
     Ok(session_profile_id(&state.store, &session_id).await)
 }
 
+#[tauri::command]
+pub async fn get_session_reasoning_effort(
+    state: State<'_, crate::AppState>,
+    window: tauri::WebviewWindow,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    let project = state.active(window.label());
+    if state
+        .store
+        .frame_project_id(&session_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_deref()
+        != Some(project.id.as_str())
+    {
+        return Err("Session not found".into());
+    }
+    state
+        .store
+        .frame_reasoning_effort(&session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Upsert a profile. An empty `id` creates a new one; a non-empty `key` updates
 /// the keyring (a blank key leaves the stored one untouched).
 #[tauri::command]
@@ -1076,7 +1117,12 @@ pub async fn set_active_model(
         let (project, scope) =
             crate::exploration_commands::working_project_for_frame(&state, &session_id).await?;
         let _activity = state.begin_project_activity(&project.id)?;
-        crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
+        let _project_write_locked = crate::exploration_commands::conversation_project_write_locked(
+            &state.store,
+            &scope,
+            Some(&session_id),
+        )
+        .await?;
         state
             .store
             .set_frame_model(&session_id, &project.id, &id)
@@ -1091,6 +1137,46 @@ pub async fn set_active_model(
             .map_err(|e| e.to_string())?;
     }
     Ok(decorated(&state.store).await)
+}
+
+#[tauri::command]
+pub async fn set_session_reasoning_effort(
+    state: State<'_, crate::AppState>,
+    effort: String,
+    session_id: String,
+) -> Result<(), String> {
+    let effort = effort.trim();
+    if !effort.is_empty()
+        && !matches!(
+            effort,
+            "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+        )
+    {
+        return Err("Unknown reasoning effort.".into());
+    }
+    let (project, scope) =
+        crate::exploration_commands::working_project_for_frame(&state, &session_id).await?;
+    let _activity = state.begin_project_activity(&project.id)?;
+    let _project_write_locked = crate::exploration_commands::conversation_project_write_locked(
+        &state.store,
+        &scope,
+        Some(&session_id),
+    )
+    .await?;
+    // Empty effort clears the override: the session inherits the bound model
+    // profile again instead of pinning "provider default" forever.
+    let override_value = if effort.is_empty() {
+        None
+    } else {
+        Some(effort)
+    };
+    state
+        .store
+        .set_frame_reasoning_effort(&session_id, &project.id, override_value)
+        .await
+        .map_err(|error| error.to_string())?;
+    crate::clear_session_agent(&state, &session_id).await;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1202,6 +1288,67 @@ mod tests {
 
         assert_eq!(session_profile_id(&store, "a").await, "m2");
         assert_eq!(session_profile_id(&store, "b").await, "m1");
+        drop(store);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn session_reasoning_override_does_not_change_profile_or_sibling() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_session_reasoning_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        store.create_project("p", "project", "").await.unwrap();
+        let mut profile = test_profile("m1", "reasoner", "model-1");
+        profile.reasoning_effort = "max".into();
+        save_raw(&store, &[profile]).await.unwrap();
+        store.set_setting(ACTIVE_KEY, "m1").await.unwrap();
+        store.create_frame("a", "p", "OPERON", "m1").await.unwrap();
+        store.create_frame("b", "p", "OPERON", "m1").await.unwrap();
+
+        store
+            .set_frame_reasoning_effort("a", "p", Some("high"))
+            .await
+            .unwrap();
+
+        assert_eq!(session_reasoning_effort(&store, "a", "max").await, "high");
+        assert_eq!(session_reasoning_effort(&store, "b", "max").await, "max");
+        assert_eq!(profile_llm(&store, "m1").await.unwrap().5, "max");
+        drop(store);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn cleared_or_empty_session_override_inherits_profile() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_session_reasoning_clear_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        store.create_project("p", "project", "").await.unwrap();
+        store.create_frame("a", "p", "OPERON", "m1").await.unwrap();
+        store.create_frame("b", "p", "OPERON", "m1").await.unwrap();
+
+        store
+            .set_frame_reasoning_effort("a", "p", Some("high"))
+            .await
+            .unwrap();
+        assert_eq!(session_reasoning_effort(&store, "a", "max").await, "high");
+        // Clearing the override (selecting "default" in the composer) makes
+        // the session follow the profile default again.
+        store
+            .set_frame_reasoning_effort("a", "p", None)
+            .await
+            .unwrap();
+        assert_eq!(session_reasoning_effort(&store, "a", "max").await, "max");
+        // Legacy rows hold Some("") for "provider default"; they must not pin
+        // the session away from the profile either.
+        store
+            .set_frame_reasoning_effort("b", "p", Some(""))
+            .await
+            .unwrap();
+        assert_eq!(session_reasoning_effort(&store, "b", "max").await, "max");
         drop(store);
         let _ = std::fs::remove_file(&tmp);
     }

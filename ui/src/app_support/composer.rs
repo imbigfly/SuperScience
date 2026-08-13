@@ -308,7 +308,7 @@ fn merge_finished_uploads(items: &mut Vec<ComposerAttachment>, results: Vec<Uplo
             .unwrap_or_else(|| "file".into());
         if result.ok {
             if let Some(info) = result.info {
-                let path = info.path;
+                let path = info.location.unwrap_or(info.path);
                 if !ready_paths.insert(path.clone()) {
                     continue;
                 }
@@ -623,9 +623,7 @@ pub(crate) fn scroll_picker_item(selector: &str, index: usize) {
 
 #[cfg(test)]
 mod mention_tests {
-    use super::{
-        active_composer_trigger, composer_picker_accepts_edit, ComposerPickerMode,
-    };
+    use super::{active_composer_trigger, composer_picker_accepts_edit, ComposerPickerMode};
 
     #[test]
     fn detects_trigger_at_the_caret() {
@@ -679,11 +677,7 @@ mod mention_tests {
             "insertFromComposition",
         ] {
             assert!(composer_picker_accepts_edit(
-                input_type,
-                None,
-                None,
-                3,
-                true
+                input_type, None, None, 3, true
             ));
         }
         assert!(!composer_picker_accepts_edit(
@@ -728,6 +722,7 @@ mod upload_attachment_tests {
                 name: name.clone(),
                 kind: "file".into(),
                 path: path.into(),
+                location: None,
                 ts: 0,
                 project_id: None,
                 project_name: None,
@@ -735,6 +730,7 @@ mod upload_attachment_tests {
                 session_title: None,
                 size_bytes: None,
                 origin: None,
+                logical_path: None,
             }),
             filename: Some(name),
             error: None,

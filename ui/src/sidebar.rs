@@ -55,12 +55,24 @@ pub(super) fn Sidebar(
     open_publication_workspace: Callback<web_sys::MouseEvent>,
     open_library: Callback<web_sys::MouseEvent>,
     load_demo: Callback<DemoInfo>,
+    open_demo_actions: Callback<(web_sys::MouseEvent, String, String)>,
     load_session: Callback<String>,
     open_exploration: Callback<Exploration>,
+    open_exploration_actions: Callback<(web_sys::MouseEvent, String, String)>,
     load_older_sessions: Callback<()>,
     move_sessions_to: Callback<(Vec<String>, Option<String>)>,
     delete_sessions: Callback<Vec<String>>,
-    open_session_actions: Callback<(web_sys::MouseEvent, String, String, bool)>,
+    open_session_actions: Callback<(
+        web_sys::MouseEvent,
+        String,
+        String,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+    )>,
     open_folder_actions: Callback<(web_sys::MouseEvent, String, String)>,
     open_capabilities: Callback<web_sys::MouseEvent>,
     open_settings: Callback<web_sys::MouseEvent>,
@@ -137,7 +149,7 @@ pub(super) fn Sidebar(
                 <button class="side-back" title=move || t(locale.get(), "sidebar.back_projects")
                     aria-label=move || t(locale.get(), "sidebar.back_projects")
                     on:click=move |_| { show_proj_menu.set(false); demo_mode.set(false); show_projects.set(true); }>
-                    <span class="gi back" aria-hidden="true"></span>
+                    {compose_icon("arrow-left")}
                 </button>
                 <button class="proj-switch" class:active=move || show_proj_menu.get()
                     disabled=move || demo_mode.get()
@@ -151,7 +163,7 @@ pub(super) fn Sidebar(
                 <div class="proj-menu-backdrop" on:click=move |_| show_proj_menu.set(false)></div>
                 <div class="proj-menu">
                     <button type="button" class="proj-menu-item" on:click=move |ev| open_proj_settings.call(ev)>
-                        <span class="gi gear"></span>
+                        {compose_icon("gear")}
                         {move || t(locale.get(), "proj_menu.settings")}
                     </button>
                     <div class="proj-menu-sep"></div>
@@ -183,21 +195,21 @@ pub(super) fn Sidebar(
                     <button class="side-btn primary" title=move || t(locale.get(), "sidebar.new_session")
                         aria-label=move || t(locale.get(), "sidebar.new_session")
                         on:click=move |ev| new_session.call(ev)>
-                        <span class="gi plus"></span>
+                        {compose_icon("plus")}
                         <span class="side-btn-label">{move || t(locale.get(), "sidebar.new_session")}</span>
                         <kbd class="side-shortcut" aria-hidden="true">{new_session_shortcut}</kbd>
                     </button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.search_sessions")
                         aria-label=move || t(locale.get(), "sidebar.search_sessions")
                         on:click=move |ev| open_search.call(ev)>
-                        <span class="gi search"></span>
+                        {compose_icon("search")}
                         <span class="side-btn-label">{move || t(locale.get(), "sidebar.search")}</span>
                         <kbd class="side-shortcut" aria-hidden="true">{search_shortcut}</kbd>
                     </button>
-                    <button class="side-btn" title=move || t(locale.get(), "sidebar.new_folder") on:click=move |ev| new_folder.call(ev)><span class="gi folder"></span>{move || t(locale.get(), "sidebar.new_folder")}</button>
-                    <button class="side-btn" title=move || t(locale.get(), "sidebar.files") on:click=move |ev| open_files.call(ev)><span class="gi doc"></span>{move || t(locale.get(), "sidebar.files")}</button>
+                    <button class="side-btn" title=move || t(locale.get(), "sidebar.new_folder") on:click=move |ev| new_folder.call(ev)>{compose_icon("folder-plus")}{move || t(locale.get(), "sidebar.new_folder")}</button>
+                    <button class="side-btn" title=move || t(locale.get(), "sidebar.files") on:click=move |ev| open_files.call(ev)>{compose_icon("doc")}{move || t(locale.get(), "sidebar.files")}</button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.graph") on:click=move |ev| open_research_graph.call(ev)>{compose_icon("branch")}{move || t(locale.get(), "sidebar.graph")}</button>
-                    <button class="side-btn" title=move || t(locale.get(), "sidebar.publication") on:click=move |ev| open_publication_workspace.call(ev)><span class="gi doc"></span>{move || t(locale.get(), "sidebar.publication")}</button>
+                    <button class="side-btn" title=move || t(locale.get(), "sidebar.publication") on:click=move |ev| open_publication_workspace.call(ev)>{compose_icon("book")}{move || t(locale.get(), "sidebar.publication")}</button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.library") on:click=move |ev| open_library.call(ev)>{compose_icon("star")}{move || t(locale.get(), "sidebar.library")}</button>
                 </nav>
             })}
@@ -337,11 +349,31 @@ pub(super) fn Sidebar(
                     if demo_mode.get() {
                         return demos.get().into_iter().map(|d| {
                             let d_click = d.clone();
+                            let d_menu = d.clone();
+                            let d_actions = d.clone();
+                            let open_demo = open_demo_actions.clone();
+                            let open_demo_btn = open_demo_actions.clone();
                             view! {
-                                <button class="side-item ses" title=d.title.clone() on:click=move |_| load_demo.call(d_click.clone())>
-                                    <span class="dot"></span>
-                                    <span class="ses-title">{d.title.clone()}</span>
-                                </button>
+                                <div class="side-item-wrap">
+                                    <button class="side-item ses" data-demo-id=d.id.clone() title=d.title.clone()
+                                        on:click=move |_| load_demo.call(d_click.clone())
+                                        on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                            ev.prevent_default();
+                                            ev.stop_propagation();
+                                            open_demo.call((ev, d_menu.id.clone(), d_menu.title.clone()));
+                                        }>
+                                        <span class="dot"></span>
+                                        <span class="ses-title">{d.title.clone()}</span>
+                                    </button>
+                                    <button type="button" class="session-actions"
+                                        title=move || t(locale.get(), "demo.actions")
+                                        aria-label=move || t(locale.get(), "demo.actions")
+                                        on:click=move |ev: web_sys::MouseEvent| {
+                                            ev.prevent_default();
+                                            ev.stop_propagation();
+                                            open_demo_btn.call((ev, d_actions.id.clone(), d_actions.title.clone()));
+                                        }>{compose_icon("more")}</button>
+                                </div>
                             }
                         }).collect_view();
                     }
@@ -370,6 +402,19 @@ pub(super) fn Sidebar(
                     // Branch sessions (#531) are lifted out of the flat list and drawn
                     // nested under the session they were forked from, in whatever group
                     // that session lands in.
+                    let branch_family_ids = list
+                        .iter()
+                        .filter_map(|session| {
+                            session.branched_from.as_ref().map(|source| {
+                                [source.clone(), session.id.clone()]
+                            })
+                        })
+                        .flatten()
+                        .collect::<HashSet<_>>();
+                    let exploration_source_ids = exploration_rows
+                        .iter()
+                        .map(|row| row.source_frame_id.clone())
+                        .collect::<HashSet<_>>();
                     let (list, branch_kids) = nest_branch_sessions(&list);
                     let group = group_by.get();
                     // Whether any folder exists — used to keep the "ungrouped" drop
@@ -377,6 +422,9 @@ pub(super) fn Sidebar(
                     // reading drag_session here, which would rebuild the whole list mid-drag.
                     let has_folders = !folder_list.is_empty();
                     let item = move |s: &SessionInfo| {
+                        let is_branch = s.branch_state.is_some();
+                        let has_branch_family = branch_family_ids.contains(&s.id);
+                        let has_exploration_round = exploration_source_ids.contains(&s.id);
                         let id = s.id.clone();
                         let id_active = id.clone();
                         let id_attr = id.clone();
@@ -387,7 +435,13 @@ pub(super) fn Sidebar(
                         let id_selected = id.clone();
                         let id_pressed = id.clone();
                         let id_select_click = id.clone();
-                        let title = if s.title.trim().is_empty() { t(loc, "sidebar.untitled").into() } else { s.title.clone() };
+                        let title = if s.title.trim().is_empty() {
+                            t(loc, "sidebar.untitled").into()
+                        } else if is_branch {
+                            s.title.strip_prefix("Branch: ").unwrap_or(&s.title).to_string()
+                        } else {
+                            s.title.clone()
+                        };
                         let title_attr = title.clone();
                         let title_tooltip = title.clone();
                         let open = load_session.clone();
@@ -399,10 +453,16 @@ pub(super) fn Sidebar(
                         let title_actions = title.clone();
                         let show_actions = open_session_actions.clone();
                         let pinned = s.pinned;
+                        let stale_prompt = s.stale_prompt;
+                        let branch_merged = matches!(
+                            s.branch_state.as_deref(),
+                            Some("merged" | "orphaned")
+                        );
                         view! {
                             <div class="side-item-wrap">
                                 <button type="button" class="side-item ses"
                                     class:pinned=pinned
+                                    class:branch-session=is_branch
                                     title=title_tooltip
                                     class:active=move || active_session.get().as_deref() == Some(id_active.as_str())
                                     class:running=move || running.get().contains(&id_running)
@@ -417,6 +477,11 @@ pub(super) fn Sidebar(
                                     data-session-id=id_attr
                                     data-session-title=title_attr
                                     data-session-pinned=if pinned { "true" } else { "false" }
+                                    data-session-stale=if stale_prompt { "true" } else { "false" }
+                                    data-session-branch=if is_branch { "true" } else { "false" }
+                                    data-session-family=if has_branch_family { "true" } else { "false" }
+                                    data-exploration-round=if has_exploration_round { "true" } else { "false" }
+                                    data-branch-merged=if branch_merged { "true" } else { "false" }
                                     on:click=move |_| {
                                         if selecting_sessions.get_untracked() {
                                             selected_sessions.update(|selected| {
@@ -456,7 +521,17 @@ pub(super) fn Sidebar(
                                         drop_target.set(None);
                                     }>
                                     <span class="session-select-mark" aria-hidden="true">{compose_icon("check")}</span>
-                                    <span class="dot"></span>
+                                    <span class="ses-status" aria-hidden="true">
+                                        <span class="ses-live" title=move || t(locale.get(), "sess_status.running")>
+                                            {compose_icon("loader")}
+                                        </span>
+                                        <span class="ses-attention" title=move || t(locale.get(), "sess_status.needs_you")>
+                                            {compose_icon("circle-alert")}
+                                        </span>
+                                    </span>
+                                    {is_branch.then(|| view! {
+                                        <span class="session-branch-icon" aria-hidden="true">{compose_icon("branch")}</span>
+                                    })}
                                     <span class="ses-title">{title}</span>
                                 </button>
                                 <button type="button" class="session-actions"
@@ -467,7 +542,7 @@ pub(super) fn Sidebar(
                                     on:click=move |ev: web_sys::MouseEvent| {
                                         ev.prevent_default();
                                         ev.stop_propagation();
-                                        show_actions.call((ev, id_actions.clone(), title_actions.clone(), pinned));
+                                        show_actions.call((ev, id_actions.clone(), title_actions.clone(), pinned, is_branch, branch_merged, has_branch_family, has_exploration_round, stale_prompt));
                                     }>"⋯"</button>
                             </div>
                         }.into_view()
@@ -482,13 +557,12 @@ pub(super) fn Sidebar(
                     let exploration_item = move |summary: &ExplorationSummary| {
                         let exploration = summary.exploration.clone();
                         let exploration_for_open = exploration.clone();
+                        let exploration_id_for_actions = exploration.id.clone();
+                        let exploration_status_for_actions = exploration.status.clone();
                         let frame_id = exploration.frame_id.clone();
                         let title = exploration.name.clone();
                         let status_key = match exploration.status.as_str() {
                             "active" => "exploration.status_active",
-                            "archived" => "exploration.status_archived",
-                            "promoted" => "exploration.status_promoted",
-                            "discarded" => "exploration.status_discarded",
                             "promoting" => "exploration.status_promoting",
                             "creating" => "exploration.status_creating",
                             _ => "exploration.status_failed",
@@ -505,8 +579,17 @@ pub(super) fn Sidebar(
                                 data-exploration-id=exploration.id.clone()
                                 data-exploration-status=exploration.status.clone()
                                 title=title.clone()
+                                on:contextmenu=move |ev: web_sys::MouseEvent| {
+                                    ev.prevent_default();
+                                    ev.stop_propagation();
+                                    open_exploration_actions.call((
+                                        ev,
+                                        exploration_id_for_actions.clone(),
+                                        exploration_status_for_actions.clone(),
+                                    ));
+                                }
                                 on:click=move |_| open.call(exploration_for_open.clone())>
-                                <span class="exploration-branch-mark" aria-hidden="true">"↳"</span>
+                                <span class="exploration-kind-icon" aria-hidden="true">{compose_icon("flask")}</span>
                                 <span class="side-exploration-copy">
                                     <span class="side-exploration-title">{title}</span>
                                     <span class="side-exploration-meta">
@@ -639,7 +722,7 @@ pub(super) fn Sidebar(
                                         folder_modal.set(Some(FolderModal::Rename(fid_rename.clone())));
                                     }>
                                     <span class="side-folder-caret" class:collapsed=collapsed>"▾"</span>
-                                    <span class="gi folder"></span>
+                                    {compose_icon("folder")}
                                     <span class="side-folder-name">{fname}</span>
                                     <span class="side-folder-count">{in_folder.len()}</span>
                                     <button type="button" class="folder-actions"
@@ -716,7 +799,7 @@ pub(super) fn Sidebar(
                         <button type="button" class="update-card" data-testid="update-card"
                             title=move || t(locale.get(), "update_card.title")
                             on:click=move |ev| open_update.call(ev)>
-                            <span class="update-card-icon gi grid" aria-hidden="true"></span>
+                            <span class="update-card-icon" aria-hidden="true">{compose_icon("download")}</span>
                             <span class="update-card-text">
                                 <span class="update-card-title">{move || t(locale.get(), "update_card.title")}</span>
                                 <span class="update-card-ver">{format!("v{}", u.version)}</span>
@@ -735,9 +818,9 @@ pub(super) fn Sidebar(
                             ])}</span>
                         </div>
                     }})}
-                    <button class="side-btn" title=move || t(locale.get(), "sidebar.capabilities") on:click=move |ev| open_capabilities.call(ev)><span class="gi grid"></span>{move || t(locale.get(), "sidebar.capabilities")}</button>
+                    <button class="side-btn" title=move || t(locale.get(), "sidebar.capabilities") on:click=move |ev| open_capabilities.call(ev)>{compose_icon("grid")}{move || t(locale.get(), "sidebar.capabilities")}</button>
                     <button class="side-btn" data-testid="report-problem-entry" title=move || t(locale.get(), "issue_report.sidebar") on:click=move |ev| open_issue_report.call(ev)>{compose_icon("chat")}{move || t(locale.get(), "issue_report.sidebar")}</button>
-                    <button class="side-btn" title=move || t(locale.get(), "sidebar.settings") on:click=move |ev| open_settings.call(ev)><span class="gi gear"></span>{move || t(locale.get(), "sidebar.settings")}</button>
+                    <button class="side-btn" title=move || t(locale.get(), "sidebar.settings") on:click=move |ev| open_settings.call(ev)>{compose_icon("gear")}{move || t(locale.get(), "sidebar.settings")}</button>
                 </div>
             })}
         </aside>

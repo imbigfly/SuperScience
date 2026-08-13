@@ -6,6 +6,7 @@ pub(crate) fn refresh_sessions(
     running: RwSignal<HashSet<String>>,
     next_cursor: RwSignal<Option<SessionCursor>>,
     active_session: RwSignal<Option<String>>,
+    exploration_frames: RwSignal<HashSet<String>>,
 ) {
     next_cursor.set(None);
     spawn_local(async move {
@@ -20,7 +21,10 @@ pub(crate) fn refresh_sessions(
                     .iter()
                     .any(|session| session.id.as_str() == id.as_str())
             });
-            if !active_is_listed {
+            let active_is_exploration = active
+                .as_ref()
+                .is_some_and(|id| exploration_frames.with_untracked(|frames| frames.contains(id)));
+            if !active_is_listed && !active_is_exploration {
                 let id = active.expect("an unlisted active session has an id");
                 let draft = sessions
                     .with_untracked(|current| {
@@ -33,6 +37,8 @@ pub(crate) fn refresh_sessions(
                         folder_id: None,
                         branched_from: None,
                         pinned: false,
+                        branch_state: None,
+                        stale_prompt: false,
                     });
                 page.items.insert(0, draft);
             }
@@ -121,7 +127,6 @@ pub(crate) fn refresh_explorations(explorations: RwSignal<Vec<ExplorationSummary
     });
 }
 
-
 /// Split the sidebar list into top-level sessions plus, per session id, the
 /// branches forked from it — the sidebar draws those nested underneath (#531).
 ///
@@ -175,6 +180,8 @@ mod branch_nesting_tests {
             folder_id: folder.map(Into::into),
             branched_from: branched_from.map(Into::into),
             pinned: false,
+            branch_state: branched_from.map(|_| "active".into()),
+            stale_prompt: false,
         }
     }
 

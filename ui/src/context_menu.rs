@@ -269,7 +269,10 @@ fn text_from_code_block(el: &web_sys::Element) -> Option<String> {
 #[derive(Clone, PartialEq)]
 pub enum SessionAction {
     Open(String),
+    AbandonExploration(String),
     Delete(String),
+    DeleteBranch(String),
+    MergeBranch(String),
     Rename {
         id: String,
         title: String,
@@ -282,16 +285,30 @@ pub enum SessionAction {
         id: String,
         pinned: bool,
     },
+    ReloadProjectRules(String),
     Transfer {
         id: String,
         mode: SessionTransferMode,
     },
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExplorationAction {
+    Open(String),
+    SelectAsMainline(String),
+    ViewDiff(String),
+    Discard(String),
+}
+
 #[derive(Clone, PartialEq)]
 pub enum FolderAction {
     Rename { id: String, name: String },
     Delete(String),
+}
+
+#[derive(Clone, PartialEq)]
+pub enum DemoAction {
+    CopyToProject(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -337,6 +354,11 @@ pub fn session_menu(
     session_id: &str,
     title: &str,
     pinned: bool,
+    is_branch: bool,
+    branch_merged: bool,
+    has_branch_family: bool,
+    has_exploration_round: bool,
+    stale_prompt: bool,
     locale: Locale,
 ) -> CtxMenu {
     let mut items = vec![item(
@@ -350,6 +372,27 @@ pub fn session_menu(
             i18n::t(locale, "ctx.open_session"),
             session_id.to_string(),
         ));
+        if stale_prompt {
+            items.push(item(
+                "reloadProjectRules",
+                i18n::t(locale, "ctx.reload_rules"),
+                session_id.to_string(),
+            ));
+        }
+        if is_branch && !branch_merged {
+            items.push(item(
+                "mergeSessionBranch",
+                i18n::t(locale, "branch.merge"),
+                session_id.to_string(),
+            ));
+        }
+        if has_exploration_round && !is_branch {
+            items.push(item(
+                "abandonExplorationRound",
+                i18n::t(locale, "exploration.abandon"),
+                session_id.to_string(),
+            ));
+        }
         items.push(item(
             if pinned { "unpinSession" } else { "pinSession" },
             i18n::t(
@@ -391,10 +434,76 @@ pub fn session_menu(
             i18n::t(locale, "ctx.export_debug_request"),
             session_id.to_string(),
         ));
+        if is_branch || (!has_branch_family && !has_exploration_round) {
+            items.push(item(
+                if is_branch {
+                    "deleteSessionBranch"
+                } else {
+                    "deleteSession"
+                },
+                i18n::t(
+                    locale,
+                    if is_branch {
+                        "branch.delete"
+                    } else {
+                        "ctx.delete_session"
+                    },
+                ),
+                session_id.to_string(),
+            ));
+        }
+    }
+    CtxMenu { x, y, items }
+}
+
+pub fn demo_menu(x: f64, y: f64, demo_id: &str, title: &str, locale: Locale) -> CtxMenu {
+    CtxMenu {
+        x,
+        y,
+        items: vec![
+            item(
+                "copyTitle",
+                i18n::t(locale, "ctx.copy_title"),
+                title.to_string(),
+            ),
+            item(
+                "copyDemoToProject",
+                i18n::t(locale, "ctx.copy_demo_to_project"),
+                demo_id.to_string(),
+            ),
+        ],
+    }
+}
+
+pub fn exploration_menu(
+    x: f64,
+    y: f64,
+    exploration_id: &str,
+    status: &str,
+    locale: Locale,
+) -> CtxMenu {
+    let mut items = vec![item(
+        "openExploration",
+        i18n::t(locale, "exploration.open"),
+        exploration_id.to_string(),
+    )];
+    if status == "active" {
         items.push(item(
-            "deleteSession",
-            i18n::t(locale, "ctx.delete_session"),
-            session_id.to_string(),
+            "selectExplorationAsMainline",
+            i18n::t(locale, "exploration.select_as_mainline"),
+            exploration_id.to_string(),
+        ));
+    }
+    items.push(item(
+        "viewExplorationDiff",
+        i18n::t(locale, "exploration.view_diff"),
+        exploration_id.to_string(),
+    ));
+    if matches!(status, "active" | "failed") {
+        items.push(item(
+            "discardExploration",
+            i18n::t(locale, "exploration.discard"),
+            exploration_id.to_string(),
         ));
     }
     CtxMenu { x, y, items }
@@ -515,11 +624,30 @@ pub fn build(
         });
     }
 
-    if let Some(ses) = closest(&target, ".side-item.ses") {
+    if let Some(ses) = closest(&target, ".side-item.ses, .message-branch-link") {
         let title = ses.get_attribute("data-session-title").unwrap_or_default();
         let id = ses.get_attribute("data-session-id").unwrap_or_default();
         let pinned = ses.get_attribute("data-session-pinned").as_deref() == Some("true");
-        return Some(session_menu(x, y, &id, &title, pinned, locale));
+        let is_branch = ses.get_attribute("data-session-branch").as_deref() == Some("true")
+            || ses.class_list().contains("message-branch-link");
+        let branch_merged = ses.get_attribute("data-branch-merged").as_deref() == Some("true");
+        let has_branch_family = ses.get_attribute("data-session-family").as_deref() == Some("true");
+        let has_exploration_round =
+            ses.get_attribute("data-exploration-round").as_deref() == Some("true");
+        let stale_prompt = ses.get_attribute("data-session-stale").as_deref() == Some("true");
+        return Some(session_menu(
+            x,
+            y,
+            &id,
+            &title,
+            pinned,
+            is_branch,
+            branch_merged,
+            has_branch_family,
+            has_exploration_round,
+            stale_prompt,
+            locale,
+        ));
     }
 
     if let Some(folder) = closest(&target, ".side-folder") {
@@ -544,6 +672,10 @@ pub fn build(
     if let Some(tile) = closest(&target, ".rp-tile") {
         let name = tile.get_attribute("data-artifact-name").unwrap_or_default();
         let path = tile.get_attribute("data-artifact-path").unwrap_or_default();
+        let location = tile
+            .get_attribute("data-artifact-location")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| path.clone());
         if !name.is_empty() {
             let mut items = vec![item("copyName", i18n::t(locale, "ctx.copy_name"), name)];
             if !path.is_empty() {
@@ -560,7 +692,7 @@ pub fn build(
                     item(
                         "attachWorkspaceFile",
                         i18n::t(locale, "ctx.attach_file"),
-                        path.clone(),
+                        location.clone(),
                     ),
                 );
                 items.push(item(
@@ -571,7 +703,7 @@ pub fn build(
                 items.push(item(
                     "revealInFileManager",
                     i18n::t(locale, "ctx.reveal_in_manager"),
-                    path,
+                    location,
                 ));
             }
             return Some(CtxMenu { x, y, items });
@@ -689,6 +821,30 @@ pub fn build(
         }
     }
 
+    if let Some(message) = closest(&target, "[data-branch-ui-index]") {
+        let ui_index = message
+            .get_attribute("data-branch-ui-index")
+            .unwrap_or_default();
+        if !ui_index.is_empty() {
+            let mut items = vec![item(
+                "branchMessage",
+                i18n::t(locale, "msg.branch_to_new_chat"),
+                ui_index,
+            )];
+            if let Some(body) = closest(&target, ".msg .body") {
+                let text = body.text_content().unwrap_or_default();
+                if !text.trim().is_empty() {
+                    items.push(item(
+                        "copyMessage",
+                        i18n::t(locale, "ctx.copy_message"),
+                        text,
+                    ));
+                }
+            }
+            return Some(CtxMenu { x, y, items });
+        }
+    }
+
     if let Some(body) = closest(&target, ".msg .body") {
         let text = body.text_content().unwrap_or_default();
         if !text.trim().is_empty() {
@@ -760,10 +916,80 @@ mod remote_file_tests {
     }
 }
 
+#[cfg(test)]
+mod session_branch_action_tests {
+    use super::{session_action, SessionAction};
+
+    #[test]
+    fn parses_branch_specific_actions() {
+        assert!(matches!(
+            session_action("mergeSessionBranch", "branch-1"),
+            Some(SessionAction::MergeBranch(id)) if id == "branch-1"
+        ));
+        assert!(matches!(
+            session_action("deleteSessionBranch", "branch-1"),
+            Some(SessionAction::DeleteBranch(id)) if id == "branch-1"
+        ));
+    }
+
+    #[test]
+    fn parses_demo_copy_action() {
+        assert!(matches!(
+            super::demo_action("copyDemoToProject", "manifest_memory_01_long_context"),
+            Some(super::DemoAction::CopyToProject(id)) if id == "manifest_memory_01_long_context"
+        ));
+        assert!(super::demo_action("copyDemoToProject", "").is_none());
+    }
+}
+
+#[cfg(test)]
+mod exploration_action_tests {
+    use super::{exploration_action, ExplorationAction};
+
+    #[test]
+    fn parses_exploration_context_actions() {
+        assert_eq!(
+            exploration_action("selectExplorationAsMainline", "exploration-1"),
+            Some(ExplorationAction::SelectAsMainline("exploration-1".into()))
+        );
+        assert_eq!(
+            exploration_action("discardExploration", "exploration-1"),
+            Some(ExplorationAction::Discard("exploration-1".into()))
+        );
+        assert_eq!(exploration_action("discardExploration", ""), None);
+    }
+}
+
+pub fn exploration_action(action: &str, payload: &str) -> Option<ExplorationAction> {
+    if payload.is_empty() {
+        return None;
+    }
+    let id = payload.to_string();
+    match action {
+        "openExploration" => Some(ExplorationAction::Open(id)),
+        "selectExplorationAsMainline" => Some(ExplorationAction::SelectAsMainline(id)),
+        "viewExplorationDiff" => Some(ExplorationAction::ViewDiff(id)),
+        "discardExploration" => Some(ExplorationAction::Discard(id)),
+        _ => None,
+    }
+}
+
 pub fn session_action(action: &str, payload: &str) -> Option<SessionAction> {
     match action {
         "openSession" if !payload.is_empty() => Some(SessionAction::Open(payload.to_string())),
+        "abandonExplorationRound" if !payload.is_empty() => {
+            Some(SessionAction::AbandonExploration(payload.to_string()))
+        }
         "deleteSession" if !payload.is_empty() => Some(SessionAction::Delete(payload.to_string())),
+        "deleteSessionBranch" if !payload.is_empty() => {
+            Some(SessionAction::DeleteBranch(payload.to_string()))
+        }
+        "mergeSessionBranch" if !payload.is_empty() => {
+            Some(SessionAction::MergeBranch(payload.to_string()))
+        }
+        "reloadProjectRules" if !payload.is_empty() => {
+            Some(SessionAction::ReloadProjectRules(payload.to_string()))
+        }
         "renameSession" if !payload.is_empty() => {
             let (id, title) = payload.split_once('\u{1e}')?;
             Some(SessionAction::Rename {
@@ -794,6 +1020,15 @@ pub fn session_action(action: &str, payload: &str) -> Option<SessionAction> {
             id: payload.to_string(),
             mode: SessionTransferMode::Move,
         }),
+        _ => None,
+    }
+}
+
+pub fn demo_action(action: &str, payload: &str) -> Option<DemoAction> {
+    match action {
+        "copyDemoToProject" if !payload.is_empty() => {
+            Some(DemoAction::CopyToProject(payload.to_string()))
+        }
         _ => None,
     }
 }
@@ -1006,9 +1241,11 @@ pub fn ContextMenuPortal(
                         let danger = matches!(
                             action.as_str(),
                             "deleteSession"
+                                | "deleteSessionBranch"
                                 | "deleteFolder"
                                 | "deleteWorkspaceFile"
                                 | "deleteWorkspaceDirectory"
+                                | "discardExploration"
                         );
                         view! {
                             <button

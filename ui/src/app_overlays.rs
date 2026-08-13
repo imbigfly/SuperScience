@@ -7,7 +7,7 @@ use crate::app_support::{
 use crate::bindings::{download_app_update, invoke, invoke_checked, open_external_url};
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, Locale};
-use crate::text::{format_bytes, md_to_html};
+use crate::text::{event_target_value, format_bytes, md_to_html};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 use std::rc::Rc;
@@ -30,6 +30,134 @@ fn project_transfer_stage_label(locale: Locale, stage: &str) -> String {
         _ => "projects.transfer.preparing",
     };
     t(locale, key)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TurnMemoryOverlayState {
+    pub(crate) locale: RwSignal<Locale>,
+    pub(crate) proposal: RwSignal<Option<TurnMemoryProposal>>,
+    pub(crate) editor: RwSignal<String>,
+    pub(crate) scope: RwSignal<String>,
+    pub(crate) replace_id: RwSignal<String>,
+    pub(crate) busy: RwSignal<bool>,
+    pub(crate) error: RwSignal<Option<String>>,
+}
+
+#[component]
+pub(crate) fn TurnMemoryOverlay(
+    state: TurnMemoryOverlayState,
+    on_confirm: Callback<()>,
+) -> impl IntoView {
+    let TurnMemoryOverlayState {
+        locale,
+        proposal,
+        editor,
+        scope,
+        replace_id,
+        busy,
+        error,
+    } = state;
+    view! {
+        {move || proposal.get().map(|draft| {
+            let failure_analysis = draft.trigger == "tool_failures";
+            let hint = if failure_analysis {
+                tf(
+                    locale.get(),
+                    "memory.proposal.failure_hint",
+                    &[
+                        ("failed", &draft.failed_tool_calls.to_string()),
+                        ("total", &draft.tool_calls.to_string()),
+                        ("rate", &format!("{:.1}", draft.failure_rate)),
+                    ],
+                )
+            } else if draft.trigger == "explicit" {
+                t(locale.get(), "memory.proposal.explicit_hint")
+            } else {
+                t(locale.get(), "memory.proposal.manual_hint")
+            };
+            let global_memories = draft.global_memories.clone();
+            view! {
+                <div class="overlay turn-memory-overlay" data-testid="turn-memory-overlay">
+                    <div class="modal turn-memory-modal" role="dialog" aria-modal="true"
+                        aria-labelledby="turn-memory-title">
+                        <h2 id="turn-memory-title">{move || t(
+                            locale.get(),
+                            if failure_analysis {
+                                "memory.proposal.failure_title"
+                            } else {
+                                "memory.proposal.title"
+                            },
+                        )}</h2>
+                        <p class="hint">{hint}</p>
+                        <label class="turn-memory-field">
+                            <span>{move || t(locale.get(), "memory.proposal.scope")}</span>
+                            <select data-testid="turn-memory-scope"
+                                prop:value=move || scope.get()
+                                disabled=move || busy.get()
+                                on:change=move |event| scope.set(event_target_value(&event))>
+                                <option value="project" prop:selected=move || scope.get() == "project">
+                                    {move || t(locale.get(), "memory.proposal.scope_project")}
+                                </option>
+                                <option value="global" prop:selected=move || scope.get() == "global">
+                                    {move || t(locale.get(), "memory.proposal.scope_global")}
+                                </option>
+                            </select>
+                        </label>
+                        {move || {
+                            let memories = global_memories.clone();
+                            (scope.get() == "global" && !memories.is_empty()).then(move || view! {
+                                <label class="turn-memory-field">
+                                    <span>{move || t(locale.get(), "memory.proposal.replace")}</span>
+                                    <select data-testid="turn-memory-replace"
+                                        prop:value=move || replace_id.get()
+                                        disabled=move || busy.get()
+                                        on:change=move |event| replace_id.set(event_target_value(&event))>
+                                        <option value="">{move || t(locale.get(), "memory.proposal.add_new")}</option>
+                                        <For each=move || memories.clone()
+                                            key=|memory| memory.id.clone() let:memory>
+                                            <option value=memory.id.clone()>
+                                                {memory.content}
+                                            </option>
+                                        </For>
+                                    </select>
+                                    <span class="hint">{move || t(locale.get(), "memory.proposal.replace_hint")}</span>
+                                </label>
+                            })
+                        }}
+                        <label class="turn-memory-field">
+                            <span>{move || t(locale.get(), "memory.proposal.content")}</span>
+                            <textarea data-testid="turn-memory-content"
+                                prop:value=move || editor.get()
+                                disabled=move || busy.get()
+                                on:input=move |event| editor.set(event_target_value(&event))></textarea>
+                        </label>
+                        {move || error.get().map(|message| view! {
+                            <div class="settings-status fail" role="alert">{message}</div>
+                        })}
+                        <div class="row">
+                            <button type="button" data-testid="turn-memory-cancel"
+                                disabled=move || busy.get()
+                                on:click=move |_| {
+                                    proposal.set(None);
+                                    editor.set(String::new());
+                                    replace_id.set(String::new());
+                                    error.set(None);
+                                }>{move || t(locale.get(), "settings.cancel")}</button>
+                            <button type="button" class="primary" data-testid="turn-memory-confirm"
+                                disabled=move || busy.get() || editor.get().trim().is_empty()
+                                on:click=move |_| on_confirm.call(())>
+                                {move || if busy.get() {
+                                    t(locale.get(), "memory.proposal.saving")
+                                } else {
+                                    t(locale.get(), "memory.proposal.confirm")
+                                }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })}
+    }
 }
 
 #[derive(Clone, Copy)]

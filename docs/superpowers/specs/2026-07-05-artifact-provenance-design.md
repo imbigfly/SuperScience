@@ -21,6 +21,9 @@ clicking the artifact.
   provenance record per current file path; re-running overwrites it.
 - A **Messages** panel (conversation lineage) — the conversation is already visible.
 - A **Review / annotations** panel — separate feature, not in this spec.
+- File links and generated-artifact cards inside chat open the shared Artifact
+  Modal over the current conversation. Opening a center-pane tab remains an
+  explicit action from that modal or the file browser.
 - Reworking SuperScience's artifact-identity model. Provenance is keyed by
   `(frame_id, workspace-relative path)` — the identifier the UI already uses.
 

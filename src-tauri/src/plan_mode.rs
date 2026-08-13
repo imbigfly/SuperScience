@@ -90,7 +90,12 @@ pub(crate) async fn set_session_plan_mode(
     let (project, scope) =
         crate::exploration_commands::working_project_for_frame(&state, &session_id).await?;
     let _activity = state.begin_project_activity(&project.id)?;
-    crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
+    let _project_write_locked = crate::exploration_commands::conversation_project_write_locked(
+        &state.store,
+        &scope,
+        Some(&session_id),
+    )
+    .await?;
     ensure_project_frame(&state.store, &project.id, &session_id).await?;
     if matches!(state.store.get_acp_session(&session_id).await, Ok(Some(_))) {
         return Err("This conversation is bound to an ACP agent; use its own plan mode.".into());

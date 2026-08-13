@@ -1057,6 +1057,13 @@ async fn run_acp_turn_inner(
                 text: message.to_string(),
             },
         );
+        crate::emit_agent_event(
+            app,
+            AgentEvent::MessageBoundary {
+                frame_id: frame_id.to_string(),
+                seq: next_seq - 1,
+            },
+        );
     }
     let prompt = runtime.handle.prompt(runtime.session_id.clone(), content);
     tokio::pin!(prompt);
@@ -1246,12 +1253,11 @@ async fn run_acp_turn_inner(
 /// ACP has no SuperScience-reference block type. Render trusted, host-resolved SuperScience
 /// context as ordinary text blocks, which every ACP v1 Agent accepts.
 fn acp_text_content(message: &str, injected_context: &[String]) -> Vec<ContentBlock> {
-    let mut content = vec![ContentBlock::Text(TextContent::new(message.to_string()))];
-    content.extend(
-        injected_context
-            .iter()
-            .map(|text| ContentBlock::Text(TextContent::new(text.clone()))),
-    );
+    let mut content = injected_context
+        .iter()
+        .map(|text| ContentBlock::Text(TextContent::new(text.clone())))
+        .collect::<Vec<_>>();
+    content.push(ContentBlock::Text(TextContent::new(message.to_string())));
     content
 }
 
@@ -1650,6 +1656,7 @@ mod tests {
         let json = serde_json::to_value(content).unwrap().to_string();
         assert!(json.contains("analyse this"));
         assert!(json.contains("bear-map"));
+        assert!(json.find("bear-map").unwrap() < json.find("analyse this").unwrap());
     }
 
     #[tokio::test]

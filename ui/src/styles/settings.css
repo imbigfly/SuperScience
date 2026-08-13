@@ -1349,6 +1349,28 @@ button.workflow-graph-port.output.active {
   color: var(--text-faint);
   font-size: 8.5px;
 }
+/* Specialist skill whitelist picker — same search + chips pattern as the
+   workflow task picker, sized for the settings pane instead of the inspector. */
+.specialist-skill-picker { display: grid; gap: 8px; }
+.specialist-skill-picker .dynamic-skill-selected { margin-bottom: 0; }
+.specialist-skill-picker .dynamic-skill-selected button { padding: 5px 9px; font-size: 12px; }
+.specialist-skill-picker .dynamic-skill-selected button svg { width: 12px; height: 12px; }
+.specialist-skill-picker .dynamic-skill-search { padding: 8px 10px; font-size: 12.5px; }
+.specialist-skill-picker .dynamic-skill-results { max-height: 220px; margin-top: 0; }
+.specialist-skill-picker .dynamic-skill-hint { padding: 10px 12px; font-size: 12px; }
+/* Beat the generic `.settings-page label` column-flex rule so options keep the
+   workflow picker's checkbox | name | scope row layout. */
+.specialist-skill-picker label.dynamic-skill-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+.specialist-skill-picker .dynamic-skill-option small { font-size: 10px; }
 .workflow-studio-actions {
   align-items: center;
   position: sticky;
@@ -1686,6 +1708,12 @@ button.workflow-graph-port.output.active {
 .settings-page label.font-size-control { display: grid; grid-template-columns: minmax(150px, 220px) 54px; align-items: center; gap: 12px; flex: 0 0 auto; }
 .font-size-control input[type="range"] { width: 100%; padding: 0; accent-color: var(--clay); box-shadow: none; }
 .font-size-control output { color: var(--text-muted); font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; }
+.appearance-font-input {
+  width: 264px; flex: 0 0 auto; padding: 7px 10px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
+  background: var(--bg-input); color: var(--text); font: inherit; font-size: 12.5px;
+}
+.appearance-font-input:focus { border-color: var(--clay); outline: none; box-shadow: 0 0 0 3px var(--focus-ring); }
 .settings-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1723,10 +1751,9 @@ button.workflow-graph-port.output.active {
   flex-shrink: 0;
 }
 .settings-pane .hint {
-  padding: 10px 12px;
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  padding: 0;
+  background: transparent;
+  border: 0;
 }
 .settings-footer {
   margin-top: auto;
@@ -2446,6 +2473,42 @@ button.workflow-graph-port.output.active {
   flex-wrap: wrap;
   min-width: 0;
 }
+.memory-toggle-label {
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.memory-note-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+.memory-note-icon svg { width: 16px; height: 16px; }
+.memory-note-size {
+  font-size: 12px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.memory-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.memory-empty-icon { display: inline-flex; color: var(--text-faint); }
+.memory-empty-icon svg { width: 20px; height: 20px; }
+.memory-global-timing { margin: -6px 2px 8px; padding: 0; }
+.memory-global-heading .settings-add-btn { margin-left: auto; padding: 4px 10px; font-size: 12px; }
 .memory-clear-btn {
   font: inherit;
   font-size: 13px;
@@ -2498,6 +2561,18 @@ button.workflow-graph-port.output.active {
   font-size: 13px;
   line-height: 1.55;
 }
+.global-memory-content { white-space: pre-wrap; }
+.global-memory-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+.global-memory-editor .memory-editor-text { min-height: 100px; }
+.global-memory-editor .row { justify-content: flex-end; }
 .settings-list-remove,
 .settings-list-edit {
   display: inline-flex;
@@ -2615,6 +2690,7 @@ button.workflow-graph-port.output.active {
   .appearance-diff-column + .appearance-diff-column { border-left: none; border-top: 1px solid var(--border); }
   .appearance-config-head, .appearance-config-row { align-items: flex-start; flex-direction: column; gap: 10px; padding: 14px 0; }
   .appearance-config-head select, .appearance-color-value { width: 100%; }
+  .appearance-font-input { width: 100%; }
   .settings-page label.font-size-control { width: 100%; grid-template-columns: 1fr 54px; }
   .settings-form-grid .span-2 { grid-column: auto; }
   .settings-toolbar { grid-template-columns: 1fr; }
@@ -2733,8 +2809,8 @@ body { font-size: var(--ui-font-size, 14px); }
 .usage-tool-rank-track { height: 5px; overflow: hidden; border-radius: 999px; background: var(--bg-sunken); }
 .usage-tool-rank-track > i { display: block; height: 100%; border-radius: inherit; }
 .usage-table { display: flex; flex-direction: column; }
-.usage-row { display: grid; grid-template-columns: 1fr 72px 72px 72px 72px; gap: 8px; align-items: center; min-height: 38px; border-bottom: 1px solid var(--border); font-size: 13px; }
-.usage-row:last-child { border-bottom: none; }
+.usage-table > .usage-row { display: grid; grid-template-columns: 1fr 72px 72px 72px 72px; gap: 8px; align-items: center; min-height: 38px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.usage-table > .usage-row:last-child { border-bottom: none; }
 .usage-row-head { color: var(--text-faint); font-size: 12px; min-height: 28px; }
 .usage-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); }
 .usage-row-head .usage-num { color: inherit; }
@@ -2760,5 +2836,5 @@ body { font-size: var(--ui-font-size, 14px); }
 @media (max-width: 720px) {
   .usage-card-head { flex-direction: column; }
   .usage-model-body { flex-direction: column; }
-  .usage-row { grid-template-columns: minmax(150px, 1fr) repeat(4, 58px); gap: 5px; font-size: 11.5px; }
+  .usage-table > .usage-row { grid-template-columns: minmax(150px, 1fr) repeat(4, 58px); gap: 5px; font-size: 11.5px; }
 }

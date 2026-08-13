@@ -606,7 +606,7 @@ fn candidates_from_stamps(
     cached: &[ExternalSessionCacheRecord],
 ) -> Vec<SessionCandidate> {
     let cached = cached
-        .into_iter()
+        .iter()
         .map(|record| (record.source_path.as_str(), record))
         .collect::<HashMap<_, _>>();
     stamps
@@ -621,7 +621,7 @@ fn candidates_from_stamps(
             let metadata = read_metadata_preview(provider, Path::new(&stamp.path))
                 .ok()
                 .and_then(|jsonl| metadata_from_jsonl(provider, &jsonl, &stamp))
-                .or_else(|| previous.map(|record| metadata_from_cache(record)))?;
+                .or_else(|| previous.map(metadata_from_cache))?;
             Some(SessionCandidate {
                 path: stamp.path,
                 file_size: stamp.size,
@@ -911,7 +911,7 @@ fn parse_context_listing(
         if size > CONTEXT_ROLLOUT_MAX_BYTES as i64 {
             continue;
         }
-        validate_context_path(provider, &path)?;
+        validate_context_path(provider, path)?;
         files.push(FileStamp {
             path: path.to_string(),
             size,

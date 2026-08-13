@@ -218,6 +218,7 @@ pub(crate) fn turn_activity_after_user(rows: &[ChatItem], user_index: usize) -> 
     rows.get(user_index + 1..).is_some_and(|tail| {
         tail.iter().any(|item| match item {
             ChatItem::Assistant { text, .. } => !text.trim().is_empty(),
+            ChatItem::BranchMerge { .. } => true,
             ChatItem::Reasoning(_)
             | ChatItem::Tool { .. }
             | ChatItem::FileChanged(_)
@@ -280,9 +281,9 @@ pub(crate) fn mark_optimistic_send_failed(
         );
         return;
     }
-    let has_error_card = rows[index + 1..].iter().any(|item| {
-        matches!(item, ChatItem::Assistant { text, .. } if text.starts_with("Error: "))
-    });
+    let has_error_card = rows[index + 1..].iter().any(
+        |item| matches!(item, ChatItem::Assistant { text, .. } if text.starts_with("Error: ")),
+    );
     if let Some(ChatItem::Assistant { text, .. }) = rows.get_mut(index + 1) {
         if text.is_empty() {
             if has_error_card {
@@ -352,20 +353,14 @@ mod optimistic_send_tests {
 
     #[test]
     fn prestart_failure_strips_the_optimistic_pair() {
-        let mut rows = vec![
-            ChatItem::User("question A".into()),
-            empty_assistant(),
-        ];
+        let mut rows = vec![ChatItem::User("question A".into()), empty_assistant()];
         remove_optimistic_send_rows(&mut rows, "question A");
         assert!(rows.is_empty());
     }
 
     #[test]
     fn poststart_prefix_keeps_the_user_row() {
-        let mut rows = vec![
-            ChatItem::User("question A".into()),
-            empty_assistant(),
-        ];
+        let mut rows = vec![ChatItem::User("question A".into()), empty_assistant()];
         let (started, message) =
             send_failed_after_start(&rows, "question A", "[turn-started] max tokens");
         assert!(started);

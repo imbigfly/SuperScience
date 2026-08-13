@@ -86,6 +86,7 @@ pub(crate) mod tauri_args {
         session_id: &Option<String>,
         title: Option<&str>,
         user_index: Option<usize>,
+        checkpoint_kind: Option<&str>,
     ) -> Value {
         let mut payload = json!({ "sessionId": session_id });
         if let Some(title) = title.map(str::trim).filter(|s| !s.is_empty()) {
@@ -93,6 +94,9 @@ pub(crate) mod tauri_args {
         }
         if let Some(user_index) = user_index {
             payload["userIndex"] = json!(user_index);
+        }
+        if let Some(checkpoint_kind) = checkpoint_kind {
+            payload["checkpointKind"] = json!(checkpoint_kind);
         }
         payload
     }
@@ -184,10 +188,11 @@ mod tauri_args_tests {
         let v = tauri_args::review_session(&sid);
         assert_eq!(v["sessionId"], "frame-1");
 
-        let v = tauri_args::branch_session(&sid, Some("fork here"), Some(2));
+        let v = tauri_args::branch_session(&sid, Some("fork here"), Some(2), Some("before_user"));
         assert_eq!(v["sessionId"], "frame-1");
         assert_eq!(v["title"], "fork here");
         assert_eq!(v["userIndex"], 2);
+        assert_eq!(v["checkpointKind"], "before_user");
         assert!(v.get("session_id").is_none());
         assert!(v.get("user_index").is_none());
 

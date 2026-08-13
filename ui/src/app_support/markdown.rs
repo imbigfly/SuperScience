@@ -161,7 +161,7 @@ fn wrap_markdown_code_blocks_with_copy_controls(html: String, locale: Locale) ->
         };
         let pre_html = &pre_rest[..end + "</pre>".len()];
         out.push_str(&format!(
-            r#"<div class="md-code-card"><button type="button" class="md-code-copy" title="{copy_label}" aria-label="{copy_label}"><span class="gi copy" aria-hidden="true"></span></button>{pre_html}</div>"#
+            r#"<div class="md-code-card"><button type="button" class="md-code-copy" title="{copy_label}" aria-label="{copy_label}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>{pre_html}</div>"#
         ));
         rest = &pre_rest[end + "</pre>".len()..];
     }
@@ -189,6 +189,12 @@ pub(crate) fn artifact_file_paths(a: &Artifact) -> Vec<String> {
     match &a.data {
         PreviewData::File { path, .. } => {
             let mut out = vec![normalize_path(path)];
+            if let Some(location) = a.location.as_deref() {
+                let location = normalize_path(location);
+                if !out.contains(&location) {
+                    out.push(location);
+                }
+            }
             if let Some(name) = path.rsplit(['/', '\\']).next() {
                 let name = normalize_path(name);
                 if !out.contains(&name) {
@@ -369,6 +375,27 @@ fn strip_trailing_list_marker(before: &str) -> &str {
     }
 }
 
+/// Malformed model Markdown can place the separator between two resource
+/// links in its own paragraph (`link\n\n、\n\nlink`). Once the links become
+/// compact resource chips that paragraph creates a conspicuous empty row (or
+/// a lone backtick). Fold only punctuation-only paragraphs back into the
+/// surrounding paragraph; ordinary prose and intentional paragraph breaks
+/// remain untouched.
+fn collapse_orphan_separator_paragraphs(mut html: String) -> String {
+    for (paragraph, replacement) in [
+        ("<p>、</p>", " 、 "),
+        ("<p>，</p>", "， "),
+        ("<p>,</p>", ", "),
+        ("<p>`</p>", " "),
+    ] {
+        let needle = format!("</p>\n{paragraph}\n<p>");
+        while html.contains(&needle) {
+            html = html.replacen(&needle, replacement, 1);
+        }
+    }
+    html
+}
+
 fn html_attr(tag: &str, name: &str) -> Option<String> {
     let needle = format!(r#"{name}=""#);
     let start = tag.find(&needle)? + needle.len();
@@ -376,16 +403,17 @@ fn html_attr(tag: &str, name: &str) -> Option<String> {
     Some(tag[start..end].to_string())
 }
 
+fn decode_html_attribute(value: &str) -> String {
+    value
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
 fn resource_reference_matches(rendered: &str, original: &str) -> bool {
-    fn decode_html_attribute(value: &str) -> String {
-        value
-            .replace("&#x27;", "'")
-            .replace("&#39;", "'")
-            .replace("&quot;", "\"")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&amp;", "&")
-    }
     normalize_path(&decode_href(&decode_html_attribute(rendered)))
         == normalize_path(&decode_href(original))
 }
@@ -471,6 +499,7 @@ pub(crate) fn enrich_md_html(
     arts: &[Artifact],
     resources: &[MessageResource],
     locale: Locale,
+    project_root: Option<&str>,
 ) -> String {
     html = replace_bound_resource_tags(html, resources);
     html = replace_artifact_tokens(html, arts);
@@ -481,11 +510,56 @@ pub(crate) fn enrich_md_html(
         html = html.replace(&marker, &chip);
     }
     html = wrap_code_filenames_as_art_refs(html, arts);
+    html = wrap_inline_workspace_paths(html, project_root);
     html = strip_list_markers_before_art_refs(&html);
+    html = collapse_orphan_separator_paragraphs(html);
     html = html.replace("<pre><code", "<pre class=\"md-code\"><code");
     html = wrap_markdown_code_blocks_with_copy_controls(html, locale);
     html = wrap_markdown_tables_with_copy_controls(html, locale);
     html
+}
+
+/// Turn inline-code project paths into ordinary Markdown-style file links.
+/// The href remains the portable relative path that `handle_md_click` resolves,
+/// while an absolute in-project path is shortened for display. Code blocks,
+/// artifact chips, URLs, commands, and paths outside the project are untouched.
+fn wrap_inline_workspace_paths(html: String, project_root: Option<&str>) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html.as_str();
+    while let Some(start) = rest.find("<code>") {
+        let before = &rest[..start];
+        out.push_str(before);
+        let code_rest = &rest[start + "<code>".len()..];
+        let Some(end) = code_rest.find("</code>") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let encoded = &code_rest[..end];
+        let candidate = decode_html_attribute(encoded);
+        let relative = workspace_relative_path(project_root.unwrap_or_default(), &candidate);
+        let linked = relative
+            .filter(|path| !path.is_empty() && !path.chars().any(char::is_whitespace))
+            .filter(|path| file_kind(path).is_some())
+            .filter(|_| !code_is_inside_art_ref(before) && !code_is_inside_link(before));
+        if let Some(path) = linked {
+            let escaped = html_escape(&path);
+            out.push_str(&format!(
+                r#"<a class="workspace-path-link" href="{escaped}"><code>{escaped}</code></a>"#
+            ));
+        } else {
+            out.push_str("<code>");
+            out.push_str(encoded);
+            out.push_str("</code>");
+        }
+        rest = &code_rest[end + "</code>".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn code_is_inside_link(before: &str) -> bool {
+    matches!((before.rfind("<a "), before.rfind("</a>")), (Some(open), Some(close)) if open > close)
+        || (before.rfind("<a ").is_some() && before.rfind("</a>").is_none())
 }
 
 #[cfg(test)]
@@ -554,6 +628,7 @@ mod art_ref_marker_tests {
             &[],
             &[message_resource("D:/work/report.md'", "markdown", true)],
             Locale::En,
+            None,
         );
         assert!(out.contains(r#"data-resource-status="ready""#));
         assert!(!out.contains("D:/work/report.md"));
@@ -576,6 +651,19 @@ mod art_ref_marker_tests {
     }
 
     #[test]
+    fn folds_orphan_resource_separators_without_touching_prose() {
+        let html = "<ul>\n<li><p><a href=\"a.png\">A</a></p>\n<p>、</p>\n<p><a href=\"b.png\">B</a></p></li>\n</ul>\n<p>`code` stays</p>";
+        let out = collapse_orphan_separator_paragraphs(html.into());
+        assert!(out.contains(r#"<p><a href="a.png">A</a> 、 <a href="b.png">B</a></p>"#));
+        assert!(out.contains("<p>`code` stays</p>"));
+        assert!(!out.contains("<p>、</p>"));
+
+        let html = "<p><a href=\"a.png\">A</a></p>\n<p>`</p>\n<p><a href=\"b.png\">B</a></p>";
+        let out = collapse_orphan_separator_paragraphs(html.into());
+        assert_eq!(out, r#"<p><a href="a.png">A</a> <a href="b.png">B</a></p>"#);
+    }
+
+    #[test]
     fn does_not_nest_art_refs_for_duplicate_filenames() {
         let arts = vec![
             Artifact {
@@ -586,6 +674,7 @@ mod art_ref_marker_tests {
                     path: "a/denovo_design_worklist.csv".into(),
                     kind: "csv".into(),
                 },
+                location: None,
                 source_item: 0,
                 superseded: false,
             },
@@ -597,6 +686,7 @@ mod art_ref_marker_tests {
                     path: "b/denovo_design_worklist.csv".into(),
                     kind: "csv".into(),
                 },
+                location: None,
                 source_item: 0,
                 superseded: false,
             },
@@ -617,6 +707,24 @@ mod art_ref_marker_tests {
             "<code>x.csv</code>",
             r#"<button type="button" class="art-ref" data-art-idx="1" title="x.csv"><code>x.csv</code></button>"#,
         );
+        assert_eq!(out, html);
+    }
+
+    #[test]
+    fn inline_project_paths_are_relative_clickable_links() {
+        let html = r#"<p>Saved <code>D:\Wisp-Science\合作项目\analysis\figures\FIGURE_LEGEND.md</code> and <code>figures/plot.png</code>.</p>"#;
+        let out = wrap_inline_workspace_paths(html.into(), Some(r"D:\Wisp-Science\合作项目"));
+        assert!(out.contains(
+            r#"href="analysis/figures/FIGURE_LEGEND.md"><code>analysis/figures/FIGURE_LEGEND.md</code>"#
+        ));
+        assert!(out.contains(r#"href="figures/plot.png"><code>figures/plot.png</code>"#));
+        assert!(!out.contains(r"D:\Wisp-Science"));
+    }
+
+    #[test]
+    fn inline_commands_and_foreign_absolute_paths_stay_plain_code() {
+        let html = r#"<p><code>monitor_run</code> <code>/usr/bin/python3</code> <code>D:\Other\secret.md</code></p>"#;
+        let out = wrap_inline_workspace_paths(html.into(), Some(r"D:\Project"));
         assert_eq!(out, html);
     }
 

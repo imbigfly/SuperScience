@@ -108,9 +108,10 @@ pub(crate) fn ProjectsScreen(
     // still mounted. If the user navigated elsewhere during the background
     // import, the normal initial load refreshes it when they return.
     create_effect(move |_| {
-        if project_transfer.get().is_some_and(|transfer| {
-            transfer.direction == "import" && transfer.is_complete()
-        }) {
+        if project_transfer
+            .get()
+            .is_some_and(|transfer| transfer.direction == "import" && transfer.is_complete())
+        {
             reload();
         }
     });
@@ -180,7 +181,7 @@ pub(crate) fn ProjectsScreen(
         {
             if pos == idx {
                 search_open.set(false);
-                let path = stored_artifact_path(&a.path);
+                let path = stored_artifact_path(a.location.as_deref().unwrap_or(&a.path));
                 let kind = file_kind(&a.name)
                     .or_else(|| file_kind(&path))
                     .unwrap_or_else(|| {
@@ -323,9 +324,7 @@ pub(crate) fn ProjectsScreen(
                 Err(error) => {
                     let message = localize_backend(locale.get_untracked(), &js_error_text(error));
                     project_transfer.set(Some(ProjectTransferProgress::failed(
-                        "import",
-                        None,
-                        message,
+                        "import", None, message,
                     )));
                 }
             }
@@ -472,7 +471,7 @@ pub(crate) fn ProjectsScreen(
                         title=move || t(locale.get(), "projects.search")
                         aria-label=move || t(locale.get(), "projects.search")
                         on:click=move |_| on_search.call(())>
-                        <span class="gi search"></span>
+                        {compose_icon("search")}
                     </button>
                     <button type="button" class="projects-icon-btn"
                         data-testid="theme-day-night-toggle"
@@ -505,7 +504,7 @@ pub(crate) fn ProjectsScreen(
                         title=move || t(locale.get(), "sidebar.settings")
                         aria-label=move || t(locale.get(), "sidebar.settings")
                         on:click=move |_| on_open_settings.call(())>
-                        <span class="gi gear"></span>
+                        {compose_icon("gear")}
                     </button>
                     <button type="button" class="btn-ghost projects-scratch"
                         on:click=move |_| on_open_scratch.call(())>
@@ -532,7 +531,7 @@ pub(crate) fn ProjectsScreen(
                     <div class="project-search-dialog" role="dialog" aria-label=move || t(locale.get(), "projects.search")
                         on:click=|ev| ev.stop_propagation()>
                         <div class="project-search-input">
-                            <span class="gi search"></span>
+                            {compose_icon("search")}
                             <input id="project-search-input" type="text" inputmode="search" autofocus=true
                                 autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
                                 placeholder=move || t(locale.get(), "projects.search_ph")
@@ -584,7 +583,7 @@ pub(crate) fn ProjectsScreen(
                                         view! {
                                             <button type="button" class="project-search-row" class:active=move || search_active.get() == row_idx
                                                 on:click=move |_| open.call(row_idx)>
-                                                <span class="gi folder"></span>
+                                                {compose_icon("folder")}
                                                 <span class="project-search-main">
                                                     <span class="project-search-title">{p.name.clone()}</span>
                                                     <span class="project-search-sub">
@@ -610,11 +609,11 @@ pub(crate) fn ProjectsScreen(
                                         view! {
                                             <button type="button" class="project-search-row" class:active=move || search_active.get() == row_idx
                                                 on:click=move |_| open.call(row_idx)>
-                                                <span class="gi doc"></span>
+                                                {compose_icon("doc")}
                                                 <span class="project-search-main">
                                                     <span class="project-search-title">{a.name.clone()}</span>
                                                     <span class="project-search-sub">
-                                                        {a.path.clone()}{(!when.is_empty()).then(|| format!(" · {when}")).unwrap_or_default()}
+                                                        {a.location.as_deref().unwrap_or(&a.path).to_string()}{(!when.is_empty()).then(|| format!(" · {when}")).unwrap_or_default()}
                                                     </span>
                                                 </span>
                                                 <span class="project-search-badge">{badge}</span>
@@ -637,7 +636,7 @@ pub(crate) fn ProjectsScreen(
                                         view! {
                                             <button type="button" class="project-search-row" class:active=move || search_active.get() == row_idx
                                                 on:click=move |_| open.call(row_idx)>
-                                                <span class="gi bubble"></span>
+                                                {compose_icon("bubble")}
                                                 <span class="project-search-main">
                                                     <span class="project-search-title">{s.title.clone()}</span>
                                                     <span class="project-search-sub">{format_relative_time(s.ts, loc)}</span>
@@ -677,7 +676,7 @@ pub(crate) fn ProjectsScreen(
                                 opening_in_place.set(false);
                                 creating.set(true);
                             }>
-                            <span class="gi plus"></span>
+                            {compose_icon("plus")}
                             <span>{move || t(locale.get(), "projects.new")}</span>
                         </button>
                         <div class="project-search-foot">
@@ -837,6 +836,7 @@ pub(crate) fn ProjectsScreen(
                             let id_win_locked = p.id.clone();
                             let id_export = p.id.clone();
                             let workspace_export = p.workspace_dir.clone();
+                            let workspace_path = p.workspace_dir.clone();
                             let id_sync = p.id.clone();
                             let id_sync_disabled = p.id.clone();
                             let id_sync_locked = p.id.clone();
@@ -879,11 +879,14 @@ pub(crate) fn ProjectsScreen(
                                                     <span class="pc-dot-n">{active}</span>
                                                 </span>
                                             })}
+                                            {(!when.is_empty()).then(|| view! { <span class="pc-when">{when.clone()}</span> })}
                                         </div>
+                                        {(!workspace_path.trim().is_empty()).then(|| view! {
+                                            <div class="pc-path" title=workspace_path.clone()>{workspace_path.clone()}</div>
+                                        })}
                                         <div class="pc-meta-row">
                                             <span class="pc-meta">{meta}</span>
                                             <span class="pc-meta">{artifacts_meta}</span>
-                                            {(!when.is_empty()).then(|| view! { <span class="pc-when">{when.clone()}</span> })}
                                             {sync_label.clone().map(|label| view! { <span class="pc-sync-state">{label}</span> })}
                                         </div>
                                     </div>

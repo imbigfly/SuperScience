@@ -419,6 +419,9 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "composer.agent_options") => Some("Agent options"),
         (Locale::En, "composer.session_options") => Some("Session options"),
         (Locale::En, "composer.auto_review") => Some("Auto-review"),
+        (Locale::En, "composer.auto_failure_analysis") => Some("Analyze tool failures"),
+        (Locale::En, "composer.failure_rate_threshold") => Some("Failure rate (%)"),
+        (Locale::En, "composer.minimum_failures") => Some("Minimum failures"),
         (Locale::En, "composer.delegation") => Some("Delegation"),
         (Locale::En, "composer.agent_completion") => Some("Completion"),
         (Locale::En, "composer.agent_completion.inline") => Some("Inline"),
@@ -778,6 +781,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "center.close_right") => Some("Close tabs to the right"),
         (Locale::En, "center.close_all") => Some("Close all files"),
         (Locale::En, "center.split") => Some("Chat beside the document"),
+        (Locale::En, "center.resize_split") => Some("Resize document and chat"),
         (Locale::En, "preview.zoom_out") => Some("Zoom out"),
         (Locale::En, "preview.zoom_reset") => Some("Reset zoom"),
         (Locale::En, "preview.zoom_in") => Some("Zoom in"),
@@ -1091,6 +1095,10 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "appearance.ui_font_size_hint") => Some("Adjust the base size used by interface text and controls."),
         (Locale::En, "appearance.code_font_size") => Some("Code font size"),
         (Locale::En, "appearance.code_font_size_hint") => Some("Adjust code, logs, and data preview text."),
+        (Locale::En, "appearance.ui_font_family") => Some("UI font"),
+        (Locale::En, "appearance.ui_font_family_hint") => Some("Name of an installed font used before the default stack; leave empty for the default."),
+        (Locale::En, "appearance.code_font_family") => Some("Code font"),
+        (Locale::En, "appearance.code_font_family_hint") => Some("Monospace font for code and data; leave empty for the default."),
         (Locale::En, "settings.nav.models") => Some("Models"),
         (Locale::En, "settings.nav.quick_actions") => Some("Quick Actions"),
         (Locale::En, "settings.nav.workflows") => Some("Workflows"),
@@ -1279,6 +1287,10 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "specialists.reviewer.test_failed") => Some("Reviewer backend test failed: {msg}"),
         (Locale::En, "specialists.skills") => Some("Skills"),
         (Locale::En, "specialists.skills.whitelist_hint") => Some("Only the checked skills are available to this specialist; none checked = no skills."),
+        (Locale::En, "specialists.skills.search") => Some("Search skills"),
+        (Locale::En, "specialists.skills.search_hint") => Some("Type to search {count} available skills."),
+        (Locale::En, "specialists.skills.no_results") => Some("No matching skills."),
+        (Locale::En, "specialists.skills.remove") => Some("Remove {skill}"),
         (Locale::En, "specialists.inherit") => Some("Inherit project settings"),
         (Locale::En, "specialists.remove") => Some("Remove"),
         (Locale::En, "specialists.builtin_locked") => Some("Built-in instructions are read-only."),
@@ -1372,10 +1384,42 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "skills.removed") => Some("Skill deleted."),
         (Locale::En, "memory.off_banner") => Some("Memory is off. The agent won't save new notes or search existing ones, but notes below are kept and stay editable. Turn memory on to resume."),
         (Locale::En, "memory.scope_hint") => Some("Project memory"),
+        (Locale::En, "memory.enabled_label") => Some("Memory"),
         (Locale::En, "memory.choose_project") => Some("Choose project"),
         (Locale::En, "memory.load_failed") => Some("Could not load project memory."),
         (Locale::En, "memory.project_notes") => Some("{count} notes"),
         (Locale::En, "memory.turn_on") => Some("Turn on"),
+        (Locale::En, "memory.global_scope") => Some("Global habits · all projects"),
+        (Locale::En, "memory.global_add") => Some("Add global habit"),
+        (Locale::En, "memory.global_timing_hint") => Some("Snapshotted when a turn starts. Changes apply from the next turn; older chat history is not rewritten."),
+        (Locale::En, "memory.global_empty") => Some("No global habits yet."),
+        (Locale::En, "memory.global_delete") => Some("Forget global habit"),
+        (Locale::En, "memory.global_edit") => Some("Edit global habit"),
+        (Locale::En, "memory.global_save") => Some("Save global habit"),
+        (Locale::En, "memory.global_created") => Some("Global habit added. It will be used from the next turn."),
+        (Locale::En, "memory.global_deleted") => Some("Global habit deleted. It will no longer be injected from the next turn; older chat history may still affect this session."),
+        (Locale::En, "memory.global_updated") => Some("Global habit updated. The new value will be used from the next turn."),
+        (Locale::En, "memory.proposal.title") => Some("Remember this turn"),
+        (Locale::En, "memory.proposal.failure_title") => Some("Remember failure analysis"),
+        (Locale::En, "memory.proposal.manual_hint") => Some("Review and edit the proposed memory before saving it."),
+        (Locale::En, "memory.proposal.explicit_hint") => Some("The user asked Wisp to remember something. Confirm the wording and scope before saving."),
+        (Locale::En, "memory.proposal.failure_hint") => Some("{failed} of {total} tool calls failed ({rate}%). Confirm the evidence-backed lesson before saving."),
+        (Locale::En, "memory.proposal.scope") => Some("Save to"),
+        (Locale::En, "memory.proposal.scope_project") => Some("Project memory"),
+        (Locale::En, "memory.proposal.scope_global") => Some("Global habits"),
+        (Locale::En, "memory.proposal.replace") => Some("Global memory action"),
+        (Locale::En, "memory.proposal.add_new") => Some("Add as a new global memory"),
+        (Locale::En, "memory.proposal.replace_hint") => Some("Choose an existing memory only when this draft corrects or replaces it."),
+        (Locale::En, "memory.proposal.content") => Some("Memory"),
+        (Locale::En, "memory.proposal.confirm") => Some("Save memory"),
+        (Locale::En, "memory.proposal.saving") => Some("Saving…"),
+        (Locale::En, "memory.proposal.generating") => Some("Preparing memory…"),
+        (Locale::En, "memory.proposal.ready") => Some("Memory draft ready."),
+        (Locale::En, "memory.proposal.none") => Some("No durable memory was proposed."),
+        (Locale::En, "memory.proposal.failed") => Some("Could not prepare memory: {msg}"),
+        (Locale::En, "memory.proposal.empty") => Some("Memory content cannot be empty."),
+        (Locale::En, "memory.proposal.saved") => Some("Memory saved."),
+        (Locale::En, "memory.proposal.saved_global") => Some("Global memory saved. It will be used from the next turn."),
         (Locale::En, "memory.clear_all") => Some("Clear all"),
         (Locale::En, "memory.empty") => Some("No notes yet."),
         (Locale::En, "memory.add") => Some("Add note"),
@@ -1692,26 +1736,25 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "msg.show_all") => Some("Show all"),
         (Locale::En, "msg.show_less") => Some("Show less"),
         (Locale::En, "msg.copy") => Some("Copy"),
+        (Locale::En, "msg.memory") => Some("Memory"),
         (Locale::En, "msg.review") => Some("Review"),
         (Locale::En, "follow_up.title") => Some("Follow-up questions"),
         (Locale::En, "follow_up.close") => Some("Hide follow-up questions"),
         (Locale::En, "msg.undo") => Some("Undo"),
-        (Locale::En, "msg.edit") => Some("Edit"),
+        (Locale::En, "msg.edit") => Some("Rewind"),
         (Locale::En, "msg.branch") => Some("Branch"),
+        (Locale::En, "msg.branch_to_new_chat") => Some("Branch to new conversation"),
         (Locale::En, "exploration.start") => Some("Start exploration"),
         (Locale::En, "exploration.history_unavailable") => Some("Explorations can only start from the current completed turn."),
         (Locale::En, "exploration.default_name") => Some("Exploration {n}"),
         (Locale::En, "exploration.start_title") => Some("Start an isolated exploration"),
-        (Locale::En, "exploration.start_hint") => Some("This copies the current completed mainline state into a persistent, isolated workspace. It is separate from a normal conversation branch."),
+        (Locale::En, "exploration.start_hint") => Some("This snapshots the current completed mainline state into an isolated local workspace. Each candidate may create multiple files and is separate from a normal conversation branch."),
         (Locale::En, "exploration.name") => Some("Exploration name"),
         (Locale::En, "exploration.create") => Some("Create exploration"),
         (Locale::En, "exploration.group") => Some("Explorations"),
         (Locale::En, "exploration.status_creating") => Some("Creating"),
         (Locale::En, "exploration.status_active") => Some("Active"),
-        (Locale::En, "exploration.status_archived") => Some("Archived"),
         (Locale::En, "exploration.status_promoting") => Some("Promoting"),
-        (Locale::En, "exploration.status_promoted") => Some("Mainline"),
-        (Locale::En, "exploration.status_discarded") => Some("Discarded"),
         (Locale::En, "exploration.status_failed") => Some("Failed"),
         (Locale::En, "exploration.isolation_full") => Some("Fully isolated"),
         (Locale::En, "exploration.isolation_partial") => Some("Partially isolated"),
@@ -1719,13 +1762,15 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "exploration.mainline_label") => Some("Mainline checkpoint"),
         (Locale::En, "exploration.external_warning_short") => Some("external effects are not rolled back"),
         (Locale::En, "exploration.view_diff") => Some("View diff"),
+        (Locale::En, "exploration.open") => Some("Open exploration"),
+        (Locale::En, "exploration.select_as_mainline") => Some("Select as mainline"),
         (Locale::En, "exploration.promote") => Some("Set as mainline"),
-        (Locale::En, "exploration.archive") => Some("Archive"),
-        (Locale::En, "exploration.restore") => Some("Restore"),
         (Locale::En, "exploration.discard") => Some("Discard"),
-        (Locale::En, "exploration.mainline_count") => Some("The current round has {n} active explorations"),
-        (Locale::En, "exploration.mainline_warning") => Some("Mainline is frozen. Promote one exploration, or archive or discard every candidate to continue."),
-        (Locale::En, "exploration.mainline_frozen_placeholder") => Some("Mainline frozen while explorations are active"),
+        (Locale::En, "exploration.abandon") => Some("Abandon exploration"),
+        (Locale::En, "exploration.abandon_confirm_body") => Some("Keep the original mainline and permanently remove every exploration in this round, including private files, artifacts, runs, and research records? External operations already performed cannot be rolled back."),
+        (Locale::En, "exploration.mainline_count") => Some("The current round has {n} exploration candidates"),
+        (Locale::En, "exploration.mainline_warning") => Some("Mainline is frozen until you select one exploration or explicitly abandon the complete round."),
+        (Locale::En, "exploration.mainline_frozen_placeholder") => Some("Mainline is frozen while this exploration round is unresolved"),
         (Locale::En, "exploration.read_only_placeholder") => Some("This exploration is read-only"),
         (Locale::En, "exploration.start_another") => Some("Start another"),
         (Locale::En, "exploration.diff_title") => Some("Exploration changes"),
@@ -1739,11 +1784,11 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "exploration.diff_branch_changes") => Some("Exploration changes"),
         (Locale::En, "exploration.diff_mainline_changes") => Some("Mainline changes since checkpoint"),
         (Locale::En, "exploration.promote_confirm_title") => Some("Set this exploration as mainline?"),
-        (Locale::En, "exploration.promote_confirm_body") => Some("The exploration conversation, files, artifacts, runs, decisions, and resource records will become the new mainline. Other candidates from this round will be archived."),
+        (Locale::En, "exploration.promote_confirm_body") => Some("The exploration conversation, files, artifacts, runs, decisions, and resource records will become the new mainline. Every other candidate from this round and its private files and records will be permanently removed."),
         (Locale::En, "exploration.discard_confirm_title") => Some("Discard this exploration?"),
         (Locale::En, "exploration.discard_confirm_body") => Some("Its private workspace and records will be removed. External operations already performed cannot be rolled back."),
-        (Locale::En, "msg.edit_confirm_title") => Some("Edit this message?"),
-        (Locale::En, "msg.edit_confirm_hint") => Some("Editing permanently deletes all conversation after this message and cannot be undone. You can also Branch to copy the conversation up to this message into a new session instead."),
+        (Locale::En, "msg.edit_confirm_title") => Some("Rewind to this message?"),
+        (Locale::En, "msg.edit_confirm_hint") => Some("Rewinding permanently removes all conversation after this message and restores it to the composer. You can branch here instead to preserve the current conversation."),
         (Locale::En, "msg.sent_at") => Some("Sent {time}"),
         (Locale::En, "msg.replied_at") => Some("Replied {time}"),
         (Locale::En, "undo.title") => Some("Undo this turn?"),
@@ -1784,6 +1829,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "ctx.rename_session") => Some("Rename"),
         (Locale::En, "ctx.delete_session") => Some("Delete"),
         (Locale::En, "ctx.copy_to_project") => Some("Copy to another project…"),
+        (Locale::En, "ctx.copy_demo_to_project") => Some("Copy to a project…"),
         (Locale::En, "ctx.move_to_project") => Some("Move to another project…"),
         (Locale::En, "ctx.move_to_prefix") => Some("Move to"),
         (Locale::En, "ctx.move_to_ungrouped") => Some("Ungrouped"),
@@ -1796,6 +1842,9 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "folder.untitled") => Some("Untitled group"),
         (Locale::En, "folder.actions") => Some("Group actions"),
         (Locale::En, "session.delete_confirm") => Some("Delete this session? This cannot be undone."),
+        (Locale::En, "ctx.reload_rules") => Some("Reload project rules…"),
+        (Locale::En, "session.reload_rules_hint") => Some("Rebuild this session's system prompt with the current AGENTS.md / WISP.md. Takes effect on the next turn. Because the prompt prefix changes, the model's prompt cache for this session is invalidated once (the next turn costs a bit more). Chat history is unaffected."),
+        (Locale::En, "session.reload_rules_action") => Some("Reload rules"),
         (Locale::En, "session.delete_many_confirm") => Some("Delete {n} conversations? This cannot be undone."),
         (Locale::En, "session.rename_title") => Some("Rename session"),
         (Locale::En, "session.actions") => Some("Conversation actions"),
@@ -1808,6 +1857,38 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "session.transfer_hint") => Some("Transfer only the saved transcript for “{title}”. Project files and runs stay in the source project; conversation-linked artifact records are not transferred, and underlying files are never deleted."),
         (Locale::En, "session.copy_success") => Some("Conversation copied to {project}."),
         (Locale::En, "session.move_success") => Some("Conversation moved to {project}."),
+        (Locale::En, "session.copy_demo_title") => Some("Copy demo to a project"),
+        (Locale::En, "session.copy_demo_hint") => Some("Copy “{title}” into a real project as a conversation you can continue. Bundled memory notes and project files are written into the target workspace."),
+        (Locale::En, "session.copy_demo_success") => Some("Demo copied to {project}."),
+        (Locale::En, "session.no_target_project_demo") => Some("Create a project first, then copy this demo into it."),
+        (Locale::En, "demo.actions") => Some("Demo actions"),
+        (Locale::En, "branch.delete") => Some("Delete branch"),
+        (Locale::En, "branch.merge") => Some("Merge back"),
+        (Locale::En, "branch.merge_title") => Some("Merge branch summary"),
+        (Locale::En, "branch.merge_hint") => Some("Only work performed in this branch after its checkpoint is summarized. The approved text is appended to the current end of main."),
+        (Locale::En, "branch.checkpoint") => Some("Branched at turn {n}"),
+        (Locale::En, "branch.branch_work") => Some("Branch work after checkpoint"),
+        (Locale::En, "branch.summary_draft") => Some("Summary to append to main"),
+        (Locale::En, "branch.summary_edit_hint") => Some("Review and edit the AI draft. This exact text becomes normal readable context at the end of main."),
+        (Locale::En, "branch.regenerate") => Some("Regenerate"),
+        (Locale::En, "branch.guided_generate") => Some("Guided generation"),
+        (Locale::En, "branch.guidance_title") => Some("Guide a new version"),
+        (Locale::En, "branch.guidance_hint") => Some("AI will create a new draft from the branch changes, the current version, and your guidance."),
+        (Locale::En, "branch.guidance_label") => Some("Guidance"),
+        (Locale::En, "branch.guidance_placeholder") => Some("For example: make the conclusion more concise, emphasize evidence, and retain unresolved questions…"),
+        (Locale::En, "branch.generate") => Some("Generate"),
+        (Locale::En, "branch.generating") => Some("Generating…"),
+        (Locale::En, "branch.merging") => Some("Merging summary…"),
+        (Locale::En, "branch.merge_success") => Some("Branch summary appended to the current end of main."),
+        (Locale::En, "branch.frozen_placeholder") => Some("This branch is frozen as read-only history"),
+        (Locale::En, "branch.merged_result") => Some("Merged branch result"),
+        (Locale::En, "branch.no_changes") => Some("No messages after the common ancestor."),
+        (Locale::En, "branch.main") => Some("main"),
+        (Locale::En, "branch.new_messages") => Some("{n} new messages"),
+        (Locale::En, "branch.role_user") => Some("You"),
+        (Locale::En, "branch.role_assistant") => Some("Assistant"),
+        (Locale::En, "branch.role_tool") => Some("Tool"),
+        (Locale::En, "branch.role_system") => Some("System"),
         (Locale::En, "err.session_transfer_busy") => Some("Wait for the conversation to finish its turn, approval, or review before transferring it."),
         (Locale::En, "err.session_transfer_same_project") => Some("Choose a different project."),
         (Locale::En, "err.session_transfer_target_missing") => Some("The target project no longer exists."),
@@ -1957,8 +2038,11 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "projects.search_ph") => Some("Search projects, artifacts, sessions..."),
         (Locale::En, "command.placeholder") => Some("Search commands..."),
         (Locale::En, "command.group.general") => Some("General"),
+        (Locale::En, "command.group.transfer") => Some("Import and export"),
         (Locale::En, "command.group.navigate") => Some("Navigate"),
         (Locale::En, "command.group.appearance") => Some("Appearance"),
+        (Locale::En, "command.group.help") => Some("Help"),
+        (Locale::En, "command.no_results") => Some("No matching commands"),
         (Locale::En, "command.new_session") => Some("New session"),
         (Locale::En, "command.scratch") => Some("Scratch chat"),
         (Locale::En, "scratch.title") => Some("Scratch chat"),
@@ -2162,6 +2246,8 @@ Do not leave generated files in the project root.",
         (Locale::En, "proj_settings.description_hint") => Some("Shown in the project switcher for your reference — not included in the agent's prompt."),
         (Locale::En, "proj_settings.agent_context") => Some("Agent Context"),
         (Locale::En, "proj_settings.agent_context_hint") => Some("Included in every agent's system prompt for this project. Use it for background, conventions, or instructions all agents should follow. Takes effect on the next new session."),
+        (Locale::En, "proj_settings.agent_context_confirm") => Some("Saving writes this project's Agent Context (.wisp/WISP.md). New conversations use it automatically. Existing conversations keep their current prompt until you right-click the session and reload project rules — that invalidates the model's prompt cache once for that session."),
+        (Locale::En, "proj_settings.agent_context_confirm_action") => Some("Save agent context"),
 
         (Locale::En, "sess_status.running") => Some("Running"),
         (Locale::En, "sess_status.needs_you") => Some("Needs you"),
@@ -2526,6 +2612,9 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "composer.agent_options") => Some("Agent 选项"),
         (Locale::Zh, "composer.session_options") => Some("会话选项"),
         (Locale::Zh, "composer.auto_review") => Some("自动审查"),
+        (Locale::Zh, "composer.auto_failure_analysis") => Some("自动分析工具失败"),
+        (Locale::Zh, "composer.failure_rate_threshold") => Some("失败率阈值 (%)"),
+        (Locale::Zh, "composer.minimum_failures") => Some("最少失败次数"),
         (Locale::Zh, "composer.delegation") => Some("子代理委派"),
         (Locale::Zh, "composer.agent_completion") => Some("结果返回方式"),
         (Locale::Zh, "composer.agent_completion.inline") => Some("当前轮内返回"),
@@ -2885,6 +2974,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "center.close_right") => Some("关闭右侧标签"),
         (Locale::Zh, "center.close_all") => Some("关闭全部文件"),
         (Locale::Zh, "center.split") => Some("在文档旁边对话"),
+        (Locale::Zh, "center.resize_split") => Some("调整文档和对话宽度"),
         (Locale::Zh, "preview.zoom_out") => Some("缩小"),
         (Locale::Zh, "preview.zoom_reset") => Some("重置缩放"),
         (Locale::Zh, "preview.zoom_in") => Some("放大"),
@@ -3198,6 +3288,10 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "appearance.ui_font_size_hint") => Some("调整界面文字和控件使用的基准字号。"),
         (Locale::Zh, "appearance.code_font_size") => Some("代码字体大小"),
         (Locale::Zh, "appearance.code_font_size_hint") => Some("调整代码、日志和数据预览文字。"),
+        (Locale::Zh, "appearance.ui_font_family") => Some("界面字体"),
+        (Locale::Zh, "appearance.ui_font_family_hint") => Some("输入系统已安装的字体名称，优先于默认字体；留空使用默认。"),
+        (Locale::Zh, "appearance.code_font_family") => Some("等宽字体"),
+        (Locale::Zh, "appearance.code_font_family_hint") => Some("用于代码和数据的等宽字体；留空使用默认。"),
         (Locale::Zh, "settings.nav.models") => Some("模型"),
         (Locale::Zh, "settings.nav.quick_actions") => Some("快捷动作"),
         (Locale::Zh, "settings.nav.workflows") => Some("工作流"),
@@ -3386,6 +3480,10 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "specialists.reviewer.test_failed") => Some("Reviewer 后端测试失败：{msg}"),
         (Locale::Zh, "specialists.skills") => Some("技能"),
         (Locale::Zh, "specialists.skills.whitelist_hint") => Some("该专家只能使用勾选的技能;一个都不勾 = 不带任何技能。"),
+        (Locale::Zh, "specialists.skills.search") => Some("搜索技能"),
+        (Locale::Zh, "specialists.skills.search_hint") => Some("输入关键词搜索 {count} 个可用技能。"),
+        (Locale::Zh, "specialists.skills.no_results") => Some("没有匹配的技能。"),
+        (Locale::Zh, "specialists.skills.remove") => Some("移除 {skill}"),
         (Locale::Zh, "specialists.inherit") => Some("继承项目设置"),
         (Locale::Zh, "specialists.remove") => Some("删除"),
         (Locale::Zh, "specialists.builtin_locked") => Some("内置指令不可编辑。"),
@@ -3479,10 +3577,42 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "skills.removed") => Some("技能已删除。"),
         (Locale::Zh, "memory.off_banner") => Some("记忆已关闭。Agent 不会保存或检索新笔记，但下方已有笔记仍会保留且可编辑。开启记忆以恢复。"),
         (Locale::Zh, "memory.scope_hint") => Some("项目记忆"),
+        (Locale::Zh, "memory.enabled_label") => Some("启用记忆"),
         (Locale::Zh, "memory.choose_project") => Some("选择项目"),
         (Locale::Zh, "memory.load_failed") => Some("无法加载该项目的记忆。"),
         (Locale::Zh, "memory.project_notes") => Some("{count} 条笔记"),
         (Locale::Zh, "memory.turn_on") => Some("开启"),
+        (Locale::Zh, "memory.global_scope") => Some("全局习惯 · 所有项目"),
+        (Locale::Zh, "memory.global_add") => Some("新增全局习惯"),
+        (Locale::Zh, "memory.global_timing_hint") => Some("在每轮开始时生成快照。修改从下一轮生效，不会改写已有聊天历史。"),
+        (Locale::Zh, "memory.global_empty") => Some("暂无全局习惯。"),
+        (Locale::Zh, "memory.global_delete") => Some("忘记这条全局习惯"),
+        (Locale::Zh, "memory.global_edit") => Some("编辑全局习惯"),
+        (Locale::Zh, "memory.global_save") => Some("保存全局习惯"),
+        (Locale::Zh, "memory.global_created") => Some("全局习惯已新增，将从下一轮开始使用。"),
+        (Locale::Zh, "memory.global_deleted") => Some("全局习惯已删除；下一轮起不再注入。当前会话中的旧历史仍可能影响回答。"),
+        (Locale::Zh, "memory.global_updated") => Some("全局习惯已更新，将从下一轮开始使用新内容。"),
+        (Locale::Zh, "memory.proposal.title") => Some("记忆这一轮"),
+        (Locale::Zh, "memory.proposal.failure_title") => Some("记忆失败分析"),
+        (Locale::Zh, "memory.proposal.manual_hint") => Some("保存前请确认并编辑这一轮提炼出的记忆。"),
+        (Locale::Zh, "memory.proposal.explicit_hint") => Some("用户要求 Wisp 记住这项内容，请确认措辞和作用域后再保存。"),
+        (Locale::Zh, "memory.proposal.failure_hint") => Some("本轮 {total} 次工具调用中有 {failed} 次失败（{rate}%）。请确认有证据支持的经验后再保存。"),
+        (Locale::Zh, "memory.proposal.scope") => Some("保存到"),
+        (Locale::Zh, "memory.proposal.scope_project") => Some("项目记忆"),
+        (Locale::Zh, "memory.proposal.scope_global") => Some("全局习惯"),
+        (Locale::Zh, "memory.proposal.replace") => Some("全局记忆操作"),
+        (Locale::Zh, "memory.proposal.add_new") => Some("新增一条全局记忆"),
+        (Locale::Zh, "memory.proposal.replace_hint") => Some("仅当草稿用于修正或取代旧记忆时，选择要替换的内容。"),
+        (Locale::Zh, "memory.proposal.content") => Some("记忆内容"),
+        (Locale::Zh, "memory.proposal.confirm") => Some("保存记忆"),
+        (Locale::Zh, "memory.proposal.saving") => Some("正在保存…"),
+        (Locale::Zh, "memory.proposal.generating") => Some("正在提炼记忆…"),
+        (Locale::Zh, "memory.proposal.ready") => Some("记忆草稿已生成。"),
+        (Locale::Zh, "memory.proposal.none") => Some("这一轮没有值得长期保存的内容。"),
+        (Locale::Zh, "memory.proposal.failed") => Some("无法生成记忆：{msg}"),
+        (Locale::Zh, "memory.proposal.empty") => Some("记忆内容不能为空。"),
+        (Locale::Zh, "memory.proposal.saved") => Some("记忆已保存。"),
+        (Locale::Zh, "memory.proposal.saved_global") => Some("全局记忆已保存，将从下一轮开始使用。"),
         (Locale::Zh, "memory.clear_all") => Some("全部清除"),
         (Locale::Zh, "memory.empty") => Some("暂无笔记。"),
         (Locale::Zh, "memory.add") => Some("添加笔记"),
@@ -3797,12 +3927,14 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "msg.show_all") => Some("展开全部"),
         (Locale::Zh, "msg.show_less") => Some("收起"),
         (Locale::Zh, "msg.copy") => Some("复制"),
+        (Locale::Zh, "msg.memory") => Some("记忆"),
         (Locale::Zh, "msg.review") => Some("审查"),
         (Locale::Zh, "follow_up.title") => Some("后续问题"),
         (Locale::Zh, "follow_up.close") => Some("关闭后续问题"),
         (Locale::Zh, "msg.undo") => Some("撤销"),
-        (Locale::Zh, "msg.edit") => Some("编辑"),
+        (Locale::Zh, "msg.edit") => Some("回溯"),
         (Locale::Zh, "msg.branch") => Some("分支"),
+        (Locale::Zh, "msg.branch_to_new_chat") => Some("分支到新会话"),
         (Locale::Zh, "exploration.start") => Some("开始探索"),
         (Locale::Zh, "exploration.history_unavailable") => Some("只能从当前最新的已完成轮次开始探索。"),
         (Locale::Zh, "exploration.default_name") => Some("探索 {n}"),
@@ -3813,10 +3945,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "exploration.group") => Some("探索"),
         (Locale::Zh, "exploration.status_creating") => Some("创建中"),
         (Locale::Zh, "exploration.status_active") => Some("进行中"),
-        (Locale::Zh, "exploration.status_archived") => Some("已归档"),
         (Locale::Zh, "exploration.status_promoting") => Some("正在设为主线"),
-        (Locale::Zh, "exploration.status_promoted") => Some("主线"),
-        (Locale::Zh, "exploration.status_discarded") => Some("已丢弃"),
         (Locale::Zh, "exploration.status_failed") => Some("失败"),
         (Locale::Zh, "exploration.isolation_full") => Some("完全隔离"),
         (Locale::Zh, "exploration.isolation_partial") => Some("部分隔离"),
@@ -3824,13 +3953,15 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "exploration.mainline_label") => Some("主线检查点"),
         (Locale::Zh, "exploration.external_warning_short") => Some("外部副作用不会回滚"),
         (Locale::Zh, "exploration.view_diff") => Some("查看差异"),
+        (Locale::Zh, "exploration.open") => Some("打开探索"),
+        (Locale::Zh, "exploration.select_as_mainline") => Some("选定为主线"),
         (Locale::Zh, "exploration.promote") => Some("设为主线"),
-        (Locale::Zh, "exploration.archive") => Some("归档"),
-        (Locale::Zh, "exploration.restore") => Some("恢复"),
         (Locale::Zh, "exploration.discard") => Some("丢弃"),
-        (Locale::Zh, "exploration.mainline_count") => Some("当前探索轮有 {n} 个活跃候选"),
-        (Locale::Zh, "exploration.mainline_warning") => Some("主线已冻结。请选择一个探索晋升，或归档、丢弃全部候选后再继续。"),
-        (Locale::Zh, "exploration.mainline_frozen_placeholder") => Some("存在活动探索，主线已冻结"),
+        (Locale::Zh, "exploration.abandon") => Some("放弃探索"),
+        (Locale::Zh, "exploration.abandon_confirm_body") => Some("保留原 main，并永久删除本轮所有探索及其私有文件、Artifact、Run 和研究记录？已经执行的外部操作无法回滚。"),
+        (Locale::Zh, "exploration.mainline_count") => Some("当前探索轮有 {n} 个候选"),
+        (Locale::Zh, "exploration.mainline_warning") => Some("选择一个探索或明确放弃整轮探索之前，main 将保持冻结。"),
+        (Locale::Zh, "exploration.mainline_frozen_placeholder") => Some("探索轮尚未确定，main 已冻结"),
         (Locale::Zh, "exploration.read_only_placeholder") => Some("此探索为只读状态"),
         (Locale::Zh, "exploration.start_another") => Some("再建一个探索"),
         (Locale::Zh, "exploration.diff_title") => Some("探索差异"),
@@ -3844,11 +3975,11 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "exploration.diff_branch_changes") => Some("探索相对检查点的变化"),
         (Locale::Zh, "exploration.diff_mainline_changes") => Some("检查点之后的主线变化"),
         (Locale::Zh, "exploration.promote_confirm_title") => Some("将这个探索设为主线？"),
-        (Locale::Zh, "exploration.promote_confirm_body") => Some("探索中的对话、文件、Artifact、运行、决策和资源记录会成为新主线；同轮其他候选会自动归档。"),
+        (Locale::Zh, "exploration.promote_confirm_body") => Some("探索中的对话、文件、Artifact、运行、决策和资源记录会成为新主线；同轮其他候选及其私有文件和记录会被永久清理。"),
         (Locale::Zh, "exploration.discard_confirm_title") => Some("丢弃这个探索？"),
         (Locale::Zh, "exploration.discard_confirm_body") => Some("它的私有工作区和记录会被移除；已经执行的外部操作无法回滚。"),
-        (Locale::Zh, "msg.edit_confirm_title") => Some("编辑这条消息？"),
-        (Locale::Zh, "msg.edit_confirm_hint") => Some("编辑会永久删除这条消息之后的全部对话，且无法恢复。也可以选择「分支」，从这条消息复制出一个新会话继续。"),
+        (Locale::Zh, "msg.edit_confirm_title") => Some("回溯到这条消息？"),
+        (Locale::Zh, "msg.edit_confirm_hint") => Some("回溯会永久移除这条消息之后的全部对话，并把它恢复到输入框。也可以从这里创建分支，以保留当前对话。"),
         (Locale::Zh, "msg.sent_at") => Some("发送于 {time}"),
         (Locale::Zh, "msg.replied_at") => Some("回复于 {time}"),
         (Locale::Zh, "undo.title") => Some("撤销这轮对话？"),
@@ -3889,6 +4020,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "ctx.rename_session") => Some("重命名"),
         (Locale::Zh, "ctx.delete_session") => Some("删除"),
         (Locale::Zh, "ctx.copy_to_project") => Some("复制到其他项目…"),
+        (Locale::Zh, "ctx.copy_demo_to_project") => Some("复制到项目…"),
         (Locale::Zh, "ctx.move_to_project") => Some("移动到其他项目…"),
         (Locale::Zh, "ctx.move_to_prefix") => Some("移动到"),
         (Locale::Zh, "ctx.move_to_ungrouped") => Some("未分组"),
@@ -3901,6 +4033,9 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "folder.untitled") => Some("未命名分组"),
         (Locale::Zh, "folder.actions") => Some("分组操作"),
         (Locale::Zh, "session.delete_confirm") => Some("删除此会话？此操作无法撤销。"),
+        (Locale::Zh, "ctx.reload_rules") => Some("重载项目规则…"),
+        (Locale::Zh, "session.reload_rules_hint") => Some("将用当前的 AGENTS.md / WISP.md 重建本会话的系统提示词，下一轮起生效。由于提示词前缀变化，该会话的模型提示词缓存将失效一次（下一轮成本略增）。聊天历史不受影响。"),
+        (Locale::Zh, "session.reload_rules_action") => Some("重载规则"),
         (Locale::Zh, "session.delete_many_confirm") => Some("删除这 {n} 个会话？此操作无法撤销。"),
         (Locale::Zh, "session.rename_title") => Some("重命名会话"),
         (Locale::Zh, "session.actions") => Some("会话操作"),
@@ -3913,6 +4048,38 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "session.transfer_hint") => Some("仅转移“{title}”的已保存对话记录。项目文件和运行记录仍保留在原项目中；与会话关联的产物记录不会转移，底层文件不会被删除。"),
         (Locale::Zh, "session.copy_success") => Some("会话已复制到 {project}。"),
         (Locale::Zh, "session.move_success") => Some("会话已移动到 {project}。"),
+        (Locale::Zh, "session.copy_demo_title") => Some("将演示复制到项目"),
+        (Locale::Zh, "session.copy_demo_hint") => Some("将“{title}”复制为可继续的真实会话。演示附带的记忆笔记和项目文件会写入目标工作区。"),
+        (Locale::Zh, "session.copy_demo_success") => Some("演示已复制到 {project}。"),
+        (Locale::Zh, "session.no_target_project_demo") => Some("请先创建一个项目，再复制此演示。"),
+        (Locale::Zh, "demo.actions") => Some("演示操作"),
+        (Locale::Zh, "branch.delete") => Some("删除分支"),
+        (Locale::Zh, "branch.merge") => Some("回并"),
+        (Locale::Zh, "branch.merge_title") => Some("回并分支总结"),
+        (Locale::Zh, "branch.merge_hint") => Some("只总结该分支从检查点之后完成的工作。确认后的文本会追加到 main 当前末尾。"),
+        (Locale::Zh, "branch.checkpoint") => Some("从第 {n} 轮分出"),
+        (Locale::Zh, "branch.branch_work") => Some("检查点后的分支工作"),
+        (Locale::Zh, "branch.summary_draft") => Some("准备追加到 main 的总结"),
+        (Locale::Zh, "branch.summary_edit_hint") => Some("请检查并编辑 AI 草稿；最终文本会作为普通可读上下文追加到 main 末尾。"),
+        (Locale::Zh, "branch.regenerate") => Some("重新生成"),
+        (Locale::Zh, "branch.guided_generate") => Some("引导生成"),
+        (Locale::Zh, "branch.guidance_title") => Some("引导生成新版本"),
+        (Locale::Zh, "branch.guidance_hint") => Some("AI 会结合【变更】【当前版本】【用户引导】生成一版新的草稿。"),
+        (Locale::Zh, "branch.guidance_label") => Some("引导词"),
+        (Locale::Zh, "branch.guidance_placeholder") => Some("例如：结论更精炼，突出实验证据，同时保留尚未解决的问题……"),
+        (Locale::Zh, "branch.generate") => Some("生成新版本"),
+        (Locale::Zh, "branch.generating") => Some("正在生成…"),
+        (Locale::Zh, "branch.merging") => Some("正在回并总结…"),
+        (Locale::Zh, "branch.merge_success") => Some("分支总结已追加到 main 当前末尾。"),
+        (Locale::Zh, "branch.frozen_placeholder") => Some("该分支已冻结为只读历史"),
+        (Locale::Zh, "branch.merged_result") => Some("回并结果"),
+        (Locale::Zh, "branch.no_changes") => Some("共同祖先之后没有新消息。"),
+        (Locale::Zh, "branch.main") => Some("main"),
+        (Locale::Zh, "branch.new_messages") => Some("{n} 条新消息"),
+        (Locale::Zh, "branch.role_user") => Some("你"),
+        (Locale::Zh, "branch.role_assistant") => Some("助手"),
+        (Locale::Zh, "branch.role_tool") => Some("工具"),
+        (Locale::Zh, "branch.role_system") => Some("系统"),
         (Locale::Zh, "err.session_transfer_busy") => Some("请等待该会话完成当前回复、审批或审查后再转移。"),
         (Locale::Zh, "err.session_transfer_same_project") => Some("请选择其他项目。"),
         (Locale::Zh, "err.session_transfer_target_missing") => Some("目标项目已不存在。"),
@@ -4062,8 +4229,11 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "projects.search_ph") => Some("搜索项目、artifacts、会话..."),
         (Locale::Zh, "command.placeholder") => Some("搜索命令..."),
         (Locale::Zh, "command.group.general") => Some("常用"),
+        (Locale::Zh, "command.group.transfer") => Some("导入与导出"),
         (Locale::Zh, "command.group.navigate") => Some("导航"),
         (Locale::Zh, "command.group.appearance") => Some("外观"),
+        (Locale::Zh, "command.group.help") => Some("帮助"),
+        (Locale::Zh, "command.no_results") => Some("没有匹配的命令"),
         (Locale::Zh, "command.new_session") => Some("新建会话"),
         (Locale::Zh, "command.scratch") => Some("随手一聊"),
         (Locale::Zh, "scratch.title") => Some("随手一聊"),
@@ -4267,6 +4437,8 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "proj_settings.description_hint") => Some("显示在项目切换器中供你参考 —— 不会包含在 Agent 的提示词里。"),
         (Locale::Zh, "proj_settings.agent_context") => Some("Agent 上下文"),
         (Locale::Zh, "proj_settings.agent_context_hint") => Some("会包含在本项目每个 Agent 的系统提示词中。可用于填写背景信息、约定或所有 Agent 都应遵循的指令。下次新建会话时生效。"),
+        (Locale::Zh, "proj_settings.agent_context_confirm") => Some("保存会写入本项目的 Agent 上下文（.wisp/WISP.md）。新会话会自动使用。已有会话仍沿用旧提示词，直到你在会话上右键并重载项目规则——重载会让该会话的模型提示词缓存失效一次。"),
+        (Locale::Zh, "proj_settings.agent_context_confirm_action") => Some("保存 Agent 上下文"),
 
         (Locale::Zh, "sess_status.running") => Some("运行中"),
         (Locale::Zh, "sess_status.needs_you") => Some("需要你"),
@@ -4315,8 +4487,26 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
             t(locale, "err.cred_env_invalid")
         }
         "Credential value is required." => t(locale, "err.cred_value_required"),
+        m if m.starts_with("exploration_round_active:") => {
+            if locale == Locale::Zh {
+                "另一个主线会话已有当前探索轮；请先结束该轮探索。".to_string()
+            } else {
+                "Another mainline conversation already owns the current exploration round. Finish that round first.".to_string()
+            }
+        }
         m if m.starts_with("exploration_mainline_frozen:") => {
-            t(locale, "exploration.mainline_warning")
+            if locale == Locale::Zh {
+                "当前 main 已冻结；请选择一个探索，或从 main 的右键菜单放弃整轮探索。".to_string()
+            } else {
+                "Mainline is frozen. Select an exploration, or abandon the complete round from mainline's context menu.".to_string()
+            }
+        }
+        m if m.starts_with("session_has_branches:") => {
+            if locale == Locale::Zh {
+                "该 main 仍有对话分支；请先删除分支。".to_string()
+            } else {
+                "This main conversation still has branches. Delete the branches first.".to_string()
+            }
         }
         m if m.starts_with("SSH connection succeeded, but the environment probe could not read") => {
             if locale == Locale::Zh {
@@ -4352,6 +4542,83 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
         }
         "Wait for the session to finish its turn, approval, or review before transferring it." => {
             t(locale, "err.session_transfer_busy")
+        }
+        "Wait for every compared conversation to finish before converging branches." => {
+            if locale == Locale::Zh {
+                "请等待所有参与比较的会话完成当前回复、审批或审阅后再收敛。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "ACP conversations cannot converge because their remote context cannot be rewritten." => {
+            if locale == Locale::Zh {
+                "ACP 会话暂不支持分支收敛，因为无法安全改写远端会话上下文。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Conversation branches changed while the summary was being prepared. Compare them again." => {
+            if locale == Locale::Zh {
+                "生成总结期间分支已发生变化，请重新比较。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Conversation branches changed before AI comparison. Compare them again." => {
+            if locale == Locale::Zh {
+                "开始 AI 智能对比前分支已发生变化，请重新比较。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Branch analysis returned invalid text." => {
+            if locale == Locale::Zh {
+                "分支智能对比返回了无效文本。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Branch analysis model timed out after 90 seconds." => {
+            if locale == Locale::Zh {
+                "分支智能对比模型在 90 秒后超时。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Branch analysis model returned an empty comparison." => {
+            if locale == Locale::Zh {
+                "分支智能对比模型返回了空结果。".into()
+            } else {
+                msg.into()
+            }
+        }
+        m if m.starts_with("Branch analysis model failed:") => {
+            if locale == Locale::Zh {
+                format!("分支智能对比模型失败：{}", m.trim_start_matches("Branch analysis model failed:"))
+            } else {
+                msg.into()
+            }
+        }
+        "Branch comparison model timed out after 120 seconds." => {
+            if locale == Locale::Zh {
+                "分支比较模型在 120 秒后超时。".into()
+            } else {
+                msg.into()
+            }
+        }
+        "Branch comparison model returned an empty summary." => {
+            if locale == Locale::Zh {
+                "分支比较模型返回了空总结。".into()
+            } else {
+                msg.into()
+            }
+        }
+        m if m.starts_with("Branch comparison model failed:") => {
+            if locale == Locale::Zh {
+                format!("分支比较模型失败：{}", m.trim_start_matches("Branch comparison model failed:"))
+            } else {
+                msg.into()
+            }
         }
         "Source and target projects must be different." => {
             t(locale, "err.session_transfer_same_project")

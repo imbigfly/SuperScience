@@ -359,6 +359,16 @@ async fn frame_and_project(
 }
 
 async fn validate_undo_session(state: &AppState, frame_id: &str) -> Result<(), String> {
+    if matches!(
+        state
+            .store
+            .session_branch_state(frame_id)
+            .await
+            .map_err(|error| error.to_string())?,
+        Some("merged" | "orphaned")
+    ) {
+        return Err("Frozen conversation branches cannot be undone.".into());
+    }
     if state.running_turns.lock().await.contains(frame_id) {
         return Err("Wait for the current turn to finish before undoing it.".into());
     }

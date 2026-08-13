@@ -15,6 +15,12 @@ results are limited to 4,000 characters and streamed terminal output to 64 KiB
 and question cards are not clipped. The durable model transcript is unchanged;
 these limits apply to the WebView presentation and its replay data.
 
+Long conversations use the same bounded tail whether they stay open or are
+reopened. After a live transcript grows past 40 completed user turns, the
+WebView unloads older reactive rows and keeps the latest 20; **Load earlier
+messages** restores the durable history from SQLite. This presentation limit
+does not change model context, exports, artifacts, or the saved transcript.
+
 SuperScience calls remote LLM APIs through model profiles. Desktop users
 configure these in **Settings -> Models**. Each row is a model profile with its
 own display name, provider, API URL, model ID, advanced options, and API key.
@@ -27,7 +33,13 @@ The composer model picker binds the selected HTTP model to the current
 conversation. Switching one populated conversation asks for confirmation and
 does not change any other conversation. Empty conversations switch immediately
 without a warning. The active profile in Settings remains the default for new
-conversations.
+conversations. The reasoning-effort selector in the same menu is also scoped to
+the current conversation: changing it overrides that conversation's model
+profile without editing the profile or affecting other conversations. A new
+conversation inherits the reasoning effort configured on its model profile.
+The selector lists the effort levels the bound model family is documented to
+support (same curated list as the model form in Settings), and choosing
+"default" clears the conversation override so it follows the profile again.
 
 Model profiles describe model access and capabilities for the **built-in SuperScience
 agent**. External coding agents (Codex / Claude via ACP) are configured under
@@ -208,3 +220,8 @@ The headless CLI reads `SUPERSCIENCE_*`. The desktop shell currently still
 accepts the legacy `WISP_*` names for the same settings.
 cargo run -p superscience-cli
 ```
+
+The full CLI environment-variable table, eval/RPC commands, and bundled MCP
+launch flags are in [development](development.md). Desktop setup, including
+ACP agents and remote MCP connections, is in
+[basic configuration](basic-configuration.md).

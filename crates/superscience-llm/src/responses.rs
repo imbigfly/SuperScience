@@ -158,7 +158,7 @@ fn message_to_input(m: &Message) -> Vec<Value> {
                     "type": "function_call",
                     "call_id": tc.id,
                     "name": openai_wire_tool_name(&tc.function.name),
-                    "arguments": tc.function.arguments,
+                    "arguments": crate::provider::valid_json_tool_arguments(&tc.function.arguments),
                 }));
             }
             items
@@ -327,7 +327,15 @@ impl Provider for OpenAiResponsesProvider {
 fn ensure_completed_response(value: &Value) -> Result<()> {
     match value.get("status").and_then(Value::as_str) {
         None | Some("completed") => Ok(()),
-        Some(_) => Err(LlmError::Incomplete),
+        Some(status) => Err(LlmError::NotCompleted {
+            status: status.to_string(),
+            reason: value
+                .pointer("/incomplete_details/reason")
+                .and_then(Value::as_str)
+                .or_else(|| value.pointer("/error/message").and_then(Value::as_str))
+                .unwrap_or("no detail provided")
+                .to_string(),
+        }),
     }
 }
 
@@ -384,6 +392,27 @@ mod tests {
             output["call_id"], "call_abc",
             "output must match the emitted call_id"
         );
+    }
+
+    /// History arguments can be invalid JSON (compaction truncates oversized
+    /// arguments mid-string; a `finish_reason: "length"` turn can persist a
+    /// half-written call). Strict gateways re-parse them and 400, so the wire
+    /// format must replace them with valid JSON.
+    #[test]
+    fn replaces_invalid_arguments_with_empty_object() {
+        let messages = vec![
+            Message::user("run the skill"),
+            assistant_with_call("", "call_bad", "openalex", "{\"q\":\"x...[ archived ...]"),
+            Message::tool("call_bad", "openalex", "result body"),
+        ];
+
+        let input = wire_input(&messages);
+
+        let call = input
+            .iter()
+            .find(|v| v.get("type").and_then(|t| t.as_str()) == Some("function_call"))
+            .expect("function_call item present");
+        assert_eq!(call["arguments"], "{}");
     }
 
     /// Interrupted turn: assistant emitted a call, then the user resumed before
@@ -500,13 +529,54 @@ mod tests {
                 "output_text": "partial report",
                 "incomplete_details": {"reason": "upstream_error"}
             });
-            assert!(matches!(
-                ensure_completed_response(&value),
-                Err(LlmError::Incomplete)
-            ));
+            match ensure_completed_response(&value) {
+                Err(LlmError::NotCompleted { status: s, reason }) => {
+                    assert_eq!(s, status);
+                    assert_eq!(reason, "upstream_error");
+                }
+                other => panic!("expected NotCompleted, got {other:?}"),
+            }
         }
         assert!(ensure_completed_response(&json!({"status": "completed"})).is_ok());
         assert!(ensure_completed_response(&json!({"output_text": "relay response"})).is_ok());
+    }
+
+    #[test]
+    fn output_token_limit_is_distinguished_from_other_failures() {
+        let limited = ensure_completed_response(&json!({
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"}
+        }))
+        .unwrap_err();
+        assert!(limited.output_limit_hit());
+        assert_eq!(
+            limited.to_string(),
+            "response ended with status 'incomplete' (max_output_tokens)"
+        );
+
+        let filtered = ensure_completed_response(&json!({
+            "status": "incomplete",
+            "incomplete_details": {"reason": "content_filter"}
+        }))
+        .unwrap_err();
+        assert!(!filtered.output_limit_hit());
+
+        let failed = ensure_completed_response(&json!({
+            "status": "failed",
+            "error": {"message": "upstream exploded"}
+        }))
+        .unwrap_err();
+        assert!(!failed.output_limit_hit());
+        assert_eq!(
+            failed.to_string(),
+            "response ended with status 'failed' (upstream exploded)"
+        );
+
+        let undetailed = ensure_completed_response(&json!({"status": "cancelled"})).unwrap_err();
+        assert_eq!(
+            undetailed.to_string(),
+            "response ended with status 'cancelled' (no detail provided)"
+        );
     }
 
     #[test]

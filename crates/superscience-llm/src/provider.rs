@@ -21,6 +21,21 @@ pub(crate) fn openai_internal_tool_name(name: &str) -> &str {
     }
 }
 
+/// OpenAI-compatible history must carry `tool_calls[].function.arguments` as
+/// a *valid* JSON string: strict gateways re-parse it and 400 with Python
+/// `json` errors like "Unterminated string" when the value is broken. Ours
+/// can be: context compaction cuts oversized arguments mid-string
+/// (`wisp-core` `bounded_latest_turn`), and a `finish_reason: "length"` turn
+/// can persist a half-written call. Replace anything that doesn't parse with
+/// an empty object, matching the Anthropic provider's stance.
+pub(crate) fn valid_json_tool_arguments(arguments: &str) -> String {
+    let trimmed = arguments.trim();
+    if !trimmed.is_empty() && serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        return arguments.to_string();
+    }
+    "{}".to_string()
+}
+
 /// reqwest's Display hides the useful part ("connection refused", "proxy
 /// unreachable", dns errors) in `source()`; walk the chain so users see it (#77).
 fn error_chain(e: &reqwest::Error) -> String {
@@ -46,11 +61,22 @@ pub enum LlmError {
     Config(String),
     #[error("stream ended without completion")]
     Incomplete,
+    /// A Responses-API turn that ended in a terminal status other than
+    /// `completed` (HTTP 200, but `incomplete`/`failed`/`cancelled`). Carries
+    /// the wire detail (`incomplete_details.reason` or `error.message`) so
+    /// callers can tell an exhausted output budget from a genuine failure.
+    #[error("response ended with status '{status}' ({reason})")]
+    NotCompleted { status: String, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, LlmError>;
 
 impl LlmError {
+    /// The model stopped because it exhausted the output token budget
+    /// (`max_output_tokens`), so a retry with a larger budget can succeed.
+    pub fn output_limit_hit(&self) -> bool {
+        matches!(self, LlmError::NotCompleted { reason, .. } if reason == "max_output_tokens")
+    }
     /// Provider rejected the request because the assembled prompt exceeds the
     /// model context window.
     pub fn is_context_overflow(&self) -> bool {
@@ -121,7 +147,8 @@ pub struct ProviderConfig {
     pub anthropic_version: String,
     /// Cap on output tokens per turn.
     pub max_tokens: u64,
-    /// OpenAI reasoning effort (`reasoning.effort` / `reasoning_effort`). None = provider default.
+    /// Reasoning effort: `reasoning.effort` / `reasoning_effort` for OpenAI,
+    /// `output_config.effort` for Anthropic. None = provider default.
     pub reasoning_effort: Option<String>,
     /// HTTP proxy override. `None`/empty = follow system/env proxy settings;
     /// `"none"` = force a direct connection; otherwise a proxy URL

@@ -125,7 +125,7 @@ test("session row menu button is hidden until hover or keyboard focus", async ({
   await expect.poll(opacity).toBe("1");
 });
 
-test("session status dot is hidden at rest and shimmers while running", async ({ page }) => {
+test("session status spinner is hidden at rest and rotates while running", async ({ page }) => {
   await page.addInitScript(parallelMock);
   await enterApp(page);
   // parallelMock holds Done for ~5s; the sidebar running indicator shows once the
@@ -136,19 +136,19 @@ test("session status dot is hidden at rest and shimmers while running", async ({
   await page.locator(".sidebar").getByRole("button", { name: "New session" }).click();
 
   const session = page.locator(".side-item.ses", { hasText: "dot-shimmer" });
-  const dot = session.locator(".dot");
+  const live = session.locator(".ses-live");
   await expect(session).toHaveClass(/running/);
 
-  // Running: dot visible with a glow and a sheen overlay.
-  await expect.poll(() => dot.evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
-  const glow = await dot.evaluate((el) => getComputedStyle(el).boxShadow);
-  expect(glow).not.toBe("none");
-  const sheen = await dot.evaluate((el) => getComputedStyle(el, "::after").backgroundImage);
-  expect(sheen).toContain("linear-gradient");
+  await expect(live).toBeVisible();
+  await expect(live.locator("svg")).toBeVisible();
+  await expect.poll(() => live.evaluate((el) => getComputedStyle(el).display)).not.toBe("none");
+  const spin = await live.locator("svg").evaluate((el) => getComputedStyle(el).animationName);
+  expect(spin).toContain("ses-spin");
+  const glow = await live.evaluate((el) => getComputedStyle(el).filter);
+  expect(glow).toContain("drop-shadow");
 
-  // Idle again: the dot fades out completely once the turn finishes.
   await expect(session).not.toHaveClass(/running/, { timeout: 15_000 });
-  await expect.poll(() => dot.evaluate((el) => getComputedStyle(el).opacity)).toBe("0");
+  await expect.poll(() => live.evaluate((el) => getComputedStyle(el).display)).toBe("none");
 });
 
 test("follow-up suggestions sit on the canvas without a panel fill", async ({ page }) => {
@@ -160,4 +160,78 @@ test("follow-up suggestions sit on the canvas without a panel fill", async ({ pa
   await expect(followUps.getByRole("button").first()).toBeVisible({ timeout: 10_000 });
   const background = await followUps.evaluate((el) => getComputedStyle(el).backgroundColor);
   expect(background).toBe("rgba(0, 0, 0, 0)");
+});
+
+test("assistant markdown rejoins bare list markers and wraps at word boundaries", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await enterApp(page);
+  // `- ` alone on a line with the item text on the next line used to render an
+  // orphan bullet dot above a flush-left paragraph.
+  const payload = [
+    "coords:",
+    "",
+    "**Module results** (Seurat 5):",
+    "",
+    "- 450 = x",
+    "- ",
+    "",
+    "Tb1 15,248,784 y",
+    "  - [QC violin](plots/qc.png)",
+    "",
+    "    (threshold lines included)",
+    "  - [PCA scatter](plots/pca.png) 、 [PCA elbow](plots/elbow.png)",
+    "",
+  ].join("\n");
+  await page.locator(".composer-inner textarea").first().fill(payload);
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const body = page.locator(".msg.assistant .body.md").last();
+  await expect(body).toContainText("Tb1 15,248,784 y", { timeout: 10_000 });
+  await expect(body.locator("li", { hasText: "Tb1 15,248,784 y" })).toHaveCount(1);
+  await expect(body.locator("li:empty")).toHaveCount(0);
+
+  const listLayout = await body.locator("li", { hasText: "Tb1 15,248,784 y" }).first()
+    .evaluate((el) => {
+      const cs = getComputedStyle(el);
+      const nested = el.querySelector("li");
+      return {
+        display: cs.display,
+        marker: cs.listStyleType,
+        nestedMarker: nested ? getComputedStyle(nested).listStyleType : "",
+      };
+    });
+  expect(listLayout).toEqual({ display: "list-item", marker: "disc", nestedMarker: "circle" });
+
+  const sectionLead = body.locator("p", { hasText: "Module results" });
+  await expect(sectionLead.locator("strong")).toBeVisible();
+  expect(await sectionLead.locator("strong").evaluate((el) => getComputedStyle(el).borderLeftWidth))
+    .toBe("3px");
+
+  const links = body.locator('a[href="plots/pca.png"], a[href="plots/elbow.png"]');
+  await expect(links).toHaveCount(2);
+  const linkBoxes = await links.evaluateAll((els) => els.map((el) => {
+    const rect = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    return { top: Math.round(rect.top), width: rect.width, display: cs.display };
+  }));
+  expect(linkBoxes[0].top).toBe(linkBoxes[1].top);
+  expect(linkBoxes.every((box) => box.width < 240 && box.display === "inline")).toBe(true);
+
+  const descriptionGap = await body.locator("li", { hasText: "QC violin" }).first()
+    .evaluate((el) => {
+      const link = el.querySelector("a")?.getBoundingClientRect();
+      const detail = Array.from(el.querySelectorAll("p"))
+        .find((p) => p.textContent?.includes("threshold"))?.getBoundingClientRect();
+      return link && detail ? detail.top - link.bottom : 999;
+    });
+  expect(descriptionGap).toBeLessThan(12);
+
+  // `overflow-wrap: anywhere` from `.msg .body` must not win on markdown bodies:
+  // it splits inline code chips mid-token (`file.p|y`) even at normal break points.
+  const wrap = await body.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return { overflowWrap: cs.overflowWrap, wordBreak: cs.wordBreak };
+  });
+  expect(wrap.overflowWrap).toBe("break-word");
+  expect(wrap.wordBreak).toBe("normal");
 });

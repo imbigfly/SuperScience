@@ -179,6 +179,13 @@ pub trait ToolEnv: Send + Sync {
     fn plan_mode(&self) -> bool {
         false
     }
+    /// Whether project mutations are temporarily locked while this
+    /// conversation remains available for read-only work. This is distinct
+    /// from plan mode: the user may ask for a normal answer, but mutating tools
+    /// must fail closed.
+    fn project_write_locked(&self) -> bool {
+        false
+    }
     /// Whether the "full" approval scope is active — auto-approve everything,
     /// dangerous commands included. Only the shell danger check consults this;
     /// default `false` keeps the CLI and tests prompting on dangerous commands.

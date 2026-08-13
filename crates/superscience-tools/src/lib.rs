@@ -55,7 +55,6 @@ const BUILT_IN_SCHEMA_NAMES: &[&str] = &[
     "search_models",
     "use_skill",
     "search_memory",
-    "append_memory",
 ];
 
 const SUBAGENT_SCHEMA_NAMES: &[&str] = &["explore", "delegate_tasks", "get_delegated_result"];
@@ -116,6 +115,14 @@ fn plan_mode_refusal(name: &str) -> String {
         "tool '{name}' is unavailable: this conversation is in plan mode, so it investigates and \
          writes a plan instead of executing one. Keep researching with read-only tools and finish \
          the plan; the user approves it before anything runs."
+    )
+}
+
+fn project_write_lock_refusal(name: &str) -> String {
+    format!(
+        "tool '{name}' is unavailable: an active isolated exploration has frozen project writes. \
+         This conversation can still inspect the project and answer questions with read-only tools. \
+         Promote an exploration, or archive or discard every active candidate, before changing project state."
     )
 }
 const MAX_MCP_SEARCH_LIMIT: usize = 10;
@@ -374,6 +381,12 @@ impl Registry {
 
 async fn run_registered_tool(tool: &dyn Tool, args: &Value, env: &dyn ToolEnv) -> ToolResult {
     let name = tool.name();
+    // Project freeze is stronger than approval/full-permission settings. Keep
+    // ordinary conversations usable for research, but fail closed for every
+    // tool that is not known to be retrieval-only.
+    if env.project_write_locked() && plan_mode_blocks(name) && !tool.read_only() {
+        return ToolResult::fail(project_write_lock_refusal(name));
+    }
     // Plan-mode gate, ahead of approvals: a session that is only allowed to
     // plan never reaches the approval prompt for a tool that would execute.
     if env.plan_mode() && plan_mode_blocks(name) && !tool.read_only() {
@@ -820,6 +833,7 @@ mod approval_tests {
     struct PlanEnv {
         root: PathBuf,
         plan: bool,
+        project_locked: bool,
     }
     #[async_trait::async_trait]
     impl ToolEnv for PlanEnv {
@@ -831,6 +845,9 @@ mod approval_tests {
         }
         fn plan_mode(&self) -> bool {
             self.plan
+        }
+        fn project_write_locked(&self) -> bool {
+            self.project_locked
         }
         async fn emit(&self, _event: ToolEvent) {}
     }
@@ -847,6 +864,7 @@ mod approval_tests {
         let planning = PlanEnv {
             root: dir.clone(),
             plan: true,
+            project_locked: false,
         };
         let blocked = reg.run("write", &write, &planning).await;
         assert!(!blocked.success);
@@ -858,9 +876,48 @@ mod approval_tests {
         let executing = PlanEnv {
             root: dir.clone(),
             plan: false,
+            project_locked: false,
         };
         assert!(reg.run("write", &write, &executing).await.success);
         assert!(reg.run("read", &read, &executing).await.success);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn project_write_lock_blocks_mutations_but_keeps_conversation_retrieval_available() {
+        let dir = std::env::temp_dir().join("wisp-project-write-lock-gate");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("note.txt"), "hello").unwrap();
+        let reg = Registry::builtins();
+        let locked = PlanEnv {
+            root: dir.clone(),
+            plan: false,
+            project_locked: true,
+        };
+
+        let blocked = reg
+            .run(
+                "write",
+                &serde_json::json!({ "path": "gated.txt", "content": "no" }),
+                &locked,
+            )
+            .await;
+        assert!(!blocked.success);
+        assert!(
+            blocked.content.contains("active isolated exploration"),
+            "{}",
+            blocked.content
+        );
+        assert!(!dir.join("gated.txt").exists(), "the write must not happen");
+        assert!(
+            reg.run(
+                "read",
+                &serde_json::json!({ "path": dir.join("note.txt").to_string_lossy() }),
+                &locked,
+            )
+            .await
+            .success
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -872,6 +929,7 @@ mod approval_tests {
         let planning = PlanEnv {
             root: PathBuf::from("."),
             plan: true,
+            project_locked: false,
         };
 
         // Dispatched the way the model reaches a deferred MCP tool.

@@ -32,6 +32,7 @@ export function attach_chat_scroll(scrollerId, contentId) {
   let follow = true;
   let lastHeight = content.scrollHeight;
   let readingTop = scroller.scrollTop;
+  let hidden = false;
   const setFollow = (value) => {
     follow = value;
     scroller.style.overflowAnchor = value ? "none" : "auto";
@@ -89,6 +90,21 @@ export function attach_chat_scroll(scrollerId, contentId) {
 
   const onGrowth = (observedHeight = content.scrollHeight) => {
     const h = observedHeight;
+    // Center-file tabs hide the chat with display:none. Ignore that temporary
+    // zero-size layout and restore the exact reading position when the chat
+    // becomes visible again instead of treating the reveal as new content.
+    if (scroller.clientHeight === 0 || h === 0) {
+      hidden = true;
+      return;
+    }
+    if (hidden) {
+      hidden = false;
+      lastHeight = h;
+      if (follow) snapBottom(scroller);
+      else scroller.scrollTop = Math.min(readingTop, scroller.scrollHeight - scroller.clientHeight);
+      syncPill();
+      return;
+    }
     const grew = h > lastHeight;
     lastHeight = h;
     if (follow) {

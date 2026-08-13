@@ -75,7 +75,9 @@ mod quick_action_routing_tests {
             LITERATURE_RESEARCH_ACTION_ID,
             false,
         )));
-        assert!(!quick_action_uses_current_conversation(&action("custom", true)));
+        assert!(!quick_action_uses_current_conversation(&action(
+            "custom", true
+        )));
     }
 
     #[test]
@@ -316,7 +318,7 @@ pub(crate) fn CommandPalette(
                 <div class="project-search-dialog conversation-search-dialog" role="dialog" aria-label="Search"
                     on:click=|ev| ev.stop_propagation()>
                     <div class="project-search-input">
-                        <span class="gi search"></span>
+                        {compose_icon("search")}
                         <input id="command-palette-input" type="text" inputmode="search" autofocus=true
                             autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
                             placeholder=move || t(locale.get(), "command.search_ph")
@@ -353,9 +355,10 @@ pub(crate) fn CommandPalette(
                             };
                             view! {
                                 <button type="button" class="project-search-row" class:active=move || active.get() == i
+                                    data-icon=icon
                                     on:mousemove=move |_| active.set(i)
                                     on:click=move |_| open_item.call((i, false))>
-                                    <span class=format!("gi {icon}")></span>
+                                    {compose_icon(icon)}
                                     <span class="project-search-main">
                                         <span class="project-search-title">{title}</span>
                                         {(!sub.trim().is_empty()).then(|| view! { <span class="project-search-sub">{sub}</span> })}
@@ -379,6 +382,7 @@ pub(crate) fn CommandPalette(
 #[component]
 pub(crate) fn ActionPalette(
     open: RwSignal<bool>,
+    has_current_project: Signal<bool>,
     on_action: Callback<&'static str>,
 ) -> impl IntoView {
     let locale = use_locale();
@@ -411,8 +415,10 @@ pub(crate) fn ActionPalette(
     let actions = create_memo(move |_| {
         let loc = locale.get();
         let general = t(loc, "command.group.general").to_string();
+        let transfer = t(loc, "command.group.transfer").to_string();
         let navigate = t(loc, "command.group.navigate").to_string();
         let appearance = t(loc, "command.group.appearance").to_string();
+        let help = t(loc, "command.group.help").to_string();
         let entries = [
             (
                 "scratch",
@@ -420,6 +426,8 @@ pub(crate) fn ActionPalette(
                 "command.scratch",
                 general.clone(),
                 "shift-n",
+                "scratch chat 随手 对话",
+                false,
             ),
             (
                 "new",
@@ -427,6 +435,8 @@ pub(crate) fn ActionPalette(
                 "command.new_session",
                 general.clone(),
                 "n",
+                "new conversation session 新建 会话",
+                true,
             ),
             (
                 "search",
@@ -434,6 +444,8 @@ pub(crate) fn ActionPalette(
                 "command.search",
                 general.clone(),
                 "k",
+                "find project artifact session 搜索 项目 会话",
+                false,
             ),
             (
                 "settings",
@@ -441,20 +453,44 @@ pub(crate) fn ActionPalette(
                 "command.settings",
                 general.clone(),
                 ",",
+                "preferences config 设置",
+                false,
             ),
             (
                 "import-codex",
                 "download",
                 "command.import_codex",
-                general.clone(),
+                transfer.clone(),
                 "",
+                "import codex conversation session 导入 会话",
+                true,
             ),
             (
                 "import-claude",
                 "download",
                 "command.import_claude",
-                general.clone(),
+                transfer.clone(),
                 "",
+                "import claude code conversation session 导入 会话",
+                true,
+            ),
+            (
+                "import-session",
+                "download",
+                "command.import_session",
+                transfer.clone(),
+                "",
+                "import restore archive zip conversation session 导入 恢复 归档 会话",
+                true,
+            ),
+            (
+                "export-current-project",
+                "download",
+                "command.export_current_project",
+                transfer,
+                "",
+                "export backup project archive zip 导出 备份 项目 归档",
+                true,
             ),
             (
                 "check-updates",
@@ -462,30 +498,53 @@ pub(crate) fn ActionPalette(
                 "command.check_updates",
                 general.clone(),
                 "",
+                "update upgrade version 更新 升级 版本",
+                false,
             ),
-            ("star-us", "star", "command.star_us", general.clone(), ""),
             (
                 "project-settings",
                 "gear",
                 "command.project_settings",
                 general.clone(),
                 "",
+                "project preferences config 项目 设置",
+                true,
             ),
-            ("skills", "grid", "command.skills", general, ""),
+            (
+                "skills",
+                "grid",
+                "command.skills",
+                general,
+                "",
+                "manage skill 管理 技能",
+                true,
+            ),
             (
                 "projects",
                 "folder",
                 "command.projects",
                 navigate.clone(),
                 "",
+                "open switch project 打开 切换 项目",
+                false,
             ),
-            ("library", "star", "command.library", navigate.clone(), ""),
+            (
+                "library",
+                "star",
+                "command.library",
+                navigate.clone(),
+                "",
+                "favorites collection 收藏 库",
+                false,
+            ),
             (
                 "toggle-sidebar",
                 "panel",
                 "command.toggle_sidebar",
                 navigate.clone(),
                 "b",
+                "show hide sidebar 显示 隐藏 侧栏",
+                false,
             ),
             (
                 "artifacts",
@@ -493,15 +552,35 @@ pub(crate) fn ActionPalette(
                 "command.artifacts",
                 navigate.clone(),
                 "",
+                "open outputs results 产物 结果",
+                true,
             ),
-            ("notebook", "doc", "command.notebook", navigate.clone(), ""),
-            ("files", "doc", "command.files", navigate.clone(), ""),
+            (
+                "notebook",
+                "doc",
+                "command.notebook",
+                navigate.clone(),
+                "",
+                "open notebook 笔记本",
+                true,
+            ),
+            (
+                "files",
+                "doc",
+                "command.files",
+                navigate.clone(),
+                "",
+                "open browser files 文件 浏览",
+                true,
+            ),
             (
                 "provenance",
                 "copy",
                 "command.provenance",
                 navigate.clone(),
                 "",
+                "open provenance history lineage 溯源 历史",
+                true,
             ),
             (
                 "contexts",
@@ -509,6 +588,8 @@ pub(crate) fn ActionPalette(
                 "command.contexts",
                 navigate.clone(),
                 "",
+                "execution host runtime ssh wsl 执行 上下文 主机",
+                true,
             ),
             (
                 "side-chat",
@@ -516,14 +597,26 @@ pub(crate) fn ActionPalette(
                 "command.side_chat",
                 navigate.clone(),
                 "",
+                "ask side chat 侧边 对话",
+                true,
             ),
-            ("close-panel", "panel", "command.close_panel", navigate, ""),
+            (
+                "close-panel",
+                "panel",
+                "command.close_panel",
+                navigate,
+                "",
+                "hide right panel 关闭 右侧",
+                true,
+            ),
             (
                 "theme-light",
                 "gear",
                 "command.theme_light",
                 appearance.clone(),
                 "",
+                "light color appearance 浅色 主题",
+                false,
             ),
             (
                 "theme-dark",
@@ -531,6 +624,8 @@ pub(crate) fn ActionPalette(
                 "command.theme_dark",
                 appearance.clone(),
                 "",
+                "dark color appearance 深色 主题",
+                false,
             ),
             (
                 "theme-system",
@@ -538,6 +633,8 @@ pub(crate) fn ActionPalette(
                 "command.theme_system",
                 appearance.clone(),
                 "",
+                "system auto color appearance 系统 自动 主题",
+                false,
             ),
             (
                 "font-ui-increase",
@@ -545,6 +642,8 @@ pub(crate) fn ActionPalette(
                 "command.font_ui_increase",
                 appearance.clone(),
                 "",
+                "font ui increase larger 字体 界面 增大",
+                false,
             ),
             (
                 "font-ui-decrease",
@@ -552,6 +651,8 @@ pub(crate) fn ActionPalette(
                 "command.font_ui_decrease",
                 appearance.clone(),
                 "",
+                "font ui decrease smaller 字体 界面 缩小",
+                false,
             ),
             (
                 "font-code-increase",
@@ -559,6 +660,8 @@ pub(crate) fn ActionPalette(
                 "command.font_code_increase",
                 appearance.clone(),
                 "",
+                "font code increase larger 字体 代码 增大",
+                false,
             ),
             (
                 "font-code-decrease",
@@ -566,14 +669,46 @@ pub(crate) fn ActionPalette(
                 "command.font_code_decrease",
                 appearance,
                 "",
+                "font code decrease smaller 字体 代码 缩小",
+                false,
+            ),
+            (
+                "star-us",
+                "star",
+                "command.star_us",
+                help.clone(),
+                "",
+                "github star",
+                false,
+            ),
+            (
+                "docs",
+                "doc",
+                "menu.docs",
+                help.clone(),
+                "",
+                "documentation readme help 文档 帮助",
+                false,
+            ),
+            (
+                "issues",
+                "bubble",
+                "menu.issues",
+                help,
+                "",
+                "github issue bug feedback report 问题 反馈 报告",
+                false,
             ),
         ];
         let q = query.get().trim().to_lowercase();
         entries
             .into_iter()
-            .filter_map(|(id, icon, key, group, shortcut)| {
+            .filter_map(|(id, icon, key, group, shortcut, aliases, project_only)| {
+                if project_only && !has_current_project.get() {
+                    return None;
+                }
                 let title = t(loc, key).to_string();
-                contains_search(&q, &[id, &title, &group]).then(|| {
+                contains_search(&q, &[id, &title, &group, aliases]).then(|| {
                     let shortcut = match (mac, shortcut) {
                         (_, "") => String::new(),
                         (true, "shift-n") => "⌘⇧N".into(),
@@ -605,7 +740,7 @@ pub(crate) fn ActionPalette(
                 <div class="project-search-dialog action-palette" role="dialog" aria-label="Command Palette"
                     on:click=|ev| ev.stop_propagation()>
                     <div class="project-search-input">
-                        <span class="gi search"></span>
+                        {compose_icon("search")}
                         <input id="action-palette-input" type="text" inputmode="search" autofocus=true
                             autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
                             placeholder=move || t(locale.get(), "command.placeholder")
@@ -640,6 +775,13 @@ pub(crate) fn ActionPalette(
                     <div class="project-search-results action-palette-results">
                         {move || {
                             let rows = actions.get();
+                            if rows.is_empty() {
+                                return view! {
+                                    <div class="project-search-empty" data-testid="action-palette-empty">
+                                        {t(locale.get(), "command.no_results")}
+                                    </div>
+                                }.into_view();
+                            }
                             rows.into_iter().enumerate().map(|(i, action)| {
                                 let previous_group = (i > 0).then(|| actions.get().get(i - 1).map(|a| a.group.clone())).flatten();
                                 let show_group = previous_group.as_deref() != Some(action.group.as_str());
@@ -648,12 +790,12 @@ pub(crate) fn ActionPalette(
                                     <button type="button" class="project-search-row action-palette-row" class:active=move || active.get() == i
                                         on:mousemove=move |_| active.set(i)
                                         on:click=move |_| run.call(i)>
-                                        <span class=format!("gi {}", action.icon)></span>
+                                        {compose_icon(&action.icon)}
                                         <span class="project-search-main"><span class="project-search-title">{action.title}</span></span>
                                         {(!action.shortcut.is_empty()).then(|| view! { <kbd class="action-shortcut">{action.shortcut}</kbd> })}
                                     </button>
                                 }
-                            }).collect_view()
+                            }).collect_view().into_view()
                         }}
                     </div>
                     <div class="project-search-foot"><span><kbd>"↑↓"</kbd>{t(locale.get(), "command.hint.navigate")}</span><span><kbd>"↵"</kbd>{t(locale.get(), "command.hint.run")}</span><span><kbd>"esc"</kbd>{t(locale.get(), "command.hint.close")}</span></div>

@@ -178,7 +178,7 @@ pub(super) fn LibraryScreen(
             </header>
             <div class="library-toolbar">
                 <label class="library-search">
-                    <span class="gi search" aria-hidden="true"></span>
+                    {compose_icon("search")}
                     <input type="search"
                         aria-label=move || t(locale.get(), "library.search")
                         placeholder=move || t(locale.get(), "library.search")

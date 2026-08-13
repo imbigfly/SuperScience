@@ -377,6 +377,24 @@ impl Store {
         row.map(artifact_version_from_row).transpose()
     }
 
+    pub async fn list_artifact_versions_owned_by_exploration(
+        &self,
+        exploration_id: &str,
+    ) -> Result<Vec<ArtifactVersion>> {
+        let rows = sqlx::query(
+            "SELECT version.id,version.artifact_id,version.version_number,version.content_type,\
+                    version.storage_path,version.size_bytes,version.checksum,version.parent_version_id,\
+                    version.producing_run_id,version.env_snapshot_hash,version.materialization,\
+                    version.capture_timing,version.created_at \
+             FROM artifact_versions version JOIN artifacts artifact ON artifact.id=version.artifact_id \
+             WHERE artifact.exploration_id=? ORDER BY artifact.id,version.version_number,version.id",
+        )
+        .bind(exploration_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(artifact_version_from_row).collect()
+    }
+
     pub async fn get_artifact_version_context(
         &self,
         version_id: &str,
@@ -450,9 +468,9 @@ impl Store {
     pub async fn list_artifacts(
         &self,
         root_frame_id: &str,
-    ) -> Result<Vec<(String, String, String, String, i64)>> {
+    ) -> Result<Vec<(String, String, String, String, i64, Option<String>)>> {
         let rows = sqlx::query(
-            "SELECT id, filename, content_type, storage_path, created_at FROM artifacts \
+            "SELECT id, filename, content_type, storage_path, created_at, logical_key FROM artifacts \
              WHERE root_frame_id=? ORDER BY created_at DESC",
         )
         .bind(root_frame_id)
@@ -466,6 +484,7 @@ impl Store {
                 row.try_get("content_type")?,
                 row.try_get("storage_path")?,
                 row.try_get("created_at")?,
+                row.try_get("logical_key")?,
             ));
         }
         Ok(out)
@@ -523,6 +542,7 @@ impl Store {
                     COALESCE(f.title,'') AS frame_title, \
                     (SELECT content FROM messages m WHERE m.frame_id=a.root_frame_id AND m.role='user' ORDER BY m.seq ASC LIMIT 1) AS first_user, \
                     (SELECT size_bytes FROM artifact_versions v WHERE v.id=a.latest_version_id) AS size_bytes, \
+                    CASE WHEN a.logical_key LIKE 'path:%' THEN substr(a.logical_key,6) END AS logical_path, \
                     CASE \
                       WHEN EXISTS (SELECT 1 FROM run_artifacts ra WHERE ra.artifact_id=a.id) THEN 'output' \
                       WHEN a.logical_key LIKE 'path:uploads/%' \
@@ -563,6 +583,7 @@ impl Store {
                     ),
                     size_bytes: row.try_get("size_bytes")?,
                     origin: row.try_get("origin")?,
+                    logical_path: row.try_get("logical_path")?,
                 })
             })
             .collect()
@@ -590,7 +611,8 @@ impl Store {
                       AND m.role='user' ORDER BY m.seq LIMIT 1) AS first_user,\
                     CASE WHEN a.exploration_id=view_exploration.id \
                          THEN (SELECT size_bytes FROM artifact_versions v WHERE v.id=a.latest_version_id) \
-                         ELSE baseline_version.size_bytes END AS size_bytes \
+                         ELSE baseline_version.size_bytes END AS size_bytes,\
+                    CASE WHEN a.logical_key LIKE 'path:%' THEN substr(a.logical_key,6) END AS logical_path \
              FROM artifacts a JOIN projects p ON p.id=a.project_id \
              JOIN explorations view_exploration ON view_exploration.id=? \
              LEFT JOIN exploration_baseline_artifact_heads baseline \
@@ -632,6 +654,7 @@ impl Store {
                     ),
                     size_bytes: row.try_get("size_bytes")?,
                     origin: "artifact".into(),
+                    logical_path: row.try_get("logical_path")?,
                 })
             })
             .collect()
@@ -669,6 +692,7 @@ impl Store {
                     (SELECT content FROM messages m WHERE m.frame_id=a.root_frame_id \
                       AND m.role='user' ORDER BY m.seq LIMIT 1) AS first_user,\
                     (SELECT size_bytes FROM artifact_versions v WHERE v.id=a.latest_version_id) AS size_bytes,\
+                    CASE WHEN a.logical_key LIKE 'path:%' THEN substr(a.logical_key,6) END AS logical_path,\
                     CASE \
                       WHEN EXISTS (SELECT 1 FROM run_artifacts ra WHERE ra.artifact_id=a.id) THEN 'output' \
                       WHEN a.logical_key LIKE 'path:uploads/%' \
@@ -700,8 +724,22 @@ impl Store {
                 ),
                 size_bytes: row.try_get("size_bytes")?,
                 origin: row.try_get("origin")?,
+                logical_path: row.try_get("logical_path")?,
             })
         })
         .transpose()
+    }
+
+    /// The logical workspace identity an artifact was registered under, when
+    /// one exists. This is the user-facing location; `storage_path` is an
+    /// internal snapshot path under `.wisp/` and must not be shown as the
+    /// document's real location.
+    pub async fn artifact_location(&self, id: &str) -> Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar("SELECT logical_key FROM artifacts WHERE id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
     }
 }

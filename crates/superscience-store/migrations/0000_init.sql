@@ -31,8 +31,11 @@ CREATE TABLE IF NOT EXISTS frames (
     exploration_id  TEXT,
     folder_id       TEXT REFERENCES folders(id) ON DELETE SET NULL,
     branched_from   TEXT,
+    branch_point_user_index INTEGER,
+    branch_point_kind TEXT,
     pinned          INTEGER NOT NULL DEFAULT 0,
     model           TEXT,
+    reasoning_effort TEXT,
     input_tokens    INTEGER,
     output_tokens   INTEGER,
     created_at      INTEGER NOT NULL,
@@ -57,6 +60,19 @@ CREATE TABLE IF NOT EXISTS messages (
     UNIQUE(frame_id, seq)
 );
 CREATE INDEX IF NOT EXISTS ix_messages_frame ON messages(frame_id);
+
+CREATE TABLE IF NOT EXISTS session_branch_merges (
+    id                      TEXT PRIMARY KEY,
+    source_frame_id         TEXT NOT NULL REFERENCES frames(id) ON DELETE CASCADE,
+    branch_frame_id         TEXT NOT NULL REFERENCES frames(id) ON DELETE CASCADE,
+    checkpoint_user_index   INTEGER NOT NULL,
+    checkpoint_kind         TEXT NOT NULL,
+    summary_message_seq     INTEGER NOT NULL,
+    guard_hash              TEXT NOT NULL,
+    created_at              INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_session_branch_merges_source
+    ON session_branch_merges(source_frame_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS session_reviews (
     id          TEXT PRIMARY KEY,
@@ -739,6 +755,17 @@ CREATE INDEX IF NOT EXISTS ix_project_state_revisions_project_created
 CREATE INDEX IF NOT EXISTS ix_project_state_revisions_frame_turn
     ON project_state_revisions(frame_id, turn_index);
 
+CREATE TABLE IF NOT EXISTS global_memories (
+    id                TEXT PRIMARY KEY,
+    content           TEXT NOT NULL CHECK(length(trim(content)) > 0),
+    source_frame_id   TEXT REFERENCES frames(id) ON DELETE SET NULL,
+    source_turn_index INTEGER CHECK(source_turn_index IS NULL OR source_turn_index >= 0),
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_global_memories_updated
+    ON global_memories(updated_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS exploration_families (
     id                TEXT PRIMARY KEY,
     project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -779,17 +806,13 @@ CREATE TABLE IF NOT EXISTS explorations (
     frame_id          TEXT NOT NULL UNIQUE REFERENCES frames(id) ON DELETE CASCADE,
     name              TEXT NOT NULL,
     status            TEXT NOT NULL
-                          CHECK(status IN ('creating','active','archived','promoting',
-                                           'promoted','discarded','failed')),
+                          CHECK(status IN ('creating','active','promoting','failed')),
     workspace_dir     TEXT NOT NULL,
     workspace_backend TEXT NOT NULL,
     scope_generation  INTEGER NOT NULL DEFAULT 0,
     warnings_json     TEXT NOT NULL DEFAULT '[]',
     created_at        INTEGER NOT NULL,
-    updated_at        INTEGER NOT NULL,
-    promoted_at       INTEGER,
-    archived_at       INTEGER,
-    discarded_at      INTEGER
+    updated_at        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_explorations_checkpoint_status
     ON explorations(checkpoint_id, status, created_at);
@@ -838,7 +861,7 @@ CREATE INDEX IF NOT EXISTS ix_exploration_effects_exploration
 
 CREATE TABLE IF NOT EXISTS exploration_promotions (
     id                  TEXT PRIMARY KEY,
-    exploration_id      TEXT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+    exploration_id      TEXT NOT NULL,
     expected_guard_hash TEXT NOT NULL,
     status              TEXT NOT NULL,
     diff_json           TEXT NOT NULL,

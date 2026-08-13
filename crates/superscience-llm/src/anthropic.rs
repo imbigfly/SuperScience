@@ -125,6 +125,12 @@ impl AnthropicProvider {
         if !system.is_empty() {
             body["system"] = json!(system);
         }
+        // Anthropic's effort knob lives under output_config (GA since the
+        // effort beta graduated); unsupported models 400, which the UI's
+        // curated effort list steers away from.
+        if let Some(effort) = &self.cfg.reasoning_effort {
+            body["output_config"] = json!({ "effort": effort });
+        }
         let tools_json: Vec<Value> = tools
             .iter()
             .map(|t| json!({ "name": t.function.name, "description": t.function.description, "input_schema": t.function.parameters }))
@@ -553,6 +559,20 @@ mod tests {
         ));
         let (_, out, _) = provider.build_body(messages, &[], false);
         out
+    }
+
+    #[test]
+    fn reasoning_effort_maps_to_output_config_effort() {
+        let mut cfg =
+            crate::ProviderConfig::anthropic("https://example.test", "", "claude-sonnet-5");
+        let provider = AnthropicProvider::new(cfg.clone());
+        let (_, _, body) = provider.build_body(&[Message::user("hi")], &[], false);
+        assert!(body.get("output_config").is_none());
+
+        cfg.reasoning_effort = Some("max".into());
+        let provider = AnthropicProvider::new(cfg);
+        let (_, _, body) = provider.build_body(&[Message::user("hi")], &[], false);
+        assert_eq!(body["output_config"]["effort"], "max");
     }
 
     #[test]

@@ -12,8 +12,8 @@
   transition: background .12s ease, color .12s ease;
 }
 .side-back:hover { background: var(--bg-elev); color: var(--text); }
-.side-back .gi { width: 16px; height: 16px; opacity: .85; }
-.side-back:hover .gi { opacity: 1; }
+.side-back svg { width: 16px; height: 16px; opacity: .85; }
+.side-back:hover svg { opacity: 1; }
 
 /* --- Project switcher pill (name opens dropdown) --- */
 .proj-switch {
@@ -43,7 +43,7 @@
   cursor: pointer; text-align: left;
 }
 .proj-menu-item:hover { background: var(--bg-sunken); }
-.proj-menu-item .gi { width: 15px; height: 15px; flex: 0 0 auto; opacity: .8; }
+.proj-menu-item svg { width: 15px; height: 15px; flex: 0 0 auto; opacity: .8; }
 .proj-menu-sep { height: 1px; background: var(--border); margin: 6px 4px; }
 .proj-menu-list { display: flex; flex-direction: column; gap: 1px; }
 .proj-menu-row {
@@ -97,6 +97,7 @@
   border: 1px solid transparent;
 }
 .side-folder:hover { background: var(--bg-elev); color: var(--text); }
+.side-folder > svg { width: 15px; height: 15px; flex: 0 0 auto; opacity: .8; }
 .side-folder.drop-target { background: var(--clay-soft); border-color: var(--clay); color: var(--text); }
 .side-folder-caret { font-size: 10px; color: var(--text-faint); transition: transform .15s ease; }
 .side-folder-caret.collapsed { transform: rotate(-90deg); }
@@ -108,6 +109,26 @@
 /* Branch sessions nested under the session they were forked from (#531). */
 .side-branch-group { display: flex; flex-direction: column; gap: 1px; }
 .side-branch-kids { display: flex; flex-direction: column; gap: 1px; margin-left: 12px; padding-left: 8px; border-left: 1px solid var(--border); }
+.message-branch-links { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 7px; margin: 8px 0 4px; padding-left: 28px; }
+.message-branch-entry { display: flex; width: min(320px, 80vw); flex-direction: column; align-items: stretch; gap: 5px; }
+.message-branch-link { display: inline-flex; width: 100%; min-width: 0; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elev); color: var(--text-muted); font-size: 11px; }
+.message-branch-link:hover { border-color: var(--border-active); color: var(--text); }
+.message-branch-link > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-branch-link svg { width: 14px; height: 14px; }
+.exploration-message-card { align-items: flex-start; border-color: color-mix(in srgb, var(--border) 72%, var(--clay)); background: color-mix(in srgb, var(--bg-elev) 94%, var(--clay)); }
+.exploration-message-card > span:first-child { display: inline-flex; flex: 0 0 auto; margin-top: 1px; color: var(--clay); }
+.message-exploration-copy { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; text-align: left; }
+.message-exploration-copy strong { overflow: hidden; color: var(--text); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.message-exploration-copy > span { overflow: hidden; color: var(--text-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.message-branch-entry .branch-merge-card { position: relative; width: calc(100% - 18px); min-height: 32px; margin-left: 18px; gap: 8px; padding: 6px 9px; border-color: var(--border); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--bg-elev) 72%, transparent); box-shadow: none; color: var(--text-muted); }
+.message-branch-entry .branch-merge-card::before { position: absolute; top: -6px; left: -12px; width: 9px; height: 16px; border-bottom: 1px solid var(--border-strong); border-left: 1px solid var(--border-strong); border-radius: 0 0 0 6px; content: ""; pointer-events: none; }
+.message-branch-entry .branch-merge-card:hover { border-color: var(--border-active); background: var(--bg-hover); color: var(--text); }
+.message-branch-entry .branch-merge-card-icon { display: inline-flex; width: 16px; height: 16px; flex: 0 0 16px; place-items: initial; border-radius: 0; background: transparent; color: var(--text-faint); }
+.message-branch-entry .branch-merge-card-copy { display: block; overflow: hidden; white-space: nowrap; }
+.message-branch-entry .branch-merge-card-copy strong { font-size: 11px; font-weight: 600; }
+.message-branch-entry .branch-merge-card-copy > span { margin-left: 6px; font-size: 10.5px; }
+.message-branch-entry .branch-merge-card-open { display: inline-flex; flex: 0 0 auto; color: var(--text-faint); }
+.message-branch-entry .branch-merge-card svg { width: 14px; height: 14px; }
 .side-ungrouped { display: flex; flex-direction: column; gap: 1px; min-height: 24px; border-radius: var(--radius-xs); border: 1px solid transparent; }
 .side-ungrouped.drop-target { background: var(--clay-soft); border-color: var(--clay); }
 .side-item.ses.dragging { opacity: .45; cursor: grabbing; }

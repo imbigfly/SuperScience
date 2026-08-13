@@ -182,11 +182,7 @@ fn valid_windows_component(component: &str) -> bool {
 }
 
 fn valid_portable_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.contains('\\')
-        && path
-            .split('/')
-            .all(|component| valid_windows_component(component))
+    !path.is_empty() && !path.contains('\\') && path.split('/').all(valid_windows_component)
 }
 
 fn valid_relay_component(value: &str) -> bool {

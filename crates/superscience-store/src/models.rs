@@ -907,6 +907,9 @@ pub struct ArtifactSearchResult {
     pub session_title: String,
     pub size_bytes: Option<i64>,
     pub origin: String,
+    /// User-facing path derived from a `path:` logical key. Storage paths may
+    /// point into Wisp's private content-addressed snapshot tree instead.
+    pub logical_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

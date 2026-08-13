@@ -593,7 +593,6 @@ mod tests {
             "list_skill_catalog",
             "use_skill",
             "search_memory",
-            "append_memory",
             "explore",
             "delegate_tasks",
             "get_delegated_result",
@@ -616,6 +615,7 @@ mod tests {
             "sdk_enabled",
             "[llm]",
             "kernel_default_model",
+            "append_memory",
         ] {
             assert!(
                 !skill.contains(stale),

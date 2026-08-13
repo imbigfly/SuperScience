@@ -14,13 +14,49 @@ use super::{
     reclaim_unconsumed_cutin, resolve_acp_artifact_references, resolve_composer_references,
     resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
     should_hide_app_on_macos_close, should_persist_ui_event, user_message_start, AgentEvent,
-    ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, QueuedItem, SessionRuntime,
-    SkillInfo, StartupReport, StartupTimeline, MAX_PENDING_UI_EVENT_BYTES,
-    UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
+    ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, ProjectActivityLocks,
+    QueuedItem, SessionRuntime, SkillInfo, StartupReport, StartupTimeline,
+    MAX_PENDING_UI_EVENT_BYTES, UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
+
+#[tokio::test]
+async fn exploration_creation_shares_project_activity_but_serializes_round_initialization() {
+    let locks = Arc::new(ProjectActivityLocks::default());
+    let running_candidate = locks.project("project").read_owned().await;
+    let first_creation = locks.exploration_creation("project").lock_owned().await;
+
+    let waiting_locks = locks.clone();
+    let second_creation = tokio::spawn(async move {
+        let _activity = waiting_locks
+            .project("project")
+            .try_read_owned()
+            .expect("a sibling exploration may share project activity");
+        let _creation = waiting_locks
+            .exploration_creation("project")
+            .lock_owned()
+            .await;
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !second_creation.is_finished(),
+        "checkpoint initialization must remain serialized"
+    );
+
+    drop(first_creation);
+    tokio::time::timeout(std::time::Duration::from_secs(1), second_creation)
+        .await
+        .expect("the second creation should wait instead of reporting ProjectBusy")
+        .unwrap();
+    assert!(
+        locks.project("project").try_write_owned().is_err(),
+        "round settlement must stay exclusive while a candidate is active"
+    );
+    drop(running_candidate);
+    assert!(locks.project("project").try_write_owned().is_ok());
+}
 
 #[tokio::test]
 async fn native_confirmation_waits_for_an_explicit_response() {
@@ -1163,13 +1199,13 @@ fn session_runtime_status_labels() {
 }
 
 #[test]
-fn branch_title_marks_new_session_without_long_labels() {
+fn branch_title_uses_the_draft_without_long_labels() {
     assert_eq!(
         branch_title(Some("  follow up analysis  ")).unwrap(),
-        "Branch: follow up analysis"
+        "follow up analysis"
     );
     assert_eq!(branch_title(Some("")).is_none(), true);
-    assert!(branch_title(Some(&"a".repeat(80))).unwrap().chars().count() <= "Branch: ".len() + 64);
+    assert!(branch_title(Some(&"a".repeat(80))).unwrap().chars().count() <= 64);
 }
 
 #[test]
@@ -1207,6 +1243,7 @@ fn transcript_page_reconstructs_legacy_prefix_before_persisted_events() {
             (1, superscience_llm::Message::user("legacy question")),
             (2, superscience_llm::Message::assistant("fallback answer")),
         ],
+        branch_merges: vec![],
         reviews: vec![],
         resources: vec![],
         ui_events: events
@@ -1224,6 +1261,36 @@ fn transcript_page_reconstructs_legacy_prefix_before_persisted_events() {
     assert_eq!(items[0].text, "legacy question");
     assert_eq!(items[1].role, "assistant");
     assert_eq!(items[1].text, "new answer");
+}
+
+#[test]
+fn branch_merge_projection_never_relabels_the_previous_answer() {
+    let page = superscience_store::SessionTranscriptPage {
+        messages: vec![
+            (1, superscience_llm::Message::user("question")),
+            (2, superscience_llm::Message::assistant("original answer")),
+            (3, superscience_llm::Message::assistant("branch summary")),
+        ],
+        branch_merges: vec![superscience_store::SessionBranchMergeCard {
+            summary_message_seq: 3,
+            branch_session_id: "branch".into(),
+            branch_title: "focused work".into(),
+            checkpoint_user_index: 0,
+            checkpoint_kind: "after_response".into(),
+            summary: "branch summary".into(),
+        }],
+        reviews: vec![],
+        resources: vec![],
+        ui_events: vec![],
+        next_before_seq: None,
+        user_offset: 0,
+        latest_seq: 3,
+    };
+
+    let items = transcript_page_items(&page).unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[1].role, "assistant");
+    assert_eq!(items[1].text, "original answer");
 }
 
 #[test]

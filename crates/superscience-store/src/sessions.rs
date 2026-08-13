@@ -4,8 +4,9 @@ use super::{
 };
 use anyhow::Result;
 use chrono::{Datelike, Duration, Local};
+use sha2::{Digest, Sha256};
 use sqlx::{Row, Sqlite, Transaction};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use superscience_llm::Message;
 
 /// Token totals for one root session, folded from the persisted per-round
@@ -67,12 +68,23 @@ pub struct ToolCallUsage {
 /// One bounded, turn-aligned slice of a saved conversation.
 pub struct SessionTranscriptPage {
     pub messages: Vec<(i64, Message)>,
+    pub branch_merges: Vec<SessionBranchMergeCard>,
     pub reviews: Vec<(i64, String)>,
     pub ui_events: Vec<String>,
     pub resources: Vec<MessageResourceLink>,
     pub next_before_seq: Option<i64>,
     pub user_offset: usize,
     pub latest_seq: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SessionBranchMergeCard {
+    pub summary_message_seq: i64,
+    pub branch_session_id: String,
+    pub branch_title: String,
+    pub checkpoint_user_index: usize,
+    pub checkpoint_kind: String,
+    pub summary: String,
 }
 
 /// One immutable read boundary over the append-only visual transcript.
@@ -83,6 +95,209 @@ pub struct SessionTranscriptPage {
 pub struct SessionUiEventSnapshot {
     pub through_event_seq: i64,
     pub events: Vec<(i64, String)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SessionBranchDeltaMessage {
+    pub seq: i64,
+    pub role: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SessionBranchLink {
+    pub id: String,
+    pub title: String,
+    pub source_session_id: String,
+    pub checkpoint_user_index: usize,
+    pub checkpoint_kind: String,
+    pub merged: bool,
+    pub merge_summary: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SessionBranchMergePreview {
+    pub main_session_id: String,
+    pub branch_session_id: String,
+    pub branch_title: String,
+    pub checkpoint_user_index: usize,
+    pub checkpoint_kind: String,
+    pub guard_hash: String,
+    pub new_message_count: usize,
+    pub messages: Vec<SessionBranchDeltaMessage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SessionBranchMerge {
+    pub main_session_id: String,
+    pub branch_session_id: String,
+    pub summary_message_seq: i64,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct BranchMessageRow {
+    seq: i64,
+    role: String,
+    content: Option<String>,
+    tool_calls: Option<String>,
+    tool_call_id: Option<String>,
+    tool_name: Option<String>,
+    reasoning: Option<String>,
+    ts: i64,
+    model_name: Option<String>,
+}
+
+const BRANCH_DELTA_MESSAGE_CHARS: usize = 4_000;
+const BRANCH_DELTA_MESSAGES: usize = 40;
+
+async fn branch_message_rows(
+    tx: &mut Transaction<'_, Sqlite>,
+    frame_id: &str,
+) -> Result<Vec<BranchMessageRow>> {
+    let rows = sqlx::query(
+        "SELECT seq,role,content,tool_calls,tool_call_id,tool_name,reasoning,ts,model_name \
+         FROM messages WHERE frame_id=? ORDER BY seq",
+    )
+    .bind(frame_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(BranchMessageRow {
+                seq: row.try_get("seq")?,
+                role: row.try_get("role")?,
+                content: row.try_get("content")?,
+                tool_calls: row.try_get("tool_calls")?,
+                tool_call_id: row.try_get("tool_call_id")?,
+                tool_name: row.try_get("tool_name")?,
+                reasoning: row.try_get("reasoning")?,
+                ts: row.try_get("ts")?,
+                model_name: row.try_get("model_name")?,
+            })
+        })
+        .collect()
+}
+
+fn clipped_branch_text(text: &str) -> String {
+    let mut chars = text.chars();
+    let clipped = chars
+        .by_ref()
+        .take(BRANCH_DELTA_MESSAGE_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        format!("{clipped}\n[… truncated …]")
+    } else {
+        clipped
+    }
+}
+
+fn branch_delta_message(row: &BranchMessageRow) -> SessionBranchDeltaMessage {
+    let mut text = row
+        .content
+        .as_deref()
+        .and_then(|content| serde_json::from_str::<superscience_llm::Content>(content).ok())
+        .map(|content| content.as_text())
+        .unwrap_or_default();
+    if text.trim().is_empty() {
+        text = row
+            .tool_name
+            .as_deref()
+            .map(|name| format!("[tool: {name}]"))
+            .or_else(|| row.tool_calls.as_ref().map(|_| "[tool call]".into()))
+            .unwrap_or_else(|| "[empty message]".into());
+    }
+    SessionBranchDeltaMessage {
+        seq: row.seq,
+        role: if row.role == "internal" {
+            "system".into()
+        } else {
+            row.role.clone()
+        },
+        text: clipped_branch_text(text.trim()),
+    }
+}
+
+fn branch_delta_messages(rows: &[BranchMessageRow]) -> Vec<SessionBranchDeltaMessage> {
+    if rows.len() <= BRANCH_DELTA_MESSAGES {
+        return rows.iter().map(branch_delta_message).collect();
+    }
+    let half = BRANCH_DELTA_MESSAGES / 2;
+    let omitted = rows.len() - BRANCH_DELTA_MESSAGES;
+    let mut messages = rows[..half]
+        .iter()
+        .map(branch_delta_message)
+        .collect::<Vec<_>>();
+    messages.push(SessionBranchDeltaMessage {
+        seq: 0,
+        role: "system".into(),
+        text: format!("[… {omitted} messages omitted from summary preview …]"),
+    });
+    messages.extend(rows[rows.len() - half..].iter().map(branch_delta_message));
+    messages
+}
+
+async fn session_branch_merge_snapshot(
+    tx: &mut Transaction<'_, Sqlite>,
+    branch_session_id: &str,
+    project_id: &str,
+) -> Result<(SessionBranchMergePreview, Vec<BranchMessageRow>)> {
+    let row = sqlx::query(
+        "SELECT f.branched_from,f.branch_point_user_index,f.branch_point_kind,f.title, \
+         (SELECT content FROM messages m WHERE m.frame_id=f.id AND m.role='user' \
+          ORDER BY m.seq LIMIT 1) AS first_user \
+         FROM frames f WHERE f.id=? AND f.project_id=? AND f.parent_frame_id=f.id \
+           AND f.exploration_id IS NULL AND f.branched_from IS NOT NULL \
+           AND f.branch_point_user_index IS NOT NULL \
+           AND f.branch_point_kind IN ('before_user','after_response') \
+           AND NOT EXISTS(SELECT 1 FROM session_branch_merges merge WHERE merge.branch_frame_id=f.id)",
+    )
+    .bind(branch_session_id)
+    .bind(project_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("Conversation is not a mergeable branch"))?;
+    let main_session_id: String = row.try_get("branched_from")?;
+    let checkpoint_user_index = usize::try_from(row.try_get::<i64, _>("branch_point_user_index")?)?;
+    let checkpoint_kind: String = row.try_get("branch_point_kind")?;
+    let title = session_display_title(row.try_get("title")?, row.try_get("first_user")?);
+    let messages = branch_message_rows(tx, branch_session_id).await?;
+    let user_positions = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| message.role == "user" && message.tool_name.is_none())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let delta_start = match checkpoint_kind.as_str() {
+        "before_user" => user_positions
+            .get(checkpoint_user_index)
+            .copied()
+            .unwrap_or(messages.len()),
+        "after_response" => user_positions
+            .get(checkpoint_user_index.saturating_add(1))
+            .copied()
+            .unwrap_or(messages.len()),
+        _ => unreachable!(),
+    };
+    let delta = messages[delta_start..].to_vec();
+    let guard_hash = hex::encode(Sha256::digest(serde_json::to_vec(&(
+        branch_session_id,
+        checkpoint_user_index,
+        &checkpoint_kind,
+        &delta,
+    ))?));
+    Ok((
+        SessionBranchMergePreview {
+            main_session_id,
+            branch_session_id: branch_session_id.to_string(),
+            branch_title: title.strip_prefix("Branch: ").unwrap_or(&title).to_string(),
+            checkpoint_user_index,
+            checkpoint_kind,
+            guard_hash,
+            new_message_count: delta.len(),
+            messages: branch_delta_messages(&delta),
+        },
+        delta,
+    ))
 }
 
 /// Maximum stdout characters returned for one tool activity group when a
@@ -268,6 +483,21 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
 }
 
 impl Store {
+    pub async fn session_has_conversation_branches(
+        &self,
+        frame_id: &str,
+        project_id: &str,
+    ) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM frames WHERE project_id=? AND parent_frame_id=id \
+             AND exploration_id IS NULL AND branched_from=?)",
+        )
+        .bind(project_id)
+        .bind(frame_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     pub async fn list_project_frame_ids(&self, project_id: &str) -> Result<Vec<String>> {
         let rows: Vec<(String,)> =
             sqlx::query_as("SELECT id FROM frames WHERE project_id=? ORDER BY id")
@@ -479,6 +709,18 @@ impl Store {
         )
     }
 
+    /// Per-conversation reasoning-effort override. `None` inherits the bound
+    /// model profile; an empty string explicitly requests the provider default.
+    pub async fn frame_reasoning_effort(&self, frame_id: &str) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar::<_, Option<String>>(
+            "SELECT reasoning_effort FROM frames WHERE id=?",
+        )
+        .bind(frame_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten())
+    }
+
     /// Overwrite a frame's created/updated timestamps. Used by importers so
     /// external conversations keep their original chronology in the sidebar.
     pub async fn set_frame_timestamps(
@@ -510,6 +752,27 @@ impl Store {
                 .bind(project_id)
                 .execute(&self.pool)
                 .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Session not found");
+        }
+        Ok(())
+    }
+
+    pub async fn set_frame_reasoning_effort(
+        &self,
+        frame_id: &str,
+        project_id: &str,
+        reasoning_effort: Option<&str>,
+    ) -> Result<()> {
+        let updated = sqlx::query(
+            "UPDATE frames SET reasoning_effort=?,updated_at=? WHERE id=? AND project_id=?",
+        )
+        .bind(reasoning_effort)
+        .bind(chrono::Utc::now().timestamp())
+        .bind(frame_id)
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
         if updated.rows_affected() != 1 {
             anyhow::bail!("Session not found");
         }
@@ -566,6 +829,54 @@ impl Store {
         Ok(())
     }
 
+    /// Rewrite a frame's persisted system prompt (the first `system` message)
+    /// in place, e.g. to reload AGENTS.md / WISP.md into a long-lived session.
+    /// Unlike `replace_messages`, other messages and resource links are
+    /// untouched. Returns false when the frame has no system message.
+    pub async fn replace_system_message(&self, frame_id: &str, msg: &Message) -> Result<bool> {
+        let content = serde_json::to_string(&msg.content)?;
+        let updated = sqlx::query(
+            "UPDATE messages SET content=? WHERE frame_id=? AND role='system' \
+             AND seq=(SELECT MIN(seq) FROM messages WHERE frame_id=? AND role='system')",
+        )
+        .bind(content)
+        .bind(frame_id)
+        .bind(frame_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Batch-load each frame's persisted system prompt content (JSON), keyed
+    /// by frame id. Frames without a system message are absent from the map.
+    pub async fn load_system_messages(
+        &self,
+        frame_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let mut map = std::collections::HashMap::new();
+        if frame_ids.is_empty() {
+            return Ok(map);
+        }
+        let mut qb: sqlx::QueryBuilder<'_, sqlx::Sqlite> = sqlx::QueryBuilder::new(
+            "SELECT frame_id, content FROM messages m WHERE role='system' \
+             AND seq=(SELECT MIN(seq) FROM messages WHERE frame_id=m.frame_id AND role='system') \
+             AND frame_id IN (",
+        );
+        let mut separated = qb.separated(", ");
+        for id in frame_ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        let rows: Vec<(String, String)> = qb
+            .build_query_as::<(String, String)>()
+            .fetch_all(&self.pool)
+            .await?;
+        for (frame_id, content) in rows {
+            map.insert(frame_id, content);
+        }
+        Ok(map)
+    }
+
     pub async fn message_count(&self, frame_id: &str) -> Result<i64> {
         Ok(
             sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE frame_id=?")
@@ -578,6 +889,7 @@ impl Store {
     /// Drop persisted turns after `keep` (seq is 1-based; keep=3 retains seq 1..=3).
     pub async fn truncate_messages(&self, frame_id: &str, keep: i64) -> Result<()> {
         let mut tx = self.begin_write().await?;
+        reconcile_session_branches_after_truncate(&mut tx, frame_id, keep).await?;
         truncate_message_rows(&mut tx, frame_id, keep).await?;
         tx.commit().await?;
         Ok(())
@@ -590,6 +902,78 @@ impl Store {
     ) -> Result<()> {
         truncate_message_rows(tx, frame_id, keep).await
     }
+}
+
+/// Reconcile branch provenance before removing a mainline suffix.
+///
+/// A merge summary is persisted at the real mainline tail even though its UI
+/// card is projected back to the branch checkpoint. Removing that tail revokes
+/// the merge. A checkpoint itself remains valid only while its concrete anchor
+/// is retained: `before_user` needs that user message, while `after_response`
+/// also needs a retained assistant reply for the turn.
+pub(crate) async fn reconcile_session_branches_after_truncate(
+    tx: &mut Transaction<'_, Sqlite>,
+    frame_id: &str,
+    keep: i64,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM session_branch_merges WHERE source_frame_id=? AND summary_message_seq>?",
+    )
+    .bind(frame_id)
+    .bind(keep)
+    .execute(&mut **tx)
+    .await?;
+
+    let retained = sqlx::query(
+        "SELECT role,content,tool_name FROM messages WHERE frame_id=? AND seq<=? ORDER BY seq",
+    )
+    .bind(frame_id)
+    .bind(keep)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut retained_turns = Vec::<bool>::new();
+    for row in retained {
+        let role: String = row.try_get("role")?;
+        let tool_name: Option<String> = row.try_get("tool_name")?;
+        if role == "user"
+            && tool_name.as_deref() != Some(crate::AGENT_WORKFLOW_COMPLETION_TOOL)
+            && row
+                .try_get::<Option<String>, _>("content")?
+                .and_then(|content| serde_json::from_str::<superscience_llm::Content>(&content).ok())
+                .is_some_and(|content| !content.as_text().trim().is_empty())
+        {
+            retained_turns.push(false);
+        } else if role == "assistant" {
+            if let Some(has_reply) = retained_turns.last_mut() {
+                *has_reply = true;
+            }
+        }
+    }
+
+    let branches = sqlx::query(
+        "SELECT id,branch_point_user_index,branch_point_kind FROM frames WHERE branched_from=? \
+         AND branch_point_user_index IS NOT NULL AND branch_point_kind IN ('before_user','after_response')",
+    )
+    .bind(frame_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for branch in branches {
+        let id: String = branch.try_get("id")?;
+        let user_index = usize::try_from(branch.try_get::<i64, _>("branch_point_user_index")?)?;
+        let kind: String = branch.try_get("branch_point_kind")?;
+        let checkpoint_retained = match kind.as_str() {
+            "before_user" => user_index < retained_turns.len(),
+            "after_response" => retained_turns.get(user_index).copied() == Some(true),
+            _ => false,
+        };
+        if !checkpoint_retained {
+            sqlx::query("UPDATE frames SET branch_point_kind='orphaned' WHERE id=?")
+                .bind(id)
+                .execute(&mut **tx)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 async fn truncate_message_rows(
@@ -954,9 +1338,52 @@ impl Store {
         let resources = self
             .list_message_resource_links(frame_id, start_seq, before_seq)
             .await?;
+        let merge_rows = sqlx::query(
+            "SELECT merge.summary_message_seq,merge.branch_frame_id,merge.checkpoint_user_index, \
+             merge.checkpoint_kind,message.content AS summary_content,branch.title, \
+             (SELECT content FROM messages m WHERE m.frame_id=branch.id AND m.role='user' \
+              ORDER BY m.seq LIMIT 1) AS first_user \
+             FROM session_branch_merges merge JOIN frames branch ON branch.id=merge.branch_frame_id \
+             JOIN messages message ON message.frame_id=merge.source_frame_id \
+               AND message.seq=merge.summary_message_seq \
+             WHERE merge.source_frame_id=? AND merge.summary_message_seq>=? \
+               AND (? IS NULL OR merge.summary_message_seq < ?) \
+             ORDER BY merge.summary_message_seq",
+        )
+        .bind(frame_id)
+        .bind(start_seq)
+        .bind(before_seq)
+        .bind(before_seq)
+        .fetch_all(&self.pool)
+        .await?;
+        let branch_merges = merge_rows
+            .into_iter()
+            .map(|row| {
+                let title =
+                    session_display_title(row.try_get("title")?, row.try_get("first_user")?);
+                Ok(SessionBranchMergeCard {
+                    summary_message_seq: row.try_get("summary_message_seq")?,
+                    branch_session_id: row.try_get("branch_frame_id")?,
+                    branch_title: title.strip_prefix("Branch: ").unwrap_or(&title).to_string(),
+                    checkpoint_user_index: usize::try_from(
+                        row.try_get::<i64, _>("checkpoint_user_index")?,
+                    )?,
+                    checkpoint_kind: row.try_get("checkpoint_kind")?,
+                    summary: row
+                        .try_get::<String, _>("summary_content")
+                        .ok()
+                        .and_then(|content| {
+                            serde_json::from_str::<superscience_llm::Content>(&content).ok()
+                        })
+                        .map(|content| content.as_text())
+                        .unwrap_or_default(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(SessionTranscriptPage {
             messages,
+            branch_merges,
             reviews,
             ui_events,
             resources,
@@ -1207,6 +1634,29 @@ impl Store {
         if exists.is_none() {
             anyhow::bail!("Session not found");
         }
+        if self
+            .session_has_conversation_branches(frame_id, project_id)
+            .await?
+        {
+            anyhow::bail!("session_has_branches: delete its branches before deleting main");
+        }
+        let owns_current_exploration: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM explorations exploration \
+             JOIN exploration_checkpoints checkpoint ON checkpoint.id=exploration.checkpoint_id \
+             JOIN exploration_families family ON family.id=checkpoint.family_id \
+             WHERE checkpoint.project_id=? AND checkpoint.source_frame_id=? \
+               AND checkpoint.source_frame_id=family.mainline_frame_id \
+               AND checkpoint.source_family_generation=family.generation)",
+        )
+        .bind(project_id)
+        .bind(frame_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if owns_current_exploration {
+            anyhow::bail!(
+                "exploration_mainline_frozen: abandon or select an exploration before deleting main"
+            );
+        }
         let mut tx = self.begin_write().await?;
         delete_session_rows(&mut tx, frame_id).await?;
         tx.commit().await?;
@@ -1268,6 +1718,32 @@ impl Store {
             anyhow::bail!("New session id cannot be empty");
         }
 
+        if remove_source {
+            if self
+                .session_has_conversation_branches(frame_id, source_project_id)
+                .await?
+            {
+                anyhow::bail!("session_has_branches: delete its branches before moving main");
+            }
+            let owns_current_exploration: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM explorations exploration \
+                 JOIN exploration_checkpoints checkpoint ON checkpoint.id=exploration.checkpoint_id \
+                 JOIN exploration_families family ON family.id=checkpoint.family_id \
+                 WHERE checkpoint.project_id=? AND checkpoint.source_frame_id=? \
+                   AND checkpoint.source_frame_id=family.mainline_frame_id \
+                   AND checkpoint.source_family_generation=family.generation)",
+            )
+            .bind(source_project_id)
+            .bind(frame_id)
+            .fetch_one(&self.pool)
+            .await?;
+            if owns_current_exploration {
+                anyhow::bail!(
+                    "exploration_mainline_frozen: abandon or select an exploration before moving main"
+                );
+            }
+        }
+
         let mut tx = self.begin_write().await?;
         let target_exists: Option<(String,)> = sqlx::query_as("SELECT id FROM projects WHERE id=?")
             .bind(target_project_id)
@@ -1278,7 +1754,7 @@ impl Store {
         }
 
         let source = sqlx::query(
-            "SELECT agent_name,status,model,input_tokens,output_tokens,completed_at,title \
+            "SELECT agent_name,status,model,reasoning_effort,input_tokens,output_tokens,completed_at,title \
              FROM frames WHERE id=? AND project_id=? AND parent_frame_id=id",
         )
         .bind(frame_id)
@@ -1290,9 +1766,9 @@ impl Store {
         let now = chrono::Utc::now().timestamp();
         sqlx::query(
             "INSERT INTO frames(\
-                id,parent_frame_id,root_frame_id,agent_name,status,project_id,folder_id,model,\
+                id,parent_frame_id,root_frame_id,agent_name,status,project_id,folder_id,model,reasoning_effort,\
                 input_tokens,output_tokens,created_at,updated_at,completed_at,title\
-             ) VALUES(?,?,?,?,?,?,NULL,?,?,?,?,?,?,?)",
+             ) VALUES(?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?)",
         )
         .bind(new_frame_id)
         .bind(new_frame_id)
@@ -1301,6 +1777,7 @@ impl Store {
         .bind(source.try_get::<String, _>("status")?)
         .bind(target_project_id)
         .bind(source.try_get::<Option<String>, _>("model")?)
+        .bind(source.try_get::<Option<String>, _>("reasoning_effort")?)
         .bind(source.try_get::<Option<i64>, _>("input_tokens")?)
         .bind(source.try_get::<Option<i64>, _>("output_tokens")?)
         .bind(now)
@@ -1488,7 +1965,7 @@ impl Store {
     }
 
     /// Record which session a branch was forked from. Purely a display link for
-    /// the sidebar's nesting — it does not affect loading, deleting, or context.
+    /// the sidebar's nesting until an explicit branch action is requested.
     pub async fn set_session_branched_from(&self, frame_id: &str, source_id: &str) -> Result<()> {
         sqlx::query("UPDATE frames SET branched_from=? WHERE id=?")
             .bind(source_id)
@@ -1496,6 +1973,252 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Mark a branch created by the current checkpoint-aware flow. Legacy rows
+    /// with only `branched_from` deliberately do not participate.
+    pub async fn set_session_branch_point(
+        &self,
+        frame_id: &str,
+        source_id: &str,
+        checkpoint_user_index: usize,
+        checkpoint_kind: &str,
+    ) -> Result<()> {
+        if !matches!(checkpoint_kind, "before_user" | "after_response") {
+            anyhow::bail!("Invalid conversation branch checkpoint kind");
+        }
+        sqlx::query(
+            "UPDATE frames SET branched_from=?,branch_point_user_index=?,branch_point_kind=? \
+             WHERE id=?",
+        )
+        .bind(source_id)
+        .bind(i64::try_from(checkpoint_user_index)?)
+        .bind(checkpoint_kind)
+        .bind(frame_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_session_branches(
+        &self,
+        source_session_id: &str,
+        project_id: &str,
+    ) -> Result<Vec<SessionBranchLink>> {
+        let rows = sqlx::query(
+            "SELECT f.id,f.title,f.branch_point_user_index,f.branch_point_kind, \
+             merge.summary_message_seq,summary.content AS merge_summary, \
+             (SELECT content FROM messages m WHERE m.frame_id=f.id AND m.role='user' \
+              ORDER BY m.seq LIMIT 1) AS first_user \
+             FROM frames f LEFT JOIN session_branch_merges merge ON merge.id=( \
+               SELECT latest.id FROM session_branch_merges latest WHERE latest.branch_frame_id=f.id \
+               ORDER BY latest.created_at DESC,latest.summary_message_seq DESC,latest.id DESC LIMIT 1) \
+             LEFT JOIN messages summary ON summary.frame_id=merge.source_frame_id \
+               AND summary.seq=merge.summary_message_seq \
+             WHERE f.branched_from=? AND f.project_id=? \
+               AND f.parent_frame_id=f.id AND f.exploration_id IS NULL \
+               AND f.branch_point_user_index IS NOT NULL \
+               AND f.branch_point_kind IN ('before_user','after_response') \
+             ORDER BY f.created_at,f.id",
+        )
+        .bind(source_session_id)
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let title =
+                    session_display_title(row.try_get("title")?, row.try_get("first_user")?);
+                Ok(SessionBranchLink {
+                    id: row.try_get("id")?,
+                    title: title.strip_prefix("Branch: ").unwrap_or(&title).to_string(),
+                    source_session_id: source_session_id.to_string(),
+                    checkpoint_user_index: usize::try_from(
+                        row.try_get::<i64, _>("branch_point_user_index")?,
+                    )?,
+                    checkpoint_kind: row.try_get("branch_point_kind")?,
+                    merged: row
+                        .try_get::<Option<i64>, _>("summary_message_seq")?
+                        .is_some(),
+                    merge_summary: row
+                        .try_get::<Option<String>, _>("merge_summary")?
+                        .and_then(|content| {
+                            serde_json::from_str::<superscience_llm::Content>(&content).ok()
+                        })
+                        .map(|content| content.as_text()),
+                })
+            })
+            .collect()
+    }
+
+    pub async fn list_mergeable_branch_ids(&self, project_id: &str) -> Result<HashSet<String>> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM frames WHERE project_id=? AND parent_frame_id=id \
+             AND exploration_id IS NULL AND branched_from IS NOT NULL \
+             AND branch_point_user_index IS NOT NULL \
+             AND branch_point_kind IN ('before_user','after_response')",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    pub async fn list_session_branch_states(
+        &self,
+        project_id: &str,
+    ) -> Result<HashMap<String, String>> {
+        let rows = sqlx::query(
+            "SELECT frame.id,frame.branch_point_kind, \
+             EXISTS(SELECT 1 FROM session_branch_merges merge WHERE merge.branch_frame_id=frame.id) AS merged \
+             FROM frames frame WHERE frame.project_id=? AND frame.branched_from IS NOT NULL \
+             AND frame.branch_point_user_index IS NOT NULL",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let id: String = row.try_get("id")?;
+                let kind: String = row.try_get("branch_point_kind")?;
+                let merged = row.try_get::<i64, _>("merged")? != 0;
+                Ok((
+                    id,
+                    if merged {
+                        "merged"
+                    } else if kind == "orphaned" {
+                        "orphaned"
+                    } else {
+                        "active"
+                    }
+                    .to_string(),
+                ))
+            })
+            .collect()
+    }
+
+    pub async fn session_branch_state(&self, frame_id: &str) -> Result<Option<&'static str>> {
+        let row = sqlx::query(
+            "SELECT branch_point_kind,EXISTS(SELECT 1 FROM session_branch_merges merge \
+             WHERE merge.branch_frame_id=frames.id) AS merged FROM frames WHERE id=? \
+             AND branched_from IS NOT NULL AND branch_point_user_index IS NOT NULL",
+        )
+        .bind(frame_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            let kind: String = row.try_get("branch_point_kind")?;
+            let merged = row.try_get::<i64, _>("merged")? != 0;
+            Ok(if merged {
+                "merged"
+            } else if kind == "orphaned" {
+                "orphaned"
+            } else {
+                "active"
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn preview_session_branch_merge(
+        &self,
+        branch_session_id: &str,
+        project_id: &str,
+    ) -> Result<SessionBranchMergePreview> {
+        let mut tx = self.pool.begin().await?;
+        let preview = session_branch_merge_snapshot(&mut tx, branch_session_id, project_id)
+            .await?
+            .0;
+        tx.rollback().await?;
+        Ok(preview)
+    }
+
+    /// Append the user-approved branch summary to the main conversation's
+    /// current tail. Mainline messages created after the checkpoint are never
+    /// read, rewritten, or included in the branch guard.
+    pub async fn merge_session_branch_summary(
+        &self,
+        branch_session_id: &str,
+        project_id: &str,
+        expected_guard_hash: &str,
+        summary: &str,
+    ) -> Result<SessionBranchMerge> {
+        let summary = summary.trim();
+        if summary.is_empty() {
+            anyhow::bail!("Branch merge summary cannot be empty");
+        }
+        if summary.chars().count() > 64_000 {
+            anyhow::bail!("Branch merge summary is too long");
+        }
+        let mut tx = self.begin_write().await?;
+        let already_merged: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM session_branch_merges WHERE branch_frame_id=?)",
+        )
+        .bind(branch_session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if already_merged {
+            anyhow::bail!("Conversation branch has already been merged");
+        }
+        let (preview, _) =
+            session_branch_merge_snapshot(&mut tx, branch_session_id, project_id).await?;
+        if preview.guard_hash != expected_guard_hash {
+            anyhow::bail!(
+                "The branch changed while its summary was being prepared. Summarize it again."
+            );
+        }
+        let summary_message_seq: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE frame_id=?")
+                .bind(&preview.main_session_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let message = Message::assistant(summary);
+        sqlx::query(
+            "INSERT INTO messages(id,frame_id,seq,role,content,tool_calls,tool_call_id,tool_name,reasoning,ts,model_name) \
+             VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&preview.main_session_id)
+        .bind(summary_message_seq)
+        .bind("assistant")
+        .bind(serde_json::to_string(&message.content)?)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(message.ts)
+        .bind(Option::<String>::None)
+        .execute(&mut *tx)
+        .await?;
+        // Do not emit a normal Text event for the summary. Event replay
+        // coalesces adjacent assistant text, so a tail-only merge could be
+        // folded into the previous answer. The persisted message remains in
+        // model context while branch metadata drives its checkpoint card.
+        sqlx::query(
+            "INSERT INTO session_branch_merges(id,source_frame_id,branch_frame_id,checkpoint_user_index,checkpoint_kind,summary_message_seq,guard_hash,created_at) \
+             VALUES(?,?,?,?,?,?,?,?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&preview.main_session_id)
+        .bind(branch_session_id)
+        .bind(i64::try_from(preview.checkpoint_user_index)?)
+        .bind(&preview.checkpoint_kind)
+        .bind(summary_message_seq)
+        .bind(expected_guard_hash)
+        .bind(chrono::Utc::now().timestamp())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE frames SET updated_at=? WHERE id=?")
+            .bind(chrono::Utc::now().timestamp())
+            .bind(&preview.main_session_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(SessionBranchMerge {
+            main_session_id: preview.main_session_id,
+            branch_session_id: branch_session_id.to_string(),
+            summary_message_seq,
+        })
     }
 
     pub async fn move_session_to_folder(
@@ -1610,7 +2333,7 @@ impl Store {
     }
 
     /// Per-project totals for the Usage settings page. A project is the durable
-    /// workspace boundary in SuperScience; scratch projects are intentionally omitted.
+    /// workspace boundary in Wisp; scratch projects are intentionally omitted.
     pub async fn token_usage_by_project(&self) -> Result<Vec<ProjectTokenUsage>> {
         let rows = sqlx::query(
             "WITH session_usage AS (\

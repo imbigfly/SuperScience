@@ -18,3 +18,20 @@ Use the magnifying-glass button beside **Sessions** to search conversation
 titles in the current workspace. Search includes older conversations that have
 not been loaded into the paginated sidebar yet. Clear the field or press Escape
 to restore the normal grouped conversation list.
+
+## Project rules changes and existing conversations
+
+A conversation's system prompt — including `AGENTS.md` and the project **Agent
+context** (`.wisp/WISP.md`) — is assembled once when the conversation starts
+and kept stable for its lifetime, so edits apply only to new conversations.
+When the files on disk no longer match a conversation's persisted prompt,
+right-click that conversation and choose **Reload project rules…**. A
+confirmation dialog explains the prompt-cache cost; there is no toast.
+The reload takes effect on the next turn and leaves the chat history
+untouched; because the prompt prefix changes, the provider's prompt cache
+for that conversation is invalidated once, so the next turn costs a bit more.
+
+Editing **Agent Context** in Project Settings writes `.wisp/WISP.md`. Saving
+a changed context asks for confirmation first: new conversations pick it up
+automatically, while existing conversations keep the old prompt until you
+reload project rules for that session.
