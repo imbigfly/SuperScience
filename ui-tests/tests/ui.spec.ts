@@ -2058,6 +2058,34 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await expect(panel).toContainText("~79.9K / 128K Tokens");
   await expect(panel.locator(".context-usage-row")).toHaveCount(7);
   await expect(panel.locator(".context-usage-segment")).toHaveCount(7);
+  const firstUsageRow = panel.locator(".context-usage-row").first();
+  const paletteColors = await firstUsageRow.evaluate((row) => {
+    const root = document.documentElement;
+    const originalTheme = root.getAttribute("data-theme");
+    const originalLight = root.getAttribute("data-light-palette");
+    const originalDark = root.getAttribute("data-dark-palette");
+    (row as HTMLElement).style.transition = "none";
+    root.setAttribute("data-theme", "light");
+    root.setAttribute("data-light-palette", "paper");
+    const paper = getComputedStyle(row).backgroundColor;
+    root.setAttribute("data-light-palette", "codex");
+    const codex = getComputedStyle(row).backgroundColor;
+    root.setAttribute("data-theme", "dark");
+    root.setAttribute("data-dark-palette", "charcoal");
+    const charcoal = getComputedStyle(row).backgroundColor;
+    for (const [attribute, value] of [
+      ["data-theme", originalTheme],
+      ["data-light-palette", originalLight],
+      ["data-dark-palette", originalDark],
+    ]) {
+      if (value === null) root.removeAttribute(attribute);
+      else root.setAttribute(attribute, value);
+    }
+    (row as HTMLElement).style.removeProperty("transition");
+    return { paper, codex, charcoal };
+  });
+  expect(paletteColors.paper).not.toBe("rgb(239, 239, 239)");
+  expect(new Set(Object.values(paletteColors)).size).toBe(3);
   await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
   await expect(panel.getByText("36.3K", { exact: true })).toBeVisible();
   await expect(panel.locator(".context-usage-row.expandable")).toHaveCount(6);
