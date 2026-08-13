@@ -29,6 +29,15 @@ fn empty_object() -> serde_json::Value {
     serde_json::json!({})
 }
 
+/// A deterministic provider-side API failure. Suites use this to script error
+/// paths such as context-overflow recovery without a real endpoint.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScriptedApiError {
+    pub status: u16,
+    #[serde(default)]
+    pub body: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScriptedCompletion {
     #[serde(default)]
@@ -54,6 +63,10 @@ pub struct ScriptedCompletion {
     /// Unicode scalar values. Zero emits one chunk.
     #[serde(default)]
     pub chunk_chars: usize,
+    /// Fail this scripted step with an API error instead of a completion. The
+    /// request is still recorded and the script advances past this step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_error: Option<ScriptedApiError>,
 }
 
 impl ScriptedCompletion {
@@ -229,6 +242,12 @@ impl Provider for ScriptedProvider {
         if scripted.delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(scripted.delay_ms)).await;
         }
+        if let Some(error) = &scripted.api_error {
+            return Err(LlmError::Api {
+                status: error.status,
+                body: error.body.clone(),
+            });
+        }
         Ok(scripted.materialize(sequence))
     }
 
@@ -240,6 +259,12 @@ impl Provider for ScriptedProvider {
     ) -> Result<Completion> {
         let (sequence, scripted) = self.next(messages, tools)?;
         deterministic_delay(scripted.delay_ms, sink).await?;
+        if let Some(error) = &scripted.api_error {
+            return Err(LlmError::Api {
+                status: error.status,
+                body: error.body.clone(),
+            });
+        }
         for chunk in chunks(
             scripted.reasoning.as_deref().unwrap_or_default(),
             scripted.chunk_chars,
@@ -297,6 +322,40 @@ mod tests {
         assert_eq!(snapshot.requests.len(), 1);
         assert_eq!(snapshot.requests[0].messages[0].role, Role::User);
         assert_eq!(snapshot.requests[0].tool_names, vec!["read"]);
+        assert_eq!(snapshot.remaining_completions, 0);
+    }
+
+    #[tokio::test]
+    async fn scripted_api_error_fails_one_step_and_advances_the_script() {
+        let provider = ScriptedProvider::new(
+            "fixture",
+            vec![
+                ScriptedCompletion {
+                    api_error: Some(ScriptedApiError {
+                        status: 400,
+                        body: "maximum context length exceeded".into(),
+                    }),
+                    ..ScriptedCompletion::default()
+                },
+                ScriptedCompletion {
+                    content: "recovered".into(),
+                    ..ScriptedCompletion::default()
+                },
+            ],
+        );
+        let mut sink = NullSink;
+        let error = provider
+            .stream(&[Message::user("first")], &[], &mut sink)
+            .await
+            .unwrap_err();
+        assert!(error.is_context_overflow(), "{error}");
+        let completion = provider
+            .complete(&[Message::user("second")], &[])
+            .await
+            .unwrap();
+        assert_eq!(completion.content, "recovered");
+        let snapshot = provider.snapshot();
+        assert_eq!(snapshot.requests.len(), 2);
         assert_eq!(snapshot.remaining_completions, 0);
     }
 }
