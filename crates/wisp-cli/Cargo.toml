@@ -17,9 +17,13 @@ dirs = "5"
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 sha2 = { workspace = true }
+uuid = { workspace = true }
+async-trait = "0.1"
 wisp-runtime = { workspace = true }
 wisp-mcp = { workspace = true }
 wisp-llm = { workspace = true }
 wisp-core = { workspace = true }
 wisp-skills = { workspace = true }
+wisp-tools = { workspace = true }
