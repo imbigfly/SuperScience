@@ -964,19 +964,31 @@ test("model selection stays bound to its conversation", async ({ page }) => {
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 });
 
-test("model effort is shown per row and saved to the model profile", async ({ page }) => {
+test("model effort is revealed on hover and saved to the model profile", async ({ page }) => {
   await enterApp(page, "/?mockSessionModels=1");
   await page.locator(".model-picker-btn").click();
 
-  // Each chat model row shows its own configured effort.
+  // Effort stays out of the resting menu, then appears at the right on hover.
   const opusRow = page.locator(".model-menu-row", { hasText: "opus-4.8" });
   const deepseekRow = page.locator(".model-menu-row", { hasText: "deepseek-v4-pro" });
+  await expect(opusRow.locator(".model-menu-effort-tag")).toBeHidden();
+  await expect(deepseekRow.locator(".model-menu-effort-tag")).toBeHidden();
+  await opusRow.hover();
   await expect(opusRow.locator(".model-menu-effort-tag")).toHaveText("max");
-  await expect(deepseekRow.locator(".model-menu-effort-tag")).toHaveText("low");
+  await expect(opusRow.locator(".model-menu-effort-tag")).toBeVisible();
+  await expect(opusRow.locator(".model-menu-effort-edit")).toBeVisible();
+  await expect(opusRow.locator(".model-menu-effort-edit svg")).toHaveCount(0);
 
   await opusRow.locator(".model-menu-effort-edit").click();
   const flyout = page.locator(".model-menu-effort-flyout[data-effort-for='opus']");
   await expect(flyout).toBeVisible();
+  const [menuBox, flyoutBox] = await Promise.all([
+    page.locator(".model-menu").boundingBox(),
+    flyout.boundingBox(),
+  ]);
+  expect(menuBox).not.toBeNull();
+  expect(flyoutBox).not.toBeNull();
+  expect(flyoutBox!.x).toBeGreaterThan(menuBox!.x);
   // The stored value carries the check mark.
   await expect(
     flyout.locator(".model-menu-effort-option[data-effort='max'] .model-menu-effort-check"),
@@ -1001,6 +1013,20 @@ test("model effort is shown per row and saved to the model profile", async ({ pa
     profile: { id: "opus", reasoning_effort: "" },
   });
   await expect(opusRow.locator(".model-menu-effort-tag")).toHaveCount(0);
+});
+
+test("Chinese reasoning effort title does not duplicate the English label", async ({ page }) => {
+  await page.goto("/?mockSessionModels=1&mockLocale=zh");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "新建会话" })).toBeVisible();
+  await page.locator(".model-picker-btn").click();
+  const opusRow = page.locator(".model-menu-row", { hasText: "opus-4.8" });
+  await opusRow.hover();
+  await opusRow.locator(".model-menu-effort-edit").click();
+
+  const title = page.locator(".model-menu-effort-flyout-label");
+  await expect(title).toHaveText("推理强度");
+  await expect(title).not.toContainText(/thinking effort/i);
 });
 
 test("effort flyout closes on Escape before the model menu", async ({ page }) => {

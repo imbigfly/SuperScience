@@ -1166,13 +1166,14 @@ details.tool:not([open]) > summary.head .run-dot { animation: tool-pulse 1.1s ea
 .model-menu-check { flex: 0 0 auto; color: var(--clay-strong); font-weight: 700; }
 .model-menu-del { flex: 0 0 auto; background: transparent; border: none; color: var(--text-faint); font-size: 15px; line-height: 1; padding: 4px 8px; cursor: pointer; border-radius: var(--radius-xs); }
 .model-menu-del:hover { color: var(--err); }
-.model-menu-effort-tag { flex: 0 0 auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.model-menu-effort-tag { flex: 0 0 auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; opacity: 0; visibility: hidden; transition: opacity .12s ease, visibility .12s ease; }
+.model-menu-row:hover .model-menu-effort-tag,
+.model-menu-row:focus-within .model-menu-effort-tag { opacity: 1; visibility: visible; }
 .model-menu-effort-edit { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; margin-right: 4px; padding: 4px 6px; background: transparent; border: none; border-radius: var(--radius-xs); color: var(--text-faint); font: inherit; font-size: 12px; cursor: pointer; opacity: 0; transition: opacity .12s ease; }
 .model-menu-row:hover .model-menu-effort-edit,
 .model-menu-effort-edit:focus-visible,
 .model-menu-effort-edit.open { opacity: 1; }
 .model-menu-effort-edit:hover, .model-menu-effort-edit.open { background: var(--bg-sunken); color: var(--text); }
-.model-menu-effort-edit svg { width: 12px; height: 12px; }
 .model-menu-effort-flyout { position: fixed; z-index: 42; width: 200px; display: flex; flex-direction: column; gap: 1px; padding: 6px; background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); box-shadow: 0 8px 28px rgba(0,0,0,.14); }
 .model-menu-effort-flyout-label { padding: 4px 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); }
 .model-menu-effort-option { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; border: none; border-radius: var(--radius-xs); background: transparent; color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer; text-align: left; }

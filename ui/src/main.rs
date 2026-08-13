@@ -11618,27 +11618,33 @@ fn App() -> impl IntoView {
                                                                     }
                                                                     let Some(el) = ev.target().and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok()) else { return; };
                                                                     let rect = el.get_bounding_client_rect();
-                                                                    let menu_left = el
+                                                                    let menu_right = el
                                                                         .closest(".model-menu")
                                                                         .ok()
                                                                         .flatten()
-                                                                        .map(|menu| menu.get_bounding_client_rect().left())
-                                                                        .unwrap_or(rect.left());
+                                                                        .map(|menu| menu.get_bounding_client_rect().right())
+                                                                        .unwrap_or(rect.right());
                                                                     // Keep in sync with the flyout width in chat.css.
                                                                     const FLYOUT_WIDTH: f64 = 200.0;
                                                                     // Generous height allowance (default + every known level + label)
                                                                     // so the flyout never runs past the viewport bottom.
                                                                     const FLYOUT_MAX_HEIGHT: f64 = 340.0;
-                                                                    let left = (menu_left - FLYOUT_WIDTH - 6.0).max(8.0);
-                                                                    let viewport_h = web_sys::window()
+                                                                    let window = web_sys::window();
+                                                                    let viewport_w = window
+                                                                        .as_ref()
+                                                                        .and_then(|w| w.inner_width().ok())
+                                                                        .and_then(|w| w.as_f64())
+                                                                        .unwrap_or(1280.0);
+                                                                    let viewport_h = window
                                                                         .and_then(|w| w.inner_height().ok())
                                                                         .and_then(|h| h.as_f64())
                                                                         .unwrap_or(800.0);
+                                                                    let left = (menu_right + 6.0)
+                                                                        .clamp(8.0, (viewport_w - FLYOUT_WIDTH - 8.0).max(8.0));
                                                                     let top = (rect.top() - 4.0).clamp(8.0, (viewport_h - FLYOUT_MAX_HEIGHT - 8.0).max(8.0));
                                                                     effort_menu_for.set(Some((effort_id.clone(), left, top)));
                                                                 }>
                                                                 <span class="model-menu-effort-edit-label">{move || t(locale.get(), "menu.edit")}</span>
-                                                                {compose_icon("chevron-down")}
                                                             </button>
                                                         </div>
                                                     }

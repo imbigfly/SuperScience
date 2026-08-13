@@ -33,13 +33,13 @@ The composer model picker binds the selected HTTP model to the current
 conversation. Switching one populated conversation asks for confirmation and
 does not change any other conversation. Empty conversations switch immediately
 without a warning. The active profile in Settings remains the default for new
-conversations. Each model row in the picker shows the reasoning effort
-configured on that profile; the row's **Edit** button opens a flyout listing
-the effort levels the model family is documented to support (same curated
-list as the model form in Settings). Choosing a level saves it as the
-profile's default — it applies to every conversation using that model and is
-not scoped to the current conversation. Choosing "default" clears the value
-so the provider decides.
+conversations. Hovering a model row in the picker reveals the reasoning effort
+configured on that profile and its **Edit** button. The button opens a flyout
+to the right of the model menu listing the effort levels the model family is
+documented to support (same curated list as the model form in Settings).
+Choosing a level saves it as the profile's default — it applies to every
+conversation using that model and is not scoped to the current conversation.
+Choosing "default" clears the value so the provider decides.
 
 Model profiles describe model access and capabilities for the **built-in Wisp
 agent**. External coding agents (Codex / Claude via ACP) are configured under
