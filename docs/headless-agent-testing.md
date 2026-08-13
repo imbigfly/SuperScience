@@ -157,6 +157,49 @@ Models in one invocation share the provider kind, URL, API key, and request
 settings. Run separate invocations when comparing models hosted by different
 providers, then compare their saved reports independently.
 
+### Live memory dataset
+
+`crates/wisp-cli/eval-suites/live-memory-v1.yaml` runs the memory mechanism
+against a real configured model. It covers the same three axes as the offline
+`memory-v1` dataset, with assertions that still work without a scripted
+provider snapshot:
+
+1. **Compression without forgetting.** Manual `/compact` and auto-compaction
+   bury locked identifiers (`QC_THRESHOLD=0.047`, `COHORT=WISP-HCC-2024-G`)
+   only in folded assistant turns. After production semantic compaction the
+   model must write those values without reading the archive. The scenario
+   must actually compact, shrink to at most 80% of its original token
+   estimate, and finish through `attempt_completion`.
+2. **Retrieval.** Facts exist only in `.wisp/memory/*.md`. The model must
+   call `search_memory` and use the retrieved chunk, including a CJK query
+   and durable notes that remain retrievable after `restart`. Distractor
+   studies must not leak into the answer.
+3. **Stage loading.** `AGENTS.md`, `.wisp/WISP.md`, and a per-turn
+   `<global_memory>` injection must appear in the live completion.
+
+Overflow recovery, the memory-off tool gate, and `final_request_*` body
+checks stay in the offline dataset: a live provider cannot script a
+deterministic 400, and live mode does not record request snapshots.
+
+```bash
+export WISP_API_KEY=<provider-key>
+export WISP_PROVIDER=openai
+export WISP_API_URL=https://api.example.com/v1
+
+cargo run -p wisp-cli -- eval \
+  --mode live \
+  --suite crates/wisp-cli/eval-suites/live-memory-v1.yaml \
+  --model model-a \
+  --parallel 1 \
+  --artifacts target/live-memory \
+  --save target/live-memory/report.json
+```
+
+Keep `--parallel 1` for an initial smoke so rate limits are comparable. Add
+`--repeat 3` after that to expose variance. Cargo tests validate the suite
+and execute every case through the production loop with a scripted provider;
+they never require an API key.
+
 ### Custom suites
 
 Pass a YAML or JSON file with `--suite`. The top-level schema is
