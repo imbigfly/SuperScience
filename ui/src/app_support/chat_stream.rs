@@ -1,5 +1,20 @@
 use super::*;
 
+/// Drop suggested follow-ups for `frame_id` and invalidate any in-flight
+/// generation so a late `generate_follow_up_questions` cannot put them back.
+pub(crate) fn dismiss_follow_up_questions(
+    questions: RwSignal<HashMap<String, Vec<String>>>,
+    generations: RwSignal<HashMap<String, u64>>,
+    frame_id: &str,
+) {
+    questions.update(|all| {
+        all.remove(frame_id);
+    });
+    generations.update(|all| {
+        *all.entry(frame_id.to_string()).or_default() += 1;
+    });
+}
+
 pub(crate) fn begin_pending_turn(
     pending: RwSignal<HashMap<String, usize>>,
     running: RwSignal<HashSet<String>>,
@@ -224,13 +239,29 @@ pub(crate) fn start_user_turn(items: &mut Vec<ChatItem>, text: String, model: Op
 mod start_user_turn_tests {
     use super::{
         append_assistant_delta, append_reasoning_delta, completed_activity_end,
-        composer_text_from_user_message, is_commentary_at, is_image_generation_tool,
-        is_tool_activity, message_with_attachments, message_with_composer_context,
-        message_with_quotes, message_with_read_only_quotes, process_item_insert_index,
-        runtime_object_quote, selection_targets_center_file, start_user_turn, trailing_queue_start,
-        ComposerQuote, ComposerReferenceChip,
+        composer_text_from_user_message, dismiss_follow_up_questions, is_commentary_at,
+        is_image_generation_tool, is_tool_activity, message_with_attachments,
+        message_with_composer_context, message_with_quotes, message_with_read_only_quotes,
+        process_item_insert_index, runtime_object_quote, selection_targets_center_file,
+        start_user_turn, trailing_queue_start, ComposerQuote, ComposerReferenceChip,
     };
     use crate::dto::{ChatItem, ContextUsage};
+    use leptos::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn dismiss_follow_up_questions_removes_and_invalidates_generation() {
+        let runtime = create_runtime();
+        let questions = create_rw_signal(HashMap::from([(
+            "s1".to_string(),
+            vec!["one?".into(), "two?".into(), "three?".into()],
+        )]));
+        let generations = create_rw_signal(HashMap::from([("s1".to_string(), 3u64)]));
+        dismiss_follow_up_questions(questions, generations, "s1");
+        assert!(questions.get_untracked().is_empty());
+        assert_eq!(generations.get_untracked().get("s1").copied(), Some(4));
+        runtime.dispose();
+    }
 
     #[test]
     fn message_with_attachments_appends_suffix() {

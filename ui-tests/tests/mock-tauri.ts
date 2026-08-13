@@ -4610,7 +4610,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               emit("agent", { kind: "Text", frame_id: fid, delta: "Hello " });
               emit("agent", { kind: "Text", frame_id: fid, delta: "from mock wisp-science." });
               emit("agent", { kind: "Done", frame_id: fid });
-            }, 50);
+            }, 50 + Number((window as any).__userEventDelayMs ?? 0));
             return fid;
           }
           case "open_external_url":

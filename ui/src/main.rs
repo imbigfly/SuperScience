@@ -1889,12 +1889,7 @@ fn App() -> impl IntoView {
                 }
             }
             AgentEvent::User { frame_id, text } => {
-                follow_up_questions.update(|questions| {
-                    questions.remove(&frame_id);
-                });
-                follow_up_generation.update(|generations| {
-                    *generations.entry(frame_id.clone()).or_default() += 1;
-                });
+                dismiss_follow_up_questions(follow_up_questions, follow_up_generation, &frame_id);
                 set_pet_activity(&frame_id, "running");
                 flush_now();
                 let outline_text = text.clone();
@@ -2953,6 +2948,12 @@ fn App() -> impl IntoView {
         }
         let branch = action == ComposerSendAction::BranchNew;
         let queued = !branch && active.as_ref().is_some_and(|id| running.get().contains(id));
+        // Do not wait for AgentEvent::User: send_message can sit on the
+        // session lock / prompt build for a long time while the optimistic
+        // user bubble is already on screen.
+        if let Some(id) = active.as_ref() {
+            dismiss_follow_up_questions(follow_up_questions, follow_up_generation, id);
+        }
         // Queue (#433): a plain send into a busy session parks behind the
         // running turn — editable/cancellable until the driver runs it — instead
         // of a dialog. Cut-in / interrupt-replace are explicit dropdown choices.
@@ -10311,7 +10312,7 @@ fn App() -> impl IntoView {
                             }
                         }
                     />
-                    {move || active_session.get().and_then(|frame_id| {
+                    {move || (!busy.get()).then(|| active_session.get()).flatten().and_then(|frame_id| {
                         follow_up_questions.with(|all| all.get(&frame_id).cloned()).map(|questions| {
                             let close_frame_id = frame_id.clone();
                             view! {
