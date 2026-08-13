@@ -76,6 +76,49 @@ provider. Live mode requires the normal `WISP_API_KEY`, `WISP_PROVIDER`, and
 `WISP_MODEL` environment variables. Scripted steps are ignored in live mode;
 live suites should use tolerant semantic assertions rather than exact prose.
 
+### Cross-model compaction benchmark
+
+The repository includes `crates/wisp-cli/eval-suites/live-compaction-v1.yaml`
+for comparing models after production semantic compaction. It measures exact
+task continuity in a realistic longitudinal-study handoff. Before compaction,
+the model must discover and read study inputs, calculate cohort results with
+Python, write an analysis artifact, and apply an authoritative correction with
+the edit tool. After compaction it must re-ground itself from the artifacts and
+write a final report with the correct decision, threshold, exclusion, completed
+work, and next action. The scenario must actually compact to at most 80% of its
+original token estimate and finish through the normal `attempt_completion` tool.
+
+Configure one provider endpoint/key, then repeat `--model` for every model that
+endpoint exposes:
+
+```bash
+export WISP_API_KEY=<provider-key>
+export WISP_PROVIDER=openai
+export WISP_API_URL=https://api.example.com/v1
+
+cargo run -p wisp-cli -- eval \
+  --mode live \
+  --suite crates/wisp-cli/eval-suites/live-compaction-v1.yaml \
+  --model model-a \
+  --model model-b \
+  --model model-c \
+  --parallel 1 \
+  --artifacts target/live-compaction \
+  --save target/live-compaction/report.json
+```
+
+Keep `--parallel 1` for an initial comparison so provider rate limits and
+latency are comparable. Add `--repeat 3` or more after the smoke run to expose
+variance. The report's `model_summaries` array contains per-model pass rate,
+token usage, cost, latency, compaction count, aggregate before/after token
+estimates, and `compaction_ratio_percent`. Every scenario also records its
+model and individual compaction measurements. Trajectory filenames include the
+model, case, and repetition so matrix runs never overwrite one another.
+
+Models in one invocation share the provider kind, URL, API key, and request
+settings. Run separate invocations when comparing models hosted by different
+providers, then compare their saved reports independently.
+
 ### Custom suites
 
 Pass a YAML or JSON file with `--suite`. The top-level schema is

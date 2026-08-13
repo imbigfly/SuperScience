@@ -200,7 +200,8 @@ cargo run -p wisp-cli -- eval --compare baseline.json --save current.json
 For a long-lived controller, `wisp-science rpc` provides a versioned JSONL
 stdin/stdout protocol with correlated approvals and cancellation. See
 [Headless agent testing](docs/headless-agent-testing.md) for suite authoring,
-artifact schemas, limits, and the RPC contract.
+artifact schemas, the built-in cross-model context-compaction benchmark,
+limits, and the RPC contract.
 
 ### ACP agents (optional)
 
