@@ -51,7 +51,7 @@ are logged as `deferred startup finished`.
 ```bash
 export WISP_API_KEY=<your provider key>
 export WISP_PROVIDER=openai            # openai | openai_responses | anthropic
-export WISP_MODEL=deepseek-v4-pro
+export WISP_MODEL=deepseek-v4-flash
 cargo run -p wisp-cli                  # interactive agent
 cargo run -p wisp-cli -- run "Summarize the files in this project"
 cargo run -p wisp-cli -- run --output jsonl "Summarize the files in this project"

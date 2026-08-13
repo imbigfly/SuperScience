@@ -6397,20 +6397,20 @@ test("model settings rejects max output tokens above the known ceiling", async (
     .toMatchObject({ profile: { max_tokens: 384000 } });
 });
 
-test("onboarding key setup adds the flash model before the pro model", async ({ page }) => {
+test("onboarding key setup lands on flash after adding pro", async ({ page }) => {
   await page.goto("/?mockOnboarding=1");
   await expect(page.locator(".onboard-overlay")).toBeVisible();
   await page.getByLabel("API key (stored in OS keyring)").fill("sk-onboard");
   await page.getByRole("button", { name: "Next" }).click();
-  // Order matters: save_model activates each new profile, so pro must land
-  // last for the user to start on it.
+  // Order matters: save_model activates each new profile, so flash must land
+  // last for the user to start on the cheaper default.
   await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
     .filter((c: any) => c.cmd === "save_model")
     .map((c: any) => {
       const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
       const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
       return profile.model;
-    }))).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
+    }))).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"]);
   // The built-in Reader gets bound to the flash profile so reading-heavy
   // work runs on the cheap tier out of the box.
   await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
@@ -6419,7 +6419,7 @@ test("onboarding key setup adds the flash model before the pro model", async ({ 
       const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
       const spec = args.spec instanceof Map ? Object.fromEntries(args.spec) : args.spec;
       return { id: spec.id, model_id: spec.model_id };
-    }))).toEqual([{ id: "reader", model_id: "m1" }]);
+    }))).toEqual([{ id: "reader", model_id: "m2" }]);
 });
 
 test("gpt-image-2 can be assigned for generation but not selected for chat", async ({ page }) => {
@@ -7208,7 +7208,7 @@ test("provider switch fills current API defaults", async ({ page }) => {
   await expect(page.getByLabel("Model")).toHaveValue("claude-sonnet-5");
   await providerSelect(page).selectOption("openai");
   await expect(page.getByLabel("API URL")).toHaveValue("https://api.deepseek.com");
-  await expect(page.getByLabel("Model")).toHaveValue("deepseek-v4-pro");
+  await expect(page.getByLabel("Model")).toHaveValue("deepseek-v4-flash");
 });
 
 test("model form input keeps focus while typing (#62)", async ({ page }) => {

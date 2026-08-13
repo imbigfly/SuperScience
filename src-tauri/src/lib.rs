@@ -4004,7 +4004,7 @@ fn default_model(provider: &str) -> &'static str {
     match normalized_provider(provider).as_str() {
         "anthropic" => "claude-sonnet-5",
         "openai_responses" => "gpt-5.5",
-        _ => "deepseek-v4-pro",
+        _ => "deepseek-v4-flash",
     }
 }
 

@@ -439,7 +439,7 @@ fn settings_provider_defaults(provider: &str) -> (&'static str, &'static str) {
     match settings_provider_value(provider) {
         "anthropic" => ("https://api.anthropic.com", "claude-sonnet-5"),
         "openai_responses" => ("https://api.openai.com/v1", "gpt-5.5"),
-        _ => ("https://api.deepseek.com", "deepseek-v4-pro"),
+        _ => ("https://api.deepseek.com", "deepseek-v4-flash"),
     }
 }
 
@@ -651,7 +651,7 @@ fn apply_known_model_limits(form: &mut ModelForm) {
 const MODEL_PRESETS: [(&str, &str, &str); 5] = [
     ("Kimi", "https://api.moonshot.cn/v1", "kimi-k3"),
     ("GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-5"),
-    ("DeepSeek", "https://api.deepseek.com", "deepseek-v4-pro"),
+    ("DeepSeek", "https://api.deepseek.com", "deepseek-v4-flash"),
     (
         "Kimi Coding",
         "https://api.kimi.com/coding/v1",

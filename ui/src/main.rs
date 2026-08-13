@@ -72,7 +72,7 @@ use text::{
     dom_value, event_target_checked, event_target_value, file_kind, format_bytes,
     group_artifact_indices, ime_composing, join_path, md_to_html, note_composition_end,
     opens_in_system_browser, parent_path, provider_defaults, provider_value, runtime_language,
-    user_message_presentation, DEEPSEEK_FLASH_MODEL,
+    user_message_presentation, DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -5947,9 +5947,9 @@ fn App() -> impl IntoView {
     });
     let dismiss_onboard = move |_| dismiss_onboarding.call(());
 
-    // Onboarding step 0: save the entered key as DeepSeek models (flash for
-    // cheap reading work, pro for everything else), reusing the same
-    // `save_model` command as Settings. Blank key = skip.
+    // Onboarding step 0: save the entered key as DeepSeek models (flash as
+    // the default, pro for heavier work), reusing the same `save_model`
+    // command as Settings. Blank key = skip.
     // ponytail: onboarding is DeepSeek-only; other providers go through Settings › Models.
     let save_onboard_key = Callback::new(move |_| {
         let key = onboard_key.get();
@@ -5957,10 +5957,10 @@ fn App() -> impl IntoView {
             return;
         }
         let provider = "openai".to_string();
-        let (api_url, pro) = provider_defaults(&provider);
+        let (api_url, _) = provider_defaults(&provider);
         // `save_model` makes every newly created profile the active one, so
         // the model the user should land on has to be saved last.
-        let wanted = [DEEPSEEK_FLASH_MODEL, pro];
+        let wanted = [DEEPSEEK_PRO_MODEL, DEEPSEEK_FLASH_MODEL];
         spawn_local(async move {
             for model in wanted {
                 let arg = to_value(&serde_json::json!({
