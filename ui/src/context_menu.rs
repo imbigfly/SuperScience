@@ -257,6 +257,11 @@ pub enum FolderAction {
     Delete(String),
 }
 
+#[derive(Clone, PartialEq)]
+pub enum DemoAction {
+    CopyToProject(String),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkspaceEntryAction {
     Rename { path: String, is_dir: bool },
@@ -400,6 +405,25 @@ pub fn session_menu(
         }
     }
     CtxMenu { x, y, items }
+}
+
+pub fn demo_menu(x: f64, y: f64, demo_id: &str, title: &str, locale: Locale) -> CtxMenu {
+    CtxMenu {
+        x,
+        y,
+        items: vec![
+            item(
+                "copyTitle",
+                i18n::t(locale, "ctx.copy_title"),
+                title.to_string(),
+            ),
+            item(
+                "copyDemoToProject",
+                i18n::t(locale, "ctx.copy_demo_to_project"),
+                demo_id.to_string(),
+            ),
+        ],
+    }
 }
 
 pub fn exploration_menu(
@@ -858,6 +882,15 @@ mod session_branch_action_tests {
             Some(SessionAction::DeleteBranch(id)) if id == "branch-1"
         ));
     }
+
+    #[test]
+    fn parses_demo_copy_action() {
+        assert!(matches!(
+            super::demo_action("copyDemoToProject", "manifest_memory_01_long_context"),
+            Some(super::DemoAction::CopyToProject(id)) if id == "manifest_memory_01_long_context"
+        ));
+        assert!(super::demo_action("copyDemoToProject", "").is_none());
+    }
 }
 
 #[cfg(test)]
@@ -938,6 +971,15 @@ pub fn session_action(action: &str, payload: &str) -> Option<SessionAction> {
             id: payload.to_string(),
             mode: SessionTransferMode::Move,
         }),
+        _ => None,
+    }
+}
+
+pub fn demo_action(action: &str, payload: &str) -> Option<DemoAction> {
+    match action {
+        "copyDemoToProject" if !payload.is_empty() => {
+            Some(DemoAction::CopyToProject(payload.to_string()))
+        }
         _ => None,
     }
 }

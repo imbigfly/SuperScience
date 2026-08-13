@@ -7,13 +7,20 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tauri::State;
+use uuid::Uuid;
+use wisp_llm::Message;
+use wisp_store::Store;
 
 use crate::resource_refs;
 use crate::AppState;
+
+const MAX_SEED_REPEAT: usize = 200;
+const MAX_SEED_PAD: usize = 64;
 
 /// Bundled demo manifests (`seed/`).
 pub fn bundled_dir() -> Option<PathBuf> {
@@ -78,6 +85,80 @@ pub(super) fn load_demo_cmd(
     let ap = state.active(window.label());
     extract_demo_assets(&id, &ap.root)?;
     load_demo(&id).ok_or_else(|| format!("demo '{id}' not found"))
+}
+
+#[tauri::command(rename = "copy_demo_to_project")]
+pub(super) async fn copy_demo_to_project_cmd(
+    state: State<'_, AppState>,
+    id: String,
+    target_project_id: String,
+) -> Result<String, String> {
+    let (_, workspace_dir) = state
+        .store
+        .get_project(&target_project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Target project not found.".to_string())?;
+    if workspace_dir.trim().is_empty() {
+        return Err("Target project has no workspace.".into());
+    }
+    let _activity = state.begin_project_activity(&target_project_id)?;
+    let model_id = crate::models::active_profile_id(&state.store).await;
+    copy_demo_into_project(
+        &state.store,
+        &id,
+        &target_project_id,
+        Path::new(&workspace_dir),
+        &model_id,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct DemoSeedTurn {
+    role: String,
+    #[serde(default)]
+    text: String,
+    #[serde(default = "default_seed_repeat")]
+    repeat: usize,
+    /// Repeat `text` inside one message so a compact seed file still expands
+    /// into enough tokens for a real `/compact` to fold the opening answer.
+    #[serde(default = "default_seed_repeat")]
+    pad: usize,
+}
+
+fn default_seed_repeat() -> usize {
+    1
+}
+
+fn seed_item(role: &str, text: &str) -> DemoUiItem {
+    DemoUiItem {
+        role: role.to_string(),
+        text: text.to_string(),
+        tool_name: None,
+        ok: None,
+        duration_ms: None,
+        input: None,
+        model_name: None,
+        call_id: None,
+        kind: None,
+        status: None,
+        locations: None,
+        resources: Vec::new(),
+    }
+}
+
+fn expand_seed_turns(turns: Vec<DemoSeedTurn>) -> Vec<DemoUiItem> {
+    let mut out = Vec::new();
+    for turn in turns {
+        let n = turn.repeat.clamp(1, MAX_SEED_REPEAT);
+        let pad = turn.pad.clamp(1, MAX_SEED_PAD);
+        let text = turn.text.repeat(pad);
+        for _ in 0..n {
+            out.push(seed_item(&turn.role, &text));
+        }
+    }
+    out
 }
 
 fn clean(text: &str) -> String {
@@ -171,8 +252,12 @@ fn clean_item(mut item: DemoUiItem) -> DemoUiItem {
     item
 }
 
-/// Load one demo by id (the manifest file stem, e.g. `manifest_esr1_03_rnaseq`).
-pub fn load_demo(id: &str) -> Option<Demo> {
+struct DemoManifest {
+    demo: Demo,
+    workspace_files: BTreeMap<String, String>,
+}
+
+fn load_demo_manifest(id: &str) -> Option<DemoManifest> {
     let dir = bundled_dir()?;
     let path = dir.join(format!("{id}.json"));
     let text = std::fs::read_to_string(&path).ok()?;
@@ -191,22 +276,132 @@ pub fn load_demo(id: &str) -> Option<Demo> {
         .pointer("/root_frame/output_data/thinking")
         .and_then(|x| x.as_str())
         .map(String::from);
-    let items: Vec<DemoUiItem> = v
-        .pointer("/root_frame/output_data/items")
-        .and_then(|x| serde_json::from_value::<Vec<DemoUiItem>>(x.clone()).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(clean_item)
-        .collect();
+    let mut items = v
+        .pointer("/root_frame/output_data/context_seed")
+        .and_then(|x| serde_json::from_value::<Vec<DemoSeedTurn>>(x.clone()).ok())
+        .map(expand_seed_turns)
+        .unwrap_or_default();
+    items.extend(
+        v.pointer("/root_frame/output_data/items")
+            .and_then(|x| serde_json::from_value::<Vec<DemoUiItem>>(x.clone()).ok())
+            .unwrap_or_default(),
+    );
+    let items = items.into_iter().map(clean_item).collect();
+    let workspace_files = v
+        .pointer("/root_frame/output_data/workspace_files")
+        .and_then(|x| serde_json::from_value::<BTreeMap<String, String>>(x.clone()).ok())
+        .unwrap_or_default();
     let title = read_title(&path).unwrap_or_else(|| id.trim_start_matches("manifest_").to_string());
-    Some(Demo {
-        id: id.to_string(),
-        title,
-        request: clean(&req),
-        response: clean(&resp),
-        thinking: thinking.map(|t| clean(&t)),
-        items,
+    Some(DemoManifest {
+        demo: Demo {
+            id: id.to_string(),
+            title,
+            request: clean(&req),
+            response: clean(&resp),
+            thinking: thinking.map(|t| clean(&t)),
+            items,
+        },
+        workspace_files,
     })
+}
+
+/// Load one demo by id (the manifest file stem, e.g. `manifest_esr1_03_rnaseq`).
+pub fn load_demo(id: &str) -> Option<Demo> {
+    load_demo_manifest(id).map(|manifest| manifest.demo)
+}
+
+fn safe_workspace_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let path = Path::new(rel);
+    if path.is_absolute() {
+        return Err(format!("unsafe demo path: {rel}"));
+    }
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(seg) => out.push(seg),
+            _ => return Err(format!("unsafe demo path: {rel}")),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return Err(format!("unsafe demo path: {rel}"));
+    }
+    Ok(root.join(out))
+}
+
+fn write_workspace_files(root: &Path, files: &BTreeMap<String, String>) -> Result<(), String> {
+    for (rel, content) in files {
+        let dest = safe_workspace_path(root, rel)?;
+        if dest.exists() {
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&dest, content).map_err(|e| format!("write {}: {e}", dest.display()))?;
+    }
+    Ok(())
+}
+
+fn demo_items_to_messages(items: &[DemoUiItem]) -> Vec<Message> {
+    let mut out = Vec::new();
+    let mut pending_reasoning = None;
+    for (idx, item) in items.iter().enumerate() {
+        match item.role.as_str() {
+            "reasoning" => pending_reasoning = Some(item.text.clone()),
+            "user" => {
+                pending_reasoning = None;
+                out.push(Message::user(&item.text));
+            }
+            "assistant" => {
+                let mut message = Message::assistant(&item.text);
+                message.reasoning = pending_reasoning.take();
+                message.model_name = item.model_name.clone();
+                out.push(message);
+            }
+            "tool" => {
+                let name = item.tool_name.clone().unwrap_or_else(|| "tool".to_string());
+                let call_id = item
+                    .call_id
+                    .clone()
+                    .unwrap_or_else(|| format!("demo-tool-{idx}"));
+                out.push(Message::tool(call_id, name, &item.text));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+pub async fn copy_demo_into_project(
+    store: &Store,
+    demo_id: &str,
+    project_id: &str,
+    workspace: &Path,
+    model_id: &str,
+) -> Result<String, String> {
+    let manifest =
+        load_demo_manifest(demo_id).ok_or_else(|| format!("demo '{demo_id}' not found"))?;
+    let messages = demo_items_to_messages(&manifest.demo.items);
+    if messages.is_empty() {
+        return Err(format!("demo '{demo_id}' has no conversation to copy"));
+    }
+    write_workspace_files(workspace, &manifest.workspace_files)?;
+    extract_demo_assets(demo_id, workspace)?;
+    let frame_id = Uuid::new_v4().to_string();
+    store
+        .create_frame(&frame_id, project_id, "OPERON", model_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    store
+        .replace_messages(&frame_id, &messages)
+        .await
+        .map_err(|e| e.to_string())?;
+    let title = manifest.demo.title.trim();
+    if !title.is_empty() {
+        let _ = store.rename_session(&frame_id, project_id, title).await;
+    }
+    Ok(frame_id)
 }
 
 #[cfg(test)]
@@ -239,8 +434,8 @@ mod tests {
         let demos = list_demos();
         assert_eq!(
             demos.len(),
-            5,
-            "bundled seed should ship the five ESR1 demos"
+            6,
+            "bundled seed should ship the five ESR1 demos plus the long-context memory demo"
         );
         assert_eq!(
             demos.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
@@ -250,6 +445,7 @@ mod tests {
                 "manifest_esr1_03_rnaseq",
                 "manifest_esr1_04_downstream",
                 "manifest_esr1_05_hypotheses",
+                "manifest_memory_01_long_context",
             ]
         );
         for info in &demos {
@@ -262,11 +458,14 @@ mod tests {
                 "{} should ship transcript items",
                 info.id
             );
-            assert!(
-                demo.items.iter().any(|i| i.role == "tool"),
-                "{} should include tool operation records",
-                info.id
-            );
+            let is_esr1 = info.id.starts_with("manifest_esr1_");
+            if is_esr1 {
+                assert!(
+                    demo.items.iter().any(|i| i.role == "tool"),
+                    "{} should include tool operation records",
+                    info.id
+                );
+            }
             let blob = serde_json::to_string(&demo).unwrap();
             assert!(!blob.to_ascii_lowercase().contains("guotosky"));
             assert!(!blob.contains("10.10.10."));
@@ -276,14 +475,16 @@ mod tests {
             assert!(!blob.to_ascii_lowercase().contains("bashrc"));
             assert!(!blob.contains("kimi-k3"));
             assert!(!blob.contains("{{artifact:"));
-            assert!(
-                demo.items
-                    .iter()
-                    .filter_map(|i| i.model_name.as_deref())
-                    .all(|m| m == "deepseek-v4-pro"),
-                "{} should use deepseek-v4-pro for all model labels",
-                info.id
-            );
+            if is_esr1 {
+                assert!(
+                    demo.items
+                        .iter()
+                        .filter_map(|i| i.model_name.as_deref())
+                        .all(|m| m == "deepseek-v4-pro"),
+                    "{} should use deepseek-v4-pro for all model labels",
+                    info.id
+                );
+            }
         }
 
         let datasets = load_demo("manifest_esr1_01_datasets").expect("datasets demo");
@@ -324,6 +525,106 @@ mod tests {
             hypotheses.request.contains("research projects")
                 || hypotheses.request.contains("scientific"),
             "hypotheses demo request should ask for research projects"
+        );
+
+        let memory = load_demo("manifest_memory_01_long_context").expect("memory demo");
+        assert!(
+            memory.items.len() > 100,
+            "memory demo should expand into a long transcript, got {}",
+            memory.items.len()
+        );
+        assert_eq!(memory.items[0].role, "user");
+        assert!(memory.items[0].text.contains("FIRST_QUESTION"));
+        assert_eq!(memory.items[1].role, "assistant");
+        assert!(memory.items[1].text.contains("FIRST_ANSWER"));
+        assert!(memory.items[1].text.contains("QC_THRESHOLD=0.047"));
+        assert!(memory.items[1].text.contains("COHORT=WISP-HCC-2024-G"));
+        for item in &memory.items[2..] {
+            assert!(
+                !item.text.contains("QC_THRESHOLD=0.047"),
+                "locked identifiers must live only in the first answer so /compact can bury them"
+            );
+            assert!(
+                !item.text.contains("FIRST_ANSWER"),
+                "later turns must not repeat the first-answer marker"
+            );
+        }
+        assert!(memory
+            .items
+            .iter()
+            .any(|item| item.text.contains("RECENT_NOTE")));
+        let chars: usize = memory.items.iter().map(|item| item.text.len()).sum();
+        assert!(
+            chars > 1_500_000,
+            "expanded notebook should fill a 256K-class window, got {chars} chars"
+        );
+        let tokens: usize = demo_items_to_messages(&memory.items)
+            .iter()
+            .map(wisp_core::ContextManager::estimated_tokens)
+            .sum();
+        assert!(
+            tokens > 400_000,
+            "estimated tokens should exceed a 256k 80% compact line and remain large on 1M, got {tokens}"
+        );
+        assert!(memory.request.contains("Long-context memory demo"));
+    }
+
+    #[tokio::test]
+    async fn copies_long_context_demo_into_a_project_workspace() {
+        let tmp = std::env::temp_dir().join(format!("wisp-copy-demo-{}", Uuid::new_v4()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = Store::open(&tmp.join("wisp.sqlite")).await.unwrap();
+        let workspace = tmp.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        store
+            .create_project("p", "Demo Target", workspace.to_str().unwrap())
+            .await
+            .unwrap();
+
+        let session_id = copy_demo_into_project(
+            &store,
+            "manifest_memory_01_long_context",
+            "p",
+            &workspace,
+            "test-model",
+        )
+        .await
+        .expect("copy demo");
+
+        let messages = store.load_messages(&session_id).await.unwrap();
+        assert!(messages.len() > 100);
+        assert!(messages[0].content.as_text().contains("FIRST_QUESTION"));
+        assert!(messages[1].content.as_text().contains("FIRST_ANSWER"));
+        assert!(messages[1].content.as_text().contains("QC_THRESHOLD=0.047"));
+        let tokens: usize = messages
+            .iter()
+            .map(wisp_core::ContextManager::estimated_tokens)
+            .sum();
+        assert!(
+            tokens > 400_000,
+            "copied session too short for 256K/1M compact tests: {tokens}"
+        );
+        assert!(workspace.join(".wisp/memory/2025-06-01.md").is_file());
+        assert!(workspace.join(".wisp/memory/2025-05-20.md").is_file());
+        assert!(workspace.join("AGENTS.md").is_file());
+        assert!(workspace.join(".wisp/WISP.md").is_file());
+        let sessions = store.list_sessions("p").await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].1.contains("Long-context memory demo"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rejects_unsafe_demo_workspace_paths() {
+        let root = PathBuf::from("/tmp/wisp-demo-root");
+        assert!(safe_workspace_path(&root, "../etc/passwd").is_err());
+        assert!(safe_workspace_path(&root, "/etc/passwd").is_err());
+        assert!(safe_workspace_path(&root, "").is_err());
+        assert_eq!(
+            safe_workspace_path(&root, ".wisp/memory/note.md").unwrap(),
+            root.join(".wisp/memory/note.md")
         );
     }
 }

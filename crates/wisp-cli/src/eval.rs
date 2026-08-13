@@ -23,6 +23,8 @@ const BUILTIN_SUITE: &str = include_str!("../eval-suites/offline-v1.yaml");
 #[cfg(test)]
 const LIVE_COMPACTION_SUITE: &str = include_str!("../eval-suites/live-compaction-v1.yaml");
 #[cfg(test)]
+const LIVE_MEMORY_SUITE: &str = include_str!("../eval-suites/live-memory-v1.yaml");
+#[cfg(test)]
 const MEMORY_SUITE: &str = include_str!("../eval-suites/memory-v1.yaml");
 const DEFAULT_MAX_CONTEXT: usize = 128_000;
 const DEFAULT_MAX_ROUNDS: usize = 12;
@@ -2288,6 +2290,218 @@ mod tests {
             assert_eq!(result.compactions.len(), 1, "{id}");
             let compaction = &result.compactions[0];
             assert!(compaction.after_tokens < compaction.before_tokens, "{id}");
+        }
+    }
+
+    fn scripted_summary(content: &str) -> ScriptedCompletion {
+        serde_json::from_value(json!({ "content": content, "finish_reason": "stop" })).unwrap()
+    }
+
+    fn scripted_tool(id: &str, name: &str, arguments: Value) -> ScriptedCompletion {
+        serde_json::from_value(json!({
+            "tool_calls": [{ "id": id, "name": name, "arguments": arguments }]
+        }))
+        .unwrap()
+    }
+
+    fn scripted_complete(id: &str, result: &str) -> ScriptedCompletion {
+        scripted_tool(id, "attempt_completion", json!({ "result": result }))
+    }
+
+    fn scripted_search(id: &str, text: &str) -> ScriptedCompletion {
+        scripted_tool(
+            id,
+            "search_memory",
+            json!({
+                "queries": [{ "text": text, "kind": "exact" }],
+                "max_results": 3
+            }),
+        )
+    }
+
+    #[test]
+    fn live_memory_suite_is_valid_for_live_mode() {
+        let suite: EvalSuite = serde_yaml::from_str(LIVE_MEMORY_SUITE).unwrap();
+        validate_suite(&suite, EvalMode::Live).unwrap();
+        let tags: BTreeSet<_> = suite
+            .cases
+            .iter()
+            .flat_map(|case| case.tags.iter().map(String::as_str))
+            .collect();
+        for required in [
+            "compaction",
+            "auto",
+            "manual",
+            "retrieval",
+            "cjk",
+            "stage",
+            "injection",
+            "restart",
+            "live",
+        ] {
+            assert!(
+                tags.contains(required),
+                "missing live memory coverage tag {required}"
+            );
+        }
+        assert!(
+            !tags.contains("overflow"),
+            "overflow recovery stays in the offline memory suite"
+        );
+        for case in &suite.cases {
+            assert!(
+                case.script.is_empty(),
+                "{} must omit scripts; live mode ignores them",
+                case.id
+            );
+            assert!(
+                case.expect.request_contains.is_empty()
+                    && case.expect.final_request_contains.is_empty()
+                    && case.expect.final_request_not_contains.is_empty(),
+                "{} must not use request-body checks; live mode has no snapshot",
+                case.id
+            );
+            assert!(
+                case.auto_compact.is_some(),
+                "{} must set auto_compact explicitly",
+                case.id
+            );
+        }
+        for strategy in ["auto", "manual"] {
+            let case = suite
+                .cases
+                .iter()
+                .find(|case| case.expect.compaction_strategies == vec![strategy.to_string()])
+                .unwrap_or_else(|| {
+                    panic!("no live case pins the '{strategy}' compaction strategy")
+                });
+            assert_eq!(case.expect.compactions, Some(1), "{strategy}");
+            assert!(
+                case.expect.max_compaction_ratio_percent.is_some(),
+                "{strategy}"
+            );
+            assert!(
+                case.expect
+                    .completion_contains
+                    .iter()
+                    .any(|fragment| fragment.contains("QC_THRESHOLD")),
+                "{strategy} must assert recall of locked identifiers"
+            );
+        }
+        assert!(
+            suite
+                .cases
+                .iter()
+                .filter(|case| case.memory_enabled)
+                .all(|case| case
+                    .expect
+                    .required_tools
+                    .iter()
+                    .any(|name| name == "search_memory")),
+            "live retrieval cases must require search_memory"
+        );
+        assert!(
+            suite
+                .cases
+                .iter()
+                .any(|case| !case.runtime_injections.is_empty()),
+            "live stage cases must exercise per-turn injection"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_memory_compaction_fixtures_cross_the_real_compaction_threshold() {
+        let suite: EvalSuite = serde_yaml::from_str(LIVE_MEMORY_SUITE).unwrap();
+        for mut case in suite
+            .cases
+            .iter()
+            .filter(|case| case.tags.iter().any(|tag| tag == "compaction"))
+            .cloned()
+        {
+            case.allowed_tools = vec!["attempt_completion".into()];
+            case.expect = EvalExpectation {
+                completion_contains: vec!["THRESHOLD_OK".into()],
+                required_tools: vec!["attempt_completion".into()],
+                compactions: Some(1),
+                compaction_strategies: case.expect.compaction_strategies.clone(),
+                max_compaction_ratio_percent: Some(80),
+                ..EvalExpectation::default()
+            };
+            case.script = vec![
+                scripted_summary(
+                    "Compacted history while preserving QC_THRESHOLD=0.047 and COHORT=WISP-HCC-2024-G.",
+                ),
+                scripted_complete("done-1", "THRESHOLD_OK"),
+            ];
+
+            let id = case.id.clone();
+            let result = run_case(
+                case,
+                1,
+                suite.defaults.clone(),
+                None,
+                EvalOptions::default(),
+            )
+            .await
+            .unwrap();
+            assert!(result.passed, "{id}: {:?}", result.failures);
+            assert_eq!(result.compactions.len(), 1, "{id}");
+            let compaction = &result.compactions[0];
+            assert!(compaction.after_tokens < compaction.before_tokens, "{id}");
+        }
+    }
+
+    fn live_memory_offline_script(case: &EvalCase) -> Vec<ScriptedCompletion> {
+        match case.id.as_str() {
+            "compact-manual-recalls-locked-ids" | "compact-auto-recalls-locked-ids" => vec![
+                scripted_summary(
+                    "Locked identifiers are QC_THRESHOLD=0.047 and COHORT=WISP-HCC-2024-G.",
+                ),
+                scripted_complete(
+                    "done-1",
+                    "RECALL_COMPLETE\nQC_THRESHOLD=0.047\nCOHORT=WISP-HCC-2024-G",
+                ),
+            ],
+            "memory-retrieval-ignores-distractors" => vec![
+                scripted_search("search-1", "TS-999-QX QC threshold"),
+                scripted_complete("done-1", "MEMORY_HIT\nTHRESHOLD=347\nSTUDY=TS-999-QX"),
+            ],
+            "memory-retrieval-cjk" => vec![
+                scripted_search("search-1", "单细胞爆内存"),
+                scripted_complete("done-1", "MEMORY_HIT\nTOKEN=WISP-CJK-BACKED-17\nbacked"),
+            ],
+            "memory-durable-after-restart" => vec![
+                scripted_complete("done-1", "READY"),
+                scripted_search("search-1", "atlas normalization"),
+                scripted_complete("done-2", "MEMORY_HIT\nTOKEN=CPM-log1p-WISP-55"),
+            ],
+            "stage-rules-and-injection-reach-the-model" => vec![scripted_complete(
+                "done-1",
+                "STAGE_OK\nRULE_TOKEN=WISP-71\nUSER_TOKEN=WISP-72\nFORMAT=WISP-PARQUET-88",
+            )],
+            other => panic!("no offline script for live memory case {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn live_memory_suite_cases_pass_with_scripted_provider() {
+        let suite: EvalSuite = serde_yaml::from_str(LIVE_MEMORY_SUITE).unwrap();
+        for mut case in suite.cases {
+            let id = case.id.clone();
+            if case.memory_enabled {
+                case.expect.request_contains.push("MEMORY_FACT".into());
+            }
+            case.script = live_memory_offline_script(&case);
+            let result = run_case(
+                case,
+                1,
+                suite.defaults.clone(),
+                None,
+                EvalOptions::default(),
+            )
+            .await
+            .unwrap();
+            assert!(result.passed, "{id}: {:?}", result.failures);
         }
     }
 
