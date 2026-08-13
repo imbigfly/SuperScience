@@ -13,7 +13,7 @@
 //! to the persisted messages, which still carry the system prompt (message[0])
 //! and any inlined file content.
 
-use super::AppState;
+use super::{terminal_ui_events, AppState};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 use wisp_core::ContextManager;
@@ -63,6 +63,10 @@ struct DebugRequestSnapshot {
     total_est_tokens: usize,
     message_count: usize,
     tool_count: usize,
+    terminal_event_count: usize,
+    /// Persisted Done/Error boundaries. Older sessions may legitimately have
+    /// none because builds before this field did not store terminal events.
+    terminal_events: Vec<serde_json::Value>,
     tools: Vec<DebugToolSchema>,
     messages: Vec<DebugSection>,
 }
@@ -87,6 +91,7 @@ fn build_snapshot(
     provider: Option<String>,
     model: Option<String>,
     source: &'static str,
+    terminal_events: Vec<serde_json::Value>,
 ) -> DebugRequestSnapshot {
     let mut sections = Vec::with_capacity(messages.len());
     let mut total = 0usize;
@@ -143,6 +148,8 @@ fn build_snapshot(
         total_est_tokens: total,
         message_count: messages.len(),
         tool_count: tool_schemas.len(),
+        terminal_event_count: terminal_events.len(),
+        terminal_events,
         tools: tool_schemas,
         messages: sections,
     }
@@ -163,6 +170,13 @@ pub(super) async fn export_debug_request(
     use tauri_plugin_dialog::DialogExt;
 
     let captured_at = chrono::Utc::now().to_rfc3339();
+    let terminal_events = terminal_ui_events(
+        &state
+            .store
+            .load_session_ui_events(&session_id)
+            .await
+            .map_err(|e| format!("{e}"))?,
+    );
 
     // Prefer the live agent (tools + provider + latest prepared request). Use a
     // non-blocking try_lock so an in-flight turn falls back to persisted
@@ -184,6 +198,7 @@ pub(super) async fn export_debug_request(
                     Some(agent.provider.name().to_string()),
                     Some(agent.provider.model().to_string()),
                     "live-agent",
+                    terminal_events.clone(),
                 )
             })
         })
@@ -205,6 +220,7 @@ pub(super) async fn export_debug_request(
                 None,
                 None,
                 "stored-messages",
+                terminal_events,
             )
         }
     };
@@ -270,7 +286,16 @@ mod tests {
             Message::user("analyze the uploaded sheet"),
             Message::assistant("on it"),
         ];
-        let snap = build_snapshot("s1", "t".into(), &msgs, &[], None, None, "stored-messages");
+        let snap = build_snapshot(
+            "s1",
+            "t".into(),
+            &msgs,
+            &[],
+            None,
+            None,
+            "stored-messages",
+            vec![],
+        );
 
         assert_eq!(snap.message_count, 3);
         assert_eq!(snap.messages[0].role, "system");
@@ -293,7 +318,16 @@ mod tests {
             Message::system("sys"),
             Message::user("Selected excerpt from workspace file data.xls:\ncol_a,col_b\n1,2\n3,4"),
         ];
-        let snap = build_snapshot("s1", "t".into(), &msgs, &[], None, None, "stored-messages");
+        let snap = build_snapshot(
+            "s1",
+            "t".into(),
+            &msgs,
+            &[],
+            None,
+            None,
+            "stored-messages",
+            vec![],
+        );
         assert!(snap.messages[1].text.contains("data.xls"));
         assert!(snap.messages[1].text.contains("col_a,col_b"));
     }
@@ -306,10 +340,40 @@ mod tests {
             "Read a file from disk",
             serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
         )];
-        let snap = build_snapshot("s1", "t".into(), &msgs, &tools, None, None, "live-agent");
+        let snap = build_snapshot(
+            "s1",
+            "t".into(),
+            &msgs,
+            &tools,
+            None,
+            None,
+            "live-agent",
+            vec![],
+        );
         assert_eq!(snap.tool_count, 1);
         assert!(snap.tools[0].est_tokens > 0);
         let msg_sum: usize = snap.messages.iter().map(|m| m.est_tokens).sum();
         assert_eq!(snap.total_est_tokens, msg_sum + snap.tools[0].est_tokens);
+    }
+
+    #[test]
+    fn terminal_errors_are_included_in_debug_snapshot() {
+        let terminal = serde_json::json!({
+            "kind": "Error",
+            "frame_id": "s1",
+            "message": "api: 524 gateway timeout"
+        });
+        let snap = build_snapshot(
+            "s1",
+            "t".into(),
+            &[Message::user("hi")],
+            &[],
+            None,
+            None,
+            "stored-messages",
+            vec![terminal.clone()],
+        );
+        assert_eq!(snap.terminal_event_count, 1);
+        assert_eq!(snap.terminal_events, vec![terminal]);
     }
 }

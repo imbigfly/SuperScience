@@ -1,4 +1,4 @@
-use super::AppState;
+use super::{terminal_ui_events, AppState};
 use crate::file_browser::mime_for_path;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -88,6 +88,7 @@ struct ExportManifest {
     exported_at: String,
     message_count: usize,
     tool_call_count: usize,
+    terminal_event_count: usize,
     artifacts: Vec<ExportArtifactManifest>,
     missing_artifacts: Vec<MissingExportArtifact>,
 }
@@ -457,6 +458,13 @@ pub(super) async fn export_session(
         .load_messages(&session_id)
         .await
         .map_err(|e| format!("{e}"))?;
+    let terminal_events = terminal_ui_events(
+        &state
+            .store
+            .load_session_ui_events(&session_id)
+            .await
+            .map_err(|e| format!("{e}"))?,
+    );
     if messages.is_empty() {
         return Err("No messages to export.".into());
     }
@@ -517,6 +525,7 @@ pub(super) async fn export_session(
         exported_at: chrono::Utc::now().to_rfc3339(),
         message_count: messages.len(),
         tool_call_count: tool_calls.len(),
+        terminal_event_count: terminal_events.len(),
         artifacts: artifact_manifest,
         missing_artifacts,
     };
@@ -555,6 +564,7 @@ pub(super) async fn export_session(
         )?;
         zip_json(&mut zip, "messages.json", &messages)?;
         zip_json(&mut zip, "tool-calls.json", &tool_calls)?;
+        zip_json(&mut zip, "terminal-events.json", &terminal_events)?;
         for file in &files {
             let source = wisp_tools::safety::validate_file_path(
                 &export_root,

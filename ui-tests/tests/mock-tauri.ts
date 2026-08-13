@@ -4271,6 +4271,29 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               }, 30);
               return fid;
             }
+            if (String(arg("message") ?? "").includes("CONTEXTUSAGERUNNING")) {
+              return await new Promise<string>((resolve) => {
+                setTimeout(() => {
+                  emit("agent", { kind: "User", frame_id: fid, text: msg });
+                  emit("agent", { kind: "Text", frame_id: fid, delta: "Still running on the original model." });
+                  emit("agent", {
+                    kind: "Usage",
+                    frame_id: fid,
+                    round: 1,
+                    input: 79_200,
+                    output: 700,
+                    reasoning: 0,
+                    cached: 50_000,
+                    ctx_tokens: 79_900,
+                    max_context: 128_000,
+                  });
+                }, 30);
+                setTimeout(() => {
+                  emit("agent", { kind: "Done", frame_id: fid });
+                  resolve(fid);
+                }, 1_200);
+              });
+            }
             if (String(arg("message") ?? "").includes("CONTEXTUSAGE")) {
               setTimeout(() => {
                 emit("agent", { kind: "User", frame_id: fid, text: msg });

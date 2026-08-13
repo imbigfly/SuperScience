@@ -552,16 +552,19 @@ fn App() -> impl IntoView {
             let _ = transcript_projection_epoch.get();
             let snapshot = items.with_untracked(|rows| latest_context_usage(rows));
             // A usage row only appears after a turn runs, so its `max` names
-            // the model that produced it. Re-base the limit on the model the
-            // session is bound to now: switching models or editing the
-            // profile's window must move the gauge without waiting a turn.
+            // the model that produced it. Re-base an idle session on the model
+            // it is bound to now. While a turn is running, keep the window of
+            // the actual cached Agent: a mid-turn model switch is intentionally
+            // applied at the next boundary, not hot-swapped under the request.
             snapshot.map(|mut snapshot| {
-                if let Some(max) = session_context_window(
-                    &models.get(),
-                    &session_model_ids.get(),
-                    Some(&session_id),
-                ) {
-                    snapshot.max = max as usize;
+                if !running.get().contains(&session_id) {
+                    if let Some(max) = session_context_window(
+                        &models.get(),
+                        &session_model_ids.get(),
+                        Some(&session_id),
+                    ) {
+                        snapshot.max = max as usize;
+                    }
                 }
                 snapshot
             })
