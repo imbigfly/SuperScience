@@ -169,6 +169,19 @@ pub struct McpClient {
     transport: Transport,
 }
 
+fn bio_tools_command(
+    python: &std::path::Path,
+    run_server: &std::path::Path,
+    pkg: &str,
+    envs: &[(String, String)],
+) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(python);
+    cmd.arg(run_server).arg(pkg);
+    cmd.envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    cmd.env("PYTHONDONTWRITEBYTECODE", "1");
+    cmd
+}
+
 impl McpClient {
     /// Spawn `command args...` and perform the MCP initialize handshake.
     pub async fn launch(command: &str, args: &[String]) -> Result<Self> {
@@ -503,9 +516,7 @@ impl McpClient {
         let dir =
             bundled_bio_tools_dir().ok_or_else(|| anyhow!("bundled bio-tools dir not found"))?;
         let run_server = dir.join("run_server.py");
-        let mut cmd = tokio::process::Command::new(python);
-        cmd.arg(run_server).arg(pkg);
-        cmd.envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        let cmd = bio_tools_command(python, &run_server, pkg, envs);
         Self::launch_with_command(cmd).await
     }
 }
@@ -539,6 +550,24 @@ fn tools_into_remote(tools: Vec<Value>) -> Vec<RemoteTool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bio_tools_command_forces_python_not_to_write_bytecode() {
+        let envs = vec![("PYTHONDONTWRITEBYTECODE".to_string(), "0".to_string())];
+        let cmd = bio_tools_command(
+            std::path::Path::new("python"),
+            std::path::Path::new("run_server.py"),
+            "mcp_bio",
+            &envs,
+        );
+
+        let value = cmd
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new("PYTHONDONTWRITEBYTECODE"))
+            .and_then(|(_, value)| value);
+        assert_eq!(value, Some(std::ffi::OsStr::new("1")));
+    }
 
     #[test]
     fn sse_body_yields_matching_jsonrpc_result() {
