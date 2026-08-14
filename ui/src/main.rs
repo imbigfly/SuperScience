@@ -838,6 +838,7 @@ fn App() -> impl IntoView {
     let drag_session = create_rw_signal::<Option<String>>(None);
     let drop_target = create_rw_signal::<Option<String>>(None);
     let session_execution_contexts = create_rw_signal::<HashSet<String>>(HashSet::new());
+    let default_execution_context = create_rw_signal::<Option<String>>(None);
     create_effect(move |_| {
         let Some(session_id) = active_session.get() else {
             return;
@@ -6799,6 +6800,32 @@ fn App() -> impl IntoView {
             apply_session_compute_resource.call((context_id, enabled));
         });
 
+    let set_default_compute_resource = Callback::new(move |context_id: Option<String>| {
+        if demo_mode.get_untracked() {
+            return;
+        }
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({ "contextId": context_id })).unwrap();
+            match invoke_checked("set_default_execution_context", args).await {
+                Ok(value) => {
+                    let Ok(saved) = serde_wasm_bindgen::from_value::<Option<String>>(value)
+                    else {
+                        return;
+                    };
+                    default_execution_context.set(saved.clone());
+                    // Make the new default usable in the current session right away.
+                    if let Some(id) = saved {
+                        apply_session_compute_resource.call((id, true));
+                    }
+                }
+                Err(error) => {
+                    let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                    show_toast(&message);
+                }
+            }
+        });
+    });
+
     let open_terminal_for_context = Callback::new(move |context_id: String| {
         spawn_local(async move {
             let arg = to_value(&serde_json::json!({ "contextId": context_id })).unwrap();
@@ -6884,6 +6911,7 @@ fn App() -> impl IntoView {
         });
     }
     refresh_execution_contexts(execution_contexts);
+    refresh_default_execution_context(default_execution_context);
     // Auto-register installed WSL distributions so they show up as checkable
     // rows in the compute menu. No-op on non-Windows and (via a registry guard
     // in the backend) on Windows machines without WSL, so it never spawns
@@ -11717,20 +11745,39 @@ fn App() -> impl IntoView {
                                                     }).map(|host| {
                                                     let context_id = format!("ssh:{}", host.alias);
                                                     let enabled = session_execution_contexts.get().contains(&context_id);
+                                                    let is_analysis_default =
+                                                        default_execution_context.get().as_deref() == Some(context_id.as_str());
                                                     let toggle_id = context_id.clone();
+                                                    let default_id = context_id.clone();
                                                     view! {
-                                                        <button type="button" class="agent-submenu-row compute-resource-row"
-                                                            class:enabled=enabled data-context-id=context_id.clone()
-                                                            aria-pressed=enabled.to_string()
-                                                            on:click=move |_| {
-                                                                toggle_session_compute_resource.call((toggle_id.clone(), !enabled));
-                                                            }>
-                                                            <span class="compute-resource-icon">{compose_icon("server")}</span>
-                                                            <span class="compute-resource-name">{host.alias}</span>
-                                                            <span class="compute-resource-state">
-                                                                {if enabled { t(locale.get(), "compute.enabled") } else { t(locale.get(), "compute.disabled") }}
-                                                            </span>
-                                                        </button>
+                                                        <div class="agent-submenu-row compute-resource-row"
+                                                            class:enabled=enabled data-context-id=context_id.clone()>
+                                                            <button type="button" class="compute-resource-toggle"
+                                                                aria-pressed=enabled.to_string()
+                                                                on:click=move |_| {
+                                                                    toggle_session_compute_resource.call((toggle_id.clone(), !enabled));
+                                                                }>
+                                                                <span class="compute-resource-icon">{compose_icon("server")}</span>
+                                                                <span class="compute-resource-name-wrap">
+                                                                    <span class="compute-resource-name">{host.alias}</span>
+                                                                    {is_analysis_default.then(|| view! {
+                                                                        <span class="compute-resource-default">{t(locale.get(), "compute.analysis_default")}</span>
+                                                                    })}
+                                                                </span>
+                                                                <span class="compute-resource-state">
+                                                                    {if enabled { t(locale.get(), "compute.enabled") } else { t(locale.get(), "compute.disabled") }}
+                                                                </span>
+                                                            </button>
+                                                            <button type="button" class="compute-resource-default-toggle"
+                                                                class:active=is_analysis_default
+                                                                title=move || t(locale.get(), if is_analysis_default { "compute.clear_default" } else { "compute.set_default" })
+                                                                aria-label=move || t(locale.get(), if is_analysis_default { "compute.clear_default" } else { "compute.set_default" })
+                                                                on:click=move |_| {
+                                                                    set_default_compute_resource.call(if is_analysis_default { None } else { Some(default_id.clone()) });
+                                                                }>
+                                                                {compose_icon("star")}
+                                                            </button>
+                                                        </div>
                                                     }
                                                 }).collect_view()}}
                                                 {move || {
@@ -11741,30 +11788,47 @@ fn App() -> impl IntoView {
                                                         .map(|ctx| {
                                                     let context_id = ctx.id.clone();
                                                     let enabled = session_execution_contexts.get().contains(&context_id);
+                                                    let is_analysis_default =
+                                                        default_execution_context.get().as_deref() == Some(context_id.as_str());
                                                     let toggle_id = context_id.clone();
+                                                    let default_id = context_id.clone();
                                                     let name = if ctx.label.trim().is_empty() { ctx.id.clone() } else { ctx.label.clone() };
-                                                    let is_default = serde_json::from_str::<serde_json::Value>(&ctx.config_json)
+                                                    let is_wsl_default = serde_json::from_str::<serde_json::Value>(&ctx.config_json)
                                                         .ok()
                                                         .and_then(|cfg| cfg.get("is_default").and_then(|v| v.as_bool()))
                                                         .unwrap_or(false);
                                                     view! {
-                                                        <button type="button" class="agent-submenu-row compute-resource-row"
-                                                            class:enabled=enabled data-context-id=context_id.clone()
-                                                            aria-pressed=enabled.to_string()
-                                                            on:click=move |_| {
-                                                                toggle_session_compute_resource.call((toggle_id.clone(), !enabled));
-                                                            }>
-                                                            <span class="compute-resource-icon">{compose_icon("terminal")}</span>
-                                                            <span class="compute-resource-name-wrap">
-                                                                <span class="compute-resource-name">{name}</span>
-                                                                {is_default.then(|| view! {
-                                                                    <span class="compute-resource-default">{t(locale.get(), "compute.default")}</span>
-                                                                })}
-                                                            </span>
-                                                            <span class="compute-resource-state">
-                                                                {if enabled { t(locale.get(), "compute.enabled") } else { t(locale.get(), "compute.disabled") }}
-                                                            </span>
-                                                        </button>
+                                                        <div class="agent-submenu-row compute-resource-row"
+                                                            class:enabled=enabled data-context-id=context_id.clone()>
+                                                            <button type="button" class="compute-resource-toggle"
+                                                                aria-pressed=enabled.to_string()
+                                                                on:click=move |_| {
+                                                                    toggle_session_compute_resource.call((toggle_id.clone(), !enabled));
+                                                                }>
+                                                                <span class="compute-resource-icon">{compose_icon("terminal")}</span>
+                                                                <span class="compute-resource-name-wrap">
+                                                                    <span class="compute-resource-name">{name}</span>
+                                                                    {is_wsl_default.then(|| view! {
+                                                                        <span class="compute-resource-default">{t(locale.get(), "compute.wsl_default")}</span>
+                                                                    })}
+                                                                    {is_analysis_default.then(|| view! {
+                                                                        <span class="compute-resource-default">{t(locale.get(), "compute.analysis_default")}</span>
+                                                                    })}
+                                                                </span>
+                                                                <span class="compute-resource-state">
+                                                                    {if enabled { t(locale.get(), "compute.enabled") } else { t(locale.get(), "compute.disabled") }}
+                                                                </span>
+                                                            </button>
+                                                            <button type="button" class="compute-resource-default-toggle"
+                                                                class:active=is_analysis_default
+                                                                title=move || t(locale.get(), if is_analysis_default { "compute.clear_default" } else { "compute.set_default" })
+                                                                aria-label=move || t(locale.get(), if is_analysis_default { "compute.clear_default" } else { "compute.set_default" })
+                                                                on:click=move |_| {
+                                                                    set_default_compute_resource.call(if is_analysis_default { None } else { Some(default_id.clone()) });
+                                                                }>
+                                                                {compose_icon("star")}
+                                                            </button>
+                                                        </div>
                                                     }
                                                 }).collect_view()}}
                                             </div>
