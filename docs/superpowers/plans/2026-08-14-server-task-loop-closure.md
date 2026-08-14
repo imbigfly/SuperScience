@@ -52,7 +52,12 @@ ArtifactVersion，而不是永远以 `ssh://` 引用留在服务器上。
   snapshot/reference/lineage 逻辑；`source_path` 记录远端相对路径。
 - 尊重大数据规则：`residency: remote`、超过 `max_file_mb`/`max_total_mb` 的文件不下载，
   由远端脚本返回的 size/checksum 直接注册为 `ssh://<alias>/<abs path>` 外部引用
-  （补上现在缺失的 checksum 和 size）。
+  （补上现在缺失的 checksum 和 size）。**引用不得指向 workdir**（会被 PR 3/6 清理
+  而悬空）：收集脚本把留在远端的产物 `mv` 出 workdir 到远端持久产物区
+  （PR 2 前默认 `~/.wisp-science/artifacts/<run_id>/`，PR 2 起为
+  `<remote_data_root>/artifacts/<run_id>/`），引用指向持久区路径。
+- **下载本身是可恢复任务**：harvest 拉回复用现有 `kind='file_transfer'` run 机制
+  （持久记录、`progress_json` 进度、应用重启后可重试），不做一次性前台 scp。
 - **海量碎文件（如 Trinity 输出十几万中间文件）——选择性传输、选择性记录**：
   数据库行数只随"被选中取回的东西"增长，与远端文件总数无关。
   - `output_specs` 就是选择器：只有 spec 命中且被取回/登记的文件才进数据库；
@@ -98,7 +103,9 @@ harvest_run { run_id }
 - fake runner：glob 命中多文件 → manifest 解析、checksum 校验、本地注册、
   `run_outputs`/`produced` 边、`harvested_at` 写入。
 - checksum 不匹配 → 报错、不注册、`harvested_at` 为 NULL、run 仍 `succeeded`。
-- 超限文件 → 注册为 `ssh://` 引用且带 size/checksum，不下载。
+- 超限文件 → 注册为 `ssh://` 引用且带 size/checksum，不下载；文件被移出
+  workdir，引用路径位于远端持久产物区。
+- 拉回走 `file_transfer` run：中断后可重试，重试幂等不重复注册。
 - `bundle: true` 命中多文件 → 单个 tar 归档、单个 ArtifactVersion、单行
   `run_outputs`；归档 checksum 校验失败不注册。
 - 非 bundle glob 命中数超上限 → 报错文案包含 `bundle` 建议，不部分注册。
@@ -196,6 +203,8 @@ cd ../ui-tests && npm ci && npx playwright test
   调用方）：
   - run 处于终态（`succeeded`/`failed`/`cancelled`/`timed_out`/`lost`）；
   - `succeeded` 且 `output_specs` 非空时要求 `harvested_at IS NOT NULL`；
+  - 防御性检查：不存在 materialization=External 且路径位于该 workdir 内的
+    ArtifactVersion（PR 1 已保证引用移出 workdir，此处兜底拒绝）；
   - 未清理过（`cleaned_at IS NULL`），重复调用幂等返回。
 - 执行：SSH 走 `sh -s` 通道 `rm -rf`；local/WSL 走对应 transport 删除（Windows 用
   原生删除，不假设 POSIX）。**路径安全**：只删除 handle 中记录的 workdir，且必须
@@ -225,7 +234,8 @@ cleanup_run_workspace { run_id }
 ### 测试
 
 - 前置条件矩阵：running 拒绝；succeeded+specs+未 harvest 拒绝；harvest 后允许；
-  failed/cancelled 直接允许；二次调用幂等。
+  failed/cancelled 直接允许；存在指向 workdir 的 External 引用 → 拒绝；二次调用
+  幂等。
 - fake runner 断言下发的删除命令路径被约束在 `.wisp-science/runs/<id>`；恶意
   workdir（`~`、`/`、含 `..`）被拒绝。
 - 删除失败 → `cleanup_error` 落库、可重试；成功 → `cleaned_at` 落库。
@@ -273,10 +283,13 @@ CREATE INDEX IF NOT EXISTS ix_remote_staging_ctx ON remote_staging(context_id, r
   （run 已终态且已清理/不存在，或 transfer 目标已被更新版本替代——同一
   `remote_path` 存在更晚的登记）。
 - 新增 `remove_remote_files` 工具：删除指定孤儿条目对应的远端文件（复用 PR 3 的
-  安全删除通道；只允许删除登记在册的路径），成功标记 `removed_at`。活跃引用拒绝
-  删除，除非显式 `force`。
+  安全删除通道；只允许删除登记在册的路径），成功标记 `removed_at`；远端文件已
+  不存在（账实漂移）视为删除成功。活跃引用拒绝删除，除非显式 `force`。
+- **丢弃服务器审计**：删除/注销 SSH context 前，列出仍指向该 context 的
+  External ArtifactVersion 与未移除的 staging 条目，要求用户先取回或显式确认
+  放弃；确认后 context 可删，引用产物标注"来源已丢弃"。
 - UI：Environment 右栏每个 SSH context 增加"远端文件"视图（登记列表、孤儿标记、
-  清理操作）。
+  清理操作）；context 删除流程接入上述审计。
 
 ### 接口
 
@@ -294,7 +307,10 @@ remove_remote_files { context_id, ids, force? }
 - run inputs staging / transfer 上传均产生登记；relay 中转不登记本地临时路径。
 - 同一 `remote_path` 二次上传 → 旧条目判定为"被替换"孤儿。
 - 活跃 run 引用的条目拒绝删除；`force` 可删；删除后 `removed_at` 落库。
+- 远端文件已不存在 → 条目仍标记 `removed_at`，不报错。
 - 未登记路径的删除请求被拒绝（防任意远端删除）。
+- context 删除：存在未取回 External 引用/未移除条目 → 要求确认；确认后引用
+  标注"来源已丢弃"。
 - PR 3 清理联动：workdir 清理后其 inputs 条目自动标记移除。
 - legacy 库幂等建表。
 
@@ -330,7 +346,8 @@ harvest + 整目录清理"两个极端。
   - 目录：走 PR 1 的 bundle 通道——远端 `tar -czf` 成单个归档、归档级
     checksum、注册为**一个** ArtifactVersion，可选本地解包；绝不逐文件注册。
   - 未被选中的文件不传输、不记录，等待清理。
-  - 进度写 `progress_json`，UI 复用现有传输进度条。
+  - 下载注册为 `kind='file_transfer'` run（与 PR 1 harvest 拉回同一机制）：
+    持久、有进度、应用重启/断网后可重试；modal 关闭不中断下载。
 - 新增 `delete_run_files` 命令：给定相对路径列表，逐一校验解析后仍位于
   `<remote_workdir_root>/<run_id>` 内（拒绝 `..`、绝对路径、symlink 逃逸），复用
   PR 3 的删除通道；全目录删除仍走 `cleanup_run_workspace`。
@@ -386,15 +403,19 @@ cd ../ui-tests && npm ci && npx playwright test
 - 复用 `RunManager` 的后台 poller/reconciler 周期：扫描
   `succeeded && harvested_at IS NOT NULL && cleaned_at IS NULL && ended_at < now - N days`
   的 run，逐个走 PR 3 的 `cleanup_run_workspace` 路径（含全部前置校验与路径约束）。
+- 独立设置 `failed_run_retention_days`（默认 NULL，建议窗口更长）：对
+  `failed`/`cancelled`/`timed_out` 的 run 同样按期回收 workdir——失败任务的碎文件
+  （如跑挂的 Trinity）常常最大，不能永久堆积；日志 tail 已在库中，不因清理丢失。
 - 清理动作写入 run 时间线（`cleanup_error`/`cleaned_at` 已有），UI 设置页暴露开关。
 - 文档：更新 `skills/remote-compute-ssh/SKILL.md` 与 control-plane spec，写明生命周期
   九段全部落地：上传 → 创建 → 后台执行 → 状态 → 日志 → 取消/重连 → 登记 → 取回 → 清理。
 
 ### 测试
 
-- 到期 run 被自动清理、未到期/未 harvest/失败态不动。
+- 到期 run 被自动清理、未到期/未 harvest 不动。
+- `failed_run_retention_days` 只影响失败/取消/超时态，且与成功态窗口互不干扰。
 - 清理失败不阻塞 poller，错误落库且下轮重试。
-- 设置默认关闭；开启/关闭即时生效。
+- 两个设置默认关闭；开启/关闭即时生效。
 
 ### 验证
 
