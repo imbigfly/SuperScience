@@ -1870,6 +1870,142 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(page.locator(".msg.user .body")).not.toContainText("Target environments:");
 });
 
+test("composer / suggests the built-in /compact command", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+
+  await composerInput.pressSequentially("/comp");
+  await expect(page.locator(".mention-menu")).toContainText("Commands, Skills & Workflows");
+  const commandItem = page.locator(".mention-menu .mention-item").filter({ hasText: "/compact" });
+  await expect(commandItem).toContainText("Archive full history");
+  await commandItem.click();
+  // Commands fill the composer instead of attaching a reference chip.
+  await expect(composerInput).toHaveValue("/compact");
+  await expect(composerInput).toBeFocused();
+  await expect(page.locator(".composer-reference-card")).toHaveCount(0);
+
+  await composerInput.fill("");
+  await composerInput.pressSequentially("/comp");
+  await expect(commandItem).toBeVisible();
+  // Enter selects the highlighted command; it must not send the message yet.
+  await composerInput.press("Enter");
+  await expect(composerInput).toHaveValue("/compact");
+  await expect(page.locator(".mention-menu")).toHaveCount(0);
+  expect(await lastInvokeArgs(page, "send_message")).toBeNull();
+});
+
+test("composer slash commands run the matching shell actions", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+  const menu = page.locator(".mention-menu");
+
+  // Empty session lists the shell commands but hides the turn-bound ones.
+  await composerInput.pressSequentially("/");
+  await expect(menu).toContainText("/compact");
+  await expect(menu).toContainText("/fork");
+  await expect(menu).toContainText("/btw");
+  await expect(menu).toContainText("/save-as-skill");
+  await expect(menu).toContainText("/skills");
+  await expect(menu).toContainText("/files");
+  await expect(menu).toContainText("/upload");
+  await expect(menu).not.toContainText("/rewind");
+  await expect(menu).not.toContainText("/review");
+  await expect(menu).not.toContainText("/remember");
+  await expect(menu).not.toContainText("/context");
+  await page.keyboard.press("Escape");
+
+  // /btw opens the side chat; a payload goes straight to it.
+  await composerInput.fill("/btw");
+  await composerInput.press("Enter");
+  const panel = page.locator(".rightpane");
+  await expect(panel.locator(".sidechat-in-pane")).toBeVisible();
+  expect(await lastInvokeArgs(page, "side_chat")).toBeNull();
+
+  await composerInput.fill("/btw what did the main thread miss?");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "side_chat")).toMatchObject({
+    question: "what did the main thread miss?",
+  });
+
+  // /save-as-skill drafts the skill-creator prompt into the composer.
+  await composerInput.fill("/save-as-skill");
+  await composerInput.press("Enter");
+  await expect(composerInput).toHaveValue(/skill-creator/);
+  await composerInput.fill("");
+
+  // /skills opens the skills settings page.
+  await composerInput.fill("/skills");
+  await composerInput.press("Enter");
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect(page.locator(".settings-nav button.active")).toHaveText("Skills");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+
+  // /files opens the file panel in the right pane.
+  await composerInput.fill("/files");
+  await composerInput.press("Enter");
+  await expect(panel.locator(".rp-files")).toBeVisible();
+
+  // A completed turn unlocks the turn-bound commands.
+  await composerInput.fill("hello there");
+  await composerInput.press("Enter");
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+
+  // Picked action commands run immediately without filling the composer.
+  await composerInput.pressSequentially("/rev");
+  await menu.locator(".mention-item").filter({ hasText: "/review" }).click();
+  await expect(composerInput).toHaveValue("");
+  await expect.poll(() => lastInvokeArgs(page, "review_session")).toMatchObject({
+    sessionId: expect.stringMatching(/^s-/),
+  });
+
+  // /remember distills the latest turn, like the message-level Memory button.
+  await composerInput.fill("/remember");
+  await composerInput.press("Enter");
+  const memoryModal = page.getByTestId("turn-memory-overlay");
+  await expect(memoryModal).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "propose_turn_memory")).toMatchObject({
+    turnIndex: 0,
+    automatic: false,
+  });
+  await page.keyboard.press("Escape");
+  await expect(memoryModal).toHaveCount(0);
+
+  // /rewind previews the rollback of the latest turn, like the Undo button.
+  await composerInput.fill("/rewind");
+  await composerInput.press("Enter");
+  const undoModal = page.getByTestId("turn-undo-modal");
+  await expect(undoModal).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "preview_turn_undo")).toMatchObject({
+    userIndex: 0,
+  });
+  await page.keyboard.press("Escape");
+  await expect(undoModal).toHaveCount(0);
+
+  // Unknown slash text still goes to the model untouched.
+  await composerInput.fill("/notacommand");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: "/notacommand",
+  });
+
+  // /fork fills via the picker; Enter then sends the payload as a branch,
+  // exactly like the "Branch in new session" send-mode item.
+  await composerInput.pressSequentially("/fork");
+  await menu.locator(".mention-item").filter({ hasText: "/fork" }).click();
+  await expect(composerInput).toHaveValue("/fork ");
+  await composerInput.pressSequentially("branch this idea");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "branch_session")).toMatchObject({
+    title: "branch this idea",
+    checkpointKind: "after_response",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    sessionId: expect.stringMatching(/^branch-/),
+    message: "branch this idea",
+  });
+});
+
 test("composer picker follows manual caret insertions and ignores pasted text", async ({ page }) => {
   await enterApp(page);
   const composerInput = composer(page);

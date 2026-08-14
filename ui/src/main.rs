@@ -1422,6 +1422,10 @@ fn App() -> impl IntoView {
     let picker_token_range = create_rw_signal(None::<(usize, usize)>);
     let picker_query = create_rw_signal(String::new());
     let picker_index = create_rw_signal(0usize);
+    // Set once the command action callbacks exist (below `request_turn_memory`).
+    // The send path and the picker both route built-in slash commands through
+    // it, so a typed command behaves exactly like a picked one.
+    let slash_command_runner = create_rw_signal(None::<Callback<String, bool>>);
     let picker_artifacts = create_rw_signal(Vec::<ArtifactInfo>::new());
     let picker_sessions = create_rw_signal(Vec::<SessionSearchInfo>::new());
     // Declared up here (not with the other context-view signals) so the
@@ -1539,6 +1543,35 @@ fn App() -> impl IntoView {
                 items
             }
             Some(ComposerPickerMode::Skill) => {
+                // Built-in commands the shell itself intercepts, hidden when
+                // the current session cannot run them (same conditions as the
+                // buttons they mirror: /compact and /rewind are local-session
+                // only, /fork needs a branchable mainline, /review and
+                // /remember need at least one turn).
+                let acp = active_acp_agent_id.get().is_some();
+                let has_items = session_has_items.get();
+                let branchable =
+                    active_branch_state.get().is_none() && !active_is_exploration.get();
+                let available = |name: &str| match name {
+                    "compact" => !acp,
+                    "rewind" => !acp && has_items,
+                    "fork" => !acp && branchable,
+                    "review" | "remember" => has_items,
+                    "context" => active_context_usage.get().is_some(),
+                    _ => true,
+                };
+                let loc = locale.get();
+                let mut commands: Vec<ComposerPickerItem> = slash_command_matches(&query)
+                    .into_iter()
+                    .filter(|name| available(name))
+                    .map(|name| {
+                        let key = format!("composer.cmd_{name}_sub");
+                        ComposerPickerItem::Command {
+                            name: name.to_string(),
+                            description: t(loc, &key),
+                        }
+                    })
+                    .collect();
                 let mut workflows = workflow_templates
                     .get()
                     .into_iter()
@@ -1560,11 +1593,13 @@ fn App() -> impl IntoView {
                     })
                     .collect();
                 rows.sort_by_key(|s| (!s.builtin, s.name.clone()));
-                workflows
-                    .into_iter()
-                    .map(ComposerPickerItem::Workflow)
-                    .chain(rows.into_iter().map(ComposerPickerItem::Skill))
-                    .collect()
+                commands.extend(
+                    workflows
+                        .into_iter()
+                        .map(ComposerPickerItem::Workflow)
+                        .chain(rows.into_iter().map(ComposerPickerItem::Skill)),
+                );
+                commands
             }
             None => vec![],
         }
@@ -1573,7 +1608,62 @@ fn App() -> impl IntoView {
         let Some(item) = picker_items.get().get(i).cloned() else {
             return;
         };
+        // Built-in commands run in the shell, not the model: payload commands
+        // (/compact, /fork …, /btw …) fill the composer, action commands run
+        // immediately. Neither attaches a reference chip.
+        if let ComposerPickerItem::Command { name, .. } = item {
+            let current = input.get_untracked();
+            let stripped = picker_token_range.get_untracked().and_then(|(start, end)| {
+                (start <= end
+                    && end <= current.len()
+                    && current.is_char_boundary(start)
+                    && current.is_char_boundary(end))
+                .then(|| (start, format!("{}{}", &current[..start], &current[end..])))
+            });
+            picker_mode.set(None);
+            if slash_command_fills_text(&name) {
+                // Payload commands keep a trailing space so the trigger token
+                // is closed and the picker does not reopen while typing it.
+                let filled = if name == "compact" {
+                    format!("/{name}")
+                } else {
+                    format!("/{name} ")
+                };
+                let caret = stripped.map(|(start, rest)| {
+                    let mut next = rest.clone();
+                    next.insert_str(start, &filled);
+                    input.set(next);
+                    rest[..start].encode_utf16().count() as u32 + filled.len() as u32
+                });
+                if let Some(caret) = caret {
+                    focus_composer_at(caret);
+                } else {
+                    focus_composer();
+                }
+            } else {
+                let remaining = stripped.map(|(start, rest)| {
+                    input.set(rest.clone());
+                    (start, rest)
+                });
+                if let Some(runner) = slash_command_runner.get_untracked() {
+                    runner.call(format!("/{name}"));
+                }
+                // The runner clears the composer; restore any draft text that
+                // preceded the command token.
+                match remaining {
+                    Some((start, rest)) if !rest.trim().is_empty() => {
+                        let caret = rest[..start].encode_utf16().count() as u32;
+                        input.set(rest);
+                        focus_composer_at(caret);
+                    }
+                    _ => focus_composer(),
+                }
+            }
+            return;
+        }
         let reference = match item {
+            // Commands were handled above; they never become reference chips.
+            ComposerPickerItem::Command { .. } => return,
             ComposerPickerItem::Artifact(a) => ComposerReferenceChip::Artifact {
                 id: a.id,
                 name: a.name,
@@ -2924,6 +3014,15 @@ fn App() -> impl IntoView {
         if demo_mode.get_untracked() {
             return;
         }
+        // Shell-owned slash commands never reach the model; the picker inserts
+        // the same text, so typed and picked commands behave identically.
+        if action == ComposerSendAction::Normal {
+            if let Some(runner) = slash_command_runner.get_untracked() {
+                if runner.call(input.get()) {
+                    return;
+                }
+            }
+        }
         let message = input.get();
         let saved_attachments = attachments.get();
         let refs = composer_references.get();
@@ -3951,7 +4050,7 @@ fn App() -> impl IntoView {
         });
     });
 
-    let pick_files = move |_| {
+    let pick_files = move |_: ()| {
         if uploading.get() {
             return;
         }
@@ -5502,6 +5601,110 @@ fn App() -> impl IntoView {
             locale,
         );
     });
+
+    // Built-in slash commands the shell executes itself. Returns true when the
+    // text was a known command and was consumed (never reaches the model).
+    // "/compact" is the exception: the session backend intercepts it, so it
+    // falls through to the normal send path.
+    slash_command_runner.set(Some(Callback::new(move |text: String| -> bool {
+        let Some((name, payload)) = parse_slash_command(&text) else {
+            return false;
+        };
+        match name {
+            "compact" => return false,
+            "fork" => {
+                if payload.is_empty() {
+                    input.set(String::new());
+                    status.set(t(locale.get_untracked(), "composer.cmd_fork_empty"));
+                } else {
+                    input.set(payload.to_string());
+                    send.call(ComposerSendAction::BranchNew);
+                }
+                return true;
+            }
+            "save-as-skill" => {
+                input.set(t(locale.get_untracked(), "composer.skill_prompt").into());
+                focus_composer();
+                return true;
+            }
+            _ => {}
+        }
+        input.set(String::new());
+        match name {
+            "btw" => {
+                if payload.is_empty() {
+                    ensure_right_tab(RightTab::SideChat, show_right, open_right_tabs, right_tab);
+                } else {
+                    send_side_chat((payload.to_string(), vec![], false));
+                }
+            }
+            // Same target as the message-level undo button: the latest
+            // completed assistant turn. The preview dialog confirms before
+            // anything is rolled back.
+            "rewind" => {
+                let target = items.with_untracked(|list| {
+                    list.iter().enumerate().rev().find_map(|(index, item)| {
+                        matches!(
+                            item,
+                            ChatItem::Assistant { text, .. }
+                                if !text.trim().is_empty() && !text.starts_with("Error: ")
+                        )
+                        .then_some(index)
+                    })
+                });
+                if let Some(index) = target {
+                    undo_message.call(index);
+                }
+            }
+            "review" => {
+                if let Some(sid) = active_session.get_untracked().filter(|id| !id.is_empty()) {
+                    request_session_review.call(sid);
+                }
+            }
+            // Same target as the message-level memory button: the latest
+            // completed assistant turn's owning user turn.
+            "remember" => {
+                let target = active_session
+                    .get_untracked()
+                    .filter(|id| !id.is_empty())
+                    .and_then(|sid| {
+                        let list = items.get_untracked();
+                        let index = list.iter().rposition(|item| {
+                            matches!(item, ChatItem::Assistant { text, .. } if !text.trim().is_empty())
+                        })?;
+                        let turn = owning_user_turn_index(&list, index)?;
+                        let offset = transcript_pages
+                            .with_untracked(|pages| pages.get(&sid).copied())
+                            .map_or(0, |page| page.user_offset);
+                        Some((sid, turn + offset))
+                    });
+                if let Some((sid, turn)) = target {
+                    request_turn_memory.call((sid, turn));
+                }
+            }
+            "context" => {
+                if active_context_usage.get_untracked().is_some() {
+                    context_usage_open.set(true);
+                }
+            }
+            "skills" => open_settings_fn(Some("skills".into())),
+            "files" => {
+                ensure_right_tab(RightTab::File, show_right, open_right_tabs, right_tab);
+                refresh_active_file_dir(
+                    file_source,
+                    file_cwd,
+                    file_entries,
+                    remote_file_cwd,
+                    remote_file_entries,
+                    remote_file_loading,
+                    remote_file_error,
+                );
+            }
+            "upload" => pick_files(()),
+            _ => {}
+        }
+        true
+    })));
 
     let jump_to_conversation_outline =
         Callback::new(move |(target, before_seq): (usize, Option<i64>)| {
@@ -10878,6 +11081,11 @@ fn App() -> impl IntoView {
                                                 "folder",
                                             ),
                                             ComposerPickerItem::Skill(s) => (s.name, s.description, "skill"),
+                                            ComposerPickerItem::Command { name, description } => (
+                                                format!("/{name}"),
+                                                description,
+                                                "terminal",
+                                            ),
                                             ComposerPickerItem::Workflow(workflow) => (
                                                 workflow.name,
                                                 workflow.description,
@@ -10919,7 +11127,7 @@ fn App() -> impl IntoView {
                                     <div class="compose-group">
                                         <div class="compose-group-label">{move || t(locale.get(), "composer.group_add")}</div>
                                         <button type="button" class="compose-item" disabled=composer_blocked
-                                            on:click=move |ev| { compose_menu_open.set(false); pick_files(ev); }>
+                                            on:click=move |_| { compose_menu_open.set(false); pick_files(()); }>
                                             <span class="compose-item-icon">{compose_icon("attach")}</span>
                                             <span class="compose-item-text">
                                                 <span class="compose-item-label">{move || t(locale.get(), "composer.attach_files")}</span>
