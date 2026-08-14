@@ -53,6 +53,15 @@ ArtifactVersion，而不是永远以 `ssh://` 引用留在服务器上。
 - 尊重大数据规则：`residency: remote`、超过 `max_file_mb`/`max_total_mb` 的文件不下载，
   由远端脚本返回的 size/checksum 直接注册为 `ssh://<alias>/<abs path>` 外部引用
   （补上现在缺失的 checksum 和 size）。
+- **海量碎文件（如 Trinity 输出十几万中间文件）**：逐文件路径必须有上限。
+  - `OutputSpec` 增加 `bundle: bool`：命中的文件在远端 `tar -czf` 成单个归档，
+    只对归档算一次 sha256，下载后注册为**一个** ArtifactVersion（kind 加
+    `bundle` 语义，manifest 里记录条目数与展开总字节数），可选本地解包到落地
+    目录；`run_outputs` 只落一行，不产生十几万行注册记录。
+  - 非 bundle 的 glob 命中数超过上限（默认 500）→ 明确报错并提示改用 `bundle`
+    或收窄 glob 到最终产物（Trinity 的正确用法是 spec 指向 `Trinity.fasta`，
+    中间目录留给清理）。
+  - 收集脚本输出 manifest 行数同样封顶，超限即中止，不向 SQLite/UI 灌入海量行。
 - 移除 `run_context.rs` 中"SSH direct output_specs must be explicit ssh:// references"
   的拒绝分支；`ssh://` URI spec 保持原语义。
 - 迁移：`runs` 增加 nullable `harvested_at`（INTEGER）。本地/WSL run 在既有 harvest 成功
@@ -74,6 +83,9 @@ fn parse_collect_manifest(stdout: &str) -> Result<Vec<RemoteOutputEntry>, String
 // src-tauri/src/harvest.rs（签名不变，新增远端入口）
 async fn harvest_remote_run_outputs(store, runner, run, specs) -> Result<Vec<HarvestedArtifact>, String>;
 
+// OutputSpec 新字段
+OutputSpec { bundle: bool /* default false */, .. }
+
 // 工具
 harvest_run { run_id }
 ```
@@ -84,6 +96,9 @@ harvest_run { run_id }
   `run_outputs`/`produced` 边、`harvested_at` 写入。
 - checksum 不匹配 → 报错、不注册、`harvested_at` 为 NULL、run 仍 `succeeded`。
 - 超限文件 → 注册为 `ssh://` 引用且带 size/checksum，不下载。
+- `bundle: true` 命中多文件 → 单个 tar 归档、单个 ArtifactVersion、单行
+  `run_outputs`；归档 checksum 校验失败不注册。
+- 非 bundle glob 命中数超上限 → 报错文案包含 `bundle` 建议，不部分注册。
 - `logical_key` 多文件命中仍报错（与本地一致）。
 - `ssh://` URI spec 行为不回归；本地/WSL run 写入 `harvested_at`。
 - legacy 库重开幂等补列。
@@ -298,17 +313,25 @@ harvest + 整目录清理"两个极端。
 ### 设计
 
 - 新增 `list_run_workspace_files` Tauri 命令：通过 `sh -s` 通道在 `remote_workdir`
-  内 `find` 枚举文件（相对路径、字节数、mtime），只读不改。local/WSL 走本地遍历。
-- 新增 `download_run_files` 命令：给定 run 内相对路径列表，复用 PR 1 的
-  收集/`scp -r`/checksum 通道下载到 `<local_results_dir>/<run_id>/`，并按
-  `path:<relative>` logical key 注册为 ArtifactVersion + `run_outputs`（与 harvest
-  同一注册路径）；进度写 `progress_json`，UI 复用现有传输进度条。
+  内枚举，只读不改。**返回有界树而非平铺清单**：单目录条目数超过阈值（默认
+  100）时折叠为聚合节点 `{dir, file_count, total_bytes}`（远端用
+  `find | wc -l` + `du -sk` 聚合），总返回行数封顶（默认 2000）。Trinity 式的
+  十几万碎文件目录在 UI 里是一个"`read_partitions/`，132,481 个文件，3.2 GB"
+  节点，永远不逐文件灌给 SQLite/UI。local/WSL 走本地遍历，同样的折叠规则。
+- 新增 `download_run_files` 命令：给定 run 内相对路径列表（文件或目录）。
+  - 文件：复用 PR 1 的收集/`scp -r`/checksum 通道下载到
+    `<local_results_dir>/<run_id>/`，按 `path:<relative>` logical key 注册为
+    ArtifactVersion + `run_outputs`（与 harvest 同一注册路径）。
+  - 目录（含折叠节点）：走 PR 1 的 bundle 通道——远端 `tar -czf` 成单个归档、
+    归档级 checksum、注册为一个 ArtifactVersion，可选本地解包；绝不逐文件注册。
+  - 进度写 `progress_json`，UI 复用现有传输进度条。
 - 新增 `delete_run_files` 命令：给定相对路径列表，逐一校验解析后仍位于
   `<remote_workdir_root>/<run_id>` 内（拒绝 `..`、绝对路径、symlink 逃逸），复用
   PR 3 的删除通道；全目录删除仍走 `cleanup_run_workspace`。
 - Modal（UI）：run 进入终态后，RunMonitorCard/run 详情出现"结果与清理"操作打开
   modal；当前会话内前台监控的 run 完成时自动打开一次。内容：
-  - 文件列表 + 复选框，命中 `output_specs` 的项预勾选并标注"已自动取回"状态；
+  - 文件树 + 复选框（折叠目录整体勾选，显示文件数与总大小），命中
+    `output_specs` 的项预勾选并标注"已自动取回"状态；
   - "下载所选"（可跳过）；"删除所选 / 清理整个工作目录"（可跳过）；关闭即什么都不做。
   - modal 加入窗口级 Escape 栈（root-owned）；下载/删除进行中禁用重复提交。
 - Guard 交互：modal 内用户显式发起的删除视为用户确认，允许在未 harvest 时删除
@@ -320,15 +343,18 @@ harvest + 整目录清理"两个极端。
 ### 接口
 
 ```rust
-list_run_workspace_files { run_id } -> Vec<{ path, size_bytes, mtime }>
-download_run_files { run_id, paths } -> Vec<HarvestedArtifact>
-delete_run_files { run_id, paths }
+list_run_workspace_files { run_id }
+    -> Vec<{ path, kind: file | dir_aggregate, size_bytes, file_count?, mtime? }>
+download_run_files { run_id, paths } -> Vec<HarvestedArtifact>  // 目录走 bundle 归档
+delete_run_files { run_id, paths }  // 目录 = rm -rf 该子树
 ```
 
 ### 测试
 
-- fake runner：枚举 manifest 解析；下载注册 ArtifactVersion/run_outputs 且 checksum
-  校验失败时不注册；删除命令路径约束（`..`/绝对路径/越界被拒）。
+- fake runner：枚举 manifest 解析；超阈值目录折叠为聚合节点且总行数封顶；下载
+  注册 ArtifactVersion/run_outputs 且 checksum 校验失败时不注册；目录下载走
+  bundle 归档、只注册一个 ArtifactVersion；删除命令路径约束（`..`/绝对路径/越界
+  被拒）。
 - 未 harvest 的 succeeded run：agent 路径清理仍被拒，modal 用户路径允许。
 - 终态才允许枚举/下载/删除；running run 拒绝。
 - UI Playwright：run 完成 → modal 自动打开一次；Escape 一次只关 modal 且 run 详情
@@ -375,8 +401,11 @@ cargo fmt --all -- --check
 
 - **远端工具依赖**：收集脚本依赖 `sha256sum`/`shasum`、`tar` 或硬链支持；沿用 SSH
   runner 既有的 preflight 模式显式探测并给出可读错误，不静默降级。
-- **大量小文件**：单次 `scp -r` 拉整个 `harvest/` 目录避免每文件一次连接；超大目录
-  的性能优化（tar 流式）留作后续，不阻塞正确性。
+- **大量小文件**：逐文件路径全部有上限（枚举折叠、glob 命中数封顶）；海量文件
+  一律走 `bundle`/目录归档通道（单 tar、单 checksum、单 ArtifactVersion）。像
+  Trinity 这样的工具，推荐用法是 spec 只指向最终产物（`Trinity.fasta`），十几万
+  中间碎文件不取回、由清理一次 `rm -rf` 回收；确需保留时整目录打包为一个归档
+  产物。skill 文档（`remote-compute-ssh`）写明这一取舍。
 - **调度器（SLURM）后端**：不在本计划内；清理/取回抽象以 workdir 为单位，未来调度
   器 run 可复用。
 - **不做**：`transfers` 独立表（沿用 `kind='file_transfer'` 的 run）、`data_assets`
