@@ -29,6 +29,12 @@ pub(crate) enum ComposerPickerItem {
     },
     Skill(SkillRow),
     Workflow(WorkflowTemplate),
+    /// Built-in slash command handled by the app itself (e.g. `/compact`).
+    /// Selecting one fills the composer instead of attaching a chip.
+    Command {
+        name: String,
+        description: String,
+    },
     Context {
         id: String,
         label: String,
@@ -609,6 +615,57 @@ pub(crate) fn composer_picker_accepts_edit(
     continues_token || inserts_trigger
 }
 
+/// Built-in slash commands offered by the `/` picker alongside skills and
+/// workflows. Each maps to an existing surface: `/compact` is intercepted by
+/// the session backend; `/fork` and `/btw` take the remaining text as a
+/// payload (branch send / side-chat question); the rest run a UI action
+/// directly. CLI-only commands like `/quit` do not belong here.
+pub(crate) const SLASH_COMMANDS: &[&str] = &[
+    "compact",
+    "fork",
+    "btw",
+    "rewind",
+    "review",
+    "remember",
+    "context",
+    "save-as-skill",
+    "skills",
+    "files",
+    "upload",
+];
+
+/// `/` commands whose name matches the picker query (already lowercased).
+pub(crate) fn slash_command_matches(query: &str) -> Vec<&'static str> {
+    SLASH_COMMANDS
+        .iter()
+        .copied()
+        .filter(|name| name.contains(query))
+        .collect()
+}
+
+/// Split composer text into a built-in command name and its payload (the text
+/// after the first whitespace run). Returns `None` unless the text is exactly
+/// a known command, so ordinary messages and unknown `/words` pass through.
+pub(crate) fn parse_slash_command(text: &str) -> Option<(&'static str, &str)> {
+    let body = text.trim().strip_prefix('/')?;
+    let (name, payload) = match body.find(char::is_whitespace) {
+        Some(at) => (&body[..at], body[at..].trim_start()),
+        None => (body, ""),
+    };
+    SLASH_COMMANDS
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == name)
+        .map(|name| (name, payload))
+}
+
+/// True for commands the picker fills into the composer — `/compact` for
+/// confirmation, `/fork` and `/btw` because they need a payload. Action
+/// commands (`/rewind`, `/review`, …) run immediately on selection instead.
+pub(crate) fn slash_command_fills_text(name: &str) -> bool {
+    matches!(name, "compact" | "fork" | "btw")
+}
+
 pub(crate) fn scroll_picker_item(selector: &str, index: usize) {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -623,7 +680,47 @@ pub(crate) fn scroll_picker_item(selector: &str, index: usize) {
 
 #[cfg(test)]
 mod mention_tests {
-    use super::{active_composer_trigger, composer_picker_accepts_edit, ComposerPickerMode};
+    use super::{
+        active_composer_trigger, composer_picker_accepts_edit, parse_slash_command,
+        slash_command_fills_text, slash_command_matches, ComposerPickerMode,
+    };
+
+    #[test]
+    fn slash_commands_filter_by_query() {
+        assert!(slash_command_matches("").contains(&"compact"));
+        assert_eq!(slash_command_matches("comp"), vec!["compact"]);
+        assert_eq!(slash_command_matches("fo"), vec!["fork"]);
+        assert!(slash_command_matches("s").contains(&"skills"));
+        assert!(slash_command_matches("s").contains(&"save-as-skill"));
+        assert!(slash_command_matches("boltz").is_empty());
+    }
+
+    #[test]
+    fn parses_only_known_commands_with_payload() {
+        assert_eq!(parse_slash_command("/compact"), Some(("compact", "")));
+        assert_eq!(
+            parse_slash_command("/fork try the other primer"),
+            Some(("fork", "try the other primer"))
+        );
+        assert_eq!(
+            parse_slash_command("  /btw   这个峰什么意思？"),
+            Some(("btw", "这个峰什么意思？"))
+        );
+        // Unknown commands, substrings, and embedded commands are not intercepted.
+        assert_eq!(parse_slash_command("/compact2"), None);
+        assert_eq!(parse_slash_command("/quit"), None);
+        assert_eq!(parse_slash_command("send /fork now"), None);
+        assert_eq!(parse_slash_command("/path/to/file"), None);
+    }
+
+    #[test]
+    fn only_payload_commands_fill_the_composer() {
+        assert!(slash_command_fills_text("compact"));
+        assert!(slash_command_fills_text("fork"));
+        assert!(slash_command_fills_text("btw"));
+        assert!(!slash_command_fills_text("rewind"));
+        assert!(!slash_command_fills_text("upload"));
+    }
 
     #[test]
     fn detects_trigger_at_the_caret() {
