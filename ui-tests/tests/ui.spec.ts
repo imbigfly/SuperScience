@@ -1917,6 +1917,7 @@ test("composer slash commands run the matching shell actions", async ({ page }) 
   await expect(menu).not.toContainText("/review");
   await expect(menu).not.toContainText("/remember");
   await expect(menu).not.toContainText("/context");
+  await expect(menu).not.toContainText("/share");
   await page.keyboard.press("Escape");
 
   // /btw opens the side chat; a payload goes straight to it.
@@ -2009,6 +2010,105 @@ test("composer slash commands run the matching shell actions", async ({ page }) 
     sessionId: expect.stringMatching(/^branch-/),
     message: "branch this idea",
   });
+});
+
+test("/share exports selected, keyword-redacted messages as a PNG", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+  const overlay = page.getByTestId("share-overlay");
+
+  // Empty session: /share is hidden from the picker and opens nothing, and
+  // the composer "+" menu entry is disabled.
+  await composerInput.pressSequentially("/sha");
+  await expect(page.locator(".mention-menu .mention-item").filter({ hasText: "/share" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toHaveCount(0);
+  expect(await lastInvokeArgs(page, "send_message")).toBeNull();
+  await page.locator(".composer-plus").click();
+  const shareItem = page.locator(".compose-item").filter({ hasText: "Share as image" });
+  await expect(shareItem).toBeDisabled();
+  await page.locator(".compose-backdrop").click();
+  await expect(shareItem).toHaveCount(0);
+
+  // Seed one turn that streams a thinking block before the reply.
+  await composerInput.fill("SHARETHINK check the spectrum");
+  await composerInput.press("Enter");
+  await expect(page.getByText("Alice confirmed the spectrum is clean.")).toBeVisible({ timeout: 10_000 });
+
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  // One Escape right after opening closes only the dialog; chat stays up.
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(composerInput).toBeVisible();
+
+  // Reopen through the picker row; the action runs immediately.
+  await composerInput.pressSequentially("/share");
+  await page.locator(".mention-menu .mention-item").filter({ hasText: "/share" }).click();
+  await expect(overlay).toBeVisible();
+
+  // User and assistant rows are preselected; thinking is listed but hidden.
+  const rows = overlay.locator(".share-row");
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0).locator("input")).toBeChecked();
+  await expect(rows.nth(1)).toHaveClass(/share-thinking/);
+  await expect(rows.nth(1).locator("input")).not.toBeChecked();
+  await expect(rows.nth(2).locator("input")).toBeChecked();
+
+  // Each row shows a role badge; the counter tracks the selection.
+  await expect(rows.nth(0).locator(".share-role")).toHaveText("You");
+  await expect(rows.nth(1).locator(".share-role")).toHaveText("Thinking");
+  await expect(rows.nth(2).locator(".share-role")).toHaveText("Assistant");
+  await expect(overlay.locator(".share-count")).toHaveText("2/3 selected");
+
+  // Keywords mask the preview text case-insensitively (raw Markdown source).
+  await overlay.locator("#share-redact-input").fill("alice，spectrum");
+  await expect(rows.nth(2)).toContainText("xxx confirmed the **xxx** is clean.");
+
+  // Deselect the user turn and export: the PNG bytes reach the save command
+  // and the saved toast closes the dialog.
+  await rows.nth(0).locator("input").click();
+  await expect(overlay.locator(".share-count")).toHaveText("1/3 selected");
+  await overlay.getByTestId("share-export").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_share_image")).toMatchObject({
+    defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.png$/),
+  });
+  const args = await lastInvokeArgs(page, "save_share_image");
+  // The Markdown reply (heading/list/code fence) renders into a tall image.
+  expect(String(args.pngBase64).length).toBeGreaterThan(10000);
+  await expect(overlay).toHaveCount(0);
+
+  // HTML format: same dialog exports a self-contained rendered document.
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  await overlay.getByTestId("share-format-html").click();
+  await expect(overlay.getByTestId("share-export")).toHaveText("Export HTML");
+  await overlay.locator("#share-redact-input").fill("alice");
+  await overlay.getByTestId("share-export").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_share_html")).toMatchObject({
+    defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.html$/),
+  });
+  const html = String((await lastInvokeArgs(page, "save_share_html")).html);
+  expect(html).toContain("<!doctype html>");
+  expect(html).toContain("xxx confirmed the <strong>spectrum</strong>");
+  expect(html).toContain("<h2>Fit summary</h2>");
+  expect(html).toContain("<li>peak A at 530 nm</li>");
+  expect(html).toContain("fit(spectrum)");
+  await expect(overlay).toHaveCount(0);
+
+  // The composer "+" menu offers the same entry once the session has content.
+  await page.locator(".composer-plus").click();
+  await expect(shareItem).toBeEnabled();
+  await shareItem.click();
+  await expect(overlay).toBeVisible();
+  // One Escape closes only the dialog; the chat stays up.
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(composerInput).toBeVisible();
 });
 
 test("composer / menu layers sections and gives each command its own icon", async ({ page }) => {
@@ -8213,16 +8313,29 @@ test("streaming assistant keeps formatted Markdown with a lightweight live tail"
   const live = page.locator(".msg.assistant .streaming-markdown");
   await expect(live).toBeVisible();
   await expect(live.locator(".streaming-markdown-prefix strong").first()).toBeVisible();
-  await live.evaluate((element) => ((element as any).__liveMarkdownProbe = true));
+  // Deltas and the Markdown commit interval are both ~50 ms. A Playwright poll
+  // started after line 18 can miss every pending-tail window under CI load, so
+  // watch the attribute continuously from the page instead.
+  await live.evaluate((element) => {
+    (element as any).__liveMarkdownProbe = true;
+    const seen = { max: 0 };
+    const record = () => {
+      seen.max = Math.max(seen.max, Number(element.getAttribute("data-pending-bytes") ?? 0));
+      (window as any).__maxPendingBytes = seen.max;
+    };
+    (window as any).__maxPendingBytes = 0;
+    record();
+    const observer = new MutationObserver(record);
+    observer.observe(element, { attributes: true, attributeFilter: ["data-pending-bytes"] });
+    const tick = () => {
+      record();
+      if (element.isConnected) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
 
   await expect(page.getByText("stream line 18", { exact: false })).toBeVisible({ timeout: 10_000 });
-  // Deltas and the minimum Markdown commit interval are both 50 ms. Polling at
-  // Playwright's default cadence can repeatedly sample just after each commit
-  // and miss the short-lived plain-text tail entirely.
-  await expect.poll(
-    async () => Number(await live.getAttribute("data-pending-bytes") ?? 0),
-    { intervals: [10], timeout: 10_000 },
-  )
+  await expect.poll(() => page.evaluate(() => Number((window as any).__maxPendingBytes ?? 0)))
     .toBeGreaterThan(0);
   expect(await live.evaluate((element) => (element as any).__liveMarkdownProbe === true)).toBe(true);
 
@@ -9128,15 +9241,46 @@ test("Windows uses the integrated title bar without covering the project landing
   )).toBe(38);
   await page.getByRole("button", { name: "Back to app" }).click();
 
+  // Home menus only list actions that work without an open project.
   await page.getByRole("button", { name: "File", exact: true }).click();
-  await expect(page.getByRole("menuitem", { name: "Open projects" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "Export current project" })).toBeDisabled();
-  await page.getByRole("menuitem", { name: "Open projects" }).click();
-  await expect(page.locator(".projects-screen")).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New project" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Import project" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Scratch chat" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Open settings" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New session" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Open projects" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Export current project" })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "New project" }).click();
+  await expect(page.locator(".overlay .proj-settings-modal")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".proj-settings-modal")).toHaveCount(0);
+
+  // Ctrl+N on the landing means a new project too, but Chromium never
+  // delivers Ctrl+N to web content, so that path is only exercisable in the
+  // real webview — the menu item above covers the same "new-project" action.
+
+  await page.getByRole("button", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Import project" }).click();
+  await expect(page.getByTestId("project-import-options")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("project-import-options")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "All commands" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Import Codex conversations" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "Light theme" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Toggle sidebar" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
   await page.locator(".proj-card-main").first().click();
   await expect(newSessionButton(page)).toBeVisible();
   await page.getByRole("button", { name: "File", exact: true }).click();
+  // Inside a workspace the menus flip back to the session-scoped set.
+  await expect(page.getByRole("menuitem", { name: "New session" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New project" })).toHaveCount(0);
   const exportCurrentProject = page.getByRole("menuitem", { name: "Export current project" });
   await expect(exportCurrentProject).toBeEnabled();
   await exportCurrentProject.click();

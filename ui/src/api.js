@@ -165,6 +165,379 @@ export async function crop_region_to_upload(hostId, left, top, width, height) {
   return String(path);
 }
 
+// --- /share long-image renderer -------------------------------------------
+
+const SHARE_WIDTH = 720;
+const SHARE_SCALE = 2;
+const SHARE_PAD = 28;
+const SHARE_GAP = 16;
+const SHARE_CARD_PAD = 16;
+const SHARE_BUBBLE_PAD = 12;
+const SHARE_LINE_HEIGHT = 22;
+const SHARE_SANS = 'system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+const SHARE_MONO = 'ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace';
+const SHARE_LABEL_FONT = `11px ${SHARE_SANS}`;
+const SHARE_COLORS = {
+  bg: "#f5f6f8",
+  card: "#ffffff",
+  border: "rgba(29, 39, 51, 0.08)",
+  text: "#1d2733",
+  muted: "#66727f",
+  faint: "#8a97a5",
+  accent: "#2f6fed",
+  codeBg: "#f1f3f5",
+  codeChip: "#e9edf1",
+  quoteBar: "#d8dee4",
+  thinkingBg: "#eef0f3",
+  thinkingBorder: "#dfe3e8",
+  thinkingText: "#71808f",
+};
+
+/** Canvas font for a styled run: {b: bold, i: italic, c: code, a: link}. */
+function shareFont(style, size) {
+  const family = style.c ? SHARE_MONO : SHARE_SANS;
+  const px = style.c ? size - 1.5 : size;
+  return `${style.i ? "italic " : ""}${style.b ? "600 " : ""}${px}px ${family}`;
+}
+
+/**
+ * Greedy wrap of styled runs into lines of segments
+ * ({text, style, font, w}), measuring with each run's own font. Breaks at
+ * the last space when one fits, else mid-run (CJK has no spaces); "\n"
+ * forces a line break.
+ */
+function wrapShareRuns(ctx, runs, maxWidth, size) {
+  const lines = [];
+  let line = [];
+  let lineW = 0;
+  let lastBreak = null; // {seg, char} — position of the last breakable space
+  for (const raw of runs) {
+    const style = { b: !!raw.b, i: !!raw.i, c: !!raw.c, a: !!raw.a };
+    const font = shareFont(style, size);
+    const key = font + (style.a ? "a" : "");
+    ctx.font = font;
+    for (const ch of String(raw.text ?? "")) {
+      if (ch === "\n") {
+        lines.push(line);
+        line = [];
+        lineW = 0;
+        lastBreak = null;
+        continue;
+      }
+      if (!line.length && ch === " ") continue; // no leading spaces
+      const w = ctx.measureText(ch).width;
+      if (lineW + w > maxWidth && line.length) {
+        if (lastBreak) {
+          // Rewind to the last space: keep what precedes it, move the rest
+          // (plus everything after that segment) to the next line.
+          const head = line.slice(0, lastBreak.seg + 1);
+          const seg = head[lastBreak.seg];
+          const keep = seg.text.slice(0, lastBreak.char);
+          const rest = seg.text.slice(lastBreak.char + 1);
+          const tail = [];
+          if (rest) tail.push({ ...seg, text: rest, w: ctx.measureText(rest).width });
+          tail.push(...line.slice(lastBreak.seg + 1));
+          if (keep) {
+            seg.text = keep;
+            seg.w = ctx.measureText(keep).width;
+          } else {
+            head.pop();
+          }
+          lines.push(head);
+          line = tail;
+          lineW = tail.reduce((sum, s) => sum + s.w, 0);
+          lastBreak = null;
+        } else {
+          lines.push(line);
+          line = [];
+          lineW = 0;
+        }
+        if (ch === " ") continue; // swallow the space at the break point
+      }
+      let seg = line[line.length - 1];
+      if (!seg || seg.key !== key) {
+        seg = { text: "", style, font, key, w: 0 };
+        line.push(seg);
+      }
+      seg.text += ch;
+      seg.w += w;
+      lineW += w;
+      if (ch === " ") lastBreak = { seg: line.length - 1, char: seg.text.length - 1 };
+    }
+  }
+  lines.push(line);
+  return lines;
+}
+
+const shareLineWidth = (line) => line.reduce((sum, seg) => sum + seg.w, 0);
+
+/** Draw one wrapped line at baseline y. Inline-code runs get a chip behind
+ * them unless `chips` is false (inside code blocks everything is code). */
+function drawShareLine(ctx, line, x, baselineY, color, lineHeight, chips) {
+  let cx = x;
+  for (const seg of line) {
+    if (chips && seg.style.c) {
+      ctx.fillStyle = SHARE_COLORS.codeChip;
+      shareRoundRect(ctx, cx - 3, baselineY - lineHeight * 0.72, seg.w + 6, lineHeight * 0.82, 4);
+      ctx.fill();
+    }
+    ctx.font = seg.font;
+    ctx.fillStyle = seg.style.a ? SHARE_COLORS.accent : color;
+    ctx.fillText(seg.text, cx, baselineY);
+    cx += seg.w;
+  }
+}
+
+function shareBlockContentHeight(block) {
+  if (block.t === "code") return block.height;
+  if (block.t === "hr") return 1;
+  return block.lines.length * block.lh;
+}
+
+/** Lay out parsed Markdown blocks (see share_markdown_blocks in Rust) into
+ * wrapped lines with per-block metrics, for a text column of `textWidth`. */
+function layoutShareBlocks(ctx, blocks, textWidth) {
+  const laid = [];
+  for (const block of Array.isArray(blocks) ? blocks : []) {
+    if (block.t === "h") {
+      const level = Math.min(3, Math.max(1, Number(block.level) || 3));
+      const size = [19, 17, 15.5][level - 1];
+      const runs = (block.runs || []).map((run) => ({ ...run, b: true }));
+      laid.push({
+        t: "h",
+        lines: wrapShareRuns(ctx, runs.length ? runs : [{ text: "" }], textWidth, size),
+        lh: Math.round(size * 1.45),
+        before: laid.length ? 10 : 0,
+        after: 4,
+      });
+    } else if (block.t === "li") {
+      const depth = Math.min(4, Number(block.depth) || 0);
+      const indent = depth * 18;
+      const prefix = block.ordered ? `${Number(block.index) || 1}.` : "•";
+      ctx.font = shareFont({}, 15);
+      const offset = indent + (block.ordered ? Math.ceil(ctx.measureText(prefix).width) + 8 : 20);
+      laid.push({
+        t: "li",
+        prefix,
+        indent,
+        offset,
+        lines: wrapShareRuns(ctx, block.runs || [], textWidth - offset, 15),
+        lh: SHARE_LINE_HEIGHT,
+        before: 0,
+        after: 3,
+      });
+    } else if (block.t === "code") {
+      const pad = 10;
+      const monoWidth = textWidth - pad * 2;
+      const lines = String(block.text || "").split("\n")
+        .flatMap((src) => wrapShareRuns(ctx, [{ text: src, c: true }], monoWidth, 14.5));
+      laid.push({
+        t: "code",
+        lines,
+        lh: 19,
+        pad,
+        height: lines.length * 19 + pad * 2,
+        before: 0,
+        after: 8,
+      });
+    } else if (block.t === "hr") {
+      laid.push({ t: "hr", before: 6, after: 12 });
+    } else {
+      // Paragraph (default); quote paragraphs indent behind a side bar.
+      const quote = !!block.quote;
+      laid.push({
+        t: quote ? "quote" : "p",
+        lines: wrapShareRuns(ctx, block.runs || [], textWidth - (quote ? 14 : 0), 15),
+        lh: SHARE_LINE_HEIGHT,
+        before: 0,
+        after: 8,
+      });
+    }
+  }
+  return laid;
+}
+
+/** Draw laid-out blocks starting at (x, y); returns the consumed height. */
+function drawShareBlocks(ctx, blocks, x, y, width) {
+  let cy = y;
+  for (const block of blocks) {
+    cy += block.before;
+    if (block.t === "hr") {
+      ctx.fillStyle = SHARE_COLORS.border;
+      ctx.fillRect(x, cy, width, 1);
+      cy += 1 + block.after;
+      continue;
+    }
+    if (block.t === "code") {
+      ctx.fillStyle = SHARE_COLORS.codeBg;
+      shareRoundRect(ctx, x, cy, width, block.height, 8);
+      ctx.fill();
+      let ty = cy + block.pad + 13;
+      for (const line of block.lines) {
+        drawShareLine(ctx, line, x + block.pad, ty, SHARE_COLORS.text, block.lh, false);
+        ty += block.lh;
+      }
+      cy += block.height + block.after;
+      continue;
+    }
+    const quote = block.t === "quote";
+    if (quote) {
+      ctx.fillStyle = SHARE_COLORS.quoteBar;
+      shareRoundRect(ctx, x, cy, 3, block.lines.length * block.lh, 1.5);
+      ctx.fill();
+    }
+    const color = quote ? SHARE_COLORS.muted : SHARE_COLORS.text;
+    let ty = cy + Math.round(block.lh * 0.72);
+    block.lines.forEach((line, i) => {
+      if (block.t === "li") {
+        if (i === 0) {
+          ctx.font = shareFont({}, 15);
+          ctx.fillStyle = SHARE_COLORS.muted;
+          ctx.fillText(block.prefix, x + block.indent, ty);
+        }
+        drawShareLine(ctx, line, x + block.offset, ty, color, block.lh, true);
+      } else {
+        drawShareLine(ctx, line, quote ? x + 14 : x, ty, color, block.lh, true);
+      }
+      ty += block.lh;
+    });
+    cy += block.lines.length * block.lh + block.after;
+  }
+  return cy - y;
+}
+
+/** Wrap plain (non-Markdown) bubble text and report its shrink-to-fit width. */
+function shareLayoutPlain(ctx, text, maxTextWidth, italic) {
+  const lines = wrapShareRuns(ctx, [{ text, i: italic }], maxTextWidth, 15);
+  const width = Math.ceil(Math.max(40, ...lines.map(shareLineWidth)));
+  return { lines, width };
+}
+
+function shareRoundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(x, y, w, h, r);
+  } else {
+    ctx.rect(x, y, w, h);
+  }
+}
+
+/**
+ * Draw the selected conversation messages as one tall PNG and return it as a
+ * base64 string (no data-URL prefix). Payload: {title, subtitle, footer,
+ * messages: [{kind: "user"|"assistant"|"thinking", label, text?, blocks?}]}.
+ * Assistant rows carry `blocks` (parsed Markdown) and render as full-width
+ * cards; user/thinking rows carry plain `text` shrink-to-fit bubbles.
+ * @param {string} payloadJson
+ */
+export async function render_share_png(payloadJson) {
+  const payload = JSON.parse(payloadJson);
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  const measure = document.createElement("canvas").getContext("2d");
+  if (!measure) throw new Error("Canvas is not available");
+
+  const cardWidth = SHARE_WIDTH - SHARE_PAD * 2;
+  const cardTextWidth = cardWidth - SHARE_CARD_PAD * 2;
+  const bubbleMaxText = SHARE_WIDTH - SHARE_PAD * 2 - SHARE_BUBBLE_PAD * 2 - 80;
+
+  // Layout pass: assistant cards lay out Markdown blocks at full width;
+  // user/thinking bubbles wrap plain text and shrink to fit.
+  const laid = messages.map((message) => {
+    if (message.kind === "assistant" && Array.isArray(message.blocks)) {
+      const blocks = layoutShareBlocks(measure, message.blocks, cardTextWidth);
+      const contentHeight = blocks.reduce(
+        (sum, block) => sum + block.before + shareBlockContentHeight(block) + block.after,
+        0,
+      );
+      return {
+        ...message,
+        card: true,
+        blocks,
+        width: cardWidth,
+        height: Math.max(contentHeight, SHARE_LINE_HEIGHT) + SHARE_CARD_PAD * 2,
+      };
+    }
+    const thinking = message.kind === "thinking";
+    const { lines, width } = shareLayoutPlain(measure, String(message.text || ""), bubbleMaxText, thinking);
+    return {
+      ...message,
+      card: false,
+      lines,
+      width: width + SHARE_BUBBLE_PAD * 2,
+      height: lines.length * SHARE_LINE_HEIGHT + SHARE_BUBBLE_PAD * 2,
+    };
+  });
+
+  const headerHeight = 82;
+  const footerHeight = 46;
+  // Each message adds its label row (16px) above the bubble/card body.
+  const bodyHeight = laid.reduce((sum, m) => sum + m.height + 16 + SHARE_GAP, 0);
+  const totalHeight = headerHeight + bodyHeight + footerHeight;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = SHARE_WIDTH * SHARE_SCALE;
+  canvas.height = totalHeight * SHARE_SCALE;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas is not available");
+  ctx.scale(SHARE_SCALE, SHARE_SCALE);
+
+  ctx.fillStyle = SHARE_COLORS.bg;
+  ctx.fillRect(0, 0, SHARE_WIDTH, totalHeight);
+
+  ctx.fillStyle = SHARE_COLORS.text;
+  ctx.font = `600 19px ${SHARE_SANS}`;
+  ctx.fillText(String(payload.title || ""), SHARE_PAD, 40);
+  ctx.fillStyle = SHARE_COLORS.faint;
+  ctx.font = SHARE_LABEL_FONT;
+  ctx.fillText(String(payload.subtitle || ""), SHARE_PAD, 60);
+  ctx.fillStyle = SHARE_COLORS.accent;
+  shareRoundRect(ctx, SHARE_PAD, 70, 34, 3, 1.5);
+  ctx.fill();
+
+  let y = headerHeight;
+  for (const message of laid) {
+    const user = message.kind === "user";
+    const thinking = message.kind === "thinking";
+    const x = user ? SHARE_WIDTH - SHARE_PAD - message.width : SHARE_PAD;
+
+    ctx.font = SHARE_LABEL_FONT;
+    ctx.fillStyle = SHARE_COLORS.faint;
+    const labelWidth = ctx.measureText(message.label).width;
+    ctx.fillText(message.label, user ? SHARE_WIDTH - SHARE_PAD - labelWidth : SHARE_PAD, y + 10);
+    y += 16;
+
+    if (message.card) {
+      ctx.fillStyle = SHARE_COLORS.card;
+      ctx.strokeStyle = SHARE_COLORS.border;
+      shareRoundRect(ctx, x, y, message.width, message.height, 12);
+      ctx.fill();
+      ctx.stroke();
+      drawShareBlocks(ctx, message.blocks, x + SHARE_CARD_PAD, y + SHARE_CARD_PAD, cardTextWidth);
+    } else {
+      ctx.fillStyle = user ? SHARE_COLORS.accent : thinking ? SHARE_COLORS.thinkingBg : SHARE_COLORS.card;
+      ctx.strokeStyle = thinking ? SHARE_COLORS.thinkingBorder : SHARE_COLORS.border;
+      shareRoundRect(ctx, x, y, message.width, message.height, 12);
+      ctx.fill();
+      ctx.stroke();
+      const color = user ? "#ffffff" : thinking ? SHARE_COLORS.thinkingText : SHARE_COLORS.text;
+      let ty = y + SHARE_BUBBLE_PAD + 15;
+      for (const line of message.lines) {
+        drawShareLine(ctx, line, x + SHARE_BUBBLE_PAD, ty, color, SHARE_LINE_HEIGHT, false);
+        ty += SHARE_LINE_HEIGHT;
+      }
+    }
+    y += message.height + SHARE_GAP;
+  }
+
+  ctx.fillStyle = SHARE_COLORS.faint;
+  ctx.font = SHARE_LABEL_FONT;
+  ctx.fillText(String(payload.footer || ""), SHARE_PAD, totalHeight - 18);
+
+  const dataUrl = canvas.toDataURL("image/png");
+  const comma = dataUrl.indexOf(",");
+  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+}
+
 /** Attach an uploaded crop, optionally returning from its preview to chat. */
 export function attach_cropped_region(path, jumpToChat) {
   window.dispatchEvent(new CustomEvent("wisp:region-attach", {

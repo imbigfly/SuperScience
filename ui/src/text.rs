@@ -809,10 +809,7 @@ mod artifact_group_tests {
             source_item: 0,
             superseded: false,
         };
-        assert_eq!(
-            artifact_group_key(&snapshot, r"D:\project"),
-            "results/"
-        );
+        assert_eq!(artifact_group_key(&snapshot, r"D:\project"), "results/");
     }
 
     #[test]

@@ -32,6 +32,76 @@
   background: var(--err); border-color: var(--err); color: #fff;
 }
 .modal .row button.primary.danger:hover { border-color: color-mix(in srgb, var(--err) 75%, #000); }
+/* /share preview dialog. Row selectors stay scoped to .share-modal so they
+   outrank the generic `.modal label` / `.modal input` rules above. */
+.share-modal { max-width: 560px; }
+.share-modal .hint { margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+.share-modal .share-select-row { display: flex; align-items: center; gap: 12px; }
+.share-modal .share-select-row .linklike {
+  background: none; border: 0; padding: 0; color: var(--clay); font: inherit;
+  font-size: 12.5px; cursor: pointer;
+}
+.share-modal .share-select-row .linklike:hover { text-decoration: underline; }
+.share-modal .share-count { margin-left: auto; font-size: 12px; color: var(--text-faint); }
+.share-modal .share-list {
+  display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto;
+  padding: 2px;
+}
+.share-modal .share-row {
+  display: flex; flex-direction: row; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-elev); color: var(--text); font-size: 13px; font-weight: 400;
+  cursor: pointer; transition: border-color .12s ease, background .12s ease;
+}
+.share-modal .share-row:hover { border-color: var(--border-strong); }
+.share-modal .share-row:has(input:checked) {
+  border-color: var(--border-active);
+  background: color-mix(in srgb, var(--clay) 4%, var(--bg-elev));
+}
+.share-modal .share-row:not(:has(input:checked)) .share-row-body { opacity: 0.55; }
+.share-modal .share-row input[type="checkbox"] {
+  flex: 0 0 auto; width: 15px; height: 15px; margin: 1px 0 0; padding: 0;
+  accent-color: var(--clay); cursor: pointer;
+}
+.share-modal .share-row-body {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px;
+  transition: opacity .12s ease;
+}
+.share-modal .share-role {
+  align-self: flex-start; font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em;
+  line-height: 1.5; padding: 0 8px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--bg-sunken); color: var(--text-muted);
+}
+.share-modal .share-user .share-role {
+  color: var(--clay-strong); border-color: var(--border-active); background: var(--clay-soft);
+}
+.share-modal .share-thinking .share-role {
+  color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, var(--border));
+  background: var(--warn-soft);
+}
+.share-modal .share-text {
+  color: var(--text); font-size: 13px; line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  overflow-wrap: anywhere; white-space: pre-line;
+}
+.share-modal .share-thinking .share-text { color: var(--text-muted); font-style: italic; }
+.share-modal .share-format { display: flex; align-items: center; gap: 12px; }
+.share-modal .share-format-label { font-size: 12px; font-weight: 500; color: var(--text-muted); }
+.share-modal .share-format-seg {
+  display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); background: var(--bg-input);
+}
+.share-modal .share-format-seg button {
+  border: 0; border-radius: calc(var(--radius-sm) - 2px); background: transparent;
+  color: var(--text-muted); font: inherit; font-size: 12.5px; padding: 4px 12px;
+  cursor: pointer; transition: background .12s ease, color .12s ease;
+}
+.share-modal .share-format-seg button:hover { color: var(--text); }
+.share-modal .share-format-seg button.active {
+  background: var(--bg-elev); color: var(--text); font-weight: 600;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
+}
+
 .portfolio-planner-modal { max-width: 560px; }
 .portfolio-planner-modal .hint {
   margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5;

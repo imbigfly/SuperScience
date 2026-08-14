@@ -208,6 +208,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "expand" => view! { <path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="M9 21H3v-6"/><path d="m3 21 7-7"/> }.into_view(),
         "download" => view! { <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/> }.into_view(),
         "upload" => view! { <path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/> }.into_view(),
+        "share" => view! { <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98"/><path d="m15.41 6.51-6.83 3.98"/> }.into_view(),
         "sync" => view! { <path d="M20 7h-9"/><path d="m16 3 4 4-4 4"/><path d="M4 17h9"/><path d="m8 21-4-4 4-4"/> }.into_view(),
         "loader" => view! { <circle cx="12" cy="12" r="9" opacity="0.16"/><path d="M21 12a9 9 0 0 0-9-9"/><path d="M21 12a9 9 0 0 0-5.2-8.2" opacity="0.4"/> }.into_view(),
         "circle-alert" => view! { <circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/> }.into_view(),

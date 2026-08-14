@@ -46,6 +46,29 @@ const VIEW_ITEMS: &[MenuItem] = &[
     ("theme-system", "command.theme_system", ""),
 ];
 
+// Projects landing (home) variants: only actions that work without an open
+// project. Anything session-scoped would sit there looking clickable but
+// doing nothing, which reads as a bug.
+const HOME_FILE_ITEMS: &[MenuItem] = &[
+    ("new-project", "projects.new", "Ctrl+N"),
+    ("import-project", "projects.import", ""),
+    ("scratch", "command.scratch", "Ctrl+Shift+N"),
+    ("settings", "command.settings", "Ctrl+,"),
+    ("", "", ""), // separator
+    ("quit", "menu.quit", ""),
+];
+
+const HOME_EDIT_ITEMS: &[MenuItem] = &[
+    ("search", "command.search", "Ctrl+K"),
+    ("commands", "menu.commands", "Ctrl+P"),
+];
+
+const HOME_VIEW_ITEMS: &[MenuItem] = &[
+    ("theme-light", "command.theme_light", ""),
+    ("theme-dark", "command.theme_dark", ""),
+    ("theme-system", "command.theme_system", ""),
+];
+
 const HELP_ITEMS: &[MenuItem] = &[
     ("check-updates", "settings.check_updates", ""),
     ("", "", ""),
@@ -58,6 +81,7 @@ const HELP_ITEMS: &[MenuItem] = &[
 pub(super) fn WindowTitlebar(
     locale: RwSignal<Locale>,
     has_current_project: Signal<bool>,
+    home: Signal<bool>,
     on_action: Callback<&'static str>,
 ) -> impl IntoView {
     let open = create_rw_signal(None::<&'static str>);
@@ -80,11 +104,12 @@ pub(super) fn WindowTitlebar(
         })
     };
 
-    let menus: &[(&'static str, &'static str, &[MenuItem])] = &[
-        ("file", "menu.file", FILE_ITEMS),
-        ("edit", "menu.edit", EDIT_ITEMS),
-        ("view", "menu.view", VIEW_ITEMS),
-        ("help", "menu.help", HELP_ITEMS),
+    // (id, label key, session-page items, home-page items)
+    let menus: &[(&'static str, &'static str, &[MenuItem], &[MenuItem])] = &[
+        ("file", "menu.file", FILE_ITEMS, HOME_FILE_ITEMS),
+        ("edit", "menu.edit", EDIT_ITEMS, HOME_EDIT_ITEMS),
+        ("view", "menu.view", VIEW_ITEMS, HOME_VIEW_ITEMS),
+        ("help", "menu.help", HELP_ITEMS, HELP_ITEMS),
     ];
 
     window_event_listener(ev::keydown, move |ev| {
@@ -108,10 +133,11 @@ pub(super) fn WindowTitlebar(
                 <span class="window-brand-version">{concat!("v", env!("CARGO_PKG_VERSION"))}</span>
             </div>
             <nav class="window-menu" aria-label="Application menu">
-                {menus.iter().map(|(id, label_key, items)| {
+                {menus.iter().map(|(id, label_key, items, home_items)| {
                     let id = *id;
                     let label_key = *label_key;
                     let items = *items;
+                    let home_items = *home_items;
                     let run = run.clone();
                     view! {
                         <div class="window-menu-group">
@@ -127,6 +153,7 @@ pub(super) fn WindowTitlebar(
                             </button>
                             {move || (open.get() == Some(id)).then(|| {
                                 let run = run.clone();
+                                let items = if home.get() { home_items } else { items };
                                 view! {
                                     <div class="window-menu-drop" role="menu" on:click=|ev| ev.stop_propagation()>
                                         {items.iter().map(|(action, key, shortcut)| {

@@ -634,6 +634,7 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "skills",
     "files",
     "upload",
+    "share",
 ];
 
 /// Each command owns a distinct icon in the `/` picker so rows scan by
@@ -654,6 +655,7 @@ pub(crate) fn slash_command_icon(name: &str) -> &'static str {
         "skills" => "book",
         "files" => "folder",
         "upload" => "upload",
+        "share" => "share",
         _ => "terminal",
     }
 }
@@ -731,6 +733,7 @@ mod mention_tests {
         assert_eq!(slash_command_matches("perm"), vec!["permission"]);
         assert!(slash_command_matches("s").contains(&"skills"));
         assert!(slash_command_matches("s").contains(&"save-as-skill"));
+        assert_eq!(slash_command_matches("shar"), vec!["share"]);
         assert!(slash_command_matches("boltz").is_empty());
     }
 
@@ -760,6 +763,7 @@ mod mention_tests {
             parse_slash_command("/permission full"),
             Some(("permission", "full"))
         );
+        assert_eq!(parse_slash_command("/share"), Some(("share", "")));
         // Unknown commands, substrings, and embedded commands are not intercepted.
         assert_eq!(parse_slash_command("/compact2"), None);
         assert_eq!(parse_slash_command("/quit"), None);
@@ -776,6 +780,7 @@ mod mention_tests {
         assert!(!slash_command_fills_text("rewind"));
         assert!(!slash_command_fills_text("plan"));
         assert!(!slash_command_fills_text("upload"));
+        assert!(!slash_command_fills_text("share"));
     }
 
     #[test]

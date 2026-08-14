@@ -287,15 +287,32 @@ pub(super) fn project_window_url(id: &str, session: Option<&str>) -> String {
     }
 }
 
+/// Top-left position (physical px) that centers a window of `window_size`
+/// over an anchor window at `anchor_pos`/`anchor_size`. Pure so placement
+/// stays testable; the caller converts to logical coordinates.
+pub(super) fn centered_window_position(
+    anchor_pos: (i32, i32),
+    anchor_size: (u32, u32),
+    window_size: (u32, u32),
+) -> (i32, i32) {
+    (
+        anchor_pos.0 + (anchor_size.0 as i32 - window_size.0 as i32) / 2,
+        anchor_pos.1 + (anchor_size.1 as i32 - window_size.1 as i32) / 2,
+    )
+}
+
 /// Open a project in its own window (or focus the existing one), wiring up
 /// cleanup on close. Shared by the `open_project_window` command and the
 /// startup restore (#52). With `session`, the window opens straight into that
 /// session — an existing window is told via the `open-session` event (#423).
+/// `anchor_label` is the window the new one centers over; `None` (startup
+/// restore) falls back to the main window.
 pub(super) async fn spawn_project_window(
     app: &AppHandle,
     state: &AppState,
     id: &str,
     session: Option<&str>,
+    anchor_label: Option<&str>,
 ) -> Result<String, String> {
     let label = project_window_label(id);
     if let Some(w) = app.get_webview_window(&label) {
@@ -313,10 +330,26 @@ pub(super) async fn spawn_project_window(
     // even before the window's frontend calls open_project.
     set_active_project(state, &label, id).await?;
     let url = tauri::WebviewUrl::App(project_window_url(id, session).into());
-    let builder = tauri::WebviewWindowBuilder::new(app, &label, url)
+    let mut builder = tauri::WebviewWindowBuilder::new(app, &label, url)
         .title("wisp science")
         .inner_size(1100.0, 760.0)
         .resizable(true);
+    // Center over the requesting window (or the main window on startup
+    // restore); otherwise the OS cascades each new window to an arbitrary
+    // spot. Sizes/positions are physical, so convert through the anchor's
+    // scale factor for the builder's logical `position`.
+    let anchor = anchor_label
+        .and_then(|label| app.get_webview_window(label))
+        .or_else(|| app.get_webview_window("main"));
+    if let Some(anchor) = anchor {
+        if let (Ok(pos), Ok(size)) = (anchor.outer_position(), anchor.outer_size()) {
+            let scale = anchor.scale_factor().unwrap_or(1.0);
+            let physical = ((1100.0 * scale) as u32, (760.0 * scale) as u32);
+            let (x, y) =
+                centered_window_position((pos.x, pos.y), (size.width, size.height), physical);
+            builder = builder.position(x as f64 / scale, y as f64 / scale);
+        }
+    }
     #[cfg(target_os = "windows")]
     let builder = builder.decorations(false).shadow(true);
     let win = builder.build().map_err(|e| e.to_string())?;
@@ -350,10 +383,18 @@ pub(super) async fn spawn_project_window(
 pub(super) async fn open_project_window(
     app: AppHandle,
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     id: String,
     session: Option<String>,
 ) -> Result<String, String> {
-    spawn_project_window(&app, state.inner(), &id, session.as_deref()).await
+    spawn_project_window(
+        &app,
+        state.inner(),
+        &id,
+        session.as_deref(),
+        Some(window.label()),
+    )
+    .await
 }
 
 #[tauri::command]
