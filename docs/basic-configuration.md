@@ -144,6 +144,7 @@ Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启�
 - `/skills`：打开技能管理设置页。
 - `/files`：打开右侧文件面板。
 - `/upload`：打开文件上传对话框。
+- `/share`：把对话导出为适合分享的长图（PNG）。弹出的预览里可以勾选要展示的消息（思考过程默认不包含），并支持关键词打码——这些词会被替换成 `xxx`。
 
 ![在输入框中手动选择 Skill](assets/basic-configuration/17-manual-skill.png)
 

@@ -43,6 +43,7 @@ mod runtime;
 mod session_import;
 mod sessions;
 mod settings;
+mod share;
 mod ssh;
 mod transcript;
 
@@ -63,5 +64,6 @@ pub(crate) use runtime::*;
 pub(crate) use session_import::*;
 pub(crate) use sessions::*;
 pub(crate) use settings::*;
+pub(crate) use share::*;
 pub(crate) use ssh::*;
 pub(crate) use transcript::*;
