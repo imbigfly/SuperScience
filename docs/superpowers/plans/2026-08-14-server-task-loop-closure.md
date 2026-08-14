@@ -20,11 +20,14 @@ Artifact 溯源。
 3. **撤回文件无概念**：上传（run inputs staging、`transfer_between_contexts`）不留
    登记，无法回答"哪些远端文件已无人引用、可以删"。
 4. **无顺序保障**：没有 `harvested_at`/`cleaned_at`，无法约束"先确认取回、再允许清理"。
+5. **存储位置不可选**：远端 workdir 根（`.wisp-science/runs`）、上传目标、取回落地目录
+   全部硬编码；会话首次启用服务器时用户无法声明"数据上传到哪、生成文件放哪"。
 
 ## 交付策略
 
-按小 PR 交付，每个 PR 一个持久抽象，各自带迁移、工具、测试。PR 1→2→3 有依赖顺序
-（清理必须以取回确认为前置；撤回清理复用清理执行路径）；PR 4 是收尾策略层，可独立。
+按小 PR 交付，每个 PR 一个持久抽象，各自带迁移、工具、测试。PR 1→2→3→4 有依赖顺序
+（存储偏好为上传与取回提供目标位置；清理必须以取回确认为前置；撤回清理复用清理执行
+路径）；PR 5 是收尾策略层，可独立。
 
 所有测试禁止真实 SSH/网络：远端行为用现有 `RunCommandRunner` fake、临时目录和
 mocked Tauri 命令覆盖。迁移同时改 `crates/wisp-store/migrations/`（新编号文件）和
@@ -41,8 +44,9 @@ ArtifactVersion，而不是永远以 `ssh://` 引用留在服务器上。
   收集脚本（复用 `ssh_script_command` 的 `sh -s` 通道）：在 `remote_workdir` 内按 glob
   匹配文件，输出 `相对路径\t字节数\tsha256`（`sha256sum`，缺失时 `shasum -a 256`），并把
   匹配文件按相对路径硬链/复制进 `<workdir>/harvest/`。
-- 单次 `scp -r` 把 `harvest/` 拉到项目本地私有暂存目录（`.wisp/harvest/<run_id>/`），
-  逐文件校验 sha256，失败则整体报错、不注册。
+- 单次 `scp -r` 把 `harvest/` 拉到项目 `remote/<context-label>/<run_id>/`（工作区既有
+  落地区），逐文件校验 sha256，失败则整体报错、不注册。PR 2 起落地目录改由用户
+  存储偏好决定。
 - 对暂存目录复用现有 `harvest_run_outputs`（`src-tauri/src/harvest.rs`），走既有的
   snapshot/reference/lineage 逻辑；`source_path` 记录远端相对路径。
 - 尊重大数据规则：`residency: remote`、超过 `max_file_mb`/`max_total_mb` 的文件不下载，
@@ -52,7 +56,7 @@ ArtifactVersion，而不是永远以 `ssh://` 引用留在服务器上。
   的拒绝分支；`ssh://` URI spec 保持原语义。
 - 迁移：`runs` 增加 nullable `harvested_at`（INTEGER）。本地/WSL run 在既有 harvest 成功
   后同样写入。harvest 失败不改变 run 终态，错误记入 `last_poll_error`（沿用现状），
-  `harvested_at` 保持 NULL，作为 PR 2 清理的硬前置。
+  `harvested_at` 保持 NULL，作为 PR 3 清理的硬前置。
 - 新增 `harvest_run` 工具/Tauri 命令：对 `succeeded` 且 `harvested_at IS NULL` 的 run
   手动重试取回（自动 harvest 失败后的恢复路径，也覆盖旧数据）。
 
@@ -91,7 +95,77 @@ cargo test -p wisp-store runs
 cargo fmt --all -- --check
 ```
 
-## PR 2：Run 工作区清理 —— cleanup_run_workspace
+## PR 2：服务器存储位置偏好 —— 首次启用时选择上传与取回目录
+
+**用户问题：** 会话内第一次启用某台服务器后，用户应能选择后续分析的默认位置：
+数据上传到服务器的哪个目录、run 工作目录建在哪、生成的文件取回后放进项目哪个
+目录。此后所有上传与取回都遵循该默认值，可随时在 Environment 面板修改。
+
+### 设计
+
+- 迁移：新表 `context_storage_prefs`，按（项目 × context）保存偏好：
+
+```sql
+CREATE TABLE IF NOT EXISTS context_storage_prefs (
+    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    context_id          TEXT NOT NULL,
+    remote_data_root    TEXT NOT NULL,  -- 上传数据的远端目录
+    remote_workdir_root TEXT NOT NULL,  -- run 工作目录根，默认 .wisp-science/runs
+    local_results_dir   TEXT NOT NULL,  -- 取回文件的项目相对目录
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    PRIMARY KEY (project_id, context_id)
+);
+```
+
+- 默认值：`remote_data_root = ~/wisp/<project-slug>/data`、
+  `remote_workdir_root = .wisp-science/runs`、
+  `local_results_dir = remote/<context-label>`（工作区既有落地区）。
+- 触发时机：会话内首次启用该 context（`set_session_execution_context_enabled` 置
+  true 或首次 `run_in_context`/`transfer_between_contexts` 命中）且该（项目 ×
+  context）无已存偏好时，UI 弹出存储位置对话框，预填默认值；确认后落库，之后的
+  会话不再询问。对话框加入窗口级 Escape 栈（root-owned）。Agent 侧路径（无 UI
+  确认时）直接使用默认值落库，不阻塞任务。
+- 校验（Store 层）：远端路径必须是 HOME 相对或绝对路径且不含 `..`；
+  `local_results_dir` 必须是项目相对路径且不逃逸项目根。
+- 消费方接线：
+  - `transfer_between_contexts` 上传缺省目标 = `remote_data_root`；
+  - run workdir = `<remote_workdir_root>/<run_id>`（替换硬编码前缀，路径校验规则
+    同步适配，PR 3 的删除约束以偏好中的根为准）；
+  - PR 1 harvest 落地目录 = `<local_results_dir>/<run_id>`。
+- UI：Environment 右栏每个 context 增加"存储位置"编辑区；设置修改只影响后续
+  run/transfer，历史记录不动。
+
+### 接口
+
+```rust
+Store::get_context_storage_prefs(project_id, context_id) -> Option<ContextStoragePrefs>
+Store::upsert_context_storage_prefs(prefs)   // 含路径校验
+
+// Tauri 命令
+get_context_storage_prefs { context_id }
+set_context_storage_prefs { context_id, remote_data_root, remote_workdir_root, local_results_dir }
+```
+
+### 测试
+
+- 无偏好首次启用 → 返回"需要确认"标记；确认落库后同项目后续会话不再触发。
+- 路径校验矩阵：`..`、绝对本地路径逃逸、空值全部拒绝。
+- run workdir、transfer 目标、harvest 落地目录分别读取偏好（fake runner 断言下发
+  路径）；无偏好时使用默认值且行为与 PR 1 一致。
+- legacy 库幂等建表；旧 run 的 `remote_workdir` 不受影响。
+- UI Playwright：首次启用弹出对话框，Escape 一次只关对话框；Environment 面板可改。
+
+### 验证
+
+```bash
+cargo test -p wisp-store storage_prefs
+cargo test -p wisp-science-desktop storage_prefs
+cd ui && cargo check --target wasm32-unknown-unknown
+cd ../ui-tests && npm ci && npx playwright test
+```
+
+## PR 3：Run 工作区清理 —— cleanup_run_workspace
 
 **用户问题：** 任务结束后，远端 `inputs/`、日志、supervisor 文件和中间产物应能安全
 删除，且绝不能在产物取回确认之前删。
@@ -106,14 +180,15 @@ cargo fmt --all -- --check
   - 未清理过（`cleaned_at IS NULL`），重复调用幂等返回。
 - 执行：SSH 走 `sh -s` 通道 `rm -rf`；local/WSL 走对应 transport 删除（Windows 用
   原生删除，不假设 POSIX）。**路径安全**：只删除 handle 中记录的 workdir，且必须
-  匹配 `.wisp-science/runs/<run_id>` 模式，拒绝任何其他路径；不展开来自远端的字符串。
+  匹配 `<remote_workdir_root>/<run_id>` 模式（PR 2 偏好中的根，默认
+  `.wisp-science/runs`），拒绝任何其他路径；不展开来自远端的字符串。
 - 删除失败写 `cleanup_error` 并保留 `cleaned_at` 为 NULL，可重试；成功写 `cleaned_at`
   并清空 `cleanup_error`。
 - `lost` 状态的 run（进程身份无法确认）清理前先做一次 kill-by-token 兜底，避免删除
   仍在写入的目录。
 - UI：run 详情/RunMonitorCard 增加"清理服务器文件"操作与已清理状态显示（图标走
   `compose_icon()` 新 kind）；`get_run_detail`/`list_runs` DTO 带出新字段。
-- Agent 提示：`monitor_run` 成功返回文案中提示可清理（不自动清理，自动化留给 PR 4）。
+- Agent 提示：`monitor_run` 成功返回文案中提示可清理（不自动清理，自动化留给 PR 5）。
 
 ### 接口
 
@@ -146,7 +221,7 @@ cd ui && cargo check --target wasm32-unknown-unknown
 cd ../ui-tests && npm ci && npx playwright test
 ```
 
-## PR 3：远端 staging 登记 —— 撤回与孤儿文件清理
+## PR 4：远端 staging 登记 —— 撤回与孤儿文件清理
 
 **用户问题：** 上传到服务器但随后被撤回、替换或不再使用的文件必须可见、可清理，
 使"直接丢弃这台服务器"成为可验证的操作。
@@ -172,13 +247,13 @@ CREATE INDEX IF NOT EXISTS ix_remote_staging_ctx ON remote_staging(context_id, r
 ```
 
 - 写入点：SSH run inputs staging（`stage_inputs` 成功后逐文件登记）、
-  `transfer_between_contexts` 上传成功后登记目标路径。run workdir 内的文件在 PR 2
+  `transfer_between_contexts` 上传成功后登记目标路径。run workdir 内的文件在 PR 3
   清理成功时批量标记 `removed_at`。
 - 新增 `list_remote_files` 工具/Tauri 命令：按 context 列出本项目登记的未移除远端
   文件，标注归属 run 与其状态，区分"活跃引用"（run 未终态或未清理）与"孤儿"
   （run 已终态且已清理/不存在，或 transfer 目标已被更新版本替代——同一
   `remote_path` 存在更晚的登记）。
-- 新增 `remove_remote_files` 工具：删除指定孤儿条目对应的远端文件（复用 PR 2 的
+- 新增 `remove_remote_files` 工具：删除指定孤儿条目对应的远端文件（复用 PR 3 的
   安全删除通道；只允许删除登记在册的路径），成功标记 `removed_at`。活跃引用拒绝
   删除，除非显式 `force`。
 - UI：Environment 右栏每个 SSH context 增加"远端文件"视图（登记列表、孤儿标记、
@@ -201,7 +276,7 @@ remove_remote_files { context_id, ids, force? }
 - 同一 `remote_path` 二次上传 → 旧条目判定为"被替换"孤儿。
 - 活跃 run 引用的条目拒绝删除；`force` 可删；删除后 `removed_at` 落库。
 - 未登记路径的删除请求被拒绝（防任意远端删除）。
-- PR 2 清理联动：workdir 清理后其 inputs 条目自动标记移除。
+- PR 3 清理联动：workdir 清理后其 inputs 条目自动标记移除。
 - legacy 库幂等建表。
 
 ### 验证
@@ -213,7 +288,7 @@ cd ui && cargo check --target wasm32-unknown-unknown
 cd ../ui-tests && npx playwright test
 ```
 
-## PR 4：保留策略 —— 成功任务自动清理（收尾，可选）
+## PR 5：保留策略 —— 成功任务自动清理（收尾，可选）
 
 **用户问题：** 用户不应手动清理每个任务；成功且已取回的任务应按项目策略自动回收
 远端空间。
@@ -223,7 +298,7 @@ cd ../ui-tests && npx playwright test
 - 项目级设置 `run_workspace_retention_days`（默认 NULL=不自动清理，显式 opt-in）。
 - 复用 `RunManager` 的后台 poller/reconciler 周期：扫描
   `succeeded && harvested_at IS NOT NULL && cleaned_at IS NULL && ended_at < now - N days`
-  的 run，逐个走 PR 2 的 `cleanup_run_workspace` 路径（含全部前置校验与路径约束）。
+  的 run，逐个走 PR 3 的 `cleanup_run_workspace` 路径（含全部前置校验与路径约束）。
 - 清理动作写入 run 时间线（`cleanup_error`/`cleaned_at` 已有），UI 设置页暴露开关。
 - 文档：更新 `skills/remote-compute-ssh/SKILL.md` 与 control-plane spec，写明生命周期
   九段全部落地：上传 → 创建 → 后台执行 → 状态 → 日志 → 取消/重连 → 登记 → 取回 → 清理。
