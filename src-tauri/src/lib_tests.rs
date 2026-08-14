@@ -1739,6 +1739,24 @@ fn project_window_url_carries_the_target_session() {
     );
 }
 
+#[test]
+fn centered_window_position_centers_over_the_anchor() {
+    assert_eq!(
+        super::project_commands::centered_window_position((100, 50), (1600, 1000), (1100, 760)),
+        (350, 170)
+    );
+    // A window larger than its anchor overflows symmetrically.
+    assert_eq!(
+        super::project_commands::centered_window_position((100, 50), (800, 600), (1100, 760)),
+        (-50, -30)
+    );
+    // Anchors on monitors left of/above the primary keep negative origins.
+    assert_eq!(
+        super::project_commands::centered_window_position((-1600, -50), (1600, 1000), (1100, 760)),
+        (-1350, 70)
+    );
+}
+
 #[tokio::test]
 async fn project_workspace_data_deletion_removes_only_the_resolved_project_directory() {
     let root = std::env::temp_dir().join(format!("wisp_project_delete_{}", uuid::Uuid::new_v4()));

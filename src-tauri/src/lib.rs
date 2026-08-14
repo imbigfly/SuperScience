@@ -7497,7 +7497,8 @@ fn spawn_deferred_startup(
         // ones. A project that was since deleted simply fails to spawn.
         for id in project_commands::persisted_windows(&store).await {
             let state = app.state::<AppState>();
-            let _ = project_commands::spawn_project_window(&app, state.inner(), &id, None).await;
+            let _ =
+                project_commands::spawn_project_window(&app, state.inner(), &id, None, None).await;
         }
         let ms = started.elapsed().as_millis();
         update_startup_report(|report| report.deferred_ms = Some(ms));

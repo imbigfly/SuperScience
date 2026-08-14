@@ -23,6 +23,10 @@ pub(super) struct ProjectLandingState {
     pub(super) project_transfer: RwSignal<Option<ProjectTransferProgress>>,
     pub(super) privacy_mode_active: RwSignal<bool>,
     pub(super) privacy_hidden_project_ids: RwSignal<HashSet<String>>,
+    /// One-shot requests from the titlebar File menu; ProjectsScreen owns the
+    /// actual dialogs and resets these flags.
+    pub(super) menu_new_project: RwSignal<bool>,
+    pub(super) menu_import_project: RwSignal<bool>,
 }
 #[component]
 pub(super) fn ProjectLanding(
@@ -50,6 +54,8 @@ pub(super) fn ProjectLanding(
         project_transfer,
         privacy_mode_active,
         privacy_hidden_project_ids,
+        menu_new_project,
+        menu_import_project,
     } = state;
 
     move || {
@@ -91,6 +97,8 @@ pub(super) fn ProjectLanding(
                     project_transfer=project_transfer
                     privacy_mode_active=privacy_mode_active
                     privacy_hidden_project_ids=privacy_hidden_project_ids
+                    menu_new_project=menu_new_project
+                    menu_import_project=menu_import_project
                 />
             }
         })
