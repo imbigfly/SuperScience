@@ -8986,15 +8986,46 @@ test("Windows uses the integrated title bar without covering the project landing
   )).toBe(38);
   await page.getByRole("button", { name: "Back to app" }).click();
 
+  // Home menus only list actions that work without an open project.
   await page.getByRole("button", { name: "File", exact: true }).click();
-  await expect(page.getByRole("menuitem", { name: "Open projects" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "Export current project" })).toBeDisabled();
-  await page.getByRole("menuitem", { name: "Open projects" }).click();
-  await expect(page.locator(".projects-screen")).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New project" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Import project" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Scratch chat" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Open settings" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New session" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Open projects" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Export current project" })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "New project" }).click();
+  await expect(page.locator(".overlay .proj-settings-modal")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".proj-settings-modal")).toHaveCount(0);
+
+  // Ctrl+N on the landing means a new project too, but Chromium never
+  // delivers Ctrl+N to web content, so that path is only exercisable in the
+  // real webview — the menu item above covers the same "new-project" action.
+
+  await page.getByRole("button", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Import project" }).click();
+  await expect(page.getByTestId("project-import-options")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("project-import-options")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "All commands" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Import Codex conversations" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "Light theme" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Toggle sidebar" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
   await page.locator(".proj-card-main").first().click();
   await expect(newSessionButton(page)).toBeVisible();
   await page.getByRole("button", { name: "File", exact: true }).click();
+  // Inside a workspace the menus flip back to the session-scoped set.
+  await expect(page.getByRole("menuitem", { name: "New session" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New project" })).toHaveCount(0);
   const exportCurrentProject = page.getByRole("menuitem", { name: "Export current project" });
   await expect(exportCurrentProject).toBeEnabled();
   await exportCurrentProject.click();

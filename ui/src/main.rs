@@ -8923,6 +8923,10 @@ fn App() -> impl IntoView {
         status: String,
         message_count: usize,
     }
+    // One-shot requests from the Windows titlebar File menu into the projects
+    // landing screen, which owns the create/import dialogs.
+    let menu_new_project = create_rw_signal(false);
+    let menu_import_project = create_rw_signal(false);
     let palette_action = {
         let new_session = palette_new_session.clone();
         let open_scratch = open_scratch.clone();
@@ -8931,7 +8935,25 @@ fn App() -> impl IntoView {
         let run_update_check = run_update_check.clone();
         let export_current_project = export_current_project.clone();
         Callback::new(move |action: &'static str| match action {
-            "new" => new_session.call(()),
+            // On the projects landing, "new" can only mean a new project —
+            // there is no workspace to hold a session yet.
+            "new" => {
+                if show_projects.get_untracked() {
+                    menu_new_project.set(true);
+                } else {
+                    new_session.call(())
+                }
+            }
+            "new-project" => {
+                if show_projects.get_untracked() {
+                    menu_new_project.set(true);
+                }
+            }
+            "import-project" => {
+                if show_projects.get_untracked() {
+                    menu_import_project.set(true);
+                }
+            }
             "scratch" => open_scratch.call(()),
             "search" => command_palette_open.set(true),
             "commands" => action_palette_open.set(true),
@@ -9109,6 +9131,7 @@ fn App() -> impl IntoView {
         scratch_open.get()
             || (project_info.get().is_some() && !show_projects.get() && !demo_mode.get())
     });
+    let home_page = Signal::derive(move || show_projects.get());
     let shortcut_action = palette_action.clone();
     window_event_listener(ev::keydown, move |ev| {
         let Some(ev) = ev.dyn_ref::<web_sys::KeyboardEvent>() else {
@@ -9267,7 +9290,7 @@ fn App() -> impl IntoView {
     view! {
         {is_windows().then(|| view! {
             <WindowTitlebar locale=locale has_current_project=has_current_project
-                on_action=palette_action.clone() />
+                home=home_page on_action=palette_action.clone() />
         })}
         <ActionPalette open=action_palette_open has_current_project=has_current_project
             on_action=palette_action />
@@ -9322,6 +9345,7 @@ fn App() -> impl IntoView {
                 demos, modal_artifact, locale, running, approval_pending,
                 sync_actions_available, command_palette_open, project_transfer,
                 privacy_mode_active, privacy_hidden_project_ids,
+                menu_new_project, menu_import_project,
             }
             open_project=switch_project
             open_project_session=palette_open_session

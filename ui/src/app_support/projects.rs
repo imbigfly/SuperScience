@@ -19,6 +19,10 @@ pub(crate) fn ProjectsScreen(
     project_transfer: RwSignal<Option<ProjectTransferProgress>>,
     privacy_mode_active: RwSignal<bool>,
     privacy_hidden_project_ids: RwSignal<HashSet<String>>,
+    // One-shot requests from the Windows titlebar File menu, which lives
+    // outside this screen; the dialogs themselves are owned here.
+    menu_new_project: RwSignal<bool>,
+    menu_import_project: RwSignal<bool>,
 ) -> impl IntoView {
     let projects = create_rw_signal(Vec::<ProjectSummary>::new());
     let recent = create_rw_signal(Vec::<RecentSession>::new());
@@ -255,6 +259,21 @@ pub(crate) fn ProjectsScreen(
         if creating.get() {
             let block = t(locale.get(), "projects.layout_context");
             new_ctx.update(|c| *c = apply_layout_block(c, &block, new_layout.get()));
+        }
+    });
+
+    // Titlebar File menu requests (one-shot flags; reset before opening so a
+    // repeated request retriggers the effect).
+    create_effect(move |_| {
+        if menu_new_project.get() {
+            menu_new_project.set(false);
+            creating.set(true);
+        }
+    });
+    create_effect(move |_| {
+        if menu_import_project.get() {
+            menu_import_project.set(false);
+            import_options_open.set(true);
         }
     });
 
