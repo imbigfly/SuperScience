@@ -1130,6 +1130,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   ];
   (window as any).__mockExecutionContexts = executionContexts;
   const sessionExecutionContexts: Record<string, string[]> = {};
+  let defaultExecutionContext: string | null = null;
   let runtimeInfos: any[] = [
     {
       runtimeId: "runtime-python-local",
@@ -2833,6 +2834,21 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             else selected.delete(contextId);
             sessionExecutionContexts[sessionId] = [...selected].sort();
             return [...sessionExecutionContexts[sessionId]];
+          }
+          case "get_default_execution_context":
+            return defaultExecutionContext;
+          case "set_default_execution_context": {
+            const contextId = arg("contextId") ?? arg("context_id");
+            if (contextId === null || contextId === undefined || String(contextId).trim() === "") {
+              defaultExecutionContext = null;
+              return null;
+            }
+            const context = executionContexts.find((item) => item.id === String(contextId));
+            if (!context || context.kind === "local") {
+              throw new Error("Execution context not found");
+            }
+            defaultExecutionContext = String(contextId);
+            return defaultExecutionContext;
           }
           case "probe_execution_context": {
             const delay = nextProbeDelayMs;

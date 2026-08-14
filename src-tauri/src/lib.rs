@@ -7855,6 +7855,8 @@ pub fn run() {
             ssh_hosts::list_ssh_hosts,
             ssh_hosts::list_session_execution_context_ids,
             ssh_hosts::set_session_execution_context_enabled,
+            ssh_hosts::set_default_execution_context,
+            ssh_hosts::get_default_execution_context,
             ssh_hosts::add_ssh_host,
             ssh_hosts::test_ssh_connection,
             ssh_hosts::remove_ssh_host,

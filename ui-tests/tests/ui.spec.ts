@@ -4413,6 +4413,32 @@ test("compute menu selects remote resources per session", async ({ page }) => {
     .not.toBe(firstSession);
 });
 
+test("compute menu sets and clears a default analysis environment", async ({ page }) => {
+  await enterApp(page);
+
+  const menu = await openComputeMenu(page);
+  const server = menu.locator('[data-context-id="ssh:gpu-server"]');
+  await expect(server.locator(".compute-resource-default")).toHaveCount(0);
+  await server.getByRole("button", { name: "Set as default analysis environment" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_default_execution_context")).toMatchObject({
+    contextId: "ssh:gpu-server",
+  });
+  // Setting the default also selects it for the current session.
+  await expect.poll(() => lastInvokeArgs(page, "set_session_execution_context_enabled")).toMatchObject({
+    sessionId: expect.any(String),
+    contextId: "ssh:gpu-server",
+    enabled: true,
+  });
+  await expect(server).toHaveClass(/enabled/);
+  await expect(server.locator(".compute-resource-default")).toHaveText("Default");
+
+  await server.getByRole("button", { name: "Remove default" }).click();
+  await expect.poll(async () =>
+    (await lastInvokeArgs(page, "set_default_execution_context"))?.contextId ?? null
+  ).toBeNull();
+  await expect(server.locator(".compute-resource-default")).toHaveCount(0);
+});
+
 test("environment panel attaches and detaches remote servers", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Toggle panel" }).click();
