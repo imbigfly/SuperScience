@@ -276,6 +276,7 @@ body:has(.window-titlebar) .conversation-search-dialog { max-height: min(660px, 
 }
 .privacy-mode-modal .privacy-project-row input:focus { border: none; box-shadow: none; }
 .privacy-mode-modal .privacy-project-row input:focus-visible { outline: 2px solid var(--clay); outline-offset: 2px; }
+.privacy-mode-modal .privacy-project-row-all { margin-bottom: 2px; border-style: dashed; }
 .privacy-project-main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 1px; }
 .privacy-project-main > span { font-size: 13px; font-weight: 600; color: var(--text); }
 .privacy-project-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font: 11px var(--font-mono); }

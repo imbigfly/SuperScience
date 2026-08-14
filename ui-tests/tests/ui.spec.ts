@@ -2609,6 +2609,54 @@ test("privacy mode hides selected projects and recent sessions, then restores th
   await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBeNull();
 });
 
+test("privacy mode select all toggles every project at once", async ({ page }) => {
+  await page.goto("/");
+  const privateProject = page.locator(".proj-card", { hasText: "wisp-science" });
+  const otherProject = page.locator(".proj-card", { hasText: "Other project" });
+  await expect(privateProject).toBeVisible();
+  await expect(otherProject).toBeVisible();
+
+  await page.keyboard.press("Control+Shift+h");
+  const modal = page.getByRole("dialog", { name: "Privacy mode" });
+  await expect(modal).toBeVisible();
+
+  const selectAll = modal.getByTestId("privacy-select-all");
+  const projectBoxes = modal.locator('.privacy-project-row:not(.privacy-project-row-all) input[type="checkbox"]');
+  await expect(projectBoxes).toHaveCount(2);
+  await expect(selectAll).not.toBeChecked();
+
+  await selectAll.check();
+  await expect(selectAll).toBeChecked();
+  for (const box of await projectBoxes.all()) {
+    await expect(box).toBeChecked();
+  }
+
+  // Unchecking one project clears the select-all state.
+  await projectBoxes.first().uncheck();
+  await expect(selectAll).not.toBeChecked();
+  await selectAll.check();
+  await expect(selectAll).toBeChecked();
+
+  await modal.getByRole("button", { name: "Hide selected" }).click();
+  await expect(privateProject).toBeHidden();
+  await expect(otherProject).toBeHidden();
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBe("1");
+
+  await page.keyboard.press("Control+Shift+h");
+  await expect(selectAll).toBeChecked();
+  await selectAll.uncheck();
+  for (const box of await projectBoxes.all()) {
+    await expect(box).not.toBeChecked();
+  }
+  await expect(modal.getByRole("button", { name: "Hide selected" })).toBeDisabled();
+
+  await modal.getByRole("button", { name: "Restore all" }).click();
+  await expect(privateProject).toBeVisible();
+  await expect(otherProject).toBeVisible();
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(2);
+});
+
 test("Ctrl+P changes UI and code font sizes", async ({ page }) => {
   await enterApp(page);
   const input = page.locator("#action-palette-input");

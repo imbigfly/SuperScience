@@ -869,6 +869,28 @@ pub(crate) fn PrivacyModeModal(
                         </div>
                     </div>
                     <div class="privacy-project-list" data-testid="privacy-project-list">
+                        {move || (!projects.with(|rows| rows.is_empty())).then(|| view! {
+                            <label class="privacy-project-row privacy-project-row-all">
+                                <input type="checkbox" data-testid="privacy-select-all"
+                                    prop:checked=move || projects.with(|rows| {
+                                        !rows.is_empty()
+                                            && rows.iter().all(|p| selected.with(|ids| ids.contains(&p.id)))
+                                    })
+                                    on:change=move |event| {
+                                        let checked = event_target_checked(&event);
+                                        if checked {
+                                            selected.set(projects.with(|rows| {
+                                                rows.iter().map(|p| p.id.clone()).collect()
+                                            }));
+                                        } else {
+                                            selected.set(HashSet::new());
+                                        }
+                                    } />
+                                <span class="privacy-project-main">
+                                    <span>{move || t(locale.get(), "privacy.select_all")}</span>
+                                </span>
+                            </label>
+                        })}
                         {move || projects.get().into_iter().map(|project| {
                             let id = project.id.clone();
                             let checked_id = project.id.clone();
