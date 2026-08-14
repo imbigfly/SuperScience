@@ -308,3 +308,242 @@ pub(super) async fn cancel_run(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Run disappeared after cancellation".to_string())
 }
+
+/// Retry output registration/download for a succeeded Run whose declared
+/// outputs were never harvested.
+#[tauri::command]
+pub(super) async fn harvest_run(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+) -> Result<wisp_store::RunRecord, String> {
+    let (ap, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let run = state
+        .store
+        .get_run(&run_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Run not found".to_string())?;
+    if run.project_id != ap.id {
+        return Err("Run does not belong to the active project".into());
+    }
+    if state
+        .store
+        .run_state_scope(&run_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        != Some(&scope)
+    {
+        return Err("Run is not visible in the active state scope".into());
+    }
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    state.run_manager.harvest_run(&state.store, &run_id).await?;
+    state
+        .store
+        .get_run(&run_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Run disappeared after harvest".to_string())
+}
+
+async fn scoped_run(
+    state: &State<'_, AppState>,
+    window: &tauri::WebviewWindow,
+    run_id: &str,
+) -> Result<(), String> {
+    let (ap, scope) =
+        exploration_commands::working_project_for_active_frame(state, window.label()).await?;
+    let run = state
+        .store
+        .get_run(run_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Run not found".to_string())?;
+    if run.project_id != ap.id {
+        return Err("Run does not belong to the active project".into());
+    }
+    if state
+        .store
+        .run_state_scope(run_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        != Some(&scope)
+    {
+        return Err("Run is not visible in the active state scope".into());
+    }
+    Ok(())
+}
+
+/// One page of one directory level of a finished Run's server workspace.
+/// Ephemeral browse data for the run-review modal; never persisted.
+#[tauri::command]
+pub(super) async fn list_run_workspace_files(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+    path: Option<String>,
+    name_filter: Option<String>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<crate::run_context::WorkspaceListing, String> {
+    scoped_run(&state, &window, &run_id).await?;
+    state
+        .run_manager
+        .list_run_workspace_files(
+            &state.store,
+            &run_id,
+            path.as_deref().unwrap_or_default(),
+            name_filter.as_deref().unwrap_or_default(),
+            offset.unwrap_or(0),
+            limit.unwrap_or(200),
+        )
+        .await
+}
+
+/// Download the user's selection from a finished Run's workspace and register
+/// it as project artifacts (directories arrive as one archive each).
+#[tauri::command]
+pub(super) async fn download_run_files(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+    files: Option<Vec<String>>,
+    dirs: Option<Vec<String>>,
+) -> Result<Vec<crate::harvest::HarvestedArtifact>, String> {
+    scoped_run(&state, &window, &run_id).await?;
+    let (ap, _) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    state
+        .run_manager
+        .download_run_files(
+            &state.store,
+            &run_id,
+            &files.unwrap_or_default(),
+            &dirs.unwrap_or_default(),
+        )
+        .await
+}
+
+/// Delete the user's selection inside a finished Run's workspace.
+#[tauri::command]
+pub(super) async fn delete_run_files(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    scoped_run(&state, &window, &run_id).await?;
+    let (ap, _) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    state
+        .run_manager
+        .delete_run_files(&state.store, &run_id, &paths)
+        .await
+}
+
+/// Ledgered files this project placed on one SSH server, with liveness state.
+#[tauri::command]
+pub(super) async fn list_remote_files(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    context_id: String,
+) -> Result<Vec<crate::run_context::remote_files::RemoteFileView>, String> {
+    let (ap, _) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    crate::run_context::remote_files::list_remote_files(&state.store, &ap.id, &context_id).await
+}
+
+/// Delete ledgered files from a server. `force` carries the user's explicit
+/// confirmation for entries a run still references.
+#[tauri::command]
+pub(super) async fn remove_remote_files(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    context_id: String,
+    ids: Vec<String>,
+    force: Option<bool>,
+) -> Result<Vec<crate::run_context::remote_files::RemoteFileView>, String> {
+    let (ap, _) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let context = state
+        .store
+        .get_execution_context(&context_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
+    if context.kind != wisp_store::ExecutionContextKind::Ssh {
+        return Err("Remote file cleanup requires an SSH context".into());
+    }
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    crate::run_context::remote_files::remove_remote_files(
+        &state.store,
+        state.run_manager.runner_ref(),
+        &ap.id,
+        &context,
+        &ids,
+        force.unwrap_or(false),
+    )
+    .await?;
+    crate::run_context::remote_files::list_remote_files(&state.store, &ap.id, &context_id).await
+}
+
+/// What dropping this server would abandon: still-remote artifact references
+/// and ledgered files.
+#[tauri::command]
+pub(super) async fn context_disposal_report(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    context_id: String,
+) -> Result<crate::run_context::remote_files::ContextDisposalReport, String> {
+    let (ap, _) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let context = state
+        .store
+        .get_execution_context(&context_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
+    crate::run_context::remote_files::context_disposal_report(&state.store, &ap.id, &context).await
+}
+
+/// Delete a terminal Run's server-side workspace. `force` carries the user's
+/// explicit confirmation when unharvested outputs would be lost.
+#[tauri::command]
+pub(super) async fn cleanup_run_workspace(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+    force: Option<bool>,
+) -> Result<wisp_store::RunRecord, String> {
+    let (ap, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let run = state
+        .store
+        .get_run(&run_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Run not found".to_string())?;
+    if run.project_id != ap.id {
+        return Err("Run does not belong to the active project".into());
+    }
+    if state
+        .store
+        .run_state_scope(&run_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        != Some(&scope)
+    {
+        return Err("Run is not visible in the active state scope".into());
+    }
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    state
+        .run_manager
+        .cleanup_run_workspace(&state.store, &run_id, force.unwrap_or(false))
+        .await
+}

@@ -3270,8 +3270,255 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             SESSION_REASONING_EFFORT_MIGRATION.to_string(),
             SESSION_BRANCH_MERGE_MIGRATION.to_string(),
             EXPLORATION_PROMOTION_RECOVERY_MIGRATION.to_string(),
+            RUN_HARVEST_STATE_MIGRATION.to_string(),
+            CONTEXT_STORAGE_PREFS_MIGRATION.to_string(),
+            RUN_CLEANUP_STATE_MIGRATION.to_string(),
+            REMOTE_STAGING_MIGRATION.to_string(),
+            RUN_RETENTION_MIGRATION.to_string(),
         ]
     );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn context_storage_prefs_validate_and_round_trip() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_storage_prefs_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+
+    assert!(store
+        .get_context_storage_prefs("p", "ssh:gpu")
+        .await
+        .unwrap()
+        .is_none());
+    let mut prefs = ContextStoragePrefs {
+        project_id: "p".into(),
+        context_id: "ssh:gpu".into(),
+        remote_data_root: "~/wisp/proj/data".into(),
+        remote_workdir_root: ".wisp-science/runs".into(),
+        local_results_dir: "remote/gpu".into(),
+        created_at: 0,
+        updated_at: 0,
+    };
+    store.upsert_context_storage_prefs(&prefs).await.unwrap();
+    let stored = store
+        .get_context_storage_prefs("p", "ssh:gpu")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.remote_data_root, "~/wisp/proj/data");
+
+    prefs.remote_data_root = "/data/wisp/proj".into();
+    prefs.local_results_dir = "results/from-gpu".into();
+    store.upsert_context_storage_prefs(&prefs).await.unwrap();
+    let updated = store
+        .get_context_storage_prefs("p", "ssh:gpu")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.remote_data_root, "/data/wisp/proj");
+    assert_eq!(updated.local_results_dir, "results/from-gpu");
+    assert_eq!(updated.created_at, stored.created_at);
+
+    // Validation matrix: traversal, escapes, absolute local dirs all rejected.
+    for (field, value) in [
+        ("remote_data_root", "~/wisp/../etc"),
+        ("remote_data_root", "$HOME/data"),
+        ("remote_data_root", "a b"),
+        ("remote_data_root", ""),
+        ("remote_workdir_root", "/absolute/runs"),
+        ("remote_workdir_root", "~/runs"),
+        ("remote_workdir_root", "runs/.."),
+        ("local_results_dir", "/absolute"),
+        ("local_results_dir", "../outside"),
+        ("local_results_dir", "a;b"),
+    ] {
+        let mut bad = updated.clone();
+        match field {
+            "remote_data_root" => bad.remote_data_root = value.into(),
+            "remote_workdir_root" => bad.remote_workdir_root = value.into(),
+            _ => bad.local_results_dir = value.into(),
+        }
+        assert!(
+            store.upsert_context_storage_prefs(&bad).await.is_err(),
+            "{field}={value} should be rejected"
+        );
+    }
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn remote_staging_ledger_round_trips_and_counts_external_references() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_remote_staging_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+
+    let entry = RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        None,
+        "~/wisp/proj/data/input.fasta",
+        "transfer",
+    );
+    store.record_remote_staging(&entry).await.unwrap();
+    let mut bad = entry.clone();
+    bad.id = "bad".into();
+    bad.source = "mystery".into();
+    assert!(store.record_remote_staging(&bad).await.is_err());
+
+    let listed = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        store
+            .mark_remote_staging_removed(&[entry.id.clone()])
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .mark_remote_staging_removed(&[entry.id.clone()])
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .list_remote_staging("p", "ssh:gpu", true)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // External-reference audit counts only head versions on that server.
+    store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: logical_artifact_id("p", "path:big.bam"),
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "big.bam".into(),
+            content_type: "data".into(),
+            storage_path: "ssh://gpu/scratch/proj/artifacts/r1/big.bam".into(),
+            logical_key: Some("path:big.bam".into()),
+            size_bytes: None,
+            checksum: None,
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::External,
+            capture_timing: ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .count_external_references_on_context("p", "ssh://gpu/")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .count_external_references_on_context("p", "ssh://other/")
+            .await
+            .unwrap(),
+        0
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn run_harvest_state_is_recorded_once_and_survives_reopen() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_run_harvest_state_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    let mut run = RunRecord::new("r", "p", "local", "Run", "command");
+    run.status = RunStatus::Succeeded;
+    store.create_run(&run).await.unwrap();
+
+    assert!(store
+        .get_run("r")
+        .await
+        .unwrap()
+        .unwrap()
+        .harvested_at
+        .is_none());
+    assert!(store.mark_run_harvested("r").await.unwrap());
+    let harvested_at = store
+        .get_run("r")
+        .await
+        .unwrap()
+        .unwrap()
+        .harvested_at
+        .unwrap();
+    // Idempotent: a second mark does not rewrite the timestamp.
+    assert!(!store.mark_run_harvested("r").await.unwrap());
+    drop(store);
+
+    // Reopening (legacy-database repair path) keeps the column and the value.
+    let reopened = Store::open(&tmp).await.unwrap();
+    assert_eq!(
+        reopened.get_run("r").await.unwrap().unwrap().harvested_at,
+        Some(harvested_at)
+    );
+    assert!(reopened
+        .record_run_harvest_error("r", "remote artifact registration failed: boom")
+        .await
+        .unwrap());
+    assert_eq!(
+        reopened
+            .get_run("r")
+            .await
+            .unwrap()
+            .unwrap()
+            .last_poll_error
+            .as_deref(),
+        Some("remote artifact registration failed: boom")
+    );
+
+    // Cleanup state: errors are retryable and cleared by a successful clean.
+    assert!(reopened
+        .record_run_cleanup_error("r", "rm failed: permission denied")
+        .await
+        .unwrap());
+    let run = reopened.get_run("r").await.unwrap().unwrap();
+    assert!(run.cleaned_at.is_none());
+    assert_eq!(
+        run.cleanup_error.as_deref(),
+        Some("rm failed: permission denied")
+    );
+    assert!(reopened.mark_run_cleaned("r").await.unwrap());
+    let run = reopened.get_run("r").await.unwrap().unwrap();
+    assert!(run.cleaned_at.is_some());
+    assert!(run.cleanup_error.is_none());
+    // Idempotent, and errors no longer overwrite a cleaned run.
+    assert!(!reopened.mark_run_cleaned("r").await.unwrap());
+    assert!(!reopened
+        .record_run_cleanup_error("r", "late")
+        .await
+        .unwrap());
 
     let _ = std::fs::remove_file(&tmp);
 }

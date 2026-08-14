@@ -49,7 +49,8 @@ use leptos::{ev, window_event_listener, *};
 use library::{refresh_library, refresh_session_library, HighlightsPane, LibraryScreen};
 use notebook::{collect_notebook_cells, NotebookCache, NotebookView};
 use overlays::{
-    AddHostOverlay, CapabilitiesOverlay, OnboardingOverlay, RuntimeInterpreterOverlay, ShareOverlay,
+    AddHostOverlay, CapabilitiesOverlay, OnboardingOverlay, RunReviewModal, RunReviewOverlay,
+    RuntimeInterpreterOverlay, ShareOverlay, StoragePrefsOverlay,
 };
 use pet::{PetDesktop, PetOverlay};
 use project_landing::{ProjectLanding, ProjectLandingState};
@@ -6790,6 +6791,9 @@ fn App() -> impl IntoView {
     let probing_context_id = create_rw_signal::<Option<String>>(None);
     let context_details_modal = create_rw_signal::<Option<(String, ContextModalKind)>>(None);
     let runtime_interpreter_form = create_rw_signal(None::<RuntimeInterpreterForm>);
+    let storage_prefs_form = create_rw_signal(None::<StoragePrefsForm>);
+    let run_review_modal = create_rw_signal(None::<String>);
+    provide_context(RunReviewModal(run_review_modal));
     let runtime_environment = create_rw_signal(None::<RuntimeSlot>);
     let runtime_environment_pinned = create_rw_signal(false);
     let runtime_environment_position = create_rw_signal((16, 16));
@@ -6890,6 +6894,7 @@ fn App() -> impl IntoView {
                 return;
             }
             spawn_local(async move {
+                let prefs_context_id = context_id.clone();
                 let (session_id, created) = match active_session.get_untracked() {
                     Some(session_id) => (session_id, false),
                     None => match invoke_checked("new_session", JsValue::UNDEFINED)
@@ -6922,6 +6927,35 @@ fn App() -> impl IntoView {
                         }
                         if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
                             session_execution_contexts.set(ids.into_iter().collect());
+                        }
+                        // First enable of a server in this project: ask where
+                        // uploads, run workdirs, and retrieved results go.
+                        if enabled && prefs_context_id != "local" {
+                            let args = to_value(&serde_json::json!({
+                                "contextId": prefs_context_id.clone(),
+                            }))
+                            .unwrap();
+                            if let Ok(value) =
+                                invoke_checked("get_context_storage_prefs", args).await
+                            {
+                                if let Ok(prefs) = serde_wasm_bindgen::from_value::<
+                                    ContextStoragePrefsView,
+                                >(value)
+                                {
+                                    if !prefs.confirmed {
+                                        let label = execution_contexts
+                                            .get_untracked()
+                                            .into_iter()
+                                            .find(|context| context.id == prefs_context_id)
+                                            .map(|context| context.label)
+                                            .filter(|label| !label.trim().is_empty())
+                                            .unwrap_or_else(|| prefs_context_id.clone());
+                                        storage_prefs_form.set(Some(
+                                            StoragePrefsForm::from_view(prefs, label, true),
+                                        ));
+                                    }
+                                }
+                            }
                         }
                     }
                     Err(error) => {
@@ -7858,6 +7892,16 @@ fn App() -> impl IntoView {
         if ssh_connectivity_modal.get().is_some() && !ssh_connectivity_busy.get() {
             ev.prevent_default();
             ssh_connectivity_modal.set(None);
+            return;
+        }
+        if run_review_modal.get().is_some() {
+            ev.prevent_default();
+            run_review_modal.set(None);
+            return;
+        }
+        if storage_prefs_form.get().is_some() {
+            ev.prevent_default();
+            storage_prefs_form.set(None);
             return;
         }
         if runtime_interpreter_form.get().is_some() {
@@ -13589,6 +13633,9 @@ fn App() -> impl IntoView {
                                                 let detach_context_id = ctx.id.clone();
                                                 let runtime_config_context = ctx.clone();
                                                 let config_context_id = ctx.id.clone();
+                                                let storage_context_id = ctx.id.clone();
+                                                let storage_context_label = label.clone();
+                                                let can_edit_storage = ctx.kind != "local";
                                                 view! {
                                                     <div class="context-card"
                                                         class:active=move || selected_context_id.get().as_deref() == Some(active_context_id.as_str())>
@@ -13634,6 +13681,40 @@ fn App() -> impl IntoView {
                                                                             RuntimeInterpreterForm::from_context(&runtime_config_context)
                                                                         ));
                                                                     }>{compose_icon("edit")}</button>
+                                                                {can_edit_storage.then(|| {
+                                                                    let remote_files_context_id = ctx.id.clone();
+                                                                    view! {
+                                                                    <button type="button" class="context-terminal context-remote-files"
+                                                                        title=t(loc, "contexts.remote_files")
+                                                                        aria-label=t(loc, "contexts.remote_files")
+                                                                        on:click=move |_| {
+                                                                            selected_context_id.set(Some(remote_files_context_id.clone()));
+                                                                            context_details_modal.set(Some((remote_files_context_id.clone(), ContextModalKind::RemoteFiles)));
+                                                                        }>{compose_icon("database")}</button>
+                                                                }})}
+                                                                {can_edit_storage.then(|| view! {
+                                                                    <button type="button" class="context-terminal context-storage-prefs"
+                                                                        title=t(loc, "contexts.storage_prefs")
+                                                                        aria-label=t(loc, "contexts.storage_prefs")
+                                                                        on:click=move |_| {
+                                                                            let context_id = storage_context_id.clone();
+                                                                            let context_label = storage_context_label.clone();
+                                                                            spawn_local(async move {
+                                                                                let args = to_value(&serde_json::json!({ "contextId": context_id })).unwrap();
+                                                                                match invoke_checked("get_context_storage_prefs", args).await {
+                                                                                    Ok(value) => {
+                                                                                        if let Ok(prefs) = serde_wasm_bindgen::from_value::<ContextStoragePrefsView>(value) {
+                                                                                            storage_prefs_form.set(Some(StoragePrefsForm::from_view(prefs, context_label, false)));
+                                                                                        }
+                                                                                    }
+                                                                                    Err(error) => {
+                                                                                        let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                                                                                        show_toast(&message);
+                                                                                    }
+                                                                                }
+                                                                            });
+                                                                        }>{compose_icon("folder")}</button>
+                                                                })}
                                                                 <button type="button" class="context-terminal context-probe"
                                                                     title=t(loc, "contexts.probe")
                                                                     aria-label=t(loc, "contexts.probe")
@@ -14641,7 +14722,6 @@ fn App() -> impl IntoView {
 
 
 
-        <ShareOverlay locale=locale draft=share_draft />
         <AddHostOverlay
             locale=locale show_add_host=show_add_host host_alias=host_alias host_hostname=host_hostname
             host_notes=host_notes host_user=host_user host_port=host_port host_identity=host_identity
@@ -14673,6 +14753,9 @@ fn App() -> impl IntoView {
             locale=locale form=runtime_interpreter_form execution_contexts=execution_contexts
             runtimes=runtime_infos
         />
+        <StoragePrefsOverlay locale=locale form=storage_prefs_form />
+        <RunReviewOverlay locale=locale modal=run_review_modal runs=run_records />
+        <ShareOverlay locale=locale draft=share_draft />
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities
             bootstrap=bootstrap caps=caps busy=busy open_settings_section=open_capability_settings

@@ -1098,6 +1098,33 @@ pub(crate) fn RunMonitorCard(
     // body every few seconds, which would snap a native `<details>` shut while
     // the user is reading it.
     let env_open = create_rw_signal(false);
+    // When a foreground-monitored SSH Run finishes successfully in this
+    // session, open the results-review modal once so the user can pick what to
+    // download and what to delete from the server.
+    let review_modal = use_context::<crate::overlays::RunReviewModal>().map(|modal| modal.0);
+    if let Some(review_modal) = review_modal {
+        let prompted = Rc::new(Cell::new(false));
+        create_effect(move |previous: Option<Option<String>>| {
+            let Some(run) = selected_run.get() else {
+                return None;
+            };
+            let status = run.status.clone();
+            let was_active = matches!(
+                previous.flatten().as_deref(),
+                Some("submitted") | Some("running") | Some("cancelling")
+            );
+            if was_active
+                && status == "succeeded"
+                && run.kind == "ssh_direct"
+                && run.cleaned_at.is_none()
+                && !prompted.get()
+            {
+                prompted.set(true);
+                review_modal.set(Some(run.id.clone()));
+            }
+            Some(status)
+        });
+    }
     view! {
         {move || {
             if dismissed_runs.with(|ids| ids.contains(&run_id)) {
@@ -1224,6 +1251,19 @@ pub(crate) fn RunMonitorCard(
                                     }>{compose_icon("close")}</button>
                             }
                         })}
+                        {(dismissible && run.kind == "ssh_direct" && run.cleaned_at.is_none())
+                            .then(|| review_modal.map(|review_modal| {
+                                let review_id = run.id.clone();
+                                let tip = t(locale.get(), "run_review.open");
+                                view! {
+                                    <button type="button" class="icon-btn run-monitor-review"
+                                        data-testid="run-monitor-review"
+                                        title=tip.clone()
+                                        aria-label=tip
+                                        on:click=move |_| review_modal.set(Some(review_id.clone()))
+                                    >{compose_icon("folder")}</button>
+                                }
+                            }))}
                         {dismissible.then(|| {
                             let tip = t(locale.get(), "runs.dismiss");
                             let dismiss_id = run.id.clone();

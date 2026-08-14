@@ -41,6 +41,12 @@ pub(super) enum DeleteConfirm {
         name: String,
         label: String,
     },
+    /// Dropping a server: `detail` reports what would be abandoned there.
+    Host {
+        alias: String,
+        label: String,
+        detail: String,
+    },
 }
 
 impl DeleteConfirm {
@@ -49,7 +55,8 @@ impl DeleteConfirm {
             DeleteConfirm::Model { label, .. }
             | DeleteConfirm::Acp { label, .. }
             | DeleteConfirm::Plugin { label, .. }
-            | DeleteConfirm::Skill { label, .. } => label,
+            | DeleteConfirm::Skill { label, .. }
+            | DeleteConfirm::Host { label, .. } => label,
         }
     }
 }
@@ -1645,7 +1652,40 @@ pub(super) fn SettingsView(
                                                         <button type="button" class="settings-list-remove"
                                                             title=move || t(locale.get(), "environments.remove")
                                                             aria-label=move || t(locale.get(), "environments.remove")
-                                                            on:click=move |_| remove_ssh_host.call(alias.clone())>
+                                                            on:click=move |_| {
+                                                                let alias = alias.clone();
+                                                                spawn_local(async move {
+                                                                    let args = to_value(&serde_json::json!({
+                                                                        "contextId": format!("ssh:{alias}"),
+                                                                    }))
+                                                                    .unwrap();
+                                                                    let report = invoke_checked("context_disposal_report", args)
+                                                                        .await
+                                                                        .ok()
+                                                                        .and_then(|value| serde_wasm_bindgen::from_value::<ContextDisposalReport>(value).ok());
+                                                                    match report {
+                                                                        Some(report)
+                                                                            if report.external_references > 0
+                                                                                || report.staged_files > 0 =>
+                                                                        {
+                                                                            let detail = tf(
+                                                                                locale.get_untracked(),
+                                                                                "hosts.disposal_detail",
+                                                                                &[
+                                                                                    ("refs", &report.external_references.to_string()),
+                                                                                    ("files", &report.staged_files.to_string()),
+                                                                                ],
+                                                                            );
+                                                                            delete_confirm.set(Some(DeleteConfirm::Host {
+                                                                                alias: alias.clone(),
+                                                                                label: alias.clone(),
+                                                                                detail,
+                                                                            }));
+                                                                        }
+                                                                        _ => remove_ssh_host.call(alias.clone()),
+                                                                    }
+                                                                });
+                                                            }>
                                                             {compose_icon("close")}
                                                         </button>
                                                     })}
@@ -5536,10 +5576,17 @@ pub(super) fn SettingsView(
                 let label = target.label().to_string();
                 let is_plugin = matches!(target, DeleteConfirm::Plugin { .. });
                 let is_skill = matches!(target, DeleteConfirm::Skill { .. });
+                let is_host = matches!(target, DeleteConfirm::Host { .. });
+                let host_detail = match &target {
+                    DeleteConfirm::Host { detail, .. } => Some(detail.clone()),
+                    _ => None,
+                };
                 let (message_key, placeholder, action_key, test_id) = if is_plugin {
                     ("plugins.remove_confirm", "plugin", "plugins.remove", "plugin-remove-confirm")
                 } else if is_skill {
                     ("skills.remove_confirm", "skill", "skills.remove", "skill-remove-confirm")
+                } else if is_host {
+                    ("hosts.remove_confirm", "host", "environments.remove", "host-remove-confirm")
                 } else {
                     ("models.remove_confirm", "model", "models.remove", "model-delete-confirm")
                 };
@@ -5552,6 +5599,9 @@ pub(super) fn SettingsView(
                                 message_key,
                                 &[(placeholder, &label)],
                             )}</div>
+                            {host_detail.clone().map(|detail| view! {
+                                <div class="hint host-disposal-detail" data-testid="host-disposal-detail">{detail}</div>
+                            })}
                             <div class="row">
                                 <button on:click=move |_| delete_confirm.set(None)>
                                     {move || t(locale.get(), "settings.cancel")}
@@ -5590,6 +5640,9 @@ pub(super) fn SettingsView(
                                             }
                                             DeleteConfirm::Plugin { id, version, .. } => {
                                                 remove_plugin.call((id, version));
+                                            }
+                                            DeleteConfirm::Host { alias, .. } => {
+                                                remove_ssh_host.call(alias);
                                             }
                                             DeleteConfirm::Skill { name, .. } => {
                                                 let arg = to_value(&serde_json::json!({ "name": name })).unwrap();

@@ -3473,6 +3473,78 @@ pub(crate) struct ExecutionContext {
     pub(crate) last_probe_error: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct WorkspaceListing {
+    pub(crate) entries: Vec<WorkspaceEntry>,
+    pub(crate) truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct WorkspaceEntry {
+    pub(crate) path: String,
+    pub(crate) kind: String,
+    pub(crate) size_bytes: u64,
+    pub(crate) file_count: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct RemoteFileView {
+    pub(crate) id: String,
+    pub(crate) remote_path: String,
+    pub(crate) source: String,
+    pub(crate) run_id: Option<String>,
+    pub(crate) run_status: Option<String>,
+    pub(crate) size_bytes: Option<i64>,
+    pub(crate) created_at: i64,
+    pub(crate) state: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct ContextDisposalReport {
+    pub(crate) context_id: String,
+    pub(crate) external_references: i64,
+    pub(crate) staged_files: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct ContextStoragePrefsView {
+    pub(crate) context_id: String,
+    pub(crate) remote_data_root: String,
+    pub(crate) remote_workdir_root: String,
+    pub(crate) local_results_dir: String,
+    pub(crate) confirmed: bool,
+}
+
+/// Editable state for the storage-locations dialog (first server enable in a
+/// project, or the Environment rail's storage action).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StoragePrefsForm {
+    pub(crate) context_id: String,
+    pub(crate) context_label: String,
+    pub(crate) remote_data_root: String,
+    pub(crate) remote_workdir_root: String,
+    pub(crate) local_results_dir: String,
+    /// True when this dialog was auto-opened on first enable.
+    pub(crate) first_use: bool,
+}
+
+impl StoragePrefsForm {
+    pub(crate) fn from_view(
+        view: ContextStoragePrefsView,
+        context_label: String,
+        first_use: bool,
+    ) -> Self {
+        Self {
+            context_id: view.context_id,
+            context_label,
+            remote_data_root: view.remote_data_root,
+            remote_workdir_root: view.remote_workdir_root,
+            local_results_dir: view.local_results_dir,
+            first_use,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct RuntimeInterpreterForm {
     pub(crate) context_id: String,
@@ -3672,6 +3744,12 @@ pub(crate) struct RunRecord {
     #[serde(default)]
     pub(crate) progress_json: String,
     pub(crate) env_snapshot_json: String,
+    #[serde(default)]
+    pub(crate) harvested_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) cleaned_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) cleanup_error: Option<String>,
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
@@ -3695,6 +3773,12 @@ pub(crate) struct RunSummary {
     #[serde(default)]
     pub(crate) progress_json: String,
     #[serde(default)]
+    pub(crate) harvested_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) cleaned_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) cleanup_error: Option<String>,
+    #[serde(default)]
     pub(crate) output_fingerprint: String,
 }
 
@@ -3716,6 +3800,9 @@ impl From<&RunRecord> for RunSummary {
             last_polled_at: run.last_polled_at,
             last_poll_error: run.last_poll_error.clone(),
             progress_json: run.progress_json.clone(),
+            harvested_at: run.harvested_at,
+            cleaned_at: run.cleaned_at,
+            cleanup_error: run.cleanup_error.clone(),
             output_fingerprint: String::new(),
         }
     }

@@ -175,7 +175,7 @@ impl Store {
             "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
                     input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
                     stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
-                    last_polled_at,last_poll_error,progress_json,env_snapshot_json \
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at,cleaned_at,cleanup_error \
              FROM runs WHERE id=?",
         )
         .bind(id)
@@ -239,7 +239,7 @@ impl Store {
             "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
                     input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
                     stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
-                    last_polled_at,last_poll_error,progress_json,env_snapshot_json \
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at,cleaned_at,cleanup_error \
              FROM runs WHERE project_id=? AND exploration_id IS NULL \
              ORDER BY created_at DESC, id DESC",
         )
@@ -262,7 +262,7 @@ impl Store {
                     run.command,run.script_path,run.input_refs_json,run.output_specs_json,run.created_at,\
                     run.started_at,run.ended_at,run.exit_code,run.stdout_tail,run.stderr_tail,\
                     run.remote_workdir,run.remote_handle_json,run.timeout_secs,run.last_polled_at,\
-                    run.last_poll_error,run.progress_json,run.env_snapshot_json FROM runs run \
+                    run.last_poll_error,run.progress_json,run.env_snapshot_json,run.harvested_at,run.cleaned_at,run.cleanup_error FROM runs run \
              WHERE run.project_id=? AND (run.exploration_id=? OR (run.exploration_id IS NULL \
                AND EXISTS(SELECT 1 FROM explorations exploration \
                  JOIN exploration_baseline_entities baseline \
@@ -282,7 +282,7 @@ impl Store {
         let columns = "run.id,run.frame_id,run.context_id,run.title,run.kind,run.status,\
             run.created_at,run.started_at,run.ended_at,run.exit_code,run.remote_workdir,\
             run.timeout_secs,run.last_polled_at,substr(run.last_poll_error,1,2048) AS last_poll_error,\
-            run.progress_json,printf('%d:%s:%s|%d:%s:%s',\
+            run.progress_json,run.harvested_at,run.cleaned_at,run.cleanup_error,printf('%d:%s:%s|%d:%s:%s',\
               length(CAST(coalesce(run.stdout_tail,'') AS BLOB)),substr(coalesce(run.stdout_tail,''),1,64),\
               substr(coalesce(run.stdout_tail,''),-128),\
               length(CAST(coalesce(run.stderr_tail,'') AS BLOB)),\
@@ -332,7 +332,7 @@ impl Store {
             "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
                     input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
                     stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
-                    last_polled_at,last_poll_error,progress_json,env_snapshot_json \
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at,cleaned_at,cleanup_error \
              FROM runs WHERE exploration_id=? ORDER BY created_at,id",
         )
         .bind(exploration_id)
@@ -346,7 +346,7 @@ impl Store {
             "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
                     input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
                     stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
-                    last_polled_at,last_poll_error,progress_json,env_snapshot_json \
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at,cleaned_at,cleanup_error \
              FROM runs WHERE status IN ('submitted','running','cancelling') \
              ORDER BY created_at, id",
         )
@@ -621,6 +621,130 @@ impl Store {
     pub async fn mark_run_lost_owned(&self, id: &str, owner: &str) -> Result<bool> {
         self.finish_active_run_owned(id, owner, RunStatus::Lost, None)
             .await
+    }
+
+    /// Record that this Run's declared outputs were registered (and, for
+    /// remote Runs, downloaded and checksum-verified). Idempotent.
+    pub async fn mark_run_harvested(&self, id: &str) -> Result<bool> {
+        let now = chrono::Utc::now().timestamp();
+        let updated =
+            sqlx::query("UPDATE runs SET harvested_at=? WHERE id=? AND harvested_at IS NULL")
+                .bind(now)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Per-project retention windows (days) for automatic run-workspace
+    /// cleanup: succeeded+harvested runs, and failed/cancelled/timed-out runs.
+    /// NULL disables the respective sweep.
+    pub async fn project_run_retention(
+        &self,
+        project_id: &str,
+    ) -> Result<(Option<i64>, Option<i64>)> {
+        let row: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT run_retention_days, failed_run_retention_days FROM projects WHERE id=?",
+        )
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.unwrap_or((None, None)))
+    }
+
+    pub async fn set_project_run_retention(
+        &self,
+        project_id: &str,
+        run_retention_days: Option<i64>,
+        failed_run_retention_days: Option<i64>,
+    ) -> Result<()> {
+        for value in [run_retention_days, failed_run_retention_days]
+            .into_iter()
+            .flatten()
+        {
+            if !(1..=3650).contains(&value) {
+                anyhow::bail!("Retention windows must be between 1 and 3650 days");
+            }
+        }
+        let updated = sqlx::query(
+            "UPDATE projects SET run_retention_days=?, failed_run_retention_days=?, updated_at=? \
+             WHERE id=?",
+        )
+        .bind(run_retention_days)
+        .bind(failed_run_retention_days)
+        .bind(chrono::Utc::now().timestamp())
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Project not found");
+        }
+        Ok(())
+    }
+
+    /// Runs whose server workspaces are due for automatic retention cleanup:
+    /// succeeded runs only after their outputs were harvested (or none were
+    /// declared), failed/cancelled/timed-out/lost runs on their own window.
+    pub async fn list_runs_due_for_retention(&self, now: i64) -> Result<Vec<RunRecord>> {
+        let rows = sqlx::query(
+            "SELECT r.id,r.project_id,r.frame_id,r.context_id,r.title,r.kind,r.status,r.command,\
+                    r.script_path,r.input_refs_json,r.output_specs_json,r.created_at,r.started_at,\
+                    r.ended_at,r.exit_code,r.stdout_tail,r.stderr_tail,r.remote_workdir,\
+                    r.remote_handle_json,r.timeout_secs,r.last_polled_at,r.last_poll_error,\
+                    r.progress_json,r.env_snapshot_json,r.harvested_at,r.cleaned_at,r.cleanup_error \
+             FROM runs r JOIN projects p ON p.id=r.project_id \
+             WHERE r.cleaned_at IS NULL AND r.remote_handle_json IS NOT NULL \
+             AND r.ended_at IS NOT NULL \
+             AND r.kind IN ('ssh_direct','local_detached') \
+             AND ((r.status='succeeded' AND p.run_retention_days IS NOT NULL \
+                   AND (r.harvested_at IS NOT NULL OR r.output_specs_json='[]') \
+                   AND r.ended_at < ? - p.run_retention_days*86400) \
+               OR (r.status IN ('failed','cancelled','timed_out','lost') \
+                   AND p.failed_run_retention_days IS NOT NULL \
+                   AND r.ended_at < ? - p.failed_run_retention_days*86400)) \
+             ORDER BY r.ended_at, r.id",
+        )
+        .bind(now)
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(run_from_row).collect()
+    }
+
+    /// Record that this Run's server-side workspace was deleted. Idempotent;
+    /// clears any earlier cleanup error.
+    pub async fn mark_run_cleaned(&self, id: &str) -> Result<bool> {
+        let now = chrono::Utc::now().timestamp();
+        let updated = sqlx::query(
+            "UPDATE runs SET cleaned_at=?, cleanup_error=NULL WHERE id=? AND cleaned_at IS NULL",
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Surface a failed workspace cleanup so the user can retry.
+    pub async fn record_run_cleanup_error(&self, id: &str, error: &str) -> Result<bool> {
+        let updated =
+            sqlx::query("UPDATE runs SET cleanup_error=? WHERE id=? AND cleaned_at IS NULL")
+                .bind(error)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Surface a harvest failure on an already-terminal Run so the UI and
+    /// retry tooling can see why outputs were not registered.
+    pub async fn record_run_harvest_error(&self, id: &str, error: &str) -> Result<bool> {
+        let updated = sqlx::query("UPDATE runs SET last_poll_error=? WHERE id=?")
+            .bind(error)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(updated.rows_affected() == 1)
     }
 
     pub async fn save_run_artifact_link(

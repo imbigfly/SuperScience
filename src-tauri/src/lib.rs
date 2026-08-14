@@ -93,6 +93,7 @@ mod specialists;
 mod ssh_guard;
 mod ssh_hosts;
 mod ssh_master;
+mod storage_prefs;
 mod terminal_sessions;
 mod turn_memory;
 mod turn_undo;
@@ -5544,6 +5545,29 @@ async fn send_message_inner(
             state.run_manager.clone(),
             frame_scope.clone(),
         )));
+        agent.add_tool(Box::new(run_context::HarvestRunTool::new_in_scope(
+            state.store.clone(),
+            state.run_manager.clone(),
+            frame_scope.clone(),
+        )));
+        agent.add_tool(Box::new(
+            run_context::CleanupRunWorkspaceTool::new_in_scope(
+                state.store.clone(),
+                state.run_manager.clone(),
+                frame_scope.clone(),
+            ),
+        ));
+        agent.add_tool(Box::new(run_context::ListRemoteFilesTool::new(
+            state.store.clone(),
+            ap.id.clone(),
+            Some(frame_id.clone()),
+        )));
+        agent.add_tool(Box::new(run_context::RemoveRemoteFilesTool::new(
+            state.store.clone(),
+            state.run_manager.clone(),
+            ap.id.clone(),
+            Some(frame_id.clone()),
+        )));
         agent.add_tool(Box::new(method_search::PrepareMethodSearchTool::new(
             state.store.clone(),
             ap.id.clone(),
@@ -7900,6 +7924,18 @@ pub fn run() {
             runtime_commands::list_runs,
             runtime_commands::get_run_detail,
             runtime_commands::cancel_run,
+            runtime_commands::harvest_run,
+            runtime_commands::cleanup_run_workspace,
+            runtime_commands::list_run_workspace_files,
+            runtime_commands::download_run_files,
+            runtime_commands::delete_run_files,
+            runtime_commands::list_remote_files,
+            runtime_commands::remove_remote_files,
+            runtime_commands::context_disposal_report,
+            project_commands::get_project_run_retention,
+            project_commands::set_project_run_retention,
+            storage_prefs::get_context_storage_prefs,
+            storage_prefs::set_context_storage_prefs,
             project_commands::get_research_graph,
             session_commands::delete_session,
             session_commands::rename_session,

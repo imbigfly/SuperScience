@@ -688,6 +688,7 @@ async fn submit_run_harvests_output_specs_on_success() {
                 logical_key: None,
                 max_file_mb: Some(1),
                 max_total_mb: Some(1),
+                bundle: false,
             }]),
         },
         &runner,
@@ -704,6 +705,8 @@ async fn submit_run_harvests_output_specs_on_success() {
             && edge.target_id == format!("artifact:{}", artifacts[0].0)
             && edge.relation == "produced"
     }));
+    let run = store.get_run(&res.run_id).await.unwrap().unwrap();
+    assert!(run.harvested_at.is_some());
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -2248,5 +2251,1531 @@ async fn local_detached_real_shell_lifecycle() {
         let path = workdir.replacen("~", &home, 1);
         let _ = std::fs::remove_dir_all(path);
     }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// --- SSH harvest v2 -------------------------------------------------------
+
+fn sha256_hex_of(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let mut digest = sha2::Sha256::new();
+    digest.update(bytes);
+    hex::encode(digest.finalize())
+}
+
+fn harvest_test_context() -> wisp_store::ExecutionContext {
+    let mut context = wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
+    context.config_json = serde_json::json!({ "alias": "gpu" }).to_string();
+    context.last_probe_status = Some("ok".into());
+    context
+}
+
+fn harvest_test_remote(
+    run_id: &str,
+    tmp: &Path,
+    specs: Vec<crate::harvest::OutputSpec>,
+) -> RemoteRun {
+    let connection =
+        crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context()).unwrap();
+    RemoteRun {
+        run_id: run_id.into(),
+        project_id: "p".into(),
+        frame_id: Some("f".into()),
+        command: "make outputs".into(),
+        timeout: Duration::from_secs(60),
+        input_refs: Vec::new(),
+        output_specs: specs,
+        harvest_root: Some(tmp.to_path_buf()),
+        handle: RemoteRunHandle::SshDirect {
+            connection,
+            workdir: format!(".wisp-science/runs/{run_id}"),
+            token: "harvest-token".into(),
+            inputs_staged: true,
+            pgid: Some(4242),
+            start_time: Some(99),
+        },
+    }
+}
+
+async fn seed_harvest_run(tmp: &Path, run_id: &str) -> wisp_store::Store {
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+    run.frame_id = Some("f".into());
+    run.status = wisp_store::RunStatus::Succeeded;
+    store.create_run(&run).await.unwrap();
+    store
+}
+
+/// Answers the collect RPC with a fixed manifest and materializes the scp
+/// download by writing the prepared files under the destination directory.
+struct HarvestFakeRunner {
+    manifest: String,
+    files: Vec<(String, Vec<u8>)>,
+    commands: StdMutex<Vec<RunCommand>>,
+}
+
+#[async_trait::async_trait]
+impl RunCommandRunner for HarvestFakeRunner {
+    async fn run(
+        &self,
+        command: RunCommand,
+        _timeout: Duration,
+    ) -> Result<RunCommandOutput, String> {
+        let program = command.program.clone();
+        let destination = command.args.last().cloned().unwrap_or_default();
+        self.commands.lock().unwrap().push(command);
+        match program.as_str() {
+            "ssh" => Ok(RunCommandOutput {
+                exit_code: 0,
+                stdout: self.manifest.clone(),
+                stderr: String::new(),
+            }),
+            "scp" => {
+                let root = PathBuf::from(destination).join("harvest");
+                for (relative, bytes) in &self.files {
+                    let path = root.join(relative);
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(path, bytes).unwrap();
+                }
+                Ok(RunCommandOutput {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
+            }
+            other => Err(format!("unexpected program {other}")),
+        }
+    }
+}
+
+fn harvest_specs() -> Vec<crate::harvest::OutputSpec> {
+    vec![
+        crate::harvest::OutputSpec {
+            glob: "results/*.tsv".into(),
+            kind: "table".into(),
+            residency: crate::harvest::OutputResidency::Auto,
+            logical_key: None,
+            max_file_mb: Some(1),
+            max_total_mb: None,
+            bundle: false,
+        },
+        crate::harvest::OutputSpec {
+            glob: "parts/*".into(),
+            kind: "archive".into(),
+            residency: crate::harvest::OutputResidency::Auto,
+            logical_key: None,
+            max_file_mb: None,
+            max_total_mb: None,
+            bundle: true,
+        },
+        crate::harvest::OutputSpec {
+            glob: "big/*.bam".into(),
+            kind: "data".into(),
+            residency: crate::harvest::OutputResidency::Remote,
+            logical_key: None,
+            max_file_mb: None,
+            max_total_mb: None,
+            bundle: false,
+        },
+    ]
+}
+
+#[tokio::test]
+async fn ssh_harvest_downloads_verifies_and_registers_selected_outputs() {
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_harvest_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_harvest_run(&tmp, "run-h").await;
+    let table = b"a\tb\n1\t2\n".to_vec();
+    let archive = b"fake-targz-bytes".to_vec();
+    let remote_path = "/home/alice/.wisp-science/artifacts/run-h/big/x.bam";
+    let manifest = format!(
+        "__WISP_HARVEST__:file:0:{}:{}:results/out.tsv\n\
+         __WISP_HARVEST__:bundle:1:{}:{}:132481:987654:bundle_1.tar.gz\n\
+         __WISP_HARVEST__:remote:2:12345:{}:{}\n\
+         __WISP_HARVEST_DONE__\n",
+        table.len(),
+        sha256_hex_of(&table),
+        archive.len(),
+        sha256_hex_of(&archive),
+        "ab".repeat(32),
+        remote_path,
+    );
+    let runner = HarvestFakeRunner {
+        manifest,
+        files: vec![
+            ("files/results/out.tsv".into(), table.clone()),
+            ("bundles/bundle_1.tar.gz".into(), archive.clone()),
+        ],
+        commands: StdMutex::new(Vec::new()),
+    };
+    let remote = harvest_test_remote("run-h", &tmp, harvest_specs());
+
+    let harvested = harvest_remote::harvest_ssh_run(&store, &runner, "test-owner", &remote, false)
+        .await
+        .unwrap();
+
+    assert_eq!(harvested.len(), 3);
+    let landing = tmp.join("remote/gpu/run-h");
+    assert_eq!(
+        std::fs::read(landing.join("results/out.tsv")).unwrap(),
+        table
+    );
+    assert_eq!(
+        std::fs::read(landing.join("bundles/bundle_1.tar.gz")).unwrap(),
+        archive
+    );
+    let run = store.get_run("run-h").await.unwrap().unwrap();
+    assert!(run.harvested_at.is_some());
+    let outputs = store.list_run_outputs("run-h").await.unwrap();
+    let mut keys: Vec<_> = outputs
+        .iter()
+        .map(|output| output.logical_output_key.clone())
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            "bundle:parts/*".to_string(),
+            "path:big/x.bam".to_string(),
+            "path:results/out.tsv".to_string(),
+        ]
+    );
+    let remote_output = outputs
+        .iter()
+        .find(|output| output.logical_output_key == "path:big/x.bam")
+        .unwrap();
+    let version = store
+        .get_artifact_version(&remote_output.artifact_version_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(version.storage_path, format!("ssh://gpu{remote_path}"));
+    assert_eq!(version.checksum.as_deref(), Some("ab".repeat(32).as_str()));
+    assert_eq!(
+        version.materialization,
+        wisp_store::ArtifactMaterialization::External
+    );
+    let transfers: Vec<_> = store
+        .list_runs_by_project("p")
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|run| run.kind == "file_transfer")
+        .collect();
+    assert_eq!(transfers.len(), 1);
+    assert_eq!(transfers[0].status, wisp_store::RunStatus::Succeeded);
+    assert_eq!(transfers[0].command.as_deref(), Some("harvest run-h"));
+    // The collect script only ran once and validated the workdir token.
+    {
+        let commands = runner.commands.lock().unwrap();
+        let collect = commands.iter().find(|c| c.program == "ssh").unwrap();
+        let payload = collect.stdin.as_deref().unwrap();
+        assert!(payload.contains("harvest-token"));
+        assert!(payload.contains("tar -czf"));
+        // Default remote data root derives from the project name ("proj").
+        assert!(payload.contains("persist=\"$HOME/wisp/proj/data/artifacts/run-h\""));
+    }
+
+    // A retried harvest re-registers nothing: same versions, same lineage rows.
+    let again = harvest_remote::harvest_ssh_run(&store, &runner, "test-owner", &remote, false)
+        .await
+        .unwrap();
+    assert_eq!(again.len(), 3);
+    assert_eq!(store.list_run_outputs("run-h").await.unwrap().len(), 3);
+    assert_eq!(
+        again
+            .iter()
+            .map(|artifact| artifact.artifact_version_id.clone())
+            .collect::<std::collections::BTreeSet<_>>(),
+        harvested
+            .iter()
+            .map(|artifact| artifact.artifact_version_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn ssh_harvest_checksum_mismatch_registers_nothing() {
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_harvest_bad_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_harvest_run(&tmp, "run-bad").await;
+    let table = b"a\tb\n1\t2\n".to_vec();
+    let manifest = format!(
+        "__WISP_HARVEST__:file:0:{}:{}:results/out.tsv\n__WISP_HARVEST_DONE__\n",
+        table.len(),
+        "cd".repeat(32),
+    );
+    let runner = HarvestFakeRunner {
+        manifest,
+        files: vec![("files/results/out.tsv".into(), table)],
+        commands: StdMutex::new(Vec::new()),
+    };
+    let remote = harvest_test_remote(
+        "run-bad",
+        &tmp,
+        vec![crate::harvest::OutputSpec {
+            glob: "results/*.tsv".into(),
+            kind: "table".into(),
+            residency: crate::harvest::OutputResidency::Auto,
+            logical_key: None,
+            max_file_mb: Some(1),
+            max_total_mb: None,
+            bundle: false,
+        }],
+    );
+
+    let error = harvest_remote::harvest_ssh_run(&store, &runner, "test-owner", &remote, false)
+        .await
+        .unwrap_err();
+
+    assert!(error.contains("checksum mismatch"), "{error}");
+    let run = store.get_run("run-bad").await.unwrap().unwrap();
+    assert!(run.harvested_at.is_none());
+    assert!(store.list_run_outputs("run-bad").await.unwrap().is_empty());
+    assert!(!tmp.join("remote/gpu/run-bad/results/out.tsv").exists());
+    let transfers: Vec<_> = store
+        .list_runs_by_project("p")
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|run| run.kind == "file_transfer")
+        .collect();
+    assert_eq!(transfers.len(), 1);
+    assert_eq!(transfers[0].status, wisp_store::RunStatus::Failed);
+    // The partial download directory does not leak.
+    let landing = tmp.join("remote/gpu/run-bad");
+    if landing.exists() {
+        assert!(std::fs::read_dir(&landing).unwrap().next().is_none());
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn ssh_harvest_collect_error_reports_bundle_guidance() {
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_harvest_cap_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_harvest_run(&tmp, "run-cap").await;
+    let runner = HarvestFakeRunner {
+        manifest: "__WISP_HARVEST_ERROR__:output glob matched more than 500 files; set bundle:true or narrow the glob to final products\n".into(),
+        files: Vec::new(),
+        commands: StdMutex::new(Vec::new()),
+    };
+    let remote = harvest_test_remote(
+        "run-cap",
+        &tmp,
+        vec![crate::harvest::OutputSpec {
+            glob: "read_partitions/*".into(),
+            kind: "data".into(),
+            residency: crate::harvest::OutputResidency::Auto,
+            logical_key: None,
+            max_file_mb: None,
+            max_total_mb: None,
+            bundle: false,
+        }],
+    );
+
+    let error = harvest_remote::harvest_ssh_run(&store, &runner, "test-owner", &remote, false)
+        .await
+        .unwrap_err();
+
+    assert!(error.contains("bundle:true"), "{error}");
+    assert!(store
+        .get_run("run-cap")
+        .await
+        .unwrap()
+        .unwrap()
+        .harvested_at
+        .is_none());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn ssh_submit_rejects_shell_unsafe_output_globs() {
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_glob_guard_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    store
+        .set_session_execution_context_enabled("f", "ssh:gpu", true)
+        .await
+        .unwrap();
+    let runner = FakeRunRunner {
+        output: Ok(RunCommandOutput {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        }),
+    };
+
+    let error = submit_run_with_runner(
+        &store,
+        "p",
+        Some("f"),
+        SubmitRunRequest {
+            context_id: "ssh:gpu".into(),
+            command: "make outputs".into(),
+            title: None,
+            timeout_secs: Some(60),
+            input_paths: None,
+            output_specs: Some(vec![crate::harvest::OutputSpec {
+                glob: "results/$(rm -rf ~)".into(),
+                kind: "table".into(),
+                residency: crate::harvest::OutputResidency::Auto,
+                logical_key: None,
+                max_file_mb: None,
+                max_total_mb: None,
+                bundle: false,
+            }]),
+        },
+        &runner,
+        Some(tmp.clone()),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.contains("unsupported character"), "{error}");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// --- storage preferences ---------------------------------------------------
+
+#[tokio::test]
+async fn ssh_run_workdir_honors_stored_workdir_root_pref() {
+    let tmp = std::env::temp_dir().join(format!("wisp_workdir_pref_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    store
+        .set_session_execution_context_enabled("f", "ssh:gpu", true)
+        .await
+        .unwrap();
+    store
+        .upsert_context_storage_prefs(&wisp_store::ContextStoragePrefs {
+            project_id: "p".into(),
+            context_id: "ssh:gpu".into(),
+            remote_data_root: "~/wisp/proj/data".into(),
+            remote_workdir_root: "scratch/wisp-runs".into(),
+            local_results_dir: "remote/gpu".into(),
+            created_at: 0,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+    let runner = FakeRunRunner {
+        output: Ok(RunCommandOutput {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        }),
+    };
+
+    let result = submit_run_with_runner(
+        &store,
+        "p",
+        Some("f"),
+        SubmitRunRequest {
+            context_id: "ssh:gpu".into(),
+            command: "echo remote".into(),
+            title: None,
+            timeout_secs: Some(60),
+            input_paths: None,
+            output_specs: None,
+        },
+        &runner,
+        Some(tmp.clone()),
+    )
+    .await
+    .unwrap();
+
+    let run = store.get_run(&result.run_id).await.unwrap().unwrap();
+    assert_eq!(
+        run.remote_workdir.as_deref(),
+        Some(format!("~/scratch/wisp-runs/{}", result.run_id).as_str())
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn ssh_harvest_uses_stored_local_results_dir_and_data_root() {
+    let tmp = std::env::temp_dir().join(format!("wisp_harvest_prefs_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_harvest_run(&tmp, "run-p").await;
+    store
+        .upsert_context_storage_prefs(&wisp_store::ContextStoragePrefs {
+            project_id: "p".into(),
+            context_id: "ssh:gpu".into(),
+            remote_data_root: "/scratch/proj".into(),
+            remote_workdir_root: ".wisp-science/runs".into(),
+            local_results_dir: "results/from-gpu".into(),
+            created_at: 0,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+    let table = b"a\tb\n1\t2\n".to_vec();
+    let manifest = format!(
+        "__WISP_HARVEST__:file:0:{}:{}:results/out.tsv\n__WISP_HARVEST_DONE__\n",
+        table.len(),
+        sha256_hex_of(&table),
+    );
+    let runner = HarvestFakeRunner {
+        manifest,
+        files: vec![("files/results/out.tsv".into(), table.clone())],
+        commands: StdMutex::new(Vec::new()),
+    };
+    let remote = harvest_test_remote(
+        "run-p",
+        &tmp,
+        vec![crate::harvest::OutputSpec {
+            glob: "results/*.tsv".into(),
+            kind: "table".into(),
+            residency: crate::harvest::OutputResidency::Auto,
+            logical_key: None,
+            max_file_mb: Some(1),
+            max_total_mb: None,
+            bundle: false,
+        }],
+    );
+
+    harvest_remote::harvest_ssh_run(&store, &runner, "test-owner", &remote, false)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read(tmp.join("results/from-gpu/run-p/results/out.tsv")).unwrap(),
+        table
+    );
+    let commands = runner.commands.lock().unwrap();
+    let collect = commands.iter().find(|c| c.program == "ssh").unwrap();
+    assert!(collect
+        .stdin
+        .as_deref()
+        .unwrap()
+        .contains("persist=\"/scratch/proj/artifacts/run-p\""));
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// --- run workspace cleanup ---------------------------------------------------
+
+async fn seed_cleanup_run(
+    store: &wisp_store::Store,
+    run_id: &str,
+    status: wisp_store::RunStatus,
+    specs_json: &str,
+    harvested: bool,
+) {
+    let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+    run.frame_id = Some("f".into());
+    run.status = status;
+    run.command = Some("make outputs".into());
+    run.output_specs_json = specs_json.into();
+    let connection =
+        crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context()).unwrap();
+    let handle = RemoteRunHandle::SshDirect {
+        connection,
+        workdir: format!(".wisp-science/runs/{run_id}"),
+        token: "cleanup-token".into(),
+        inputs_staged: true,
+        pgid: Some(4242),
+        start_time: Some(99),
+    };
+    run.remote_workdir = Some(handle.display_workdir());
+    run.remote_handle_json = Some(serde_json::to_string(&handle).unwrap());
+    store.create_run(&run).await.unwrap();
+    if harvested {
+        store.mark_run_harvested(run_id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn cleanup_requires_terminal_state_and_harvested_outputs() {
+    let tmp = std::env::temp_dir().join(format!("wisp_cleanup_guard_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    let specs = serde_json::json!([{
+        "glob": "results/*.tsv", "kind": "table", "residency": "auto"
+    }])
+    .to_string();
+    seed_cleanup_run(
+        &store,
+        "run-active",
+        wisp_store::RunStatus::Running,
+        "[]",
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-unharvested",
+        wisp_store::RunStatus::Succeeded,
+        &specs,
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-failed",
+        wisp_store::RunStatus::Failed,
+        &specs,
+        false,
+    )
+    .await;
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_CLEANUP__:done\n"),
+        ok_output("__WISP_CLEANUP__:done\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+
+    let error = manager
+        .cleanup_run_workspace(&store, "run-active", false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("still running"), "{error}");
+
+    let error = manager
+        .cleanup_run_workspace(&store, "run-unharvested", false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("harvest_run"), "{error}");
+    assert_eq!(runner.commands.lock().unwrap().len(), 0);
+
+    // Failed runs have nothing to harvest: cleanup proceeds without force.
+    let cleaned = manager
+        .cleanup_run_workspace(&store, "run-failed", false)
+        .await
+        .unwrap();
+    assert!(cleaned.cleaned_at.is_some());
+
+    // Explicit user confirmation (force) accepts the data loss.
+    let cleaned = manager
+        .cleanup_run_workspace(&store, "run-unharvested", true)
+        .await
+        .unwrap();
+    assert!(cleaned.cleaned_at.is_some());
+    {
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 2);
+        let payload = commands[0].stdin.as_deref().unwrap();
+        assert!(payload.contains("workdir=\"$HOME/.wisp-science/runs/run-failed\""));
+        assert!(payload.contains("rm -rf \"$workdir\""));
+        assert!(payload.contains("cleanup-token"));
+    }
+
+    // Idempotent: a second cleanup issues no further remote commands.
+    let again = manager
+        .cleanup_run_workspace(&store, "run-failed", false)
+        .await
+        .unwrap();
+    assert!(again.cleaned_at.is_some());
+    assert_eq!(runner.commands.lock().unwrap().len(), 2);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cleanup_rejects_foreign_workdirs_and_records_failures() {
+    let tmp = std::env::temp_dir().join(format!("wisp_cleanup_paths_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+
+    // Malicious/foreign workdir strings are refused before any command runs.
+    for (run_id, workdir) in [
+        ("run-root", "/"),
+        ("run-home", "runs/../run-home"),
+        ("run-other", ".wisp-science/runs/another-run"),
+    ] {
+        let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+        run.frame_id = Some("f".into());
+        run.status = wisp_store::RunStatus::Failed;
+        let connection =
+            crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context())
+                .unwrap();
+        run.remote_handle_json = Some(
+            serde_json::to_string(&RemoteRunHandle::SshDirect {
+                connection,
+                workdir: workdir.into(),
+                token: "tok".into(),
+                inputs_staged: true,
+                pgid: Some(1),
+                start_time: Some(1),
+            })
+            .unwrap(),
+        );
+        store.create_run(&run).await.unwrap();
+        let runner = Arc::new(ScriptedRunRunner::new(vec![]));
+        let manager = RunManager::with_runner(runner.clone());
+        let error = manager
+            .cleanup_run_workspace(&store, run_id, false)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("workdir"),
+            "workdir {workdir} should be rejected: {error}"
+        );
+        assert!(runner.commands.lock().unwrap().is_empty());
+        let run = store.get_run(run_id).await.unwrap().unwrap();
+        assert!(run.cleaned_at.is_none());
+        assert!(run
+            .cleanup_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("workdir"));
+    }
+
+    // A failed remote deletion records the error and stays retryable.
+    seed_cleanup_run(
+        &store,
+        "run-flaky",
+        wisp_store::RunStatus::Failed,
+        "[]",
+        false,
+    )
+    .await;
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        Err("ssh: connect to host gpu port 22: Connection refused".into()),
+        ok_output("__WISP_CLEANUP__:done\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+    let error = manager
+        .cleanup_run_workspace(&store, "run-flaky", false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("Connection refused"), "{error}");
+    let run = store.get_run("run-flaky").await.unwrap().unwrap();
+    assert!(run.cleaned_at.is_none());
+    assert!(run
+        .cleanup_error
+        .as_deref()
+        .unwrap()
+        .contains("Connection refused"));
+    let cleaned = manager
+        .cleanup_run_workspace(&store, "run-flaky", false)
+        .await
+        .unwrap();
+    assert!(cleaned.cleaned_at.is_some());
+    assert!(cleaned.cleanup_error.is_none());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cleanup_refuses_while_an_external_reference_points_into_the_workdir() {
+    let tmp = std::env::temp_dir().join(format!("wisp_cleanup_extref_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    seed_cleanup_run(
+        &store,
+        "run-ref",
+        wisp_store::RunStatus::Succeeded,
+        "[]",
+        true,
+    )
+    .await;
+    // Simulate a (buggy or legacy) External reference into the workdir itself.
+    let version_id = store
+        .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: wisp_store::logical_artifact_id("p", "path:stuck.bam"),
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "stuck.bam".into(),
+            content_type: "data".into(),
+            storage_path: "ssh://gpu/home/alice/.wisp-science/runs/run-ref/inputs/stuck.bam".into(),
+            logical_key: Some("path:stuck.bam".into()),
+            size_bytes: None,
+            checksum: None,
+            producing_run_id: Some("run-ref".into()),
+            env_snapshot_hash: None,
+            materialization: wisp_store::ArtifactMaterialization::External,
+            capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    store
+        .save_run_output(&wisp_store::RunOutput {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: "run-ref".into(),
+            artifact_version_id: version_id,
+            role: "data".into(),
+            logical_output_key: "path:stuck.bam".into(),
+            source_path: "stuck.bam".into(),
+            created_at: chrono::Utc::now().timestamp(),
+        })
+        .await
+        .unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![]));
+    let manager = RunManager::with_runner(runner.clone());
+    let error = manager
+        .cleanup_run_workspace(&store, "run-ref", false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("still points into"), "{error}");
+    assert!(runner.commands.lock().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// --- remote staging ledger ---------------------------------------------------
+
+#[tokio::test]
+async fn ssh_input_staging_ledgers_uploaded_files() {
+    let tmp = std::env::temp_dir().join(format!("wisp_staging_ledger_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("input.fasta"), b">seq\nACGT\n").unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    store
+        .set_session_execution_context_enabled("f", "ssh:gpu", true)
+        .await
+        .unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output(""),
+        Err("temporary SSH disconnect".into()),
+    ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let manager = RunManager::with_runner(runner.clone());
+
+    let submitted = manager
+        .submit(
+            store.clone(),
+            "p".into(),
+            Some("f".into()),
+            SubmitRunRequest {
+                context_id: "ssh:gpu".into(),
+                command: "wc -l input.fasta".into(),
+                title: None,
+                timeout_secs: Some(60),
+                input_paths: Some(vec!["input.fasta".into()]),
+                output_specs: None,
+            },
+            Some(tmp.clone()),
+        )
+        .await
+        .unwrap();
+    wait_for_terminal(&store, &submitted.run_id).await;
+
+    let entries = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].source, "run_input");
+    assert_eq!(
+        entries[0].run_id.as_deref(),
+        Some(submitted.run_id.as_str())
+    );
+    assert_eq!(
+        entries[0].remote_path,
+        format!(
+            "~/.wisp-science/runs/{}/inputs/input.fasta",
+            submitted.run_id
+        )
+    );
+    assert_eq!(entries[0].size_bytes, Some(10));
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn remote_files_classify_and_remove_only_ledgered_paths() {
+    let tmp = std::env::temp_dir().join(format!("wisp_remote_files_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    let context = harvest_test_context();
+    store.upsert_execution_context(&context).await.unwrap();
+    // Active: staged input of a succeeded-but-not-cleaned run.
+    seed_cleanup_run(
+        &store,
+        "run-live",
+        wisp_store::RunStatus::Succeeded,
+        "[]",
+        true,
+    )
+    .await;
+    let mut active = wisp_store::RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        Some("run-live".into()),
+        "~/.wisp-science/runs/run-live/inputs/input.fasta",
+        "run_input",
+    );
+    active.created_at = 100;
+    store.record_remote_staging(&active).await.unwrap();
+    // Replaced: an older upload to the same path as a newer one.
+    let mut old_upload = wisp_store::RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        None,
+        "~/wisp/proj/data/matrix.tsv",
+        "transfer",
+    );
+    old_upload.created_at = 200;
+    store.record_remote_staging(&old_upload).await.unwrap();
+    let mut new_upload = wisp_store::RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        None,
+        "~/wisp/proj/data/matrix.tsv",
+        "transfer",
+    );
+    new_upload.created_at = 300;
+    store.record_remote_staging(&new_upload).await.unwrap();
+
+    let files = remote_files::list_remote_files(&store, "p", "ssh:gpu")
+        .await
+        .unwrap();
+    let state_of = |id: &str| {
+        files
+            .iter()
+            .find(|file| file.id == id)
+            .map(|file| file.state)
+            .unwrap()
+    };
+    assert_eq!(state_of(&active.id), remote_files::RemoteFileState::Active);
+    assert_eq!(
+        state_of(&old_upload.id),
+        remote_files::RemoteFileState::Replaced
+    );
+    assert_eq!(
+        state_of(&new_upload.id),
+        remote_files::RemoteFileState::Orphan
+    );
+
+    // Active entries require force; unledgered ids are refused outright.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![]));
+    let manager = RunManager::with_runner(runner.clone());
+    let error = remote_files::remove_remote_files(
+        &store,
+        manager.runner_ref(),
+        "p",
+        &context,
+        &[active.id.clone()],
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("still referenced"), "{error}");
+    let error = remote_files::remove_remote_files(
+        &store,
+        manager.runner_ref(),
+        "p",
+        &context,
+        &["not-ledgered".into()],
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("not ledgered"), "{error}");
+    assert!(runner.commands.lock().unwrap().is_empty());
+
+    // Orphan and replaced entries delete; missing remote files still count.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(&format!(
+        "__WISP_RM__:{}\n__WISP_RM__:{}\n",
+        old_upload.id, new_upload.id
+    ))]));
+    let manager = RunManager::with_runner(runner.clone());
+    let removed = remote_files::remove_remote_files(
+        &store,
+        manager.runner_ref(),
+        "p",
+        &context,
+        &[old_upload.id.clone(), new_upload.id.clone()],
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, 2);
+    {
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 1);
+        let payload = commands[0].stdin.as_deref().unwrap();
+        assert_eq!(payload.matches("rm -rf \"$path\"").count(), 2);
+        assert!(payload.contains("'wisp/proj/data/matrix.tsv'"));
+    }
+    let remaining = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, active.id);
+
+    // Force removes the active entry with explicit user confirmation.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(&format!(
+        "__WISP_RM__:{}\n",
+        active.id
+    ))]));
+    let manager = RunManager::with_runner(runner.clone());
+    let removed = remote_files::remove_remote_files(
+        &store,
+        manager.runner_ref(),
+        "p",
+        &context,
+        &[active.id.clone()],
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, 1);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn workspace_cleanup_marks_staged_inputs_removed() {
+    let tmp = std::env::temp_dir().join(format!("wisp_cleanup_ledger_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    seed_cleanup_run(
+        &store,
+        "run-led",
+        wisp_store::RunStatus::Failed,
+        "[]",
+        false,
+    )
+    .await;
+    store
+        .record_remote_staging(&wisp_store::RemoteStagingEntry::new(
+            "p",
+            "ssh:gpu",
+            Some("run-led".into()),
+            "~/.wisp-science/runs/run-led/inputs/input.fasta",
+            "run_input",
+        ))
+        .await
+        .unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(
+        "__WISP_CLEANUP__:done\n",
+    )]));
+    let manager = RunManager::with_runner(runner);
+
+    manager
+        .cleanup_run_workspace(&store, "run-led", false)
+        .await
+        .unwrap();
+
+    assert!(store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap()
+        .is_empty());
+    let all = store
+        .list_remote_staging("p", "ssh:gpu", true)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 1);
+    assert!(all[0].removed_at.is_some());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn transfer_upload_ledgers_its_destination() {
+    let tmp = std::env::temp_dir().join(format!("wisp_transfer_ledger_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    store
+        .set_session_execution_context_enabled("f", "ssh:gpu", true)
+        .await
+        .unwrap();
+    let source = tmp.join("matrix.tsv");
+    std::fs::write(&source, b"a\tb\n").unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output(""), // destination pre-check
+        ok_output(""), // scp upload
+    ]));
+    let manager = RunManager::with_runner(runner);
+    let context = store
+        .get_execution_context("ssh:gpu")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let response = manager
+        .submit_local_upload_to_ssh(
+            store.clone(),
+            "p",
+            Some("f"),
+            &source,
+            &context,
+            "~/wisp/proj/data/matrix.tsv",
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap();
+    wait_for_terminal(&store, &response.run_id).await;
+
+    let entries = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].source, "transfer");
+    assert_eq!(entries[0].remote_path, "~/wisp/proj/data/matrix.tsv");
+    assert_eq!(entries[0].run_id.as_deref(), Some(response.run_id.as_str()));
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// --- run review: selective download / browse / delete -----------------------
+
+#[tokio::test]
+async fn download_run_files_registers_one_row_per_selection() {
+    let tmp = std::env::temp_dir().join(format!("wisp_review_dl_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_harvest_run(&tmp, "run-sel").await;
+    // Give the seeded run a confirmed handle for terminal_ssh_remote.
+    let table = b"a\tb\n".to_vec();
+    let archive = b"dir-targz".to_vec();
+    let manifest = format!(
+        "__WISP_HARVEST__:file:0:{}:{}:results/out.tsv\n\
+         __WISP_HARVEST__:bundle:1:{}:{}:132481:987654:bundle_1.tar.gz\n\
+         __WISP_HARVEST_DONE__\n",
+        table.len(),
+        sha256_hex_of(&table),
+        archive.len(),
+        sha256_hex_of(&archive),
+    );
+    let runner = HarvestFakeRunner {
+        manifest,
+        files: vec![
+            ("files/results/out.tsv".into(), table.clone()),
+            ("bundles/bundle_1.tar.gz".into(), archive.clone()),
+        ],
+        commands: StdMutex::new(Vec::new()),
+    };
+    let remote = harvest_test_remote("run-sel", &tmp, Vec::new());
+
+    let harvested = harvest_remote::download_run_files(
+        &store,
+        &runner,
+        "test-owner",
+        &remote,
+        &["results/out.tsv".into()],
+        &["read_partitions".into()],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(harvested.len(), 2);
+    let outputs = store.list_run_outputs("run-sel").await.unwrap();
+    assert_eq!(outputs.len(), 2);
+    let mut keys: Vec<_> = outputs
+        .iter()
+        .map(|output| output.logical_output_key.clone())
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            "bundle:read_partitions".to_string(),
+            "path:results/out.tsv".to_string(),
+        ]
+    );
+    // Selection does not mark the run harvested — that stays spec-driven.
+    assert!(store
+        .get_run("run-sel")
+        .await
+        .unwrap()
+        .unwrap()
+        .harvested_at
+        .is_none());
+    // The collect script bundles the directory selection via find.
+    {
+        let commands = runner.commands.lock().unwrap();
+        let collect = commands.iter().find(|c| c.program == "ssh").unwrap();
+        let payload = collect.stdin.as_deref().unwrap();
+        assert!(payload.contains("find read_partitions -type f"));
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn run_review_browse_and_delete_require_a_terminal_ssh_run() {
+    let tmp = std::env::temp_dir().join(format!("wisp_review_guard_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    seed_cleanup_run(
+        &store,
+        "run-open",
+        wisp_store::RunStatus::Running,
+        "[]",
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-done",
+        wisp_store::RunStatus::Succeeded,
+        "[]",
+        false,
+    )
+    .await;
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output(
+            "__WISP_LS__:file:1024::out.tsv\n__WISP_LS__:dir:2048:12:parts\n__WISP_LS_DONE__\n",
+        ),
+        ok_output("__WISP_RM_DONE__\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+
+    let error = manager
+        .list_run_workspace_files(&store, "run-open", "", "", 0, 100)
+        .await
+        .unwrap_err();
+    assert!(error.contains("still running"), "{error}");
+
+    let listing = manager
+        .list_run_workspace_files(&store, "run-done", "", "", 0, 100)
+        .await
+        .unwrap();
+    assert_eq!(listing.entries.len(), 2);
+    assert_eq!(listing.entries[1].kind, "dir");
+
+    // Path traversal is rejected before any command runs.
+    let error = manager
+        .delete_run_files(&store, "run-done", &["../escape".into()])
+        .await
+        .unwrap_err();
+    assert!(error.contains("workdir-relative"), "{error}");
+
+    manager
+        .delete_run_files(&store, "run-done", &["parts".into()])
+        .await
+        .unwrap();
+    {
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 2);
+        let payload = commands[1].stdin.as_deref().unwrap();
+        assert!(payload.contains("rm -rf -- 'parts'"));
+        assert!(payload.contains("cleanup-token"));
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// --- retention sweep ---------------------------------------------------------
+
+async fn seed_retention_run(
+    store: &wisp_store::Store,
+    run_id: &str,
+    status: wisp_store::RunStatus,
+    ended_days_ago: i64,
+    specs_json: &str,
+    harvested: bool,
+) {
+    let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+    run.frame_id = Some("f".into());
+    run.status = status;
+    run.command = Some("make outputs".into());
+    run.output_specs_json = specs_json.into();
+    run.ended_at = Some(chrono::Utc::now().timestamp() - ended_days_ago * 86_400);
+    let connection =
+        crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context()).unwrap();
+    let handle = RemoteRunHandle::SshDirect {
+        connection,
+        workdir: format!(".wisp-science/runs/{run_id}"),
+        token: "retention-token".into(),
+        inputs_staged: true,
+        pgid: Some(4242),
+        start_time: Some(99),
+    };
+    run.remote_workdir = Some(handle.display_workdir());
+    run.remote_handle_json = Some(serde_json::to_string(&handle).unwrap());
+    store.create_run(&run).await.unwrap();
+    if harvested {
+        store.mark_run_harvested(run_id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn retention_sweep_cleans_only_expired_eligible_runs() {
+    let tmp = std::env::temp_dir().join(format!("wisp_retention_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    let specs = serde_json::json!([{
+        "glob": "results/*.tsv", "kind": "table", "residency": "auto"
+    }])
+    .to_string();
+
+    // Retention disabled: nothing is due even when old.
+    seed_retention_run(
+        &store,
+        "run-old",
+        wisp_store::RunStatus::Succeeded,
+        30,
+        "[]",
+        false,
+    )
+    .await;
+    assert!(store
+        .list_runs_due_for_retention(chrono::Utc::now().timestamp())
+        .await
+        .unwrap()
+        .is_empty());
+
+    store
+        .set_project_run_retention("p", Some(7), Some(14))
+        .await
+        .unwrap();
+    assert!(store
+        .set_project_run_retention("p", Some(0), None)
+        .await
+        .is_err());
+
+    // Eligible: succeeded+harvested past 7d; succeeded with no declared specs;
+    // failed past 14d. Not eligible: unharvested specs, recent, still running.
+    seed_retention_run(
+        &store,
+        "run-done",
+        wisp_store::RunStatus::Succeeded,
+        8,
+        &specs,
+        true,
+    )
+    .await;
+    seed_retention_run(
+        &store,
+        "run-unharvested",
+        wisp_store::RunStatus::Succeeded,
+        8,
+        &specs,
+        false,
+    )
+    .await;
+    seed_retention_run(
+        &store,
+        "run-recent",
+        wisp_store::RunStatus::Succeeded,
+        2,
+        "[]",
+        false,
+    )
+    .await;
+    seed_retention_run(
+        &store,
+        "run-failed-old",
+        wisp_store::RunStatus::Failed,
+        15,
+        &specs,
+        false,
+    )
+    .await;
+    seed_retention_run(
+        &store,
+        "run-failed-new",
+        wisp_store::RunStatus::Failed,
+        8,
+        &specs,
+        false,
+    )
+    .await;
+    seed_retention_run(
+        &store,
+        "run-active",
+        wisp_store::RunStatus::Running,
+        15,
+        "[]",
+        false,
+    )
+    .await;
+
+    let due: Vec<String> = store
+        .list_runs_due_for_retention(chrono::Utc::now().timestamp())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|run| run.id)
+        .collect();
+    assert_eq!(due, vec!["run-old", "run-failed-old", "run-done"]);
+
+    // The first cleanup fails; the sweep continues and cleans the rest.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        Err("connection refused".into()),
+        ok_output("__WISP_CLEANUP__:done\n"),
+        ok_output("__WISP_CLEANUP__:done\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+    let cleaned = manager.run_retention_sweep(&store).await.unwrap();
+    assert_eq!(cleaned, 2);
+    assert!(store
+        .get_run("run-old")
+        .await
+        .unwrap()
+        .unwrap()
+        .cleaned_at
+        .is_none());
+    assert!(store
+        .get_run("run-done")
+        .await
+        .unwrap()
+        .unwrap()
+        .cleaned_at
+        .is_some());
+    assert!(store
+        .get_run("run-failed-old")
+        .await
+        .unwrap()
+        .unwrap()
+        .cleaned_at
+        .is_some());
+    assert!(store
+        .get_run("run-unharvested")
+        .await
+        .unwrap()
+        .unwrap()
+        .cleaned_at
+        .is_none());
+
+    // The failed run retries on the next sweep and drops out once cleaned.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(
+        "__WISP_CLEANUP__:done\n",
+    )]));
+    let manager = RunManager::with_runner(runner);
+    assert_eq!(manager.run_retention_sweep(&store).await.unwrap(), 1);
+    assert!(store
+        .get_run("run-old")
+        .await
+        .unwrap()
+        .unwrap()
+        .cleaned_at
+        .is_some());
+    assert_eq!(manager.run_retention_sweep(&store).await.unwrap(), 0);
+
     let _ = std::fs::remove_dir_all(&tmp);
 }

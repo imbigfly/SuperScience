@@ -4269,6 +4269,42 @@ test("text entries keep the native context menu", async ({ page }) => {
   }
 });
 
+test("project settings save opt-in run workspace retention windows", async ({ page }) => {
+  await enterApp(page);
+  await page.locator(".proj-switch").click();
+  await page.getByRole("button", { name: "Project settings" }).click();
+
+  const settings = page.locator(".proj-settings-modal");
+  const succeeded = settings.getByTestId("retention-succeeded");
+  const failed = settings.getByTestId("retention-failed");
+  // Off by default.
+  await expect(succeeded).toHaveValue("");
+  await expect(failed).toHaveValue("");
+
+  await succeeded.fill("7");
+  await succeeded.blur();
+  // An empty second field serializes as undefined (retention stays off).
+  await expect.poll(() => lastInvokeArgs(page, "set_project_run_retention")).toMatchObject({
+    runRetentionDays: 7,
+  });
+  expect(
+    (await lastInvokeArgs(page, "set_project_run_retention")).failedRunRetentionDays ?? null,
+  ).toBeNull();
+  await failed.fill("14");
+  await failed.blur();
+  await expect.poll(() => lastInvokeArgs(page, "set_project_run_retention")).toMatchObject({
+    runRetentionDays: 7,
+    failedRunRetentionDays: 14,
+  });
+
+  // Reopening reflects the stored windows.
+  await page.keyboard.press("Escape");
+  await page.locator(".proj-switch").click();
+  await page.getByRole("button", { name: "Project settings" }).click();
+  await expect(settings.getByTestId("retention-succeeded")).toHaveValue("7");
+  await expect(settings.getByTestId("retention-failed")).toHaveValue("14");
+});
+
 test("saving a changed agent context asks for confirmation", async ({ page }) => {
   await enterApp(page);
   await page.locator(".proj-switch").click();
@@ -4756,6 +4792,53 @@ test("environment panel attaches and detaches remote servers", async ({ page }) 
     .getByRole("button", { name: "Remove from session" })).toHaveCount(0);
 });
 
+test("first server enable asks for storage locations and the rail can edit them", async ({ page }) => {
+  await enterApp(page);
+  // No saved preferences for this project × server → first enable prompts.
+  await page.evaluate(() => {
+    delete (window as any).__mockStoragePrefs["ssh:gpu-server"];
+  });
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+
+  const attach = page.getByTestId("context-attach");
+  await attach.locator('.context-attach-row[data-context-id="ssh:gpu-server"]').click();
+  const dialog = page.getByTestId("storage-prefs-modal");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#storage-prefs-data-root")).toHaveValue("~/wisp/demo-project/data");
+  await expect(dialog.locator("#storage-prefs-workdir-root")).toHaveValue(".wisp-science/runs");
+  await expect(dialog.locator("#storage-prefs-results-dir")).toHaveValue("remote/gpu-server");
+
+  // Escape immediately: one press closes only the dialog; the Environment
+  // rail (its parent surface) stays open with the now-attached server.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
+  expect(await lastInvokeArgs(page, "set_context_storage_prefs")).toBeNull();
+
+  // The rail's storage action reopens the dialog; saving persists the edits.
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "Storage locations" }).click();
+  await expect(dialog).toBeVisible();
+  await dialog.locator("#storage-prefs-data-root").fill("/scratch/demo/data");
+  await dialog.locator("#storage-prefs-results-dir").fill("results/from-gpu");
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "set_context_storage_prefs")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    remoteDataRoot: "/scratch/demo/data",
+    remoteWorkdirRoot: ".wisp-science/runs",
+    localResultsDir: "results/from-gpu",
+  });
+
+  // Saved preferences: re-enabling never prompts again.
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "Remove from session" }).click();
+  await attach.locator('.context-attach-row[data-context-id="ssh:gpu-server"]').click();
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+});
+
 test("settings manages servers and probes them with the default environment skill", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Environments");
@@ -5132,6 +5215,135 @@ test("Run surface binds an exact publication evidence source", async ({ page }) 
   });
   await expect(dialog).toHaveCount(0);
   await expect(page.getByTestId("publication-workspace")).toContainText("run-kinase-001");
+});
+
+test("finished run offers server workspace cleanup and shows the cleaned state", async ({ page }) => {
+  await enterApp(page);
+  await selectRemoteContext(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "View runs" }).click();
+
+  const run = page.locator(".run-card", { hasText: "Kinase screen QC" });
+  await expect(run).toBeVisible();
+  // The running local run offers no cleanup; the finished SSH run does.
+  await run.getByRole("button", { name: "Clean up server workspace" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "cleanup_run_workspace"))
+    .toMatchObject({ runId: "run-kinase-001" });
+  await expect(run.getByTestId("run-cleaned")).toHaveText("workspace cleaned");
+  await expect(run.getByRole("button", { name: "Clean up server workspace" })).toHaveCount(0);
+});
+
+test("remote files view lists ledgered files and deletes retracted ones", async ({ page }) => {
+  await enterApp(page);
+  await selectRemoteContext(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "Remote files" }).click();
+
+  const pane = page.getByTestId("remote-files-pane");
+  await expect(pane).toBeVisible();
+  const rows = pane.getByTestId("remote-file-row");
+  await expect(rows).toHaveCount(3);
+  const active = rows.filter({ hasText: "plates.csv" });
+  await expect(active).toContainText("active");
+  // Active entries stay protected — no delete action.
+  await expect(active.getByRole("button", { name: "Delete from server" })).toHaveCount(0);
+
+  const replaced = rows.filter({ hasText: "matrix.tsv" }).filter({ hasText: "replaced" });
+  await replaced.getByRole("button", { name: "Delete from server" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "remove_remote_files")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    ids: ["stage-old-upload"],
+  });
+  await expect(rows).toHaveCount(2);
+
+  // Escape closes only this modal; the Environment rail stays open.
+  await page.keyboard.press("Escape");
+  await expect(pane).toHaveCount(0);
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
+});
+
+test("run review modal browses the workspace and downloads or deletes selections", async ({ page }) => {
+  await enterApp(page);
+  await selectRemoteContext(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "View runs" }).click();
+
+  const runCard = page.locator(".run-card", { hasText: "Kinase screen QC" });
+  await runCard.getByTestId("run-review-open").click();
+  const review = page.getByTestId("run-review-modal");
+  await expect(review).toBeVisible();
+  const rows = review.getByTestId("run-review-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.filter({ hasText: "results" })).toContainText("132481 files");
+
+  // Escape immediately: one press closes only the review modal — the runs
+  // modal underneath stays open.
+  await page.keyboard.press("Escape");
+  await expect(review).toHaveCount(0);
+  await expect(page.locator(".context-details-modal.runs-details")).toBeVisible();
+
+  // Reopen, drill into the directory and back, then download a selection.
+  await runCard.getByTestId("run-review-open").click();
+  await expect(review).toBeVisible();
+  await review.getByRole("button", { name: "results" }).click();
+  await expect(review.getByTestId("run-review-row")).toContainText("summary.tsv");
+  await review.getByRole("button", { name: "Up" }).click();
+  await expect(review.getByTestId("run-review-row")).toHaveCount(2);
+  await rows.filter({ hasText: "qc_table.tsv" }).locator("input[type=checkbox]").check();
+  await rows.filter({ hasText: "132481 files" }).locator("input[type=checkbox]").check();
+  await review.getByRole("button", { name: "Download selected" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "download_run_files")).toMatchObject({
+    runId: "run-kinase-001",
+    files: ["qc_table.tsv"],
+    dirs: ["results"],
+  });
+  await expect(review.getByTestId("run-review-status")).toContainText("downloaded");
+
+  // Delete only the selected directory; the file entry survives.
+  await rows.filter({ hasText: "132481 files" }).locator("input[type=checkbox]").check();
+  await review.getByRole("button", { name: "Delete selected" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "delete_run_files")).toMatchObject({
+    runId: "run-kinase-001",
+    paths: ["results"],
+  });
+  await expect(review.getByTestId("run-review-row")).toHaveCount(1);
+
+  // Whole-workspace cleanup is user-explicit (force) and closes the modal.
+  await review.getByRole("button", { name: "Clean entire workspace" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "cleanup_run_workspace")).toMatchObject({
+    runId: "run-kinase-001",
+    force: true,
+  });
+  await expect(review).toHaveCount(0);
+});
+
+test("dropping a server audits abandoned remote files before removal", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Environments");
+
+  const server = page.locator('.environment-settings-row[data-context-id="ssh:gpu-server"]');
+  await server.locator(".settings-list-remove").click();
+  const confirm = page.getByTestId("host-remove-confirm");
+  await expect(confirm).toBeVisible();
+  await expect(confirm.getByTestId("host-disposal-detail"))
+    .toContainText("3 ledgered file(s)");
+  // Cancel keeps the server.
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(server).toBeVisible();
+  expect(await lastInvokeArgs(page, "remove_ssh_host")).toBeNull();
+
+  // Confirming abandons the remote files and removes the host.
+  await server.locator(".settings-list-remove").click();
+  await page.getByTestId("host-remove-confirm")
+    .getByRole("button", { name: "Remove server" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "remove_ssh_host"))
+    .toMatchObject({ alias: "gpu-server" });
 });
 
 test("method-search Run reviews the frozen contract before start and exposes controls", async ({ page }) => {

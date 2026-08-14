@@ -1255,7 +1255,7 @@ fn run_in_context_tool_schema() -> Value {
                 },
                 "output_specs": {
                     "type": "array",
-                    "description": "Optional output specs. SSH direct currently accepts explicit ssh:// references only",
+                    "description": "Optional output specs selecting which results are registered (and, for SSH Runs, downloaded back with checksum verification). Explicit ssh:// URIs register remote references without download",
                     "items": {
                         "type": "object",
                         "properties": {

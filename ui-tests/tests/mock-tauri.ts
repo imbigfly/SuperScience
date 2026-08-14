@@ -67,6 +67,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       last_polled_at: run.last_polled_at ?? null,
       last_poll_error: run.last_poll_error ?? null,
       progress_json: run.progress_json ?? "{}",
+      harvested_at: run.harvested_at ?? null,
+      cleaned_at: run.cleaned_at ?? null,
+      cleanup_error: run.cleanup_error ?? null,
       output_fingerprint: `${stdout.length}:${stdout.slice(0, 64)}:${stdout.slice(-128)}|${stderr.length}:${stderr.slice(0, 64)}:${stderr.slice(-128)}`,
     };
   };
@@ -1131,6 +1134,73 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   ];
   (window as any).__mockExecutionContexts = executionContexts;
   const sessionExecutionContexts: Record<string, string[]> = {};
+  const contextStoragePrefs: Record<
+    string,
+    { remote_data_root: string; remote_workdir_root: string; local_results_dir: string }
+  > = {
+    // Confirmed by default so unrelated attach flows do not open the
+    // first-use storage dialog; the storage-prefs spec deletes this entry.
+    "ssh:gpu-server": {
+      remote_data_root: "~/wisp/demo-project/data",
+      remote_workdir_root: ".wisp-science/runs",
+      local_results_dir: "remote/gpu-server",
+    },
+  };
+  (window as any).__mockStoragePrefs = contextStoragePrefs;
+  const remoteStagingEntries: any[] = [
+    {
+      id: "stage-input-001",
+      context_id: "ssh:gpu-server",
+      run_id: "run-kinase-001",
+      remote_path: "~/.wisp-science/runs/run-kinase-001/inputs/plates.csv",
+      source: "run_input",
+      run_status: "succeeded",
+      size_bytes: 20480,
+      created_at: 1783482605,
+      removed_at: null,
+      state: "active",
+    },
+    {
+      id: "stage-old-upload",
+      context_id: "ssh:gpu-server",
+      run_id: null,
+      remote_path: "~/wisp/demo-project/data/matrix.tsv",
+      source: "transfer",
+      run_status: null,
+      size_bytes: 1048576,
+      created_at: 1783482000,
+      removed_at: null,
+      state: "replaced",
+    },
+    {
+      id: "stage-new-upload",
+      context_id: "ssh:gpu-server",
+      run_id: null,
+      remote_path: "~/wisp/demo-project/data/matrix.tsv",
+      source: "transfer",
+      run_status: null,
+      size_bytes: 2097152,
+      created_at: 1783482500,
+      removed_at: null,
+      state: "orphan",
+    },
+  ];
+  (window as any).__mockRemoteStaging = remoteStagingEntries;
+  let projectRunRetention: {
+    run_retention_days: number | null;
+    failed_run_retention_days: number | null;
+  } = { run_retention_days: null, failed_run_retention_days: null };
+  const runWorkspaceFiles: Record<string, Record<string, any[]>> = {
+    "run-kinase-001": {
+      "": [
+        { path: "results", kind: "dir", size_bytes: 3221225472, file_count: 132481 },
+        { path: "qc_table.tsv", kind: "file", size_bytes: 2048, file_count: null },
+      ],
+      results: [
+        { path: "results/summary.tsv", kind: "file", size_bytes: 4096, file_count: null },
+      ],
+    },
+  };
   let defaultExecutionContext: string | null = null;
   let runtimeInfos: any[] = [
     {
@@ -2833,6 +2903,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               identity_file: null,
               notes: "Mock GPU host",
             }];
+          case "remove_ssh_host":
+            return [];
           case "list_execution_contexts":
             return executionContexts;
           case "list_session_execution_context_ids": {
@@ -2851,6 +2923,69 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             else selected.delete(contextId);
             sessionExecutionContexts[sessionId] = [...selected].sort();
             return [...sessionExecutionContexts[sessionId]];
+          }
+          case "list_remote_files": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            return remoteStagingEntries.filter(
+              (entry) => entry.context_id === contextId && !entry.removed_at
+            );
+          }
+          case "remove_remote_files": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            const ids = (arg("ids") ?? []) as string[];
+            const force = Boolean(arg("force"));
+            for (const id of ids) {
+              const entry = remoteStagingEntries.find(
+                (item) => item.id === id && item.context_id === contextId && !item.removed_at
+              );
+              if (!entry) throw new Error(`remote file entry ${id} is not ledgered`);
+              if (entry.state === "active" && !force) {
+                throw new Error(`${entry.remote_path} is still referenced by a run`);
+              }
+              entry.removed_at = Math.floor(Date.now() / 1000);
+            }
+            return remoteStagingEntries.filter(
+              (entry) => entry.context_id === contextId && !entry.removed_at
+            );
+          }
+          case "context_disposal_report": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            return {
+              context_id: contextId,
+              external_references: Number((window as any).__mockExternalRefs ?? 0),
+              staged_files: remoteStagingEntries.filter(
+                (entry) => entry.context_id === contextId && !entry.removed_at
+              ).length,
+            };
+          }
+          case "get_context_storage_prefs": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            const stored = contextStoragePrefs[contextId];
+            if (stored) return { ...stored, context_id: contextId, confirmed: true };
+            const context = executionContexts.find((item) => item.id === contextId);
+            const label = (context?.label ?? contextId).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+            return {
+              context_id: contextId,
+              remote_data_root: "~/wisp/demo-project/data",
+              remote_workdir_root: ".wisp-science/runs",
+              local_results_dir: `remote/${label}`,
+              confirmed: false,
+            };
+          }
+          case "set_context_storage_prefs": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            const prefs = {
+              remote_data_root: String(arg("remoteDataRoot") ?? arg("remote_data_root") ?? ""),
+              remote_workdir_root: String(
+                arg("remoteWorkdirRoot") ?? arg("remote_workdir_root") ?? ""
+              ),
+              local_results_dir: String(arg("localResultsDir") ?? arg("local_results_dir") ?? ""),
+            };
+            if (!prefs.remote_data_root || !prefs.remote_workdir_root || !prefs.local_results_dir) {
+              throw new Error("storage locations are required");
+            }
+            contextStoragePrefs[contextId] = prefs;
+            return { ...prefs, context_id: contextId, confirmed: true };
           }
           case "get_default_execution_context":
             return defaultExecutionContext;
@@ -3028,6 +3163,50 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (!run) throw new Error("Run not found");
             return run;
           }
+          case "list_run_workspace_files": {
+            const runId = String(arg("runId") ?? "");
+            const path = String(arg("path") ?? "");
+            const filter = String(arg("nameFilter") ?? "").toLowerCase();
+            const limit = Number(arg("limit") ?? 200);
+            const offset = Number(arg("offset") ?? 0);
+            const levels = runWorkspaceFiles[runId] ?? {};
+            let rows = (levels[path] ?? []).filter((entry: any) =>
+              !filter || entry.path.split("/").pop().toLowerCase().includes(filter)
+            );
+            const page = rows.slice(offset, offset + limit);
+            return { entries: page, truncated: rows.length > offset + limit };
+          }
+          case "download_run_files":
+            return [];
+          case "delete_run_files": {
+            const runId = String(arg("runId") ?? "");
+            const paths = (arg("paths") ?? []) as string[];
+            const levels = runWorkspaceFiles[runId] ?? {};
+            for (const level of Object.keys(levels)) {
+              levels[level] = levels[level].filter(
+                (entry: any) => !paths.some((p) => entry.path === p || entry.path.startsWith(`${p}/`))
+              );
+            }
+            for (const p of paths) delete levels[p];
+            return null;
+          }
+          case "cleanup_run_workspace": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run) throw new Error("Run not found");
+            if (["submitted", "running", "cancelling"].includes(run.status)) {
+              throw new Error("Run is still active");
+            }
+            if (!run.remote_handle_json) throw new Error("Run has no server workspace to clean");
+            run.cleaned_at = run.cleaned_at ?? Math.floor(Date.now() / 1000);
+            run.cleanup_error = null;
+            return run;
+          }
+          case "harvest_run": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run) throw new Error("Run not found");
+            run.harvested_at = run.harvested_at ?? Math.floor(Date.now() / 1000);
+            return run;
+          }
           case "get_method_search_run":
             return mockMethodSearchDetails();
           case "start_method_search": {
@@ -3167,6 +3346,16 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               "Expand the search for underrepresented species",
               "Generate a literature landscape visualization",
             ];
+          case "get_project_run_retention":
+            return projectRunRetention;
+          case "set_project_run_retention": {
+            projectRunRetention = {
+              run_retention_days: (arg("runRetentionDays") ?? null) as number | null,
+              failed_run_retention_days:
+                (arg("failedRunRetentionDays") ?? null) as number | null,
+            };
+            return projectRunRetention;
+          }
           case "get_project_settings":
             return { name: project.name, description: "", agent_context: projectAgentContext };
           case "update_project": {

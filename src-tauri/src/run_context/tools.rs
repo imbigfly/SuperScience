@@ -2,7 +2,7 @@ use super::{
     RunManager, RunPreflightReport, RunPreflightSpec, RunPreflightStatus, SubmitRunRequest,
 };
 use wisp_llm::ToolSchema;
-use wisp_tools::{Tool, ToolEnv, ToolResult};
+use wisp_tools::{Approval, Tool, ToolEnv, ToolResult};
 
 pub struct RunInContextTool {
     store: wisp_store::Store,
@@ -82,7 +82,7 @@ impl Tool for RunInContextTool {
                     },
                     "output_specs": {
                         "type": "array",
-                        "description": "Optional output specs. SSH direct currently accepts explicit ssh:// references only",
+                        "description": "Optional output specs selecting which results are registered (and, for SSH Runs, downloaded back into the project after success with checksum verification). Point globs at final products only; intermediate files stay unregistered and are reclaimed by cleanup. SSH globs are workdir-relative; explicit ssh:// URIs register remote references without download",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -91,7 +91,8 @@ impl Tool for RunInContextTool {
                                 "residency": { "type": "string", "enum": ["local", "remote", "auto"] },
                                 "logical_key": { "type": "string", "description": "Stable logical output identity; defaults to the matched project-relative path" },
                                 "max_file_mb": { "type": "integer" },
-                                "max_total_mb": { "type": "integer" }
+                                "max_total_mb": { "type": "integer" },
+                                "bundle": { "type": "boolean", "description": "Pack all matched files into one tar.gz registered as a single artifact. Required when a glob matches many files (e.g. assembly intermediates)" }
                             },
                             "required": ["glob", "kind", "residency"]
                         }
@@ -428,15 +429,343 @@ async fn wait_for_terminal(
 
 fn run_wait_result(run: wisp_store::RunRecord, detached: bool) -> ToolResult {
     let succeeded = run.status == wisp_store::RunStatus::Succeeded;
+    let cleanable = run.status.is_terminal()
+        && run.remote_workdir.is_some()
+        && run.cleaned_at.is_none()
+        && run.kind != "file_transfer";
     let mut value = serde_json::to_value(run).unwrap_or_default();
     if detached {
         value["wait_detached"] = serde_json::Value::Bool(true);
+    }
+    if cleanable && !detached {
+        value["next_action"] = serde_json::Value::String(
+            "When the server workspace is no longer needed, call cleanup_run_workspace to \
+             reclaim it (harvested outputs and logs stay in the project)."
+                .into(),
+        );
     }
     let content = value.to_string();
     if detached || succeeded {
         ToolResult::ok(content)
     } else {
         ToolResult::fail(content)
+    }
+}
+
+pub struct HarvestRunTool {
+    store: wisp_store::Store,
+    manager: RunManager,
+    scope: wisp_store::StateScope,
+}
+
+impl HarvestRunTool {
+    pub fn new_in_scope(
+        store: wisp_store::Store,
+        manager: RunManager,
+        scope: wisp_store::StateScope,
+    ) -> Self {
+        Self {
+            store,
+            manager,
+            scope,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for HarvestRunTool {
+    fn name(&self) -> &str {
+        "harvest_run"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "harvest_run",
+            "Retry output harvest for a succeeded Run whose declared output_specs were never registered (for example the automatic post-run download failed or the app closed mid-pull). Downloads spec-matched remote outputs with checksum verification and registers them as project artifacts.",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "run_id": { "type": "string" } },
+                "required": ["run_id"]
+            }),
+        )
+    }
+
+    fn preview(&self, args: &serde_json::Value) -> String {
+        args.get("run_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .into()
+    }
+
+    async fn run(&self, args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+        let Some(run_id) = args.get("run_id").and_then(|value| value.as_str()) else {
+            return ToolResult::fail("harvest_run requires run_id");
+        };
+        match self.store.run_visible_in_scope(run_id, &self.scope).await {
+            Ok(true) => {}
+            Ok(false) => return ToolResult::fail("Run does not belong to this state scope"),
+            Err(error) => return ToolResult::fail(format!("harvest_run error: {error}")),
+        }
+        match self.manager.harvest_run(&self.store, run_id).await {
+            Ok(harvested) => ToolResult::ok(
+                serde_json::json!({ "run_id": run_id, "harvested": harvested }).to_string(),
+            ),
+            Err(error) => ToolResult::fail(format!("harvest_run error: {error}")),
+        }
+    }
+}
+
+pub struct CleanupRunWorkspaceTool {
+    store: wisp_store::Store,
+    manager: RunManager,
+    scope: wisp_store::StateScope,
+}
+
+impl CleanupRunWorkspaceTool {
+    pub fn new_in_scope(
+        store: wisp_store::Store,
+        manager: RunManager,
+        scope: wisp_store::StateScope,
+    ) -> Self {
+        Self {
+            store,
+            manager,
+            scope,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for CleanupRunWorkspaceTool {
+    fn name(&self) -> &str {
+        "cleanup_run_workspace"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "cleanup_run_workspace",
+            "Delete a finished Run's server-side workspace (inputs, logs, intermediate files). Requires a terminal Run; a succeeded Run with declared output_specs must be harvested first so results are never lost. Registered artifacts and run logs in the project are unaffected. Idempotent.",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "run_id": { "type": "string" } },
+                "required": ["run_id"]
+            }),
+        )
+    }
+
+    fn preview(&self, args: &serde_json::Value) -> String {
+        args.get("run_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .into()
+    }
+
+    async fn run(&self, args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+        let Some(run_id) = args.get("run_id").and_then(|value| value.as_str()) else {
+            return ToolResult::fail("cleanup_run_workspace requires run_id");
+        };
+        match self.store.run_visible_in_scope(run_id, &self.scope).await {
+            Ok(true) => {}
+            Ok(false) => return ToolResult::fail("Run does not belong to this state scope"),
+            Err(error) => return ToolResult::fail(format!("cleanup_run_workspace error: {error}")),
+        }
+        match self
+            .manager
+            .cleanup_run_workspace(&self.store, run_id, false)
+            .await
+        {
+            Ok(run) => ToolResult::ok(serde_json::to_string(&run).unwrap_or_default()),
+            Err(error) => ToolResult::fail(format!("cleanup_run_workspace error: {error}")),
+        }
+    }
+}
+
+pub struct ListRemoteFilesTool {
+    store: wisp_store::Store,
+    project_id: String,
+    frame_id: Option<String>,
+}
+
+impl ListRemoteFilesTool {
+    pub fn new(store: wisp_store::Store, project_id: String, frame_id: Option<String>) -> Self {
+        Self {
+            store,
+            project_id,
+            frame_id,
+        }
+    }
+}
+
+async fn selected_ssh_context_for_tools(
+    store: &wisp_store::Store,
+    frame_id: Option<&str>,
+    context_id: &str,
+) -> Result<wisp_store::ExecutionContext, String> {
+    let context = store
+        .get_execution_context(context_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
+    if context.kind != wisp_store::ExecutionContextKind::Ssh {
+        return Err(format!("Execution context is not SSH: {context_id}"));
+    }
+    if let Some(frame_id) = frame_id {
+        if !store
+            .session_execution_context_enabled(frame_id, context_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Err(format!(
+                "Execution context {context_id} is not selected for this session"
+            ));
+        }
+    }
+    Ok(context)
+}
+
+#[async_trait::async_trait]
+impl Tool for ListRemoteFilesTool {
+    fn name(&self) -> &str {
+        "list_remote_files"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "list_remote_files",
+            "List the files this project placed on one SSH server (run input staging and uploads), classified as active (still referenced), replaced (a newer upload took the same path), or orphan (safe to delete). Use remove_remote_files to delete retracted files.",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "context_id": { "type": "string", "description": "SSH context id, e.g. ssh:gpu" } },
+                "required": ["context_id"]
+            }),
+        )
+    }
+
+    fn preview(&self, args: &serde_json::Value) -> String {
+        args.get("context_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .into()
+    }
+
+    async fn run(&self, args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+        let Some(context_id) = args.get("context_id").and_then(|value| value.as_str()) else {
+            return ToolResult::fail("list_remote_files requires context_id");
+        };
+        if let Err(error) =
+            selected_ssh_context_for_tools(&self.store, self.frame_id.as_deref(), context_id).await
+        {
+            return ToolResult::fail(format!("list_remote_files error: {error}"));
+        }
+        match super::remote_files::list_remote_files(&self.store, &self.project_id, context_id)
+            .await
+        {
+            Ok(files) => ToolResult::ok(
+                serde_json::json!({ "context_id": context_id, "files": files }).to_string(),
+            ),
+            Err(error) => ToolResult::fail(format!("list_remote_files error: {error}")),
+        }
+    }
+}
+
+pub struct RemoveRemoteFilesTool {
+    store: wisp_store::Store,
+    manager: RunManager,
+    project_id: String,
+    frame_id: Option<String>,
+}
+
+impl RemoveRemoteFilesTool {
+    pub fn new(
+        store: wisp_store::Store,
+        manager: RunManager,
+        project_id: String,
+        frame_id: Option<String>,
+    ) -> Self {
+        Self {
+            store,
+            manager,
+            project_id,
+            frame_id,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for RemoveRemoteFilesTool {
+    fn name(&self) -> &str {
+        "remove_remote_files"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "remove_remote_files",
+            "Delete ledgered files from one SSH server by their list_remote_files entry ids. Only orphaned/replaced entries are deleted; entries still referenced by a run are refused (the UI may force with explicit user confirmation). A path already gone on the server still counts as removed.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "context_id": { "type": "string" },
+                    "ids": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["context_id", "ids"]
+            }),
+        )
+    }
+
+    fn minimum_approval(&self) -> Approval {
+        Approval::Ask
+    }
+
+    fn preview(&self, args: &serde_json::Value) -> String {
+        let context = args
+            .get("context_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let count = args
+            .get("ids")
+            .and_then(|value| value.as_array())
+            .map(|ids| ids.len())
+            .unwrap_or(0);
+        format!("{context}: {count} file(s)")
+    }
+
+    async fn run(&self, args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+        let Some(context_id) = args.get("context_id").and_then(|value| value.as_str()) else {
+            return ToolResult::fail("remove_remote_files requires context_id");
+        };
+        let ids: Vec<String> = args
+            .get("ids")
+            .and_then(|value| value.as_array())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let context =
+            match selected_ssh_context_for_tools(&self.store, self.frame_id.as_deref(), context_id)
+                .await
+            {
+                Ok(context) => context,
+                Err(error) => {
+                    return ToolResult::fail(format!("remove_remote_files error: {error}"))
+                }
+            };
+        match super::remote_files::remove_remote_files(
+            &self.store,
+            self.manager.runner.as_ref(),
+            &self.project_id,
+            &context,
+            &ids,
+            false,
+        )
+        .await
+        {
+            Ok(removed) => ToolResult::ok(
+                serde_json::json!({ "context_id": context_id, "removed": removed }).to_string(),
+            ),
+            Err(error) => ToolResult::fail(format!("remove_remote_files error: {error}")),
+        }
     }
 }
 
