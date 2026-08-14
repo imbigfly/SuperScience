@@ -713,6 +713,7 @@ pub(crate) fn settings_section_label(loc: Locale, section: &str) -> String {
         "memory" => t(loc, "settings.nav.memory"),
         "skills" => t(loc, "settings.nav.skills"),
         "plugins" => t(loc, "settings.nav.plugins"),
+        "browser" => t(loc, "settings.nav.browser"),
         "connections" => t(loc, "settings.nav.connections"),
         "channels" => t(loc, "settings.nav.channels"),
         "credentials" => t(loc, "settings.nav.credentials"),

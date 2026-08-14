@@ -485,6 +485,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { id: "scientific_illustrator", name: "Scientific Illustrator", icon: "image", color: "clay", description: "Creates scientific figures", instructions: "illustrator rubric", model_id: "", skills: ["figure-composer", "figure-style"], connectors: [], builtin: true },
   ];
   let sessionSpecialists: Record<string, string> = {};
+  let mockBrowserUrlFilters = { block: [] as { host: string; reason?: string }[], prefer: [] as { host: string; reason?: string }[] };
   let mockQuickActions = [{
     id: "literature_research",
     name: "Research literature",
@@ -2306,6 +2307,22 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               pet_enabled: mockPetEnabled,
               pet_directory: mockPetDirectory,
             };
+          case "get_browser_url_filters":
+            return mockBrowserUrlFilters;
+          case "set_browser_url_filters": {
+            const next = plain(arg("filters") ?? {});
+            mockBrowserUrlFilters = {
+              block: Array.isArray(next.block) ? next.block.map((row: any) => ({
+                host: String(row.host ?? "").trim().toLowerCase(),
+                reason: String(row.reason ?? "").trim(),
+              })).filter((row: { host: string }) => row.host) : [],
+              prefer: Array.isArray(next.prefer) ? next.prefer.map((row: any) => ({
+                host: String(row.host ?? "").trim().toLowerCase(),
+                reason: String(row.reason ?? "").trim(),
+              })).filter((row: { host: string }) => row.host) : [],
+            };
+            return mockBrowserUrlFilters;
+          }
           case "get_context_usage_details":
             return {
               system_prompt: "You are wisp-science.\n\n## Environment\nWindows x86_64",

@@ -1737,6 +1737,13 @@ button.workflow-graph-port.output.active {
 .settings-sync-actions button { display: inline-flex; align-items: center; gap: 7px; }
 .settings-sync-actions svg { width: 16px; height: 16px; }
 .settings-field-hint { margin: 0; color: var(--text-faint); font-size: 12px; line-height: 1.45; }
+.browser-filter-add {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1.2fr) minmax(8rem, 1fr) auto;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.browser-filter-pane .cred-group-heading { margin-top: 8px; }
 .settings-path-row { display: flex; align-items: center; gap: 8px; }
 .settings-path-row input { min-width: 0; flex: 1; }
 .settings-path-row > button { flex: 0 0 auto; }
@@ -2688,6 +2695,7 @@ button.workflow-graph-port.output.active {
   .settings-nav-group { flex-direction: row; }
   .settings-nav button { white-space: nowrap; }
   .settings-form-grid { grid-template-columns: 1fr; }
+  .browser-filter-add { grid-template-columns: 1fr; }
   .settings-appearance-pane { width: calc(100% - 24px); padding-top: 22px; }
   .theme-mode-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
   .appearance-diff-preview { grid-template-columns: 1fr; }
