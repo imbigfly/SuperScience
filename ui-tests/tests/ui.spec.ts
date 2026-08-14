@@ -8036,16 +8036,29 @@ test("streaming assistant keeps formatted Markdown with a lightweight live tail"
   const live = page.locator(".msg.assistant .streaming-markdown");
   await expect(live).toBeVisible();
   await expect(live.locator(".streaming-markdown-prefix strong").first()).toBeVisible();
-  await live.evaluate((element) => ((element as any).__liveMarkdownProbe = true));
+  // Deltas and the Markdown commit interval are both ~50 ms. A Playwright poll
+  // started after line 18 can miss every pending-tail window under CI load, so
+  // watch the attribute continuously from the page instead.
+  await live.evaluate((element) => {
+    (element as any).__liveMarkdownProbe = true;
+    const seen = { max: 0 };
+    const record = () => {
+      seen.max = Math.max(seen.max, Number(element.getAttribute("data-pending-bytes") ?? 0));
+      (window as any).__maxPendingBytes = seen.max;
+    };
+    (window as any).__maxPendingBytes = 0;
+    record();
+    const observer = new MutationObserver(record);
+    observer.observe(element, { attributes: true, attributeFilter: ["data-pending-bytes"] });
+    const tick = () => {
+      record();
+      if (element.isConnected) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
 
   await expect(page.getByText("stream line 18", { exact: false })).toBeVisible({ timeout: 10_000 });
-  // Deltas and the minimum Markdown commit interval are both 50 ms. Polling at
-  // Playwright's default cadence can repeatedly sample just after each commit
-  // and miss the short-lived plain-text tail entirely.
-  await expect.poll(
-    async () => Number(await live.getAttribute("data-pending-bytes") ?? 0),
-    { intervals: [10], timeout: 10_000 },
-  )
+  await expect.poll(() => page.evaluate(() => Number((window as any).__maxPendingBytes ?? 0)))
     .toBeGreaterThan(0);
   expect(await live.evaluate((element) => (element as any).__liveMarkdownProbe === true)).toBe(true);
 
