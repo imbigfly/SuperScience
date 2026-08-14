@@ -3270,7 +3270,63 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             SESSION_REASONING_EFFORT_MIGRATION.to_string(),
             SESSION_BRANCH_MERGE_MIGRATION.to_string(),
             EXPLORATION_PROMOTION_RECOVERY_MIGRATION.to_string(),
+            RUN_HARVEST_STATE_MIGRATION.to_string(),
         ]
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn run_harvest_state_is_recorded_once_and_survives_reopen() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_run_harvest_state_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    let mut run = RunRecord::new("r", "p", "local", "Run", "command");
+    run.status = RunStatus::Succeeded;
+    store.create_run(&run).await.unwrap();
+
+    assert!(store
+        .get_run("r")
+        .await
+        .unwrap()
+        .unwrap()
+        .harvested_at
+        .is_none());
+    assert!(store.mark_run_harvested("r").await.unwrap());
+    let harvested_at = store
+        .get_run("r")
+        .await
+        .unwrap()
+        .unwrap()
+        .harvested_at
+        .unwrap();
+    // Idempotent: a second mark does not rewrite the timestamp.
+    assert!(!store.mark_run_harvested("r").await.unwrap());
+    drop(store);
+
+    // Reopening (legacy-database repair path) keeps the column and the value.
+    let reopened = Store::open(&tmp).await.unwrap();
+    assert_eq!(
+        reopened.get_run("r").await.unwrap().unwrap().harvested_at,
+        Some(harvested_at)
+    );
+    assert!(reopened
+        .record_run_harvest_error("r", "remote artifact registration failed: boom")
+        .await
+        .unwrap());
+    assert_eq!(
+        reopened
+            .get_run("r")
+            .await
+            .unwrap()
+            .unwrap()
+            .last_poll_error
+            .as_deref(),
+        Some("remote artifact registration failed: boom")
     );
 
     let _ = std::fs::remove_file(&tmp);

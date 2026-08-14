@@ -5544,6 +5544,11 @@ async fn send_message_inner(
             state.run_manager.clone(),
             frame_scope.clone(),
         )));
+        agent.add_tool(Box::new(run_context::HarvestRunTool::new_in_scope(
+            state.store.clone(),
+            state.run_manager.clone(),
+            frame_scope.clone(),
+        )));
         agent.add_tool(Box::new(method_search::PrepareMethodSearchTool::new(
             state.store.clone(),
             ap.id.clone(),
@@ -7899,6 +7904,7 @@ pub fn run() {
             runtime_commands::list_runs,
             runtime_commands::get_run_detail,
             runtime_commands::cancel_run,
+            runtime_commands::harvest_run,
             project_commands::get_research_graph,
             session_commands::delete_session,
             session_commands::rename_session,

@@ -18,6 +18,11 @@ pub struct OutputSpec {
     pub logical_key: Option<String>,
     pub max_file_mb: Option<u64>,
     pub max_total_mb: Option<u64>,
+    /// Pack every matched file into one tar.gz archive registered as a single
+    /// ArtifactVersion. Required for massive many-file outputs so registration
+    /// never scales with the remote file count.
+    #[serde(default)]
+    pub bundle: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +67,7 @@ pub async fn harvest_run_outputs(
                     run_id,
                     &spec.kind,
                     &spec.glob,
+                    None,
                     None,
                     &logical_key,
                 )
@@ -128,7 +134,41 @@ pub async fn harvest_run_outputs(
     Ok(out)
 }
 
-async fn register_local_artifact(
+/// A retried harvest must not append duplicate versions or lineage rows for
+/// an output that an earlier attempt already registered for the same Run.
+async fn already_registered(
+    store: &wisp_store::Store,
+    artifact_id: &str,
+    run_id: &str,
+    logical_key: &str,
+    checksum: Option<&str>,
+    storage_path: &str,
+) -> Result<Option<String>, String> {
+    let Some(version) = store
+        .latest_artifact_version(artifact_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    let same_content = match checksum {
+        Some(checksum) => version.checksum.as_deref() == Some(checksum),
+        None => version.storage_path == storage_path,
+    };
+    if !same_content || version.producing_run_id.as_deref() != Some(run_id) {
+        return Ok(None);
+    }
+    let linked = store
+        .list_run_outputs(run_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|output| output.logical_output_key == logical_key);
+    Ok(linked.then_some(version.id))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn register_local_artifact(
     store: &wisp_store::Store,
     project_id: &str,
     root_frame_id: &str,
@@ -154,6 +194,31 @@ async fn register_local_artifact(
             crate::snapshot_store::SnapshotPolicy::Always
         },
     )?;
+    if let Some(version_id) = already_registered(
+        store,
+        &artifact_id,
+        run_id,
+        logical_key,
+        Some(&captured.checksum),
+        &captured.storage_path,
+    )
+    .await?
+    {
+        return Ok(HarvestedArtifact {
+            artifact_id,
+            artifact_version_id: version_id,
+            path: captured.storage_path,
+            kind: kind.into(),
+            logical_output_key: logical_key.into(),
+            checksum: Some(captured.checksum),
+            residency: if as_reference {
+                OutputResidency::Remote
+            } else {
+                OutputResidency::Local
+            },
+            size: Some(captured.size_bytes),
+        });
+    }
     let size_bytes =
         i64::try_from(captured.size_bytes).map_err(|_| "artifact is too large".to_string())?;
     let env_snapshot_hash = store
@@ -206,7 +271,8 @@ async fn register_local_artifact(
     })
 }
 
-async fn register_reference_artifact(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn register_reference_artifact(
     store: &wisp_store::Store,
     project_id: &str,
     root_frame_id: &str,
@@ -214,9 +280,31 @@ async fn register_reference_artifact(
     kind: &str,
     uri: &str,
     size: Option<u64>,
+    checksum: Option<String>,
     logical_key: &str,
 ) -> Result<HarvestedArtifact, String> {
     let artifact_id = wisp_store::logical_artifact_id(project_id, logical_key);
+    if let Some(version_id) = already_registered(
+        store,
+        &artifact_id,
+        run_id,
+        logical_key,
+        checksum.as_deref(),
+        uri,
+    )
+    .await?
+    {
+        return Ok(HarvestedArtifact {
+            artifact_id,
+            artifact_version_id: version_id,
+            path: uri.into(),
+            kind: kind.into(),
+            logical_output_key: logical_key.into(),
+            checksum,
+            residency: OutputResidency::Remote,
+            size,
+        });
+    }
     let filename = uri
         .rsplit('/')
         .next()
@@ -242,7 +330,7 @@ async fn register_reference_artifact(
             storage_path: uri.to_string(),
             logical_key: Some(logical_key.to_string()),
             size_bytes,
-            checksum: None,
+            checksum: checksum.clone(),
             producing_run_id: Some(run_id.to_string()),
             env_snapshot_hash,
             materialization: wisp_store::ArtifactMaterialization::External,
@@ -266,7 +354,7 @@ async fn register_reference_artifact(
         path: uri.into(),
         kind: kind.into(),
         logical_output_key: logical_key.into(),
-        checksum: None,
+        checksum,
         residency: OutputResidency::Remote,
         size,
     })
@@ -353,6 +441,7 @@ mod tests {
                 logical_key: None,
                 max_file_mb: Some(1),
                 max_total_mb: Some(1),
+                bundle: false,
             }],
         )
         .await
@@ -413,6 +502,7 @@ mod tests {
                 logical_key: None,
                 max_file_mb: Some(0),
                 max_total_mb: None,
+                bundle: false,
             }],
         )
         .await
@@ -460,6 +550,7 @@ mod tests {
                 logical_key: None,
                 max_file_mb: None,
                 max_total_mb: None,
+                bundle: false,
             }],
         )
         .await
@@ -504,6 +595,7 @@ mod tests {
             logical_key: Some("figure:t-cell-exhaustion".into()),
             max_file_mb: Some(1),
             max_total_mb: Some(1),
+            bundle: false,
         };
         let first = harvest_run_outputs(&store, "p", "f", "r", &tmp, &[spec.clone()])
             .await

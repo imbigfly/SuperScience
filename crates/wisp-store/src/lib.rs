@@ -148,6 +148,7 @@ const GLOBAL_MEMORIES_MIGRATION_SQL: &str = include_str!("../migrations/0039_glo
 const SESSION_REASONING_EFFORT_MIGRATION: &str = "0040_session_reasoning_effort";
 const SESSION_BRANCH_MERGE_MIGRATION: &str = "0041_session_branch_merge";
 const EXPLORATION_PROMOTION_RECOVERY_MIGRATION: &str = "0042_exploration_promotion_recovery";
+const RUN_HARVEST_STATE_MIGRATION: &str = "0043_run_harvest_state";
 
 #[derive(Clone)]
 pub struct Store {
@@ -582,6 +583,10 @@ impl Store {
         if !Self::migration_applied(pool, EXPLORATION_PROMOTION_RECOVERY_MIGRATION).await? {
             Self::apply_exploration_promotion_recovery(pool).await?;
             Self::record_migration(pool, EXPLORATION_PROMOTION_RECOVERY_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, RUN_HARVEST_STATE_MIGRATION).await? {
+            Self::add_columns_if_missing(pool, "runs", &[("harvested_at", "INTEGER")]).await?;
+            Self::record_migration(pool, RUN_HARVEST_STATE_MIGRATION).await?;
         }
         Ok(())
     }

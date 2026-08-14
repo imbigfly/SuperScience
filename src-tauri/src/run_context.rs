@@ -9,6 +9,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+mod harvest_remote;
 mod local_detached;
 mod remote;
 mod tools;
@@ -26,7 +27,7 @@ use remote::{
 };
 #[cfg(test)]
 use remote::{parse_input_progress, remote_poll_delay_secs};
-pub use tools::{CancelRunTool, GetRunTool, MonitorRunTool, RunInContextTool};
+pub use tools::{CancelRunTool, GetRunTool, HarvestRunTool, MonitorRunTool, RunInContextTool};
 pub(crate) use transfer::{load_trust_edges, revoke_trust_edge, RevokeTrustResponse, SshTrustEdge};
 pub use transfer::{ConfigureSshTrustTool, TransferBetweenContextsTool};
 
@@ -1185,6 +1186,105 @@ impl RunManager {
         });
     }
 
+    /// Retry output harvest for a succeeded Run whose outputs were never
+    /// registered (automatic harvest failed or the app closed mid-pull).
+    pub async fn harvest_run(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+    ) -> Result<Vec<crate::harvest::HarvestedArtifact>, String> {
+        let run = store
+            .get_run(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Run not found: {run_id}"))?;
+        if run.status != wisp_store::RunStatus::Succeeded {
+            return Err(format!(
+                "harvest_run requires a succeeded Run, but it is {}",
+                run.status.as_str()
+            ));
+        }
+        if run.harvested_at.is_some() {
+            return Err("Run outputs were already harvested".into());
+        }
+        let remote = remote_run_from_record(store, &run)
+            .await?
+            .ok_or_else(|| "Run has no detached handle to harvest from".to_string())?;
+        if remote.output_specs.is_empty() {
+            return Err("Run declared no output specs".into());
+        }
+        let frame_id = remote
+            .frame_id
+            .clone()
+            .ok_or_else(|| "Run has no source session".to_string())?;
+        let result = if remote.handle.is_local_detached() {
+            let root = remote
+                .harvest_root
+                .clone()
+                .ok_or_else(|| "Run project workspace is not available".to_string())?;
+            let references: Vec<_> = remote
+                .output_specs
+                .iter()
+                .filter(|spec| !spec.glob.starts_with("ssh://"))
+                .cloned()
+                .collect();
+            crate::harvest::harvest_run_outputs(
+                store,
+                &remote.project_id,
+                &frame_id,
+                &remote.run_id,
+                &root,
+                &references,
+            )
+            .await
+        } else {
+            let fallback = PathBuf::from(".");
+            let uri_references: Vec<_> = remote
+                .output_specs
+                .iter()
+                .filter(|spec| spec.glob.starts_with("ssh://"))
+                .cloned()
+                .collect();
+            if !uri_references.is_empty() {
+                crate::harvest::harvest_run_outputs(
+                    store,
+                    &remote.project_id,
+                    &frame_id,
+                    &remote.run_id,
+                    remote.harvest_root.as_deref().unwrap_or(&fallback),
+                    &uri_references,
+                )
+                .await?;
+            }
+            harvest_remote::harvest_ssh_run(
+                store,
+                self.runner.as_ref(),
+                &self.owner_id,
+                &remote,
+                false,
+            )
+            .await
+        };
+        match result {
+            Ok(harvested) => {
+                store
+                    .mark_run_harvested(run_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(harvested)
+            }
+            Err(error) => {
+                let _ = store
+                    .record_run_harvest_error(
+                        run_id,
+                        &format!("remote artifact registration failed: {error}"),
+                    )
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
     pub async fn cancel(&self, store: &wisp_store::Store, run_id: &str) -> Result<(), String> {
         let run = store
             .get_run(run_id)
@@ -2053,14 +2153,11 @@ async fn create_run_record(
 
     let handle = match ctx.kind {
         wisp_store::ExecutionContextKind::Ssh => {
-            if output_specs
+            for spec in output_specs
                 .iter()
-                .any(|spec| !spec.glob.starts_with("ssh://"))
+                .filter(|spec| !spec.glob.starts_with("ssh://"))
             {
-                return Err(
-                    "SSH direct output_specs must be explicit ssh:// references; remote glob harvest is not available yet"
-                        .into(),
-                );
+                harvest_remote::validate_remote_glob(&spec.glob)?;
             }
             RemoteRunHandle::SshDirect {
                 connection: crate::ssh_hosts::SshConnection::from_execution_context(&ctx)?,
@@ -2180,40 +2277,22 @@ fn local_detached_handle_for(
 
 async fn finish_remote_run(
     store: &wisp_store::Store,
+    runner: &dyn RunCommandRunner,
     owner_id: &str,
     remote: &RemoteRun,
     status: wisp_store::RunStatus,
     exit_code: Option<i64>,
 ) -> Result<(), String> {
-    if status == wisp_store::RunStatus::Succeeded {
+    if status == wisp_store::RunStatus::Succeeded && !remote.output_specs.is_empty() {
         if let Some(frame_id) = remote.frame_id.as_deref() {
-            let references: Vec<_> = if remote.handle.is_local_detached() {
-                remote
-                    .output_specs
-                    .iter()
-                    .filter(|spec| !spec.glob.starts_with("ssh://"))
-                    .cloned()
-                    .collect()
-            } else {
-                remote
-                    .output_specs
-                    .iter()
-                    .filter(|spec| spec.glob.starts_with("ssh://"))
-                    .cloned()
-                    .collect()
-            };
-            if !references.is_empty() {
-                let fallback = PathBuf::from(".");
-                if let Err(error) = crate::harvest::harvest_run_outputs(
-                    store,
-                    &remote.project_id,
-                    frame_id,
-                    &remote.run_id,
-                    remote.harvest_root.as_deref().unwrap_or(&fallback),
-                    &references,
-                )
-                .await
-                {
+            match harvest_finished_remote(store, runner, owner_id, remote, frame_id).await {
+                Ok(()) => {
+                    store
+                        .mark_run_harvested(&remote.run_id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                Err(error) => {
                     store
                         .record_run_poll_owned(
                             &remote.run_id,
@@ -2232,6 +2311,58 @@ async fn finish_remote_run(
         .finish_active_run_owned(&remote.run_id, owner_id, status, exit_code)
         .await
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Register a succeeded detached Run's declared outputs: local globs for
+/// local/WSL Runs, and both `ssh://` URI references and glob-matched remote
+/// pull-back for SSH-direct Runs.
+async fn harvest_finished_remote(
+    store: &wisp_store::Store,
+    runner: &dyn RunCommandRunner,
+    owner_id: &str,
+    remote: &RemoteRun,
+    frame_id: &str,
+) -> Result<(), String> {
+    let fallback = PathBuf::from(".");
+    if remote.handle.is_local_detached() {
+        let references: Vec<_> = remote
+            .output_specs
+            .iter()
+            .filter(|spec| !spec.glob.starts_with("ssh://"))
+            .cloned()
+            .collect();
+        if !references.is_empty() {
+            crate::harvest::harvest_run_outputs(
+                store,
+                &remote.project_id,
+                frame_id,
+                &remote.run_id,
+                remote.harvest_root.as_deref().unwrap_or(&fallback),
+                &references,
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+    let uri_references: Vec<_> = remote
+        .output_specs
+        .iter()
+        .filter(|spec| spec.glob.starts_with("ssh://"))
+        .cloned()
+        .collect();
+    if !uri_references.is_empty() {
+        crate::harvest::harvest_run_outputs(
+            store,
+            &remote.project_id,
+            frame_id,
+            &remote.run_id,
+            remote.harvest_root.as_deref().unwrap_or(&fallback),
+            &uri_references,
+        )
+        .await?;
+    }
+    harvest_remote::harvest_ssh_run(store, runner, owner_id, remote, true).await?;
     Ok(())
 }
 
@@ -2263,6 +2394,7 @@ fn remote_lifecycle_lease_secs(remote: &RemoteRun) -> i64 {
 
 async fn fail_remote_start(
     store: &wisp_store::Store,
+    runner: &dyn RunCommandRunner,
     owner_id: &str,
     remote: &RemoteRun,
     error: &str,
@@ -2278,6 +2410,7 @@ async fn fail_remote_start(
         .map_err(|e| e.to_string())?;
     finish_remote_run(
         store,
+        runner,
         owner_id,
         remote,
         wisp_store::RunStatus::Failed,
@@ -2321,7 +2454,7 @@ async fn remote_lifecycle(
                     .as_deref()
                     .unwrap_or("unknown start error"),
             );
-            fail_remote_start(store, owner_id, &remote, &error).await?;
+            fail_remote_start(store, runner, owner_id, &remote, &error).await?;
             return Ok(());
         }
 
@@ -2340,6 +2473,7 @@ async fn remote_lifecycle(
                     Ok(PrepareRemote::Prepared) => {
                         finish_remote_run(
                             store,
+                            runner,
                             owner_id,
                             &remote,
                             wisp_store::RunStatus::Cancelled,
@@ -2361,6 +2495,7 @@ async fn remote_lifecycle(
                             .map_err(|e| e.to_string())?;
                         finish_remote_run(
                             store,
+                            runner,
                             owner_id,
                             &remote,
                             wisp_store::RunStatus::Cancelled,
@@ -2375,7 +2510,7 @@ async fn remote_lifecycle(
                     Ok(handle) => remote.handle = handle,
                     Err(error) => {
                         let error = retry_stopped_error(&remote.handle, &error);
-                        fail_remote_start(store, owner_id, &remote, &error).await?;
+                        fail_remote_start(store, runner, owner_id, &remote, &error).await?;
                         return Ok(());
                     }
                 }
@@ -2409,6 +2544,7 @@ async fn remote_lifecycle(
                 Ok(RemoteCancel::Cancelled) => {
                     finish_remote_run(
                         store,
+                        runner,
                         owner_id,
                         &remote,
                         wisp_store::RunStatus::Cancelled,
@@ -2420,6 +2556,7 @@ async fn remote_lifecycle(
                 Ok(RemoteCancel::Finished(code)) => {
                     finish_remote_run(
                         store,
+                        runner,
                         owner_id,
                         &remote,
                         remote_terminal_status(code),
@@ -2431,6 +2568,7 @@ async fn remote_lifecycle(
                 Ok(RemoteCancel::TimedOut(code)) => {
                     finish_remote_run(
                         store,
+                        runner,
                         owner_id,
                         &remote,
                         wisp_store::RunStatus::TimedOut,
@@ -2444,8 +2582,15 @@ async fn remote_lifecycle(
                         .record_run_poll_owned(&remote.run_id, owner_id, None, None, Some(&reason))
                         .await
                         .map_err(|e| e.to_string())?;
-                    finish_remote_run(store, owner_id, &remote, wisp_store::RunStatus::Lost, None)
-                        .await?;
+                    finish_remote_run(
+                        store,
+                        runner,
+                        owner_id,
+                        &remote,
+                        wisp_store::RunStatus::Lost,
+                        None,
+                    )
+                    .await?;
                     return Ok(());
                 }
                 Err(error) => {
@@ -2463,6 +2608,7 @@ async fn remote_lifecycle(
                             .map_err(|e| e.to_string())?;
                         finish_remote_run(
                             store,
+                            runner,
                             owner_id,
                             &remote,
                             wisp_store::RunStatus::Lost,
@@ -2497,6 +2643,7 @@ async fn remote_lifecycle(
                         RemotePollState::Finished(code) => {
                             finish_remote_run(
                                 store,
+                                runner,
                                 owner_id,
                                 &remote,
                                 remote_terminal_status(code),
@@ -2508,6 +2655,7 @@ async fn remote_lifecycle(
                         RemotePollState::TimedOut(code) => {
                             finish_remote_run(
                                 store,
+                                runner,
                                 owner_id,
                                 &remote,
                                 wisp_store::RunStatus::TimedOut,
@@ -2519,6 +2667,7 @@ async fn remote_lifecycle(
                         RemotePollState::Cancelled => {
                             finish_remote_run(
                                 store,
+                                runner,
                                 owner_id,
                                 &remote,
                                 wisp_store::RunStatus::Cancelled,
@@ -2540,6 +2689,7 @@ async fn remote_lifecycle(
                                 .map_err(|e| e.to_string())?;
                             finish_remote_run(
                                 store,
+                                runner,
                                 owner_id,
                                 &remote,
                                 wisp_store::RunStatus::Lost,
@@ -2565,6 +2715,7 @@ async fn remote_lifecycle(
                             .map_err(|e| e.to_string())?;
                         finish_remote_run(
                             store,
+                            runner,
                             owner_id,
                             &remote,
                             wisp_store::RunStatus::Lost,
@@ -2680,6 +2831,10 @@ async fn record_run_outcome(
                             &prepared.output_specs,
                         )
                         .await?;
+                        store
+                            .mark_run_harvested(&prepared.run_id)
+                            .await
+                            .map_err(|e| e.to_string())?;
                     }
                 }
             }

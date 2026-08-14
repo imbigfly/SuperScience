@@ -334,7 +334,8 @@ CREATE TABLE IF NOT EXISTS runs (
     lifecycle_lease_until INTEGER,
     progress_json      TEXT NOT NULL DEFAULT '{}',
     env_snapshot_json  TEXT NOT NULL DEFAULT '{}',
-    exploration_id     TEXT
+    exploration_id     TEXT,
+    harvested_at       INTEGER
 );
 CREATE INDEX IF NOT EXISTS ix_runs_project ON runs(project_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_runs_context ON runs(context_id);

@@ -308,3 +308,42 @@ pub(super) async fn cancel_run(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Run disappeared after cancellation".to_string())
 }
+
+/// Retry output registration/download for a succeeded Run whose declared
+/// outputs were never harvested.
+#[tauri::command]
+pub(super) async fn harvest_run(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+) -> Result<wisp_store::RunRecord, String> {
+    let (ap, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let run = state
+        .store
+        .get_run(&run_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Run not found".to_string())?;
+    if run.project_id != ap.id {
+        return Err("Run does not belong to the active project".into());
+    }
+    if state
+        .store
+        .run_state_scope(&run_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        != Some(&scope)
+    {
+        return Err("Run is not visible in the active state scope".into());
+    }
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    state.run_manager.harvest_run(&state.store, &run_id).await?;
+    state
+        .store
+        .get_run(&run_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Run disappeared after harvest".to_string())
+}

@@ -82,7 +82,7 @@ impl Tool for RunInContextTool {
                     },
                     "output_specs": {
                         "type": "array",
-                        "description": "Optional output specs. SSH direct currently accepts explicit ssh:// references only",
+                        "description": "Optional output specs selecting which results are registered (and, for SSH Runs, downloaded back into the project after success with checksum verification). Point globs at final products only; intermediate files stay unregistered and are reclaimed by cleanup. SSH globs are workdir-relative; explicit ssh:// URIs register remote references without download",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -91,7 +91,8 @@ impl Tool for RunInContextTool {
                                 "residency": { "type": "string", "enum": ["local", "remote", "auto"] },
                                 "logical_key": { "type": "string", "description": "Stable logical output identity; defaults to the matched project-relative path" },
                                 "max_file_mb": { "type": "integer" },
-                                "max_total_mb": { "type": "integer" }
+                                "max_total_mb": { "type": "integer" },
+                                "bundle": { "type": "boolean", "description": "Pack all matched files into one tar.gz registered as a single artifact. Required when a glob matches many files (e.g. assembly intermediates)" }
                             },
                             "required": ["glob", "kind", "residency"]
                         }
@@ -437,6 +438,69 @@ fn run_wait_result(run: wisp_store::RunRecord, detached: bool) -> ToolResult {
         ToolResult::ok(content)
     } else {
         ToolResult::fail(content)
+    }
+}
+
+pub struct HarvestRunTool {
+    store: wisp_store::Store,
+    manager: RunManager,
+    scope: wisp_store::StateScope,
+}
+
+impl HarvestRunTool {
+    pub fn new_in_scope(
+        store: wisp_store::Store,
+        manager: RunManager,
+        scope: wisp_store::StateScope,
+    ) -> Self {
+        Self {
+            store,
+            manager,
+            scope,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for HarvestRunTool {
+    fn name(&self) -> &str {
+        "harvest_run"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "harvest_run",
+            "Retry output harvest for a succeeded Run whose declared output_specs were never registered (for example the automatic post-run download failed or the app closed mid-pull). Downloads spec-matched remote outputs with checksum verification and registers them as project artifacts.",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "run_id": { "type": "string" } },
+                "required": ["run_id"]
+            }),
+        )
+    }
+
+    fn preview(&self, args: &serde_json::Value) -> String {
+        args.get("run_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .into()
+    }
+
+    async fn run(&self, args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+        let Some(run_id) = args.get("run_id").and_then(|value| value.as_str()) else {
+            return ToolResult::fail("harvest_run requires run_id");
+        };
+        match self.store.run_visible_in_scope(run_id, &self.scope).await {
+            Ok(true) => {}
+            Ok(false) => return ToolResult::fail("Run does not belong to this state scope"),
+            Err(error) => return ToolResult::fail(format!("harvest_run error: {error}")),
+        }
+        match self.manager.harvest_run(&self.store, run_id).await {
+            Ok(harvested) => ToolResult::ok(
+                serde_json::json!({ "run_id": run_id, "harvested": harvested }).to_string(),
+            ),
+            Err(error) => ToolResult::fail(format!("harvest_run error: {error}")),
+        }
     }
 }
 
