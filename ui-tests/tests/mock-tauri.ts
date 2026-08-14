@@ -3652,6 +3652,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "export_session":
             return "/mock/export.zip";
+          case "save_share_image":
+            return "/mock/wisp-share.png";
           case "import_session_archive":
             return {
               frame_id: "imported-frame",
@@ -4165,6 +4167,17 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             if (String(msg).includes("POSTSTARTFAIL")) {
               throw new Error("[turn-started] execution failed after turn/start");
+            }
+            if (String(msg).includes("SHARETHINK")) {
+              // Fixture for /share: a turn with a visible thinking block, so
+              // the share dialog lists it (deselected by default).
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Reasoning", frame_id: fid, delta: "Secret plan: verify with Alice first." });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Alice confirmed the spectrum is clean." });
+                emit("agent", { kind: "Done", frame_id: fid, stop_reason: "end_turn" });
+              }, 30);
+              return fid;
             }
             if (String(msg).includes("TOOLONLYDONE")) {
               setTimeout(() => {

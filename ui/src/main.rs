@@ -48,7 +48,9 @@ use i18n::{
 use leptos::{ev, window_event_listener, *};
 use library::{refresh_library, refresh_session_library, HighlightsPane, LibraryScreen};
 use notebook::{collect_notebook_cells, NotebookCache, NotebookView};
-use overlays::{AddHostOverlay, CapabilitiesOverlay, OnboardingOverlay, RuntimeInterpreterOverlay};
+use overlays::{
+    AddHostOverlay, CapabilitiesOverlay, OnboardingOverlay, RuntimeInterpreterOverlay, ShareOverlay,
+};
 use pet::{PetDesktop, PetOverlay};
 use project_landing::{ProjectLanding, ProjectLandingState};
 use publication::{PublicationEvidenceSource, PublicationWorkspaceModal};
@@ -62,8 +64,8 @@ use session_modals::{
     ProjSettingsOverlayState, RenameSessionOverlay, RenameSessionOverlayState,
     SessionTransferOverlay, SessionTransferOverlayState, TurnUndoOverlay, TurnUndoOverlayState,
 };
-use settings_view::{DeleteConfirm, SettingsView, SettingsViewState};
 use settings_view::{known_effort_values, ALL_EFFORT_VALUES};
+use settings_view::{DeleteConfirm, SettingsView, SettingsViewState};
 use sidebar::{Sidebar, SidebarState};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -1432,6 +1434,8 @@ fn App() -> impl IntoView {
     let full_permission_enabled = create_rw_signal(false);
     let full_permission_busy = create_rw_signal(false);
     let ui_confirm = create_rw_signal::<Option<UiConfirm>>(None);
+    // `/share` preview dialog: Some(rows) while open, None when closed.
+    let share_draft = create_rw_signal::<Option<Vec<ShareMessage>>>(None);
     // One flag, two backends, exactly like the composer toggle: a built-in
     // session reads its own plan flag, an ACP-bound one reads the agent's
     // mode. `None` = the session is ACP-bound, so the toggle drives the ACP
@@ -1709,7 +1713,7 @@ fn App() -> impl IntoView {
                     "compact" => !acp,
                     "rewind" => !acp && has_items,
                     "fork" => !acp && branchable,
-                    "review" | "remember" => has_items,
+                    "review" | "remember" | "share" => has_items,
                     "context" => active_context_usage.get().is_some(),
                     // Hidden where the agent has no plan mode to switch into
                     // (same condition that drops the agent-menu toggle row).
@@ -4796,7 +4800,10 @@ fn App() -> impl IntoView {
                 let text = tf(
                     loc,
                     "err.max_tokens_ceiling",
-                    &[("model", form.model.trim()), ("max", &dto.max_tokens.to_string())],
+                    &[
+                        ("model", form.model.trim()),
+                        ("max", &dto.max_tokens.to_string()),
+                    ],
                 );
                 model_form_msg.set(Some((false, text)));
                 return;
@@ -5893,6 +5900,16 @@ fn App() -> impl IntoView {
                 );
             }
             "upload" => pick_files(()),
+            // Open the share preview over the current transcript; thinking
+            // rows are listed but deselected (hidden from the export).
+            "share" => {
+                let rows = items.with_untracked(|list| share_messages(list));
+                if rows.is_empty() {
+                    status.set(t(locale.get_untracked(), "composer.cmd_share_empty"));
+                } else {
+                    share_draft.set(Some(rows));
+                }
+            }
             _ => {}
         }
         true
@@ -6957,8 +6974,7 @@ fn App() -> impl IntoView {
             let args = to_value(&serde_json::json!({ "contextId": context_id })).unwrap();
             match invoke_checked("set_default_execution_context", args).await {
                 Ok(value) => {
-                    let Ok(saved) = serde_wasm_bindgen::from_value::<Option<String>>(value)
-                    else {
+                    let Ok(saved) = serde_wasm_bindgen::from_value::<Option<String>>(value) else {
                         return;
                     };
                     default_execution_context.set(saved.clone());
@@ -7534,9 +7550,7 @@ fn App() -> impl IntoView {
                 }));
                 spawn_local(async move {
                     let value = invoke("list_projects", JsValue::UNDEFINED).await;
-                    if let Ok(list) =
-                        serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(value)
-                    {
+                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(value) {
                         let default_target = list
                             .first()
                             .map(|project| project.id.clone())
@@ -7769,6 +7783,11 @@ fn App() -> impl IntoView {
         if ctx_menu.get().is_some() {
             ev.prevent_default();
             ctx_menu.set(None);
+            return;
+        }
+        if share_draft.get().is_some() {
+            ev.prevent_default();
+            share_draft.set(None);
             return;
         }
         if let Some(modal) = update_check_modal.get() {
@@ -8622,90 +8641,90 @@ fn App() -> impl IntoView {
     let save_session_transfer = {
         let open_project_transition = open_project_transition;
         move |_| {
-        let Some(transfer) = session_transfer.get() else {
-            return;
-        };
-        if transfer.target_project_id.is_empty() || session_transfer_busy.get() {
-            return;
-        }
-        let target_name = proj_list
-            .get()
-            .into_iter()
-            .find(|project| project.id == transfer.target_project_id)
-            .map(|project| project.name)
-            .unwrap_or_else(|| transfer.target_project_id.clone());
-        session_transfer_busy.set(true);
-        session_transfer_error.set(None);
-        spawn_local(async move {
-            if transfer.from_demo {
+            let Some(transfer) = session_transfer.get() else {
+                return;
+            };
+            if transfer.target_project_id.is_empty() || session_transfer_busy.get() {
+                return;
+            }
+            let target_name = proj_list
+                .get()
+                .into_iter()
+                .find(|project| project.id == transfer.target_project_id)
+                .map(|project| project.name)
+                .unwrap_or_else(|| transfer.target_project_id.clone());
+            session_transfer_busy.set(true);
+            session_transfer_error.set(None);
+            spawn_local(async move {
+                if transfer.from_demo {
+                    let args = to_value(&serde_json::json!({
+                        "id": transfer.id,
+                        "targetProjectId": transfer.target_project_id,
+                    }))
+                    .unwrap();
+                    match invoke_checked("copy_demo_to_project", args).await {
+                        Ok(value) => {
+                            let session_id =
+                                serde_wasm_bindgen::from_value::<String>(value).unwrap_or_default();
+                            status.set(tf(
+                                locale.get(),
+                                "session.copy_demo_success",
+                                &[("project", &target_name)],
+                            ));
+                            session_transfer.set(None);
+                            session_transfer_busy.set(false);
+                            if !session_id.is_empty() {
+                                open_project_transition
+                                    .call((transfer.target_project_id, Some(session_id)));
+                            }
+                        }
+                        Err(error) => {
+                            session_transfer_error
+                                .set(Some(localize_backend(locale.get(), &js_error_text(error))));
+                            session_transfer_busy.set(false);
+                        }
+                    }
+                    return;
+                }
                 let args = to_value(&serde_json::json!({
                     "id": transfer.id,
                     "targetProjectId": transfer.target_project_id,
+                    "mode": transfer.mode.as_str(),
                 }))
                 .unwrap();
-                match invoke_checked("copy_demo_to_project", args).await {
-                    Ok(value) => {
-                        let session_id =
-                            serde_wasm_bindgen::from_value::<String>(value).unwrap_or_default();
-                        status.set(tf(
-                            locale.get(),
-                            "session.copy_demo_success",
-                            &[("project", &target_name)],
-                        ));
-                        session_transfer.set(None);
-                        session_transfer_busy.set(false);
-                        if !session_id.is_empty() {
-                            open_project_transition
-                                .call((transfer.target_project_id, Some(session_id)));
+                match invoke_checked("transfer_session_to_project", args).await {
+                    Ok(_) => {
+                        if transfer.mode == SessionTransferMode::Move {
+                            transcripts.update(|saved| {
+                                saved.remove(&transfer.id);
+                            });
+                            running.update(|ids| {
+                                ids.remove(&transfer.id);
+                            });
+                            pending_turns.update(|turns| {
+                                turns.remove(&transfer.id);
+                            });
+                            if active_session.get().as_deref() == Some(transfer.id.as_str()) {
+                                active_session.set(None);
+                                items.set(vec![]);
+                            }
                         }
+                        refresh_session_history();
+                        let message_key = if transfer.mode == SessionTransferMode::Copy {
+                            "session.copy_success"
+                        } else {
+                            "session.move_success"
+                        };
+                        status.set(tf(locale.get(), message_key, &[("project", &target_name)]));
+                        session_transfer.set(None);
                     }
                     Err(error) => {
                         session_transfer_error
                             .set(Some(localize_backend(locale.get(), &js_error_text(error))));
-                        session_transfer_busy.set(false);
                     }
                 }
-                return;
-            }
-            let args = to_value(&serde_json::json!({
-                "id": transfer.id,
-                "targetProjectId": transfer.target_project_id,
-                "mode": transfer.mode.as_str(),
-            }))
-            .unwrap();
-            match invoke_checked("transfer_session_to_project", args).await {
-                Ok(_) => {
-                    if transfer.mode == SessionTransferMode::Move {
-                        transcripts.update(|saved| {
-                            saved.remove(&transfer.id);
-                        });
-                        running.update(|ids| {
-                            ids.remove(&transfer.id);
-                        });
-                        pending_turns.update(|turns| {
-                            turns.remove(&transfer.id);
-                        });
-                        if active_session.get().as_deref() == Some(transfer.id.as_str()) {
-                            active_session.set(None);
-                            items.set(vec![]);
-                        }
-                    }
-                    refresh_session_history();
-                    let message_key = if transfer.mode == SessionTransferMode::Copy {
-                        "session.copy_success"
-                    } else {
-                        "session.move_success"
-                    };
-                    status.set(tf(locale.get(), message_key, &[("project", &target_name)]));
-                    session_transfer.set(None);
-                }
-                Err(error) => {
-                    session_transfer_error
-                        .set(Some(localize_backend(locale.get(), &js_error_text(error))));
-                }
-            }
-            session_transfer_busy.set(false);
-        });
+                session_transfer_busy.set(false);
+            });
         }
     };
 
@@ -14583,6 +14602,7 @@ fn App() -> impl IntoView {
 
 
 
+        <ShareOverlay locale=locale draft=share_draft />
         <AddHostOverlay
             locale=locale show_add_host=show_add_host host_alias=host_alias host_hostname=host_hostname
             host_notes=host_notes host_user=host_user host_port=host_port host_identity=host_identity

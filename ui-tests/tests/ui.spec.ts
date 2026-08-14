@@ -1917,6 +1917,7 @@ test("composer slash commands run the matching shell actions", async ({ page }) 
   await expect(menu).not.toContainText("/review");
   await expect(menu).not.toContainText("/remember");
   await expect(menu).not.toContainText("/context");
+  await expect(menu).not.toContainText("/share");
   await page.keyboard.press("Escape");
 
   // /btw opens the side chat; a payload goes straight to it.
@@ -2009,6 +2010,62 @@ test("composer slash commands run the matching shell actions", async ({ page }) 
     sessionId: expect.stringMatching(/^branch-/),
     message: "branch this idea",
   });
+});
+
+test("/share exports selected, keyword-redacted messages as a PNG", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+  const overlay = page.getByTestId("share-overlay");
+
+  // Empty session: /share is hidden from the picker and opens nothing.
+  await composerInput.pressSequentially("/sha");
+  await expect(page.locator(".mention-menu .mention-item").filter({ hasText: "/share" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toHaveCount(0);
+  expect(await lastInvokeArgs(page, "send_message")).toBeNull();
+
+  // Seed one turn that streams a thinking block before the reply.
+  await composerInput.fill("SHARETHINK check the spectrum");
+  await composerInput.press("Enter");
+  await expect(page.getByText("Alice confirmed the spectrum is clean.")).toBeVisible({ timeout: 10_000 });
+
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  // One Escape right after opening closes only the dialog; chat stays up.
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(composerInput).toBeVisible();
+
+  // Reopen through the picker row; the action runs immediately.
+  await composerInput.pressSequentially("/share");
+  await page.locator(".mention-menu .mention-item").filter({ hasText: "/share" }).click();
+  await expect(overlay).toBeVisible();
+
+  // User and assistant rows are preselected; thinking is listed but hidden.
+  const rows = overlay.locator(".share-row");
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0).locator("input")).toBeChecked();
+  await expect(rows.nth(1)).toHaveClass(/share-thinking/);
+  await expect(rows.nth(1).locator("input")).not.toBeChecked();
+  await expect(rows.nth(2).locator("input")).toBeChecked();
+
+  // Keywords mask the preview text case-insensitively.
+  await overlay.locator("#share-redact-input").fill("alice，spectrum");
+  await expect(rows.nth(2)).toContainText("xxx confirmed the xxx is clean.");
+
+  // Deselect the user turn and export: the PNG bytes reach the save command
+  // and the saved toast closes the dialog.
+  await rows.nth(0).locator("input").click();
+  await overlay.getByTestId("share-export").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_share_image")).toMatchObject({
+    defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.png$/),
+  });
+  const args = await lastInvokeArgs(page, "save_share_image");
+  expect(String(args.pngBase64).length).toBeGreaterThan(1000);
+  await expect(overlay).toHaveCount(0);
 });
 
 test("composer / menu layers sections and gives each command its own icon", async ({ page }) => {
@@ -8001,16 +8058,29 @@ test("streaming assistant keeps formatted Markdown with a lightweight live tail"
   const live = page.locator(".msg.assistant .streaming-markdown");
   await expect(live).toBeVisible();
   await expect(live.locator(".streaming-markdown-prefix strong").first()).toBeVisible();
-  await live.evaluate((element) => ((element as any).__liveMarkdownProbe = true));
+  // Deltas and the Markdown commit interval are both ~50 ms. A Playwright poll
+  // started after line 18 can miss every pending-tail window under CI load, so
+  // watch the attribute continuously from the page instead.
+  await live.evaluate((element) => {
+    (element as any).__liveMarkdownProbe = true;
+    const seen = { max: 0 };
+    const record = () => {
+      seen.max = Math.max(seen.max, Number(element.getAttribute("data-pending-bytes") ?? 0));
+      (window as any).__maxPendingBytes = seen.max;
+    };
+    (window as any).__maxPendingBytes = 0;
+    record();
+    const observer = new MutationObserver(record);
+    observer.observe(element, { attributes: true, attributeFilter: ["data-pending-bytes"] });
+    const tick = () => {
+      record();
+      if (element.isConnected) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
 
   await expect(page.getByText("stream line 18", { exact: false })).toBeVisible({ timeout: 10_000 });
-  // Deltas and the minimum Markdown commit interval are both 50 ms. Polling at
-  // Playwright's default cadence can repeatedly sample just after each commit
-  // and miss the short-lived plain-text tail entirely.
-  await expect.poll(
-    async () => Number(await live.getAttribute("data-pending-bytes") ?? 0),
-    { intervals: [10], timeout: 10_000 },
-  )
+  await expect.poll(() => page.evaluate(() => Number((window as any).__maxPendingBytes ?? 0)))
     .toBeGreaterThan(0);
   expect(await live.evaluate((element) => (element as any).__liveMarkdownProbe === true)).toBe(true);
 
