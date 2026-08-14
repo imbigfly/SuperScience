@@ -1150,6 +1150,7 @@ mod session_context_window_tests {
             label: id.into(),
             provider: "openai".into(),
             api_url: String::new(),
+            provider_id: "openai".into(),
             model: format!("model-{id}"),
             has_api_key: true,
             active,
@@ -1398,7 +1399,7 @@ pub(crate) struct SshHost {
     /// `key` (default) or `password`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) auth_method: Option<String>,
-    /// Whether a password is stored in the OS keyring (never the password itself).
+    /// Whether a password is stored in the local secrets file (never the password itself).
     #[serde(default)]
     pub(crate) has_password: bool,
     /// Write-only password from the form; never returned by list APIs.
@@ -1590,6 +1591,8 @@ pub(crate) struct Settings {
     pub(crate) pet_directory: String,
     #[serde(default = "default_notifications_enabled")]
     pub(crate) notifications_enabled: bool,
+    #[serde(default = "default_pii_firewall_enabled")]
+    pub(crate) pii_firewall_enabled: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1613,6 +1616,10 @@ fn default_sync_backend() -> String {
 }
 
 fn default_notifications_enabled() -> bool {
+    true
+}
+
+fn default_pii_firewall_enabled() -> bool {
     true
 }
 
@@ -1754,6 +1761,7 @@ impl Default for Settings {
             pet_enabled: false,
             pet_directory: String::new(),
             notifications_enabled: true,
+            pii_firewall_enabled: true,
         }
     }
 }
@@ -2498,6 +2506,8 @@ pub(crate) struct ModelProfile {
     #[serde(default)]
     pub(crate) api_url: String,
     #[serde(default)]
+    pub(crate) provider_id: String,
+    #[serde(default)]
     pub(crate) model: String,
     #[serde(default)]
     pub(crate) has_api_key: bool,
@@ -2515,6 +2525,25 @@ pub(crate) struct ModelProfile {
     pub(crate) use_for_vision: bool,
     #[serde(default)]
     pub(crate) use_for_image_generation: bool,
+}
+
+/// Shared endpoint + credentials for one or more [`ModelProfile`]s.
+#[derive(Clone, Deserialize)]
+pub(crate) struct ModelProvider {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    #[serde(default)]
+    pub(crate) protocol: String,
+    #[serde(default)]
+    pub(crate) api_url: String,
+    #[serde(default)]
+    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) builtin: bool,
+    #[serde(default)]
+    pub(crate) has_api_key: bool,
+    #[serde(default)]
+    pub(crate) model_count: usize,
 }
 
 impl ModelProfile {
@@ -2730,7 +2759,10 @@ pub(crate) struct ConnForm {
 pub(crate) struct ModelForm {
     pub(crate) id: Option<String>,
     pub(crate) label: String,
+    pub(crate) provider_id: String,
+    /// Protocol mirrored from the owning provider (for effort hints / validate).
     pub(crate) provider: String,
+    /// Base URL mirrored from the owning provider (for validate).
     pub(crate) api_url: String,
     pub(crate) model: String,
     pub(crate) max_tokens: u64,
@@ -2753,6 +2785,15 @@ pub(crate) struct CatalogEntryDto {
     pub(crate) supports_vision: bool,
     #[allow(dead_code)]
     pub(crate) efforts: Vec<String>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ProviderForm {
+    pub(crate) id: Option<String>,
+    pub(crate) label: String,
+    pub(crate) protocol: String,
+    pub(crate) api_url: String,
+    pub(crate) builtin: bool,
 }
 
 fn default_model_context_window() -> u64 {

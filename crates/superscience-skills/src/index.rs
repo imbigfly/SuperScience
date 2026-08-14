@@ -572,6 +572,16 @@ mod tests {
         assert!(idx.get("analysis-workflow").is_some());
         assert!(idx.get("figure-style").is_some());
         assert!(idx.get("journal-club-ppt").is_some());
+        // Vendored third-party packs (OfficeCLI / academic / nature / playwright guidance).
+        assert!(idx.get("officecli").is_some());
+        assert!(idx.get("deep-research").is_some());
+        assert!(idx.get("academic-paper").is_some());
+        assert!(idx.get("nature-writing").is_some());
+        assert!(idx.get("humanizer-zh").is_some());
+        assert!(idx.get("nature-figure").is_some());
+        assert!(idx.get("nature-statistics").is_some());
+        assert!(idx.get("knowledge-graph").is_some());
+        assert!(idx.get("playwright").is_some());
     }
 
     #[test]

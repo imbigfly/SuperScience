@@ -2,12 +2,14 @@ use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanel
 use crate::app_support::{
     allow_drop, build_conn_json, close_details_ancestor, compose_icon, conn_form_from_row,
     context_capability_summary, drag_session_id, focus_element_soon, format_relative_time,
-    join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form, quick_action_label,
-    reviewer_backend_key, reviewer_backend_label, reviewer_missing_acp_profile_id,
-    set_reviewer_backend, settings_section_label, settings_subpage_label, skill_matches_filter,
-    start_session_drag, CRED_GROUPS,
+    join_tags, js_error_text, new_acp_form, new_model_form_for_provider, new_provider_form,
+    profile_to_form, provider_to_form, quick_action_label, reviewer_backend_key,
+    reviewer_backend_label, reviewer_missing_acp_profile_id, set_reviewer_backend,
+    settings_section_label, settings_subpage_label, skill_matches_filter, start_session_drag,
+    CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
+use crate::bindings::invoke_timeout;
 use crate::dto::*;
 use crate::i18n::{localize_backend, set_document_lang, t, tf, Locale};
 use crate::text::{
@@ -37,6 +39,10 @@ pub(super) enum DeleteConfirm {
         version: String,
         label: String,
     },
+    Provider {
+        id: String,
+        label: String,
+    },
     Skill {
         name: String,
         label: String,
@@ -49,6 +55,7 @@ impl DeleteConfirm {
             DeleteConfirm::Model { label, .. }
             | DeleteConfirm::Acp { label, .. }
             | DeleteConfirm::Plugin { label, .. }
+            | DeleteConfirm::Provider { label, .. }
             | DeleteConfirm::Skill { label, .. } => label,
         }
     }
@@ -320,19 +327,39 @@ fn usage_tool_rank_rows(rows: &[ToolCallUsage], other: &str) -> Vec<UsageToolRan
 
 fn usage_summary_view(loc: Locale, totals: (i64, i64, i64, i64)) -> impl IntoView {
     let tokens = |value: i64| crate::fmt_tokens(value.max(0) as u64);
+    let grand = totals.0.max(0) + totals.1.max(0) + totals.2.max(0) + totals.3.max(0);
+    let tiles = [
+        ("settings.usage.input", "input", totals.0),
+        ("settings.usage.output", "output", totals.1),
+        ("settings.usage.reasoning", "reasoning", totals.2),
+        ("settings.usage.cached", "cached", totals.3),
+    ];
     view! {
-        <div class="usage-summary">
-            {[
-                ("settings.usage.input", totals.0),
-                ("settings.usage.output", totals.1),
-                ("settings.usage.reasoning", totals.2),
-                ("settings.usage.cached", totals.3),
-            ].into_iter().map(|(key, value)| view! {
-                <div class="usage-tile">
-                    <span class="usage-tile-value">{tokens(value)}</span>
-                    <span class="usage-tile-label">{t(loc, key)}</span>
-                </div>
-            }).collect_view()}
+        <div class="usage-hero" data-testid="usage-hero">
+            <div class="usage-hero-total">
+                <span class="usage-hero-label">{t(loc, "settings.usage.total")}</span>
+                <strong class="usage-hero-value">{tokens(grand)}</strong>
+                <span class="usage-hero-unit">{t(loc, "settings.usage.tokens")}</span>
+            </div>
+            <div class="usage-summary">
+                {tiles.into_iter().map(|(key, kind, value)| {
+                    let share = if grand > 0 {
+                        value.max(0) as f64 / grand as f64 * 100.0
+                    } else {
+                        0.0
+                    };
+                    view! {
+                        <div class=format!("usage-tile kind-{kind}") data-testid="usage-tile">
+                            <span class="usage-tile-label">{t(loc, key)}</span>
+                            <span class="usage-tile-value">{tokens(value)}</span>
+                            <span class="usage-tile-share">{format!("{share:.0}%")}</span>
+                            <span class="usage-tile-bar" aria-hidden="true">
+                                <i style=format!("width:{share:.1}%")></i>
+                            </span>
+                        </div>
+                    }
+                }).collect_view()}
+            </div>
         </div>
     }
 }
@@ -662,6 +689,57 @@ const MODEL_PRESETS: [(&str, &str, &str); 5] = [
     ),
 ];
 
+#[derive(Clone, Debug)]
+struct PendingPresetModel {
+    label: String,
+    model: String,
+    api_url: String,
+}
+
+fn normalize_api_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_lowercase()
+}
+
+fn find_provider_by_url<'a>(providers: &'a [ModelProvider], api_url: &str) -> Option<&'a ModelProvider> {
+    let norm = normalize_api_url(api_url);
+    providers
+        .iter()
+        .find(|p| normalize_api_url(&p.api_url) == norm)
+}
+
+fn provider_payload(form: &ProviderForm) -> serde_json::Value {
+    serde_json::json!({
+        "id": form.id.clone().unwrap_or_default(),
+        "label": form.label.trim(),
+        "protocol": form.protocol.trim(),
+        "api_url": form.api_url.trim(),
+        "sort_order": 0,
+        "builtin": form.builtin,
+    })
+}
+
+fn open_preset_model_form(
+    model_form: RwSignal<Option<ModelForm>>,
+    model_catalog_limits: RwSignal<Option<CatalogEntryDto>>,
+    model_form_key: RwSignal<String>,
+    model_form_msg: RwSignal<Option<(bool, String)>>,
+    show_acp_agents: RwSignal<bool>,
+    label: &str,
+    api_url: &str,
+    model: &str,
+    provider: &ModelProvider,
+) {
+    show_acp_agents.set(false);
+    let mut form = new_model_form_for_provider(provider);
+    form.label = label.into();
+    form.model = model.into();
+    form.api_url = api_url.into();
+    model_form.set(Some(form));
+    model_form_key.set(String::new());
+    model_form_msg.set(None);
+    apply_catalog_limits(model_form, model_catalog_limits);
+}
+
 fn appearance_palette_options(dark: bool) -> [(&'static str, &'static str); 5] {
     if dark {
         [
@@ -770,6 +848,21 @@ fn build_issue_report_markdown(
     }
 }
 
+fn specialist_metric_count(list: &Option<Vec<String>>, inherit_label: &str) -> String {
+    match list {
+        Some(items) => items.len().to_string(),
+        None => inherit_label.to_string(),
+    }
+}
+
+fn specialist_sop_count(instructions: &str) -> String {
+    if instructions.trim().is_empty() {
+        "0".into()
+    } else {
+        "1".into()
+    }
+}
+
 fn github_issue_draft_url(title: &str, body: &str) -> String {
     let title = js_sys::encode_uri_component(title)
         .as_string()
@@ -866,6 +959,8 @@ pub(super) fn SettingsView(
     test_reviewer_form: Callback<web_sys::MouseEvent>,
     validate_model_form: Callback<web_sys::MouseEvent>,
     start_specialist_chat: Callback<web_sys::MouseEvent>,
+    chat_with_specialist: Callback<String>,
+    open_files_panel: Callback<()>,
     refresh_conns: Callback<()>,
     refresh_skills: Callback<()>,
     reload_skills: Callback<()>,
@@ -1004,6 +1099,12 @@ pub(super) fn SettingsView(
             browser_filters_busy.set(false);
         });
     });
+    // Pet settings are hidden from the nav; bounce any leftover deep-link away.
+    create_effect(move |_| {
+        if settings_section.get() == "pet" {
+            settings_section.set("general".into());
+        }
+    });
     create_effect(move |_| {
         if settings_section.get() != "memory" {
             memory_project_menu_open.set(false);
@@ -1070,6 +1171,64 @@ pub(super) fn SettingsView(
     // Model-list drag-reorder state (local — no need to hoist to the app shell).
     let drag_model = create_rw_signal(None::<String>);
     let drop_model = create_rw_signal(None::<String>);
+    let model_providers = create_rw_signal(Vec::<ModelProvider>::new());
+    let provider_form = create_rw_signal(None::<ProviderForm>);
+    let provider_form_key = create_rw_signal(String::new());
+    let provider_clear_key = create_rw_signal(false);
+    let provider_form_msg = create_rw_signal(None::<(bool, String)>);
+    let managing_provider_id = create_rw_signal(None::<String>);
+    let model_manager_search = create_rw_signal(String::new());
+    let pending_preset_model = create_rw_signal(None::<PendingPresetModel>);
+    let close_models_step = {
+        move || {
+            if model_form.get_untracked().is_some() {
+                model_form.set(None);
+                model_form_key.set(String::new());
+                model_form_msg.set(None);
+                return;
+            }
+            if provider_form.get_untracked().is_some() {
+                provider_form.set(None);
+                provider_form_key.set(String::new());
+                provider_clear_key.set(false);
+                provider_form_msg.set(None);
+                pending_preset_model.set(None);
+                return;
+            }
+            if managing_provider_id.get_untracked().is_some() {
+                managing_provider_id.set(None);
+                model_manager_search.set(String::new());
+                return;
+            }
+            close_settings_subpage.call(());
+        }
+    };
+    let refresh_model_providers = move || {
+        spawn_local(async move {
+            if let Ok(value) = invoke_checked("list_model_providers", JsValue::UNDEFINED).await {
+                if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProvider>>(value) {
+                    model_providers.set(list);
+                }
+            }
+        });
+    };
+    create_effect(move |_| {
+        if show_settings.get() && settings_section.get() == "models" {
+            let _ = models.get();
+            refresh_model_providers();
+        }
+    });
+    create_effect(move |_| {
+        if settings_section.get() != "models" {
+            provider_form.set(None);
+            provider_form_key.set(String::new());
+            provider_clear_key.set(false);
+            provider_form_msg.set(None);
+            managing_provider_id.set(None);
+            model_manager_search.set(String::new());
+            pending_preset_model.set(None);
+        }
+    });
     // Agent-created SSH trust edges (`configure_ssh_trust`), shown under the
     // hosts they involve so the user can see and revoke them. Reloaded each
     // time the Environments section opens.
@@ -1111,7 +1270,9 @@ pub(super) fn SettingsView(
             return true;
         }
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
-            if let Ok(Some(details)) = document.query_selector("details.settings-add-menu[open]") {
+            if let Ok(Some(details)) = document.query_selector(
+                "details.settings-add-menu[open], details.settings-join-sync[open]",
+            ) {
                 let _ = details.remove_attribute("open");
                 return true;
             }
@@ -1120,10 +1281,30 @@ pub(super) fn SettingsView(
             quick_action_form.set(None);
             return true;
         }
+        if settings_section.get_untracked() == "models" {
+            if model_form.get_untracked().is_some() {
+                model_form.set(None);
+                model_form_key.set(String::new());
+                model_form_msg.set(None);
+                return true;
+            }
+            if provider_form.get_untracked().is_some() {
+                provider_form.set(None);
+                provider_form_key.set(String::new());
+                provider_clear_key.set(false);
+                provider_form_msg.set(None);
+                pending_preset_model.set(None);
+                return true;
+            }
+            if managing_provider_id.get_untracked().is_some() {
+                managing_provider_id.set(None);
+                model_manager_search.set(String::new());
+                return true;
+            }
+        }
         // Breadcrumb subpages (memory file, model/ACP/specialist/conn/channel
         // editors): one Escape returns to the section list, not the app.
         let has_subpage = memory_selected.get_untracked().is_some()
-            || model_form.get_untracked().is_some()
             || acp_form.get_untracked().is_some()
             || specialist_form.get_untracked().is_some()
             || conn_form.get_untracked().is_some()
@@ -1232,7 +1413,7 @@ pub(super) fn SettingsView(
             focus_element_soon("sync-device-code");
         }
     });
-    let choose_sync_folder = move |_| {
+    let choose_sync_folder = move |_: web_sys::MouseEvent| {
         spawn_local(async move {
             let value = invoke("pick_directory", JsValue::UNDEFINED).await;
             if let Ok(path) = serde_wasm_bindgen::from_value::<String>(value) {
@@ -1343,17 +1524,14 @@ pub(super) fn SettingsView(
                     <span>{move || t(locale.get(), "settings.back_to_app")}</span>
                 </button>
                 <div class="settings-nav-title">{move || t(locale.get(), "settings.title")}</div>
-                <div class="settings-nav-group">
-                    <span class="settings-nav-label">{move || t(locale.get(), "settings.nav.workspace")}</span>
+                <div class="settings-nav-group" role="group" aria-labelledby="settings-nav-workspace">
+                    <span class="settings-nav-label" id="settings-nav-workspace">{move || t(locale.get(), "settings.nav.workspace")}</span>
                     <button class:active=move || settings_section.get()=="general"
                         on:click=move |_| go_settings_section.call("general".into())>
                         {move || t(locale.get(), "settings.nav.general")}</button>
                     <button class:active=move || settings_section.get()=="appearance"
                         on:click=move |_| go_settings_section.call("appearance".into())>
                         {move || t(locale.get(), "settings.nav.appearance")}</button>
-                    <button class:active=move || settings_section.get()=="pet"
-                        on:click=move |_| go_settings_section.call("pet".into())>
-                        {move || t(locale.get(), "settings.nav.pet")}</button>
                     <button class:active=move || settings_section.get()=="credentials"
                         on:click=move |_| go_settings_section.call("credentials".into())>
                         {move || t(locale.get(), "settings.nav.credentials")}</button>
@@ -1370,8 +1548,8 @@ pub(super) fn SettingsView(
                         on:click=move |_| go_settings_section.call("usage".into())>
                         {move || t(locale.get(), "settings.nav.usage")}</button>
                 </div>
-                <div class="settings-nav-group">
-                    <span class="settings-nav-label">{move || t(locale.get(), "settings.nav.capabilities")}</span>
+                <div class="settings-nav-group" role="group" aria-labelledby="settings-nav-capabilities">
+                    <span class="settings-nav-label" id="settings-nav-capabilities">{move || t(locale.get(), "settings.nav.capabilities")}</span>
                     <button class:active=move || settings_section.get()=="models"
                         on:click=move |_| go_settings_section.call("models".into())>
                         {move || t(locale.get(), "settings.nav.models")}</button>
@@ -1383,9 +1561,9 @@ pub(super) fn SettingsView(
                         data-testid="settings-nav-workflows"
                         on:click=move |_| go_settings_section.call("workflows".into())>
                         {move || t(locale.get(), "settings.nav.workflows")}</button>
-                    <button class:active=move || settings_section.get()=="specialists"
-                        on:click=move |_| go_settings_section.call("specialists".into())>
-                        {move || t(locale.get(), "settings.nav.specialists")}</button>
+                    <button type="button" data-testid="settings-nav-files"
+                        on:click=move |_| open_files_panel.call(())>
+                        {move || t(locale.get(), "settings.nav.files")}</button>
                     <button class:active=move || settings_section.get()=="memory"
                         on:click=move |_| go_settings_section.call("memory".into())>
                         {move || t(locale.get(), "settings.nav.memory")}</button>
@@ -1417,30 +1595,80 @@ pub(super) fn SettingsView(
                             v.connectors.into_iter().find(|c| c.key == k).map(|c| c.name)
                         })
                     });
-                    let sub = settings_subpage_label(
-                        loc,
-                        &sec,
-                        model_form.get().as_ref(),
-                        conn_form.get().as_ref(),
-                        open_conn_name.as_deref(),
-                        memory_selected.get().as_deref(),
-                        specialist_form.get().as_ref(),
-                        acp_form.get().as_ref(),
-                        channels_open.get().as_deref(),
-                    );
+                    let sub = if sec == "models" {
+                        if let Some(form) = acp_form.get().as_ref() {
+                            Some(if form.id.is_empty() {
+                                t(loc, "models.add_acp").into()
+                            } else {
+                                t(loc, "models.edit_acp").into()
+                            })
+                        } else if let Some(form) = model_form.get().as_ref() {
+                            Some(if form.id.is_some() {
+                                t(loc, "models.edit").into()
+                            } else {
+                                t(loc, "models.add").into()
+                            })
+                        } else if provider_form.get().is_some() {
+                            Some(if provider_form.get().and_then(|f| f.id).is_some() {
+                                t(loc, "providers.edit_title").into()
+                            } else {
+                                t(loc, "providers.add_title").into()
+                            })
+                        } else if let Some(pid) = managing_provider_id.get() {
+                            Some(
+                                model_providers
+                                    .get()
+                                    .into_iter()
+                                    .find(|p| p.id == pid)
+                                    .map(|p| p.label)
+                                    .unwrap_or_else(|| t(loc, "providers.models").into()),
+                            )
+                        } else {
+                            None
+                        }
+                    } else {
+                        settings_subpage_label(
+                            loc,
+                            &sec,
+                            model_form.get().as_ref(),
+                            conn_form.get().as_ref(),
+                            open_conn_name.as_deref(),
+                            memory_selected.get().as_deref(),
+                            specialist_form.get().as_ref(),
+                            acp_form.get().as_ref(),
+                            channels_open.get().as_deref(),
+                        )
+                    };
+                    let models_subpage_open = sec == "models"
+                        && (model_form.get().is_some()
+                            || provider_form.get().is_some()
+                            || managing_provider_id.get().is_some()
+                            || acp_form.get().is_some());
                     view! {
                         <div class="settings-head">
                             <div class="settings-head-main">
                                 {sub.is_some().then(|| view! {
                                     <button type="button" class="settings-head-back"
                                         title=move || t(locale.get(), "settings.back")
-                                        on:click=move |_| close_settings_subpage.call(())>{compose_icon("chevron-left")}</button>
+                                        on:click=move |_| {
+                                            if models_subpage_open {
+                                                close_models_step();
+                                            } else {
+                                                close_settings_subpage.call(());
+                                            }
+                                        }>{compose_icon("chevron-left")}</button>
                                 })}
                                 {move || if let Some(child) = sub.clone() {
                                     view! {
                                         <div class="settings-breadcrumb">
                                             <button type="button" class="settings-crumb-link"
-                                                on:click=move |_| close_settings_subpage.call(())>{parent.clone()}</button>
+                                                on:click=move |_| {
+                                                    if models_subpage_open {
+                                                        close_models_step();
+                                                    } else {
+                                                        close_settings_subpage.call(());
+                                                    }
+                                                }>{parent.clone()}</button>
                                             <span class="settings-crumb-sep">"›"</span>
                                             <span class="settings-crumb-current">{child}</span>
                                         </div>
@@ -2032,49 +2260,57 @@ pub(super) fn SettingsView(
                                                     .div_ceil(USAGE_SESSION_PAGE_SIZE)
                                                     .max(1);
                                                 view! {
-                                                    <div class="usage-table" data-testid="usage-session-table">
-                                                        <div class="usage-row usage-row-head">
-                                                            <span>{t(loc, "settings.usage.session")}</span>
-                                                            <span class="usage-num">{t(loc, "settings.usage.input")}</span>
-                                                            <span class="usage-num">{t(loc, "settings.usage.output")}</span>
-                                                            <span class="usage-num">{t(loc, "settings.usage.reasoning")}</span>
-                                                            <span class="usage-num">{t(loc, "settings.usage.cached")}</span>
-                                                        </div>
-                                                        {page.items.into_iter().map(|row| view! {
-                                                            <div class="usage-row" data-testid="usage-session-row" data-session-id=row.id>
-                                                                <span class="usage-session">
-                                                                    <span class="usage-session-title">{row.title}</span>
-                                                                    <span class="usage-session-when">{format_relative_time(row.updated_at, loc)}</span>
-                                                                </span>
-                                                                <span class="usage-num">{tokens(row.input)}</span>
-                                                                <span class="usage-num">{tokens(row.output)}</span>
-                                                                <span class="usage-num">{tokens(row.reasoning)}</span>
-                                                                <span class="usage-num">{tokens(row.cached)}</span>
+                                                    <section class="usage-card usage-sessions-card">
+                                                        <div class="usage-card-head">
+                                                            <div>
+                                                                <h3>{t(loc, "settings.usage.session_list")}</h3>
+                                                                <p>{t(loc, "settings.usage.session_list_hint")}</p>
                                                             </div>
-                                                        }).collect_view()}
-                                                    </div>
-                                                    {(page_count > 1).then(|| view! {
-                                                        <div class="usage-pagination" data-testid="usage-pagination">
-                                                            <button type="button" class="btn-ghost"
-                                                                disabled=(current_page == 0).then_some("")
-                                                                on:click=move |_| usage_session_page.update(|page| {
-                                                                    *page = page.saturating_sub(1);
-                                                                })>
-                                                                {t(loc, "settings.usage.previous")}
-                                                            </button>
-                                                            <span>{tf(loc, "settings.usage.page", &[
-                                                                ("page", &(current_page + 1).to_string()),
-                                                                ("pages", &page_count.to_string()),
-                                                            ])}</span>
-                                                            <button type="button" class="btn-ghost"
-                                                                disabled=(current_page + 1 >= page_count).then_some("")
-                                                                on:click=move |_| usage_session_page.update(|page| {
-                                                                    *page = (*page + 1).min(page_count - 1);
-                                                                })>
-                                                                {t(loc, "settings.usage.next")}
-                                                            </button>
                                                         </div>
-                                                    })}
+                                                        <div class="usage-table usage-session-table" data-testid="usage-session-table">
+                                                            <div class="usage-row usage-row-head">
+                                                                <span>{t(loc, "settings.usage.session")}</span>
+                                                                <span class="usage-num">{t(loc, "settings.usage.input")}</span>
+                                                                <span class="usage-num">{t(loc, "settings.usage.output")}</span>
+                                                                <span class="usage-num">{t(loc, "settings.usage.reasoning")}</span>
+                                                                <span class="usage-num">{t(loc, "settings.usage.cached")}</span>
+                                                            </div>
+                                                            {page.items.into_iter().map(|row| view! {
+                                                                <div class="usage-row" data-testid="usage-session-row" data-session-id=row.id>
+                                                                    <span class="usage-session">
+                                                                        <span class="usage-session-title">{row.title}</span>
+                                                                        <span class="usage-session-when">{format_relative_time(row.updated_at, loc)}</span>
+                                                                    </span>
+                                                                    <span class="usage-num">{tokens(row.input)}</span>
+                                                                    <span class="usage-num">{tokens(row.output)}</span>
+                                                                    <span class="usage-num">{tokens(row.reasoning)}</span>
+                                                                    <span class="usage-num">{tokens(row.cached)}</span>
+                                                                </div>
+                                                            }).collect_view()}
+                                                        </div>
+                                                        {(page_count > 1).then(|| view! {
+                                                            <div class="usage-pagination" data-testid="usage-pagination">
+                                                                <button type="button" class="btn-ghost"
+                                                                    disabled=(current_page == 0).then_some("")
+                                                                    on:click=move |_| usage_session_page.update(|page| {
+                                                                        *page = page.saturating_sub(1);
+                                                                    })>
+                                                                    {t(loc, "settings.usage.previous")}
+                                                                </button>
+                                                                <span>{tf(loc, "settings.usage.page", &[
+                                                                    ("page", &(current_page + 1).to_string()),
+                                                                    ("pages", &page_count.to_string()),
+                                                                ])}</span>
+                                                                <button type="button" class="btn-ghost"
+                                                                    disabled=(current_page + 1 >= page_count).then_some("")
+                                                                    on:click=move |_| usage_session_page.update(|page| {
+                                                                        *page = (*page + 1).min(page_count - 1);
+                                                                    })>
+                                                                    {t(loc, "settings.usage.next")}
+                                                                </button>
+                                                            </div>
+                                                        })}
+                                                    </section>
                                                 }.into_view()
                                             }
                                         }}
@@ -2118,7 +2354,9 @@ pub(super) fn SettingsView(
                                         .unwrap_or(0)
                                         .max(1);
                                     view! {
-                                        <p class="settings-field-hint">{t(loc, "settings.usage.hint")}</p>
+                                        <div class="usage-pane-intro">
+                                            <p class="settings-field-hint">{t(loc, "settings.usage.hint")}</p>
+                                        </div>
                                         {usage_summary_view(loc, totals)}
                                         <section class="usage-card usage-activity-card" data-testid="usage-activity">
                                             <div class="usage-card-head">
@@ -2171,9 +2409,17 @@ pub(super) fn SettingsView(
                                                     }).collect_view()}
                                                 </div>
                                             </div>
+                                            <div class="usage-activity-legend" aria-hidden="true">
+                                                <span>{t(loc, "settings.usage.legend_less")}</span>
+                                                <i class="usage-activity-swatch level-0"></i>
+                                                <i class="usage-activity-swatch level-1"></i>
+                                                <i class="usage-activity-swatch level-2"></i>
+                                                <i class="usage-activity-swatch level-3"></i>
+                                                <i class="usage-activity-swatch level-4"></i>
+                                                <span>{t(loc, "settings.usage.legend_more")}</span>
+                                            </div>
                                         </section>
                                         <div class="usage-overview-grid">
-                                            <div class="usage-left-stack">
                                             <section class="usage-card usage-model-card" data-testid="usage-model-share">
                                                 <div class="usage-card-head">
                                                     <div>
@@ -2263,61 +2509,62 @@ pub(super) fn SettingsView(
                                                     }.into_view()
                                                 }}
                                             </section>
-                                            </div>
-                                            <section class="usage-card usage-workspaces-card">
-                                                <div class="usage-card-head">
-                                                    <div>
-                                                        <h3>{t(loc, "settings.usage.workspaces")}</h3>
-                                                        <p>{t(loc, "settings.usage.workspaces_hint")}</p>
-                                                    </div>
-                                                </div>
-                                                <div class="usage-table">
-                                                    <div class="usage-row usage-row-head">
-                                                        <span>{t(loc, "settings.usage.workspace")}</span>
-                                                        <span class="usage-num">{t(loc, "settings.usage.input")}</span>
-                                                        <span class="usage-num">{t(loc, "settings.usage.output")}</span>
-                                                        <span class="usage-num">{t(loc, "settings.usage.reasoning")}</span>
-                                                        <span class="usage-num">{t(loc, "settings.usage.cached")}</span>
-                                                    </div>
-                                                    {overview.workspaces.into_iter().map(|row| {
-                                                        let selected = row.clone();
-                                                        let name = if row.name.trim().is_empty() {
-                                                            row.project_id.clone()
-                                                        } else {
-                                                            row.name.clone()
-                                                        };
-                                                        let sessions = tf(loc, "settings.usage.sessions", &[
-                                                            ("n", &row.session_count.max(0).to_string()),
-                                                        ]);
-                                                        view! {
-                                                            <button type="button" class="usage-row usage-workspace-row"
-                                                                data-testid="usage-workspace-row"
-                                                                data-workspace-id=row.project_id
-                                                                aria-label=tf(loc, "settings.usage.open_workspace", &[("name", &name)])
-                                                                on:click=move |_| {
-                                                                    usage_session_page.set(0);
-                                                                    session_token_usage.set(None);
-                                                                    selected_usage_workspace.set(Some(selected.clone()));
-                                                                }>
-                                                                <span class="usage-session">
-                                                                    <span class="usage-session-title">{name}</span>
-                                                                    <span class="usage-session-when">
-                                                                        {sessions}" · "{format_relative_time(row.updated_at, loc)}
-                                                                    </span>
-                                                                    {(!row.workspace_dir.is_empty()).then(|| view! {
-                                                                        <span class="usage-workspace-path" title=row.workspace_dir.clone()>{row.workspace_dir}</span>
-                                                                    })}
-                                                                </span>
-                                                                <span class="usage-num">{tokens(row.input)}</span>
-                                                                <span class="usage-num">{tokens(row.output)}</span>
-                                                                <span class="usage-num">{tokens(row.reasoning)}</span>
-                                                                <span class="usage-num">{tokens(row.cached)}</span>
-                                                            </button>
-                                                        }
-                                                    }).collect_view()}
-                                                </div>
-                                            </section>
                                         </div>
+                                        <section class="usage-card usage-workspaces-card">
+                                            <div class="usage-card-head">
+                                                <div>
+                                                    <h3>{t(loc, "settings.usage.workspaces")}</h3>
+                                                    <p>{t(loc, "settings.usage.workspaces_hint")}</p>
+                                                </div>
+                                            </div>
+                                            <div class="usage-table usage-workspace-table">
+                                                <div class="usage-row usage-row-head">
+                                                    <span>{t(loc, "settings.usage.workspace")}</span>
+                                                    <span class="usage-num">{t(loc, "settings.usage.input")}</span>
+                                                    <span class="usage-num">{t(loc, "settings.usage.output")}</span>
+                                                    <span class="usage-num">{t(loc, "settings.usage.reasoning")}</span>
+                                                    <span class="usage-num">{t(loc, "settings.usage.cached")}</span>
+                                                    <span class="usage-row-chevron" aria-hidden="true"></span>
+                                                </div>
+                                                {overview.workspaces.into_iter().map(|row| {
+                                                    let selected = row.clone();
+                                                    let name = if row.name.trim().is_empty() {
+                                                        row.project_id.clone()
+                                                    } else {
+                                                        row.name.clone()
+                                                    };
+                                                    let sessions = tf(loc, "settings.usage.sessions", &[
+                                                        ("n", &row.session_count.max(0).to_string()),
+                                                    ]);
+                                                    view! {
+                                                        <button type="button" class="usage-row usage-workspace-row"
+                                                            data-testid="usage-workspace-row"
+                                                            data-workspace-id=row.project_id
+                                                            aria-label=tf(loc, "settings.usage.open_workspace", &[("name", &name)])
+                                                            on:click=move |_| {
+                                                                usage_session_page.set(0);
+                                                                session_token_usage.set(None);
+                                                                selected_usage_workspace.set(Some(selected.clone()));
+                                                            }>
+                                                            <span class="usage-session">
+                                                                <span class="usage-session-title">{name}</span>
+                                                                <span class="usage-session-when">
+                                                                    {sessions}" · "{format_relative_time(row.updated_at, loc)}
+                                                                </span>
+                                                                {(!row.workspace_dir.is_empty()).then(|| view! {
+                                                                    <span class="usage-workspace-path" title=row.workspace_dir.clone()>{row.workspace_dir}</span>
+                                                                })}
+                                                            </span>
+                                                            <span class="usage-num">{tokens(row.input)}</span>
+                                                            <span class="usage-num">{tokens(row.output)}</span>
+                                                            <span class="usage-num">{tokens(row.reasoning)}</span>
+                                                            <span class="usage-num">{tokens(row.cached)}</span>
+                                                            <span class="usage-row-chevron" aria-hidden="true">"›"</span>
+                                                        </button>
+                                                    }
+                                                }).collect_view()}
+                                            </div>
+                                        </section>
                                     }.into_view()
                                 }
                             }
@@ -2534,40 +2781,6 @@ pub(super) fn SettingsView(
                             <div class="settings-pane settings-pane-subpage">
                                 <div class="conn-form model-form">
                                     <div class="settings-form-grid">
-                                        <label class="span-2">{move || t(locale.get(), "settings.provider")}
-                                            <select data-testid="settings-provider"
-                                                on:change=move|ev| {
-                                                    let p = dom_value(&ev);
-                                                    model_form.update(|o| if let Some(o)=o {
-                                                        let (api_url, model) = settings_provider_defaults(&p);
-                                                        o.provider = settings_provider_value(&p).into();
-                                                        o.api_url = api_url.into();
-                                                        o.model = model.into();
-                                                    });
-                                                    apply_catalog_limits(model_form, model_catalog_limits);
-                                                }
-                                                >
-                                                <option value="openai"
-                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "openai")>
-                                                    {move || t(locale.get(), "settings.provider.openai")}
-                                                </option>
-                                                <option value="openai_responses"
-                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "openai_responses")>
-                                                    {move || t(locale.get(), "settings.provider.openai_responses")}
-                                                </option>
-                                                <option value="anthropic"
-                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "anthropic")>
-                                                    {move || t(locale.get(), "settings.provider.anthropic")}
-                                                </option>
-                                            </select>
-                                        </label>
-                                        <label class="span-2">{move || t(locale.get(), "settings.api_url")}
-                                            <input aria-describedby="model-api-url-hint"
-                                                prop:value=move || model_form.get().map(|f| f.api_url.clone()).unwrap_or_default()
-                                                on:input=move |ev| model_form.update(|o| if let Some(o)=o { o.api_url = event_target_input(&ev).value(); }) /></label>
-                                        <span id="model-api-url-hint" class="hint span-2" data-testid="model-api-url-hint">
-                                            {move || t(locale.get(), "settings.tip")}
-                                        </span>
                                         <label>{move || t(locale.get(), "settings.label")}
                                             <input prop:value=move || model_form.get().map(|f| f.label.clone()).unwrap_or_default()
                                                 placeholder=move || t(locale.get(), "settings.label_ph")
@@ -2620,8 +2833,6 @@ pub(super) fn SettingsView(
                                                     .iter()
                                                     .map(|v| v.to_string())
                                                     .collect();
-                                                // Keep a saved value visible even when the curated
-                                                // list for this model no longer includes it.
                                                 if !current.is_empty() && !values.iter().any(|v| v == &current) {
                                                     values.push(current.clone());
                                                 }
@@ -2644,9 +2855,6 @@ pub(super) fn SettingsView(
                                                 }
                                             }}
                                         </label>
-                                        // Hint lives OUTSIDE the <label> on purpose: its text mentions
-                                        // "model", and nesting it would fold that into the <select>'s
-                                        // accessible name, so getByLabel("Model") would match it (#e2e).
                                         <span class="hint effort-hint span-2">{move || {
                                             let form = model_form.get();
                                             let provider = form.as_ref().map(|f| f.provider.clone()).unwrap_or_default();
@@ -2692,27 +2900,352 @@ pub(super) fn SettingsView(
                                             </label>
                                             <span class="hint span-2">{move || t(locale.get(), "settings.image_generation_hint")}</span>
                                         </div>
+                                    </div>
+                                    {move || model_form_msg.get().map(|(ok, text)| view! {
+                                        <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
+                                    })}
+                                    <div class="row settings-footer">
+                                        <button type="button" disabled=move || settings_busy.get() on:click=move |ev| validate_model_form.call(ev)>{move || t(locale.get(), "settings.validate")}</button>
+                                        <button type="button" disabled=move || settings_busy.get() on:click=move |_| close_models_step()>{move || t(locale.get(), "settings.cancel")}</button>
+                                        <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_model_form.call(ev)>{move || t(locale.get(), "settings.save")}</button>
+                                    </div>
+                                </div>
+                            </div>
+                        }.into_view()
+                    } else if provider_form.get().is_some() {
+                        view! {
+                            <div class="settings-pane settings-pane-subpage">
+                                <div class="conn-form model-form">
+                                    <div class="settings-form-grid">
+                                        <label class="span-2">{move || t(locale.get(), "settings.label")}
+                                            <input prop:value=move || provider_form.get().map(|f| f.label.clone()).unwrap_or_default()
+                                                on:input=move |ev| provider_form.update(|o| if let Some(o)=o { o.label = event_target_input(&ev).value(); }) /></label>
+                                        <label class="span-2">{move || t(locale.get(), "settings.provider")}
+                                            <select data-testid="settings-provider"
+                                                on:change=move|ev| {
+                                                    let p = dom_value(&ev);
+                                                    provider_form.update(|o| if let Some(o)=o {
+                                                        o.protocol = settings_provider_value(&p).into();
+                                                        let (api_url, _) = settings_provider_defaults(&p);
+                                                        o.api_url = api_url.into();
+                                                    });
+                                                }>
+                                                <option value="openai"
+                                                    prop:selected=move || provider_form.get().is_some_and(|f| settings_provider_value(&f.protocol) == "openai")>
+                                                    {move || t(locale.get(), "settings.provider.openai")}
+                                                </option>
+                                                <option value="openai_responses"
+                                                    prop:selected=move || provider_form.get().is_some_and(|f| settings_provider_value(&f.protocol) == "openai_responses")>
+                                                    {move || t(locale.get(), "settings.provider.openai_responses")}
+                                                </option>
+                                                <option value="anthropic"
+                                                    prop:selected=move || provider_form.get().is_some_and(|f| settings_provider_value(&f.protocol) == "anthropic")>
+                                                    {move || t(locale.get(), "settings.provider.anthropic")}
+                                                </option>
+                                            </select>
+                                        </label>
+                                        <label class="span-2">{move || t(locale.get(), "settings.api_url")}
+                                            <input aria-label=move || t(locale.get(), "settings.api_url")
+                                                aria-describedby="model-api-url-hint"
+                                                prop:value=move || provider_form.get().map(|f| f.api_url.clone()).unwrap_or_default()
+                                                on:input=move |ev| provider_form.update(|o| if let Some(o)=o { o.api_url = event_target_input(&ev).value(); }) /></label>
+                                        <span id="model-api-url-hint" class="hint span-2" data-testid="model-api-url-hint">
+                                            {move || t(locale.get(), "settings.tip")}
+                                        </span>
                                         <label class="span-2">{move || t(locale.get(), "settings.api_key")}
-                                            <input type="password" id="model-form-api-key" prop:value=move || model_form_key.get()
+                                            <input type="password" id="model-form-api-key" prop:value=move || provider_form_key.get()
                                                 placeholder=move || {
-                                                    let Some(id) = model_form.get().and_then(|f| f.id) else { return String::new(); };
-                                                    if models.get().iter().any(|m| m.id == id && m.has_api_key) {
+                                                    if provider_form.get().is_some_and(|f| {
+                                                        f.id.as_ref().and_then(|id| {
+                                                            model_providers.get().iter().find(|p| p.id == *id).map(|p| p.has_api_key)
+                                                        }).unwrap_or(false)
+                                                    }) {
                                                         t(locale.get(), "settings.stored_key").to_string()
                                                     } else {
                                                         String::new()
                                                     }
                                                 }
                                                 autocomplete="new-password"
-                                                on:input=move |ev| model_form_key.set(event_target_input(&ev).value()) /></label>
+                                                on:input=move |ev| provider_form_key.set(event_target_input(&ev).value()) /></label>
+                                        {move || provider_form.get().is_some_and(|f| {
+                                            f.id.as_ref().and_then(|id| {
+                                                model_providers.get().iter().find(|p| p.id == *id).map(|p| p.has_api_key)
+                                            }).unwrap_or(false)
+                                        }).then(|| view! {
+                                            <label class="span-2 settings-check">
+                                                <input type="checkbox" prop:checked=move || provider_clear_key.get()
+                                                    on:change=move|ev| provider_clear_key.set(event_target_checked(&ev)) />
+                                                <span>{move || t(locale.get(), "providers.clear_key")}</span>
+                                            </label>
+                                        })}
                                     </div>
-                                    {move || model_form_msg.get().map(|(ok, text)| view! {
+                                    {move || provider_form_msg.get().map(|(ok, text)| view! {
                                         <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
                                     })}
                                     <div class="row settings-footer">
-                                            <button type="button" disabled=move || settings_busy.get() on:click=move |ev| validate_model_form.call(ev)>{move || t(locale.get(), "settings.validate")}</button>
-                                        <button type="button" disabled=move || settings_busy.get() on:click=move |_| close_settings_subpage.call(())>{move || t(locale.get(), "settings.cancel")}</button>
-                                            <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_model_form.call(ev)>{move || t(locale.get(), "settings.save")}</button>
+                                        <button type="button" disabled=move || settings_busy.get() on:click=move |_| {
+                                            let Some(form) = provider_form.get() else { return; };
+                                            let loc = locale.get();
+                                            if form.api_url.trim().is_empty() {
+                                                provider_form_msg.set(Some((false, t(loc, "err.api_url_required").into())));
+                                                return;
+                                            }
+                                            let validate_model = form.id.as_ref().and_then(|pid| {
+                                                models.get().iter().find(|m| m.provider_id == *pid).map(|m| m.model.clone())
+                                            }).filter(|m| !m.trim().is_empty()).unwrap_or_else(|| "gpt-4o".into());
+                                            let key = provider_form_key.get();
+                                            let has_key = form.id.as_ref().and_then(|id| {
+                                                model_providers.get().iter().find(|p| p.id == *id).map(|p| p.has_api_key)
+                                            }).unwrap_or(false);
+                                            let mut cfg = Settings::default();
+                                            cfg.provider = settings_provider_value(&form.protocol).into();
+                                            cfg.api_url = form.api_url.trim().into();
+                                            cfg.model = validate_model;
+                                            cfg.has_api_key = has_key && key.is_empty();
+                                            settings_busy.set(true);
+                                            provider_form_msg.set(Some((true, t(loc, "status.validating").into())));
+                                            spawn_local(async move {
+                                                let res = invoke_timeout(
+                                                    "validate_settings",
+                                                    to_value(&serde_json::json!({
+                                                        "settings": cfg,
+                                                        "key": key,
+                                                        "profileId": None::<String>,
+                                                    })).unwrap(),
+                                                    35_000,
+                                                ).await;
+                                                match res {
+                                                    Ok(v) => {
+                                                        let raw = v.as_string().unwrap_or_else(|| t(loc, "status.validation_succeeded").into());
+                                                        provider_form_msg.set(Some((true, localize_backend(loc, &raw))));
+                                                    }
+                                                    Err(err) => {
+                                                        provider_form_msg.set(Some((false, tf(
+                                                            loc,
+                                                            "status.validation_failed",
+                                                            &[("msg", &localize_backend(loc, &js_error_text(err)))],
+                                                        ))));
+                                                    }
+                                                }
+                                                settings_busy.set(false);
+                                            });
+                                        }>{move || t(locale.get(), "settings.validate")}</button>
+                                        <button type="button" disabled=move || settings_busy.get() on:click=move |_| close_models_step()>{move || t(locale.get(), "settings.cancel")}</button>
+                                        <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |_| {
+                                            let Some(form) = provider_form.get() else { return; };
+                                            let loc = locale.get();
+                                            if form.label.trim().is_empty() {
+                                                provider_form_msg.set(Some((false, t(loc, "err.api_url_required").into())));
+                                                return;
+                                            }
+                                            if form.api_url.trim().is_empty() {
+                                                provider_form_msg.set(Some((false, t(loc, "err.api_url_required").into())));
+                                                return;
+                                            }
+                                            let key = provider_form_key.get();
+                                            let clear_key = provider_clear_key.get();
+                                            let pending = pending_preset_model.get();
+                                            let payload = provider_payload(&form);
+                                            settings_busy.set(true);
+                                            provider_form_msg.set(Some((true, t(loc, "status.saving_settings").into())));
+                                            spawn_local(async move {
+                                                let arg = to_value(&serde_json::json!({
+                                                    "provider": payload,
+                                                    "key": if key.is_empty() { None } else { Some(key) },
+                                                    "clearKey": if clear_key { Some(true) } else { None },
+                                                })).unwrap();
+                                                match invoke_checked("save_model_provider", arg).await {
+                                                    Ok(value) => {
+                                                        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProvider>>(value) {
+                                                            model_providers.set(list.clone());
+                                                            if let Ok(models_value) = invoke_checked("list_models", JsValue::UNDEFINED).await {
+                                                                if let Ok(model_list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(models_value) {
+                                                                    models.set(model_list);
+                                                                }
+                                                            }
+                                                            if let Some(preset) = pending {
+                                                                if let Some(provider) = find_provider_by_url(&list, &preset.api_url) {
+                                                                    if provider.has_api_key {
+                                                                        open_preset_model_form(
+                                                                            model_form,
+                                                                            model_catalog_limits,
+                                                                            model_form_key,
+                                                                            model_form_msg,
+                                                                            show_acp_agents,
+                                                                            &preset.label,
+                                                                            &preset.api_url,
+                                                                            &preset.model,
+                                                                            provider,
+                                                                        );
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        provider_form.set(None);
+                                                        provider_form_key.set(String::new());
+                                                        provider_clear_key.set(false);
+                                                        pending_preset_model.set(None);
+                                                        provider_form_msg.set(Some((true, t(loc, "status.settings_saved").into())));
+                                                        refresh_model_providers();
+                                                    }
+                                                    Err(err) => {
+                                                        provider_form_msg.set(Some((false, localize_backend(loc, &js_error_text(err)))));
+                                                    }
+                                                }
+                                                settings_busy.set(false);
+                                            });
+                                        }>{move || t(locale.get(), "settings.save")}</button>
                                     </div>
+                                </div>
+                            </div>
+                        }.into_view()
+                    } else if managing_provider_id.get().is_some() {
+                        view! {
+                            <div class="settings-pane settings-pane-subpage model-settings-pane">
+                                <div class="model-manager-toolbar">
+                                    <label class="model-manager-search">
+                                        <input type="search"
+                                            placeholder=move || t(locale.get(), "providers.search_models")
+                                            prop:value=move || model_manager_search.get()
+                                            on:input=move |ev| model_manager_search.set(event_target_input(&ev).value()) />
+                                    </label>
+                                    <button type="button" class="settings-add-btn" on:click=move |_| {
+                                        let Some(pid) = managing_provider_id.get() else { return; };
+                                        let Some(provider) = model_providers.get().into_iter().find(|p| p.id == pid) else { return; };
+                                        show_acp_agents.set(false);
+                                        model_form.set(Some(new_model_form_for_provider(&provider)));
+                                        model_form_key.set(String::new());
+                                        model_form_msg.set(None);
+                                    }>{move || t(locale.get(), "models.add")}</button>
+                                </div>
+                                <div class="settings-list">
+                                    <For each=move || {
+                                        let pid = managing_provider_id.get().unwrap_or_default();
+                                        let query = model_manager_search.get().trim().to_lowercase();
+                                        models.get().into_iter().filter(|m| {
+                                            m.provider_id == pid && (query.is_empty()
+                                                || m.label.to_lowercase().contains(&query)
+                                                || m.model.to_lowercase().contains(&query))
+                                        }).collect::<Vec<_>>()
+                                    } key=|m| (m.id.clone(), m.active) let:m>
+                                        {
+                                            let pick_id = m.id.clone();
+                                            let del_id = m.id.clone();
+                                            let del_label = m.label.clone();
+                                            let edit = m.clone();
+                                            let is_active = m.active;
+                                            let is_chat_model = m.is_chat_model();
+                                            let can_delete = models.get().iter().any(|other| {
+                                                other.id != m.id && other.is_chat_model()
+                                            });
+                                            let show_sub = !m.model.is_empty() && m.model != m.label;
+                                            let drag_id = m.id.clone();
+                                            let drag_cls = m.id.clone();
+                                            let enter_id = m.id.clone();
+                                            let drop_id = m.id.clone();
+                                            let over_cls = m.id.clone();
+                                            view! {
+                                                <div class="settings-list-row settings-list-row-link"
+                                                    class:settings-list-row-active=is_active
+                                                    class:dragging=move || drag_model.get().as_deref() == Some(drag_cls.as_str())
+                                                    class:model-drag-over=move || drop_model.get().as_deref() == Some(over_cls.as_str())
+                                                    attr:draggable="true"
+                                                    on:dragstart=move |ev: web_sys::DragEvent| {
+                                                        start_session_drag(&ev, &drag_id);
+                                                        drag_model.set(Some(drag_id.clone()));
+                                                    }
+                                                    on:dragend=move |_| {
+                                                        drag_model.set(None);
+                                                        drop_model.set(None);
+                                                    }
+                                                    on:dragover=move |ev: web_sys::DragEvent| allow_drop(&ev)
+                                                    on:dragenter=move |ev: web_sys::DragEvent| {
+                                                        allow_drop(&ev);
+                                                        if drop_model.get().as_deref() != Some(enter_id.as_str()) {
+                                                            drop_model.set(Some(enter_id.clone()));
+                                                        }
+                                                    }
+                                                    on:drop=move |ev: web_sys::DragEvent| {
+                                                        allow_drop(&ev);
+                                                        let from = drag_session_id(&ev, drag_model.get());
+                                                        drag_model.set(None);
+                                                        drop_model.set(None);
+                                                        let Some(from) = from.filter(|f| f != &drop_id) else { return };
+                                                        let mut list = models.get_untracked();
+                                                        let (Some(fi), Some(ti)) = (
+                                                            list.iter().position(|x| x.id == from),
+                                                            list.iter().position(|x| x.id == drop_id),
+                                                        ) else { return };
+                                                        let item = list.remove(fi);
+                                                        let at = list.iter().position(|x| x.id == drop_id).unwrap()
+                                                            + usize::from(fi < ti);
+                                                        list.insert(at, item);
+                                                        let ids: Vec<String> = list.iter().map(|x| x.id.clone()).collect();
+                                                        models.set(list);
+                                                        spawn_local(async move {
+                                                            let arg = to_value(&serde_json::json!({ "ids": ids })).unwrap();
+                                                            if let Ok(v) = invoke_checked("reorder_models", arg).await {
+                                                                if let Ok(l) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
+                                                                    models.set(l);
+                                                                }
+                                                            }
+                                                        });
+                                                    }
+                                                    on:click=move |_| {
+                                                        let form = profile_to_form(&edit);
+                                                        show_acp_agents.set(false);
+                                                        model_form.set(Some(form));
+                                                        model_form_key.set(String::new());
+                                                        model_form_msg.set(None);
+                                                    }>
+                                                    <span class="settings-list-grip" aria-hidden="true" title=move || t(locale.get(), "models.reorder")>"\u{283F}"</span>
+                                                    <div class="settings-list-main">
+                                                        <span class="settings-list-title">
+                                                            {m.label.clone()}
+                                                            {m.use_for_vision.then(|| view! { <span class="settings-cap-badge" title="vision">"vision"</span> })}
+                                                            {m.use_for_image_generation.then(|| view! {
+                                                                <span class="settings-cap-badge" title="image generation">"image gen"</span>
+                                                            })}
+                                                        </span>
+                                                        {show_sub.then(|| view! {
+                                                            <span class="settings-list-sub">{m.model.clone()}</span>
+                                                        })}
+                                                    </div>
+                                                    <div class="settings-list-actions">
+                                                        {is_active.then(|| view! {
+                                                            <span class="settings-active-mark" title="active">"✓"</span>
+                                                        })}
+                                                        {(can_delete && !is_active).then(|| { let id = del_id.clone(); view! {
+                                                            <button class="settings-list-remove" type="button" title=move || t(locale.get(), "models.remove")
+                                                                on:click=move |ev| {
+                                                                    ev.stop_propagation();
+                                                                    delete_confirm.set(Some(DeleteConfirm::Model {
+                                                                        id: id.clone(),
+                                                                        label: del_label.clone(),
+                                                                    }));
+                                                                }>{compose_icon("close")}</button>
+                                                        }})}
+                                                        {(!is_active && is_chat_model).then(|| { let id = pick_id.clone(); view! {
+                                                            <button class="settings-list-use" type="button"
+                                                                on:click=move |ev| {
+                                                                    ev.stop_propagation();
+                                                                    let id = id.clone();
+                                                                    spawn_local(async move {
+                                                                        let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
+                                                                        if let Ok(v) = invoke_checked("set_active_model", arg).await {
+                                                                            if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
+                                                                                models.set(list);
+                                                                            }
+                                                                        }
+                                                                    });
+                                                                }>{move || t(locale.get(), "models.use")}</button>
+                                                        }})}
+                                                        <span class="settings-list-chevron" aria-hidden="true">"›"</span>
+                                                    </div>
+                                                </div>
+                                            }
+                                        }
+                                    </For>
                                 </div>
                             </div>
                         }.into_view()
@@ -2755,11 +3288,12 @@ pub(super) fn SettingsView(
                                         view! {
                                             <button type="button" class="settings-add-btn" on:click=move |_| {
                                                 show_acp_agents.set(false);
-                                                model_form.set(Some(new_model_form()));
-                                                apply_catalog_limits(model_form, model_catalog_limits);
-                                                model_form_key.set(String::new());
-                                                model_form_msg.set(None);
-                                            }>{move || t(locale.get(), "models.add")}</button>
+                                                provider_form.set(Some(new_provider_form()));
+                                                provider_form_key.set(String::new());
+                                                provider_clear_key.set(false);
+                                                provider_form_msg.set(None);
+                                                pending_preset_model.set(None);
+                                            }>{move || t(locale.get(), "providers.add")}</button>
                                         }.into_view()
                                     }}
                                 </div>
@@ -2894,147 +3428,153 @@ pub(super) fn SettingsView(
                                             <button type="button" class="model-preset-btn"
                                                 on:click=move |_| {
                                                     show_acp_agents.set(false);
-                                                    model_form.set(Some(ModelForm {
+                                                    let preset = PendingPresetModel {
                                                         label: label.into(),
-                                                        provider: "openai".into(),
                                                         api_url: api_url.into(),
                                                         model: model.into(),
-                                                        max_tokens: 8192,
-                                                        context_window: 128_000,
-                                                        ..Default::default()
-                                                    }));
-                                                    apply_catalog_limits(model_form, model_catalog_limits);
-                                                    model_form_key.set(String::new());
-                                                    model_form_msg.set(None);
-                                                    focus_element_soon("model-form-api-key");
+                                                    };
+                                                    let existing = find_provider_by_url(&model_providers.get(), api_url).cloned();
+                                                    spawn_local(async move {
+                                                        settings_busy.set(true);
+                                                        let provider = if let Some(p) = existing {
+                                                            Some(p)
+                                                        } else {
+                                                            let arg = to_value(&serde_json::json!({
+                                                                "provider": {
+                                                                    "id": "",
+                                                                    "label": label,
+                                                                    "protocol": "openai",
+                                                                    "api_url": api_url,
+                                                                    "sort_order": 0,
+                                                                    "builtin": false,
+                                                                },
+                                                                "key": None::<String>,
+                                                                "clearKey": None::<bool>,
+                                                            })).unwrap();
+                                                            match invoke_checked("save_model_provider", arg).await {
+                                                                Ok(value) => {
+                                                                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProvider>>(value) {
+                                                                        model_providers.set(list.clone());
+                                                                        list.into_iter().find(|p| normalize_api_url(&p.api_url) == normalize_api_url(api_url))
+                                                                    } else {
+                                                                        None
+                                                                    }
+                                                                }
+                                                                Err(_) => None,
+                                                            }
+                                                        };
+                                                        settings_busy.set(false);
+                                                        let Some(provider) = provider else { return; };
+                                                        if provider.has_api_key {
+                                                            open_preset_model_form(
+                                                                model_form,
+                                                                model_catalog_limits,
+                                                                model_form_key,
+                                                                model_form_msg,
+                                                                show_acp_agents,
+                                                                label,
+                                                                api_url,
+                                                                model,
+                                                                &provider,
+                                                            );
+                                                        } else {
+                                                            pending_preset_model.set(Some(preset));
+                                                            provider_form.set(Some(provider_to_form(&provider)));
+                                                            provider_form_key.set(String::new());
+                                                            provider_clear_key.set(false);
+                                                            provider_form_msg.set(Some((
+                                                                false,
+                                                                t(locale.get(), "providers.preset_needs_key").into(),
+                                                            )));
+                                                            focus_element_soon("model-form-api-key");
+                                                        }
+                                                    });
                                                 }>{label}</button>
                                         }).collect_view()}
                                     </div>
-                                    <div class="settings-list">
-                                        <For each=move || models.get() key=|m| (m.id.clone(), m.active) let:m>
+                                    <div class="provider-cards" data-testid="provider-cards">
+                                        <For each=move || model_providers.get() key=|p| p.id.clone() let:provider>
                                             {
-                                                let pick_id = m.id.clone();
-                                                let del_id = m.id.clone();
-                                                let del_label = m.label.clone();
-                                                let edit = m.clone();
-                                                let is_active = m.active;
-                                                let is_chat_model = m.is_chat_model();
-                                                let can_delete = models.get().iter().any(|other| {
-                                                    other.id != m.id && other.is_chat_model()
-                                                });
-                                                let show_sub = !m.model.is_empty() && m.model != m.label;
-                                                let drag_id = m.id.clone();
-                                                let drag_cls = m.id.clone();
-                                                let enter_id = m.id.clone();
-                                                let drop_id = m.id.clone();
-                                                let over_cls = m.id.clone();
+                                                let icon = provider.label.chars().next().unwrap_or('?').to_string();
+                                                let badge_key = if provider.builtin {
+                                                    "providers.badge.builtin"
+                                                } else {
+                                                    "providers.badge.custom"
+                                                };
+                                                let count_label = tf(
+                                                    locale.get(),
+                                                    "providers.model_count",
+                                                    &[("n", &provider.model_count.to_string())],
+                                                );
+                                                let key_display = if provider.has_api_key {
+                                                    "••••".to_string()
+                                                } else {
+                                                    t(locale.get(), "providers.key_missing").into()
+                                                };
+                                                let settings_provider = provider.clone();
+                                                let models_provider = provider.clone();
+                                                let remove_provider = provider.clone();
+                                                let provider_id = provider.id.clone();
+                                                let key_ok = provider.has_api_key;
                                                 view! {
-                                                    <div class="settings-list-row settings-list-row-link"
-                                                        class:settings-list-row-active=is_active
-                                                        class:dragging=move || drag_model.get().as_deref() == Some(drag_cls.as_str())
-                                                        class:model-drag-over=move || drop_model.get().as_deref() == Some(over_cls.as_str())
-                                                        attr:draggable="true"
-                                                        on:dragstart=move |ev: web_sys::DragEvent| {
-                                                            start_session_drag(&ev, &drag_id);
-                                                            drag_model.set(Some(drag_id.clone()));
-                                                        }
-                                                        on:dragend=move |_| {
-                                                            drag_model.set(None);
-                                                            drop_model.set(None);
-                                                        }
-                                                        on:dragover=move |ev: web_sys::DragEvent| allow_drop(&ev)
-                                                        on:dragenter=move |ev: web_sys::DragEvent| {
-                                                            allow_drop(&ev);
-                                                            if drop_model.get().as_deref() != Some(enter_id.as_str()) {
-                                                                drop_model.set(Some(enter_id.clone()));
-                                                            }
-                                                        }
-                                                        on:drop=move |ev: web_sys::DragEvent| {
-                                                            allow_drop(&ev);
-                                                            let from = drag_session_id(&ev, drag_model.get());
-                                                            drag_model.set(None);
-                                                            drop_model.set(None);
-                                                            let Some(from) = from.filter(|f| f != &drop_id) else { return };
-                                                            let mut list = models.get_untracked();
-                                                            let (Some(fi), Some(ti)) = (
-                                                                list.iter().position(|x| x.id == from),
-                                                                list.iter().position(|x| x.id == drop_id),
-                                                            ) else { return };
-                                                            let item = list.remove(fi);
-                                                            // After removal the target shifts up by one when dragging
-                                                            // downward; insert after it so the row lands where dropped.
-                                                            let at = list.iter().position(|x| x.id == drop_id).unwrap()
-                                                                + usize::from(fi < ti);
-                                                            list.insert(at, item);
-                                                            let ids: Vec<String> = list.iter().map(|x| x.id.clone()).collect();
-                                                            models.set(list);
-                                                            spawn_local(async move {
-                                                                let arg = to_value(&serde_json::json!({ "ids": ids })).unwrap();
-                                                                if let Ok(v) = invoke_checked("reorder_models", arg).await {
-                                                                    if let Ok(l) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                                                                        models.set(l);
-                                                                    }
-                                                                }
-                                                            });
-                                                        }
-                                                        on:click=move |_| {
-                                                            let form = profile_to_form(&edit);
-                                                            show_acp_agents.set(false);
-                                                            model_form.set(Some(form));
-                                                            apply_catalog_limits(model_form, model_catalog_limits);
-                                                            model_form_key.set(String::new());
-                                                            model_form_msg.set(None);
-                                                        }>
-                                                        <span class="settings-list-grip" aria-hidden="true" title=move || t(locale.get(), "models.reorder")>"\u{283F}"</span>
-                                                        <div class="settings-list-main">
-                                                            <span class="settings-list-title">
-                                                                {m.label.clone()}
-                                                                {m.use_for_vision.then(|| view! { <span class="settings-cap-badge" title="vision">"vision"</span> })}
-                                                                {m.use_for_image_generation.then(|| view! {
-                                                                    <span class="settings-cap-badge" title="image generation">"image gen"</span>
-                                                                })}
+                                                    <article class="provider-card" data-testid="provider-card" data-provider-id=provider_id.clone()>
+                                                        <div class="provider-card-header">
+                                                            <span class="provider-card-icon" aria-hidden="true">{icon}</span>
+                                                            <div class="provider-card-title">
+                                                                <div class="provider-card-name-row">
+                                                                    <span class="provider-card-name">{provider.label.clone()}</span>
+                                                                    <span class="provider-card-badge" class:builtin=provider.builtin>
+                                                                        {move || t(locale.get(), badge_key)}
+                                                                    </span>
+                                                                </div>
+                                                                <span class="provider-card-endpoint" title=provider.api_url.clone()>
+                                                                    {provider.api_url.clone()}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                        <div class="provider-card-meta">
+                                                            <span class="provider-card-key" class:missing=!key_ok>
+                                                                {move || t(locale.get(), "providers.api_key")}
+                                                                " · "
+                                                                {key_display.clone()}
                                                             </span>
-                                                            {show_sub.then(|| view! {
-                                                                <span class="settings-list-sub">{m.model.clone()}</span>
+                                                            <span class="provider-card-count">{count_label.clone()}</span>
+                                                        </div>
+                                                        <div class="provider-card-footer">
+                                                            <button type="button" data-testid="provider-open-models"
+                                                                on:click=move |_| {
+                                                                    managing_provider_id.set(Some(models_provider.id.clone()));
+                                                                    model_manager_search.set(String::new());
+                                                                    model_form_msg.set(None);
+                                                                }>{move || t(locale.get(), "providers.models")}</button>
+                                                            <button type="button" data-testid="provider-open-settings"
+                                                                on:click=move |_| {
+                                                                    provider_form.set(Some(provider_to_form(&settings_provider)));
+                                                                    provider_form_key.set(String::new());
+                                                                    provider_clear_key.set(false);
+                                                                    provider_form_msg.set(None);
+                                                                    pending_preset_model.set(None);
+                                                                }>{move || t(locale.get(), "providers.settings")}</button>
+                                                            {(!provider.builtin).then(|| {
+                                                                let id = remove_provider.id.clone();
+                                                                let label = remove_provider.label.clone();
+                                                                view! {
+                                                                    <button type="button" class="danger"
+                                                                        on:click=move |_| {
+                                                                            delete_confirm.set(Some(DeleteConfirm::Provider {
+                                                                                id: id.clone(),
+                                                                                label: label.clone(),
+                                                                            }));
+                                                                        }>{move || t(locale.get(), "providers.remove")}</button>
+                                                                }
                                                             })}
                                                         </div>
-                                                        <div class="settings-list-actions">
-                                                            {is_active.then(|| view! {
-                                                                <span class="settings-active-mark" title="active">"✓"</span>
-                                                            })}
-                                                            {(can_delete && !is_active).then(|| { let id = del_id.clone(); view! {
-                                                                <button class="settings-list-remove" type="button" title=move || t(locale.get(), "models.remove")
-                                                                    on:click=move |ev| {
-                                                                        ev.stop_propagation();
-                                                                        delete_confirm.set(Some(DeleteConfirm::Model {
-                                                                            id: id.clone(),
-                                                                            label: del_label.clone(),
-                                                                        }));
-                                                                    }>{compose_icon("close")}</button>
-                                                            }})}
-                                                            {(!is_active && is_chat_model).then(|| { let id = pick_id.clone(); view! {
-                                                                <button class="settings-list-use" type="button"
-                                                                    on:click=move |ev| {
-                                                                        ev.stop_propagation();
-                                                                        let id = id.clone();
-                                                                        spawn_local(async move {
-                                                                            let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
-                                                                            if let Ok(v) = invoke_checked("set_active_model", arg).await {
-                                                                                if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                                                                                    models.set(list);
-                                                                                }
-                                                                            }
-                                                                        });
-                                                                    }>{move || t(locale.get(), "models.use")}</button>
-                                                            }})}
-                                                            <span class="settings-list-chevron" aria-hidden="true">"›"</span>
-                                                        </div>
-                                                    </div>
+                                                    </article>
                                                 }
                                             }
                                         </For>
                                     </div>
-                                    {move || models.get().is_empty().then(|| view! {
+                                    {move || model_providers.get().is_empty().then(|| view! {
                                         <p class="model-empty-hint">{move || t(locale.get(), "models.empty")}</p>
                                     })}
                                 }.into_view()
@@ -3587,8 +4127,108 @@ pub(super) fn SettingsView(
                             </div>
                         }.into_view()
                     } else {
+                        let render_specialist_card = move |s: Specialist| {
+                            let edit = s.clone();
+                            let chat_id = s.id.clone();
+                            let del_id = s.id.clone();
+                            let builtin = s.builtin;
+                            let icon = if s.icon.trim().is_empty() {
+                                "review".into()
+                            } else {
+                                s.icon.clone()
+                            };
+                            let avatar_clay = s.color == "clay" || s.color.trim().is_empty();
+                            let inherit = t(locale.get(), "specialists.metric.inherit");
+                            let materials = specialist_metric_count(&s.connectors, &inherit);
+                            let skills = specialist_metric_count(&s.skills, &inherit);
+                            let sop = specialist_sop_count(&s.instructions);
+                            let desc = if s.description.trim().is_empty() {
+                                t(locale.get(), "specialists.edit_hint")
+                            } else {
+                                s.description.clone()
+                            };
+                            let handle = if builtin {
+                                t(locale.get(), "specialists.handle.builtin")
+                            } else {
+                                t(locale.get(), "specialists.handle.custom")
+                            };
+                            let role = if builtin {
+                                t(locale.get(), "specialists.role.builtin")
+                            } else {
+                                t(locale.get(), "specialists.role.custom")
+                            };
+                            view! {
+                                <article class="specialist-card" data-testid=format!("specialist-card-{}", s.id)
+                                    title=move || t(locale.get(), "specialists.edit_hint")
+                                    on:click=move |_| {
+                                        model_form_msg.set(None);
+                                        specialist_skill_query.set(String::new());
+                                        specialist_form.set(Some(edit.clone()));
+                                    }>
+                                    <header class="specialist-card-head">
+                                        <span class="specialist-card-avatar" aria-hidden="true"
+                                            class:clay=avatar_clay>
+                                            {compose_icon(&icon)}
+                                        </span>
+                                        <div class="specialist-card-meta">
+                                            <strong class="specialist-card-title">
+                                                <span>{s.name.clone()}</span>
+                                                <span class="specialist-card-handle">{handle}</span>
+                                            </strong>
+                                            <span class="specialist-card-role">{role}</span>
+                                            <span class="specialist-card-status">
+                                                <i aria-hidden="true"></i>
+                                                {move || t(locale.get(), "specialists.status.ready")}
+                                            </span>
+                                        </div>
+                                        <div class="specialist-card-actions">
+                                            {(!builtin).then(|| {
+                                                let id = del_id.clone();
+                                                view! {
+                                                    <button type="button" class="specialist-card-action"
+                                                        data-testid=format!("specialist-remove-{}", id)
+                                                        title=move || t(locale.get(), "specialists.remove")
+                                                        aria-label=move || t(locale.get(), "specialists.remove")
+                                                        on:click=move |ev| {
+                                                            ev.stop_propagation();
+                                                            remove_specialist.call(id.clone());
+                                                        }>
+                                                        {compose_icon("close")}
+                                                    </button>
+                                                }
+                                            })}
+                                            <button type="button" class="specialist-card-action specialist-card-chat"
+                                                data-testid=format!("specialist-chat-{}", chat_id)
+                                                title=move || t(locale.get(), "specialists.chat_with")
+                                                aria-label=move || t(locale.get(), "specialists.chat_with")
+                                                on:click=move |ev| {
+                                                    ev.stop_propagation();
+                                                    chat_with_specialist.call(chat_id.clone());
+                                                }>
+                                                {compose_icon("chat")}
+                                            </button>
+                                        </div>
+                                    </header>
+                                    <p class="specialist-card-desc">{desc}</p>
+                                    <footer class="specialist-card-metrics">
+                                        <div>
+                                            <b>{materials}</b>
+                                            <span>{move || t(locale.get(), "specialists.metric.materials")}</span>
+                                        </div>
+                                        <div>
+                                            <b>{skills}</b>
+                                            <span>{move || t(locale.get(), "specialists.metric.skills")}</span>
+                                        </div>
+                                        <div>
+                                            <b>{sop}</b>
+                                            <span>{move || t(locale.get(), "specialists.metric.sop")}</span>
+                                        </div>
+                                    </footer>
+                                </article>
+                            }
+                        };
                         view! {
-                        <div class="settings-pane settings-pane-list">
+                        <div class="settings-pane settings-pane-list specialists-pane">
                             <div class="settings-toolbar settings-toolbar-end">
                                 <span class="settings-filter">{move || {
                                     let n = specialists.get().len();
@@ -3620,63 +4260,15 @@ pub(super) fn SettingsView(
                                 </details>
                             </div>
                             <div class="conn-group-label">{move || t(locale.get(), "specialists.builtin")}</div>
-                            <div class="settings-list">
+                            <div class="specialist-card-grid" data-testid="specialist-grid-builtin">
                                 <For each=move || { specialists.get().into_iter().filter(|s| s.builtin).collect::<Vec<_>>() } key=|s| s.id.clone() let:s>
-                                    {
-                                        let edit = s.clone();
-                                        view! {
-                                            <div class="settings-list-row settings-list-row-link"
-                                                on:click=move |_| {
-                                                    model_form_msg.set(None);
-                                                    specialist_skill_query.set(String::new());
-                                                    specialist_form.set(Some(edit.clone()));
-                                                }>
-                                                <div class="settings-list-main">
-                                                    <span class="settings-list-title">{s.name.clone()}</span>
-                                                    {(!s.description.is_empty()).then(|| view! {
-                                                        <span class="settings-list-sub">{s.description.clone()}</span>
-                                                    })}
-                                                </div>
-                                                <div class="settings-list-actions">
-                                                    <span class="settings-list-chevron" aria-hidden="true">"›"</span>
-                                                </div>
-                                            </div>
-                                        }
-                                    }
+                                    {render_specialist_card(s)}
                                 </For>
                             </div>
                             <div class="conn-group-label">{move || t(locale.get(), "specialists.custom")}</div>
-                            <div class="settings-list">
+                            <div class="specialist-card-grid" data-testid="specialist-grid-custom">
                                 <For each=move || { specialists.get().into_iter().filter(|s| !s.builtin).collect::<Vec<_>>() } key=|s| s.id.clone() let:s>
-                                    {
-                                        let edit = s.clone();
-                                        let del_id = s.id.clone();
-                                        view! {
-                                            <div class="settings-list-row settings-list-row-link"
-                                                on:click=move |_| {
-                                                    model_form_msg.set(None);
-                                                    specialist_skill_query.set(String::new());
-                                                    specialist_form.set(Some(edit.clone()));
-                                                }>
-                                                <div class="settings-list-main">
-                                                    <span class="settings-list-title">{s.name.clone()}</span>
-                                                    {(!s.description.is_empty()).then(|| view! {
-                                                        <span class="settings-list-sub">{s.description.clone()}</span>
-                                                    })}
-                                                </div>
-                                                <div class="settings-list-actions">
-                                                    {(!s.builtin).then(|| { let id = del_id.clone(); view! {
-                                                        <button class="settings-list-remove" type="button" title=move || t(locale.get(), "specialists.remove")
-                                                            on:click=move |ev| {
-                                                                ev.stop_propagation();
-                                                                remove_specialist.call(id.clone());
-                                                            }>{compose_icon("close")}</button>
-                                                    }})}
-                                                    <span class="settings-list-chevron" aria-hidden="true">"›"</span>
-                                                </div>
-                                            </div>
-                                        }
-                                    }
+                                    {render_specialist_card(s)}
                                 </For>
                             </div>
                         </div>
@@ -5011,11 +5603,12 @@ pub(super) fn SettingsView(
                         </div>
                     </div>
                 }.into_view())}
-                {move || (settings_section.get() == "channels" && channels_open.get().is_none()).then(|| view! {
-                    <div class="settings-pane">
-                        <div class="settings-form-grid">
-                            <div class="span-2 settings-sync-block">
-                                <h3>{move || t(locale.get(), "settings.sync.title")}</h3>
+                {move || (settings_section.get() == "channels").then(|| view! {
+                    <crate::channels_view::ChannelsPane locale=locale open=channels_open/>
+                    {move || channels_open.get().is_none().then(|| view! {
+                        <details class="settings-join-sync" data-testid="manual-project-sync">
+                            <summary>{move || t(locale.get(), "settings.sync.title")}</summary>
+                            <div class="settings-join-sync-body">
                                 <p class="settings-field-hint">{move || t(locale.get(), "settings.sync.hint")}</p>
                                 <label>{move || t(locale.get(), "settings.sync.backend")}
                                     <select data-testid="sync-backend"
@@ -5078,16 +5671,13 @@ pub(super) fn SettingsView(
                                         <span>{move || t(locale.get(), "projects.sync.join")}</span>
                                     </button>
                                 </div>
+                                <div class="row settings-footer">
+                                    <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
+                                    <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
+                                </div>
                             </div>
-                        </div>
-                        <div class="row settings-footer">
-                            <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
-                            <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
-                        </div>
-                    </div>
-                }.into_view())}
-                {move || (settings_section.get() == "channels").then(|| view! {
-                    <crate::channels_view::ChannelsPane locale=locale open=channels_open/>
+                        </details>
+                    })}
                 }.into_view())}
                 {move || (settings_section.get() == "permissions").then(|| view! {
                     <div class="settings-pane settings-pane-list">
@@ -5614,10 +6204,13 @@ pub(super) fn SettingsView(
                 let label = target.label().to_string();
                 let is_plugin = matches!(target, DeleteConfirm::Plugin { .. });
                 let is_skill = matches!(target, DeleteConfirm::Skill { .. });
+                let is_provider = matches!(target, DeleteConfirm::Provider { .. });
                 let (message_key, placeholder, action_key, test_id) = if is_plugin {
                     ("plugins.remove_confirm", "plugin", "plugins.remove", "plugin-remove-confirm")
                 } else if is_skill {
                     ("skills.remove_confirm", "skill", "skills.remove", "skill-remove-confirm")
+                } else if is_provider {
+                    ("providers.remove_confirm", "provider", "providers.remove", "provider-remove-confirm")
                 } else {
                     ("models.remove_confirm", "model", "models.remove", "model-delete-confirm")
                 };
@@ -5646,6 +6239,26 @@ pub(super) fn SettingsView(
                                                         models.set(list);
                                                     }
                                                 }
+                                            }
+                                            DeleteConfirm::Provider { id, .. } => {
+                                                settings_busy.set(true);
+                                                let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
+                                                match invoke_checked("remove_model_provider", arg).await {
+                                                    Ok(value) => {
+                                                        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProvider>>(value) {
+                                                            model_providers.set(list);
+                                                        }
+                                                        if managing_provider_id.get().as_deref() == Some(id.as_str()) {
+                                                            managing_provider_id.set(None);
+                                                        }
+                                                    }
+                                                    Err(error) => {
+                                                        let loc = locale.get();
+                                                        let msg = localize_backend(loc, &js_error_text(error));
+                                                        provider_form_msg.set(Some((false, msg)));
+                                                    }
+                                                }
+                                                settings_busy.set(false);
                                             }
                                             DeleteConfirm::Acp { id, .. } => {
                                                 settings_busy.set(true);

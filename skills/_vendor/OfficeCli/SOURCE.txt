@@ -1,0 +1,2 @@
+Source: https://github.com/iOfficeAI/OfficeCli
+Vendored skill dirs: officecli*, morph-ppt*

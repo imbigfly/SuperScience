@@ -1383,23 +1383,26 @@ pub(crate) fn render_item(
                 .and_then(|project| project.get().map(|project| project.root));
             let html = enrich_md_html(
                 md_to_html(text),
-                &[],
+                artifacts,
                 &[],
                 locale.get(),
                 project_root.as_deref(),
             );
+            let arts_for_click = artifacts.to_vec();
             view! {
                 <div class="assistant-wrap">
                     <div class="body md compact-markdown"
                         inner_html=html
                         on:click=move |ev: web_sys::MouseEvent| {
-                            handle_md_click(&ev, &[], &[], &on_artifact, &on_file)
+                            handle_md_click(&ev, &arts_for_click, &[], &on_artifact, &on_file)
                         }
                     ></div>
                 </div>
             }.into_view()
         }
-        ChatItem::Assistant { text, model, resources } => view! {
+        ChatItem::Assistant { text, model, resources } => {
+            let show_review = !session_id.trim().is_empty();
+            view! {
             <AssistantMessage
                 text=text.clone()
                 model=model.clone()
@@ -1418,6 +1421,7 @@ pub(crate) fn render_item(
                 on_branch=Callback::new(on_branch)
                 can_branch=can_branch
                 show_actions=show_actions
+                show_review=show_review
                 can_undo=can_undo
                 on_undo=on_undo
                 show_explore=show_explore
@@ -1425,7 +1429,8 @@ pub(crate) fn render_item(
                 explore_turn_index=explore_turn_index
                 on_explore=on_explore
             />
-        }.into_view(),
+        }.into_view()
+        }
         ChatItem::BranchMerge { text, branch_title, .. } => {
             let open_text = text.clone();
             let title = if branch_title.trim().is_empty() {

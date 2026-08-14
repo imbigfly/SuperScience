@@ -95,15 +95,22 @@ impl Agent {
         max_iter: usize,
         memory_enabled: bool,
         vision_cfg: Option<ProviderConfig>,
+        pii_firewall: bool,
     ) -> Self {
-        let provider = superscience_llm::build(cfg.clone());
-        let vision_provider = vision_cfg.map(superscience_llm::build);
+        let provider =
+            superscience_llm::maybe_wrap_pii_firewall(superscience_llm::build(cfg.clone()), pii_firewall);
+        let vision_provider = vision_cfg.map(|vision| {
+            superscience_llm::maybe_wrap_pii_firewall(superscience_llm::build(vision), pii_firewall)
+        });
         let mut tools = build_registry(skills, memory, memory_enabled);
         // The explore subagent shares the primary model but runs in its own
         // context; only its anchor (stats + conclusion + trace path) lands in
         // the main context.
         tools.add(Box::new(subagent::ExploreTool::new(
-            Arc::from(superscience_llm::build(cfg)),
+            Arc::from(superscience_llm::maybe_wrap_pii_firewall(
+                superscience_llm::build(cfg),
+                pii_firewall,
+            )),
             max_context,
         )));
         let session_path = root.join(".superscience").join("session.json");

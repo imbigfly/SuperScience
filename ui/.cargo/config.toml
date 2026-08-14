@@ -1,5 +1,7 @@
-[target.wasm32-unknown-unknown]
-# Disable reference-types so wasm-bindgen-cli 0.2.96 skips externref-xform.
-# webkit2gtk 2.52.3 ARM64 cannot expose externref tables in instance.exports,
-# so the externref optimization makes wisp-ui unrenderable on that engine.
-rustflags = ["-C", "target-feature=-reference-types"]
+# Linux/arm64 webkit2gtk 2.52.3 cannot expose wasm externref tables (upstream
+# v1.2.0). Enabling `-C target-feature=-reference-types` here also breaks
+# macOS Trunk + wasm-bindgen 0.2.127 (`__wbindgen_externref_table_alloc`).
+# This fork packages macOS locally; keep the Linux workaround in CI only.
+#
+# [target.wasm32-unknown-unknown]
+# rustflags = ["-C", "target-feature=-reference-types"]

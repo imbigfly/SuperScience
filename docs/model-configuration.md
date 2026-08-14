@@ -21,9 +21,32 @@ WebView unloads older reactive rows and keeps the latest 20; **Load earlier
 messages** restores the durable history from SQLite. This presentation limit
 does not change model context, exports, artifacts, or the saved transcript.
 
-SuperScience calls remote LLM APIs through model profiles. Desktop users
-configure these in **Settings -> Models**. Each row is a model profile with its
-own display name, provider, API URL, model ID, advanced options, and API key.
+SuperScience calls remote LLM APIs through **providers** and **model profiles**.
+Desktop users configure these in **Settings → Models**.
+
+### Providers
+
+Each provider card holds the shared connection settings:
+
+- Display name
+- Protocol (`openai` / `openai_responses` / `anthropic`)
+- Base URL
+- API key (stored in the local secrets file under `provider_key:{id}`)
+
+A built-in provider **天成TOKEN平台** (`https://www.tctoken.cn/v1`, OpenAI-compatible)
+is always present first. It cannot be deleted. New installs start with that
+provider and zero models until you add one.
+
+### Models under a provider
+
+Inside a provider, each model profile configures only model-specific fields:
+
+- Display name and model ID
+- Max output tokens and context window
+- Reasoning effort
+- Vision / image-generation role checkboxes
+
+Models under the same provider share that provider's URL, protocol, and API key.
 A models.dev catalog baked in at build time maps exact model IDs to the
 vendor's documented ceilings: for a catalog-known model the form auto-fills
 **Max output tokens** and **Context window** and shows the ceiling next to the
@@ -44,6 +67,10 @@ curated list as the model form in Settings).
 Choosing a level saves it as the profile's default — it applies to every
 conversation using that model and is not scoped to the current conversation.
 Choosing "default" clears the value so the provider decides.
+
+**Quick setup** presets (Kimi, GLM, DeepSeek, …) create or open the matching
+provider and then open the add-model form with known limits prefilled. If the
+provider has no API key yet, Settings opens the provider key field first.
 
 Model profiles describe model access and capabilities for the **built-in SuperScience
 agent**. External coding agents (Codex / Claude via ACP) are configured under
@@ -102,15 +129,15 @@ generate a billable validation image.
 
 ## API providers
 
-| Provider | Use when | Required fields |
+| Protocol | Use when | Configured on |
 | --- | --- | --- |
-| OpenAI-compatible | DeepSeek, GLM, local gateways, or any `/chat/completions` compatible endpoint | API URL, Model ID, API key |
-| OpenAI (Responses API) | OpenAI reasoning/tool-call models through `/v1/responses` | API URL, Model ID, API key |
-| Anthropic | Claude API through `/v1/messages` | API URL, Model ID, API key |
+| OpenAI-compatible | DeepSeek, GLM, 天成TOKEN, local gateways, or any `/chat/completions` compatible endpoint | Provider card (URL + key); model ID on each model |
+| OpenAI (Responses API) | OpenAI reasoning/tool-call models through `/v1/responses` | Provider card (URL + key); model ID on each model |
+| Anthropic | Claude API through `/v1/messages` | Provider card (URL + key); model ID on each model |
 
 Enter the provider's API base URL. Do not append `/v1`, `/chat/completions`,
 `/responses`, or `/v1/messages`; SuperScience adds the matching request path for the
-selected provider. For OpenAI-compatible services, SuperScience tries both
+selected protocol. For OpenAI-compatible services, SuperScience tries both
 `/chat/completions` and `/v1/chat/completions` when the base URL has no explicit
 version or endpoint path. It only falls back when the first route is missing or
 returns an obvious non-API response, so authentication and rate-limit failures
@@ -213,9 +240,18 @@ For OpenAI-compatible and Responses API profiles, SuperScience sends its interna
 This avoids the reserved `python` function-name collision on Codex models,
 including when the request is translated by gateways such as CLIProxyAPI.
 
-API keys are stored in the OS keyring. They are not stored in SQLite.
+API keys are stored in a local secrets file (not SQLite, not the OS keychain).
+On macOS, Keychain items are bound to the app code signature, so that backend
+is intentionally unused — updates would otherwise re-prompt for the login password.
 
-The desktop app stores model profile metadata in `.superscience/superscience.sqlite`. Existing single-model installs are migrated into a `default` model profile the first time settings are loaded.
+- Default path (release): `~/Library/Application Support/science.superscience/superscience/secrets.json` on macOS, or the platform equivalent under the user data directory.
+- Debug builds keep using `~/.superscience-dev-secrets.json`.
+- File mode is `0600` on Unix.
+- Override path: `SUPERSCIENCE_SECRETS_FILE=/path/to/secrets.json`.
+
+The desktop app stores provider and model-profile metadata in
+`.superscience/superscience.sqlite`. A built-in 天成TOKEN provider is always
+ensured on first load; empty installs start with that provider and zero models.
 
 ## Headless CLI
 

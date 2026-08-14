@@ -764,7 +764,7 @@ pub(crate) fn process_item_insert_index(items: &[ChatItem]) -> usize {
 }
 
 pub(crate) fn is_run_monitor_tool(name: &str) -> bool {
-    matches!(name, "monitor_run" | "superscience_monitor_run" | "superscience_monitor_run")
+    matches!(name, "monitor_run" | "superscience_monitor_run")
 }
 
 pub(crate) fn is_image_generation_tool(name: &str) -> bool {

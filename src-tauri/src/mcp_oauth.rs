@@ -449,7 +449,7 @@ pub async fn finish_authorization(
             let secret =
                 serde_json::to_string(&credential).context("serialize MCP OAuth credential")?;
             superscience_store::secrets::Secret::set(&secret_name(connection_id), &secret)
-                .context("save MCP OAuth credential in OS keyring")?;
+                .context("save MCP OAuth credential in local secrets file")?;
             Ok(())
         }
         .await;
@@ -501,7 +501,7 @@ async fn refresh(connection_id: &str, credential: &mut Credential) -> Result<()>
     let secret =
         serde_json::to_string(credential).context("serialize refreshed MCP OAuth credential")?;
     superscience_store::secrets::Secret::set(&secret_name(connection_id), &secret)
-        .context("save refreshed MCP OAuth credential in OS keyring")?;
+        .context("save refreshed MCP OAuth credential in local secrets file")?;
     Ok(())
 }
 

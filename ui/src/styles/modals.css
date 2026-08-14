@@ -1,23 +1,25 @@
 /* ---------- Modals ---------- */
 .overlay { position: fixed; inset: 0; z-index: 100; background: hsl(215 25% 14% / 0.28); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 20px; user-select: none; animation: motion-fade-in var(--motion-duration-medium) var(--motion-ease-standard) both; }
 
-/* Dedicated feedback screen (not the chat composer). */
+/* Dedicated feedback dialog (centered; not the chat composer). */
 .feedback-overlay {
-  align-items: stretch; justify-content: stretch; padding: 0;
+  align-items: center; justify-content: center; padding: 24px;
 }
 .feedback-modal {
-  width: 100%; height: 100%; max-width: none; max-height: none;
-  border-radius: 0; border: none; box-shadow: none;
+  width: min(560px, 100%);
+  max-width: 560px;
+  max-height: min(860px, calc(100vh - 48px));
   display: flex; flex-direction: column; gap: 14px;
-  padding: 18px 20px 16px; box-sizing: border-box; overflow: hidden;
+  padding: 20px 22px 18px; box-sizing: border-box;
+  overflow: hidden;
 }
 .feedback-body {
   flex: 1 1 auto; min-height: 0; overflow: auto;
   display: flex; flex-direction: column; align-items: center; gap: 16px;
-  padding: 8px 0 12px;
+  padding: 4px 0 4px;
 }
 .feedback-subtitle {
-  margin: 0; max-width: 520px; text-align: center;
+  margin: 0; max-width: 480px; text-align: center;
   color: var(--text-muted); font-size: 13.5px; line-height: 1.5;
 }
 .feedback-qr-placeholder {
@@ -38,7 +40,7 @@
 .feedback-qr-label { font-size: 13px; font-weight: 600; color: var(--text); }
 .feedback-qr-hint { font-size: 12px; line-height: 1.4; max-width: 150px; color: var(--text-faint); text-align: center; }
 .feedback-compose {
-  width: min(640px, 100%);
+  width: 100%;
   display: flex; flex-direction: column; gap: 10px;
   padding: 14px 14px 12px;
   border: 1px solid var(--border-strong);
@@ -78,9 +80,7 @@
 .feedback-status.ok { color: var(--ok, var(--clay-strong)); }
 body:has(.window-titlebar) .feedback-overlay { padding-top: 38px; }
 body:has(.window-titlebar) .feedback-modal { border-top: 1px solid var(--border); }
-=======
 .overlay:has(.confirm-modal) { z-index: 110; }
->>>>>>> upstream/main
 :root[data-theme="dark"] .overlay { background: hsl(30 8% 6% / 0.55); }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] .overlay { background: hsl(30 8% 6% / 0.55); }
@@ -747,11 +747,30 @@ textarea.host-input { min-height:64px; resize:vertical; }
   font-weight: 500;
   letter-spacing: -0.02em;
 }
-.research-graph-heading p {
-  margin: var(--space-1) 0 0;
+.research-graph-heading .feature-tagline,
+.publication-workspace-head .feature-tagline {
+  margin: 10px 0 0;
+  max-width: 46rem;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--clay) 28%, var(--border));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--clay) 14%, var(--bg-sunken)) 0%,
+      color-mix(in srgb, var(--clay) 4%, var(--bg-input)) 100%
+    );
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.research-graph-heading .research-graph-meta {
+  margin: 8px 0 0;
   color: var(--text-faint);
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
+  font-weight: 400;
 }
 .research-graph-head-actions { display: flex; align-items: center; gap: var(--space-2); }
 .research-graph-view-modes {
@@ -997,7 +1016,12 @@ textarea.host-input { min-height:64px; resize:vertical; }
 .publication-pane-head h3,
 .publication-readiness h3 { margin: 0; }
 .publication-workspace-head h2 { font: 600 22px/1.2 var(--font-serif); }
-.publication-workspace-head p { margin-top: 4px; color: var(--text-muted); font-size: 12px; }
+.publication-workspace-head p:not(.feature-tagline) {
+  margin-top: 4px; color: var(--text-muted); font-size: 12px;
+}
+.publication-workspace-head .feature-tagline {
+  margin-top: 10px;
+}
 .publication-head-actions { margin-left: auto; }
 .publication-error { padding: 9px 20px; border-bottom: 1px solid color-mix(in srgb, var(--err) 30%, var(--border)); background: color-mix(in srgb, var(--err) 7%, var(--bg-elev)); color: var(--err); font-size: 12px; }
 .publication-toolbar { flex-wrap: wrap; padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--bg-sunken); }

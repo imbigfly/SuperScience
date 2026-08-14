@@ -207,9 +207,25 @@ pub(crate) fn artifact_file_paths(a: &Artifact) -> Vec<String> {
     }
 }
 
+fn path_key(path: &str) -> String {
+    normalize_path(path).replace('\\', "/")
+}
+
+/// True when `mentioned` is the stored path, its basename, or a trailing
+/// relative suffix (`dir/file.md` vs `/abs/dir/file.md`).
+fn path_reference_matches(mentioned: &str, stored: &str) -> bool {
+    let mentioned = path_key(mentioned);
+    let stored = path_key(stored);
+    if mentioned.is_empty() || stored.is_empty() {
+        return false;
+    }
+    stored == mentioned || stored.ends_with(&format!("/{mentioned}"))
+}
+
 pub(crate) fn href_matches_artifact(href: &str, a: &Artifact) -> bool {
-    let h = normalize_path(href);
-    artifact_file_paths(a).iter().any(|p| *p == h)
+    artifact_file_paths(a)
+        .iter()
+        .any(|path| path_reference_matches(href, path))
 }
 
 pub(crate) fn artifact_index_for_href(arts: &[Artifact], href: &str) -> Option<usize> {
@@ -287,25 +303,68 @@ pub(crate) fn replace_artifact_tokens(mut html: String, arts: &[Artifact]) -> St
     html
 }
 
-/// Promote bare `<code>filename</code>` to artifact chips, without nesting
-/// inside an existing `.art-ref` (browsers auto-split nested `<button>`s into
-/// an empty outer chip + a filled sibling — the dashed pills in lists).
+/// Promote inline `<code>path</code>` spans that refer to a known artifact.
+/// Matches basename, workspace-relative, or a trailing suffix of an absolute
+/// path, and keeps the original code text so `dir/file.md` stays visible.
+/// Skips fenced blocks (`<pre>` / `class=`) and existing `.art-ref` chips
+/// (browsers auto-split nested `<button>`s into an empty outer chip + a
+/// filled sibling — the dashed pills in lists).
 pub(crate) fn wrap_code_filenames_as_art_refs(html: String, arts: &[Artifact]) -> String {
-    let mut html = html;
-    for (i, a) in arts.iter().enumerate() {
-        let fname = html_escape(&a.name);
-        if fname.is_empty() {
-            continue;
-        }
-        let needle = format!("<code>{fname}</code>");
-        let replacement = format!(
-            r#"<button type="button" class="art-ref" data-art-idx="{i}" title="{fname}"><code>{fname}</code></button>"#
-        );
-        html = replace_code_outside_art_refs(&html, &needle, &replacement);
+    if arts.is_empty() {
+        return html;
     }
-    html
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html.as_str();
+    while let Some(start) = rest.find("<code") {
+        out.push_str(&rest[..start]);
+        let code_rest = &rest[start..];
+        let Some(gt) = code_rest.find('>') else {
+            out.push_str(rest);
+            break;
+        };
+        let tag = &code_rest[..=gt];
+        let after_tag = &code_rest[gt + 1..];
+        let Some(end) = after_tag.find("</code>") else {
+            out.push_str(rest);
+            break;
+        };
+        let inner = &after_tag[..end];
+        let span_len = gt + 1 + end + "</code>".len();
+        let whole = &code_rest[..span_len];
+        let skip = tag.contains("class=")
+            || inner.contains('\n')
+            || inner.contains('<')
+            || code_is_inside_pre(&out)
+            || code_is_inside_art_ref(&out);
+        if !skip {
+            let mentioned = decode_html_attribute(inner.trim());
+            if let Some(idx) = artifact_index_for_href(arts, &mentioned) {
+                let title = html_escape(&arts[idx].name);
+                out.push_str(&format!(
+                    r#"<button type="button" class="art-ref" data-art-idx="{idx}" title="{title}">{whole}</button>"#
+                ));
+                rest = &code_rest[span_len..];
+                continue;
+            }
+        }
+        out.push_str(whole);
+        rest = &code_rest[span_len..];
+    }
+    out.push_str(rest);
+    out
 }
 
+fn code_is_inside_pre(before: &str) -> bool {
+    let open = before.rfind("<pre");
+    let close = before.rfind("</pre>");
+    match (open, close) {
+        (Some(opened), Some(closed)) => opened > closed,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
 fn replace_code_outside_art_refs(html: &str, needle: &str, replacement: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
@@ -708,6 +767,90 @@ mod art_ref_marker_tests {
             r#"<button type="button" class="art-ref" data-art-idx="1" title="x.csv"><code>x.csv</code></button>"#,
         );
         assert_eq!(out, html);
+    }
+
+    fn file_artifact(path: &str) -> Artifact {
+        let name = path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(path)
+            .to_string();
+        Artifact {
+            id: "a1".into(),
+            name,
+            kind: "markdown",
+            data: PreviewData::File {
+                path: path.into(),
+                kind: "markdown".into(),
+            },
+            location: None,
+            source_item: 0,
+            superseded: false,
+        }
+    }
+
+    #[test]
+    fn wraps_relative_code_paths_as_artifact_chips() {
+        let arts = vec![file_artifact(
+            "bmc_cancer_draft/01_background_methods_v0.md",
+        )];
+        let html = md_to_html(
+            "Draft: `bmc_cancer_draft/01_background_methods_v0.md` is ready.",
+        );
+        let out = wrap_code_filenames_as_art_refs(html, &arts);
+        assert!(out.contains(r#"class="art-ref""#));
+        assert!(out.contains(r#"data-art-idx="0""#));
+        assert!(out.contains("<code>bmc_cancer_draft/01_background_methods_v0.md</code>"));
+        assert_eq!(out.matches("</button>").count(), 1);
+    }
+
+    #[test]
+    fn wraps_relative_code_paths_when_artifact_is_absolute() {
+        let arts = vec![file_artifact(
+            "/Users/me/project/bmc_cancer_draft/01_background_methods_v0.md",
+        )];
+        let html =
+            r#"<p>see <code>bmc_cancer_draft/01_background_methods_v0.md</code></p>"#;
+        let out = wrap_code_filenames_as_art_refs(html.into(), &arts);
+        assert!(out.contains(r#"data-art-idx="0""#));
+        assert!(out.contains("bmc_cancer_draft/01_background_methods_v0.md"));
+    }
+
+    #[test]
+    fn relative_markdown_link_matches_absolute_artifact_path() {
+        let art = file_artifact("/tmp/project/bmc_cancer_draft/01_background_methods_v0.md");
+        assert!(href_matches_artifact(
+            "bmc_cancer_draft/01_background_methods_v0.md",
+            &art
+        ));
+        assert!(href_matches_artifact("01_background_methods_v0.md", &art));
+        assert!(!href_matches_artifact("other/notes.md", &art));
+    }
+
+    #[test]
+    fn does_not_wrap_code_inside_pre_blocks() {
+        let arts = vec![file_artifact("notes.md")];
+        let html = r#"<pre><code>notes.md</code></pre>"#;
+        let out = wrap_code_filenames_as_art_refs(html.into(), &arts);
+        assert!(!out.contains("art-ref"));
+        assert!(out.contains("<pre><code>notes.md</code></pre>"));
+    }
+
+    #[test]
+    fn does_not_wrap_fenced_code_with_language_class() {
+        let arts = vec![file_artifact("notes.md")];
+        let html = r#"<pre><code class="language-md">notes.md</code></pre>"#;
+        let out = wrap_code_filenames_as_art_refs(html.into(), &arts);
+        assert!(!out.contains("art-ref"));
+    }
+
+    #[test]
+    fn skips_wrapping_code_already_inside_art_ref_chip() {
+        let arts = vec![file_artifact("x.csv")];
+        let html = r#"<button type="button" class="art-ref" data-art-idx="0" title="x.csv"><code>x.csv</code></button>"#;
+        let out = wrap_code_filenames_as_art_refs(html.into(), &arts);
+        assert_eq!(out.matches(r#"class="art-ref""#).count(), 1);
+        assert!(!out.contains("</button></button>"));
     }
 
     #[test]

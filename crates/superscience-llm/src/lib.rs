@@ -12,6 +12,7 @@
 pub mod anthropic;
 pub mod message;
 pub mod openai;
+pub mod privacy;
 pub mod provider;
 pub mod responses;
 pub mod routed;
@@ -20,6 +21,7 @@ pub mod scripted;
 pub use message::{
     Completion, Content, FunctionCall, ImageUrl, Message, Part, Role, ToolCall, ToolSchema, Usage,
 };
+pub use privacy::maybe_wrap as maybe_wrap_pii_firewall;
 pub use provider::{
     build, is_retriable, NullSink, Provider, ProviderConfig, ProviderKind, StreamSink,
 };

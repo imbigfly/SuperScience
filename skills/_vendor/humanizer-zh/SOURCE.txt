@@ -1,0 +1,4 @@
+Source: https://github.com/op7418/Humanizer-zh
+License: MIT (see LICENSE)
+Vendored into skills/humanizer-zh for SuperScience/天成科研助手 bundling.
+Translated from https://github.com/blader/humanizer; patterns also reference stop-slop and Wikipedia Signs of AI writing.

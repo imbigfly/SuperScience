@@ -522,13 +522,18 @@ pub(super) fn ResearchGraphModal(
             on:click=move |_| on_close.call(())>
             <section class="modal research-graph-modal" role="dialog" aria-modal="true"
                 data-testid="research-graph-modal"
-                aria-labelledby="research-graph-title" aria-describedby="research-graph-summary"
+                aria-labelledby="research-graph-title"
+                aria-describedby="research-graph-tagline research-graph-summary"
                 tabindex="-1"
                 on:click=|event| event.stop_propagation()>
                 <header class="research-graph-head">
                     <div class="research-graph-heading">
                         <h2 id="research-graph-title">{move || t(locale.get(), "graph.title")}</h2>
-                        <p id="research-graph-summary">{move || {
+                        <p id="research-graph-tagline" class="feature-tagline"
+                            data-testid="research-graph-tagline">
+                            {move || t(locale.get(), "graph.subtitle")}
+                        </p>
+                        <p id="research-graph-summary" class="research-graph-meta">{move || {
                             let current = graph.get();
                             let nodes = current.nodes.len().to_string();
                             let edges = current.edges.len().to_string();

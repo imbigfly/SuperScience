@@ -46,6 +46,17 @@ body:has(.window-titlebar) .projects-screen { top: 38px; }
 .projects-icon-btn:hover { background: var(--bg-elev); border-color: var(--border); }
 .projects-icon-btn svg { width: 18px; height: 18px; opacity: .95; }
 .projects-import { display: inline-flex; align-items: center; gap: 7px; }
+.projects-user { display: inline-flex; align-items: center; gap: 7px; max-width: 180px; }
+.projects-user svg { width: 16px; height: 16px; flex: 0 0 auto; }
+.projects-user-avatar {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--clay) 16%, var(--bg-sunken));
+  color: var(--clay-strong); font-size: 11px; font-weight: 700; line-height: 1;
+}
+.projects-user-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600;
+}
 .new-plus { margin-right: 2px; font-size: 18px; line-height: 0; }
 .projects-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; width: min(100%, 1200px); }
 .projects-col { min-width: 0; }

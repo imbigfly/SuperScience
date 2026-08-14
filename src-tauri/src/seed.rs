@@ -3,11 +3,15 @@
 //! Full operation history lives in `output_data.items` (UiItem-shaped rows).
 //! Figure/data files live in paired `assets_*.tar.gz` archives and are extracted
 //! into the workspace when a demo is opened.
+//!
+//! Locale-specific narrative overlays live under `seed/{locale}/manifest_*.i18n.json`
+//! and rewrite user/assistant/plan/reasoning text (plus request/response/thinking)
+//! while keeping tool I/O from the English base manifests.
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -71,9 +75,41 @@ pub struct Demo {
     pub items: Vec<DemoUiItem>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+struct DemoI18nOverlay {
+    #[serde(default)]
+    request: Option<String>,
+    #[serde(default)]
+    response: Option<String>,
+    #[serde(default)]
+    thinking: Option<String>,
+    /// Map of item index → translated narrative text.
+    #[serde(default)]
+    items: HashMap<String, DemoI18nItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct DemoI18nItem {
+    #[serde(default)]
+    text: Option<String>,
+}
+
+fn normalize_locale(locale: Option<&str>) -> &'static str {
+    match locale.map(str::trim).unwrap_or("") {
+        "" => "zh",
+        s if s.eq_ignore_ascii_case("zh")
+            || s.to_ascii_lowercase().starts_with("zh-")
+            || s.to_ascii_lowercase().starts_with("zh_") =>
+        {
+            "zh"
+        }
+        _ => "en",
+    }
+}
+
 #[tauri::command(rename = "list_demos")]
-pub(super) fn list_demos_cmd() -> Vec<DemoInfo> {
-    list_demos()
+pub(super) fn list_demos_cmd(locale: Option<String>) -> Vec<DemoInfo> {
+    list_demos(locale.as_deref())
 }
 
 #[tauri::command(rename = "load_demo")]
@@ -81,10 +117,11 @@ pub(super) fn load_demo_cmd(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
     id: String,
+    locale: Option<String>,
 ) -> Result<Demo, String> {
     let ap = state.active(window.label());
     extract_demo_assets(&id, &ap.root)?;
-    load_demo(&id).ok_or_else(|| format!("demo '{id}' not found"))
+    load_demo(&id, locale.as_deref()).ok_or_else(|| format!("demo '{id}' not found"))
 }
 
 #[tauri::command(rename = "copy_demo_to_project")]
@@ -170,18 +207,38 @@ fn clean(text: &str) -> String {
     art.replace_all(&s, "(artifact)").to_string()
 }
 
-fn read_title(path: &std::path::Path) -> Option<String> {
+fn title_from_request(req: &str) -> String {
+    let first = req.split(['.', '。', '!', '！', '?', '？']).next().unwrap_or(req);
+    first.trim().chars().take(70).collect()
+}
+
+fn read_base_title(path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
     let req = v
         .pointer("/root_frame/input_data/request")
         .and_then(|x| x.as_str())?;
-    let first = req.split('.').next().unwrap_or(req).trim();
-    Some(first.chars().take(70).collect())
+    Some(title_from_request(req))
+}
+
+fn overlay_path(locale: &str, id: &str) -> Option<PathBuf> {
+    if locale == "en" {
+        return None;
+    }
+    let dir = bundled_dir()?;
+    let path = dir.join(locale).join(format!("{id}.i18n.json"));
+    path.is_file().then_some(path)
+}
+
+fn load_overlay(locale: &str, id: &str) -> Option<DemoI18nOverlay> {
+    let path = overlay_path(locale, id)?;
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// Enumerate `manifest_*.json` in the bundled seed dir.
-pub fn list_demos() -> Vec<DemoInfo> {
+pub fn list_demos(locale: Option<&str>) -> Vec<DemoInfo> {
+    let locale = normalize_locale(locale);
     let Some(dir) = bundled_dir() else {
         return vec![];
     };
@@ -200,8 +257,18 @@ pub fn list_demos() -> Vec<DemoInfo> {
             if !stem.starts_with("manifest_") {
                 continue;
             }
-            let title =
-                read_title(&p).unwrap_or_else(|| stem.trim_start_matches("manifest_").to_string());
+            let title = if let Some(overlay) = load_overlay(locale, &stem) {
+                overlay
+                    .request
+                    .as_deref()
+                    .map(title_from_request)
+                    .filter(|t| !t.is_empty())
+                    .or_else(|| read_base_title(&p))
+                    .unwrap_or_else(|| stem.trim_start_matches("manifest_").to_string())
+            } else {
+                read_base_title(&p)
+                    .unwrap_or_else(|| stem.trim_start_matches("manifest_").to_string())
+            };
             out.push(DemoInfo { id: stem, title });
         }
     }
@@ -252,6 +319,31 @@ fn clean_item(mut item: DemoUiItem) -> DemoUiItem {
     item
 }
 
+fn apply_overlay(mut demo: Demo, overlay: DemoI18nOverlay) -> Demo {
+    if let Some(request) = overlay.request {
+        demo.request = clean(&request);
+        demo.title = title_from_request(&demo.request);
+    }
+    if let Some(response) = overlay.response {
+        demo.response = clean(&response);
+    }
+    if let Some(thinking) = overlay.thinking {
+        demo.thinking = Some(clean(&thinking));
+    }
+    for (idx_s, item_overlay) in overlay.items {
+        let Ok(idx) = idx_s.parse::<usize>() else {
+            continue;
+        };
+        let Some(item) = demo.items.get_mut(idx) else {
+            continue;
+        };
+        if let Some(text) = item_overlay.text {
+            item.text = clean(&text);
+        }
+    }
+    demo
+}
+
 struct DemoManifest {
     demo: Demo,
     workspace_files: BTreeMap<String, String>,
@@ -291,7 +383,7 @@ fn load_demo_manifest(id: &str) -> Option<DemoManifest> {
         .pointer("/root_frame/output_data/workspace_files")
         .and_then(|x| serde_json::from_value::<BTreeMap<String, String>>(x.clone()).ok())
         .unwrap_or_default();
-    let title = read_title(&path).unwrap_or_else(|| id.trim_start_matches("manifest_").to_string());
+    let title = read_base_title(&path).unwrap_or_else(|| id.trim_start_matches("manifest_").to_string());
     Some(DemoManifest {
         demo: Demo {
             id: id.to_string(),
@@ -306,8 +398,13 @@ fn load_demo_manifest(id: &str) -> Option<DemoManifest> {
 }
 
 /// Load one demo by id (the manifest file stem, e.g. `manifest_esr1_03_rnaseq`).
-pub fn load_demo(id: &str) -> Option<Demo> {
-    load_demo_manifest(id).map(|manifest| manifest.demo)
+pub fn load_demo(id: &str, locale: Option<&str>) -> Option<Demo> {
+    let locale = normalize_locale(locale);
+    let mut manifest = load_demo_manifest(id)?;
+    if let Some(overlay) = load_overlay(locale, id) {
+        manifest.demo = apply_overlay(manifest.demo, overlay);
+    }
+    Some(manifest.demo)
 }
 
 fn safe_workspace_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
@@ -431,7 +528,7 @@ mod tests {
 
     #[test]
     fn lists_and_loads_bundled_demos() {
-        let demos = list_demos();
+        let demos = list_demos(Some("en"));
         assert_eq!(
             demos.len(),
             6,
@@ -449,7 +546,7 @@ mod tests {
             ]
         );
         for info in &demos {
-            let demo = load_demo(&info.id).expect("load demo");
+            let demo = load_demo(&info.id, Some("en")).expect("load demo");
             assert!(!demo.request.is_empty());
             assert!(!demo.request.contains("English reply"));
             assert!(!demo.request.to_ascii_lowercase().contains("guotosky"));
@@ -487,19 +584,19 @@ mod tests {
             }
         }
 
-        let datasets = load_demo("manifest_esr1_01_datasets").expect("datasets demo");
+        let datasets = load_demo("manifest_esr1_01_datasets", Some("en")).expect("datasets demo");
         assert!(
             datasets.request.contains("MCF7") || datasets.request.contains("ESR1"),
             "datasets demo request should mention ESR1/MCF7"
         );
 
-        let samples = load_demo("manifest_esr1_02_samples").expect("samples demo");
+        let samples = load_demo("manifest_esr1_02_samples", Some("en")).expect("samples demo");
         assert!(
             samples.request.contains("GSE153250"),
             "samples demo request should mention GSE153250"
         );
 
-        let rnaseq = load_demo("manifest_esr1_03_rnaseq").expect("rnaseq demo");
+        let rnaseq = load_demo("manifest_esr1_03_rnaseq", Some("en")).expect("rnaseq demo");
         assert!(
             rnaseq
                 .items
@@ -512,7 +609,7 @@ mod tests {
             "rnaseq response should mention the study"
         );
 
-        let downstream = load_demo("manifest_esr1_04_downstream").expect("downstream demo");
+        let downstream = load_demo("manifest_esr1_04_downstream", Some("en")).expect("downstream demo");
         assert!(
             downstream.request.contains("differential")
                 || downstream.request.contains("GSEA")
@@ -520,14 +617,14 @@ mod tests {
             "downstream demo request should mention enrichment/DEG"
         );
 
-        let hypotheses = load_demo("manifest_esr1_05_hypotheses").expect("hypotheses demo");
+        let hypotheses = load_demo("manifest_esr1_05_hypotheses", Some("en")).expect("hypotheses demo");
         assert!(
             hypotheses.request.contains("research projects")
                 || hypotheses.request.contains("scientific"),
             "hypotheses demo request should ask for research projects"
         );
 
-        let memory = load_demo("manifest_memory_01_long_context").expect("memory demo");
+        let memory = load_demo("manifest_memory_01_long_context", Some("en")).expect("memory demo");
         assert!(
             memory.items.len() > 100,
             "memory demo should expand into a long transcript, got {}",
@@ -638,5 +735,49 @@ mod tests {
             safe_workspace_path(&root, ".wisp/memory/note.md").unwrap(),
             root.join(".wisp/memory/note.md")
         );
+    }
+
+    #[test]
+    fn chinese_overlay_rewrites_titles_and_request() {
+        let en = list_demos(Some("en"));
+        let zh = list_demos(Some("zh"));
+        assert_eq!(zh.len(), 5);
+        assert_eq!(en.len(), 5);
+
+        let en_first = en
+            .iter()
+            .find(|d| d.id == "manifest_esr1_01_datasets")
+            .expect("en datasets");
+        let zh_first = zh
+            .iter()
+            .find(|d| d.id == "manifest_esr1_01_datasets")
+            .expect("zh datasets");
+        assert_ne!(
+            en_first.title, zh_first.title,
+            "zh overlay should localize the sidebar title"
+        );
+        assert!(
+            zh_first.title.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "zh title should contain Chinese characters, got {:?}",
+            zh_first.title
+        );
+
+        let demo = load_demo("manifest_esr1_01_datasets", Some("zh")).expect("load zh demo");
+        assert!(
+            demo.request.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "zh request should be Chinese, got {:?}",
+            demo.request.chars().take(80).collect::<String>()
+        );
+        let user = demo
+            .items
+            .iter()
+            .find(|i| i.role == "user")
+            .expect("user row");
+        assert!(
+            user.text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "zh user message should be Chinese"
+        );
+        // Tool rows remain from the English base.
+        assert!(demo.items.iter().any(|i| i.role == "tool"));
     }
 }

@@ -114,7 +114,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       },
       {
         role: "assistant",
-        text: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.",
+        text: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.\n\n| Sample | Group |\n| --- | --- |\n| S1 | siNT |\n| S2 | siESR1 |",
         tool_name: null,
         ok: null,
         input: "",
@@ -328,6 +328,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   (window as any).__mockUpdateInstalled = false;
   let resolveMockOAuth: (() => void) | null = null;
   let mockPetEnabled = new URLSearchParams(window.location.search).get("mockPet") === "1";
+  let mockPiiFirewallEnabled = true;
   let mockPetDirectory = mockPetEnabled ? "C:\\Users\\tester\\.codex\\pets\\wispy" : "";
   (window as any).__petWindowVisible = false;
   let resolveMockUpdateCheck: (() => void) | null = null;
@@ -483,6 +484,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { id: "reviewer", name: "审阅专家", icon: "review", color: "clay", description: "追溯会话记录，报告捏造结果、幻觉事实或偏离计划的问题。", instructions: "rubric", model_id: "", skills: [], connectors: [], builtin: true },
     { id: "reader", name: "检索专家", icon: "search", color: "clay", description: "并行检索项目会话，并返回精炼且带出处的证据。", instructions: "reader rubric", model_id: "", skills: [], connectors: [], builtin: true },
     { id: "scientific_illustrator", name: "科学插画专家", icon: "image", color: "clay", description: "根据请求与项目上下文创建可发表的科学图件。", instructions: "illustrator rubric", model_id: "", skills: ["figure-composer", "figure-style"], connectors: [], builtin: true },
+    { id: "r_bioinformatics_figure", name: "生信图专家", icon: "image", color: "clay", description: "默认用 R/`r` tool 绘制常见生信图。", instructions: "r bioinfo figure rubric", model_id: "", skills: ["figure-style", "nature-figure"], connectors: [], builtin: true },
   ];
   let sessionSpecialists: Record<string, string> = {};
   let mockBrowserUrlFilters = { block: [] as { host: string; reason?: string }[], prefer: [] as { host: string; reason?: string }[] };
@@ -686,6 +688,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       id: "default",
       label: "deepseek-v4-pro",
       provider: "openai",
+      provider_id: "deepseek",
       api_url: "https://api.deepseek.com",
       model: "deepseek-v4-pro",
       has_api_key: true,
@@ -701,6 +704,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       id: "opus",
       label: "opus-4.8",
       provider: "anthropic",
+      provider_id: "anthropic",
       api_url: "https://api.anthropic.com",
       model: "opus-4.8",
       has_api_key: true,
@@ -713,6 +717,44 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       use_for_image_generation: false,
     },
   ];
+  let mockProviders = [
+    {
+      id: "tctoken",
+      label: "天成TOKEN平台",
+      protocol: "openai",
+      api_url: "https://www.tctoken.cn/v1",
+      sort_order: 0,
+      builtin: true,
+      has_api_key: false,
+      model_count: 0,
+    },
+    {
+      id: "deepseek",
+      label: "api.deepseek.com",
+      protocol: "openai",
+      api_url: "https://api.deepseek.com",
+      sort_order: 1,
+      builtin: false,
+      has_api_key: true,
+      model_count: 1,
+    },
+    {
+      id: "anthropic",
+      label: "api.anthropic.com",
+      protocol: "anthropic",
+      api_url: "https://api.anthropic.com",
+      sort_order: 2,
+      builtin: false,
+      has_api_key: true,
+      model_count: 1,
+    },
+  ];
+  const syncProviderModelCounts = () => {
+    for (const provider of mockProviders) {
+      provider.model_count = mockModels.filter((m) => m.provider_id === provider.id).length;
+    }
+  };
+  syncProviderModelCounts();
   const activeHttpModelId = () => mockModels.find((model) => model.active)?.id ?? mockModels[0]?.id ?? "";
   // Baked model catalog (mirrors src-tauri model_catalog): exact id match
   // within vendor namespaces, never prefix matching.
@@ -2312,6 +2354,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               has_sync_relay_token: !mockSyncUnconfigured,
               pet_enabled: mockPetEnabled,
               pet_directory: mockPetDirectory,
+              pii_firewall_enabled: mockPiiFirewallEnabled,
             };
           case "get_browser_url_filters":
             return mockBrowserUrlFilters;
@@ -2329,6 +2372,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             };
             return mockBrowserUrlFilters;
           }
+          case "get_pii_firewall_enabled":
+            return mockPiiFirewallEnabled;
+          case "set_pii_firewall_enabled":
+            mockPiiFirewallEnabled = Boolean(arg("enabled"));
+            return null;
           case "get_context_usage_details":
             return {
               system_prompt: "You are superscience.\n\n## Environment\nWindows x86_64",
@@ -2437,6 +2485,56 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               String(arg("apiUrl") ?? ""),
               String(arg("model") ?? ""),
             );
+          }
+          case "list_model_providers":
+            syncProviderModelCounts();
+            return mockProviders;
+          case "save_model_provider": {
+            const provider = plain(arg("provider") ?? {});
+            const key = arg("key");
+            const clearKey = Boolean(arg("clearKey"));
+            if (!provider.id) {
+              let n = 1;
+              while (mockProviders.some((p) => p.id === `p${n}`)) n += 1;
+              provider.id = `p${n}`;
+              provider.builtin = false;
+              provider.sort_order = mockProviders.length;
+              mockProviders.push(provider);
+            } else {
+              const idx = mockProviders.findIndex((p) => p.id === provider.id);
+              if (idx >= 0) {
+                const builtin = mockProviders[idx].builtin;
+                mockProviders[idx] = { ...mockProviders[idx], ...provider, builtin };
+              } else {
+                mockProviders.push(provider);
+              }
+            }
+            const target = mockProviders.find((p) => p.id === provider.id);
+            if (target) {
+              if (clearKey) target.has_api_key = false;
+              else if (key) target.has_api_key = true;
+              for (const model of mockModels) {
+                if (model.provider_id === target.id) {
+                  model.provider = target.protocol;
+                  model.api_url = target.api_url;
+                  model.has_api_key = target.has_api_key;
+                }
+              }
+            }
+            syncProviderModelCounts();
+            return mockProviders;
+          }
+          case "remove_model_provider": {
+            const id = String(arg("id") ?? "");
+            if (id === "tctoken" || mockProviders.some((p) => p.id === id && p.builtin)) {
+              throw new Error("Built-in providers cannot be removed.");
+            }
+            if (mockModels.some((m) => m.provider_id === id)) {
+              throw new Error("Remove or move all models under this provider first.");
+            }
+            mockProviders = mockProviders.filter((p) => p.id !== id);
+            syncProviderModelCounts();
+            return mockProviders;
           }
           case "get_storage_usage":
             return {
@@ -3113,6 +3211,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const useForImageGeneration = Boolean(
               arg("useForImageGeneration") ?? profile.use_for_image_generation,
             );
+            const provider = mockProviders.find((p) => p.id === profile.provider_id);
+            if (provider) {
+              profile.provider = provider.protocol;
+              profile.api_url = provider.api_url;
+              profile.has_api_key = provider.has_api_key;
+            }
             // Mirror the backend: an empty id creates a fresh profile.
             if (!profile.id) {
               let n = 1;
@@ -3133,11 +3237,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 ? false
                 : m.use_for_image_generation,
             });
+            syncProviderModelCounts();
             return mockModels;
           }
           case "remove_model": {
             const id = arg("id") ?? "";
             mockModels = mockModels.filter((m) => m.id !== id);
+            syncProviderModelCounts();
             return mockModels;
           }
           case "set_active_model": {
@@ -3684,6 +3790,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const next = plain(arg("settings") ?? {});
             mockPetEnabled = Boolean(next.pet_enabled);
             mockPetDirectory = String(next.pet_directory ?? "");
+            if (Object.prototype.hasOwnProperty.call(next, "pii_firewall_enabled")) {
+              mockPiiFirewallEnabled = Boolean(next.pii_firewall_enabled);
+            }
             mockLocale = String(next.locale ?? mockLocale);
             (window as any).__lastSetSettings = next;
             return null;
@@ -3744,9 +3853,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "validate_settings": {
             const validationSettings = plain(arg("settings") ?? {});
-            return String(validationSettings.model ?? "") === "gpt-image-2"
-              ? "Validated openai_responses with gpt-image-2"
-              : "Validated openai with deepseek-v4-pro";
+            const provider = String(validationSettings.provider ?? "openai");
+            const model = String(validationSettings.model ?? "");
+            if (model === "gpt-image-2") {
+              return "Validated openai_responses with gpt-image-2";
+            }
+            return `Validated ${provider} with ${model || "deepseek-v4-pro"}`;
           }
           case "get_memory_view":
             return memoryViewFor(resolveMemoryProjectId(args, arg));
@@ -4780,6 +4892,179 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "get_session_specialist":
             return mockSpecialists.find((s) => s.id === sessionSpecialists[arg("frameId")]) ?? null;
+          case "tctoken_session":
+            return (window as any).__tctokenSession ?? {
+              loggedIn: false,
+              userId: null,
+              username: null,
+              displayName: null,
+              group: null,
+            };
+          case "tctoken_provider_url":
+            return "https://www.tctoken.cn";
+          case "tctoken_login": {
+            const username = String(arg("username") ?? "").trim();
+            const password = String(arg("password") ?? "").trim();
+            if (!username || !password) throw new Error("Username and password are required.");
+            if (password === "need2fa") {
+              return {
+                require2fa: true,
+                session: {
+                  loggedIn: false,
+                  userId: null,
+                  username: null,
+                  displayName: null,
+                  group: null,
+                },
+              };
+            }
+            const session = {
+              loggedIn: true,
+              userId: 42,
+              username,
+              displayName: "Demo User",
+              group: "default",
+            };
+            (window as any).__tctokenSession = session;
+            return { require2fa: false, session };
+          }
+          case "tctoken_login_2fa": {
+            const code = String(arg("code") ?? "").trim();
+            if (!code) throw new Error("Verification code is required.");
+            const session = {
+              loggedIn: true,
+              userId: 42,
+              username: "demo",
+              displayName: "Demo User",
+              group: "default",
+            };
+            (window as any).__tctokenSession = session;
+            return { require2fa: false, session };
+          }
+          case "tctoken_logout":
+            (window as any).__tctokenSession = {
+              loggedIn: false,
+              userId: null,
+              username: null,
+              displayName: null,
+              group: null,
+            };
+            return null;
+          case "tctoken_get_remembered_login":
+            return (window as any).__tctokenRememberedLogin ?? {
+              remember: false,
+              username: "",
+              password: "",
+            };
+          case "tctoken_set_remembered_login": {
+            const username = String(arg("username") ?? "").trim();
+            const password = String(arg("password") ?? "").trim();
+            (window as any).__tctokenRememberedLogin = username && password
+              ? { remember: true, username, password }
+              : { remember: false, username: "", password: "" };
+            return null;
+          }
+          case "tctoken_clear_remembered_login":
+            (window as any).__tctokenRememberedLogin = {
+              remember: false,
+              username: "",
+              password: "",
+            };
+            return null;
+          case "tctoken_account":
+            return {
+              userId: 42,
+              username: "demo",
+              displayName: "Demo User",
+              group: "default",
+              quota: 2_500_000,
+              usedQuota: 500_000,
+              requestCount: 12,
+              remainingDisplay: "¥5.00",
+              usedDisplay: "¥1.00",
+            };
+          case "tctoken_topup_info":
+            return {
+              min_topup: 1,
+              enable_online_topup: true,
+              pay_methods: [
+                { name: "支付宝", type: "alipay" },
+                { name: "微信", type: "wxpay" },
+              ],
+              amount_options: [50, 100, 200],
+            };
+          case "tctoken_topup_amount":
+            return { amount: Number(arg("amount") ?? 0), quota: Number(arg("amount") ?? 0) * 500_000 };
+          case "tctoken_topup_pay": {
+            ((window as any).__tctokenPayLog ??= []).push(plain(args ?? {}));
+            return {
+              provider: "epay",
+              trade_no: "USR1NOmock",
+              pay_url: "https://www.tctoken.cn/pay/mock",
+              params: {},
+            };
+          }
+          case "tctoken_get_default_token_id":
+            return (window as any).__tctokenDefaultTokenId ?? null;
+          case "tctoken_set_default_token": {
+            const id = Number(arg("id") ?? 0);
+            (window as any).__tctokenDefaultTokenId = id > 0 ? id : null;
+            return id;
+          }
+          case "tctoken_topup_redeem":
+            return { ok: true };
+          case "tctoken_topup_orders":
+            return {
+              items: [
+                {
+                  money: "50",
+                  trade_no: "ORD-001",
+                  payment_method: "alipay",
+                  created_at: 1_700_000_000,
+                  status: "success",
+                  quota: 25_000_000,
+                },
+              ],
+              total: 1,
+            };
+          case "tctoken_logs":
+            return {
+              items: [
+                {
+                  created_at: 1_700_000_100,
+                  channel: 1,
+                  username: "demo",
+                  token_name: "default",
+                  model_name: "gpt-4o",
+                  use_time: 2,
+                  prompt_tokens: 10,
+                  completion_tokens: 20,
+                  quota: 50_000,
+                },
+              ],
+              total: 1,
+            };
+          case "tctoken_logs_stat":
+            return { quota: 50_000, rpm: 1, tpm: 30 };
+          case "tctoken_tokens":
+            return {
+              items: [
+                {
+                  id: 7,
+                  name: "default",
+                  key: "sk-****abcd",
+                  remain_quota: 2_500_000,
+                  expired_time: -1,
+                  status: 1,
+                },
+              ],
+              total: 1,
+            };
+          case "tctoken_token_key":
+            return { key: "sk-mock-drawing-key" };
+          case "tctoken_set_drawing_key":
+            ((window as any).__drawingKeyLog ??= []).push(plain(args ?? {}));
+            return null;
           default:
             return null;
         }
@@ -4921,7 +5206,10 @@ export function parallelMock(): void {
             sync_folder: "",
             sync_relay_token: "",
             has_sync_relay_token: true,
+            pii_firewall_enabled: true,
           };
+          case "get_pii_firewall_enabled": return true;
+          case "set_pii_firewall_enabled": return null;
           case "get_project_info": return project;
           case "generate_follow_up_questions": return [
             "Review the records that need manual correction",

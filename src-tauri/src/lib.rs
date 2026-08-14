@@ -42,6 +42,7 @@ mod exploration_commands;
 mod exploration_promotion;
 mod exploration_workspace;
 mod feedback;
+mod tctoken;
 mod file_browser;
 mod harvest;
 mod image_generation_tool;
@@ -1881,7 +1882,7 @@ struct Settings {
     sync_relay_url: String,
     #[serde(default)]
     sync_folder: String,
-    /// Write-only. An empty value preserves the existing keyring secret.
+    /// Write-only. An empty value preserves the existing secrets-file entry.
     #[serde(default)]
     sync_relay_token: String,
     #[serde(default)]
@@ -1893,6 +1894,9 @@ struct Settings {
     /// Desktop notifications for task done/failed/awaiting-approval (#327).
     #[serde(default = "default_notifications_enabled")]
     notifications_enabled: bool,
+    /// Anonymize PII in outbound LLM prompts (default on).
+    #[serde(default = "default_pii_firewall_enabled")]
+    pii_firewall_enabled: bool,
 }
 
 const DEFAULT_MAX_ITER: usize = 100;
@@ -1913,6 +1917,10 @@ const fn default_follow_up_questions() -> bool {
 }
 
 const fn default_resume_last_session() -> bool {
+    true
+}
+
+const fn default_pii_firewall_enabled() -> bool {
     true
 }
 
@@ -3123,8 +3131,6 @@ struct MacMenuLabels {
     theme_light: &'static str,
     theme_dark: &'static str,
     theme_system: &'static str,
-    docs: &'static str,
-    star_us: &'static str,
     issues: &'static str,
 }
 
@@ -3166,9 +3172,7 @@ fn mac_menu_labels(locale: AppMenuLocale) -> MacMenuLabels {
             theme_light: "浅色",
             theme_dark: "深色",
             theme_system: "跟随系统",
-            docs: "文档",
-            star_us: "点个 Star",
-            issues: "反馈问题",
+            issues: "反馈",
         },
         AppMenuLocale::En => MacMenuLabels {
             app_settings: "Settings…",
@@ -3205,9 +3209,7 @@ fn mac_menu_labels(locale: AppMenuLocale) -> MacMenuLabels {
             theme_light: "Light",
             theme_dark: "Dark",
             theme_system: "System",
-            docs: "Documentation",
-            star_us: "Star us",
-            issues: "Report an Issue",
+            issues: "Feedback",
         },
     }
 }
@@ -3253,8 +3255,6 @@ fn mac_menu_action(id: &str) -> Option<&'static str> {
         "action.theme-dark" => Some("theme-dark"),
         "action.theme-system" => Some("theme-system"),
         "action.check-updates" => Some("check-updates"),
-        "action.docs" => Some("docs"),
-        "action.star-us" => Some("star-us"),
         "action.issues" => Some("issues"),
         _ => None,
     }
@@ -3460,14 +3460,6 @@ fn install_macos_app_menu(app: &AppHandle, locale_tag: &str) -> Result<(), Strin
                 .map_err(|error| error.to_string())?,
         )
         .separator()
-        .item(
-            &build_menu_item(app, "action.docs", labels.docs, None)
-                .map_err(|error| error.to_string())?,
-        )
-        .item(
-            &build_menu_item(app, "action.star-us", labels.star_us, None)
-                .map_err(|error| error.to_string())?,
-        )
         .item(
             &build_menu_item(app, "action.issues", labels.issues, None)
                 .map_err(|error| error.to_string())?,
@@ -3994,6 +3986,43 @@ async fn load_auto_compact_enabled(store: &Store) -> bool {
         .flatten()
         .map(|value| value != "false")
         .unwrap_or(true)
+}
+
+/// Outbound PII firewall for cloud LLM calls. Defaults to on.
+pub(crate) async fn load_pii_firewall_enabled(store: &Store) -> bool {
+    store
+        .get_setting("pii_firewall_enabled")
+        .await
+        .ok()
+        .flatten()
+        .map(|value| value != "false")
+        .unwrap_or(true)
+}
+
+async fn save_pii_firewall_enabled(store: &Store, enabled: bool) -> Result<(), String> {
+    store
+        .set_setting(
+            "pii_firewall_enabled",
+            if enabled { "true" } else { "false" },
+        )
+        .await
+        .map_err(|e| format!("{e}"))
+}
+
+#[tauri::command]
+async fn get_pii_firewall_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(load_pii_firewall_enabled(&state.store).await)
+}
+
+#[tauri::command]
+async fn set_pii_firewall_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    save_pii_firewall_enabled(&state.store, enabled).await?;
+    // Rebuild agents on the next turn so the Provider wrapper matches the toggle.
+    clear_idle_agents(&state).await;
+    Ok(())
 }
 
 /// Labels of app windows currently holding OS focus. A set (not a bool) so the
@@ -5456,12 +5485,14 @@ async fn send_message_inner(
             max_iter,
             load_memory_enabled(&state.store).await,
             vision_cfg.clone(),
+            load_pii_firewall_enabled(&state.store).await,
         );
         agent.set_auto_compact(load_auto_compact_enabled(&state.store).await);
         if !project_write_locked
-            && specialist
-                .as_ref()
-                .is_some_and(|specialist| specialist.id == "scientific_illustrator")
+            && specialist.as_ref().is_some_and(|specialist| {
+                specialist.id == "scientific_illustrator"
+                    || specialist.id == "r_bioinformatics_figure"
+            })
         {
             std::fs::create_dir_all(ap.root.join("figures"))
                 .map_err(|error| format!("Failed to prepare figures directory: {error}"))?;
@@ -6458,7 +6489,10 @@ async fn generate_review_with_backend(
                 max_tokens,
                 &reasoning_effort,
             )?;
-            let llm = superscience_llm::build(cfg);
+            let llm = superscience_llm::maybe_wrap_pii_firewall(
+                superscience_llm::build(cfg),
+                load_pii_firewall_enabled(&state.store).await,
+            );
             let reviewer_model = llm.model().to_string();
             let selected_profile = if reviewer.model_id.trim().is_empty() {
                 "active"
@@ -6937,14 +6971,17 @@ async fn generate_follow_up_questions(
         }
         _ => load_session_settings(&state.store, &session_id).await,
     };
-    let llm = superscience_llm::build(build_provider_config(
-        &provider,
-        &api_url,
-        &api_key,
-        &model,
-        max_tokens.min(512),
-        &reasoning_effort,
-    )?);
+    let llm = superscience_llm::maybe_wrap_pii_firewall(
+        superscience_llm::build(build_provider_config(
+            &provider,
+            &api_url,
+            &api_key,
+            &model,
+            max_tokens.min(512),
+            &reasoning_effort,
+        )?),
+        load_pii_firewall_enabled(&state.store).await,
+    );
     let completion = llm
         .complete(
             &[
@@ -7044,7 +7081,10 @@ async fn side_chat(
             max_tokens,
             &reasoning_effort,
         )?;
-        let llm = superscience_llm::build(cfg);
+        let llm = superscience_llm::maybe_wrap_pii_firewall(
+            superscience_llm::build(cfg),
+            load_pii_firewall_enabled(&state.store).await,
+        );
         llm.complete(
             &[
                 Message::system(side_chat::SYSTEM_PROMPT),
@@ -7868,6 +7908,27 @@ pub fn run() {
             exploration_promotion::promote_exploration,
             exploration_promotion::discard_exploration,
             feedback::send_feedback_email,
+            tctoken::tctoken_session_cmd,
+            tctoken::tctoken_login_cmd,
+            tctoken::tctoken_login_2fa_cmd,
+            tctoken::tctoken_logout_cmd,
+            tctoken::tctoken_get_remembered_login_cmd,
+            tctoken::tctoken_set_remembered_login_cmd,
+            tctoken::tctoken_clear_remembered_login_cmd,
+            tctoken::tctoken_account_cmd,
+            tctoken::tctoken_logs_cmd,
+            tctoken::tctoken_logs_stat_cmd,
+            tctoken::tctoken_topup_info_cmd,
+            tctoken::tctoken_topup_amount_cmd,
+            tctoken::tctoken_topup_pay_cmd,
+            tctoken::tctoken_topup_redeem_cmd,
+            tctoken::tctoken_topup_orders_cmd,
+            tctoken::tctoken_tokens_cmd,
+            tctoken::tctoken_token_key_cmd,
+            tctoken::tctoken_get_default_token_id_cmd,
+            tctoken::tctoken_set_default_token_cmd,
+            tctoken::tctoken_set_drawing_key_cmd,
+            tctoken::tctoken_provider_url_cmd,
             session_commands::list_sessions_page,
             session_commands::reload_project_rules,
             runtime_commands::list_execution_contexts,
@@ -7959,6 +8020,8 @@ pub fn run() {
             browser_url_filters::set_browser_url_filters,
             settings_commands::get_settings,
             settings_commands::set_settings,
+            get_pii_firewall_enabled,
+            set_pii_firewall_enabled,
             settings_commands::get_storage_usage,
             settings_commands::get_token_usage,
             settings_commands::get_session_token_usage,
@@ -7972,6 +8035,9 @@ pub fn run() {
             pet_commands::open_pet_session,
             desktop_lifecycle::set_pet_window_visible,
             models::list_models,
+            models::list_model_providers,
+            models::save_model_provider,
+            models::remove_model_provider,
             models::get_session_model,
             models::get_session_reasoning_effort,
             models::save_model,

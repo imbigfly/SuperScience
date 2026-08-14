@@ -21,6 +21,7 @@ mod session_modals;
 mod settings_view;
 mod sidebar;
 mod text;
+mod user_center;
 mod window_titlebar;
 
 use agent_workflows::{
@@ -36,7 +37,8 @@ use bindings::{
     attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection, close_mcp_app,
     force_chat_bottom, invoke, invoke_checked, invoke_timeout, is_mac, is_windows,
     jump_chat_to_item, jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
-    listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_image_count,
+    listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_file_count,
+    pasted_file_paths,
     preserve_chat_prepend_position, preview_selection, schedule_chat_follow, set_saved_marks,
     CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
@@ -70,14 +72,15 @@ use session_modals::{
 use settings_view::{known_effort_values, ALL_EFFORT_VALUES};
 use settings_view::{DeleteConfirm, SettingsView, SettingsViewState};
 use sidebar::{Sidebar, SidebarState};
+use user_center::{refresh_tctoken_session, UserCenterOverlay, TctokenSession};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use text::{
     dom_value, event_target_checked, event_target_value, file_kind, format_bytes,
     group_artifact_indices, ime_composing, join_path, md_to_html, note_composition_end,
-    opens_in_system_browser, parent_path, provider_defaults, provider_value, runtime_language,
-    user_message_presentation, DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
+    opens_in_system_browser, parent_path, provider_value, runtime_language,
+    user_message_presentation,
 };
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -613,6 +616,9 @@ fn App() -> impl IntoView {
     let scratch_open = create_rw_signal(false); // ephemeral scratch chat overlay
     let show_feedback = create_rw_signal(false);
     let feedback_diagnostics = create_rw_signal(String::new());
+    let show_user_center = create_rw_signal(false);
+    let tctoken_session = create_rw_signal(TctokenSession::default());
+    refresh_tctoken_session(tctoken_session);
     let project_open_error = create_rw_signal(None::<String>);
     let project_transfer = create_rw_signal(None::<ProjectTransferProgress>);
     let project_export_prompt = create_rw_signal(None::<(String, String)>);
@@ -812,6 +818,12 @@ fn App() -> impl IntoView {
     // Per-session specialist (persona) picker, gated to before the first message.
     let session_specialist = create_rw_signal::<Option<Specialist>>(None);
     let demos = create_rw_signal::<Vec<DemoInfo>>(vec![]);
+    let active_demo_id = create_rw_signal::<Option<String>>(None);
+    create_effect(move |_| {
+        if !demo_mode.get() {
+            active_demo_id.set(None);
+        }
+    });
     let command_palette_open = create_rw_signal(false);
     let action_palette_open = create_rw_signal(false);
     let (privacy_active_initial, privacy_projects_initial) = load_privacy_mode();
@@ -1236,7 +1248,9 @@ fn App() -> impl IntoView {
     // Successful edit/write tool calls bump the matching tab's revision. The
     // preview subtree is keyed by this value and re-reads the saved file.
     let center_file_revisions = create_rw_signal::<HashMap<String, u64>>(HashMap::new());
-    let center_file_open = create_memo(move |_| !demo_mode.get() && center_file.get().is_some());
+    // Demo mode is view-only for send/new-session, but file/table previews still
+    // open so bundled example data and the right-hand resources pane remain usable.
+    let center_file_open = create_memo(move |_| center_file.get().is_some());
     // Split view: keep the main conversation beside the open document instead of
     // hiding it. Same session, same history — only the layout moves.
     let center_split = create_rw_signal(false);
@@ -1326,8 +1340,6 @@ fn App() -> impl IntoView {
     let caps = create_rw_signal::<Option<Capabilities>>(None);
     let bootstrap = create_rw_signal::<Option<BootstrapStatus>>(None);
     let show_onboarding = create_rw_signal(false);
-    let onboard_step = create_rw_signal(0usize);
-    let onboard_key = create_rw_signal(String::new());
 
     create_effect(move |_| {
         if file_source.get() != "local" {
@@ -4298,12 +4310,21 @@ fn App() -> impl IntoView {
             return;
         }
         let event: JsValue = ev.clone().into();
-        let count = pasted_image_count(event.clone());
-        if count == 0 {
+        let count = pasted_file_count(event.clone());
+        if count > 0 {
+            ev.prevent_default();
+            upload_from_paste(attachments, uploading, event, count);
+            return;
+        }
+        let paths = serde_wasm_bindgen::from_value::<Vec<String>>(pasted_file_paths(event))
+            .unwrap_or_default();
+        if paths.is_empty() {
             return;
         }
         ev.prevent_default();
-        upload_from_paste(attachments, uploading, event, count);
+        for path in paths {
+            let _ = attach_ready_path(attachments, path);
+        }
     };
 
     let composer_blocked = move || {
@@ -4805,21 +4826,14 @@ fn App() -> impl IntoView {
             return;
         };
         let loc = locale.get();
-        let key = model_form_key.get();
-        let has_key = form
-            .id
-            .as_ref()
-            .and_then(|id| {
-                models
-                    .get()
-                    .iter()
-                    .find(|m| &m.id == id)
-                    .map(|m| m.has_api_key)
-            })
-            .unwrap_or(false);
-        let cfg = model_form_to_settings(&form, has_key && key.is_empty());
-        if let Some(err_key) = settings_required_error_key(&cfg, &key) {
-            let err = t(loc, err_key);
+        if form.model.trim().is_empty() {
+            let err = t(loc, "err.model_required");
+            let text = tf(loc, "status.save_failed", &[("msg", &err)]);
+            model_form_msg.set(Some((false, text)));
+            return;
+        }
+        if form.provider_id.trim().is_empty() {
+            let err = t(loc, "err.api_url_required");
             let text = tf(loc, "status.save_failed", &[("msg", &err)]);
             model_form_msg.set(Some((false, text)));
             return;
@@ -4843,10 +4857,12 @@ fn App() -> impl IntoView {
         settings_busy.set(true);
         model_form_msg.set(Some((true, t(loc, "status.saving_settings").into())));
         let provider = provider_value(&form.provider);
+        let provider_id = form.provider_id.clone();
         let profile = serde_json::json!({
             "id": form.id.clone().unwrap_or_default(),
             "label": form.label.trim(),
             "provider": provider,
+            "provider_id": form.provider_id.trim(),
             "api_url": form.api_url.trim(),
             "model": form.model.trim(),
             "max_tokens": form.max_tokens,
@@ -4856,11 +4872,27 @@ fn App() -> impl IntoView {
             "use_for_vision": form.use_for_vision,
             "use_for_image_generation": form.use_for_image_generation,
         });
-        let key_arg = if key.is_empty() { None } else { Some(key) };
         spawn_local(async move {
+            let provider_has_key = invoke_checked("list_model_providers", JsValue::UNDEFINED)
+                .await
+                .ok()
+                .and_then(|v| serde_wasm_bindgen::from_value::<Vec<ModelProvider>>(v).ok())
+                .and_then(|providers| {
+                    providers
+                        .into_iter()
+                        .find(|p| p.id == provider_id)
+                        .map(|p| p.has_api_key)
+                })
+                .unwrap_or(false);
+            if !provider_has_key {
+                let err = t(loc, "err.api_key_required");
+                let text = tf(loc, "status.save_failed", &[("msg", &err)]);
+                model_form_msg.set(Some((false, text)));
+                settings_busy.set(false);
+                return;
+            }
             let arg = to_value(&serde_json::json!({
                 "profile": profile,
-                "key": key_arg,
                 "useForVision": form.use_for_vision,
                 "useForImageGeneration": form.use_for_image_generation,
             }))
@@ -4894,16 +4926,16 @@ fn App() -> impl IntoView {
             return;
         };
         let loc = locale.get();
-        let key = model_form_key.get();
-        let has_key = models
-            .get()
-            .iter()
-            .find(|m| Some(m.id.as_str()) == form.id.as_deref())
-            .map(|m| m.has_api_key)
-            .unwrap_or(false);
-        let cfg = model_form_to_settings(&form, has_key);
-        if let Some(err_key) = settings_required_error_key(&cfg, &key) {
-            let err = t(loc, err_key);
+        if form.model.trim().is_empty() {
+            let err = t(loc, "err.model_required");
+            model_form_msg.set(Some((
+                false,
+                tf(loc, "status.validation_failed", &[("msg", &err)]),
+            )));
+            return;
+        }
+        if form.api_url.trim().is_empty() {
+            let err = t(loc, "err.api_url_required");
             model_form_msg.set(Some((
                 false,
                 tf(loc, "status.validation_failed", &[("msg", &err)]),
@@ -4912,17 +4944,37 @@ fn App() -> impl IntoView {
         }
         settings_busy.set(true);
         model_form_msg.set(Some((true, t(loc, "status.validating").into())));
-        // The backend probes with a test image when "supports images" is on,
-        // so both outcomes say which probe ran — a checked box was never
-        // proof that the model takes images.
+        let provider_id = form.provider_id.clone();
+        let cfg = model_form_to_settings(&form, true);
         let vision = cfg.supports_vision;
+        let profile_id = form.id.clone();
         spawn_local(async move {
+            let provider_has_key = invoke_checked("list_model_providers", JsValue::UNDEFINED)
+                .await
+                .ok()
+                .and_then(|v| serde_wasm_bindgen::from_value::<Vec<ModelProvider>>(v).ok())
+                .and_then(|providers| {
+                    providers
+                        .into_iter()
+                        .find(|p| p.id == provider_id)
+                        .map(|p| p.has_api_key)
+                })
+                .unwrap_or(false);
+            if !provider_has_key {
+                let err = t(loc, "err.api_key_required");
+                model_form_msg.set(Some((
+                    false,
+                    tf(loc, "status.validation_failed", &[("msg", &err)]),
+                )));
+                settings_busy.set(false);
+                return;
+            }
             let res = invoke_timeout(
                 "validate_settings",
                 to_value(&serde_json::json!({
                     "settings": cfg,
-                    "key": key,
-                    "profileId": form.id.clone(),
+                    "key": "",
+                    "profileId": profile_id,
                 }))
                 .unwrap(),
                 35_000,
@@ -5177,10 +5229,14 @@ fn App() -> impl IntoView {
         }
     };
 
-    let start_issue_report = {
+    let open_feedback = Callback::new({
         let locale = locale;
         let models = models;
-        move |_| {
+        let bootstrap = bootstrap;
+        let feedback_diagnostics = feedback_diagnostics;
+        let show_capabilities = show_capabilities;
+        let show_feedback = show_feedback;
+        move |_: ()| {
             show_capabilities.set(false);
             let model = active_model_label(&models.get_untracked())
                 .unwrap_or_else(|| "not configured".into());
@@ -5191,6 +5247,10 @@ fn App() -> impl IntoView {
             ));
             show_feedback.set(true);
         }
+    });
+    let start_issue_report = {
+        let open_feedback = open_feedback.clone();
+        move |_| open_feedback.call(())
     };
 
     let use_plugin = Callback::new(
@@ -5735,6 +5795,10 @@ fn App() -> impl IntoView {
     });
 
     let request_session_review = Callback::new(move |session_id: String| {
+        // Bundled demos have no durable session id; review would only fail.
+        if demo_mode.get_untracked() || session_id.trim().is_empty() {
+            return;
+        }
         if reviewing.with_untracked(|ids| ids.contains(&session_id)) {
             return;
         }
@@ -6014,10 +6078,16 @@ fn App() -> impl IntoView {
         sel_artifact.set(0);
         right_tab.set(RightTab::Artifacts);
         active_session.set(None);
+        active_demo_id.set(Some(id.clone()));
+        // Keep the right pane available for table/file previews, but drop any
+        // leftover center tabs from a previous demo or real project.
+        center_files.set(vec![]);
+        center_file.set(None);
+        let loc = locale.get_untracked().code().to_string();
         spawn_local(async move {
             let v = invoke(
                 "load_demo",
-                to_value(&serde_json::json!({ "id": id })).unwrap(),
+                to_value(&serde_json::json!({ "id": id, "locale": loc })).unwrap(),
             )
             .await;
             if let Ok(demo) = serde_wasm_bindgen::from_value::<Demo>(v) {
@@ -6044,6 +6114,53 @@ fn App() -> impl IntoView {
             }
         });
     };
+
+    // Example sessions follow Settings → General → Language.
+    create_effect(move |_| {
+        let loc = locale.get().code().to_string();
+        if !demo_mode.get() {
+            return;
+        }
+        let active_id = active_demo_id.get_untracked();
+        spawn_local(async move {
+            let v = invoke(
+                "list_demos",
+                to_value(&serde_json::json!({ "locale": loc.clone() })).unwrap(),
+            )
+            .await;
+            if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<DemoInfo>>(v) {
+                demos.set(list);
+            }
+            if let Some(id) = active_id {
+                let loaded = invoke(
+                    "load_demo",
+                    to_value(&serde_json::json!({ "id": id, "locale": loc })).unwrap(),
+                )
+                .await;
+                if let Ok(demo) = serde_wasm_bindgen::from_value::<Demo>(loaded) {
+                    let mut view = if !demo.items.is_empty() {
+                        demo.items.into_iter().map(LoadedItem::into_chat).collect()
+                    } else {
+                        let mut legacy = vec![ChatItem::User(demo.request.clone())];
+                        if let Some(t) = &demo.thinking {
+                            if !t.is_empty() {
+                                legacy.push(ChatItem::Reasoning(t.clone()));
+                            }
+                        }
+                        legacy.push(ChatItem::Assistant {
+                            text: demo.response.clone(),
+                            model: None,
+                            resources: Vec::new(),
+                        });
+                        legacy
+                    };
+                    settle_question_cards(&mut view);
+                    items.set(view);
+                    status_cb.set(tf(locale.get(), "status.demo", &[("title", &demo.title)]));
+                }
+            }
+        });
+    });
 
     let respond_confirm = {
         let active_session = active_session;
@@ -6340,6 +6457,48 @@ fn App() -> impl IntoView {
         });
     });
 
+    let chat_with_specialist = Callback::new(move |specialist_id: String| {
+        if demo_mode.get_untracked() || specialist_id.trim().is_empty() {
+            return;
+        }
+        show_settings.set(false);
+        show_projects.set(false);
+        attachments.set(vec![]);
+        items.set(vec![]);
+        let loc = locale.get();
+        spawn_local(async move {
+            let v = invoke("new_session", JsValue::UNDEFINED).await;
+            let Some(id) = v.as_string().filter(|s| !s.is_empty()) else {
+                status.set(t(loc, "status.send_failed").into());
+                return;
+            };
+            let arg = to_value(&serde_json::json!({
+                "frameId": id,
+                "id": specialist_id,
+            }))
+            .unwrap();
+            if let Err(err) = invoke_checked("set_session_specialist", arg).await {
+                status.set(tf(
+                    loc,
+                    "status.send_failed",
+                    &[("msg", &localize_backend(loc, &js_error_text(err)))],
+                ));
+                return;
+            }
+            active_session.set(Some(id.clone()));
+            let arg = to_value(&serde_json::json!({ "frameId": id })).unwrap();
+            let v = invoke("get_session_specialist", arg).await;
+            if active_session.get_untracked().as_deref() == Some(id.as_str()) {
+                session_specialist.set(
+                    serde_wasm_bindgen::from_value::<Option<Specialist>>(v)
+                        .ok()
+                        .flatten(),
+                );
+            }
+            refresh_session_history();
+        });
+    });
+
     let save_skill_tags = Callback::new(move |(name, raw): (String, String)| {
         let tags = split_tags(&raw);
         spawn_local(async move {
@@ -6389,78 +6548,6 @@ fn App() -> impl IntoView {
         });
     });
     let dismiss_onboard = move |_| dismiss_onboarding.call(());
-
-    // Onboarding step 0: save the entered key as DeepSeek models (flash as
-    // the default, pro for heavier work), reusing the same `save_model`
-    // command as Settings. Blank key = skip.
-    // ponytail: onboarding is DeepSeek-only; other providers go through Settings › Models.
-    let save_onboard_key = Callback::new(move |_| {
-        let key = onboard_key.get();
-        if key.trim().is_empty() {
-            return;
-        }
-        let provider = "openai".to_string();
-        let (api_url, _) = provider_defaults(&provider);
-        // `save_model` makes every newly created profile the active one, so
-        // the model the user should land on has to be saved last.
-        let wanted = [DEEPSEEK_PRO_MODEL, DEEPSEEK_FLASH_MODEL];
-        spawn_local(async move {
-            for model in wanted {
-                let arg = to_value(&serde_json::json!({
-                    "profile": {
-                        "id": "",
-                        "label": "",
-                        "provider": provider,
-                        "api_url": api_url,
-                        "model": model,
-                        "max_tokens": 8192,
-                        "reasoning_effort": "",
-                        "supports_vision": false,
-                        "use_for_vision": false,
-                        "use_for_image_generation": false,
-                    },
-                    "key": Some(key.clone()),
-                    "useForVision": false,
-                    "useForImageGeneration": false,
-                }))
-                .unwrap();
-                if let Ok(v) = invoke_checked("save_model", arg).await {
-                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                        models.set(list);
-                    }
-                }
-            }
-            // Bind the built-in Reader to the flash tier so reading-heavy work
-            // runs on the cheap model out of the box. An already-bound Reader
-            // is the user's choice — leave it alone.
-            let flash_id = models
-                .get_untracked()
-                .iter()
-                .find(|p| p.model == DEEPSEEK_FLASH_MODEL)
-                .map(|p| p.id.clone());
-            if let Some(flash_id) = flash_id {
-                if let Ok(v) = invoke_checked("list_specialists", JsValue::UNDEFINED).await {
-                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<Specialist>>(v) {
-                        if let Some(mut reader) = list
-                            .into_iter()
-                            .find(|s| s.id == "reader" && s.model_id.trim().is_empty())
-                        {
-                            reader.model_id = flash_id;
-                            let arg = to_value(&serde_json::json!({ "spec": reader })).unwrap();
-                            if let Ok(v) = invoke_checked("save_specialist_cmd", arg).await {
-                                if let Ok(list) =
-                                    serde_wasm_bindgen::from_value::<Vec<Specialist>>(v)
-                                {
-                                    specialists.set(list);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            onboard_key.set(String::new());
-        });
-    });
 
     let ctx_menu = create_rw_signal::<Option<CtxMenu>>(None);
     let rename_session_target = create_rw_signal::<Option<(String, String)>>(None);
@@ -7750,8 +7837,8 @@ fn App() -> impl IntoView {
     // pane → approval reject last. Component-owned inner surfaces consume
     // Escape through `window_capture_escape` before this handler runs.
     // ProjectsScreen owns create/delete/search Escape while `show_projects`,
-    // but app-level overlays (settings, artifact modal, onboarding) still
-    // close here — they can sit on top of the projects landing.
+    // but app-level overlays (settings, artifact modal, onboarding, feedback)
+    // still close here — they can sit on top of the projects landing.
     window_event_listener(ev::keydown, move |ev| {
         let Some(ev) = ev.dyn_ref::<web_sys::KeyboardEvent>() else {
             return;
@@ -7916,11 +8003,19 @@ fn App() -> impl IntoView {
         }
         if show_onboarding.get() {
             ev.prevent_default();
-            if onboard_step.get() > 0 {
-                onboard_step.update(|s| *s = s.saturating_sub(1));
-            } else {
-                dismiss_onboarding.call(());
-            }
+            dismiss_onboarding.call(());
+            return;
+        }
+        // Feedback sits above the projects landing (Help → Feedback); close it
+        // before the show_projects early-return below.
+        if show_feedback.get() {
+            ev.prevent_default();
+            show_feedback.set(false);
+            return;
+        }
+        if show_user_center.get() {
+            ev.prevent_default();
+            show_user_center.set(false);
             return;
         }
         if show_library.get() {
@@ -7987,11 +8082,6 @@ fn App() -> impl IntoView {
         if show_capabilities.get() {
             ev.prevent_default();
             show_capabilities.set(false);
-            return;
-        }
-        if show_feedback.get() {
-            ev.prevent_default();
-            show_feedback.set(false);
             return;
         }
 
@@ -8453,11 +8543,16 @@ fn App() -> impl IntoView {
         let locale = locale;
         let show_capabilities = show_capabilities;
         let active_session = active_session;
+        let session_specialist = session_specialist;
         let sel_artifact = sel_artifact;
         let right_tab = right_tab;
         let models = models;
         let needs_api_key = needs_api_key;
-        move |prompt_key: &'static str| {
+        move |(prompt_key, skill, specialist): (
+            &'static str,
+            Option<&'static str>,
+            Option<&'static str>,
+        )| {
             if busy.get_untracked() {
                 return;
             }
@@ -8466,7 +8561,27 @@ fn App() -> impl IntoView {
             attachments.set(vec![]);
             sel_artifact.set(0);
             right_tab.set(RightTab::Artifacts);
-            let text: String = t(locale.get(), prompt_key).into();
+            let loc = locale.get();
+            let body: String = t(loc, prompt_key).into();
+            // Director kickoff carries its own intake rules; every other capability
+            // chat gets the shared "max 5 questions → deliver" coaching frame.
+            let text = if prompt_key == "caps.prompt.director_kickoff" {
+                body
+            } else {
+                match skill {
+                    Some(name) => {
+                        let frame = tf(loc, "caps.prompt.socratic_frame", &[("skill", name)]);
+                        format!("{frame}\n\n{body}")
+                    }
+                    None => {
+                        let frame: String = t(loc, "caps.prompt.guided_frame").into();
+                        format!("{frame}\n\n{body}")
+                    }
+                }
+            };
+            let references = skill
+                .map(|name| vec![ComposerReferenceArg::Skill { name: name.into() }])
+                .unwrap_or_default();
             let turn_model = active_model_label(&models.get());
             items.set(vec![
                 ChatItem::User(text.clone()),
@@ -8484,7 +8599,26 @@ fn App() -> impl IntoView {
                     status.set(t(locale.get(), "status.send_failed").into());
                     return;
                 }
+                if let Some(specialist_id) = specialist {
+                    let arg = to_value(&serde_json::json!({
+                        "frameId": id,
+                        "id": specialist_id,
+                    }))
+                    .unwrap();
+                    let _ = invoke_checked("set_session_specialist", arg).await;
+                }
                 active_session.set(Some(id.clone()));
+                if specialist.is_some() {
+                    let arg = to_value(&serde_json::json!({ "frameId": id })).unwrap();
+                    let v = invoke("get_session_specialist", arg).await;
+                    if active_session.get_untracked().as_deref() == Some(id.as_str()) {
+                        session_specialist.set(
+                            serde_wasm_bindgen::from_value::<Option<Specialist>>(v)
+                                .ok()
+                                .flatten(),
+                        );
+                    }
+                }
                 running.update(|r| {
                     r.insert(id.clone());
                 });
@@ -8493,7 +8627,7 @@ fn App() -> impl IntoView {
                     session_id: Some(id.clone()),
                     message: text,
                     attachments: vec![],
-                    references: vec![],
+                    references,
                     resume: false,
                     acp_agent_id: None,
                     guide: None,
@@ -8557,8 +8691,12 @@ fn App() -> impl IntoView {
                         focus_composer();
                     });
                 }
-                CapabilityAction::GuidedChat { prompt_key } => {
-                    start_guided_capability_chat.call(prompt_key);
+                CapabilityAction::GuidedChat {
+                    prompt_key,
+                    skill,
+                    specialist,
+                } => {
+                    start_guided_capability_chat.call((prompt_key, skill, specialist));
                 }
                 CapabilityAction::OpenSettings { section } => {
                     open_settings_fn(Some(section.to_string()));
@@ -8582,16 +8720,26 @@ fn App() -> impl IntoView {
                     ensure_right_tab(RightTab::Agents, show_right, open_right_tabs, right_tab);
                 }
                 CapabilityAction::EnvSetup => {
-                    start_guided_capability_chat.call("caps.env_setup_prompt");
+                    start_guided_capability_chat.call(("caps.env_setup_prompt", None, None));
                 }
+                CapabilityAction::None => {}
                 CapabilityAction::OpenDemo => {
                     project_open_error.set(None);
                     show_projects.set(false);
                     demo_mode.set(true);
+                    active_demo_id.set(None);
                     items.set(vec![]);
                     active_session.set(None);
+                    center_files.set(vec![]);
+                    center_file.set(None);
+                    show_right.set(false);
+                    let loc = locale.get_untracked().code().to_string();
                     spawn_local(async move {
-                        let v = invoke("list_demos", JsValue::UNDEFINED).await;
+                        let v = invoke(
+                            "list_demos",
+                            to_value(&serde_json::json!({ "locale": loc })).unwrap(),
+                        )
+                        .await;
                         if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<DemoInfo>>(v) {
                             demos.set(list);
                         }
@@ -9154,6 +9302,7 @@ fn App() -> impl IntoView {
         let manage_skills = palette_manage_skills.clone();
         let run_update_check = run_update_check.clone();
         let export_current_project = export_current_project.clone();
+        let open_feedback = open_feedback.clone();
         Callback::new(move |action: &'static str| match action {
             "new" => new_session.call(()),
             "scratch" => open_scratch.call(()),
@@ -9225,11 +9374,7 @@ fn App() -> impl IntoView {
             "export-current-project" => export_current_project.call(()),
             "skills" => manage_skills.call(()),
             "check-updates" => run_update_check(),
-            "docs" => open_external_url("https://github.com/imbigfly/SuperScience#readme".into()),
-            "star-us" => open_external_url("https://github.com/imbigfly/SuperScience".into()),
-            "issues" => {
-                open_external_url("https://github.com/imbigfly/SuperScience/issues".into())
-            }
+            "issues" => open_feedback.call(()),
             "toggle-sidebar" => show_sidebar.update(|show| *show = !*show),
             "artifacts" => {
                 ensure_right_tab(RightTab::Artifacts, show_right, open_right_tabs, right_tab)
@@ -9275,19 +9420,14 @@ fn App() -> impl IntoView {
     {
         let palette_action = palette_action.clone();
         let run_update_check = run_update_check.clone();
+        let open_feedback = open_feedback.clone();
         let native_menu_cb = Closure::wrap(Box::new(move |payload: JsValue| {
             let Some(action) = payload.as_string() else {
                 return;
             };
             match action.as_str() {
                 "check-updates" => run_update_check(),
-                "docs" => {
-                    open_external_url("https://github.com/imbigfly/SuperScience#readme".into())
-                }
-                "star-us" => open_external_url("https://github.com/imbigfly/SuperScience".into()),
-                "issues" => {
-                    open_external_url("https://github.com/imbigfly/SuperScience/issues".into())
-                }
+                "issues" => open_feedback.call(()),
                 other => {
                     if let Some(action) = match other {
                         "new" => Some("new"),
@@ -9546,6 +9686,7 @@ fn App() -> impl IntoView {
                 demos, modal_artifact, locale, running, approval_pending,
                 sync_actions_available, command_palette_open, project_transfer,
                 privacy_mode_active, privacy_hidden_project_ids,
+                active_demo_id, center_files, center_file, show_right,
             }
             open_project=switch_project
             open_project_session=palette_open_session
@@ -9555,6 +9696,8 @@ fn App() -> impl IntoView {
             on_capability_action=on_capability_action
             open_project_export=open_project_export
             theme_mode=theme_mode
+            tctoken_session=tctoken_session
+            open_user_center=Callback::new(move |_| show_user_center.set(true))
         />
         <SessionImportModal
             locale=locale
@@ -9614,6 +9757,18 @@ fn App() -> impl IntoView {
             open_settings=Callback::new(move |section: Option<String>| open_settings_fn(section))
         />
         <UpdateCheckOverlay state=UpdateCheckOverlayState { locale, update_check_modal, update_check_enabled, update_banner } />
+        // Feedback must live outside `.app`: the projects landing hides the
+        // shell with `app-hidden`, which used to swallow Help → Feedback.
+        <FeedbackOverlay
+            locale=locale
+            show_feedback=show_feedback
+            diagnostics=feedback_diagnostics
+        />
+        <UserCenterOverlay
+            locale=locale
+            show=show_user_center
+            session=tctoken_session
+        />
         <div class="app"
             class:app-entering=move || app_shell_entering.get()
             class:scratch-mode=move || scratch_open.get()
@@ -9629,7 +9784,7 @@ fn App() -> impl IntoView {
                 attention: approval_pending,
                 rename_session_input, rename_session_target, collapsed_folders, folder_modal_input,
                 folder_modal, demos, session_history_cursor, session_history_loading,
-                update_banner,
+                update_banner, tctoken_session,
             }
             open_update=Callback::new(move |_| {
                 run_update_check();
@@ -9644,6 +9799,9 @@ fn App() -> impl IntoView {
             })
             new_folder=Callback::new(new_folder)
             open_files=Callback::new(open_files)
+            open_specialists=Callback::new(move |_| {
+                open_settings_fn(Some("specialists".into()));
+            })
             open_research_graph=Callback::new(move |_| {
                 show_research_graph.set(true);
                 refresh_research_graph(research_graph);
@@ -9712,6 +9870,7 @@ fn App() -> impl IntoView {
             open_capabilities=Callback::new(open_capabilities)
             open_issue_report=Callback::new(start_issue_report)
             open_settings=Callback::new(open_settings)
+            open_user_center=Callback::new(move |_| show_user_center.set(true))
             on_sidebar_resize_start=Callback::new(on_sidebar_resize_start)
         />
 
@@ -9744,7 +9903,7 @@ fn App() -> impl IntoView {
                         }}</span>
                     </button>
                     <For
-                        each=move || if demo_mode.get() { Vec::new() } else { center_files.get() }
+                        each=move || center_files.get()
                         key=|file| file.path.clone()
                         children=move |file| {
                             let path = file.path;
@@ -9915,7 +10074,7 @@ fn App() -> impl IntoView {
                     }>{compose_icon("terminal")}</button>
                 <button class="icon-btn" title=move || t(locale.get(), "center.toggle_panel")
                     class:active=move || show_right.get()
-                    disabled=move || scratch_open.get() || demo_mode.get()
+                    disabled=move || scratch_open.get()
                     on:click=move |_| {
                         show_right.update(|open| {
                             if *open {
@@ -9932,7 +10091,7 @@ fn App() -> impl IntoView {
                 </div>
             </div>
 
-            {move || (!demo_mode.get()).then(|| center_file.get()).flatten().and_then(|path| {
+            {move || center_file.get().and_then(|path| {
                 center_files.get().into_iter().find(|file| file.path == path)
             }).map(|file| {
                 let path = file.path.clone();
@@ -10749,9 +10908,7 @@ fn App() -> impl IntoView {
                                     } else {
                                         items.with_untracked(|list| list[i].clone())
                                     };
-                                    let arts = if matches!(&item, ChatItem::Assistant { .. })
-                                        && !compact_assistant
-                                    {
+                                    let arts = if matches!(&item, ChatItem::Assistant { .. }) {
                                         artifacts.get_untracked()
                                     } else {
                                         Vec::new()
@@ -10886,6 +11043,7 @@ fn App() -> impl IntoView {
                                                     <StreamingAssistantMessage
                                                         items=items
                                                         source_item=i
+                                                        artifacts=arts.clone()
                                                         on_artifact=on_artifact_select
                                                         on_file=on_file_link
                                                     />
@@ -12854,7 +13012,7 @@ fn App() -> impl IntoView {
             </div>
         </main>
 
-        {move || (show_right.get() && !scratch_open.get() && !demo_mode.get()).then(|| view! {
+        {move || (show_right.get() && !scratch_open.get()).then(|| view! {
             <div class="resizer" on:mousedown=on_resize_start></div>
             <button type="button" class="rightpane-backdrop"
                 aria-label=move || t(locale.get(), "right.close")
@@ -14702,6 +14860,34 @@ fn App() -> impl IntoView {
             test_reviewer_form=Callback::new(test_reviewer_form)
             validate_model_form=Callback::new(validate_model_form)
             start_specialist_chat=start_specialist_chat
+            chat_with_specialist=chat_with_specialist
+            open_files_panel=Callback::new(move |_: ()| {
+                show_settings.set(false);
+                // Always leave the projects landing. The file browser lives in
+                // the workspace right panel (same as sidebar Files); closing
+                // settings while `show_projects` is still true just shows home.
+                show_projects.set(false);
+                if project_info.get().is_none() && !scratch_open.get() {
+                    spawn_local(async move {
+                        let value = invoke("get_project_info", JsValue::UNDEFINED).await;
+                        if let Ok(info) = serde_wasm_bindgen::from_value::<ProjectInfo>(value) {
+                            if !info.id.is_empty() {
+                                project_info.set(Some(info));
+                            }
+                        }
+                    });
+                }
+                ensure_right_tab(RightTab::File, show_right, open_right_tabs, right_tab);
+                refresh_active_file_dir(
+                    file_source,
+                    file_cwd,
+                    file_entries,
+                    remote_file_cwd,
+                    remote_file_entries,
+                    remote_file_loading,
+                    remote_file_error,
+                );
+            })
             refresh_conns=Callback::new(move |_: ()| refresh_conns())
             refresh_skills=Callback::new(move |_: ()| refresh_skills())
             reload_skills=reload_skills
@@ -14883,15 +15069,8 @@ fn App() -> impl IntoView {
             start_env_setup=Callback::new(start_env_setup)
             on_capability_action=on_capability_action
         />
-        <FeedbackOverlay
-            locale=locale
-            show_feedback=show_feedback
-            diagnostics=feedback_diagnostics
-        />
         <OnboardingOverlay
-            locale=locale show_onboarding=show_onboarding onboard_step=onboard_step
-            onboard_key=onboard_key
-            save_onboard_key=save_onboard_key
+            locale=locale show_onboarding=show_onboarding
             dismiss_onboard=Callback::new(dismiss_onboard)
         />
         <ContextRecoveryOverlay

@@ -33,6 +33,24 @@ PNG 仅作质检预览。\n\
 保持文字可读，使用色盲友好编码，并区分观测数据与概念示意。最后给出简明说明，\
 并用项目相对路径的 Markdown 图片链接嵌入已保存的图件。";
 
+pub const R_BIOINFORMATICS_FIGURE_RUBRIC: &str = "\
+你是「生信图专家」。默认且优先用持久 `r` tool 与 ggplot2（及任务所需的 Bioconductor / \
+CRAN 包）绘制数据驱动的生信图，而不是给空泛建议。\n\n\
+硬性规则：\n\
+1. Intake 总共最多五个澄清问题；每次优先只问一个短问题。禁止长问卷。\n\
+2. 优先请用户上传数据或给出项目内路径。禁止追问可从文件直接读出的元数据\
+（行列数、schema、体积、列名清单等）——应自己用 `r` 读入后检查。\n\
+3. 只补齐阻塞项：图类型（火山图、热图、PCA/UMAP、箱线/小提琴、生存曲线、\
+富集条形/气泡图等，或用户描述的目标）、分组/比较变量、输出偏好。默认交付 \
+`figures/*.pdf`（或用户指定格式）并另存 PNG 预览。\n\
+4. 材料齐后立刻：读数 → 写/运行 R → 出图 → 用 `view_image` 质检预览 → 修正后交付。\
+不要用「请确认长计划」拖延；一句「接下来我做 X」即可动手。\n\
+5. 无用户明确要求时，不要改用 Python，也不要调用 `generate_image`。\n\
+6. 不得捏造统计结果、p 值、样本或标签。缺 R 包时说明安装方式再继续。\n\
+7. 可按需 `use_skill` 加载 `nature-figure` / `figure-style`；多面板组合可参考其版式指引，\
+但仍以 R 出图为主。\n\n\
+最后用项目相对路径的 Markdown 图片链接嵌入已保存图件，并简要说明所用脚本与图类型。";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Specialist {
     pub id: String,
@@ -111,6 +129,22 @@ pub fn builtin_scientific_illustrator() -> Specialist {
     }
 }
 
+pub fn builtin_r_bioinformatics_figure() -> Specialist {
+    Specialist {
+        id: "r_bioinformatics_figure".into(),
+        name: "生信图专家".into(),
+        icon: "grid".into(),
+        color: "clay".into(),
+        description: "默认用 R 绘制常见生信图（火山图、热图、PCA/UMAP 等）。".into(),
+        instructions: R_BIOINFORMATICS_FIGURE_RUBRIC.into(),
+        model_id: String::new(),
+        review_backend: None,
+        skills: Some(vec!["figure-style".into(), "nature-figure".into()]),
+        connectors: Some(vec![]),
+        builtin: true,
+    }
+}
+
 async fn load_raw(store: &Store) -> Vec<Specialist> {
     store
         .get_setting(SPECIALISTS_KEY)
@@ -170,6 +204,19 @@ pub async fn ensure(store: &Store) -> Vec<Specialist> {
         }
         None => list.insert(2.min(list.len()), builtin_scientific_illustrator()),
     }
+    match list.iter_mut().find(|s| s.id == "r_bioinformatics_figure") {
+        Some(bio) => {
+            let fresh = builtin_r_bioinformatics_figure();
+            bio.builtin = true;
+            bio.name = fresh.name;
+            bio.description = fresh.description;
+            bio.instructions = fresh.instructions;
+            bio.review_backend = None;
+            bio.skills = Some(vec!["figure-style".into(), "nature-figure".into()]);
+            bio.connectors = Some(vec![]);
+        }
+        None => list.insert(3.min(list.len()), builtin_r_bioinformatics_figure()),
+    }
     list
 }
 
@@ -217,6 +264,10 @@ pub async fn upsert(store: &Store, mut spec: Specialist) -> Result<Vec<Specialis
         } else if spec.id == "scientific_illustrator" {
             spec.review_backend = None;
             spec.skills = Some(vec!["figure-composer".into(), "figure-style".into()]);
+            spec.connectors = Some(vec![]);
+        } else if spec.id == "r_bioinformatics_figure" {
+            spec.review_backend = None;
+            spec.skills = Some(vec!["figure-style".into(), "nature-figure".into()]);
             spec.connectors = Some(vec![]);
         }
         *existing = spec;
@@ -390,6 +441,13 @@ mod tests {
         assert_eq!(illustrator.name, "科学插画专家");
         assert!(illustrator.description.contains("科学图件"));
         assert!(illustrator.instructions.contains("科学插画专家"));
+
+        let bio = builtin_r_bioinformatics_figure();
+        assert_eq!(bio.name, "生信图专家");
+        assert!(bio.description.contains("R"));
+        assert!(bio.instructions.contains("生信图专家"));
+        assert!(bio.instructions.contains("`r` tool"));
+        assert!(bio.instructions.contains("最多五个"));
     }
 
     async fn test_store() -> (superscience_store::Store, std::path::PathBuf) {
@@ -402,7 +460,7 @@ mod tests {
     async fn ensure_materializes_builtin_specialists_once() {
         let (store, tmp) = test_store().await;
         let list = ensure(&store).await;
-        assert_eq!(list.len(), 3);
+        assert_eq!(list.len(), 4);
         let r = &list[0];
         assert_eq!(r.id, "reviewer");
         assert!(r.builtin);
@@ -419,8 +477,16 @@ mod tests {
             illustrator.skills.as_deref(),
             Some(&["figure-composer".to_string(), "figure-style".to_string()][..])
         );
+        let bio = &list[3];
+        assert_eq!(bio.id, "r_bioinformatics_figure");
+        assert!(bio.builtin);
+        assert_eq!(bio.instructions, R_BIOINFORMATICS_FIGURE_RUBRIC);
+        assert_eq!(
+            bio.skills.as_deref(),
+            Some(&["figure-style".to_string(), "nature-figure".to_string()][..])
+        );
         // Second read does not duplicate the built-ins.
-        assert_eq!(ensure(&store).await.len(), 3);
+        assert_eq!(ensure(&store).await.len(), 4);
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -466,6 +532,7 @@ mod tests {
         assert!(remove(&store, "reviewer").await.is_err());
         assert!(remove(&store, "reader").await.is_err());
         assert!(remove(&store, "scientific_illustrator").await.is_err());
+        assert!(remove(&store, "r_bioinformatics_figure").await.is_err());
         // Editing the builtin keeps instructions but accepts a model change.
         let mut r = get(&store, "reviewer").await.unwrap();
         r.instructions = "haha".into();
@@ -500,6 +567,20 @@ mod tests {
         assert_eq!(
             illustrator.skills,
             Some(vec!["figure-composer".into(), "figure-style".into()])
+        );
+
+        let mut bio = get(&store, "r_bioinformatics_figure").await.unwrap();
+        bio.instructions = "replace rubric".into();
+        bio.skills = None;
+        let list = upsert(&store, bio).await.unwrap();
+        let bio = list
+            .iter()
+            .find(|specialist| specialist.id == "r_bioinformatics_figure")
+            .unwrap();
+        assert_eq!(bio.instructions, R_BIOINFORMATICS_FIGURE_RUBRIC);
+        assert_eq!(
+            bio.skills,
+            Some(vec!["figure-style".into(), "nature-figure".into()])
         );
         let _ = std::fs::remove_file(&tmp);
     }

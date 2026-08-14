@@ -1,0 +1,406 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>天成科研助手 · 完整功能思维导图</title>
+    <dateCreated>Tue, 11 Aug 2026 19:41:00 +0800</dateCreated>
+  </head>
+  <body>
+    <outline text="天成科研助手 · 完整功能">
+      <outline text="0. 产品定位与核心名词">
+        <outline text="开源、本地优先的 AI 科研工作台"/>
+        <outline text="桌面应用（Tauri）+ 无界面 CLI"/>
+        <outline text="平台：Windows / macOS / Linux（源码）"/>
+        <outline text="核心名词">
+          <outline text="Project 研究项目"/>
+          <outline text="ExecutionContext 执行环境"/>
+          <outline text="DataAsset 数据资产"/>
+          <outline text="Run 可复现任务"/>
+          <outline text="Artifact / ArtifactVersion 产物与版本"/>
+          <outline text="Paper 文献"/>
+          <outline text="Decision 决策"/>
+        </outline>
+        <outline text="本地优先原则">
+          <outline text="数据/会话留本机"/>
+          <outline text="密钥进系统 Keyring"/>
+          <outline text="密钥不进 SQLite"/>
+        </outline>
+      </outline>
+
+      <outline text="1. 项目工作区">
+        <outline text="多项目管理">
+          <outline text="项目落地页（卡片：名称/会话数/最近活动）"/>
+          <outline text="新建项目（命名 + 目录选择）"/>
+          <outline text="打开/热切换项目（无需重启）"/>
+          <outline text="就地打开项目文件夹（in-place）"/>
+          <outline text="删除项目（仅元数据 / 含本地数据）"/>
+          <outline text="跨项目最近会话"/>
+          <outline text="Scratch 临时对话"/>
+          <outline text="新窗口打开项目"/>
+          <outline text="存储占用分项目查看"/>
+        </outline>
+        <outline text="示例与引导">
+          <outline text="内置演示 Seed（只读）"/>
+          <outline text="首次 Onboarding（API Key）"/>
+          <outline text="能力发现首页（天成强化）"/>
+          <outline text="Case Study 选题库（规划）"/>
+        </outline>
+        <outline text="项目指令与记忆">
+          <outline text="项目根 AGENTS.md 注入"/>
+          <outline text="Project Memory 增删改查"/>
+          <outline text="跨项目 Memory 浏览"/>
+          <outline text="Capabilities 摘要卡片"/>
+        </outline>
+        <outline text="工作区 Manifest（规划 M3）">
+          <outline text="类型化目录布局"/>
+          <outline text="scripts / data / results / figures / literature"/>
+          <outline text="按类型注册与保存 API"/>
+        </outline>
+      </outline>
+
+      <outline text="2. 对话与 Agent 核心">
+        <outline text="Agent 循环">
+          <outline text="流式思考 → 工具调用 → 验证 → 完成"/>
+          <outline text="OpenAI 兼容 / Responses / Anthropic"/>
+          <outline text="RoutedProvider 分层路由（规划：LLM 评分选型）"/>
+          <outline text="max_iter / 上下文预算"/>
+          <outline text="停止与中断（等待/停滞 SSE/重试）"/>
+          <outline text="自动上下文压缩 + /compact"/>
+          <outline text="上下文用量仪表"/>
+          <outline text="Provider overload 重试"/>
+        </outline>
+        <outline text="工具与安全">
+          <outline text="沙箱内 read/write/edit/search/grep/shell"/>
+          <outline text="显式审批门控"/>
+          <outline text="计划卡 update_plan + Other 反馈"/>
+          <outline text="会话级 Full Permission"/>
+          <outline text="禁止自由形式 ssh/scp（走注册环境）"/>
+          <outline text="Windows 危险命令门控"/>
+          <outline text="ask_user / pause"/>
+          <outline text="AI 辅助问题报告"/>
+        </outline>
+        <outline text="会话管理">
+          <outline text="SQLite 持久化与重启恢复"/>
+          <outline text="会话文件夹/分组"/>
+          <outline text="项目级会话搜索（含未分页历史）"/>
+          <outline text="批量会话操作"/>
+          <outline text="跨项目会话转移"/>
+          <outline text="导出 ZIP / 导入归档（含 Codex/Claude JSONL）"/>
+          <outline text="撤销某一轮文件改动（预览后恢复）"/>
+          <outline text="中途插入消息 cut-in"/>
+          <outline text="人工审阅模式"/>
+          <outline text="回复后追问建议"/>
+          <outline text="侧边问答 Reader（证据片段）"/>
+          <outline text="消息资源绑定 → ArtifactVersion"/>
+          <outline text="FlashThinking（规划）"/>
+          <outline text="更深 loop_engine（规划）"/>
+        </outline>
+        <outline text="Composer 交互">
+          <outline text="@ 附加产物/文件/环境/运行时"/>
+          <outline text="# 引用已保存会话（Reader）"/>
+          <outline text="/ 指定 Skill 或 Workflow"/>
+          <outline text="Ctrl/Cmd+K / P 命令面板"/>
+          <outline text="图片/文件夹附加"/>
+          <outline text="流式 Markdown 渲染"/>
+        </outline>
+        <outline text="预览与 Notebook">
+          <outline text="Jupyter / PDF / Office / 图片离线预览"/>
+          <outline text="AnyDoc 富文档转 Markdown"/>
+          <outline text="图片框选加入对话"/>
+          <outline text="大文本/CSV/日志有界预览"/>
+          <outline text="Generated 产物卡片（仅结构化写入）"/>
+          <outline text="Mol* 三维结构查看器（规划）"/>
+        </outline>
+      </outline>
+
+      <outline text="3. 模型 · 专员 · 图像">
+        <outline text="模型配置">
+          <outline text="多 Model Profile"/>
+          <outline text="密钥 Keyring + Validate"/>
+          <outline text="快速配置（Kimi/GLM/DeepSeek 等）"/>
+          <outline text="会话级模型绑定"/>
+          <outline text="视觉能力开关"/>
+          <outline text="search_models 按能力发现"/>
+          <outline text="自定义凭据映射（仅本机注入）"/>
+        </outline>
+        <outline text="ACP 外部编码 Agent">
+          <outline text="Settings → ACP Agents"/>
+          <outline text="Codex / Claude Code 等 stdio ACP v1"/>
+          <outline text="Test Connection"/>
+          <outline text="会话锁定到所选 ACP"/>
+        </outline>
+        <outline text="Specialists 专家">
+          <outline text="用户定义 persona"/>
+          <outline text="Skill/MCP 子集 + 绑定模型"/>
+          <outline text="内置 Reviewer 一键审阅"/>
+          <outline text="对话生成 save_specialist"/>
+          <outline text="Scientific Illustrator + 图像生成"/>
+          <outline text="SVG↔PNG 校对工作流"/>
+        </outline>
+      </outline>
+
+      <outline text="4. 执行环境 ExecutionContext">
+        <outline text="注册与探测">
+          <outline text="local 始终注册"/>
+          <outline text="SSH：添加/测试/探测/导入 ssh config"/>
+          <outline text="WSL：导入发行版（Windows）"/>
+          <outline text="能力探测（OS/CPU/GPU/Python/R/调度器）"/>
+          <outline text="每环境独立解释器路径"/>
+          <outline text="Agent 说明字段"/>
+          <outline text="会话右侧环境面板"/>
+          <outline text="未来：slurm / modal / literature / mcp（规划）"/>
+        </outline>
+        <outline text="交互终端">
+          <outline text="底栏多标签 PTY"/>
+          <outline text="local / WSL / SSH 独立会话"/>
+          <outline text="折叠不杀进程"/>
+          <outline text="与 Run 职责分离"/>
+          <outline text="SSH 断线重连 / tmux（规划）"/>
+          <outline text="终端标签跨重启持久化（规划）"/>
+        </outline>
+        <outline text="远程文件与传输">
+          <outline text="Files 本地 CRUD"/>
+          <outline text="复制相对/绝对路径；多选复制"/>
+          <outline text="SSH 远程浏览与下载"/>
+          <outline text="上下文间传输（本机↔SSH / SSH↔SSH）"/>
+          <outline text="传输进度卡"/>
+          <outline text="定向 SSH trust"/>
+          <outline text="远程 glob 枚举与调度器取消（规划）"/>
+        </outline>
+      </outline>
+
+      <outline text="5. Run 管理与 Runtime">
+        <outline text="Run 生命周期">
+          <outline text="run_in_context 分离式提交"/>
+          <outline text="预检 / 心跳 / 取消 / lost 恢复"/>
+          <outline text="有界 stdout/stderr"/>
+          <outline text="壁钟超时 1s–7d"/>
+          <outline text="内联 Run 卡（秒级计时/吞吐/ETA）"/>
+          <outline text="SSH 暂存 inputs"/>
+          <outline text="远程 Artifact 引用（不默认同步）"/>
+          <outline text="产出收获 harvest"/>
+          <outline text="调度器感知 Run / SLURM（规划）"/>
+        </outline>
+        <outline text="持久 Python / R Runtime">
+          <outline text="项目×上下文×语言 持久 REPL"/>
+          <outline text="变量跨 cell/会话保留"/>
+          <outline text="与 RunManager 职责分离"/>
+          <outline text="跨重启/SSH 断线重挂接（规划）"/>
+          <outline text="变量浏览器（远期）"/>
+        </outline>
+      </outline>
+
+      <outline text="6. 研究资产 · 图谱 · 出版">
+        <outline text="Artifact 与血缘">
+          <outline text="注册 Artifact + 不可变版本"/>
+          <outline text="Files 右键注册（不改字节）"/>
+          <outline text="血缘：Code / Log / Inputs / Environment"/>
+          <outline text="产物挂对话 / 结果弹窗"/>
+        </outline>
+        <outline text="Research Graph">
+          <outline text="记录 DataAsset / Paper / Decision"/>
+          <outline text="验证边与 produced 关系"/>
+          <outline text="侧栏列表 + SVG 图"/>
+          <outline text="边详情面板"/>
+          <outline text="Runs 时间线 / 文献数据侧栏深化（规划）"/>
+        </outline>
+        <outline text="出版证据胶囊">
+          <outline text="稿件条目与修订（Section/Claim/Figure）"/>
+          <outline text="绑定 Artifact/Run 证据状态"/>
+          <outline text="Freeze + readiness 检查"/>
+          <outline text="Build Capsule 确定性 ZIP"/>
+          <outline text="精确证据锚点"/>
+          <outline text="洁净工作区 Verify（local）"/>
+          <outline text="远程/容器 hardened 复验（规划）"/>
+        </outline>
+        <outline text="全局 Library">
+          <outline text="跨项目收藏 Notebook cell / 图像"/>
+          <outline text="代码版本化"/>
+          <outline text="Insert into chat"/>
+          <outline text="搜索 / 过滤 / 溯源"/>
+        </outline>
+      </outline>
+
+      <outline text="7. 探索分支 Exploration">
+        <outline text="从主线/历史轮次创建隔离探索"/>
+        <outline text="独立工作区快照（增量可取消）"/>
+        <outline text="查看差异"/>
+        <outline text="设为主线（fast-forward）"/>
+        <outline text="归档 / 丢弃"/>
+        <outline text="主线冻结；多候选互斥"/>
+        <outline text=".gitignore / .wispignore"/>
+        <outline text="外部副作用不可回滚警告"/>
+        <outline text="ACP 探索（规划）"/>
+      </outline>
+
+      <outline text="8. Skills 技能系统">
+        <outline text="发现与管理">
+          <outline text="作用域：bundled / project / global / plugin"/>
+          <outline text="启用禁用 / 标签覆盖 / Reload"/>
+          <outline text="从 SKILL.md / 文件夹 / ZIP 安装"/>
+          <outline text="Semantic YAML manifest"/>
+          <outline text="Catalog Snapshot / Portfolio"/>
+          <outline text="search_skills / use_skill 渐进加载"/>
+          <outline text="Skill → create_workflow"/>
+        </outline>
+        <outline text="文献与证据治理">
+          <outline text="literature-review 多源综述"/>
+          <outline text="bear-* 概念地图/演化/撞车/正反证据"/>
+          <outline text="pdf-explore PDF 深读"/>
+          <outline text="journal-club-ppt 组会 PPT"/>
+          <outline text="paper-narrative 稿件叙事"/>
+          <outline text="audit-biomedical-paper-evidence"/>
+          <outline text="figure-duplicate-audit"/>
+          <outline text="indication-dossier 适应症档案"/>
+          <outline text="evidence-governed research"/>
+        </outline>
+        <outline text="结构预测与分子设计">
+          <outline text="AlphaFold2 / OpenFold3 / Boltz / Chai1 / ESMFold"/>
+          <outline text="DiffDock 对接"/>
+          <outline text="ProteinMPNN / LigandMPNN / SolubleMPNN"/>
+          <outline text="fair-esm2 / Borzoi / Evo2"/>
+        </outline>
+        <outline text="单细胞与分析流程">
+          <outline text="scvi-tools / scgpt"/>
+          <outline text="analysis-workflow 可复现多阶段"/>
+          <outline text="figure-composer / figure-style"/>
+        </outline>
+        <outline text="计算环境与远程">
+          <outline text="local-env-setup / compute-env-setup"/>
+          <outline text="probe-compute-environment"/>
+          <outline text="remote-compute-ssh / modal"/>
+          <outline text="using-model-endpoint"/>
+        </outline>
+        <outline text="浏览器与产品自知">
+          <outline text="browser-use"/>
+          <outline text="self-awareness / product-self-knowledge"/>
+          <outline text="customize / skill-creator"/>
+        </outline>
+      </outline>
+
+      <outline text="9. MCP 与功能插件">
+        <outline text="MCP">
+          <outline text="内置 bio-tools（约 80 库）"/>
+          <outline text="PubMed / GEO / UniProt / PDB / ChEMBL…"/>
+          <outline text="search_mcp_tools / use_mcp_tool 按需发现"/>
+          <outline text="自定义 stdio MCP"/>
+          <outline text="远程 Streamable HTTP + OAuth"/>
+          <outline text="bio-tools 总开关与连接测试"/>
+        </outline>
+        <outline text="Feature Plugins">
+          <outline text=".superscience-plugin 安装"/>
+          <outline text="Skills + MCP + MCP Apps 打包"/>
+          <outline text="全局安装、按项目启用"/>
+          <outline text="HTTPS+SHA256 校验"/>
+          <outline text="MCP App 中心标签页"/>
+        </outline>
+      </outline>
+
+      <outline text="10. 多 Agent 委派与 Workflow">
+        <outline text="Delegation">
+          <outline text="临时子 Agent 并行"/>
+          <outline text="同轮/后台完成后合成"/>
+          <outline text="审批策略 review_all / auto_safe"/>
+          <outline text="Codex/ACP 作执行器"/>
+          <outline text="跨会话资源租约"/>
+          <outline text="Agents 活动面板"/>
+        </outline>
+        <outline text="Workflow Studio">
+          <outline text="可视化 DAG（并行列/依赖箭）"/>
+          <outline text="节点合同编辑"/>
+          <outline text="内置模板：文献证据/圆桌/方法/研究设计"/>
+          <outline text="Roundtable 生成器"/>
+          <outline text="Quick Action 选中文本触发"/>
+          <outline text="/ 选择 Workflow chip"/>
+          <outline text="节点绑模型 model_id"/>
+          <outline text="方法搜索与失败预算恢复"/>
+        </outline>
+      </outline>
+
+      <outline text="11. 工作台 UI 与体验">
+        <outline text="Files / 中心预览 / Inspector"/>
+        <outline text="聊天与工作台分栏"/>
+        <outline text="Escape 多层叠加栈"/>
+        <outline text="MCP App 停靠不重载"/>
+        <outline text="多窗口完成通知归属"/>
+        <outline text="Windows 托盘与退出策略"/>
+        <outline text="中英 i18n"/>
+        <outline text="Contexts / Runs 时间线面板"/>
+      </outline>
+
+      <outline text="12. 项目迁移与加密同步">
+        <outline text="导入导出">
+          <outline text="Export ZIP（工作区+会话+产物+Run+图谱）"/>
+          <outline text="Import 到新项目目录"/>
+          <outline text="非阻塞传输 + 进度"/>
+          <outline text="排除密钥与全局设置"/>
+        </outline>
+        <outline text="手动加密同步">
+          <outline text="仅「立即同步」（无后台监视）"/>
+          <outline text="自托管中继 / 网盘共享目录"/>
+          <outline text="设备码加入"/>
+          <outline text="冲突：采用远端 / 采用本机"/>
+          <outline text="E2E 加密 blob"/>
+        </outline>
+      </outline>
+
+      <outline text="13. 远程接入与外设">
+        <outline text="IM Channels">
+          <outline text="飞书长连接 / 扫码建应用"/>
+          <outline text="微信 iLink 扫码绑定"/>
+          <outline text="共享 last-message session"/>
+          <outline text="/status /project /session /new /stop"/>
+          <outline text="工具审批仍在桌面"/>
+          <outline text="IM 侧文件/审批按钮（规划）"/>
+        </outline>
+        <outline text="真实浏览器">
+          <outline text="Chrome 扩展桥（复用登录态）"/>
+          <outline text="开页/点击/填表/抓取"/>
+          <outline text="审批卡"/>
+        </outline>
+        <outline text="宠物与 StickS3">
+          <outline text="Settings → Pet 动画宠物"/>
+          <outline text="Windows 透明置顶窗"/>
+          <outline text="状态联动 Agent"/>
+          <outline text="StickS3 LAN Device Bridge"/>
+          <outline text="StickS3 跨网中继（规划）"/>
+        </outline>
+      </outline>
+
+      <outline text="14. 设置 · 安全 · 更新">
+        <outline text="分区 Settings（General/Models/Environments/Skills…）"/>
+        <outline text="基础配置图文教程"/>
+        <outline text="macOS 应用内更新"/>
+        <outline text="Windows/Linux 检查更新 + Releases"/>
+        <outline text="发版签名流水线"/>
+      </outline>
+
+      <outline text="15. CLI 与开发者面">
+        <outline text="superscience-cli 交互 Agent"/>
+        <outline text="run / --output jsonl"/>
+        <outline text="eval 回归套件与基线对比"/>
+        <outline text="SUPERSCIENCE_* 环境变量"/>
+        <outline text="MCP smoke / Playwright E2E"/>
+      </outline>
+
+      <outline text="16. 天成科研助手 Fork 特有">
+        <outline text="品牌名：天成科研助手"/>
+        <outline text="bundle id：science.superscience"/>
+        <outline text="能力发现首页（Capabilities tiles）"/>
+        <outline text="独立反馈弹窗（微信群 + 邮件客服）"/>
+        <outline text="诊断信息自动附加（版本/平台/模型）"/>
+        <outline text="本地 macOS 打包与 Local Codesign"/>
+        <outline text="上游同步报告 report/YYYY-MM-DD-vX.Y.Z.md"/>
+      </outline>
+
+      <outline text="17. 完整工作台愿景场景">
+        <outline text="一项目内注册组学 SSH + GPU SSH"/>
+        <outline text="远程下载/注册大数据（引用而非默认同步）"/>
+        <outline text="组学主机跑分析 → 收获 QC/表"/>
+        <outline text="GPU 主机做结构分析"/>
+        <outline text="本地出最终图"/>
+        <outline text="时间线 + 研究图谱连贯呈现"/>
+        <outline text="出版证据胶囊可复核交付"/>
+      </outline>
+    </outline>
+  </body>
+</opml>

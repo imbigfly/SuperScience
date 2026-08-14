@@ -9,8 +9,9 @@ approval, review, persistence flush, or structured run is active. New project
 tasks are also rejected until that sync finishes.
 
 The **Sync now** and **Copy device code** actions appear on project cards only
-after the selected sync backend is fully configured in Settings. Relay mode
-requires both a relay URL and token; shared-folder mode requires a folder path.
+after the selected sync backend is fully configured. Relay mode requires both a
+relay URL and token; shared-folder mode requires a folder path. The in-app
+Settings form for choosing that backend is currently hidden.
 
 Each revision contains:
 
@@ -28,12 +29,13 @@ known revision, preventing silent descriptor tampering or rollback.
 
 ## Choose a backend
 
-Open **Settings → General → Manual project sync**.
+The Settings form for manual project sync is currently hidden. An already
+configured backend still applies.
 
 ### Self-hosted relay
 
 Set **Storage backend** to **Self-hosted relay server**, then enter its HTTPS
-URL and bearer token. The token is stored in the operating-system keyring and
+URL and bearer token. The token is stored in the local secrets file and
 is not included in project data or device codes. Plain HTTP is accepted only
 for `localhost`, for local development.
 
@@ -79,8 +81,8 @@ compare-and-swap behavior than a cloud-synchronized folder.
 ## Additional device
 
 1. Configure the relay token, or select that device's local cloud-drive folder.
-2. Open **Settings → General → Manual project sync**, press
-   **Join synced project**, and paste the device code.
+2. On **Channel Access**, expand **Join synced project** (collapsed by default)
+   and paste the device code.
 3. Choose a new local parent directory. SuperScience downloads into staging, verifies
    every encrypted blob and plaintext checksum, then imports the project under
    a device-local workspace path.

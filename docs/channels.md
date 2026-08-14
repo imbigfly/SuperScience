@@ -1,6 +1,6 @@
 # IM Channels (Feishu / WeChat)
 
-Settings → Remote Access connects IM bots to the workspace agent: messages you send
+Settings → Channel Access connects IM bots to the workspace agent: messages you send
 from Feishu or WeChat drive normal agent sessions (visible in the desktop app),
 and the final answer of each turn is sent back to the chat.
 
@@ -37,10 +37,10 @@ unattended turns that need approval wait until you click there.
 ## Feishu bot
 
 Uses a **self-built app** over Feishu's official long connection, so no public
-callback URL is needed. The recommended setup is **Settings → Remote Access →
+callback URL is needed. The recommended setup is **Settings → Channel Access →
 Create by QR code**. Choose Feishu China or Lark International first, scan with
 the matching mobile app, and finish the app setup in the page opened by Feishu.
-SuperScience stores the returned App Secret directly in the OS keyring; the device code
+SuperScience stores the returned App Secret directly in the local secrets file; the device code
 and secret are never exposed to the webview or written to SQLite.
 
 An existing app can still be configured manually on
@@ -52,8 +52,8 @@ An existing app can still be configured manually on
    to `im.message.receive_v1`.
 3. Permissions: `im:message`, `im:message.p2p_msg`, `im:message.group_at_msg`
    (or `im:message.group_msg`), plus "get bot info".
-4. Paste App ID / App Secret in Settings → Remote Access, select the matching
-   region, save, then toggle on. The secret is stored in the OS keyring.
+4. Paste App ID / App Secret in Settings → Channel Access, select the matching
+   region, save, then toggle on. The secret is stored in the local secrets file.
 
 Direct (p2p) messages are handled as-is; in group chats the bot only reacts
 when @-mentioned. Duplicate event delivery is deduped by `event_id`. Normal
@@ -70,9 +70,9 @@ are not yet supported. Use `/stop` to cancel a running turn.
 ## WeChat bot (iLink)
 
 Uses WeChat's official iLink bot API (`ilinkai.weixin.qq.com`). Click **Scan to
-bind** in Settings → Remote Access and confirm in WeChat. The scanning account
+bind** in Settings → Channel Access and confirm in WeChat. The scanning account
 becomes the owner — only its 1:1 messages are handled; group messages are
-ignored. The bot token lives in the OS keyring; unbind removes it.
+ignored. The bot token lives in the local secrets file; unbind removes it.
 
 Notes:
 

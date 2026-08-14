@@ -21,6 +21,8 @@ pub(crate) fn ProjectsScreen(
     project_transfer: RwSignal<Option<ProjectTransferProgress>>,
     privacy_mode_active: RwSignal<bool>,
     privacy_hidden_project_ids: RwSignal<HashSet<String>>,
+    tctoken_session: RwSignal<crate::user_center::TctokenSession>,
+    on_open_user_center: Callback<()>,
 ) -> impl IntoView {
     let projects = create_rw_signal(Vec::<ProjectSummary>::new());
     let recent = create_rw_signal(Vec::<RecentSession>::new());
@@ -94,7 +96,12 @@ pub(crate) fn ProjectsScreen(
             if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<RecentSession>>(r) {
                 recent.set(list);
             }
-            let dm = invoke("list_demos", JsValue::UNDEFINED).await;
+            let loc = locale.get_untracked().code().to_string();
+            let dm = invoke(
+                "list_demos",
+                to_value(&serde_json::json!({ "locale": loc })).unwrap(),
+            )
+            .await;
             if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<DemoInfo>>(dm) {
                 demo_count.set(list.len());
             }
@@ -542,6 +549,35 @@ pub(crate) fn ProjectsScreen(
                     }>
                         <span class="new-plus">"+"</span>{move || t(locale.get(), "projects.new")}
                     </button>
+                    <button type="button" class="btn-ghost projects-user"
+                        data-testid="home-user-center-entry"
+                        title=move || if tctoken_session.get().logged_in {
+                            t(locale.get(), "sidebar.user_center")
+                        } else {
+                            t(locale.get(), "sidebar.login")
+                        }
+                        aria-label=move || if tctoken_session.get().logged_in {
+                            t(locale.get(), "sidebar.user_center")
+                        } else {
+                            t(locale.get(), "sidebar.login")
+                        }
+                        on:click=move |_| on_open_user_center.call(())>
+                        {move || {
+                            let session = tctoken_session.get();
+                            if let Some(name) = session.display_label() {
+                                let initial = session.avatar_initial();
+                                view! {
+                                    <span class="projects-user-avatar" aria-hidden="true">{initial}</span>
+                                    <span class="projects-user-name">{name}</span>
+                                }.into_view()
+                            } else {
+                                view! {
+                                    {compose_icon("user")}
+                                    <span>{move || t(locale.get(), "sidebar.login")}</span>
+                                }.into_view()
+                            }
+                        }}
+                    </button>
                 </div>
             </div>
             {move || open_error.get().map(|message| view! {
@@ -828,6 +864,25 @@ pub(crate) fn ProjectsScreen(
                 locale=locale
                 on_activate=on_capability_action
             />
+            <div class="director-cta" data-testid="director-cta">
+                <button
+                    type="button"
+                    class="director-cta-btn"
+                    data-testid="director-kickoff"
+                    on:click=move |_| {
+                        on_capability_action.call(
+                            crate::capabilities_home::CapabilityAction::GuidedChat {
+                                prompt_key: "caps.prompt.director_kickoff",
+                                skill: None,
+                                specialist: None,
+                            },
+                        );
+                    }
+                >
+                    {move || t(locale.get(), "home.director_cta")}
+                </button>
+                <p class="director-cta-hint">{move || t(locale.get(), "home.director_cta_hint")}</p>
+            </div>
             <div class="projects-cols">
                 <div class="projects-col">
                     <h2>{move || t(locale.get(), "projects.title")}</h2>

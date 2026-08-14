@@ -319,24 +319,83 @@ function pastedImageName(file, index) {
   return `pasted_image_${stamp}_${index + 1}.${ext}`;
 }
 
-function pastedImageFiles(event) {
+function isClipboardImage(file) {
+  return String(file?.type || "").startsWith("image/");
+}
+
+function isGenericClipboardImageName(name) {
+  const base = String(name || "").trim().toLowerCase();
+  if (!base) return true;
+  return /^(image|clipboard|untitled|screenshot|screen shot)(?:[-_.\s].*)?\.(png|jpe?g|gif|webp|svg)$/.test(base);
+}
+
+function clipboardFiles(event) {
   const data = event?.clipboardData;
   if (!data) return [];
-  const items = Array.from(data.items || []);
-  const files = items.length
-    ? items.filter((item) => item.kind === "file" && item.type?.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean)
-    : Array.from(data.files || []).filter((file) => file.type?.startsWith("image/"));
-  return files.map((file, i) => new File([file], pastedImageName(file, i), { type: file.type || "image/png" }));
+  const fromItems = Array.from(data.items || [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+  if (fromItems.length) return fromItems;
+  return Array.from(data.files || []);
+}
+
+function pastedFiles(event) {
+  return clipboardFiles(event).map((file, i) => {
+    if (isClipboardImage(file) && isGenericClipboardImageName(file.name)) {
+      return new File([file], pastedImageName(file, i), { type: file.type || "image/png" });
+    }
+    return file;
+  });
+}
+
+function fileUrlToPath(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "file:") return "";
+    let path = decodeURIComponent(url.pathname || "");
+    if (url.hostname && url.hostname !== "localhost") {
+      path = `//${url.hostname}${path}`;
+    } else if (/^\/[A-Za-z]:\//.test(path)) {
+      path = path.slice(1);
+    }
+    return path;
+  } catch {
+    return "";
+  }
+}
+
+export function pasted_file_count(event) {
+  return clipboardFiles(event).length;
 }
 
 export function pasted_image_count(event) {
-  return pastedImageFiles(event).length;
+  return pasted_file_count(event);
+}
+
+export function pasted_file_paths(event) {
+  const data = event?.clipboardData;
+  if (!data || typeof data.getData !== "function") return [];
+  const uriList = data.getData("text/uri-list") || "";
+  if (!uriList) return [];
+  return uriList
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map(fileUrlToPath)
+    .filter(Boolean);
+}
+
+export async function upload_pasted_files(event) {
+  const files = pastedFiles(event);
+  if (!files.length) return [];
+  return upload_files(files);
 }
 
 export async function upload_pasted_images(event) {
-  const files = pastedImageFiles(event);
-  if (!files.length) return [];
-  return upload_files(files);
+  return upload_pasted_files(event);
 }
 
 function dragDataHasFiles(event) {

@@ -13,6 +13,46 @@ function providerSelect(page: Page) {
   return page.getByTestId("settings-provider");
 }
 
+function providerCard(page: Page, providerId: string) {
+  return page.locator(`[data-testid="provider-card"][data-provider-id="${providerId}"]`);
+}
+
+async function openProviderSettings(page: Page, providerId = "deepseek") {
+  if (!(await page.getByTestId("provider-cards").isVisible().catch(() => false))) {
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Models", exact: true }).click();
+  }
+  await expect(page.getByTestId("provider-cards")).toBeVisible();
+  await providerCard(page, providerId).getByTestId("provider-open-settings").click();
+  await expect(providerSelect(page)).toBeVisible();
+}
+
+async function openModelEditor(
+  page: Page,
+  providerId = "deepseek",
+  modelLabel = "deepseek-v4-pro",
+) {
+  if (!(await page.getByTestId("provider-cards").isVisible().catch(() => false))
+    && !(await page.locator(".settings-list-row").first().isVisible().catch(() => false))) {
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Models", exact: true }).click();
+  }
+  if (await page.getByTestId("provider-cards").isVisible().catch(() => false)) {
+    await providerCard(page, providerId).getByTestId("provider-open-models").click();
+  }
+  const row = page.locator(".settings-list-row").filter({ hasText: modelLabel });
+  if (await row.count()) {
+    await row.click();
+  } else {
+    await page.getByRole("button", { name: /Add model/i }).click();
+  }
+}
+
+/** Opens provider settings (protocol / URL / key). */
+async function openModelsSettings(page: Page) {
+  await openProviderSettings(page);
+}
+
 async function expectInsideViewport(locator: Locator, width: number, height: number) {
   const box = await locator.boundingBox();
   expect(box).not.toBeNull();
@@ -22,21 +62,15 @@ async function expectInsideViewport(locator: Locator, width: number, height: num
   expect(box!.y + box!.height).toBeLessThanOrEqual(height);
 }
 
-async function openModelsSettings(page: Page) {
-  await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("button", { name: "Models" }).click();
-  const row = page.locator(".settings-list-row").first();
-  if (await row.count()) {
-    await row.click();
-  } else {
-    await page.getByRole("button", { name: /Add model/i }).click();
-  }
-  await expect(providerSelect(page)).toBeVisible();
-}
-
 async function openSettingsSection(page: Page, name: string) {
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name, exact: true }).click();
+}
+
+/** Specialists moved from Settings nav to the sidebar entry. */
+async function openSpecialistsPage(page: Page) {
+  await page.getByTestId("sidebar-specialists").click();
+  await expect(page.getByTestId("specialist-grid-builtin")).toBeVisible();
 }
 
 // The app now boots to the Projects landing screen; open a real project (not
@@ -239,6 +273,7 @@ test("Example project shows bundled demos as read-only transcripts", async ({ pa
   const sessionsBefore = (await invokeArgsList(page, "new_session")).length;
   const sendsBefore = (await invokeArgsList(page, "send_message")).length;
   const scratchBefore = (await invokeArgsList(page, "start_scratch_chat")).length;
+  const reviewsBefore = (await invokeArgsList(page, "review_session")).length;
   // The synthetic "Example project" opens a demo view whose sidebar lists the
   // bundled demos (no per-project "Open demo" button any more).
   await page.getByText("Example project").click();
@@ -268,6 +303,15 @@ test("Example project shows bundled demos as read-only transcripts", async ({ pa
   // Full transcript includes SSH/run operation cards, not just the summary.
   await expect(page.getByText("Re-run pipeline with fixed STAR index")).toBeVisible();
   await expect(page.getByTestId("run-monitor-card")).toBeVisible();
+
+  // View-only still allows browsing resources: right pane + generated tables.
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await expect(page.locator(".rightpane")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review" })).toHaveCount(0);
+  await page.locator(".message-artifact-card").filter({ hasText: "Table 1" }).click();
+  await expect(page.locator(".rightpane")).toBeVisible();
+  await expect(page.locator(".rp-tile-main").filter({ hasText: "Table 1" })).toBeVisible();
+  expect((await invokeArgsList(page, "review_session")).length).toBe(reviewsBefore);
   expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
   expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
 });
@@ -519,9 +563,11 @@ test("Usage groups workspaces, charts activity and models, and paginates session
 
   const usage = page.getByTestId("usage-pane");
   await expect(usage).toBeVisible();
-  await expect(usage.locator(".usage-tile")).toHaveCount(4);
+  await expect(usage.getByTestId("usage-hero")).toBeVisible();
+  await expect(usage.getByTestId("usage-tile")).toHaveCount(4);
   const activity = page.getByTestId("usage-activity");
   await expect(activity.locator(".usage-activity-cell")).toHaveCount(371);
+  await expect(activity.locator(".usage-activity-legend")).toBeVisible();
 
   const daily = activity.getByRole("button", { name: "Daily", exact: true });
   const weekly = activity.getByRole("button", { name: "Weekly", exact: true });
@@ -610,6 +656,17 @@ test("storage separates project paths and filters usage when a project is clicke
     .toContainText("120.0 MB");
 });
 
+test("Help → Feedback opens on projects landing without entering an app", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator(".projects-screen")).toBeVisible();
+  await expect(page.locator(".app")).toHaveClass(/app-hidden/);
+  await emitTauriEvent(page, "native-menu-action", "issues");
+  await expect(page.getByTestId("feedback-dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("feedback-dialog")).toHaveCount(0);
+  await expect(page.locator(".projects-screen")).toBeVisible();
+});
+
 test("sidebar Feedback opens a dedicated dialog and sends support email (#596)", async ({ page }) => {
   await enterApp(page);
   const sendsBefore = (await invokeArgsList(page, "send_message")).length;
@@ -643,6 +700,138 @@ test("sidebar Feedback opens a dedicated dialog and sends support email (#596)",
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("feedback-dialog")).toHaveCount(0);
   await expect(page.locator(".composer .send")).toHaveText("Send");
+});
+
+test("sidebar user center login opens four tabs", async ({ page }) => {
+  await enterApp(page);
+  await page.getByTestId("user-center-entry").click();
+  await expect(page.getByTestId("user-center-dialog")).toBeVisible();
+  await expect(page.getByTestId("user-center-login")).toBeVisible();
+
+  await page.getByTestId("user-center-tctoken-link").click();
+  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
+    url: "https://www.tctoken.cn",
+  });
+
+  await page.getByTestId("user-center-username").fill("demo");
+  await page.getByTestId("user-center-password").fill("secret");
+  await page.getByTestId("user-center-login-btn").click();
+
+  await expect(page.getByTestId("user-center-tab-account")).toBeVisible();
+  await expect(page.getByTestId("user-center-account")).toContainText("¥5.00");
+
+  await page.getByTestId("user-center-tab-tasks").click();
+  await expect(page.getByTestId("user-center-tasks")).toBeVisible();
+  await expect(page.getByTestId("user-center-tasks")).toContainText("gpt-4o");
+
+  await page.getByTestId("user-center-tab-topup").click();
+  await expect(page.getByTestId("user-center-orders")).toBeVisible();
+  await expect(page.getByTestId("user-center-orders")).toContainText("ORD-001");
+
+  await page.getByTestId("user-center-tab-keys").click();
+  await expect(page.getByTestId("user-center-keys")).toBeVisible();
+  await expect(page.getByTestId("user-center-keys")).toContainText("sk-****abcd");
+  await expect(page.getByTestId("user-center-keys").getByRole("button", { name: /^(Default|当前默认)$/ })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any).__tctokenDefaultTokenId)).toBe(7);
+
+  await page.getByTestId("user-center-tab-account").click();
+  await page.getByTestId("user-center-pay").click();
+  await expect.poll(() => lastInvokeArgs(page, "tctoken_topup_pay")).toMatchObject({
+    amount: 50,
+    paymentMethod: "alipay",
+  });
+  const payArgs = await lastInvokeArgs(page, "tctoken_topup_pay");
+  expect(payArgs).not.toHaveProperty("channel");
+  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
+    url: "https://www.tctoken.cn/pay/mock",
+  });
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("user-center-dialog")).toHaveCount(0);
+});
+
+test("user center remembers password and toggles visibility", async ({ page }) => {
+  await enterApp(page);
+  await page.getByTestId("user-center-entry").click();
+  await expect(page.getByTestId("user-center-login")).toBeVisible();
+
+  const password = page.getByTestId("user-center-password");
+  await page.getByTestId("user-center-username").fill("demo");
+  await password.fill("secret");
+  await expect(password).toHaveAttribute("type", "password");
+  await page.getByTestId("user-center-password-toggle").click();
+  await expect(password).toHaveAttribute("type", "text");
+  await expect(password).toHaveValue("secret");
+  await page.getByTestId("user-center-password-toggle").click();
+  await expect(password).toHaveAttribute("type", "password");
+
+  await page.getByTestId("user-center-remember").locator("input").check();
+  await page.getByTestId("user-center-login-btn").click();
+  await expect(page.getByTestId("user-center-tab-account")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any).__tctokenRememberedLogin)).toMatchObject({
+    remember: true,
+    username: "demo",
+    password: "secret",
+  });
+
+  await page.getByTestId("user-center-logout").click();
+  await expect(page.getByTestId("user-center-login")).toBeVisible();
+  await expect(page.getByTestId("user-center-username")).toHaveValue("demo");
+  await expect(page.getByTestId("user-center-password")).toHaveValue("secret");
+  await expect(page.getByTestId("user-center-remember").locator("input")).toBeChecked();
+});
+
+test("user center restores logged-in session in sidebar", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).__tctokenSession = {
+      loggedIn: true,
+      userId: 42,
+      username: "demo",
+      displayName: "Demo User",
+      group: "default",
+    };
+  });
+  await enterApp(page);
+  await expect(page.getByTestId("user-center-entry")).toContainText("Demo User");
+  await page.getByTestId("user-center-entry").click();
+  await expect(page.getByTestId("user-center-account")).toBeVisible();
+  await page.getByTestId("user-center-logout").click();
+  await expect(page.getByTestId("user-center-login")).toBeVisible();
+});
+
+test("projects landing shows login entry and opens user center", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator(".projects-screen")).toBeVisible();
+  const entry = page.getByTestId("home-user-center-entry");
+  await expect(entry).toBeVisible();
+  await expect(entry).toContainText(/^(Sign in|登录)$/);
+  await entry.click();
+  await expect(page.getByTestId("user-center-dialog")).toBeVisible();
+  await expect(page.getByTestId("user-center-login")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("user-center-dialog")).toHaveCount(0);
+  await expect(page.locator(".projects-screen")).toBeVisible();
+});
+
+test("projects landing shows signed-in user as personal center entry", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).__tctokenSession = {
+      loggedIn: true,
+      userId: 42,
+      username: "demo",
+      displayName: "Demo User",
+      group: "default",
+    };
+  });
+  await page.goto("/");
+  const entry = page.getByTestId("home-user-center-entry");
+  await expect(entry).toContainText("Demo User");
+  await expect(entry.locator(".projects-user-avatar")).toHaveText("D");
+  await entry.click();
+  await expect(page.getByTestId("user-center-account")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("user-center-dialog")).toHaveCount(0);
+  await expect(entry).toBeVisible();
 });
 
 test("Memory settings show the active project name", async ({ page }) => {
@@ -4033,6 +4222,26 @@ test("artifact tile attaches to the chat from its context and more menus", async
   await expect(page.locator(".composer-attachment.ready")).toHaveCount(1);
 });
 
+test("settings Files opens the workspace file browser instead of the home screen", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator(".projects-screen")).toBeVisible();
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await page.getByTestId("settings-nav-files").click();
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+  await expect(page.locator(".projects-screen")).toHaveCount(0);
+  await expect(page.locator(".rp-files")).toBeVisible();
+});
+
+test("settings Files from a project opens the same workspace file browser", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await page.getByTestId("settings-nav-files").click();
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+  await expect(page.locator(".rp-files")).toBeVisible();
+});
+
 test("workspace Files panel navigates deeply nested analysis modules", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Files" }).click();
@@ -4572,6 +4781,34 @@ test("Files browses registered SSH contexts without a real remote host", async (
   await expect(page.locator('[data-workspace-path="report.csv"]')).toBeVisible();
 });
 
+test("pasted local file attaches to the composer instead of inserting its name", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).evaluate((el) => {
+    const data = new DataTransfer();
+    data.items.add(new File(["gene,value\nBRCA1,2"], "report.csv", { type: "text/csv" }));
+    data.setData("text/plain", "report.csv");
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: data });
+    el.dispatchEvent(event);
+  });
+  await expect(page.locator(".composer-attachment.ready")).toHaveText("report.csv");
+  await expect(composer(page)).toHaveValue("");
+});
+
+test("pasted file URL attaches a path chip without inserting the filename", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).evaluate((el) => {
+    const data = new DataTransfer();
+    data.setData("text/uri-list", "file:///Users/me/project/notes.md");
+    data.setData("text/plain", "notes.md");
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: data });
+    el.dispatchEvent(event);
+  });
+  await expect(page.locator(".composer-attachment.ready")).toHaveText("notes.md");
+  await expect(composer(page)).toHaveValue("");
+});
+
 test("pasted image attaches to the composer", async ({ page }) => {
   await enterApp(page);
   await composer(page).evaluate((el) => {
@@ -4985,6 +5222,9 @@ test("project research graph opens from the sidebar in list and graph views", as
   await sidebar.getByRole("button", { name: "Research graph", exact: true }).click();
   await expect(modal).toBeVisible();
   await expect(modal.locator(".research-graph-heading h2")).toHaveCSS("font-family", /Source Serif/);
+  await expect(modal.getByTestId("research-graph-tagline")).toContainText(
+    /relationship map|why you did what you did/i,
+  );
   await expect(modal).toContainText("5 nodes · 3 relationships");
   await expect(modal.getByTestId("research-graph-list")).toBeVisible();
   await expect(modal.getByText("Use DESeq2 over edgeR")).toBeVisible();
@@ -5037,6 +5277,9 @@ test("registered Artifact opens publication binding and Escape keeps Workspace o
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("publication-binding-dialog")).toHaveCount(0);
   await expect(page.getByTestId("publication-workspace")).toBeVisible();
+  await expect(page.getByTestId("publication-workspace-tagline")).toContainText(
+    /exact evidence|evidence capsule/i,
+  );
   await expect(page.getByTestId("publication-manuscript-tree")).toContainText("Figure 2B");
 });
 
@@ -6720,8 +6963,10 @@ test("artifact panel normalizes png/pdf shorthand to the previewable image", asy
 
 test("settings page shows the saved provider", async ({ page }) => {
   await enterApp(page);
-  await openModelsSettings(page);
+  await openProviderSettings(page);
   await expect(providerSelect(page)).toHaveValue("openai");
+  await page.locator(".settings-footer").getByRole("button", { name: "Cancel" }).click();
+  await openModelEditor(page);
   await expect(page.locator("label.settings-check", { hasText: "Supports image input" })).toHaveCSS("flex-direction", "row");
   await expect(page.locator("label.settings-check", { hasText: "Use for image analysis" })).toHaveCSS("flex-direction", "row");
   await expect(page.locator("label.settings-check", { hasText: "Use for image generation" })).toHaveCSS("flex-direction", "row");
@@ -6731,12 +6976,17 @@ test("settings page shows the saved provider", async ({ page }) => {
 test("model settings updates activation and confirms removal", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
+  await expect(page.getByTestId("provider-card").first()).toBeVisible();
+  await expect(providerCard(page, "tctoken")).toBeVisible();
 
+  await providerCard(page, "anthropic").getByTestId("provider-open-models").click();
   const opus = page.locator(".settings-list-row").filter({ hasText: "opus-4.8" });
   await opus.getByRole("button", { name: "Use" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
   await expect(opus).toHaveClass(/settings-list-row-active/);
+  await page.locator(".settings-head-back").click();
 
+  await providerCard(page, "deepseek").getByTestId("provider-open-models").click();
   const deepseek = page.locator(".settings-list-row").filter({ hasText: "deepseek-v4-pro" });
   await deepseek.getByTitle("Remove model").click();
   const confirm = page.getByTestId("model-delete-confirm");
@@ -6870,27 +7120,32 @@ test("UI font size setting scales Chinese chat markdown and composer", async ({ 
 
 test("vision assignment keeps model fields and stored key placeholder untouched", async ({ page }) => {
   await enterApp(page);
-  await openModelsSettings(page);
+  await openProviderSettings(page, "deepseek");
 
-  const effort = page.getByLabel("Reasoning effort");
-  const key = page.getByLabel("API key (stored in OS keyring)");
-  const useForVision = page.getByLabel("Use for image analysis");
-
+  const key = page.getByLabel("API key (stored in local secrets file)");
   await providerSelect(page).selectOption("openai_responses");
   await page.getByLabel("API URL").fill("https://api.openai-proxy.org/v1");
-  await page.getByLabel("Model").fill("gpt-5.6-luna");
-  await effort.selectOption("medium");
   await expect(key).toHaveValue("");
   await expect(key).toHaveAttribute("placeholder", "(stored — leave blank to keep)");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "save_model_provider")).toMatchObject({
+    provider: {
+      id: "deepseek",
+      protocol: "openai_responses",
+      api_url: "https://api.openai-proxy.org/v1",
+    },
+  });
 
+  await openModelEditor(page, "deepseek", "deepseek-v4-pro");
+  const effort = page.getByLabel("Reasoning effort");
+  const useForVision = page.getByLabel("Use for image analysis");
+  await page.getByLabel("Model").fill("gpt-5.6-luna");
+  await effort.selectOption("medium");
   if (await useForVision.isChecked()) {
     await useForVision.uncheck();
   }
   await useForVision.check();
-
-  await expect(providerSelect(page)).toHaveValue("openai_responses");
   await expect(effort).toHaveValue("medium");
-  await expect(key).toHaveValue("");
 
   await page.getByRole("button", { name: "Save" }).click();
   await expect.poll(async () => page.evaluate(() => {
@@ -6908,6 +7163,7 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
     useForVision: true,
     profile: {
       provider: "openai_responses",
+      provider_id: "deepseek",
       // gpt-5.6-luna is in the baked catalog (128K out / 1.05M ctx).
       context_window: 1050000,
       reasoning_effort: "medium",
@@ -6916,14 +7172,13 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
   });
 
   await page.locator(".settings-list-row").first().click();
-  await expect(providerSelect(page)).toHaveValue("openai_responses");
   await expect(effort).toHaveValue("medium");
   await expect(page.getByLabel("Use for image analysis")).toBeChecked();
 });
 
 test("model settings rejects max output tokens above the known ceiling", async ({ page }) => {
   await enterApp(page);
-  await openModelsSettings(page);
+  await openModelEditor(page);
 
   // deepseek-v4-pro is in the baked catalog (384K output ceiling).
   const maxTokens = page.getByLabel("Max output tokens");
@@ -6949,7 +7204,7 @@ test("model settings auto-fills catalog limits and save clamps to them", async (
   // URL must be in place before the model id is typed.
   await page.getByLabel("API URL").fill("https://api.kimi.com/coding/v1");
   await page.getByLabel("Model").fill("k3-256k");
-  await page.getByLabel("API key (stored in OS keyring)").fill("sk-k3");
+  await page.getByLabel("API key (stored in local secrets file)").fill("sk-k3");
 
   // kimi-for-coding/k3-256k is in the baked catalog (262144 ctx / 131072 out).
   await expect(page.getByLabel("Max output tokens")).toHaveValue("131072");
@@ -6971,39 +7226,30 @@ test("model settings auto-fills catalog limits and save clamps to them", async (
   expect(stored).toMatchObject({ context_window: 262144, max_tokens: 131072 });
 });
 
-test("onboarding key setup lands on flash after adding pro", async ({ page }) => {
+test("onboarding shows three value cards and dismisses on Get started", async ({ page }) => {
   await page.goto("/?mockOnboarding=1");
-  await expect(page.locator(".onboard-overlay")).toBeVisible();
-  await page.getByLabel("API key (stored in OS keyring)").fill("sk-onboard");
-  await page.getByRole("button", { name: "Next" }).click();
-  // Order matters: save_model activates each new profile, so flash must land
-  // last for the user to start on the cheaper default.
-  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
-    .filter((c: any) => c.cmd === "save_model")
-    .map((c: any) => {
-      const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
-      const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
-      return profile.model;
-    }))).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"]);
-  // The built-in Reader gets bound to the flash profile so reading-heavy
-  // work runs on the cheap tier out of the box.
-  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
-    .filter((c: any) => c.cmd === "save_specialist_cmd")
-    .map((c: any) => {
-      const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
-      const spec = args.spec instanceof Map ? Object.fromEntries(args.spec) : args.spec;
-      return { id: spec.id, model_id: spec.model_id };
-    }))).toEqual([{ id: "reader", model_id: "m2" }]);
+  await expect(page.getByTestId("onboard-overlay")).toBeVisible();
+  await expect(page.getByTestId("onboard-card-1")).toContainText("I never touch your data.");
+  await expect(page.getByTestId("onboard-card-2")).toContainText("I do the grunt work.");
+  await expect(page.getByTestId("onboard-card-3")).toContainText("You direct; I execute.");
+  await page.getByTestId("onboard-start").click();
+  await expect(page.getByTestId("onboard-overlay")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "dismiss_onboarding")
+  )).toBe(true);
 });
 
 test("gpt-image-2 can be assigned for generation but not selected for chat", async ({ page }) => {
   await enterApp(page);
-  await openSettingsSection(page, "Models");
-  const opus = page.locator(".settings-list-row", { hasText: "opus-4.8" });
-  await opus.click();
-
+  await openProviderSettings(page, "anthropic");
   await providerSelect(page).selectOption("openai_responses");
   await page.getByLabel("API URL").fill("https://api.openai.com/v1");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "save_model_provider")).toMatchObject({
+    provider: { id: "anthropic", protocol: "openai_responses" },
+  });
+
+  await openModelEditor(page, "anthropic", "opus-4.8");
   await page.getByLabel("Model").fill("gpt-image-2");
   await expect(page.getByLabel("Supports image input")).not.toBeChecked();
   await page.getByLabel("Use for image generation").check();
@@ -7018,6 +7264,7 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
     profile: {
       id: "opus",
       provider: "openai_responses",
+      provider_id: "anthropic",
       model: "gpt-image-2",
       use_for_image_generation: true,
     },
@@ -7036,7 +7283,7 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
 
 test("settings normalizes a blank stored provider to openai", async ({ page }) => {
   await enterApp(page);
-  await openModelsSettings(page);
+  await openProviderSettings(page);
   await expect(providerSelect(page)).toHaveValue("openai");
   await page.getByRole("button", { name: "Valid" }).click();
   await expect(page.locator(".settings-status")).toContainText("Validated openai with deepseek-v4-pro");
@@ -7044,7 +7291,7 @@ test("settings normalizes a blank stored provider to openai", async ({ page }) =
 
 test("editing API URL keeps provider state and display aligned", async ({ page }) => {
   await enterApp(page);
-  await openModelsSettings(page);
+  await openProviderSettings(page);
   await page.getByLabel("API URL").fill("https://api.deepseek.com");
   await expect(providerSelect(page)).toHaveValue("openai");
   await page.getByRole("button", { name: "Valid" }).click();
@@ -7053,7 +7300,7 @@ test("editing API URL keeps provider state and display aligned", async ({ page }
 
 test("model API URL explains that endpoint paths are added automatically", async ({ page }) => {
   await enterApp(page);
-  await openModelsSettings(page);
+  await openProviderSettings(page);
 
   await expect(page.getByTestId("model-api-url-hint")).toHaveText(
     "Enter the provider's API base URL. You do not need to append /v1, /chat/completions, /responses, or /v1/messages; SuperScience completes the request path and probes common OpenAI-compatible paths automatically.",
@@ -7066,7 +7313,7 @@ test("model API URL explains that endpoint paths are added automatically", async
 
 test("settings can validate current API config", async ({ page }) => {
   await enterApp(page);
-  await openModelsSettings(page);
+  await openModelEditor(page);
   await page.getByRole("button", { name: "Valid" }).click();
   // The mock profile has "supports images" on, so validation probes with a
   // test image and says so.
@@ -7081,14 +7328,11 @@ test("settings can validate current API config", async ({ page }) => {
 
 test("editing a saved model validates with that model profile id", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("button", { name: "Models" }).click();
-  await page.locator(".settings-list-row", { hasText: "opus-4.8" }).click();
-  await expect(providerSelect(page)).toBeVisible();
-  await expect(page.getByLabel("Model ID")).toHaveValue("opus-4.8");
+  await openModelEditor(page, "anthropic", "opus-4.8");
+  await expect(page.getByLabel("Model")).toHaveValue("opus-4.8");
 
   await page.getByRole("button", { name: "Valid" }).click();
-  await expect(page.locator(".settings-status")).toContainText("Validated openai with deepseek-v4-pro");
+  await expect(page.locator(".settings-status")).toContainText("Validated anthropic with opus-4.8");
   await expect.poll(() => lastInvokeArgs(page, "validate_settings")).toMatchObject({
     profileId: "opus",
     key: "",
@@ -7486,29 +7730,75 @@ test("projects home shows capability scene tabs and tiles", async ({ page }) => 
   const scene = page.getByTestId("capability-scene");
   await expect(scene).toBeVisible();
   await expect(scene.getByRole("heading", { name: "What you can do" })).toBeVisible();
-  // Capability section sits above Projects / Recent sessions.
+  const directorCta = page.getByTestId("director-kickoff");
+  await expect(directorCta).toBeVisible();
+  await expect(directorCta).toHaveText("Director, let's begin");
+  // Capability section sits above director CTA, which sits above Projects / Recent sessions.
   const projectsHeading = page.getByRole("heading", { name: "Projects", exact: true });
   await expect(projectsHeading).toBeVisible();
   const sceneBox = await scene.boundingBox();
+  const directorBox = await directorCta.boundingBox();
   const projectsBox = await projectsHeading.boundingBox();
-  expect(sceneBox && projectsBox && sceneBox.y < projectsBox.y).toBeTruthy();
-  await expect(page.getByTestId("cap-tile-ai-agent")).toBeVisible();
-  await page.getByRole("tab", { name: "Literature" }).click();
-  await expect(page.getByTestId("cap-tile-literature")).toBeVisible();
-  await expect(page.getByTestId("cap-tile-ai-agent")).toHaveCount(0);
+  expect(sceneBox && directorBox && sceneBox.y < directorBox.y).toBeTruthy();
+  expect(directorBox && projectsBox && directorBox.y < projectsBox.y).toBeTruthy();
+  await expect(page.getByTestId("cap-tile-academic-paper")).toBeVisible();
+  await page.getByRole("tab", { name: "AI drawing" }).click();
+  await expect(page.getByTestId("cap-tile-nature-figure")).toBeVisible();
+  await expect(page.getByTestId("cap-tile-academic-paper")).toHaveCount(0);
 });
 
-test("capabilities overlay scene tab launches guided chat", async ({ page }) => {
+test("projects home director kickoff starts socratic guided chat", async ({ page }) => {
+  await page.goto("/");
+  const kickoff = page.getByTestId("director-kickoff");
+  await expect(kickoff).toBeVisible();
+  // Breathing animation keeps the button "unstable" for Playwright; force the click.
+  await kickoff.click({ force: true });
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: expect.stringMatching(/FIVE questions|research director coach|at most five/i),
+    references: [],
+  });
+});
+
+test("capabilities overlay scene tab launches guided skill chat", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Capabilities" }).click();
   const capabilities = page.getByTestId("capabilities-dialog");
   await expect(capabilities).toBeVisible();
-  await page.getByRole("tab", { name: "Literature" }).click();
-  await page.getByTestId("cap-tile-literature").click();
+  await page.getByRole("tab", { name: "Paper writing" }).click();
+  await page.getByTestId("cap-tile-deep-research").click();
   await expect(capabilities).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
-    message: expect.stringMatching(/literature|bear/i),
+    message: expect.stringMatching(/deep-research|FIVE clarifying|use_skill|Capability coaching/i),
+    references: [{ kind: "skill", name: "deep-research" }],
   });
+});
+
+test("AI drawing R bioinfo tile binds specialist then sends guided skill chat", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Capabilities" }).click();
+  const capabilities = page.getByTestId("capabilities-dialog");
+  await expect(capabilities).toBeVisible();
+  await page.getByRole("tab", { name: "AI drawing" }).click();
+  await expect(page.getByTestId("cap-tile-r-bioinfo-figure")).toBeVisible();
+  await page.getByTestId("cap-tile-r-bioinfo-figure").click();
+  await expect(capabilities).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "set_session_specialist")).toMatchObject({
+    id: "r_bioinformatics_figure",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: expect.stringMatching(/nature-figure|FIVE|r tool|bioinformatics|Capability coaching/i),
+    references: [{ kind: "skill", name: "nature-figure" }],
+  });
+  const order = await page.evaluate(() => {
+    const cmds = ((window as any).__skillInvokeLog ?? []).map((c: any) => c.cmd);
+    const newIdx = cmds.lastIndexOf("new_session");
+    const setIdx = cmds.lastIndexOf("set_session_specialist");
+    const sendIdx = cmds.lastIndexOf("send_message");
+    return { newIdx, setIdx, sendIdx };
+  });
+  expect(order.newIdx).toBeGreaterThanOrEqual(0);
+  expect(order.setIdx).toBeGreaterThan(order.newIdx);
+  expect(order.sendIdx).toBeGreaterThan(order.setIdx);
 });
 
 test("capabilities overlay closes with Escape", async ({ page }) => {
@@ -7805,29 +8095,26 @@ test("OAuth authorization keeps Cancel available and clears form status", async 
 
 test("settings validation rejects blank required fields", async ({ page }) => {
   await enterApp(page);
-  await openModelsSettings(page);
+  await openProviderSettings(page);
   await page.getByLabel("API URL").fill("");
   await page.getByRole("button", { name: "Valid" }).click();
-  await expect(page.locator(".settings-status")).toHaveText("Validation failed: API URL is required.");
+  await expect(page.locator(".settings-status")).toHaveText("API URL is required.");
 });
 
 test("provider switch fills current API defaults", async ({ page }) => {
   await enterApp(page);
-  await openModelsSettings(page);
+  await openProviderSettings(page);
   await providerSelect(page).selectOption("openai_responses");
   await expect(page.getByLabel("API URL")).toHaveValue("https://api.openai.com/v1");
-  await expect(page.getByLabel("Model")).toHaveValue("gpt-5.5");
   await providerSelect(page).selectOption("anthropic");
   await expect(page.getByLabel("API URL")).toHaveValue("https://api.anthropic.com");
-  await expect(page.getByLabel("Model")).toHaveValue("claude-sonnet-5");
   await providerSelect(page).selectOption("openai");
   await expect(page.getByLabel("API URL")).toHaveValue("https://api.deepseek.com");
-  await expect(page.getByLabel("Model")).toHaveValue("deepseek-v4-flash");
 });
 
 test("model form input keeps focus while typing (#62)", async ({ page }) => {
   await enterApp(page);
-  await openModelsSettings(page);
+  await openModelEditor(page);
   const model = page.getByLabel("Model");
   await model.fill("");
   // Type character-by-character. The bug: the form pane was gated on the whole
@@ -7836,6 +8123,26 @@ test("model form input keeps focus while typing (#62)", async ({ page }) => {
   await model.pressSequentially("gpt-5.5-x");
   await expect(model).toHaveValue("gpt-5.5-x");
   await expect(model).toBeFocused();
+});
+
+test("provider cards keep Settings and drop the duplicate Edit action", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  const card = providerCard(page, "deepseek");
+  await expect(card.getByTestId("provider-open-settings")).toHaveText("Settings");
+  await expect(card.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "Settings", exact: true })).toHaveCount(1);
+});
+
+test("builtin tctoken provider is first and quick setup opens provider or model form", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  const cards = page.getByTestId("provider-card");
+  await expect(cards.first()).toHaveAttribute("data-provider-id", "tctoken");
+  await expect(providerCard(page, "tctoken")).toContainText("0 models");
+  await page.getByTestId("model-presets").getByRole("button", { name: "DeepSeek" }).click();
+  // Existing deepseek provider already has a key → opens add/edit model form.
+  await expect(page.getByLabel("Model")).toBeVisible();
 });
 
 test("inline approval card keeps its buttons reachable with a long preview (#63)", async ({ page }) => {
@@ -8953,9 +9260,9 @@ test("selecting preview text quotes it into chat and saves a review annotation",
 test("scratch chat opens from landing and closes on Escape", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".projects-screen")).toBeVisible();
-  await page.getByRole("button", { name: "Scratch chat" }).click();
+  await page.getByRole("button", { name: "Start conversation" }).click();
   await expect(page.locator(".app.scratch-mode")).toBeVisible();
-  await expect(page.locator(".scratch-title")).toHaveText("Scratch chat");
+  await expect(page.locator(".scratch-title")).toHaveText("Start conversation");
   // Scratch chrome is title + close only — inbox/terminal/panel stay project-scoped.
   await expect(page.locator(".topbar-actions")).toBeHidden();
   await expect(page.locator(".scratch-close")).toBeVisible();
@@ -9405,7 +9712,11 @@ test("projects sync manually, copy a device code, and join on another device", a
 
   await expect(page.getByRole("button", { name: "Join synced project" })).toHaveCount(0);
   await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("button", { name: "Remote Access", exact: true }).click();
+  await page.getByRole("button", { name: "Channel Access", exact: true }).click();
+  const sync = page.getByTestId("manual-project-sync");
+  await expect(sync).toBeVisible();
+  await expect(sync).not.toHaveAttribute("open");
+  await sync.locator("summary").click();
   await page.getByRole("button", { name: "Join synced project" }).click();
   const joinDialog = page.getByRole("dialog", { name: "Join a synced project" });
   const deviceCode = page.getByTestId("sync-device-code");
@@ -9441,22 +9752,53 @@ test("project sync actions appear only after a sync backend is configured", asyn
   await expect(projectCard.getByRole("button", { name: "Sync now" })).toHaveCount(0);
   await expect(projectCard.getByRole("button", { name: "Copy device code" })).toHaveCount(0);
 
-  await openSettingsSection(page, "Remote Access");
+  await openSettingsSection(page, "Channel Access");
+  const sync = page.getByTestId("manual-project-sync");
+  await sync.locator("summary").click();
   await page.getByTestId("sync-relay-url").fill("https://relay.example.test");
   await page.getByTestId("sync-relay-token").fill("secret-token");
-  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await page.locator(".settings-join-sync-body .settings-footer").getByRole("button", { name: "Save" }).click();
 
   await expect(projectCard.getByRole("button", { name: "Sync now" })).toBeVisible();
   await expect(projectCard.getByRole("button", { name: "Copy device code" })).toBeVisible();
 });
 
-test("remote access settings configure a cloud-drive sync folder", async ({ page }) => {
+test("channel access settings collapse manual project sync by default", async ({ page }) => {
   await page.goto("/");
-  await openSettingsSection(page, "Remote Access");
+  await openSettingsSection(page, "Channel Access");
+  await expect(page.getByRole("heading", { name: "Channel Access" })).toBeVisible();
+  await expect(page.locator(".channel-card")).toHaveCount(3);
+  const sync = page.getByTestId("manual-project-sync");
+  await expect(sync).toBeVisible();
+  await expect(sync).not.toHaveAttribute("open");
+  await expect(page.getByTestId("sync-backend")).not.toBeVisible();
+  await expect(page.getByTestId("sync-relay-url")).not.toBeVisible();
+  await expect(page.getByRole("button", { name: "Join synced project" })).not.toBeVisible();
+
+  await sync.locator("summary").click();
+  await expect(sync).toHaveAttribute("open", "");
+  await expect(page.getByTestId("sync-backend")).toBeVisible();
+  await expect(page.getByTestId("sync-relay-url")).toBeVisible();
+  await page.getByRole("button", { name: "Join synced project" }).click();
+  const joinDialog = page.getByRole("dialog", { name: "Join a synced project" });
+  await expect(joinDialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(joinDialog).toHaveCount(0);
+  await expect(sync).toHaveAttribute("open", "");
+  await page.keyboard.press("Escape");
+  await expect(sync).not.toHaveAttribute("open");
+  await expect(page.getByRole("heading", { name: "Channel Access" })).toBeVisible();
+});
+
+test("channel access settings configure a cloud-drive sync folder", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "Channel Access");
+  const sync = page.getByTestId("manual-project-sync");
+  await sync.locator("summary").click();
   await page.getByTestId("sync-backend").selectOption("folder");
   await page.locator(".settings-path-row").getByRole("button", { name: "Choose folder" }).click();
   await expect(page.getByTestId("sync-folder")).toHaveValue("/mock/root/new-project");
-  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await page.locator(".settings-join-sync-body .settings-footer").getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
     settings: { sync_backend: "folder", sync_folder: "/mock/root/new-project" },
   });
@@ -10574,12 +10916,13 @@ test("a ?project window opens straight into the project, skipping the landing (#
 
 test("specialists page configures the builtin Reader and saves a custom specialist", async ({ page }) => {
   await enterApp(page);
-  await openSettingsSection(page, "Specialists");
+  await openSpecialistsPage(page);
+  await expect(page.locator(".specialist-card").first()).toBeVisible();
   await expect(page.getByText("审阅专家")).toBeVisible();
   await expect(page.getByText("检索专家")).toBeVisible();
   await expect(page.getByText("科学插画专家")).toBeVisible();
-  // Builtin rows have no remove button.
-  await expect(page.locator(".settings-list-remove")).toHaveCount(0);
+  // Builtin cards have no remove button.
+  await expect(page.locator('[data-testid^="specialist-remove-"]')).toHaveCount(0);
 
   await page.getByText("检索专家").click();
   await expect(page.getByLabel("Instructions")).toBeDisabled();
@@ -10645,7 +10988,7 @@ test("specialist skills whitelist uses a searchable picker instead of a full lis
 
 test("Reviewer settings select, test, and persist an ACP backend", async ({ page }) => {
   await enterApp(page);
-  await openSettingsSection(page, "Specialists");
+  await openSpecialistsPage(page);
   await page.getByText("审阅专家").click();
 
   const backend = page.getByTestId("reviewer-backend-select");
@@ -10683,7 +11026,7 @@ test("Reviewer settings select, test, and persist an ACP backend", async ({ page
 
 test("a deleted ACP reviewer remains visibly selected as missing", async ({ page }) => {
   await enterApp(page);
-  await openSettingsSection(page, "Specialists");
+  await openSpecialistsPage(page);
   await page.getByText("审阅专家").click();
   await page.getByTestId("reviewer-backend-select").selectOption("acp:acp-test");
   await page.getByRole("button", { name: "Save" }).click();
@@ -10700,7 +11043,8 @@ test("a deleted ACP reviewer remains visibly selected as missing", async ({ page
     .click();
   await expect(row).toHaveCount(0);
 
-  await nav.getByRole("button", { name: "Specialists", exact: true }).click();
+  await page.locator(".settings-head-close").click();
+  await openSpecialistsPage(page);
   await page.getByText("审阅专家").click();
   const backend = page.getByTestId("reviewer-backend-select");
   await expect(backend).toHaveValue("acp:acp-test");
@@ -10719,8 +11063,8 @@ test("a deleted ACP reviewer remains visibly selected as missing", async ({ page
 
 test("new session can pick a specialist and it locks after the first message", async ({ page }) => {
   await enterApp(page);
-  // Create the custom specialist through the settings flow, as above.
-  await openSettingsSection(page, "Specialists");
+  // Create the custom specialist through the sidebar specialists page.
+  await openSpecialistsPage(page);
   await page.getByText("Add specialist").click();
   await page.getByText("Write from scratch").click();
   await page.getByLabel("Name").fill("Paper hunter");
@@ -10748,7 +11092,7 @@ test("new session can pick a specialist and it locks after the first message", a
 
 test("chat-with-claude creation opens a new session with the interview prompt", async ({ page }) => {
   await enterApp(page);
-  await openSettingsSection(page, "Specialists");
+  await openSpecialistsPage(page);
   await page.getByText("Add specialist").click();
   await page.getByText("Chat with Claude").click();
   // settings closed, a session is active, and send_message was invoked with the template
@@ -10758,14 +11102,15 @@ test("chat-with-claude creation opens a new session with the interview prompt", 
   )).toBeGreaterThan(0);
 });
 
-test("remote access settings: Feishu, WeChat, and StickS3 setup", async ({ page }) => {
+test("channel access settings: Feishu, WeChat, and StickS3 setup", async ({ page }) => {
   await enterApp(page);
-  await openSettingsSection(page, "Remote Access");
+  await openSettingsSection(page, "Channel Access");
 
-  // List page: routing note plus one row per bot, toggles disabled until bound.
+  // List page: routing note plus one card per bot, toggles disabled until bound.
   await expect(page.getByTestId("channel-routing-help")).toBeVisible();
   await expect(page.getByTestId("channel-routing-help").getByText("/project", { exact: true })).toBeVisible();
   await expect(page.getByTestId("channel-routing-help").getByText("/session", { exact: true })).toBeVisible();
+  await expect(page.locator(".channel-card")).toHaveCount(3);
   await expect(page.getByTestId("feishu-channel-row")).toBeVisible();
   await expect(page.getByTestId("weixin-channel-row")).toBeVisible();
   await expect(page.getByTestId("sticks3-channel-row")).toBeVisible();
@@ -10776,6 +11121,7 @@ test("remote access settings: Feishu, WeChat, and StickS3 setup", async ({ page 
   // Feishu subpage: existing applications still have a manual, keyring-backed
   // setup path.
   await page.getByTestId("feishu-channel-row").click();
+  await expect(page.getByTestId("manual-project-sync")).toHaveCount(0);
   await expect(page.getByTestId("feishu-channel-card")).toBeVisible();
   await page.getByTestId("feishu-international").check();
   await page.getByTestId("feishu-app-id").fill("cli_test123");
@@ -10817,7 +11163,7 @@ test("remote access settings: Feishu, WeChat, and StickS3 setup", async ({ page 
   await page.getByTestId("weixin-unbind").click();
   await expect(page.getByTestId("weixin-bind")).toBeVisible({ timeout: 10_000 });
 
-  // StickS3 is the third Remote Access peer. LAN is usable now; Relay is an
+  // StickS3 is the third Channel Access peer. LAN is usable now; Relay is an
   // explicit, disabled future transport instead of being conflated with LAN.
   await page.locator(".settings-head-back").click();
   await page.getByTestId("sticks3-channel-row").click();
@@ -10854,7 +11200,7 @@ test("remote access settings: Feishu, WeChat, and StickS3 setup", async ({ page 
 
 test("StickS3 listener errors remain visible without breaking settings", async ({ page }) => {
   await enterApp(page, "/?mockDeviceBridgeError=1");
-  await openSettingsSection(page, "Remote Access");
+  await openSettingsSection(page, "Channel Access");
   await page.getByTestId("sticks3-channel-row").click();
   await page.getByTestId("sticks3-bind-ipv4").fill("127.0.0.1");
   await page.getByTestId("sticks3-port").fill("18766");

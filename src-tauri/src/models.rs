@@ -20,10 +20,16 @@ fn default_context_window() -> u64 {
 pub struct ModelProfile {
     pub id: String,
     pub label: String,
+    /// Protocol type (`openai` / `openai_responses` / `anthropic`). Mirrored
+    /// from the owning provider on read so callers keep working.
     pub provider: String,
+    /// API base URL mirrored from the owning provider on read.
     pub api_url: String,
+    /// Owning provider id. Empty only for pre-migration JSON; `ensure` fills it.
+    #[serde(default)]
+    pub provider_id: String,
     pub model: String,
-    /// Computed on read from the keyring; never part of the persisted JSON.
+    /// Computed on read from the secrets file; never part of the persisted JSON.
     #[serde(default)]
     pub has_api_key: bool,
     /// Computed on read; true for the active profile.
@@ -50,29 +56,51 @@ pub struct ModelProfile {
     pub use_for_image_generation: bool,
 }
 
+/// Shared endpoint + credentials for one or more [`ModelProfile`]s.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelProvider {
+    pub id: String,
+    pub label: String,
+    /// Protocol: `openai` | `openai_responses` | `anthropic`.
+    pub protocol: String,
+    pub api_url: String,
+    #[serde(default)]
+    pub sort_order: i64,
+    #[serde(default)]
+    pub builtin: bool,
+    /// Computed on read from the secrets file; never persisted.
+    #[serde(default)]
+    pub has_api_key: bool,
+    /// Computed on read: number of model profiles under this provider.
+    #[serde(default)]
+    pub model_count: usize,
+}
+
 const PROFILES_KEY: &str = "model_profiles";
+const PROVIDERS_KEY: &str = "model_providers";
 const ACTIVE_KEY: &str = "active_model_id";
 const VISION_KEY: &str = "vision_model_id";
 const IMAGE_GENERATION_KEY: &str = "image_generation_model_id";
 const LEGACY_KEY_SECRET: &str = "api_key";
 const CUSTOM_CREDENTIALS_KEY: &str = "custom_credentials";
 const CUSTOM_CREDENTIAL_SECRET_PREFIX: &str = "custom_credential:";
+pub const TCTOKEN_PROVIDER_ID: &str = "tctoken";
+const TCTOKEN_PROVIDER_LABEL: &str = "天成TOKEN平台";
+const TCTOKEN_PROVIDER_URL: &str = "https://www.tctoken.cn/v1";
 
 fn secret_name(id: &str) -> String {
     format!("model_key:{id}")
 }
 
-/// Process-lifetime cache of resolved secrets, keyed by keyring name.
+fn provider_secret_name(id: &str) -> String {
+    format!("provider_key:{id}")
+}
+
+/// Process-lifetime cache of resolved secrets, keyed by secret name.
 ///
-/// On macOS the OS keyring pops a login-password prompt whenever the calling
-/// app's code signature doesn't match the stored item's ACL (e.g. after the
-/// unsigned→signed jump in v0.4.2). `decorated()` read the keyring once *per
-/// profile on every UI refresh*, turning that into an endless prompt storm
-/// (issue #85). Caching means the keyring is touched at most once per key per
-/// launch; a denied prompt is remembered as empty so it stops nagging too.
-/// Writes go through `secret_set`/`secret_del` so the cache never goes stale.
-/// ponytail: holds keys in memory for the session (the process already does
-/// while running a turn); values are dropped on process exit.
+/// Avoids re-reading the secrets file on every UI refresh. Writes go through
+/// `secret_set`/`secret_del` so the cache never goes stale. Values are dropped
+/// on process exit.
 fn secret_cache() -> &'static Mutex<HashMap<String, String>> {
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -103,7 +131,7 @@ fn secret_set(name: &str, value: &str) -> Result<(), String> {
 
 fn secret_del(name: &str) -> Result<(), String> {
     let r = superscience_store::secrets::Secret::delete(name).map_err(|e| e.to_string());
-    // Remember "absent" so existence checks don't re-hit (and re-prompt) the keyring.
+    // Remember "absent" so existence checks don't re-read the secrets file.
     secret_cache()
         .lock()
         .unwrap()
@@ -112,10 +140,10 @@ fn secret_del(name: &str) -> Result<(), String> {
 }
 
 /// Service credentials (#115): API keys/emails for external services that
-/// skills and bundled MCP tools authenticate to. Each is stored in the OS
-/// keyring (same cache as model keys, read at most once per launch) and
+/// skills and bundled MCP tools authenticate to. Each is stored in the local
+/// secrets file (same cache as model keys, read at most once per launch) and
 /// injected as an env var into spawned Python/MCP processes. `id` is the
-/// stable UI/command identifier; `secret` is the keyring name; `env` is the
+/// stable UI/command identifier; `secret` is the secrets-file key; `env` is the
 /// variable the consuming Python reads.
 struct Credential {
     id: &'static str,
@@ -125,7 +153,7 @@ struct Credential {
 
 /// User-defined credential metadata. The value is deliberately absent: only
 /// this non-secret name/environment mapping is persisted in SQLite, while the
-/// value stays in the OS keyring under an id-derived entry.
+/// value stays in the local secrets file under an id-derived entry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CustomCredential {
     pub id: String,
@@ -428,73 +456,319 @@ async fn save_raw(
         .map_err(|e| e.to_string())
 }
 
-/// Ensure at least one profile exists. On the first read of a legacy install,
-/// migrate the single `provider`/`api_url`/`model` settings + `api_key` secret
-/// into a "default" profile so existing users keep working unchanged.
-async fn ensure(store: &superscience_store::Store) -> Vec<ModelProfile> {
-    let profiles = load_raw(store).await;
-    if !profiles.is_empty() {
-        return profiles;
-    }
-    let provider = store
-        .get_setting("provider")
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let api_url = store
-        .get_setting("api_url")
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let model = store
-        .get_setting("model")
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let max_tokens = store
-        .get_setting("max_tokens")
-        .await
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let reasoning_effort = store
-        .get_setting("reasoning_effort")
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let default = ModelProfile {
-        id: "default".into(),
-        label: if model.trim().is_empty() {
-            "Default".into()
-        } else {
-            model.clone()
-        },
-        provider,
-        api_url,
-        model,
-        has_api_key: false,
-        active: false,
-        max_tokens,
-        context_window: DEFAULT_CONTEXT_WINDOW,
-        reasoning_effort,
-        supports_vision: false,
-        use_for_vision: false,
-        use_for_image_generation: false,
+async fn load_providers_raw(store: &superscience_store::Store) -> Vec<ModelProvider> {
+    let Some(raw) = store.get_setting(PROVIDERS_KEY).await.ok().flatten() else {
+        return Vec::new();
     };
-    let profiles = vec![default];
-    let _ = save_raw(store, &profiles).await;
-    let _ = store.set_setting(ACTIVE_KEY, "default").await;
-    // Carry the legacy key into the default profile's slot so it isn't lost.
-    let legacy = secret_get(LEGACY_KEY_SECRET);
-    if !legacy.is_empty() {
-        let _ = secret_set(&secret_name("default"), &legacy);
+    serde_json::from_str::<Vec<ModelProvider>>(&raw).unwrap_or_default()
+}
+
+async fn save_providers_raw(
+    store: &superscience_store::Store,
+    providers: &[ModelProvider],
+) -> Result<(), String> {
+    let json = serde_json::to_string(providers).map_err(|e| e.to_string())?;
+    store
+        .set_setting(PROVIDERS_KEY, &json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn normalize_api_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn protocol_of(profile: &ModelProfile) -> String {
+    let p = profile.provider.trim();
+    if p.is_empty() {
+        "openai".into()
+    } else {
+        p.to_string()
+    }
+}
+
+fn fresh_provider_id(existing: &[ModelProvider]) -> String {
+    for n in 1..10_000 {
+        let id = format!("p{n}");
+        if !existing.iter().any(|p| p.id == id) {
+            return id;
+        }
+    }
+    "p".into()
+}
+
+fn builtin_tctoken_provider() -> ModelProvider {
+    ModelProvider {
+        id: TCTOKEN_PROVIDER_ID.into(),
+        label: TCTOKEN_PROVIDER_LABEL.into(),
+        protocol: "openai".into(),
+        api_url: TCTOKEN_PROVIDER_URL.into(),
+        sort_order: 0,
+        builtin: true,
+        has_api_key: false,
+        model_count: 0,
+    }
+}
+
+fn strip_computed_provider(mut p: ModelProvider) -> ModelProvider {
+    p.has_api_key = false;
+    p.model_count = 0;
+    p
+}
+
+/// Ensure at least the builtin 天成TOKEN provider exists, migrate legacy flat
+/// profiles into providers, and return profiles with `provider_id` filled.
+async fn ensure(store: &superscience_store::Store) -> Vec<ModelProfile> {
+    let mut profiles = load_raw(store).await;
+    if profiles.is_empty() {
+        // Legacy single-model install → one default profile first.
+        let provider = store
+            .get_setting("provider")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let api_url = store
+            .get_setting("api_url")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let model = store
+            .get_setting("model")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let max_tokens = store
+            .get_setting("max_tokens")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let reasoning_effort = store
+            .get_setting("reasoning_effort")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if !(provider.is_empty() && api_url.is_empty() && model.is_empty()) {
+            let default = ModelProfile {
+                id: "default".into(),
+                label: if model.trim().is_empty() {
+                    "Default".into()
+                } else {
+                    model.clone()
+                },
+                provider,
+                api_url,
+                provider_id: String::new(),
+                model,
+                has_api_key: false,
+                active: false,
+                max_tokens,
+                context_window: DEFAULT_CONTEXT_WINDOW,
+                reasoning_effort,
+                supports_vision: false,
+                use_for_vision: false,
+                use_for_image_generation: false,
+            };
+            profiles = vec![default];
+            let _ = save_raw(store, &profiles).await;
+            let _ = store.set_setting(ACTIVE_KEY, "default").await;
+            let legacy = secret_get(LEGACY_KEY_SECRET);
+            if !legacy.is_empty() {
+                let _ = secret_set(&secret_name("default"), &legacy);
+            }
+        }
+    }
+
+    let mut providers = load_providers_raw(store).await;
+    let mut providers_dirty = false;
+    let mut profiles_dirty = false;
+
+    if providers.is_empty() && !profiles.is_empty() {
+        // Cluster flat profiles by (protocol, normalized URL).
+        let mut groups: Vec<(String, String, Vec<usize>)> = Vec::new();
+        for (idx, profile) in profiles.iter().enumerate() {
+            let protocol = protocol_of(profile);
+            let url = normalize_api_url(&profile.api_url);
+            if let Some((_, _, idxs)) = groups
+                .iter_mut()
+                .find(|(p, u, _)| *p == protocol && *u == url)
+            {
+                idxs.push(idx);
+            } else {
+                groups.push((protocol, url, vec![idx]));
+            }
+        }
+        for (protocol, url, idxs) in groups {
+            let first = &profiles[idxs[0]];
+            let id = if normalize_api_url(&first.api_url) == normalize_api_url(TCTOKEN_PROVIDER_URL)
+                && protocol == "openai"
+            {
+                TCTOKEN_PROVIDER_ID.to_string()
+            } else {
+                fresh_provider_id(&providers)
+            };
+            let label = if id == TCTOKEN_PROVIDER_ID {
+                TCTOKEN_PROVIDER_LABEL.to_string()
+            } else if !first.label.trim().is_empty() {
+                // Prefer a host-ish label from URL when available.
+                url.split("://")
+                    .nth(1)
+                    .and_then(|rest| rest.split('/').next())
+                    .filter(|h| !h.is_empty())
+                    .map(|h| h.to_string())
+                    .unwrap_or_else(|| first.label.clone())
+            } else {
+                "Provider".into()
+            };
+            let api_url = if first.api_url.trim().is_empty() {
+                if id == TCTOKEN_PROVIDER_ID {
+                    TCTOKEN_PROVIDER_URL.to_string()
+                } else {
+                    String::new()
+                }
+            } else {
+                first.api_url.clone()
+            };
+            let provider = ModelProvider {
+                id: id.clone(),
+                label,
+                protocol: protocol.clone(),
+                api_url,
+                sort_order: providers.len() as i64 + 1,
+                builtin: id == TCTOKEN_PROVIDER_ID,
+                has_api_key: false,
+                model_count: 0,
+            };
+            // Copy first available model key onto the provider.
+            for idx in &idxs {
+                let k = key_for_model(&profiles[*idx].id);
+                if !k.is_empty() {
+                    let _ = secret_set(&provider_secret_name(&id), &k);
+                    break;
+                }
+            }
+            for idx in idxs {
+                if profiles[idx].provider_id != id {
+                    profiles[idx].provider_id = id.clone();
+                    profiles[idx].provider = protocol.clone();
+                    profiles_dirty = true;
+                }
+            }
+            providers.push(provider);
+        }
+        providers_dirty = true;
+    }
+
+    // Always pin builtin 天成TOKEN at the front.
+    match providers
+        .iter_mut()
+        .find(|p| p.id == TCTOKEN_PROVIDER_ID)
+    {
+        Some(existing) => {
+            if !existing.builtin
+                || existing.label != TCTOKEN_PROVIDER_LABEL
+                || existing.protocol != "openai"
+            {
+                existing.builtin = true;
+                existing.label = TCTOKEN_PROVIDER_LABEL.into();
+                existing.protocol = "openai".into();
+                if existing.api_url.trim().is_empty() {
+                    existing.api_url = TCTOKEN_PROVIDER_URL.into();
+                }
+                providers_dirty = true;
+            }
+            if existing.sort_order != 0 {
+                existing.sort_order = 0;
+                providers_dirty = true;
+            }
+        }
+        None => {
+            providers.insert(0, builtin_tctoken_provider());
+            providers_dirty = true;
+        }
+    }
+
+    // Assign orphan profiles to tctoken when provider_id missing.
+    for profile in &mut profiles {
+        if profile.provider_id.trim().is_empty() {
+            profile.provider_id = TCTOKEN_PROVIDER_ID.into();
+            if profile.provider.trim().is_empty() {
+                profile.provider = "openai".into();
+            }
+            if profile.api_url.trim().is_empty() {
+                profile.api_url = TCTOKEN_PROVIDER_URL.into();
+            }
+            profiles_dirty = true;
+        }
+    }
+
+    // Re-sort: builtin tctoken first, then by sort_order / id.
+    providers.sort_by(|a, b| {
+        match (a.id.as_str() == TCTOKEN_PROVIDER_ID, b.id.as_str() == TCTOKEN_PROVIDER_ID) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a
+                .sort_order
+                .cmp(&b.sort_order)
+                .then_with(|| a.id.cmp(&b.id)),
+        }
+    });
+    for (idx, p) in providers.iter_mut().enumerate() {
+        let want = idx as i64;
+        if p.sort_order != want {
+            p.sort_order = want;
+            providers_dirty = true;
+        }
+    }
+
+    if providers_dirty {
+        let persisted: Vec<_> = providers.iter().cloned().map(strip_computed_provider).collect();
+        let _ = save_providers_raw(store, &persisted).await;
+    }
+    if profiles_dirty {
+        let _ = save_raw(store, &profiles).await;
+    }
+
+    // Mirror provider URL/protocol onto profiles for runtime callers.
+    let provider_map: std::collections::HashMap<_, _> =
+        providers.into_iter().map(|p| (p.id.clone(), p)).collect();
+    for profile in &mut profiles {
+        if let Some(prov) = provider_map.get(&profile.provider_id) {
+            profile.provider = prov.protocol.clone();
+            profile.api_url = prov.api_url.clone();
+        }
     }
     profiles
+}
+
+async fn ensure_providers(store: &superscience_store::Store) -> Vec<ModelProvider> {
+    let _ = ensure(store).await;
+    load_providers_raw(store).await
+}
+
+fn key_for_model(id: &str) -> String {
+    let k = secret_get(&secret_name(id));
+    if k.is_empty() && id == "default" {
+        secret_get(LEGACY_KEY_SECRET)
+    } else {
+        k
+    }
+}
+
+/// Key for a profile: prefer provider-level secret, fall back to legacy model key.
+fn key_for(profile: &ModelProfile) -> String {
+    if !profile.provider_id.trim().is_empty() {
+        let k = secret_get(&provider_secret_name(&profile.provider_id));
+        if !k.is_empty() {
+            return k;
+        }
+    }
+    key_for_model(&profile.id)
 }
 
 async fn active_id(store: &superscience_store::Store, profiles: &[ModelProfile]) -> String {
@@ -566,27 +840,29 @@ pub async fn session_reasoning_effort(
     profile_default.to_string()
 }
 
-/// Key for a profile, falling back to the legacy `api_key` secret for the
-/// migrated "default" profile (so a not-yet-re-saved default still works).
-fn key_for(id: &str) -> String {
-    let k = secret_get(&secret_name(id));
-    if k.is_empty() && id == "default" {
-        secret_get(LEGACY_KEY_SECRET)
-    } else {
-        k
-    }
-}
-
 /// The active profile's `(provider, api_url, model, api_key)` for a turn.
 pub async fn active_config(store: &superscience_store::Store) -> (String, String, String, String) {
     let profiles = ensure(store).await;
+    if profiles.is_empty() {
+        return (
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+    }
     let id = active_id(store, &profiles).await;
     let p = profiles
         .iter()
         .find(|p| p.id == id)
         .cloned()
         .unwrap_or_else(|| profiles[0].clone());
-    (p.provider, p.api_url, p.model, key_for(&p.id))
+    (
+        p.provider.clone(),
+        p.api_url.clone(),
+        p.model.clone(),
+        key_for(&p),
+    )
 }
 
 pub(crate) fn is_image_generation_model(model: &str) -> bool {
@@ -650,11 +926,12 @@ pub async fn vision_config(
     let profiles = ensure(store).await;
     let id = vision_id(store, &profiles).await?;
     let p = profiles.iter().find(|p| p.id == id)?.clone();
+    let key = key_for(&p);
     Some((
         p.provider,
         p.api_url,
         p.model,
-        key_for(&p.id),
+        key,
         p.max_tokens,
         p.reasoning_effort,
     ))
@@ -669,7 +946,33 @@ pub async fn image_generation_config(
     let profiles = ensure(store).await;
     let id = image_generation_id(store, &profiles).await?;
     let p = profiles.iter().find(|p| p.id == id)?;
-    Some((p.api_url.clone(), p.model.clone(), key_for(&p.id)))
+    Some((p.api_url.clone(), p.model.clone(), key_for(p)))
+}
+
+/// Replace the API key for the model assigned to image generation.
+pub async fn set_image_generation_api_key(
+    store: &superscience_store::Store,
+    key: &str,
+) -> Result<String, String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(String::from("API key is empty."));
+    }
+    let profiles = ensure(store).await;
+    let Some(id) = image_generation_id(store, &profiles).await else {
+        return Err(String::from(
+            "No image-generation model is configured. Assign gpt-image-2 under Settings → Models.",
+        ));
+    };
+    let Some(p) = profiles.iter().find(|p| p.id == id) else {
+        return Err(String::from("Image-generation model profile is missing."));
+    };
+    if !p.provider_id.trim().is_empty() {
+        secret_set(&provider_secret_name(&p.provider_id), key)?;
+    } else {
+        secret_set(&secret_name(&id), key)?;
+    }
+    Ok(id)
 }
 
 /// Update the active profile's provider/api_url/model/label. The classic Settings
@@ -811,7 +1114,7 @@ pub async fn profile_llm(
         p.provider.clone(),
         p.api_url.clone(),
         p.model.clone(),
-        key_for(&p.id),
+        key_for(p),
         p.max_tokens,
         p.reasoning_effort.clone(),
     ))
@@ -821,14 +1124,20 @@ pub async fn profile_llm(
 /// exist. The returned string may still be empty when the profile has no key.
 pub async fn profile_key(store: &superscience_store::Store, id: &str) -> Option<String> {
     let profiles = ensure(store).await;
-    profiles.iter().any(|p| p.id == id).then(|| key_for(id))
+    profiles
+        .iter()
+        .find(|p| p.id == id)
+        .map(key_for)
 }
 
 /// Whether the active profile has a key stored (for `get_settings`).
 pub async fn active_has_key(store: &superscience_store::Store) -> bool {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
-    !key_for(&id).is_empty()
+    profiles
+        .iter()
+        .find(|p| p.id == id)
+        .is_some_and(|p| !key_for(p).is_empty())
 }
 
 pub async fn active_supports_vision(store: &superscience_store::Store) -> bool {
@@ -856,7 +1165,7 @@ async fn decorated(store: &superscience_store::Store) -> Vec<ModelProfile> {
     profiles
         .into_iter()
         .map(|mut p| {
-            p.has_api_key = !key_for(&p.id).is_empty();
+            p.has_api_key = !key_for(&p).is_empty();
             p.active = p.id == id;
             p.use_for_vision = vision.as_deref() == Some(p.id.as_str());
             p.use_for_image_generation = image_generation.as_deref() == Some(p.id.as_str());
@@ -887,6 +1196,133 @@ fn fresh_id(existing: &[ModelProfile]) -> String {
 #[tauri::command]
 pub async fn list_models(state: State<'_, crate::AppState>) -> Result<Vec<ModelProfile>, String> {
     Ok(decorated(&state.store).await)
+}
+
+fn decorated_providers(
+    providers: Vec<ModelProvider>,
+    profiles: &[ModelProfile],
+) -> Vec<ModelProvider> {
+    providers
+        .into_iter()
+        .map(|mut p| {
+            let provider_key = !secret_get(&provider_secret_name(&p.id)).is_empty();
+            p.has_api_key = provider_key
+                || profiles
+                    .iter()
+                    .any(|m| m.provider_id == p.id && !key_for(m).is_empty());
+            p.model_count = profiles.iter().filter(|m| m.provider_id == p.id).count();
+            p
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn list_model_providers(
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<ModelProvider>, String> {
+    let profiles = ensure(&state.store).await;
+    let providers = ensure_providers(&state.store).await;
+    Ok(decorated_providers(providers, &profiles))
+}
+
+#[tauri::command]
+pub async fn save_model_provider(
+    state: State<'_, crate::AppState>,
+    mut provider: ModelProvider,
+    key: Option<String>,
+    clear_key: Option<bool>,
+) -> Result<Vec<ModelProvider>, String> {
+    let mut providers = ensure_providers(&state.store).await;
+    if provider.label.trim().is_empty() {
+        return Err("Provider name is required.".into());
+    }
+    if provider.api_url.trim().is_empty() {
+        return Err("API URL is required.".into());
+    }
+    let protocol = provider.protocol.trim();
+    if !matches!(
+        protocol,
+        "openai" | "openai_responses" | "openai-responses" | "responses" | "anthropic"
+    ) {
+        return Err("Unsupported provider protocol.".into());
+    }
+    provider.protocol = match protocol {
+        "openai-responses" | "responses" => "openai_responses".into(),
+        "anthropic" => "anthropic".into(),
+        _ => "openai".into(),
+    };
+    if provider.id.trim().is_empty() {
+        provider.id = fresh_provider_id(&providers);
+        provider.builtin = false;
+        provider.sort_order = providers.iter().map(|p| p.sort_order).max().unwrap_or(0) + 1;
+    } else if let Some(existing) = providers.iter().find(|p| p.id == provider.id) {
+        provider.builtin = existing.builtin;
+        provider.sort_order = existing.sort_order;
+        if existing.builtin {
+            provider.id = TCTOKEN_PROVIDER_ID.into();
+            // Keep builtin identity; allow URL/label/key edits.
+            if provider.label.trim().is_empty() {
+                provider.label = TCTOKEN_PROVIDER_LABEL.into();
+            }
+        }
+    }
+    let id = provider.id.clone();
+    if let Some(existing) = providers.iter_mut().find(|p| p.id == id) {
+        *existing = strip_computed_provider(provider);
+    } else {
+        providers.push(strip_computed_provider(provider));
+    }
+    save_providers_raw(&state.store, &providers).await?;
+    if clear_key == Some(true) {
+        let _ = secret_del(&provider_secret_name(&id));
+    } else if let Some(k) = key {
+        let k = k.trim();
+        if !k.is_empty() {
+            secret_set(&provider_secret_name(&id), k)?;
+        }
+    }
+    // Keep model mirrors in sync.
+    let mut profiles = ensure(&state.store).await;
+    let mut dirty = false;
+    if let Some(prov) = providers.iter().find(|p| p.id == id) {
+        for profile in &mut profiles {
+            if profile.provider_id == id
+                && (profile.provider != prov.protocol || profile.api_url != prov.api_url)
+            {
+                profile.provider = prov.protocol.clone();
+                profile.api_url = prov.api_url.clone();
+                dirty = true;
+            }
+        }
+    }
+    if dirty {
+        save_raw(&state.store, &profiles).await?;
+    }
+    crate::clear_idle_agents(&state).await;
+    let profiles = ensure(&state.store).await;
+    Ok(decorated_providers(providers, &profiles))
+}
+
+#[tauri::command]
+pub async fn remove_model_provider(
+    state: State<'_, crate::AppState>,
+    id: String,
+) -> Result<Vec<ModelProvider>, String> {
+    if id == TCTOKEN_PROVIDER_ID {
+        return Err("Built-in providers cannot be removed.".into());
+    }
+    let profiles = ensure(&state.store).await;
+    if profiles.iter().any(|p| p.provider_id == id) {
+        return Err("Remove or move all models under this provider first.".into());
+    }
+    let mut providers = ensure_providers(&state.store).await;
+    if providers.iter().any(|p| p.id == id && p.builtin) {
+        return Err("Built-in providers cannot be removed.".into());
+    }
+    providers.retain(|p| p.id != id);
+    save_providers_raw(&state.store, &providers).await?;
+    let _ = secret_del(&provider_secret_name(&id));
+    Ok(decorated_providers(providers, &profiles))
 }
 
 #[tauri::command]
@@ -943,7 +1379,7 @@ pub async fn get_session_reasoning_effort(
 }
 
 /// Upsert a profile. An empty `id` creates a new one; a non-empty `key` updates
-/// the keyring (a blank key leaves the stored one untouched).
+/// the provider secret (a blank key leaves the stored one untouched).
 #[tauri::command]
 pub async fn save_model(
     state: State<'_, crate::AppState>,
@@ -961,12 +1397,23 @@ pub async fn save_model(
     profile.use_for_vision = assign_vision;
     profile.use_for_image_generation = assign_image_generation;
     let mut profiles = ensure(&state.store).await;
+    let providers = ensure_providers(&state.store).await;
     if profile.model.trim().is_empty() {
         return Err("Model is required.".into());
     }
-    if profile.api_url.trim().is_empty() {
-        return Err("API URL is required.".into());
+    if profile.provider_id.trim().is_empty() {
+        return Err("Provider is required.".into());
     }
+    let Some(prov) = providers
+        .iter()
+        .find(|p| p.id == profile.provider_id)
+        .cloned()
+    else {
+        return Err("Provider not found.".into());
+    };
+    // Model form no longer owns URL/protocol — always mirror the provider.
+    profile.provider = prov.protocol.clone();
+    profile.api_url = prov.api_url.clone();
     if assign_vision && !can_describe_images(&profile) {
         return Err("Image analysis requires an API model marked as vision-capable.".into());
     }
@@ -982,9 +1429,7 @@ pub async fn save_model(
     }
     let id = profile.id.clone();
     let is_new = !profiles.iter().any(|p| p.id == id);
-    if !is_chat_model(&profile) && !profiles.iter().any(|p| p.id != id && is_chat_model(p)) {
-        return Err("At least one chat model is required.".into());
-    }
+    // Providers may exist with zero chat models (builtin empty card).
     if let Some(existing) = profiles.iter_mut().find(|p| p.id == id) {
         *existing = profile;
     } else {
@@ -1026,7 +1471,7 @@ pub async fn save_model(
     if let Some(k) = key {
         let k = k.trim();
         if !k.is_empty() {
-            secret_set(&secret_name(&id), k)?;
+            secret_set(&provider_secret_name(&prov.id), k)?;
         }
     }
     // Land the user on a freshly added model so they can edit/use it right away.
@@ -1056,14 +1501,6 @@ pub async fn remove_model(
     id: String,
 ) -> Result<Vec<ModelProfile>, String> {
     let mut profiles = ensure(&state.store).await;
-    if profiles
-        .iter()
-        .filter(|p| p.id != id && is_chat_model(p))
-        .count()
-        == 0
-    {
-        return Err("At least one chat model is required.".into());
-    }
     profiles.retain(|p| p.id != id);
     save_raw(&state.store, &profiles).await?;
     let _ = secret_del(&secret_name(&id));
@@ -1207,6 +1644,7 @@ mod tests {
             label: label.into(),
             provider: "openai".into(),
             api_url: "u".into(),
+            provider_id: TCTOKEN_PROVIDER_ID.into(),
             model: model.into(),
             has_api_key: false,
             active: false,
@@ -1580,7 +2018,7 @@ mod tests {
     }
 
     // The write-through cache must stay coherent: a set is readable without a
-    // fresh keyring hit, and a delete reads back as absent (not the old value).
+    // fresh secrets-file read, and a delete reads back as absent (not the old value).
     #[test]
     fn secret_cache_write_through() {
         let name = "model_key:__cache_coherence_test__";
@@ -1702,15 +2140,15 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let store = superscience_store::Store::open(&tmp).await.unwrap();
-        save_raw(
-            &store,
-            &[
-                test_profile("default", "deepseek", "deepseek-v4-pro"),
-                test_profile("glm", "glm", "glm-5.2"),
-            ],
-        )
-        .await
-        .unwrap();
+        // Distinct URLs so migration creates separate providers (keys are
+        // provider-scoped after the cards redesign).
+        let mut deepseek = test_profile("default", "deepseek", "deepseek-v4-pro");
+        deepseek.api_url = "https://api.deepseek.com/v1".into();
+        deepseek.provider_id.clear();
+        let mut glm = test_profile("glm", "glm", "glm-5.2");
+        glm.api_url = "https://open.bigmodel.cn/api/paas/v4".into();
+        glm.provider_id.clear();
+        save_raw(&store, &[deepseek, glm]).await.unwrap();
         secret_set(&secret_name("default"), "sk-default").unwrap();
         secret_set(&secret_name("glm"), "sk-glm").unwrap();
 
@@ -1723,6 +2161,75 @@ mod tests {
 
         let _ = secret_del(&secret_name("default"));
         let _ = secret_del(&secret_name("glm"));
+        let profiles = ensure(&store).await;
+        for p in &profiles {
+            let _ = secret_del(&provider_secret_name(&p.provider_id));
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn migrate_clusters_same_url_and_shares_provider_key() {
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_provider_migrate_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let mut a = test_profile("m1", "A", "model-a");
+        a.api_url = "https://example.com/v1".into();
+        a.provider_id.clear();
+        let mut b = test_profile("m2", "B", "model-b");
+        b.api_url = "https://example.com/v1/".into(); // trailing slash → same cluster
+        b.provider_id.clear();
+        save_raw(&store, &[a, b]).await.unwrap();
+        secret_set(&secret_name("m1"), "sk-shared").unwrap();
+
+        let profiles = ensure(&store).await;
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].provider_id, profiles[1].provider_id);
+        assert_ne!(profiles[0].provider_id, TCTOKEN_PROVIDER_ID);
+        assert_eq!(key_for(&profiles[0]), "sk-shared");
+        assert_eq!(key_for(&profiles[1]), "sk-shared");
+
+        let providers = load_providers_raw(&store).await;
+        assert!(providers.iter().any(|p| p.id == TCTOKEN_PROVIDER_ID && p.builtin));
+        assert_eq!(providers[0].id, TCTOKEN_PROVIDER_ID);
+
+        let _ = secret_del(&secret_name("m1"));
+        let _ = secret_del(&provider_secret_name(&profiles[0].provider_id));
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn empty_install_seeds_builtin_tctoken_only() {
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_provider_empty_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let profiles = ensure(&store).await;
+        assert!(profiles.is_empty());
+        let providers = load_providers_raw(&store).await;
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, TCTOKEN_PROVIDER_ID);
+        assert_eq!(providers[0].api_url, TCTOKEN_PROVIDER_URL);
+        assert!(providers[0].builtin);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn builtin_provider_cannot_be_removed() {
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_provider_builtin_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let _ = ensure(&store).await;
+        // Simulate remove_model_provider guard without Tauri State.
+        let id = TCTOKEN_PROVIDER_ID.to_string();
+        assert!(id == TCTOKEN_PROVIDER_ID);
+        let providers = load_providers_raw(&store).await;
+        assert!(providers.iter().any(|p| p.id == id && p.builtin));
         let _ = std::fs::remove_file(&tmp);
     }
 }

@@ -51,8 +51,12 @@ extern "C" {
     pub(crate) fn park_mcp_app(instance_id: &str);
     #[wasm_bindgen(js_name = close_mcp_app)]
     pub(crate) fn close_mcp_app(instance_id: &str);
+    #[wasm_bindgen(js_name = pasted_file_count)]
+    pub(crate) fn pasted_file_count(event: JsValue) -> usize;
     #[wasm_bindgen(js_name = pasted_image_count)]
     pub(crate) fn pasted_image_count(event: JsValue) -> usize;
+    #[wasm_bindgen(js_name = pasted_file_paths)]
+    pub(crate) fn pasted_file_paths(event: JsValue) -> JsValue;
     #[wasm_bindgen(js_name = drag_has_files)]
     pub(crate) fn drag_has_files(event: JsValue) -> bool;
     #[wasm_bindgen(js_name = set_drag_copy)]
@@ -61,6 +65,8 @@ extern "C" {
     pub(crate) fn is_windows() -> bool;
     pub(crate) fn is_mac() -> bool;
     pub(crate) async fn window_control(action: &str);
+    #[wasm_bindgen(js_name = upload_pasted_files)]
+    pub(crate) async fn upload_pasted_files(event: JsValue) -> JsValue;
     #[wasm_bindgen(js_name = upload_pasted_images)]
     pub(crate) async fn upload_pasted_images(event: JsValue) -> JsValue;
     #[wasm_bindgen(js_name = native_drop_in_composer)]

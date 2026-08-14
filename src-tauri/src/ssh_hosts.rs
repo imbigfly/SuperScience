@@ -1,6 +1,6 @@
 //! SSH host registry, validated connection snapshots, and tauri commands.
 //!
-//! Passwords are never stored in SQLite: they live in the OS keyring under
+//! Passwords are never stored in SQLite: they live in the local secrets file under
 //! `ssh_password:{alias}` and are injected into OpenSSH via SSH_ASKPASS for
 //! non-interactive managed tools (probe/run/runtime/files).
 
@@ -51,10 +51,10 @@ pub struct SshHost {
     /// `key` (default) or `password`. Persisted in settings JSON only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
-    /// Computed on read from the keyring; never part of the persisted JSON.
+    /// Computed on read from the secrets file; never part of the persisted JSON.
     #[serde(default, skip_serializing)]
     pub has_password: bool,
-    /// Write-only: accepted from the UI to set/update the keyring secret.
+    /// Write-only: accepted from the UI to set/update the secrets-file entry.
     /// Never returned by list APIs.
     #[serde(default, skip_serializing)]
     pub password: Option<String>,
@@ -235,7 +235,7 @@ impl SshConnection {
                 if password_get(&self.alias).is_none() {
                     return Err(format!(
                         "SSH password is not set for `{}`. Open host settings, choose password \
-                         authentication, and save a password (stored in the OS keyring). \
+                         authentication, and save a password (stored in the local secrets file). \
                          Do not put passwords in shell commands.",
                         self.alias
                     ));

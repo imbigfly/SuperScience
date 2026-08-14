@@ -1,11 +1,10 @@
-use crate::app_support::ProjectsScreen;
+use crate::app_support::{CenterFileTab, ProjectsScreen};
 use crate::bindings::invoke;
 use crate::capabilities_home::CapabilityAction;
 use crate::dto::*;
 use crate::i18n::Locale;
 use leptos::*;
 use std::collections::HashSet;
-use wasm_bindgen::JsValue;
 
 #[derive(Clone, Copy)]
 pub(super) struct ProjectLandingState {
@@ -24,6 +23,10 @@ pub(super) struct ProjectLandingState {
     pub(super) project_transfer: RwSignal<Option<ProjectTransferProgress>>,
     pub(super) privacy_mode_active: RwSignal<bool>,
     pub(super) privacy_hidden_project_ids: RwSignal<HashSet<String>>,
+    pub(super) active_demo_id: RwSignal<Option<String>>,
+    pub(super) center_files: RwSignal<Vec<CenterFileTab>>,
+    pub(super) center_file: RwSignal<Option<String>>,
+    pub(super) show_right: RwSignal<bool>,
 }
 #[component]
 pub(super) fn ProjectLanding(
@@ -36,6 +39,8 @@ pub(super) fn ProjectLanding(
     on_capability_action: Callback<CapabilityAction>,
     open_project_export: Callback<(String, String)>,
     theme_mode: RwSignal<String>,
+    tctoken_session: RwSignal<crate::user_center::TctokenSession>,
+    open_user_center: Callback<()>,
 ) -> impl IntoView {
     let ProjectLandingState {
         show_projects,
@@ -53,6 +58,10 @@ pub(super) fn ProjectLanding(
         project_transfer,
         privacy_mode_active,
         privacy_hidden_project_ids,
+        active_demo_id,
+        center_files,
+        center_file,
+        show_right,
     } = state;
 
     move || {
@@ -61,10 +70,19 @@ pub(super) fn ProjectLanding(
                 project_open_error.set(None);
                 show_projects.set(false);
                 demo_mode.set(true);
+                active_demo_id.set(None);
                 items.set(vec![]);
                 active_session.set(None);
+                center_files.set(vec![]);
+                center_file.set(None);
+                show_right.set(false);
+                let loc = locale.get_untracked().code().to_string();
                 spawn_local(async move {
-                    let v = invoke("list_demos", JsValue::UNDEFINED).await;
+                    let v = invoke(
+                        "list_demos",
+                        serde_wasm_bindgen::to_value(&serde_json::json!({ "locale": loc })).unwrap(),
+                    )
+                    .await;
                     if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<DemoInfo>>(v) {
                         demos.set(list);
                     }
@@ -96,6 +114,8 @@ pub(super) fn ProjectLanding(
                     project_transfer=project_transfer
                     privacy_mode_active=privacy_mode_active
                     privacy_hidden_project_ids=privacy_hidden_project_ids
+                    tctoken_session=tctoken_session
+                    on_open_user_center=open_user_center
                 />
             }
         })

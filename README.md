@@ -43,7 +43,7 @@ you opt into Full Permission.
 
 Persistent Python and R kernels keep variables across cells, conversations, and
 restarts. Register local, WSL, and SSH hosts once; probe hardware; submit
-long **Runs** with live logs. Keys live in the OS keyring, never in SQLite.
+long **Runs** with live logs. Secrets live in a local secrets file (never SQLite).
 
 **Built for science**
 

@@ -41,6 +41,7 @@ fn assistant_text_at(items: RwSignal<Vec<ChatItem>>, source_item: usize) -> Stri
 pub(crate) fn StreamingAssistantMessage(
     items: RwSignal<Vec<ChatItem>>,
     source_item: usize,
+    artifacts: Vec<Artifact>,
     on_artifact: Callback<usize>,
     on_file: Callback<ModalArtifact>,
 ) -> impl IntoView {
@@ -104,13 +105,14 @@ pub(crate) fn StreamingAssistantMessage(
 
     let html = create_memo({
         let recent_parse_cost_ms = Rc::clone(&recent_parse_cost_ms);
+        let artifacts = artifacts.clone();
         move |_| {
             let started_at = js_sys::Date::now();
             let project_root =
                 project.and_then(|project| project.get().map(|project| project.root));
             let html = enrich_md_html(
                 md_to_html(&rendered_text.get()),
-                &[],
+                &artifacts,
                 &[],
                 locale.get(),
                 project_root.as_deref(),
@@ -156,7 +158,7 @@ pub(crate) fn StreamingAssistantMessage(
                     id=hid
                     inner_html=move || html.get()
                     on:click=move |ev: web_sys::MouseEvent| {
-                        handle_md_click(&ev, &[], &[], &on_artifact, &on_file)
+                        handle_md_click(&ev, &artifacts, &[], &on_artifact, &on_file)
                     }
                 ></div>
                 {move || {
@@ -240,6 +242,9 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "computer" => view! { <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/> }.into_view(),
         "server" => view! { <rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/><circle cx="7" cy="7.5" r="0.5" fill="currentColor"/><circle cx="7" cy="16.5" r="0.5" fill="currentColor"/> }.into_view(),
         "search" => view! { <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/> }.into_view(),
+        "shield" => view! {
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        }.into_view(),
         "sun" => view! {
             <circle cx="12" cy="12" r="4"/>
             <path d="M12 2v2"/><path d="M12 20v2"/>
@@ -257,7 +262,11 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "compact" => view! { <path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="m14 10 7-7"/><path d="m3 21 7-7"/> }.into_view(),
         "fork" => view! { <circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.5 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/> }.into_view(),
         "save" => view! { <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/> }.into_view(),
-        "shield" => view! { <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/> }.into_view(),
+        "user" => view! { <circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/> }.into_view(),
+        "eye" => view! {
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/>
+            <circle cx="12" cy="12" r="3"/>
+        }.into_view(),
         _ => view! { <path d="M9 18l6-6-6-6"/> }.into_view(), // chevron
     };
     let size = if matches!(
@@ -706,6 +715,7 @@ pub(crate) fn AssistantMessage(
     on_branch: Callback<usize>,
     can_branch: Signal<bool>,
     show_actions: Signal<bool>,
+    show_review: bool,
     can_undo: Signal<bool>,
     on_undo: Callback<usize>,
     show_explore: Signal<bool>,
@@ -882,6 +892,7 @@ pub(crate) fn AssistantMessage(
                 >
                     {compose_icon("memory")}
                 </button>
+                {show_review.then(|| view! {
                 <button
                     type="button"
                     class="msg-icon-btn msg-review-btn"
@@ -891,6 +902,7 @@ pub(crate) fn AssistantMessage(
                 >
                     {compose_icon("review")}
                 </button>
+                })}
                 {move || show_explore.get().then(|| view! { <button
                     type="button"
                     class="msg-icon-btn msg-explore-btn"

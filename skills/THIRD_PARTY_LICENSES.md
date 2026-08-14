@@ -1287,3 +1287,14 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
 IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
+
+
+### Bundled third-party skill packs (vendored into skills/)
+
+See also `skills/_vendor/README.md` and per-source LICENSE files under `skills/_vendor/`.
+
+- **OfficeCLI** (https://github.com/iOfficeAI/OfficeCli) — Apache-2.0. Bundled as `officecli*`, `morph-ppt*`. Full LICENSE/NOTICE in `skills/_vendor/OfficeCli/` and `skills/officecli/`.
+- **academic-research-skills** (https://github.com/Imbad0202/academic-research-skills) — Creative Commons Attribution-NonCommercial 4.0. Bundled as `academic-paper`, `academic-paper-reviewer`, `academic-pipeline`, `deep-research` (each with embedded `shared/`). See `skills/_vendor/academic-research-skills/LICENSE`.
+- **nature-skills** (https://github.com/Yuan1z0825/nature-skills) — MIT. Bundled as `nature-*` including `nature-shared` and `nature-figure` assets. See `skills/_vendor/nature-skills/LICENSE`.
+- **Humanizer-zh** (https://github.com/op7418/Humanizer-zh) — MIT. Bundled as `humanizer-zh`. Translated from [blader/humanizer](https://github.com/blader/humanizer). See `skills/_vendor/humanizer-zh/LICENSE`.
+- **Playwright** (https://github.com/microsoft/playwright) — Apache-2.0. Guidance-only skill `skills/playwright/` (runtime installs via npm; monorepo not vendored).

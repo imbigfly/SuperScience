@@ -1,105 +1,179 @@
-//! OS keyring-backed secret storage for API keys.
+//! Secret storage for API keys and credentials.
 //!
-//! In **debug** builds we bypass the OS keyring and persist to a plaintext JSON
-//! file in the user's home dir. macOS binds each keychain item to the calling
-//! app's code signature, which `tauri dev` regenerates on every rebuild — so the
-//! real keyring pops the login-keychain password prompt on every dev run. Dev
-//! keys aren't worth that friction. Release builds use the OS keyring unchanged.
+//! Secrets live in a local JSON file (mode `0600` on Unix) under the app data
+//! directory. This avoids macOS Keychain ACL prompts when the app is rebuilt or
+//! updated (Keychain items are bound to the calling app's code signature).
+//!
+//! Override the file location with `SUPERSCIENCE_SECRETS_FILE` (legacy
+//! `WISP_SECRETS_FILE` is also accepted). There is no OS-keyring backend: all
+//! installs are expected to use this file store.
 
-/// A named secret (e.g. an API key) stored in the OS credential manager.
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// A named secret (e.g. an API key).
 pub struct Secret;
 
 impl Secret {
     pub fn set(name: &str, value: &str) -> anyhow::Result<()> {
-        backend::set(name, value)
+        file::set(name, value)
     }
 
     pub fn get(name: &str) -> anyhow::Result<String> {
-        backend::get(name)
+        file::get(name)
     }
 
     pub fn delete(name: &str) -> anyhow::Result<()> {
-        backend::delete(name)
+        file::delete(name)
+    }
+
+    /// Resolved secrets file path (for diagnostics / docs).
+    pub fn file_path() -> PathBuf {
+        file::path()
+    }
+
+    /// Active backend name. Always `"file"`.
+    pub fn backend_name() -> &'static str {
+        "file"
     }
 }
 
-#[cfg(not(debug_assertions))]
-mod backend {
-    use keyring::Entry;
-
-    const SERVICE: &str = "superscience";
-
-    pub fn set(name: &str, value: &str) -> anyhow::Result<()> {
-        Entry::new(SERVICE, name)?.set_password(value)?;
-        Ok(())
-    }
-
-    pub fn get(name: &str) -> anyhow::Result<String> {
-        Ok(Entry::new(SERVICE, name)?.get_password()?)
-    }
-
-    pub fn delete(name: &str) -> anyhow::Result<()> {
-        Entry::new(SERVICE, name)?.delete_credential()?;
-        Ok(())
-    }
+fn env_var(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
-#[cfg(debug_assertions)]
-mod backend {
-    // ponytail: plaintext file, whole-file rewrite, no locking. Dev-only, single
-    // user — if concurrent writes ever matter, put a Mutex around load+store.
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
+mod file {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::sync::Mutex;
 
-    fn file() -> PathBuf {
-        std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join(".superscience-dev-secrets.json")
+    fn lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    pub fn path() -> PathBuf {
+        if let Some(custom) =
+            env_var("SUPERSCIENCE_SECRETS_FILE").or_else(|| env_var("WISP_SECRETS_FILE"))
+        {
+            return PathBuf::from(custom);
+        }
+        #[cfg(debug_assertions)]
+        {
+            // Keep the historic debug path so existing dev keys keep working.
+            if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+            {
+                return PathBuf::from(home).join(".superscience-dev-secrets.json");
+            }
+        }
+        if let Some(dir) = dirs::data_dir() {
+            return dir
+                .join("science.superscience")
+                .join("superscience")
+                .join("secrets.json");
+        }
+        std::env::temp_dir().join("superscience-secrets.json")
     }
 
     fn load() -> BTreeMap<String, String> {
-        std::fs::read(file())
+        fs::read(path())
             .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
 
     fn store(map: &BTreeMap<String, String>) -> anyhow::Result<()> {
-        std::fs::write(file(), serde_json::to_vec_pretty(map)?)?;
+        let path = path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(map)?;
+        let mut file = fs::File::create(&path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        }
         Ok(())
     }
 
     pub fn set(name: &str, value: &str) -> anyhow::Result<()> {
+        let _guard = lock()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("secrets file lock poisoned"))?;
         let mut map = load();
         map.insert(name.to_string(), value.to_string());
         store(&map)
     }
 
     pub fn get(name: &str) -> anyhow::Result<String> {
+        let _guard = lock()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("secrets file lock poisoned"))?;
         load()
             .remove(name)
             .ok_or_else(|| anyhow::anyhow!("no secret named {name}"))
     }
 
     pub fn delete(name: &str) -> anyhow::Result<()> {
+        let _guard = lock()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("secrets file lock poisoned"))?;
         let mut map = load();
         map.remove(name);
         store(&map)
     }
 }
 
-#[cfg(all(test, debug_assertions))]
+#[cfg(test)]
 mod tests {
-    use super::Secret;
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Serialize tests that mutate process-global env / OnceLock-backed paths.
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
-    fn set_get_delete_roundtrip() {
-        let name = "test:roundtrip";
-        Secret::set(name, "abc123").unwrap();
-        assert_eq!(Secret::get(name).unwrap(), "abc123");
-        Secret::delete(name).unwrap();
-        assert!(Secret::get(name).is_err());
+    fn file_backend_roundtrip() {
+        let _guard = test_lock();
+        let path = std::env::temp_dir().join(format!(
+            "superscience-secrets-test-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("SUPERSCIENCE_SECRETS_FILE", &path);
+        // Exercise the file module directly so OnceLock backend selection from
+        // other tests in this process cannot interfere.
+        file::set("test:roundtrip", "abc123").unwrap();
+        assert_eq!(file::get("test:roundtrip").unwrap(), "abc123");
+        file::delete("test:roundtrip").unwrap();
+        assert!(file::get("test:roundtrip").is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = std::fs::remove_file(&path);
+        std::env::remove_var("SUPERSCIENCE_SECRETS_FILE");
+    }
+
+    #[test]
+    fn backend_name_is_file() {
+        assert_eq!(Secret::backend_name(), "file");
     }
 }

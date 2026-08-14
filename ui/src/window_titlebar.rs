@@ -1,6 +1,6 @@
 //! Windows integrated title bar: brand, File/Edit/View/Help menus, window controls.
 
-use crate::bindings::{open_external_url, window_control};
+use crate::bindings::window_control;
 use crate::i18n::{t, Locale};
 use leptos::{ev, window_event_listener, *};
 use wasm_bindgen::JsCast;
@@ -49,9 +49,7 @@ const VIEW_ITEMS: &[MenuItem] = &[
 const HELP_ITEMS: &[MenuItem] = &[
     ("check-updates", "settings.check_updates", ""),
     ("", "", ""),
-    ("docs", "menu.docs", ""),
-    ("star-us", "menu.star_us", ""),
-    ("issues", "menu.issues", ""),
+    ("issues", "issue_report.sidebar", ""),
 ];
 
 #[component]
@@ -68,13 +66,6 @@ pub(super) fn WindowTitlebar(
             open.set(None);
             match action {
                 "quit" => spawn_local(async { window_control("close").await }),
-                "docs" => {
-                    open_external_url("https://github.com/imbigfly/SuperScience#readme".into())
-                }
-                "star-us" => open_external_url("https://github.com/imbigfly/SuperScience".into()),
-                "issues" => {
-                    open_external_url("https://github.com/imbigfly/SuperScience/issues".into())
-                }
                 other => on_action.call(other),
             }
         })

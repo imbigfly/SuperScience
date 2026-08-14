@@ -24,7 +24,7 @@ Do not implement broad product vision in one change. Prefer small PRs that add o
 
 - Keep Windows and macOS behavior explicit. Avoid Unix-only assumptions unless gated behind an SSH/WSL context.
 - Never require a real SSH host, GPU, SLURM cluster, WSL distro, API key, or network access in automated tests. Use pure parsing tests, fake command runners, temporary directories, and mocked Tauri commands.
-- Store secrets in the existing keyring path, not SQLite. SSH private key contents must never be copied into SQLite.
+- Store secrets via `superscience-store::secrets` (local secrets file; never SQLite). SSH private key contents must never be copied into SQLite.
 - For long-running compute, do not extend the existing `shell` tool timeout as the main solution. Add a structured run/job abstraction.
 - For large scientific data, do not default to local sync. Represent large data as remote references with checksums/metadata where possible.
 - Keep schemas backward-compatible and migrations idempotent, following the existing `superscience-store` style.

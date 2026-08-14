@@ -1,6 +1,6 @@
 # StickS3 Device Bridge
 
-StickS3 Device Bridge is an experimental, opt-in Remote Access integration for
+StickS3 Device Bridge is an experimental, opt-in Channel Access integration for
 using a StickS3 as a physical SuperScience status pet. Open **Settings → Remote
 Access → StickS3 Device Bridge** to configure it.
 
@@ -57,7 +57,7 @@ from the StickS3 Wi-Fi network.
 
 ## Enable LAN mode
 
-1. Open **Settings → Remote Access → StickS3 Device Bridge**.
+1. Open **Settings → Channel Access → StickS3 Device Bridge**.
 2. Select **Local network (LAN)**. Relay server is visible but unavailable in
    this phase.
 3. Enter one concrete IPv4 address belonging to this computer.
@@ -234,8 +234,8 @@ bounded memory and is not a conversation transcript.
 ## Token handling
 
 The first enable generates a random 256-bit pre-shared token when none exists.
-SuperScience stores it through the existing secret-storage path (the operating
-system keyring in release builds), never in SQLite or normal logs. Authenticated
+SuperScience stores it through the existing secret-storage path (the local
+secrets file), never in SQLite or normal logs. Authenticated
 routes compare a token-derived fixed-size MAC rather than directly comparing
 the supplied secret.
 

@@ -444,6 +444,7 @@ pub(super) fn PublicationWorkspaceModal(
             on:click=move |_| on_close.call(())>
             <section class="modal publication-workspace-modal" role="dialog" aria-modal="true"
                 aria-labelledby="publication-workspace-title"
+                aria-describedby="publication-workspace-tagline"
                 data-testid="publication-workspace"
                 on:click=|event| event.stop_propagation()>
                 <header class="publication-workspace-head">
@@ -451,7 +452,10 @@ pub(super) fn PublicationWorkspaceModal(
                         <h2 id="publication-workspace-title">
                             {move || t(locale.get(), "publication.title")}
                         </h2>
-                        <p>{move || t(locale.get(), "publication.subtitle")}</p>
+                        <p id="publication-workspace-tagline" class="feature-tagline"
+                            data-testid="publication-workspace-tagline">
+                            {move || t(locale.get(), "publication.subtitle")}
+                        </p>
                     </div>
                     <div class="publication-head-actions">
                         <button type="button" class="icon-btn"

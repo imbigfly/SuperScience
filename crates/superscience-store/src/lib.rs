@@ -1,7 +1,7 @@
 //! SQLite persistence for SuperScience: projects, frames, messages, settings.
 //!
 //! Replaces the mangopi JSON session file with a structured store. API keys
-//! live in the OS keyring (see [`secrets`]); everything else lives here.
+//! live in a local secrets file (see [`secrets`]); everything else lives here.
 
 mod acp_sessions;
 mod agent_workflow_attempts;

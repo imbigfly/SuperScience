@@ -86,6 +86,7 @@ pub(crate) fn provider_defaults(provider: &str) -> (&'static str, &'static str) 
     }
 }
 
+
 pub(crate) fn join_path(base: &str, name: &str) -> String {
     if base == "." || base.is_empty() {
         name.to_string()

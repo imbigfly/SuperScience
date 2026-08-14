@@ -121,6 +121,7 @@ wisp-science/
 ├─ python/          kernel_worker.py + mock MCP server (uv-managed)
 ├─ r/               optional system-R kernel worker (requires jsonlite)
 ├─ skills/          Bundled SKILL.md catalog for reusable scientific workflows
+│                   (knowledge-graph visualizer is stdlib-only; extraction uses the in-app model)
 ├─ mcp-servers/     Bundled MCP servers (bio-tools: ~80 DB clients)
 └─ seed/            Bundled demo session recordings (ESR1 / GSE153250 ×5)
 ```

@@ -219,6 +219,7 @@ fn configured_image_generation_tool_is_available_without_a_specialist() {
         4,
         false,
         None,
+        true,
     );
 
     super::add_configured_image_generation_tool(
@@ -251,6 +252,7 @@ fn live_agent_settings_refresh_max_iter_on_reused_agent() {
         100,
         false,
         None,
+        true,
     );
     assert_eq!(agent.max_iter, 100);
 
@@ -398,7 +400,9 @@ fn mac_menu_action_maps_update_and_settings_ids() {
         super::mac_menu_action("action.check-updates"),
         Some("check-updates")
     );
-    assert_eq!(super::mac_menu_action("action.star-us"), Some("star-us"));
+    assert_eq!(super::mac_menu_action("action.issues"), Some("issues"));
+    assert_eq!(super::mac_menu_action("action.star-us"), None);
+    assert_eq!(super::mac_menu_action("action.docs"), None);
     assert_eq!(super::mac_menu_action("action.settings"), Some("settings"));
     assert_eq!(super::mac_menu_action("action.unknown"), None);
 }

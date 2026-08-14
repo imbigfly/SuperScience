@@ -647,6 +647,7 @@ pub(crate) fn profile_to_form(m: &ModelProfile) -> ModelForm {
     ModelForm {
         id: Some(m.id.clone()),
         label: m.label.clone(),
+        provider_id: m.provider_id.clone(),
         provider: m.provider.clone(),
         api_url: m.api_url.clone(),
         model: m.model.clone(),
@@ -668,13 +669,39 @@ pub(crate) fn profile_to_form(m: &ModelProfile) -> ModelForm {
 }
 
 pub(crate) fn new_model_form() -> ModelForm {
-    let (api_url, model) = provider_defaults("openai");
     ModelForm {
-        provider: "openai".into(),
-        api_url: api_url.into(),
-        model: model.into(),
         max_tokens: 8192,
         context_window: 128_000,
+        provider: "openai".into(),
+        ..Default::default()
+    }
+}
+
+pub(crate) fn new_model_form_for_provider(provider: &ModelProvider) -> ModelForm {
+    let mut form = new_model_form();
+    form.provider_id = provider.id.clone();
+    form.provider = provider.protocol.clone();
+    form.api_url = provider.api_url.clone();
+    form
+}
+
+pub(crate) fn provider_to_form(p: &ModelProvider) -> ProviderForm {
+    ProviderForm {
+        id: Some(p.id.clone()),
+        label: p.label.clone(),
+        protocol: if p.protocol.trim().is_empty() {
+            "openai".into()
+        } else {
+            p.protocol.clone()
+        },
+        api_url: p.api_url.clone(),
+        builtin: p.builtin,
+    }
+}
+
+pub(crate) fn new_provider_form() -> ProviderForm {
+    ProviderForm {
+        protocol: "openai".into(),
         ..Default::default()
     }
 }

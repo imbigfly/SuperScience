@@ -1,0 +1,3 @@
+Source: https://github.com/microsoft/playwright
+License: Apache-2.0
+Note: Only a guidance skill is bundled; runtime installs via npm.

@@ -6,6 +6,7 @@ use crate::bindings::is_mac;
 use crate::dto::*;
 use crate::i18n::{t, tf, Locale};
 use crate::text::dom_value;
+use crate::user_center::TctokenSession;
 use crate::window_capture_escape;
 use leptos::*;
 use std::collections::{HashMap, HashSet};
@@ -39,6 +40,7 @@ pub(super) struct SidebarState {
     pub(super) session_history_loading: RwSignal<bool>,
     /// Newer release surfaced by the auto-check → prompt card in the footer.
     pub(super) update_banner: RwSignal<Option<AvailableUpdate>>,
+    pub(super) tctoken_session: RwSignal<TctokenSession>,
 }
 
 #[component]
@@ -51,6 +53,7 @@ pub(super) fn Sidebar(
     open_search: Callback<web_sys::MouseEvent>,
     new_folder: Callback<web_sys::MouseEvent>,
     open_files: Callback<web_sys::MouseEvent>,
+    open_specialists: Callback<web_sys::MouseEvent>,
     open_research_graph: Callback<web_sys::MouseEvent>,
     open_publication_workspace: Callback<web_sys::MouseEvent>,
     open_library: Callback<web_sys::MouseEvent>,
@@ -77,6 +80,7 @@ pub(super) fn Sidebar(
     open_capabilities: Callback<web_sys::MouseEvent>,
     open_settings: Callback<web_sys::MouseEvent>,
     open_issue_report: Callback<web_sys::MouseEvent>,
+    open_user_center: Callback<web_sys::MouseEvent>,
     open_update: Callback<web_sys::MouseEvent>,
     on_sidebar_resize_start: Callback<web_sys::MouseEvent>,
 ) -> impl IntoView {
@@ -99,6 +103,7 @@ pub(super) fn Sidebar(
         attention,
         rename_session_input,
         rename_session_target,
+        tctoken_session,
         collapsed_folders,
         folder_modal_input,
         folder_modal,
@@ -208,6 +213,12 @@ pub(super) fn Sidebar(
                     </button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.new_folder") on:click=move |ev| new_folder.call(ev)>{compose_icon("folder-plus")}{move || t(locale.get(), "sidebar.new_folder")}</button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.files") on:click=move |ev| open_files.call(ev)>{compose_icon("doc")}{move || t(locale.get(), "sidebar.files")}</button>
+                    <button class="side-btn" data-testid="sidebar-specialists"
+                        title=move || t(locale.get(), "sidebar.specialists")
+                        on:click=move |ev| open_specialists.call(ev)>
+                        {compose_icon("review")}
+                        {move || t(locale.get(), "sidebar.specialists")}
+                    </button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.graph") on:click=move |ev| open_research_graph.call(ev)>{compose_icon("branch")}{move || t(locale.get(), "sidebar.graph")}</button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.publication") on:click=move |ev| open_publication_workspace.call(ev)>{compose_icon("book")}{move || t(locale.get(), "sidebar.publication")}</button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.library") on:click=move |ev| open_library.call(ev)>{compose_icon("star")}{move || t(locale.get(), "sidebar.library")}</button>
@@ -821,6 +832,33 @@ pub(super) fn Sidebar(
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.capabilities") on:click=move |ev| open_capabilities.call(ev)>{compose_icon("grid")}{move || t(locale.get(), "sidebar.capabilities")}</button>
                     <button class="side-btn" data-testid="report-problem-entry" title=move || t(locale.get(), "issue_report.sidebar") on:click=move |ev| open_issue_report.call(ev)>{compose_icon("chat")}{move || t(locale.get(), "issue_report.sidebar")}</button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.settings") on:click=move |ev| open_settings.call(ev)>{compose_icon("gear")}{move || t(locale.get(), "sidebar.settings")}</button>
+                    <button class="side-btn user-center-entry" data-testid="user-center-entry"
+                        title=move || if tctoken_session.get().logged_in {
+                            t(locale.get(), "sidebar.user_center")
+                        } else {
+                            t(locale.get(), "sidebar.login")
+                        }
+                        on:click=move |ev| open_user_center.call(ev)>
+                        {compose_icon("user")}
+                        {move || {
+                            let s = tctoken_session.get();
+                            if let Some(name) = s.display_label() {
+                                let meta = format!(
+                                    "{} · {}",
+                                    s.username.unwrap_or_default(),
+                                    s.group.unwrap_or_else(|| "default".into()),
+                                );
+                                view! {
+                                    <span class="side-user-lines">
+                                        <span class="side-user-name">{name}</span>
+                                        <span class="side-user-meta-line">{meta}</span>
+                                    </span>
+                                }.into_view()
+                            } else {
+                                view! { <span>{move || t(locale.get(), "sidebar.login")}</span> }.into_view()
+                            }
+                        }}
+                    </button>
                 </div>
             })}
         </aside>

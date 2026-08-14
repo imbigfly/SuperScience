@@ -23,17 +23,36 @@
 .ctx-item-label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctx-submenu-chevron { flex: none; color: var(--text-faint); font-size: 17px; line-height: 1; }
 .ctx-submenu-menu { z-index: 122; }
-.onboard { max-width: 440px; text-align: center; }
-.onboard h2 { text-align: center; }
-.onboard .hint { text-align: center; font-size: 13.5px; line-height: 1.55; }
-.onboard-dots { display: flex; justify-content: center; gap: 8px; }
-.onboard-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
-.onboard-dot.active { background: var(--clay); }
-.onboard-getkey { align-self: flex-start; font-size: 12.5px; }
-/* Two numbered sub-steps on the model page: get a key, then paste it. */
-.onboard-steps { text-align: left; margin: 6px 0 2px; padding-left: 22px; display: flex; flex-direction: column; gap: 14px; }
-.onboard-steps li::marker { color: var(--text-faint); font-size: 13px; }
-.onboard-steps .hint { text-align: left; margin: 0 0 6px; }
+.onboard { max-width: 600px; text-align: left; }
+.onboard h2 { text-align: center; margin-bottom: 8px; }
+.onboard-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 8px 0 16px;
+}
+.onboard-card {
+  padding: 14px 4px;
+  border-top: 1px solid var(--border);
+}
+.onboard-card:first-child { border-top: none; padding-top: 8px; }
+.onboard-card-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+}
+.onboard-card-body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+.onboard-actions {
+  justify-content: center;
+  margin-top: 4px;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .ctx-menu { animation: none; }

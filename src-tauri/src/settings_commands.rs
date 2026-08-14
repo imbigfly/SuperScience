@@ -122,6 +122,7 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         .flatten()
         .unwrap_or_default();
     let notifications_enabled = super::load_notifications_enabled(&state.store).await;
+    let pii_firewall_enabled = super::load_pii_firewall_enabled(&state.store).await;
     let auto_compact = super::load_auto_compact_enabled(&state.store).await;
     let follow_up_questions = state
         .store
@@ -170,6 +171,7 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         pet_enabled,
         pet_directory,
         notifications_enabled,
+        pii_firewall_enabled,
     })
 }
 
@@ -313,6 +315,22 @@ pub(super) async fn set_settings(
         )
         .await
         .map_err(|e| e.to_string())?;
+    let previous_pii = super::load_pii_firewall_enabled(&state.store).await;
+    state
+        .store
+        .set_setting(
+            "pii_firewall_enabled",
+            if settings.pii_firewall_enabled {
+                "true"
+            } else {
+                "false"
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    if previous_pii != settings.pii_firewall_enabled {
+        clear_idle_agents(&state).await;
+    }
     state
         .store
         .set_setting("max_iter", &settings.max_iter.to_string())
@@ -606,35 +624,76 @@ pub(super) async fn validate_settings(
     key: Option<String>,
     profile_id: Option<String>,
 ) -> Result<String, String> {
-    let provider_name = normalized_provider(&settings.provider);
-    let stored_key = match profile_id
+    // Prefer resolving an existing profile through its provider (URL + protocol
+    // + shared key). Form fields still win for brand-new / edited drafts.
+    let resolved = match profile_id
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
-        Some(id) => models::profile_key(&state.store, id)
-            .await
-            .unwrap_or_default(),
-        None => {
-            let (_, _, _, stored_key) = load_settings(&state.store).await;
-            stored_key
-        }
+        Some(id) => models::profile_llm(&state.store, id).await,
+        None => None,
     };
+    let (provider, api_url, model, stored_key, max_tokens, reasoning_effort) =
+        if let Some((p, url, m, k, max, effort)) = resolved {
+            (
+                if settings.provider.trim().is_empty() {
+                    p
+                } else {
+                    settings.provider.clone()
+                },
+                if settings.api_url.trim().is_empty() {
+                    url
+                } else {
+                    settings.api_url.clone()
+                },
+                if settings.model.trim().is_empty() {
+                    m
+                } else {
+                    settings.model.clone()
+                },
+                k,
+                if settings.max_tokens == 0 {
+                    max
+                } else {
+                    settings.max_tokens
+                },
+                if settings.reasoning_effort.trim().is_empty() {
+                    effort
+                } else {
+                    settings.reasoning_effort.clone()
+                },
+            )
+        } else {
+            let stored_key = {
+                let (_, _, _, stored_key) = load_settings(&state.store).await;
+                stored_key
+            };
+            (
+                settings.provider.clone(),
+                settings.api_url.clone(),
+                settings.model.clone(),
+                stored_key,
+                settings.max_tokens,
+                settings.reasoning_effort.clone(),
+            )
+        };
+    let provider_name = normalized_provider(&provider);
     let api_key = effective_api_key(key, stored_key);
     let cfg = build_provider_config(
-        &settings.provider,
-        &settings.api_url,
+        &provider,
+        &api_url,
         &api_key,
-        &settings.model,
-        settings.max_tokens,
-        &settings.reasoning_effort,
+        &model,
+        max_tokens,
+        &reasoning_effort,
     )?;
 
     tracing::info!(
         target: "superscience",
         provider = %provider_name,
-        api_url = %settings.api_url,
-        model = %settings.model,
+        api_url = %api_url,
+        model = %model,
         "validating settings"
     );
     let result = tokio::time::timeout(
@@ -652,10 +711,7 @@ pub(super) async fn validate_settings(
     }
 
     tracing::info!(target: "superscience", "settings validation succeeded");
-    Ok(format!(
-        "Validated {} with {}",
-        provider_name, settings.model
-    ))
+    Ok(format!("Validated {} with {}", provider_name, model))
 }
 
 /// 16x16 PNG — small enough to be free, large enough that vision APIs with a

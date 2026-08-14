@@ -1,7 +1,7 @@
 -- SuperScience initial schema (MVP subset of the upstream drizzle model).
 -- projects: a workspace; frames: a conversation root/branch; messages:
 -- serialized agent turns; artifacts: saved files; settings: kv config;
--- api_keys are kept in the OS keyring, not here.
+-- api_keys are kept in the local secrets file, not here.
 
 CREATE TABLE IF NOT EXISTS projects (
     id            TEXT PRIMARY KEY,

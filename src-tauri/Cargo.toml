@@ -35,7 +35,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 dirs = "5"
 dunce = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["cookies"] }
 regex = { workspace = true }
 url = { workspace = true }
 glob = { workspace = true }

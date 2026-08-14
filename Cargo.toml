@@ -58,7 +58,6 @@ ring = "0.17"
 sha2 = "0.10"
 tar = "0.4"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
-keyring = "3"
 superscience-llm = { path = "crates/superscience-llm" }
 superscience-core = { path = "crates/superscience-core" }
 superscience-tools = { path = "crates/superscience-tools" }
