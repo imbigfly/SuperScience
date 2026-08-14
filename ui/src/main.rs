@@ -808,6 +808,10 @@ fn App() -> impl IntoView {
     let demos = create_rw_signal::<Vec<DemoInfo>>(vec![]);
     let command_palette_open = create_rw_signal(false);
     let action_palette_open = create_rw_signal(false);
+    let (privacy_active_initial, privacy_projects_initial) = load_privacy_mode();
+    let privacy_mode_active = create_rw_signal(privacy_active_initial);
+    let privacy_hidden_project_ids = create_rw_signal(privacy_projects_initial);
+    let privacy_mode_modal_open = create_rw_signal(false);
     // Top-nav project switcher dropdown + Project Settings modal.
     let show_proj_menu = create_rw_signal(false);
     let proj_list = create_rw_signal::<Vec<ProjectSummary>>(vec![]);
@@ -7602,6 +7606,11 @@ fn App() -> impl IntoView {
             show_session_import.set(None);
             return;
         }
+        if privacy_mode_modal_open.get() {
+            ev.prevent_default();
+            privacy_mode_modal_open.set(false);
+            return;
+        }
         if action_palette_open.get() {
             ev.prevent_default();
             action_palette_open.set(false);
@@ -8736,6 +8745,7 @@ fn App() -> impl IntoView {
                 show_settings.set(true);
                 settings_section.set("models".into());
             }
+            "privacy-mode" => privacy_mode_modal_open.set(true),
             "import-codex" => {
                 if project_info.get_untracked().is_some() && !demo_mode.get_untracked() {
                     show_session_import.set(Some(SessionImportProvider::Codex));
@@ -8918,6 +8928,12 @@ fn App() -> impl IntoView {
                 command_palette_open.set(false);
                 action_palette_open.update(|open| *open = !*open);
             }
+            "h" if ev.shift_key() => {
+                ev.prevent_default();
+                command_palette_open.set(false);
+                action_palette_open.set(false);
+                privacy_mode_modal_open.set(true);
+            }
             "k" => {
                 ev.prevent_default();
                 action_palette_open.set(false);
@@ -9060,11 +9076,29 @@ fn App() -> impl IntoView {
         <ActionPalette open=action_palette_open has_current_project=has_current_project
             on_action=palette_action />
         <CommandPalette open=command_palette_open current_project_id=palette_project_id
+            privacy_mode_active=privacy_mode_active
+            privacy_hidden_project_ids=privacy_hidden_project_ids
             on_open_project=command_palette_open_project on_open_session=command_palette_open_session on_open_artifact=palette_open_artifact
             on_command=palette_action
             on_new_session=palette_new_session on_open_scratch=open_scratch
             on_project_settings=palette_project_settings
             on_manage_skills=palette_manage_skills on_attach=palette_attach />
+        <PrivacyModeModal
+            open=privacy_mode_modal_open
+            active=privacy_mode_active
+            hidden_project_ids=privacy_hidden_project_ids
+            on_hide=Callback::new(move |project_ids: HashSet<String>| {
+                save_privacy_mode(true, &project_ids);
+                privacy_hidden_project_ids.set(project_ids);
+                privacy_mode_active.set(true);
+                privacy_mode_modal_open.set(false);
+            })
+            on_restore=Callback::new(move |_| {
+                privacy_mode_active.set(false);
+                privacy_hidden_project_ids.with_untracked(|ids| save_privacy_mode(false, ids));
+                privacy_mode_modal_open.set(false);
+            })
+        />
         <ProjectExportPrompt
             state=ProjectExportPromptState { locale, prompt: project_export_prompt }
             on_export_zip=start_project_export
@@ -9091,6 +9125,7 @@ fn App() -> impl IntoView {
                 show_projects, demo_mode, items, active_session, project_open_error,
                 demos, modal_artifact, locale, running, approval_pending,
                 sync_actions_available, command_palette_open, project_transfer,
+                privacy_mode_active, privacy_hidden_project_ids, privacy_mode_modal_open,
             }
             open_project=switch_project
             open_project_session=palette_open_session

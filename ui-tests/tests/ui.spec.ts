@@ -2363,6 +2363,8 @@ test("Cmd+K opens search and the composer shows the macOS shortcut", async ({ pa
     .locator(".action-shortcut")).toHaveText("⌘N");
   await expect(actionPalette.locator(".action-palette-row", { hasText: "Search" })
     .locator(".action-shortcut")).toHaveText("⌘K");
+  await expect(actionPalette.locator(".action-palette-row", { hasText: "Privacy mode" })
+    .locator(".action-shortcut")).toHaveText("⌘⇧H");
 });
 
 test("Cmd+Enter sends when the modifier shortcut is selected on macOS", async ({ page }) => {
@@ -2474,6 +2476,58 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   const before = await page.evaluate(() => ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "new_session").length);
   await page.keyboard.press("Control+n");
   await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "new_session").length)).toBeGreaterThan(before);
+});
+
+test("privacy mode hides selected projects and recent sessions, then restores them", async ({ page }) => {
+  await page.goto("/");
+  const privateProject = page.locator(".proj-card", { hasText: "wisp-science" });
+  const otherProject = page.locator(".proj-card", { hasText: "Other project" });
+  await expect(privateProject).toBeVisible();
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(2);
+
+  await page.keyboard.press("Control+p");
+  const palette = page.getByRole("dialog", { name: "Command Palette" });
+  await page.locator("#action-palette-input").fill("privacy mode");
+  const privacyAction = palette.locator(".action-palette-row", { hasText: "Privacy mode" });
+  await expect(privacyAction.locator(".action-shortcut")).toHaveText("Ctrl+Shift+H");
+  await privacyAction.click();
+
+  const modal = page.getByRole("dialog", { name: "Privacy mode" });
+  await expect(modal).toBeVisible();
+  // Root-owned Escape must work before focus moves into the modal.
+  await page.keyboard.press("Escape");
+  await expect(modal).toBeHidden();
+
+  await page.keyboard.press("Control+Shift+h");
+  await expect(modal).toBeVisible();
+  const projectRow = modal.locator(".privacy-project-row", { hasText: "wisp-science" });
+  await projectRow.locator('input[type="checkbox"]').check();
+  await modal.getByRole("button", { name: "Hide selected" }).click();
+
+  await expect(privateProject).toBeHidden();
+  await expect(otherProject).toBeVisible();
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(0);
+  await expect(page.locator(".privacy-mode-banner")).toContainText("1 project(s) hidden");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBe("1");
+
+  await page.reload();
+  await expect(page.locator(".privacy-mode-banner")).toBeVisible();
+  await expect(privateProject).toBeHidden();
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(0);
+  await page.keyboard.press("Control+k");
+  const search = page.getByRole("dialog", { name: "Search" });
+  await expect(search).not.toContainText("wisp-science");
+  await expect(search).not.toContainText("Enumerate MCP bio-tools databases");
+  await page.keyboard.press("Escape");
+
+  await page.keyboard.press("Control+Shift+h");
+  await expect(modal.locator(".privacy-project-row", { hasText: "wisp-science" })
+    .locator('input[type="checkbox"]')).toBeChecked();
+  await modal.getByRole("button", { name: "Restore all" }).click();
+  await expect(privateProject).toBeVisible();
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(2);
+  await expect(page.locator(".privacy-mode-banner")).toBeHidden();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBeNull();
 });
 
 test("Ctrl+P changes UI and code font sizes", async ({ page }) => {

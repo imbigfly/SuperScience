@@ -147,6 +147,8 @@ fn url_query_param(key: &str) -> Option<String> {
 pub(crate) fn CommandPalette(
     open: RwSignal<bool>,
     current_project_id: Signal<Option<String>>,
+    privacy_mode_active: RwSignal<bool>,
+    privacy_hidden_project_ids: RwSignal<HashSet<String>>,
     on_open_project: Callback<(String, bool)>,
     on_open_session: Callback<(String, String, bool)>,
     on_open_artifact: Callback<(String, String, String)>,
@@ -217,11 +219,15 @@ pub(crate) fn CommandPalette(
     let items = create_memo(move |_| {
         let q = query.get().trim().to_lowercase();
         let current = current_project_id.get();
+        let hidden = privacy_mode_active
+            .get()
+            .then(|| privacy_hidden_project_ids.get())
+            .unwrap_or_default();
         let mut out = Vec::new();
         let mut ps: Vec<_> = projects
             .get()
             .into_iter()
-            .filter(|p| contains_search(&q, &[&p.name, &p.description]))
+            .filter(|p| !hidden.contains(&p.id) && contains_search(&q, &[&p.name, &p.description]))
             .collect();
         ps.sort_by_key(|p| (current.as_deref() != Some(p.id.as_str()), p.name.clone()));
         out.extend(ps.into_iter().map(CommandPaletteItem::Project));
@@ -232,13 +238,21 @@ pub(crate) fn CommandPalette(
                 std::cmp::Reverse(a.ts),
             )
         });
-        out.extend(ars.into_iter().map(CommandPaletteItem::Artifact));
+        out.extend(
+            ars.into_iter()
+                .filter(|a| !a.project_id.as_ref().is_some_and(|id| hidden.contains(id)))
+                .map(CommandPaletteItem::Artifact),
+        );
         let mut ss = sessions.get();
         // The store ranks title hits ahead of transcript-body hits. This stable
         // partition keeps that order while retaining a current-project bias
         // when an older backend or mocked bridge returns unranked rows.
         ss.sort_by_key(|s| current.as_deref() != Some(s.project_id.as_str()));
-        out.extend(ss.into_iter().map(CommandPaletteItem::Session));
+        out.extend(
+            ss.into_iter()
+                .filter(|s| !hidden.contains(&s.project_id))
+                .map(CommandPaletteItem::Session),
+        );
         out.push(CommandPaletteItem::Command("scratch"));
         out.push(CommandPaletteItem::Command("new"));
         out.push(CommandPaletteItem::Command("check-updates"));
@@ -454,6 +468,15 @@ pub(crate) fn ActionPalette(
                 general.clone(),
                 ",",
                 "preferences config 设置",
+                false,
+            ),
+            (
+                "privacy-mode",
+                "eye-off",
+                "command.privacy_mode",
+                general.clone(),
+                "shift-h",
+                "privacy recording hide projects recent sessions 隐私 录屏 隐藏 项目 最近会话",
                 false,
             ),
             (
@@ -713,6 +736,8 @@ pub(crate) fn ActionPalette(
                         (_, "") => String::new(),
                         (true, "shift-n") => "⌘⇧N".into(),
                         (false, "shift-n") => "Ctrl+Shift+N".into(),
+                        (true, "shift-h") => "⌘⇧H".into(),
+                        (false, "shift-h") => "Ctrl+Shift+H".into(),
                         (true, key) => format!("⌘{}", key.to_uppercase()),
                         (false, key) => format!("Ctrl+{}", key.to_uppercase()),
                     };
@@ -799,6 +824,91 @@ pub(crate) fn ActionPalette(
                         }}
                     </div>
                     <div class="project-search-foot"><span><kbd>"↑↓"</kbd>{t(locale.get(), "command.hint.navigate")}</span><span><kbd>"↵"</kbd>{t(locale.get(), "command.hint.run")}</span><span><kbd>"esc"</kbd>{t(locale.get(), "command.hint.close")}</span></div>
+                </div>
+            </div>
+        })}
+    }
+}
+
+#[component]
+pub(crate) fn PrivacyModeModal(
+    open: RwSignal<bool>,
+    active: RwSignal<bool>,
+    hidden_project_ids: RwSignal<HashSet<String>>,
+    on_hide: Callback<HashSet<String>>,
+    on_restore: Callback<()>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let projects = create_rw_signal(Vec::<ProjectSummary>::new());
+    let selected = create_rw_signal(HashSet::<String>::new());
+
+    create_effect(move |_| {
+        if !open.get() {
+            return;
+        }
+        selected.set(hidden_project_ids.get_untracked());
+        spawn_local(async move {
+            let value = invoke("list_projects", JsValue::UNDEFINED).await;
+            if let Ok(rows) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(value) {
+                projects.set(rows);
+            }
+        });
+    });
+
+    view! {
+        {move || open.get().then(|| view! {
+            <div class="overlay privacy-mode-overlay" on:click=move |_| open.set(false)>
+                <div class="modal privacy-mode-modal" role="dialog"
+                    aria-label=move || t(locale.get(), "privacy.title")
+                    on:click=|event| event.stop_propagation()>
+                    <div class="privacy-mode-head">
+                        <div class="privacy-mode-icon" aria-hidden="true">{compose_icon("eye-off")}</div>
+                        <div>
+                            <h2>{move || t(locale.get(), "privacy.title")}</h2>
+                            <p>{move || t(locale.get(), "privacy.hint")}</p>
+                        </div>
+                    </div>
+                    <div class="privacy-project-list" data-testid="privacy-project-list">
+                        {move || projects.get().into_iter().map(|project| {
+                            let id = project.id.clone();
+                            let checked_id = project.id.clone();
+                            view! {
+                                <label class="privacy-project-row">
+                                    <input type="checkbox"
+                                        prop:checked=move || selected.with(|ids| ids.contains(&checked_id))
+                                        on:change=move |event| {
+                                            let checked = event_target_checked(&event);
+                                            selected.update(|ids| {
+                                                if checked { ids.insert(id.clone()); } else { ids.remove(&id); }
+                                            });
+                                        } />
+                                    <span class="privacy-project-main">
+                                        <span>{project.name}</span>
+                                        {(!project.workspace_dir.trim().is_empty()).then(|| view! {
+                                            <small title=project.workspace_dir.clone()>{project.workspace_dir}</small>
+                                        })}
+                                    </span>
+                                </label>
+                            }
+                        }).collect_view()}
+                    </div>
+                    <p class="privacy-mode-status">
+                        {move || t(locale.get(), if active.get() { "privacy.active" } else { "privacy.inactive" })}
+                    </p>
+                    <div class="row privacy-mode-actions">
+                        <button type="button" on:click=move |_| open.set(false)>
+                            {move || t(locale.get(), "projects.cancel")}
+                        </button>
+                        <button type="button" disabled=move || !active.get()
+                            on:click=move |_| on_restore.call(())>
+                            {move || t(locale.get(), "privacy.restore")}
+                        </button>
+                        <button type="button" class="primary"
+                            disabled=move || selected.with(|ids| ids.is_empty())
+                            on:click=move |_| on_hide.call(selected.get_untracked())>
+                            {move || t(locale.get(), "privacy.hide")}
+                        </button>
+                    </div>
                 </div>
             </div>
         })}

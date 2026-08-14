@@ -239,6 +239,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "computer" => view! { <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/> }.into_view(),
         "server" => view! { <rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/><circle cx="7" cy="7.5" r="0.5" fill="currentColor"/><circle cx="7" cy="16.5" r="0.5" fill="currentColor"/> }.into_view(),
         "search" => view! { <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/> }.into_view(),
+        "eye-off" => view! { <path d="m3 3 18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 4.2A10.8 10.8 0 0 1 12 4c5 0 9 5 9 8a12.4 12.4 0 0 1-2 3.7"/><path d="M6.6 6.6C4.4 8 3 10.2 3 12c0 3 4 8 9 8a10.4 10.4 0 0 0 4.2-.9"/> }.into_view(),
         "terminal" => view! { <path d="m4 17 6-5-6-5"/><path d="M12 19h8"/> }.into_view(),
         "grid" => view! { <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/> }.into_view(),
         "list" => view! { <path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/> }.into_view(),
