@@ -19,7 +19,6 @@ pub(crate) fn ProjectsScreen(
     project_transfer: RwSignal<Option<ProjectTransferProgress>>,
     privacy_mode_active: RwSignal<bool>,
     privacy_hidden_project_ids: RwSignal<HashSet<String>>,
-    on_open_privacy: Callback<()>,
 ) -> impl IntoView {
     let projects = create_rw_signal(Vec::<ProjectSummary>::new());
     let recent = create_rw_signal(Vec::<RecentSession>::new());
@@ -518,17 +517,6 @@ pub(crate) fn ProjectsScreen(
             </div>
             {move || open_error.get().map(|message| view! {
                 <div class="project-open-error" role="alert">{message}</div>
-            })}
-            {move || privacy_mode_active.get().then(|| {
-                let count = privacy_hidden_project_ids.with(|ids| ids.len());
-                view! {
-                    <button type="button" class="privacy-mode-banner"
-                        on:click=move |_| on_open_privacy.call(())>
-                        {compose_icon("eye-off")}
-                        <span>{tf(locale.get(), "privacy.banner", &[("n", &count.to_string())])}</span>
-                        <kbd>{if is_mac() { "⌘⇧H" } else { "Ctrl+Shift+H" }}</kbd>
-                    </button>
-                }
             })}
             {move || search_open.get().then(|| view! {
                 <div class="project-search-overlay" on:click=move |_| search_open.set(false)>

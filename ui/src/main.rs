@@ -9299,7 +9299,7 @@ fn App() -> impl IntoView {
                 show_projects, demo_mode, items, active_session, project_open_error,
                 demos, modal_artifact, locale, running, approval_pending,
                 sync_actions_available, command_palette_open, project_transfer,
-                privacy_mode_active, privacy_hidden_project_ids, privacy_mode_modal_open,
+                privacy_mode_active, privacy_hidden_project_ids,
             }
             open_project=switch_project
             open_project_session=palette_open_session

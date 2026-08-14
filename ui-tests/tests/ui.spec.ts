@@ -2578,18 +2578,21 @@ test("privacy mode hides selected projects and recent sessions, then restores th
   await page.keyboard.press("Control+Shift+h");
   await expect(modal).toBeVisible();
   const projectRow = modal.locator(".privacy-project-row", { hasText: "wisp-science" });
+  await expect(projectRow).toHaveCSS("flex-direction", "row");
   await projectRow.locator('input[type="checkbox"]').check();
   await modal.getByRole("button", { name: "Hide selected" }).click();
 
   await expect(privateProject).toBeHidden();
   await expect(otherProject).toBeVisible();
   await expect(page.getByTestId("recent-session-card")).toHaveCount(0);
-  await expect(page.locator(".privacy-mode-banner")).toContainText("1 project(s) hidden");
+  await expect(page.locator(".privacy-mode-banner")).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBe("1");
 
   await page.reload();
-  await expect(page.locator(".privacy-mode-banner")).toBeVisible();
+  await expect(otherProject).toBeVisible();
   await expect(privateProject).toBeHidden();
+  await expect(page.locator(".privacy-mode-banner")).toHaveCount(0);
+  await expect(page.getByText("Privacy mode")).toHaveCount(0);
   await expect(page.getByTestId("recent-session-card")).toHaveCount(0);
   await page.keyboard.press("Control+k");
   const search = page.getByRole("dialog", { name: "Search" });
@@ -2603,7 +2606,6 @@ test("privacy mode hides selected projects and recent sessions, then restores th
   await modal.getByRole("button", { name: "Restore all" }).click();
   await expect(privateProject).toBeVisible();
   await expect(page.getByTestId("recent-session-card")).toHaveCount(2);
-  await expect(page.locator(".privacy-mode-banner")).toBeHidden();
   await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBeNull();
 });
 

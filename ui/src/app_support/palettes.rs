@@ -892,22 +892,24 @@ pub(crate) fn PrivacyModeModal(
                             }
                         }).collect_view()}
                     </div>
-                    <p class="privacy-mode-status">
-                        {move || t(locale.get(), if active.get() { "privacy.active" } else { "privacy.inactive" })}
-                    </p>
-                    <div class="row privacy-mode-actions">
-                        <button type="button" on:click=move |_| open.set(false)>
-                            {move || t(locale.get(), "projects.cancel")}
-                        </button>
-                        <button type="button" disabled=move || !active.get()
-                            on:click=move |_| on_restore.call(())>
-                            {move || t(locale.get(), "privacy.restore")}
-                        </button>
-                        <button type="button" class="primary"
-                            disabled=move || selected.with(|ids| ids.is_empty())
-                            on:click=move |_| on_hide.call(selected.get_untracked())>
-                            {move || t(locale.get(), "privacy.hide")}
-                        </button>
+                    <div class="privacy-mode-foot">
+                        <p class="privacy-mode-status">
+                            {move || t(locale.get(), if active.get() { "privacy.active" } else { "privacy.inactive" })}
+                        </p>
+                        <div class="row privacy-mode-actions">
+                            <button type="button" on:click=move |_| open.set(false)>
+                                {move || t(locale.get(), "projects.cancel")}
+                            </button>
+                            <button type="button" disabled=move || !active.get()
+                                on:click=move |_| on_restore.call(())>
+                                {move || t(locale.get(), "privacy.restore")}
+                            </button>
+                            <button type="button" class="primary"
+                                disabled=move || selected.with(|ids| ids.is_empty())
+                                on:click=move |_| on_hide.call(selected.get_untracked())>
+                                {move || t(locale.get(), "privacy.hide")}
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
