@@ -2077,6 +2077,18 @@ pub(crate) fn ContextDetailsOverlay(
                                                     run.status.as_str(),
                                                     "submitted" | "running" | "cancelling"
                                                 );
+                                            let terminal = matches!(
+                                                run.status.as_str(),
+                                                "succeeded" | "failed" | "cancelled" | "timed_out" | "lost"
+                                            );
+                                            let cleaned = run.cleaned_at.is_some();
+                                            let cleanable = !method_search
+                                                && terminal
+                                                && !cleaned
+                                                && run.kind != "file_transfer"
+                                                && run.remote_workdir.is_some();
+                                            let cleanup_id = run.id.clone();
+                                            let cleanup_error = run.cleanup_error.clone();
                                             let cancel_label = if run.status == "cancelling" {
                                                 t(locale.get(), "runs.force_cancel")
                                             } else {
@@ -2134,8 +2146,39 @@ pub(crate) fn ContextDetailsOverlay(
                                                                         }>{compose_icon("close")}</button>
                                                                 }
                                                             })}
+                                                            {cleanable.then(|| {
+                                                                let run_id = cleanup_id.clone();
+                                                                let tip = t(locale.get(), "runs.cleanup");
+                                                                view! {
+                                                                    <button type="button" class="icon-btn run-cleanup"
+                                                                        title=tip.clone()
+                                                                        aria-label=tip
+                                                                        on:click=move |_| {
+                                                                            let run_id = run_id.clone();
+                                                                            spawn_local(async move {
+                                                                                let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+                                                                                match invoke_checked("cleanup_run_workspace", arg).await {
+                                                                                    Ok(_) => show_toast(&t(locale.get_untracked(), "runs.cleanup_done")),
+                                                                                    Err(error) => show_toast(&localize_backend(
+                                                                                        locale.get_untracked(),
+                                                                                        &js_error_text(error),
+                                                                                    )),
+                                                                                }
+                                                                                refresh_runs(runs, locale);
+                                                                            });
+                                                                        }>{compose_icon("trash")}</button>
+                                                                }
+                                                            })}
+                                                            {cleaned.then(|| view! {
+                                                                <span class="run-cleaned" data-testid="run-cleaned">
+                                                                    {t(locale.get(), "runs.cleaned")}
+                                                                </span>
+                                                            })}
                                                         </div>
                                                     </div>
+                                                    {cleanup_error.filter(|error| !error.trim().is_empty()).map(|error| view! {
+                                                        <div class="context-error">{error}</div>
+                                                    })}
                                                     {progress.map(|progress| run_progress_meter(progress, locale.get()))}
                                                     {method_progress.map(|progress| view! {
                                                         <div class="method-search-card-progress">

@@ -5550,6 +5550,13 @@ async fn send_message_inner(
             state.run_manager.clone(),
             frame_scope.clone(),
         )));
+        agent.add_tool(Box::new(
+            run_context::CleanupRunWorkspaceTool::new_in_scope(
+                state.store.clone(),
+                state.run_manager.clone(),
+                frame_scope.clone(),
+            ),
+        ));
         agent.add_tool(Box::new(method_search::PrepareMethodSearchTool::new(
             state.store.clone(),
             ap.id.clone(),
@@ -7906,6 +7913,7 @@ pub fn run() {
             runtime_commands::get_run_detail,
             runtime_commands::cancel_run,
             runtime_commands::harvest_run,
+            runtime_commands::cleanup_run_workspace,
             storage_prefs::get_context_storage_prefs,
             storage_prefs::set_context_storage_prefs,
             project_commands::get_research_graph,

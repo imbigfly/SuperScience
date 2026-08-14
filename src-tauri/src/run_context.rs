@@ -9,6 +9,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+mod cleanup;
 mod harvest_remote;
 mod local_detached;
 mod remote;
@@ -27,7 +28,10 @@ use remote::{
 };
 #[cfg(test)]
 use remote::{parse_input_progress, remote_poll_delay_secs};
-pub use tools::{CancelRunTool, GetRunTool, HarvestRunTool, MonitorRunTool, RunInContextTool};
+pub use tools::{
+    CancelRunTool, CleanupRunWorkspaceTool, GetRunTool, HarvestRunTool, MonitorRunTool,
+    RunInContextTool,
+};
 pub(crate) use transfer::{load_trust_edges, revoke_trust_edge, RevokeTrustResponse, SshTrustEdge};
 pub use transfer::{ConfigureSshTrustTool, TransferBetweenContextsTool};
 
@@ -1184,6 +1188,94 @@ impl RunManager {
             let _ = task.await;
             active.lock().await.remove(&cleanup_id);
         });
+    }
+
+    /// Delete a terminal Run's server-side workspace. `force` is an explicit
+    /// user confirmation that skips the harvested-before-clean guard (the
+    /// agent/automatic paths never pass it).
+    pub async fn cleanup_run_workspace(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+        force: bool,
+    ) -> Result<wisp_store::RunRecord, String> {
+        let run = store
+            .get_run(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Run not found: {run_id}"))?;
+        if !run.status.is_terminal() {
+            return Err(format!(
+                "Run is still {}; cancel or wait for it before cleaning its workspace",
+                run.status.as_str()
+            ));
+        }
+        if run.cleaned_at.is_some() {
+            return Ok(run);
+        }
+        let output_specs: Vec<crate::harvest::OutputSpec> =
+            serde_json::from_str(&run.output_specs_json).unwrap_or_default();
+        if run.status == wisp_store::RunStatus::Succeeded
+            && !output_specs.is_empty()
+            && run.harvested_at.is_none()
+            && !force
+        {
+            return Err(
+                "Run outputs were never harvested; call harvest_run first, or clean up with \
+                 explicit user confirmation (force) accepting that unretrieved outputs are lost"
+                    .into(),
+            );
+        }
+        let handle: RemoteRunHandle = run
+            .remote_handle_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
+            .ok_or_else(|| "Run has no server workspace to clean".to_string())?;
+        // Defensive: never delete a workdir that a registered External
+        // artifact reference still points into.
+        let workdir_fragment = match &handle {
+            RemoteRunHandle::SshDirect { workdir, .. }
+            | RemoteRunHandle::LocalDetached { workdir, .. } => format!("/{workdir}/"),
+        };
+        for output in store
+            .list_run_outputs(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            let Some(version) = store
+                .get_artifact_version(&output.artifact_version_id)
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                continue;
+            };
+            if version.materialization == wisp_store::ArtifactMaterialization::External
+                && version.storage_path.contains(&workdir_fragment)
+            {
+                return Err(format!(
+                    "Registered artifact reference {} still points into the run workspace; \
+                     harvest it before cleanup",
+                    version.storage_path
+                ));
+            }
+        }
+        match cleanup::delete_run_workspace(self.runner.as_ref(), &handle, run_id).await {
+            Ok(()) => {
+                store
+                    .mark_run_cleaned(run_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                store
+                    .get_run(run_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "Run disappeared after cleanup".to_string())
+            }
+            Err(error) => {
+                let _ = store.record_run_cleanup_error(run_id, &error).await;
+                Err(error)
+            }
+        }
     }
 
     /// Retry output harvest for a succeeded Run whose outputs were never

@@ -3272,6 +3272,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             EXPLORATION_PROMOTION_RECOVERY_MIGRATION.to_string(),
             RUN_HARVEST_STATE_MIGRATION.to_string(),
             CONTEXT_STORAGE_PREFS_MIGRATION.to_string(),
+            RUN_CLEANUP_STATE_MIGRATION.to_string(),
         ]
     );
 
@@ -3400,6 +3401,28 @@ async fn run_harvest_state_is_recorded_once_and_survives_reopen() {
             .as_deref(),
         Some("remote artifact registration failed: boom")
     );
+
+    // Cleanup state: errors are retryable and cleared by a successful clean.
+    assert!(reopened
+        .record_run_cleanup_error("r", "rm failed: permission denied")
+        .await
+        .unwrap());
+    let run = reopened.get_run("r").await.unwrap().unwrap();
+    assert!(run.cleaned_at.is_none());
+    assert_eq!(
+        run.cleanup_error.as_deref(),
+        Some("rm failed: permission denied")
+    );
+    assert!(reopened.mark_run_cleaned("r").await.unwrap());
+    let run = reopened.get_run("r").await.unwrap().unwrap();
+    assert!(run.cleaned_at.is_some());
+    assert!(run.cleanup_error.is_none());
+    // Idempotent, and errors no longer overwrite a cleaned run.
+    assert!(!reopened.mark_run_cleaned("r").await.unwrap());
+    assert!(!reopened
+        .record_run_cleanup_error("r", "late")
+        .await
+        .unwrap());
 
     let _ = std::fs::remove_file(&tmp);
 }

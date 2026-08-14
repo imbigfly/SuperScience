@@ -346,7 +346,9 @@ CREATE TABLE IF NOT EXISTS runs (
     progress_json      TEXT NOT NULL DEFAULT '{}',
     env_snapshot_json  TEXT NOT NULL DEFAULT '{}',
     exploration_id     TEXT,
-    harvested_at       INTEGER
+    harvested_at       INTEGER,
+    cleaned_at         INTEGER,
+    cleanup_error      TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_runs_project ON runs(project_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_runs_context ON runs(context_id);

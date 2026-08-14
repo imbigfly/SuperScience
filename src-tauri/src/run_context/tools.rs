@@ -429,9 +429,20 @@ async fn wait_for_terminal(
 
 fn run_wait_result(run: wisp_store::RunRecord, detached: bool) -> ToolResult {
     let succeeded = run.status == wisp_store::RunStatus::Succeeded;
+    let cleanable = run.status.is_terminal()
+        && run.remote_workdir.is_some()
+        && run.cleaned_at.is_none()
+        && run.kind != "file_transfer";
     let mut value = serde_json::to_value(run).unwrap_or_default();
     if detached {
         value["wait_detached"] = serde_json::Value::Bool(true);
+    }
+    if cleanable && !detached {
+        value["next_action"] = serde_json::Value::String(
+            "When the server workspace is no longer needed, call cleanup_run_workspace to \
+             reclaim it (harvested outputs and logs stay in the project)."
+                .into(),
+        );
     }
     let content = value.to_string();
     if detached || succeeded {
@@ -500,6 +511,71 @@ impl Tool for HarvestRunTool {
                 serde_json::json!({ "run_id": run_id, "harvested": harvested }).to_string(),
             ),
             Err(error) => ToolResult::fail(format!("harvest_run error: {error}")),
+        }
+    }
+}
+
+pub struct CleanupRunWorkspaceTool {
+    store: wisp_store::Store,
+    manager: RunManager,
+    scope: wisp_store::StateScope,
+}
+
+impl CleanupRunWorkspaceTool {
+    pub fn new_in_scope(
+        store: wisp_store::Store,
+        manager: RunManager,
+        scope: wisp_store::StateScope,
+    ) -> Self {
+        Self {
+            store,
+            manager,
+            scope,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for CleanupRunWorkspaceTool {
+    fn name(&self) -> &str {
+        "cleanup_run_workspace"
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "cleanup_run_workspace",
+            "Delete a finished Run's server-side workspace (inputs, logs, intermediate files). Requires a terminal Run; a succeeded Run with declared output_specs must be harvested first so results are never lost. Registered artifacts and run logs in the project are unaffected. Idempotent.",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "run_id": { "type": "string" } },
+                "required": ["run_id"]
+            }),
+        )
+    }
+
+    fn preview(&self, args: &serde_json::Value) -> String {
+        args.get("run_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .into()
+    }
+
+    async fn run(&self, args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+        let Some(run_id) = args.get("run_id").and_then(|value| value.as_str()) else {
+            return ToolResult::fail("cleanup_run_workspace requires run_id");
+        };
+        match self.store.run_visible_in_scope(run_id, &self.scope).await {
+            Ok(true) => {}
+            Ok(false) => return ToolResult::fail("Run does not belong to this state scope"),
+            Err(error) => return ToolResult::fail(format!("cleanup_run_workspace error: {error}")),
+        }
+        match self
+            .manager
+            .cleanup_run_workspace(&self.store, run_id, false)
+            .await
+        {
+            Ok(run) => ToolResult::ok(serde_json::to_string(&run).unwrap_or_default()),
+            Err(error) => ToolResult::fail(format!("cleanup_run_workspace error: {error}")),
         }
     }
 }

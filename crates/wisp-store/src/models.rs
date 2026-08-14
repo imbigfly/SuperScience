@@ -1068,6 +1068,10 @@ pub struct RunRecord {
     /// When declared output specs were registered (downloaded/verified for
     /// remote Runs). NULL means outputs were never harvested.
     pub harvested_at: Option<i64>,
+    /// When the server-side run workspace was deleted. NULL means it still
+    /// exists (or was never created).
+    pub cleaned_at: Option<i64>,
+    pub cleanup_error: Option<String>,
 }
 
 /// Polling/list projection for the WebView. Large command, output, remote
@@ -1090,6 +1094,8 @@ pub struct RunSummary {
     pub last_poll_error: Option<String>,
     pub progress_json: String,
     pub harvested_at: Option<i64>,
+    pub cleaned_at: Option<i64>,
+    pub cleanup_error: Option<String>,
     /// Bounded head/tail sample plus byte lengths; changes make visible run
     /// monitors refetch the one full record they display.
     pub output_fingerprint: String,
@@ -1286,6 +1292,8 @@ impl RunRecord {
             progress_json: "{}".into(),
             env_snapshot_json: "{}".into(),
             harvested_at: None,
+            cleaned_at: None,
+            cleanup_error: None,
         }
     }
 
@@ -1393,6 +1401,8 @@ pub(crate) fn run_from_row(row: SqliteRow) -> Result<RunRecord> {
         progress_json: row.try_get("progress_json")?,
         env_snapshot_json: row.try_get("env_snapshot_json")?,
         harvested_at: row.try_get("harvested_at")?,
+        cleaned_at: row.try_get("cleaned_at")?,
+        cleanup_error: row.try_get("cleanup_error")?,
     })
 }
 
@@ -1415,6 +1425,8 @@ pub(crate) fn run_summary_from_row(row: SqliteRow) -> Result<RunSummary> {
         last_poll_error: row.try_get("last_poll_error")?,
         progress_json: row.try_get("progress_json")?,
         harvested_at: row.try_get("harvested_at")?,
+        cleaned_at: row.try_get("cleaned_at")?,
+        cleanup_error: row.try_get("cleanup_error")?,
         output_fingerprint: row.try_get("output_fingerprint")?,
     })
 }

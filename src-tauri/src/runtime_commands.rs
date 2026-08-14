@@ -347,3 +347,40 @@ pub(super) async fn harvest_run(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Run disappeared after harvest".to_string())
 }
+
+/// Delete a terminal Run's server-side workspace. `force` carries the user's
+/// explicit confirmation when unharvested outputs would be lost.
+#[tauri::command]
+pub(super) async fn cleanup_run_workspace(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+    force: Option<bool>,
+) -> Result<wisp_store::RunRecord, String> {
+    let (ap, scope) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let run = state
+        .store
+        .get_run(&run_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Run not found".to_string())?;
+    if run.project_id != ap.id {
+        return Err("Run does not belong to the active project".into());
+    }
+    if state
+        .store
+        .run_state_scope(&run_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        != Some(&scope)
+    {
+        return Err("Run is not visible in the active state scope".into());
+    }
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    state
+        .run_manager
+        .cleanup_run_workspace(&state.store, &run_id, force.unwrap_or(false))
+        .await
+}

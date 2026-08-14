@@ -2792,3 +2792,295 @@ async fn ssh_harvest_uses_stored_local_results_dir_and_data_root() {
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+// --- run workspace cleanup ---------------------------------------------------
+
+async fn seed_cleanup_run(
+    store: &wisp_store::Store,
+    run_id: &str,
+    status: wisp_store::RunStatus,
+    specs_json: &str,
+    harvested: bool,
+) {
+    let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+    run.frame_id = Some("f".into());
+    run.status = status;
+    run.output_specs_json = specs_json.into();
+    let connection =
+        crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context()).unwrap();
+    let handle = RemoteRunHandle::SshDirect {
+        connection,
+        workdir: format!(".wisp-science/runs/{run_id}"),
+        token: "cleanup-token".into(),
+        inputs_staged: true,
+        pgid: Some(4242),
+        start_time: Some(99),
+    };
+    run.remote_workdir = Some(handle.display_workdir());
+    run.remote_handle_json = Some(serde_json::to_string(&handle).unwrap());
+    store.create_run(&run).await.unwrap();
+    if harvested {
+        store.mark_run_harvested(run_id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn cleanup_requires_terminal_state_and_harvested_outputs() {
+    let tmp = std::env::temp_dir().join(format!("wisp_cleanup_guard_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    let specs = serde_json::json!([{
+        "glob": "results/*.tsv", "kind": "table", "residency": "auto"
+    }])
+    .to_string();
+    seed_cleanup_run(
+        &store,
+        "run-active",
+        wisp_store::RunStatus::Running,
+        "[]",
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-unharvested",
+        wisp_store::RunStatus::Succeeded,
+        &specs,
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-failed",
+        wisp_store::RunStatus::Failed,
+        &specs,
+        false,
+    )
+    .await;
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_CLEANUP__:done\n"),
+        ok_output("__WISP_CLEANUP__:done\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+
+    let error = manager
+        .cleanup_run_workspace(&store, "run-active", false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("still running"), "{error}");
+
+    let error = manager
+        .cleanup_run_workspace(&store, "run-unharvested", false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("harvest_run"), "{error}");
+    assert_eq!(runner.commands.lock().unwrap().len(), 0);
+
+    // Failed runs have nothing to harvest: cleanup proceeds without force.
+    let cleaned = manager
+        .cleanup_run_workspace(&store, "run-failed", false)
+        .await
+        .unwrap();
+    assert!(cleaned.cleaned_at.is_some());
+
+    // Explicit user confirmation (force) accepts the data loss.
+    let cleaned = manager
+        .cleanup_run_workspace(&store, "run-unharvested", true)
+        .await
+        .unwrap();
+    assert!(cleaned.cleaned_at.is_some());
+    {
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 2);
+        let payload = commands[0].stdin.as_deref().unwrap();
+        assert!(payload.contains("workdir=\"$HOME/.wisp-science/runs/run-failed\""));
+        assert!(payload.contains("rm -rf \"$workdir\""));
+        assert!(payload.contains("cleanup-token"));
+    }
+
+    // Idempotent: a second cleanup issues no further remote commands.
+    let again = manager
+        .cleanup_run_workspace(&store, "run-failed", false)
+        .await
+        .unwrap();
+    assert!(again.cleaned_at.is_some());
+    assert_eq!(runner.commands.lock().unwrap().len(), 2);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cleanup_rejects_foreign_workdirs_and_records_failures() {
+    let tmp = std::env::temp_dir().join(format!("wisp_cleanup_paths_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+
+    // Malicious/foreign workdir strings are refused before any command runs.
+    for (run_id, workdir) in [
+        ("run-root", "/"),
+        ("run-home", "runs/../run-home"),
+        ("run-other", ".wisp-science/runs/another-run"),
+    ] {
+        let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+        run.frame_id = Some("f".into());
+        run.status = wisp_store::RunStatus::Failed;
+        let connection =
+            crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context())
+                .unwrap();
+        run.remote_handle_json = Some(
+            serde_json::to_string(&RemoteRunHandle::SshDirect {
+                connection,
+                workdir: workdir.into(),
+                token: "tok".into(),
+                inputs_staged: true,
+                pgid: Some(1),
+                start_time: Some(1),
+            })
+            .unwrap(),
+        );
+        store.create_run(&run).await.unwrap();
+        let runner = Arc::new(ScriptedRunRunner::new(vec![]));
+        let manager = RunManager::with_runner(runner.clone());
+        let error = manager
+            .cleanup_run_workspace(&store, run_id, false)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("workdir"),
+            "workdir {workdir} should be rejected: {error}"
+        );
+        assert!(runner.commands.lock().unwrap().is_empty());
+        let run = store.get_run(run_id).await.unwrap().unwrap();
+        assert!(run.cleaned_at.is_none());
+        assert!(run
+            .cleanup_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("workdir"));
+    }
+
+    // A failed remote deletion records the error and stays retryable.
+    seed_cleanup_run(
+        &store,
+        "run-flaky",
+        wisp_store::RunStatus::Failed,
+        "[]",
+        false,
+    )
+    .await;
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        Err("ssh: connect to host gpu port 22: Connection refused".into()),
+        ok_output("__WISP_CLEANUP__:done\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+    let error = manager
+        .cleanup_run_workspace(&store, "run-flaky", false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("Connection refused"), "{error}");
+    let run = store.get_run("run-flaky").await.unwrap().unwrap();
+    assert!(run.cleaned_at.is_none());
+    assert!(run
+        .cleanup_error
+        .as_deref()
+        .unwrap()
+        .contains("Connection refused"));
+    let cleaned = manager
+        .cleanup_run_workspace(&store, "run-flaky", false)
+        .await
+        .unwrap();
+    assert!(cleaned.cleaned_at.is_some());
+    assert!(cleaned.cleanup_error.is_none());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cleanup_refuses_while_an_external_reference_points_into_the_workdir() {
+    let tmp = std::env::temp_dir().join(format!("wisp_cleanup_extref_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    seed_cleanup_run(
+        &store,
+        "run-ref",
+        wisp_store::RunStatus::Succeeded,
+        "[]",
+        true,
+    )
+    .await;
+    // Simulate a (buggy or legacy) External reference into the workdir itself.
+    let version_id = store
+        .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: wisp_store::logical_artifact_id("p", "path:stuck.bam"),
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "stuck.bam".into(),
+            content_type: "data".into(),
+            storage_path: "ssh://gpu/home/alice/.wisp-science/runs/run-ref/inputs/stuck.bam".into(),
+            logical_key: Some("path:stuck.bam".into()),
+            size_bytes: None,
+            checksum: None,
+            producing_run_id: Some("run-ref".into()),
+            env_snapshot_hash: None,
+            materialization: wisp_store::ArtifactMaterialization::External,
+            capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    store
+        .save_run_output(&wisp_store::RunOutput {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: "run-ref".into(),
+            artifact_version_id: version_id,
+            role: "data".into(),
+            logical_output_key: "path:stuck.bam".into(),
+            source_path: "stuck.bam".into(),
+            created_at: chrono::Utc::now().timestamp(),
+        })
+        .await
+        .unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![]));
+    let manager = RunManager::with_runner(runner.clone());
+    let error = manager
+        .cleanup_run_workspace(&store, "run-ref", false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("still points into"), "{error}");
+    assert!(runner.commands.lock().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}

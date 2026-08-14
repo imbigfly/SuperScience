@@ -67,6 +67,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       last_polled_at: run.last_polled_at ?? null,
       last_poll_error: run.last_poll_error ?? null,
       progress_json: run.progress_json ?? "{}",
+      harvested_at: run.harvested_at ?? null,
+      cleaned_at: run.cleaned_at ?? null,
+      cleanup_error: run.cleanup_error ?? null,
       output_fingerprint: `${stdout.length}:${stdout.slice(0, 64)}:${stdout.slice(-128)}|${stderr.length}:${stderr.slice(0, 64)}:${stderr.slice(-128)}`,
     };
   };
@@ -3068,6 +3071,23 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "get_run_detail": {
             const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
             if (!run) throw new Error("Run not found");
+            return run;
+          }
+          case "cleanup_run_workspace": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run) throw new Error("Run not found");
+            if (["submitted", "running", "cancelling"].includes(run.status)) {
+              throw new Error("Run is still active");
+            }
+            if (!run.remote_handle_json) throw new Error("Run has no server workspace to clean");
+            run.cleaned_at = run.cleaned_at ?? Math.floor(Date.now() / 1000);
+            run.cleanup_error = null;
+            return run;
+          }
+          case "harvest_run": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run) throw new Error("Run not found");
+            run.harvested_at = run.harvested_at ?? Math.floor(Date.now() / 1000);
             return run;
           }
           case "get_method_search_run":

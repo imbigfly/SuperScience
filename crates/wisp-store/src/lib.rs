@@ -155,6 +155,7 @@ const SESSION_BRANCH_MERGE_MIGRATION: &str = "0041_session_branch_merge";
 const EXPLORATION_PROMOTION_RECOVERY_MIGRATION: &str = "0042_exploration_promotion_recovery";
 const RUN_HARVEST_STATE_MIGRATION: &str = "0043_run_harvest_state";
 const CONTEXT_STORAGE_PREFS_MIGRATION: &str = "0044_context_storage_prefs";
+const RUN_CLEANUP_STATE_MIGRATION: &str = "0045_run_cleanup_state";
 
 #[derive(Clone)]
 pub struct Store {
@@ -597,6 +598,15 @@ impl Store {
         if !Self::migration_applied(pool, CONTEXT_STORAGE_PREFS_MIGRATION).await? {
             Self::apply_context_storage_prefs(pool).await?;
             Self::record_migration(pool, CONTEXT_STORAGE_PREFS_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, RUN_CLEANUP_STATE_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "runs",
+                &[("cleaned_at", "INTEGER"), ("cleanup_error", "TEXT")],
+            )
+            .await?;
+            Self::record_migration(pool, RUN_CLEANUP_STATE_MIGRATION).await?;
         }
         Ok(())
     }

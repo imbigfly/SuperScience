@@ -5081,6 +5081,24 @@ test("Run surface binds an exact publication evidence source", async ({ page }) 
   await expect(page.getByTestId("publication-workspace")).toContainText("run-kinase-001");
 });
 
+test("finished run offers server workspace cleanup and shows the cleaned state", async ({ page }) => {
+  await enterApp(page);
+  await selectRemoteContext(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "View runs" }).click();
+
+  const run = page.locator(".run-card", { hasText: "Kinase screen QC" });
+  await expect(run).toBeVisible();
+  // The running local run offers no cleanup; the finished SSH run does.
+  await run.getByRole("button", { name: "Clean up server workspace" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "cleanup_run_workspace"))
+    .toMatchObject({ runId: "run-kinase-001" });
+  await expect(run.getByTestId("run-cleaned")).toHaveText("workspace cleaned");
+  await expect(run.getByRole("button", { name: "Clean up server workspace" })).toHaveCount(0);
+});
+
 test("method-search Run reviews the frozen contract before start and exposes controls", async ({ page }) => {
   await enterApp(page, "/?mockMethodSearch=1");
   await page.getByRole("button", { name: "Toggle panel" }).click();

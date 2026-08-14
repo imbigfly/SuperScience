@@ -3711,6 +3711,12 @@ pub(crate) struct RunRecord {
     #[serde(default)]
     pub(crate) progress_json: String,
     pub(crate) env_snapshot_json: String,
+    #[serde(default)]
+    pub(crate) harvested_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) cleaned_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) cleanup_error: Option<String>,
 }
 
 #[derive(Deserialize, Clone, PartialEq)]
@@ -3734,6 +3740,12 @@ pub(crate) struct RunSummary {
     #[serde(default)]
     pub(crate) progress_json: String,
     #[serde(default)]
+    pub(crate) harvested_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) cleaned_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) cleanup_error: Option<String>,
+    #[serde(default)]
     pub(crate) output_fingerprint: String,
 }
 
@@ -3755,6 +3767,9 @@ impl From<&RunRecord> for RunSummary {
             last_polled_at: run.last_polled_at,
             last_poll_error: run.last_poll_error.clone(),
             progress_json: run.progress_json.clone(),
+            harvested_at: run.harvested_at,
+            cleaned_at: run.cleaned_at,
+            cleanup_error: run.cleanup_error.clone(),
             output_fingerprint: String::new(),
         }
     }

@@ -175,7 +175,7 @@ impl Store {
             "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
                     input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
                     stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
-                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at \
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at,cleaned_at,cleanup_error \
              FROM runs WHERE id=?",
         )
         .bind(id)
@@ -239,7 +239,7 @@ impl Store {
             "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
                     input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
                     stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
-                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at \
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at,cleaned_at,cleanup_error \
              FROM runs WHERE project_id=? AND exploration_id IS NULL \
              ORDER BY created_at DESC, id DESC",
         )
@@ -262,7 +262,7 @@ impl Store {
                     run.command,run.script_path,run.input_refs_json,run.output_specs_json,run.created_at,\
                     run.started_at,run.ended_at,run.exit_code,run.stdout_tail,run.stderr_tail,\
                     run.remote_workdir,run.remote_handle_json,run.timeout_secs,run.last_polled_at,\
-                    run.last_poll_error,run.progress_json,run.env_snapshot_json,run.harvested_at FROM runs run \
+                    run.last_poll_error,run.progress_json,run.env_snapshot_json,run.harvested_at,run.cleaned_at,run.cleanup_error FROM runs run \
              WHERE run.project_id=? AND (run.exploration_id=? OR (run.exploration_id IS NULL \
                AND EXISTS(SELECT 1 FROM explorations exploration \
                  JOIN exploration_baseline_entities baseline \
@@ -282,7 +282,7 @@ impl Store {
         let columns = "run.id,run.frame_id,run.context_id,run.title,run.kind,run.status,\
             run.created_at,run.started_at,run.ended_at,run.exit_code,run.remote_workdir,\
             run.timeout_secs,run.last_polled_at,substr(run.last_poll_error,1,2048) AS last_poll_error,\
-            run.progress_json,run.harvested_at,printf('%d:%s:%s|%d:%s:%s',\
+            run.progress_json,run.harvested_at,run.cleaned_at,run.cleanup_error,printf('%d:%s:%s|%d:%s:%s',\
               length(CAST(coalesce(run.stdout_tail,'') AS BLOB)),substr(coalesce(run.stdout_tail,''),1,64),\
               substr(coalesce(run.stdout_tail,''),-128),\
               length(CAST(coalesce(run.stderr_tail,'') AS BLOB)),\
@@ -332,7 +332,7 @@ impl Store {
             "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
                     input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
                     stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
-                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at \
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at,cleaned_at,cleanup_error \
              FROM runs WHERE exploration_id=? ORDER BY created_at,id",
         )
         .bind(exploration_id)
@@ -346,7 +346,7 @@ impl Store {
             "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
                     input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
                     stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
-                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at \
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at,cleaned_at,cleanup_error \
              FROM runs WHERE status IN ('submitted','running','cancelling') \
              ORDER BY created_at, id",
         )
@@ -630,6 +630,31 @@ impl Store {
         let updated =
             sqlx::query("UPDATE runs SET harvested_at=? WHERE id=? AND harvested_at IS NULL")
                 .bind(now)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Record that this Run's server-side workspace was deleted. Idempotent;
+    /// clears any earlier cleanup error.
+    pub async fn mark_run_cleaned(&self, id: &str) -> Result<bool> {
+        let now = chrono::Utc::now().timestamp();
+        let updated = sqlx::query(
+            "UPDATE runs SET cleaned_at=?, cleanup_error=NULL WHERE id=? AND cleaned_at IS NULL",
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Surface a failed workspace cleanup so the user can retry.
+    pub async fn record_run_cleanup_error(&self, id: &str, error: &str) -> Result<bool> {
+        let updated =
+            sqlx::query("UPDATE runs SET cleanup_error=? WHERE id=? AND cleaned_at IS NULL")
+                .bind(error)
                 .bind(id)
                 .execute(&self.pool)
                 .await?;
