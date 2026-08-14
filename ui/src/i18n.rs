@@ -290,7 +290,8 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "composer.queue_button") => Some("Queue…"),
         (Locale::En, "composer.cut_in_now") => Some("Cut in (this turn)"),
         (Locale::En, "composer.interrupt_replace") => Some("Interrupt & replace"),
-        (Locale::En, "queue.cut_in") => Some("Cut in"),
+        (Locale::En, "queue.cut_in") => Some("Guide now"),
+        (Locale::En, "queue.edit") => Some("Edit"),
         (Locale::En, "queue.move_up") => Some("Move up"),
         (Locale::En, "queue.move_down") => Some("Move down"),
         (Locale::En, "composer.send_options") => Some("Message options"),
@@ -2458,7 +2459,8 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "composer.queue_button") => Some("排队…"),
         (Locale::Zh, "composer.cut_in_now") => Some("插队(本回合)"),
         (Locale::Zh, "composer.interrupt_replace") => Some("中断并替换"),
-        (Locale::Zh, "queue.cut_in") => Some("插队"),
+        (Locale::Zh, "queue.cut_in") => Some("立刻引导"),
+        (Locale::Zh, "queue.edit") => Some("编辑"),
         (Locale::Zh, "queue.move_up") => Some("上移"),
         (Locale::Zh, "queue.move_down") => Some("下移"),
         (Locale::Zh, "composer.send_options") => Some("消息选项"),
@@ -4849,6 +4851,22 @@ mod api_error_hint_tests {
         let out = localize_backend(Locale::Zh, msg);
         assert!(out.starts_with(msg), "raw error must stay visible");
         assert!(out.contains(&t(Locale::Zh, "err.hint.balance")));
+    }
+}
+
+#[cfg(test)]
+mod queue_label_tests {
+    use super::*;
+
+    #[test]
+    fn queued_bubble_actions_use_guide_and_edit() {
+        assert_eq!(t(Locale::Zh, "queue.cut_in"), "立刻引导");
+        assert_eq!(t(Locale::En, "queue.cut_in"), "Guide now");
+        assert_eq!(t(Locale::Zh, "queue.edit"), "编辑");
+        assert_eq!(t(Locale::En, "queue.edit"), "Edit");
+        // Sent-message rewind keeps its own label.
+        assert_eq!(t(Locale::Zh, "msg.edit"), "回溯");
+        assert_eq!(t(Locale::En, "msg.edit"), "Rewind");
     }
 }
 

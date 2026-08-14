@@ -9787,6 +9787,32 @@ test("queued follow-ups can be reordered up and down (#433)", async ({ page }) =
   )).toEqual(["move_up", "move_down"]);
 });
 
+test("editing a queued follow-up restores it to the composer", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await page.goto("/");
+  await page.locator(".proj-card-main").first().click();
+  await expect(newSessionButton(page)).toBeVisible();
+
+  await composer(page).fill("alpha");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+
+  await composer(page).fill("what is QC?");
+  await page.getByRole("button", { name: "Queue…" }).click();
+  const queued = page.locator(".msg.user.queued", { hasText: "what is QC?" });
+  await expect(queued).toBeVisible({ timeout: 500 });
+  await expect(queued.getByRole("button", { name: "Guide now" })).toBeVisible();
+
+  await queued.getByRole("button", { name: "Edit" }).click();
+  await expect(queued).toHaveCount(0);
+  await expect(composer(page)).toHaveValue("what is QC?");
+  await expect.poll(async () => page.evaluate(() =>
+    ((window as any).__sendInvokeLog ?? [])
+      .filter((c: any) => c.cmd === "queued_turn_action")
+      .map((c: any) => c.args?.action),
+  )).toEqual(["cancel"]);
+});
+
 test("project removal offers a files-preserving action in the in-app dialog (#96)", async ({ page }) => {
   // Native window.confirm() is a no-op in this webview (wry's WKUIDelegate has
   // no JS confirm panel), so the ✕ silently did nothing. Deletion now goes

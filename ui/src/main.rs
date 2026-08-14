@@ -3236,8 +3236,9 @@ fn App() -> impl IntoView {
             dismiss_follow_up_questions(follow_up_questions, follow_up_generation, id);
         }
         // Queue (#433): a plain send into a busy session parks behind the
-        // running turn — editable/cancellable until the driver runs it — instead
-        // of a dialog. Cut-in / interrupt-replace are explicit dropdown choices.
+        // running turn — cancellable / restorable to the composer until the
+        // driver runs it — instead of a dialog. Cut-in / interrupt-replace are
+        // explicit dropdown choices.
         if queued && action == ComposerSendAction::Normal {
             let Some(session) = active.clone() else {
                 return;
@@ -3873,29 +3874,31 @@ fn App() -> impl IntoView {
         if sid.is_empty() {
             return;
         }
+        let restore = matches!(op, QueueOp::Edit(_));
         let (id, action, message): (u64, &'static str, Option<String>) = match op {
-            QueueOp::Cancel(id) => {
+            QueueOp::Cancel(id) | QueueOp::Edit(id) => {
+                let mut draft = String::new();
                 route_items(active_session, items, transcripts, &sid, |rows| {
+                    if restore {
+                        if let Some(ChatItem::QueuedUser { text, .. }) = rows.iter().find(
+                            |it| matches!(it, ChatItem::QueuedUser { id: qid, .. } if *qid == id),
+                        ) {
+                            draft = composer_text_from_user_message(text);
+                        }
+                    }
                     rows.retain(
                         |it| !matches!(it, ChatItem::QueuedUser { id: qid, .. } if *qid == id),
                     );
                 });
+                if restore {
+                    input.set(draft);
+                    focus_composer();
+                }
                 (id, "cancel", None)
             }
             // The bubble stays; it promotes to a User row when the running turn
             // folds it in and emits the matching User event.
             QueueOp::CutIn(id) => (id, "cutin", None),
-            QueueOp::Save(id, text) => {
-                route_items(active_session, items, transcripts, &sid, |rows| {
-                    if let Some(ChatItem::QueuedUser { text: slot, .. }) = rows
-                        .iter_mut()
-                        .find(|it| matches!(it, ChatItem::QueuedUser { id: qid, .. } if *qid == id))
-                    {
-                        *slot = text.clone();
-                    }
-                });
-                (id, "edit", Some(text))
-            }
             // Reorder (#433): swap with the neighbouring queued row locally, then
             // mirror it server-side. Queued rows sit contiguously at the tail, so
             // a neighbour that is not a QueuedUser means we are at an end → no-op.
