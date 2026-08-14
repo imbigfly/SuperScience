@@ -23,6 +23,7 @@ mod app_updates;
 mod approval_commands;
 mod artifact_commands;
 mod browser_bridge;
+mod browser_url_filters;
 mod channels;
 mod codex_import;
 mod connector_commands;
@@ -5497,15 +5498,18 @@ async fn send_message_inner(
         );
         agent.add_tool(Box::new(browser_bridge::BrowserSetupTool::new(
             state.browser_bridge.clone(),
+            state.store.clone(),
         )));
         agent.add_tool(Box::new(browser_bridge::WebScanTool::new(
             state.browser_bridge.clone(),
         )));
         agent.add_tool(Box::new(browser_bridge::WebExecuteJsTool::new(
             state.browser_bridge.clone(),
+            state.store.clone(),
         )));
         agent.add_tool(Box::new(browser_bridge::WebOpenTabTool::new(
             state.browser_bridge.clone(),
+            state.store.clone(),
         )));
         agent.add_tool(Box::new(browser_bridge::WebScreenshotTool::new(
             state.browser_bridge.clone(),
@@ -7969,6 +7973,8 @@ pub fn run() {
             approval_commands::revoke_approval_grant,
             approval_commands::revoke_all_approval_grants,
             approval_commands::set_session_full_permission,
+            browser_url_filters::get_browser_url_filters,
+            browser_url_filters::set_browser_url_filters,
             settings_commands::get_settings,
             settings_commands::set_settings,
             settings_commands::get_storage_usage,

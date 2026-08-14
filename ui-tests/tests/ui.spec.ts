@@ -7950,6 +7950,28 @@ test("settings permissions lists and revokes remembered approvals", async ({ pag
   await expect(page.getByText("No remembered approvals.")).toBeVisible();
 });
 
+test("browser URL filters persist block and prefer hosts", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Browser");
+  await expect(page.getByTestId("browser-url-filters")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+
+  await openSettingsSection(page, "Browser");
+  await page.getByTestId("browser-block-host").fill("hijacked.example");
+  await page.getByTestId("browser-block-reason").fill("domain taken over");
+  await page.getByTestId("browser-block-add").click();
+  await expect(page.getByTestId("browser-block-list")).toContainText("hijacked.example");
+  await expect(page.getByTestId("browser-block-list")).toContainText("domain taken over");
+
+  await page.getByTestId("browser-prefer-host").fill("pubmed.ncbi.nlm.nih.gov");
+  await page.getByTestId("browser-prefer-add").click();
+  await expect(page.getByTestId("browser-prefer-list")).toContainText("pubmed.ncbi.nlm.nih.gov");
+
+  await page.getByTestId("browser-block-remove").click();
+  await expect(page.getByTestId("browser-block-list")).toContainText("No blocked hosts.");
+});
+
 test("chat stays pinned to the bottom while streaming a long reply (#61)", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("SCROLLTEST");

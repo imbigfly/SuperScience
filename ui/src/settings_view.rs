@@ -891,6 +891,45 @@ pub(super) fn SettingsView(
     let global_memory_edit_id = create_rw_signal(None::<String>);
     let global_memory_editor = create_rw_signal(String::new());
     let global_memory_busy = create_rw_signal(false);
+    let browser_filters = create_rw_signal(BrowserUrlFilters::default());
+    let browser_filters_msg = create_rw_signal(None::<(bool, String)>);
+    let browser_filters_busy = create_rw_signal(false);
+    let browser_block_host = create_rw_signal(String::new());
+    let browser_block_reason = create_rw_signal(String::new());
+    let browser_prefer_host = create_rw_signal(String::new());
+    let browser_prefer_reason = create_rw_signal(String::new());
+    create_effect(move |_| {
+        if show_settings.get() && settings_section.get() == "browser" {
+            spawn_local(async move {
+                if let Ok(value) =
+                    invoke_checked("get_browser_url_filters", JsValue::UNDEFINED).await
+                {
+                    if let Ok(filters) = serde_wasm_bindgen::from_value::<BrowserUrlFilters>(value) {
+                        browser_filters.set(filters);
+                    }
+                }
+            });
+        }
+    });
+    let save_browser_filters = Callback::new(move |next: BrowserUrlFilters| {
+        browser_filters_busy.set(true);
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "filters": next })).unwrap();
+            match invoke_checked("set_browser_url_filters", arg).await {
+                Ok(value) => {
+                    if let Ok(filters) = serde_wasm_bindgen::from_value::<BrowserUrlFilters>(value) {
+                        browser_filters.set(filters);
+                        browser_filters_msg.set(Some((
+                            true,
+                            t(locale.get_untracked(), "browser.filters.saved").into(),
+                        )));
+                    }
+                }
+                Err(err) => browser_filters_msg.set(Some((false, js_error_text(err)))),
+            }
+            browser_filters_busy.set(false);
+        });
+    });
     create_effect(move |_| {
         if settings_section.get() != "memory" {
             memory_project_menu_open.set(false);
@@ -1282,6 +1321,10 @@ pub(super) fn SettingsView(
                     <button class:active=move || settings_section.get()=="plugins"
                         on:click=move |_| go_settings_section.call("plugins".into())>
                         {move || t(locale.get(), "settings.nav.plugins")}</button>
+                    <button class:active=move || settings_section.get()=="browser"
+                        data-testid="settings-nav-browser"
+                        on:click=move |_| go_settings_section.call("browser".into())>
+                        {move || t(locale.get(), "settings.nav.browser")}</button>
                     <button class:active=move || settings_section.get()=="connections"
                         on:click=move |_| go_settings_section.call("connections".into())>
                         {move || t(locale.get(), "settings.nav.connections")}</button>
@@ -4304,6 +4347,138 @@ pub(super) fn SettingsView(
                                 <p class="skill-filter-empty">{move || t(locale.get(), if plugins_list.get().is_empty() { "plugins.empty" } else { "plugins.no_match" })}</p>
                             })
                         }}
+                    </div>
+                }.into_view())}
+                {move || (settings_section.get() == "browser").then(|| view! {
+                    <div class="settings-pane settings-pane-list browser-filter-pane" data-testid="browser-url-filters">
+                        <p class="settings-note">{move || t(locale.get(), "browser.filters.hint")}</p>
+                        {move || browser_filters_msg.get().map(|(ok, text)| view! {
+                            <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
+                        })}
+                        <div class="cred-group-heading">
+                            <span class="conn-group-label">{move || t(locale.get(), "browser.filters.block")}</span>
+                        </div>
+                        <div class="browser-filter-add">
+                            <input data-testid="browser-block-host"
+                                prop:placeholder=move || t(locale.get(), "browser.filters.host_placeholder")
+                                aria-label=move || t(locale.get(), "browser.filters.host")
+                                prop:value=move || browser_block_host.get()
+                                on:input=move |ev| browser_block_host.set(event_target_value(&ev)) />
+                            <input data-testid="browser-block-reason"
+                                prop:placeholder=move || t(locale.get(), "browser.filters.reason_block_placeholder")
+                                aria-label=move || t(locale.get(), "browser.filters.reason")
+                                prop:value=move || browser_block_reason.get()
+                                on:input=move |ev| browser_block_reason.set(event_target_value(&ev)) />
+                            <button type="button" class="settings-add-btn" data-testid="browser-block-add"
+                                disabled=move || browser_filters_busy.get() || browser_block_host.get().trim().is_empty()
+                                on:click=move |_| {
+                                    let host = browser_block_host.get().trim().to_string();
+                                    if host.is_empty() { return; }
+                                    let reason = browser_block_reason.get().trim().to_string();
+                                    let mut next = browser_filters.get();
+                                    next.block.retain(|rule| !rule.host.eq_ignore_ascii_case(&host));
+                                    next.block.push(BrowserUrlFilterRule { host, reason });
+                                    browser_block_host.set(String::new());
+                                    browser_block_reason.set(String::new());
+                                    save_browser_filters.call(next);
+                                }>{move || t(locale.get(), "browser.filters.add")}</button>
+                        </div>
+                        <div class="settings-list" data-testid="browser-block-list">
+                            <For each=move || browser_filters.get().block
+                                key=|rule| rule.host.clone()
+                                let:rule>
+                                {
+                                    let host = rule.host.clone();
+                                    let reason = rule.reason.clone();
+                                    view! {
+                                        <div class="settings-list-row">
+                                            <div class="settings-list-main">
+                                                <span class="settings-list-title">{host.clone()}</span>
+                                                {(!reason.is_empty()).then(|| view! {
+                                                    <span class="settings-list-sub">{reason.clone()}</span>
+                                                })}
+                                            </div>
+                                            <div class="settings-list-actions">
+                                                <button type="button" class="settings-list-remove"
+                                                    data-testid="browser-block-remove"
+                                                    title=move || t(locale.get(), "browser.filters.remove")
+                                                    aria-label=move || t(locale.get(), "browser.filters.remove")
+                                                    on:click=move |_| {
+                                                        let mut next = browser_filters.get();
+                                                        next.block.retain(|rule| rule.host != host);
+                                                        save_browser_filters.call(next);
+                                                    }>{compose_icon("close")}</button>
+                                            </div>
+                                        </div>
+                                    }
+                                }
+                            </For>
+                            {move || browser_filters.get().block.is_empty().then(|| view! {
+                                <div class="settings-list-empty">{t(locale.get(), "browser.filters.block_empty")}</div>
+                            })}
+                        </div>
+                        <div class="cred-group-heading">
+                            <span class="conn-group-label">{move || t(locale.get(), "browser.filters.prefer")}</span>
+                        </div>
+                        <div class="browser-filter-add">
+                            <input data-testid="browser-prefer-host"
+                                prop:placeholder=move || t(locale.get(), "browser.filters.host_placeholder")
+                                aria-label=move || t(locale.get(), "browser.filters.host")
+                                prop:value=move || browser_prefer_host.get()
+                                on:input=move |ev| browser_prefer_host.set(event_target_value(&ev)) />
+                            <input data-testid="browser-prefer-reason"
+                                prop:placeholder=move || t(locale.get(), "browser.filters.reason_prefer_placeholder")
+                                aria-label=move || t(locale.get(), "browser.filters.reason")
+                                prop:value=move || browser_prefer_reason.get()
+                                on:input=move |ev| browser_prefer_reason.set(event_target_value(&ev)) />
+                            <button type="button" class="settings-add-btn" data-testid="browser-prefer-add"
+                                disabled=move || browser_filters_busy.get() || browser_prefer_host.get().trim().is_empty()
+                                on:click=move |_| {
+                                    let host = browser_prefer_host.get().trim().to_string();
+                                    if host.is_empty() { return; }
+                                    let reason = browser_prefer_reason.get().trim().to_string();
+                                    let mut next = browser_filters.get();
+                                    next.prefer.retain(|rule| !rule.host.eq_ignore_ascii_case(&host));
+                                    next.prefer.push(BrowserUrlFilterRule { host, reason });
+                                    browser_prefer_host.set(String::new());
+                                    browser_prefer_reason.set(String::new());
+                                    save_browser_filters.call(next);
+                                }>{move || t(locale.get(), "browser.filters.add")}</button>
+                        </div>
+                        <div class="settings-list" data-testid="browser-prefer-list">
+                            <For each=move || browser_filters.get().prefer
+                                key=|rule| rule.host.clone()
+                                let:rule>
+                                {
+                                    let host = rule.host.clone();
+                                    let reason = rule.reason.clone();
+                                    view! {
+                                        <div class="settings-list-row">
+                                            <div class="settings-list-main">
+                                                <span class="settings-list-title">{host.clone()}</span>
+                                                {(!reason.is_empty()).then(|| view! {
+                                                    <span class="settings-list-sub">{reason.clone()}</span>
+                                                })}
+                                            </div>
+                                            <div class="settings-list-actions">
+                                                <button type="button" class="settings-list-remove"
+                                                    data-testid="browser-prefer-remove"
+                                                    title=move || t(locale.get(), "browser.filters.remove")
+                                                    aria-label=move || t(locale.get(), "browser.filters.remove")
+                                                    on:click=move |_| {
+                                                        let mut next = browser_filters.get();
+                                                        next.prefer.retain(|rule| rule.host != host);
+                                                        save_browser_filters.call(next);
+                                                    }>{compose_icon("close")}</button>
+                                            </div>
+                                        </div>
+                                    }
+                                }
+                            </For>
+                            {move || browser_filters.get().prefer.is_empty().then(|| view! {
+                                <div class="settings-list-empty">{t(locale.get(), "browser.filters.prefer_empty")}</div>
+                            })}
+                        </div>
                     </div>
                 }.into_view())}
                 {move || (settings_section.get() == "skills").then(|| view! {

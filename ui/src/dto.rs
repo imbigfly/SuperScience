@@ -1592,6 +1592,22 @@ pub(crate) struct Settings {
     pub(crate) notifications_enabled: bool,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct BrowserUrlFilterRule {
+    #[serde(default)]
+    pub(crate) host: String,
+    #[serde(default)]
+    pub(crate) reason: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct BrowserUrlFilters {
+    #[serde(default)]
+    pub(crate) block: Vec<BrowserUrlFilterRule>,
+    #[serde(default)]
+    pub(crate) prefer: Vec<BrowserUrlFilterRule>,
+}
+
 fn default_sync_backend() -> String {
     "relay".into()
 }
