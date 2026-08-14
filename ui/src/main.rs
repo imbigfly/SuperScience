@@ -48,7 +48,7 @@ use i18n::{
 use leptos::{ev, window_event_listener, *};
 use library::{refresh_library, refresh_session_library, HighlightsPane, LibraryScreen};
 use notebook::{collect_notebook_cells, NotebookCache, NotebookView};
-use overlays::{AddHostOverlay, CapabilitiesOverlay, OnboardingOverlay, RuntimeInterpreterOverlay, StoragePrefsOverlay};
+use overlays::{AddHostOverlay, CapabilitiesOverlay, OnboardingOverlay, RunReviewModal, RunReviewOverlay, RuntimeInterpreterOverlay, StoragePrefsOverlay};
 use pet::{PetDesktop, PetOverlay};
 use project_landing::{ProjectLanding, ProjectLandingState};
 use publication::{PublicationEvidenceSource, PublicationWorkspaceModal};
@@ -6774,6 +6774,8 @@ fn App() -> impl IntoView {
     let context_details_modal = create_rw_signal::<Option<(String, ContextModalKind)>>(None);
     let runtime_interpreter_form = create_rw_signal(None::<RuntimeInterpreterForm>);
     let storage_prefs_form = create_rw_signal(None::<StoragePrefsForm>);
+    let run_review_modal = create_rw_signal(None::<String>);
+    provide_context(RunReviewModal(run_review_modal));
     let runtime_environment = create_rw_signal(None::<RuntimeSlot>);
     let runtime_environment_pinned = create_rw_signal(false);
     let runtime_environment_position = create_rw_signal((16, 16));
@@ -7870,6 +7872,11 @@ fn App() -> impl IntoView {
         if ssh_connectivity_modal.get().is_some() && !ssh_connectivity_busy.get() {
             ev.prevent_default();
             ssh_connectivity_modal.set(None);
+            return;
+        }
+        if run_review_modal.get().is_some() {
+            ev.prevent_default();
+            run_review_modal.set(None);
             return;
         }
         if storage_prefs_form.get().is_some() {
@@ -14688,6 +14695,7 @@ fn App() -> impl IntoView {
             runtimes=runtime_infos
         />
         <StoragePrefsOverlay locale=locale form=storage_prefs_form />
+        <RunReviewOverlay locale=locale modal=run_review_modal runs=run_records />
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities
             bootstrap=bootstrap caps=caps busy=busy open_settings_section=open_capability_settings

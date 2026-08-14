@@ -2244,6 +2244,19 @@ pub(crate) fn ContextDetailsOverlay(
                                                                 }
                                                             })}
                                                             {cleanable.then(|| {
+                                                                let review_id = cleanup_id.clone();
+                                                                let tip = t(locale.get(), "run_review.open");
+                                                                let review_modal = use_context::<crate::overlays::RunReviewModal>();
+                                                                review_modal.map(|review_modal| view! {
+                                                                    <button type="button" class="icon-btn run-review-open"
+                                                                        data-testid="run-review-open"
+                                                                        title=tip.clone()
+                                                                        aria-label=tip
+                                                                        on:click=move |_| review_modal.0.set(Some(review_id.clone()))
+                                                                    >{compose_icon("folder")}</button>
+                                                                })
+                                                            })}
+                                                            {cleanable.then(|| {
                                                                 let run_id = cleanup_id.clone();
                                                                 let tip = t(locale.get(), "runs.cleanup");
                                                                 view! {

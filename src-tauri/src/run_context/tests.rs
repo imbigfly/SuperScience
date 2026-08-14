@@ -2805,6 +2805,7 @@ async fn seed_cleanup_run(
     let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
     run.frame_id = Some("f".into());
     run.status = status;
+    run.command = Some("make outputs".into());
     run.output_specs_json = specs_json.into();
     let connection =
         crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context()).unwrap();
@@ -3424,6 +3425,155 @@ async fn transfer_upload_ledgers_its_destination() {
     assert_eq!(entries[0].source, "transfer");
     assert_eq!(entries[0].remote_path, "~/wisp/proj/data/matrix.tsv");
     assert_eq!(entries[0].run_id.as_deref(), Some(response.run_id.as_str()));
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// --- run review: selective download / browse / delete -----------------------
+
+#[tokio::test]
+async fn download_run_files_registers_one_row_per_selection() {
+    let tmp = std::env::temp_dir().join(format!("wisp_review_dl_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_harvest_run(&tmp, "run-sel").await;
+    // Give the seeded run a confirmed handle for terminal_ssh_remote.
+    let table = b"a\tb\n".to_vec();
+    let archive = b"dir-targz".to_vec();
+    let manifest = format!(
+        "__WISP_HARVEST__:file:0:{}:{}:results/out.tsv\n\
+         __WISP_HARVEST__:bundle:1:{}:{}:132481:987654:bundle_1.tar.gz\n\
+         __WISP_HARVEST_DONE__\n",
+        table.len(),
+        sha256_hex_of(&table),
+        archive.len(),
+        sha256_hex_of(&archive),
+    );
+    let runner = HarvestFakeRunner {
+        manifest,
+        files: vec![
+            ("files/results/out.tsv".into(), table.clone()),
+            ("bundles/bundle_1.tar.gz".into(), archive.clone()),
+        ],
+        commands: StdMutex::new(Vec::new()),
+    };
+    let remote = harvest_test_remote("run-sel", &tmp, Vec::new());
+
+    let harvested = harvest_remote::download_run_files(
+        &store,
+        &runner,
+        "test-owner",
+        &remote,
+        &["results/out.tsv".into()],
+        &["read_partitions".into()],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(harvested.len(), 2);
+    let outputs = store.list_run_outputs("run-sel").await.unwrap();
+    assert_eq!(outputs.len(), 2);
+    let mut keys: Vec<_> = outputs
+        .iter()
+        .map(|output| output.logical_output_key.clone())
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            "bundle:read_partitions".to_string(),
+            "path:results/out.tsv".to_string(),
+        ]
+    );
+    // Selection does not mark the run harvested — that stays spec-driven.
+    assert!(store
+        .get_run("run-sel")
+        .await
+        .unwrap()
+        .unwrap()
+        .harvested_at
+        .is_none());
+    // The collect script bundles the directory selection via find.
+    {
+        let commands = runner.commands.lock().unwrap();
+        let collect = commands.iter().find(|c| c.program == "ssh").unwrap();
+        let payload = collect.stdin.as_deref().unwrap();
+        assert!(payload.contains("find read_partitions -type f"));
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn run_review_browse_and_delete_require_a_terminal_ssh_run() {
+    let tmp = std::env::temp_dir().join(format!("wisp_review_guard_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    seed_cleanup_run(
+        &store,
+        "run-open",
+        wisp_store::RunStatus::Running,
+        "[]",
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-done",
+        wisp_store::RunStatus::Succeeded,
+        "[]",
+        false,
+    )
+    .await;
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output(
+            "__WISP_LS__:file:1024::out.tsv\n__WISP_LS__:dir:2048:12:parts\n__WISP_LS_DONE__\n",
+        ),
+        ok_output("__WISP_RM_DONE__\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+
+    let error = manager
+        .list_run_workspace_files(&store, "run-open", "", "", 0, 100)
+        .await
+        .unwrap_err();
+    assert!(error.contains("still running"), "{error}");
+
+    let listing = manager
+        .list_run_workspace_files(&store, "run-done", "", "", 0, 100)
+        .await
+        .unwrap();
+    assert_eq!(listing.entries.len(), 2);
+    assert_eq!(listing.entries[1].kind, "dir");
+
+    // Path traversal is rejected before any command runs.
+    let error = manager
+        .delete_run_files(&store, "run-done", &["../escape".into()])
+        .await
+        .unwrap_err();
+    assert!(error.contains("workdir-relative"), "{error}");
+
+    manager
+        .delete_run_files(&store, "run-done", &["parts".into()])
+        .await
+        .unwrap();
+    {
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 2);
+        let payload = commands[1].stdin.as_deref().unwrap();
+        assert!(payload.contains("rm -rf -- 'parts'"));
+        assert!(payload.contains("cleanup-token"));
+    }
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

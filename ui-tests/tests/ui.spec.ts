@@ -5130,6 +5130,63 @@ test("remote files view lists ledgered files and deletes retracted ones", async 
   await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
 });
 
+test("run review modal browses the workspace and downloads or deletes selections", async ({ page }) => {
+  await enterApp(page);
+  await selectRemoteContext(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "View runs" }).click();
+
+  const runCard = page.locator(".run-card", { hasText: "Kinase screen QC" });
+  await runCard.getByTestId("run-review-open").click();
+  const review = page.getByTestId("run-review-modal");
+  await expect(review).toBeVisible();
+  const rows = review.getByTestId("run-review-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.filter({ hasText: "results" })).toContainText("132481 files");
+
+  // Escape immediately: one press closes only the review modal — the runs
+  // modal underneath stays open.
+  await page.keyboard.press("Escape");
+  await expect(review).toHaveCount(0);
+  await expect(page.locator(".context-details-modal.runs-details")).toBeVisible();
+
+  // Reopen, drill into the directory and back, then download a selection.
+  await runCard.getByTestId("run-review-open").click();
+  await expect(review).toBeVisible();
+  await review.getByRole("button", { name: "results" }).click();
+  await expect(review.getByTestId("run-review-row")).toContainText("summary.tsv");
+  await review.getByRole("button", { name: "Up" }).click();
+  await expect(review.getByTestId("run-review-row")).toHaveCount(2);
+  await rows.filter({ hasText: "qc_table.tsv" }).locator("input[type=checkbox]").check();
+  await rows.filter({ hasText: "132481 files" }).locator("input[type=checkbox]").check();
+  await review.getByRole("button", { name: "Download selected" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "download_run_files")).toMatchObject({
+    runId: "run-kinase-001",
+    files: ["qc_table.tsv"],
+    dirs: ["results"],
+  });
+  await expect(review.getByTestId("run-review-status")).toContainText("downloaded");
+
+  // Delete only the selected directory; the file entry survives.
+  await rows.filter({ hasText: "132481 files" }).locator("input[type=checkbox]").check();
+  await review.getByRole("button", { name: "Delete selected" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "delete_run_files")).toMatchObject({
+    runId: "run-kinase-001",
+    paths: ["results"],
+  });
+  await expect(review.getByTestId("run-review-row")).toHaveCount(1);
+
+  // Whole-workspace cleanup is user-explicit (force) and closes the modal.
+  await review.getByRole("button", { name: "Clean entire workspace" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "cleanup_run_workspace")).toMatchObject({
+    runId: "run-kinase-001",
+    force: true,
+  });
+  await expect(review).toHaveCount(0);
+});
+
 test("dropping a server audits abandoned remote files before removal", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Environments");

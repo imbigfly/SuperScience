@@ -3474,6 +3474,20 @@ pub(crate) struct ExecutionContext {
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct WorkspaceListing {
+    pub(crate) entries: Vec<WorkspaceEntry>,
+    pub(crate) truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct WorkspaceEntry {
+    pub(crate) path: String,
+    pub(crate) kind: String,
+    pub(crate) size_bytes: u64,
+    pub(crate) file_count: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub(crate) struct RemoteFileView {
     pub(crate) id: String,
     pub(crate) remote_path: String,

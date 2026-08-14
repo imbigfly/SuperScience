@@ -5,7 +5,7 @@
 
 use super::{
     checked_output, ssh_script_command, transfer_progress, RemoteRun, RemoteRunHandle,
-    RunCommandRunner,
+    RunCommandRunner, REMOTE_RPC_TIMEOUT,
 };
 use crate::harvest::{HarvestedArtifact, OutputResidency, OutputSpec};
 use sha2::{Digest, Sha256};
@@ -138,6 +138,11 @@ emit_guard() {{
 : > "$list"
 count=0
 total=0
+if [ -d {glob} ]; then
+  find {glob} -type f > "$list"
+  count=$(wc -l < "$list" | tr -d ' ')
+  total=$(while IFS= read -r f; do wc -c < "$f"; done < "$list" | awk '{{s+=$1}} END {{print s+0}}')
+else
 for f in {glob}; do
   [ -f "$f" ] || continue
   count=$((count+1))
@@ -145,6 +150,7 @@ for f in {glob}; do
   total=$((total+size))
   printf '%s\n' "$f" >> "$list"
 done
+fi
 if [ "$count" -gt 0 ]; then
   command -v tar >/dev/null 2>&1 || {{ printf '__WISP_HARVEST_ERROR__:bundle outputs require tar on the server\n'; exit 69; }}
   archive="$harvest/bundles/bundle_{idx}.tar.gz"
@@ -457,7 +463,75 @@ pub(super) async fn harvest_ssh_run(
     if specs.is_empty() {
         return Ok(Vec::new());
     }
-    for (_, spec) in &specs {
+    let harvested =
+        collect_pull_register(store, runner, owner_id, remote, &specs, renew_parent).await?;
+    store
+        .mark_run_harvested(&remote.run_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(harvested)
+}
+
+/// Selective retrieval for the run-review modal: only the user's explicit
+/// selection is transferred and registered — one ArtifactVersion per file,
+/// one archive ArtifactVersion per directory — never the remote inventory.
+pub(super) async fn download_run_files(
+    store: &wisp_store::Store,
+    runner: &dyn RunCommandRunner,
+    owner_id: &str,
+    remote: &RemoteRun,
+    files: &[String],
+    dirs: &[String],
+) -> Result<Vec<HarvestedArtifact>, String> {
+    if files.is_empty() && dirs.is_empty() {
+        return Err("download_run_files requires at least one selected path".into());
+    }
+    let mut specs = Vec::new();
+    for file in files {
+        specs.push((
+            specs.len(),
+            OutputSpec {
+                glob: file.clone(),
+                kind: "file".into(),
+                residency: OutputResidency::Local,
+                logical_key: None,
+                max_file_mb: None,
+                max_total_mb: None,
+                bundle: false,
+            },
+        ));
+    }
+    for dir in dirs {
+        specs.push((
+            specs.len(),
+            OutputSpec {
+                glob: dir.trim_end_matches('/').to_string(),
+                kind: "archive".into(),
+                residency: OutputResidency::Local,
+                logical_key: None,
+                max_file_mb: None,
+                max_total_mb: None,
+                bundle: true,
+            },
+        ));
+    }
+    // Synthetic specs replace the run's declared ones for registration below.
+    let mut selection = remote.clone();
+    selection.output_specs = specs.iter().map(|(_, spec)| spec.clone()).collect();
+    let specs: Vec<(usize, OutputSpec)> =
+        selection.output_specs.iter().cloned().enumerate().collect();
+    collect_pull_register(store, runner, owner_id, &selection, &specs, false).await
+}
+
+async fn collect_pull_register(
+    store: &wisp_store::Store,
+    runner: &dyn RunCommandRunner,
+    owner_id: &str,
+    remote: &RemoteRun,
+    specs: &[(usize, OutputSpec)],
+    renew_parent: bool,
+) -> Result<Vec<HarvestedArtifact>, String> {
+    for (_, spec) in specs {
         validate_remote_glob(&spec.glob)?;
     }
     let frame_id = remote
@@ -496,14 +570,14 @@ pub(super) async fn harvest_ssh_run(
                         token,
                         &remote.run_id,
                         &prefs.remote_data_root,
-                        &specs,
+                        specs,
                     ),
                 )?,
                 COLLECT_TIMEOUT,
             )
             .await,
     )?;
-    let plan = plan_from_manifest(&specs, parse_collect_manifest(&collect.stdout)?)?;
+    let plan = plan_from_manifest(specs, parse_collect_manifest(&collect.stdout)?)?;
 
     let landing = landing_dir(harvest_root, &prefs.local_results_dir, &remote.run_id);
     if plan.download_files > 0 {
@@ -589,10 +663,6 @@ pub(super) async fn harvest_ssh_run(
         };
         harvested.push(artifact);
     }
-    store
-        .mark_run_harvested(&remote.run_id)
-        .await
-        .map_err(|e| e.to_string())?;
     Ok(harvested)
 }
 
@@ -824,6 +894,263 @@ async fn pull_and_verify(
     Ok(())
 }
 
+/// Cap on rows a single workspace listing returns; deeper pages come via
+/// offset. Keeps Trinity-scale directories from flooding the UI.
+pub(crate) const WORKSPACE_LIST_CAP: usize = 500;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct WorkspaceListing {
+    pub entries: Vec<WorkspaceEntry>,
+    /// More rows exist past `offset + entries.len()`.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct WorkspaceEntry {
+    /// Workdir-relative path.
+    pub path: String,
+    pub kind: String,
+    pub size_bytes: u64,
+    /// Files inside a directory entry.
+    pub file_count: Option<u64>,
+}
+
+pub(crate) fn validate_workspace_subpath(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    if value.len() > 512 {
+        return Err("workspace path is too long".into());
+    }
+    if value.starts_with('/') || value.split('/').any(|part| part.is_empty() || part == "..") {
+        return Err(format!("workspace path must be workdir-relative: {value}"));
+    }
+    if let Some(bad) = value
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || "._-/".contains(*c)))
+    {
+        return Err(format!(
+            "workspace path contains an unsupported character '{bad}': {value}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_name_filter(value: &str) -> Result<(), String> {
+    if value.len() > 64 {
+        return Err("name filter is too long".into());
+    }
+    if let Some(bad) = value
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || "._- ".contains(*c)))
+    {
+        return Err(format!(
+            "name filter contains an unsupported character '{bad}'"
+        ));
+    }
+    Ok(())
+}
+
+/// One directory level of the run workspace, filtered and paged on the server
+/// so massive output trees never reach SQLite or the UI. The result is
+/// ephemeral: nothing about the listing is ever persisted.
+fn list_payload(
+    workdir: &str,
+    token: &str,
+    subpath: &str,
+    name_filter: &str,
+    offset: usize,
+    limit: usize,
+) -> String {
+    let base = if subpath.is_empty() {
+        "\"$workdir/inputs\"".to_string()
+    } else {
+        format!("\"$workdir/inputs\"/'{subpath}'")
+    };
+    let filter = if name_filter.is_empty() {
+        "cat".to_string()
+    } else {
+        format!("{{ grep -i -F -- '{name_filter}' || true; }}")
+    };
+    let start = offset + 1;
+    // One extra row signals truncation.
+    let end = offset + limit + 1;
+    format!(
+        r#"set -eu
+workdir="$HOME/{workdir}"
+[ -f "$workdir/token" ] && [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'wisp token mismatch' >&2; exit 73; }}
+base={base}
+if [ ! -d "$base" ]; then
+  printf '__WISP_LS_DONE__\n'
+  exit 0
+fi
+cd "$base"
+ls -1A | {filter} | sed -n '{start},{end}p' | while IFS= read -r name; do
+  if [ -f "$name" ]; then
+    size=$(wc -c < "$name")
+    printf '__WISP_LS__:file:%s::%s\n' "$size" "$name"
+  elif [ -d "$name" ]; then
+    count=$(find "$name" -type f | wc -l | tr -d ' ')
+    kb=$(du -sk "$name" | awk '{{print $1}}')
+    printf '__WISP_LS__:dir:%s:%s:%s\n' "$((kb * 1024))" "$count" "$name"
+  fi
+done
+printf '__WISP_LS_DONE__\n'
+"#
+    )
+}
+
+fn parse_workspace_listing(
+    stdout: &str,
+    subpath: &str,
+    limit: usize,
+) -> Result<WorkspaceListing, String> {
+    if !stdout.lines().any(|line| line == "__WISP_LS_DONE__") {
+        return Err("workspace listing did not complete".into());
+    }
+    let mut entries = Vec::new();
+    for line in stdout.lines() {
+        let Some(rest) = line.strip_prefix("__WISP_LS__:") else {
+            continue;
+        };
+        let mut fields = rest.splitn(4, ':');
+        let kind = fields.next().unwrap_or_default().to_string();
+        let size_bytes: u64 = parse_field(fields.next(), "size")?;
+        let file_count = fields
+            .next()
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| "workspace listing count is invalid".to_string())
+            })
+            .transpose()?;
+        let name = fields
+            .next()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "workspace listing name is missing".to_string())?;
+        if !matches!(kind.as_str(), "file" | "dir") {
+            return Err(format!("workspace listing has unknown kind: {kind}"));
+        }
+        let path = if subpath.is_empty() {
+            name.to_string()
+        } else {
+            format!("{subpath}/{name}")
+        };
+        entries.push(WorkspaceEntry {
+            path,
+            kind,
+            size_bytes,
+            file_count,
+        });
+        if entries.len() > limit + 1 {
+            return Err("workspace listing exceeded its row cap".into());
+        }
+    }
+    let truncated = entries.len() > limit;
+    entries.truncate(limit);
+    Ok(WorkspaceListing { entries, truncated })
+}
+
+pub(super) async fn list_run_workspace_files(
+    runner: &dyn RunCommandRunner,
+    remote: &RemoteRun,
+    subpath: &str,
+    name_filter: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<WorkspaceListing, String> {
+    validate_workspace_subpath(subpath)?;
+    validate_name_filter(name_filter)?;
+    let limit = limit.clamp(1, WORKSPACE_LIST_CAP);
+    let RemoteRunHandle::SshDirect {
+        connection,
+        workdir,
+        token,
+        ..
+    } = &remote.handle
+    else {
+        return Err("workspace listing requires an SSH-direct Run".into());
+    };
+    let output = checked_output(
+        "list run workspace",
+        runner
+            .run(
+                ssh_script_command(
+                    connection,
+                    "list run workspace",
+                    list_payload(workdir, token, subpath, name_filter, offset, limit),
+                )?,
+                REMOTE_RPC_TIMEOUT,
+            )
+            .await,
+    )?;
+    parse_workspace_listing(&output.stdout, subpath, limit)
+}
+
+fn delete_payload(workdir: &str, token: &str, paths: &[String]) -> String {
+    let mut script = format!(
+        r#"set -eu
+workdir="$HOME/{workdir}"
+[ -f "$workdir/token" ] && [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'wisp token mismatch' >&2; exit 73; }}
+cd "$workdir/inputs"
+"#
+    );
+    for path in paths {
+        script.push_str(&format!("rm -rf -- '{path}'\n"));
+    }
+    script.push_str("printf '__WISP_RM_DONE__\\n'\n");
+    script
+}
+
+/// Delete selected files/directories inside the run workspace. Whole-workspace
+/// deletion goes through `cleanup_run_workspace` instead.
+pub(super) async fn delete_run_files(
+    runner: &dyn RunCommandRunner,
+    remote: &RemoteRun,
+    paths: &[String],
+) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("delete_run_files requires at least one selected path".into());
+    }
+    for path in paths {
+        validate_workspace_subpath(path)?;
+        if path.is_empty() {
+            return Err("delete_run_files cannot delete the workspace root".into());
+        }
+    }
+    let RemoteRunHandle::SshDirect {
+        connection,
+        workdir,
+        token,
+        ..
+    } = &remote.handle
+    else {
+        return Err("workspace deletion requires an SSH-direct Run".into());
+    };
+    let output = checked_output(
+        "delete run workspace files",
+        runner
+            .run(
+                ssh_script_command(
+                    connection,
+                    "delete run workspace files",
+                    delete_payload(workdir, token, paths),
+                )?,
+                cleanup_rpc_timeout(),
+            )
+            .await,
+    )?;
+    if !output.stdout.lines().any(|line| line == "__WISP_RM_DONE__") {
+        return Err("workspace deletion did not confirm".into());
+    }
+    Ok(())
+}
+
+fn cleanup_rpc_timeout() -> Duration {
+    Duration::from_secs(10 * 60)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,6 +1301,73 @@ mod tests {
         .unwrap();
         let error = plan_from_manifest(&[(0, keyed)], entries).unwrap_err();
         assert!(error.contains("more than one file"), "{error}");
+    }
+
+    #[test]
+    fn workspace_paths_and_filters_are_validated() {
+        assert!(validate_workspace_subpath("").is_ok());
+        assert!(validate_workspace_subpath("results/out.tsv").is_ok());
+        for bad in ["/abs", "a//b", "../up", "a/../b", "a b", "a;b", "$HOME"] {
+            assert!(validate_workspace_subpath(bad).is_err(), "{bad}");
+        }
+        assert!(validate_name_filter("out 1.tsv").is_ok());
+        assert!(validate_name_filter("a'b").is_err());
+    }
+
+    #[test]
+    fn list_payload_filters_and_pages_on_the_server() {
+        let payload = list_payload(".wisp-science/runs/r1", "tok", "results", "tsv", 500, 500);
+        assert!(payload.contains("base=\"$workdir/inputs\"/'results'"));
+        assert!(payload.contains("grep -i -F -- 'tsv'"));
+        assert!(payload.contains("sed -n '501,1001p'"));
+        assert!(payload.contains("find \"$name\" -type f | wc -l"));
+        let root = list_payload(".wisp-science/runs/r1", "tok", "", "", 0, 200);
+        assert!(root.contains("base=\"$workdir/inputs\"\n"));
+        assert!(root.contains("sed -n '1,201p'"));
+    }
+
+    #[test]
+    fn workspace_listing_parses_and_reports_truncation() {
+        let stdout = "__WISP_LS__:file:1024::out.tsv\n\
+                      __WISP_LS__:dir:3221225472:132481:read_partitions\n\
+                      __WISP_LS_DONE__\n";
+        let listing = parse_workspace_listing(stdout, "results", 10).unwrap();
+        assert_eq!(listing.entries.len(), 2);
+        assert!(!listing.truncated);
+        assert_eq!(listing.entries[0].path, "results/out.tsv");
+        assert_eq!(listing.entries[0].kind, "file");
+        assert_eq!(listing.entries[1].path, "results/read_partitions");
+        assert_eq!(listing.entries[1].file_count, Some(132481));
+
+        // One extra row past the limit marks the page truncated and is dropped.
+        let stdout = "__WISP_LS__:file:1::a\n__WISP_LS__:file:2::b\n__WISP_LS_DONE__\n";
+        let listing = parse_workspace_listing(stdout, "", 1).unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        assert!(listing.truncated);
+
+        assert!(parse_workspace_listing("__WISP_LS__:file:1::a\n", "", 10).is_err());
+    }
+
+    #[test]
+    fn delete_payload_removes_only_selected_paths_inside_the_workspace() {
+        let payload = delete_payload(
+            ".wisp-science/runs/r1",
+            "tok",
+            &["read_partitions".into(), "results/tmp.log".into()],
+        );
+        assert!(payload.contains("cd \"$workdir/inputs\""));
+        assert!(payload.contains("rm -rf -- 'read_partitions'"));
+        assert!(payload.contains("rm -rf -- 'results/tmp.log'"));
+        assert!(payload.contains("wisp token mismatch"));
+        assert!(payload.contains("__WISP_RM_DONE__"));
+    }
+
+    #[test]
+    fn bundle_collection_uses_find_for_directory_selections() {
+        let specs = vec![(0, spec("read_partitions", true, OutputResidency::Local))];
+        let payload = collect_payload(".wisp-science/runs/r1", "tok", "r1", "~/w/data", &specs);
+        assert!(payload.contains("if [ -d read_partitions ]; then"));
+        assert!(payload.contains("find read_partitions -type f > \"$list\""));
     }
 
     #[test]

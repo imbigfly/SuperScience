@@ -348,6 +348,104 @@ pub(super) async fn harvest_run(
         .ok_or_else(|| "Run disappeared after harvest".to_string())
 }
 
+async fn scoped_run(
+    state: &State<'_, AppState>,
+    window: &tauri::WebviewWindow,
+    run_id: &str,
+) -> Result<(), String> {
+    let (ap, scope) =
+        exploration_commands::working_project_for_active_frame(state, window.label()).await?;
+    let run = state
+        .store
+        .get_run(run_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Run not found".to_string())?;
+    if run.project_id != ap.id {
+        return Err("Run does not belong to the active project".into());
+    }
+    if state
+        .store
+        .run_state_scope(run_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        != Some(&scope)
+    {
+        return Err("Run is not visible in the active state scope".into());
+    }
+    Ok(())
+}
+
+/// One page of one directory level of a finished Run's server workspace.
+/// Ephemeral browse data for the run-review modal; never persisted.
+#[tauri::command]
+pub(super) async fn list_run_workspace_files(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+    path: Option<String>,
+    name_filter: Option<String>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<crate::run_context::WorkspaceListing, String> {
+    scoped_run(&state, &window, &run_id).await?;
+    state
+        .run_manager
+        .list_run_workspace_files(
+            &state.store,
+            &run_id,
+            path.as_deref().unwrap_or_default(),
+            name_filter.as_deref().unwrap_or_default(),
+            offset.unwrap_or(0),
+            limit.unwrap_or(200),
+        )
+        .await
+}
+
+/// Download the user's selection from a finished Run's workspace and register
+/// it as project artifacts (directories arrive as one archive each).
+#[tauri::command]
+pub(super) async fn download_run_files(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+    files: Option<Vec<String>>,
+    dirs: Option<Vec<String>>,
+) -> Result<Vec<crate::harvest::HarvestedArtifact>, String> {
+    scoped_run(&state, &window, &run_id).await?;
+    let (ap, _) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    state
+        .run_manager
+        .download_run_files(
+            &state.store,
+            &run_id,
+            &files.unwrap_or_default(),
+            &dirs.unwrap_or_default(),
+        )
+        .await
+}
+
+/// Delete the user's selection inside a finished Run's workspace.
+#[tauri::command]
+pub(super) async fn delete_run_files(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    scoped_run(&state, &window, &run_id).await?;
+    let (ap, _) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    state
+        .run_manager
+        .delete_run_files(&state.store, &run_id, &paths)
+        .await
+}
+
 /// Ledgered files this project placed on one SSH server, with liveness state.
 #[tauri::command]
 pub(super) async fn list_remote_files(

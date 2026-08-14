@@ -1,5 +1,6 @@
 use crate::app_support::{
-    compose_icon, js_error_text, refresh_execution_contexts, refresh_runtimes, show_toast,
+    compose_icon, js_error_text, refresh_execution_contexts, refresh_runs, refresh_runtimes,
+    show_toast,
 };
 use crate::bindings::{invoke_checked, open_external_url};
 use crate::dto::*;
@@ -338,6 +339,319 @@ pub(super) fn RuntimeInterpreterOverlay(
                     </div>
                 </div>
             })
+    }
+}
+
+/// Root-owned open state (run id) for the run-review modal, shared through
+/// the Leptos context so run cards anywhere can open it.
+#[derive(Clone, Copy)]
+pub(crate) struct RunReviewModal(pub(crate) RwSignal<Option<String>>);
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Review a finished Run's server workspace: browse one directory level at a
+/// time (server-side filter + paging, nothing persisted), download only the
+/// explicit selection, delete the selection, or clean the whole workspace.
+#[component]
+pub(super) fn RunReviewOverlay(
+    locale: RwSignal<Locale>,
+    modal: RwSignal<Option<String>>,
+    runs: RwSignal<Vec<RunSummary>>,
+) -> impl IntoView {
+    let path = create_rw_signal(String::new());
+    let filter = create_rw_signal(String::new());
+    let entries = create_rw_signal(Vec::<WorkspaceEntry>::new());
+    let truncated = create_rw_signal(false);
+    // Selected paths → kind ("file" | "dir").
+    let selection = create_rw_signal(std::collections::HashMap::<String, String>::new());
+    let busy = create_rw_signal(false);
+    let error = create_rw_signal(None::<String>);
+    let status = create_rw_signal(None::<String>);
+
+    let fetch = move |append: bool| {
+        let Some(run_id) = modal.get_untracked() else {
+            return;
+        };
+        busy.set(true);
+        error.set(None);
+        let offset = if append {
+            entries.with_untracked(|entries| entries.len())
+        } else {
+            0
+        };
+        let args = to_value(&serde_json::json!({
+            "runId": run_id,
+            "path": path.get_untracked(),
+            "nameFilter": filter.get_untracked().trim(),
+            "offset": offset,
+            "limit": 200,
+        }))
+        .unwrap();
+        spawn_local(async move {
+            match invoke_checked("list_run_workspace_files", args).await {
+                Ok(value) => {
+                    if let Ok(listing) = serde_wasm_bindgen::from_value::<WorkspaceListing>(value) {
+                        if append {
+                            entries.update(|current| current.extend(listing.entries));
+                        } else {
+                            entries.set(listing.entries);
+                        }
+                        truncated.set(listing.truncated);
+                    }
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+            busy.set(false);
+        });
+    };
+
+    // Fresh state and first page whenever the modal opens on a run.
+    create_effect(move |previous: Option<Option<String>>| {
+        let current = modal.get();
+        if current.is_some() && previous.flatten() != current {
+            path.set(String::new());
+            filter.set(String::new());
+            selection.set(Default::default());
+            status.set(None);
+            fetch(false);
+        }
+        current
+    });
+
+    let close = move || {
+        modal.set(None);
+        entries.set(Vec::new());
+        selection.set(Default::default());
+    };
+
+    let download = move |_| {
+        let Some(run_id) = modal.get_untracked() else {
+            return;
+        };
+        let selected = selection.get_untracked();
+        if selected.is_empty() {
+            return;
+        }
+        let files: Vec<String> = selected
+            .iter()
+            .filter(|(_, kind)| kind.as_str() == "file")
+            .map(|(path, _)| path.clone())
+            .collect();
+        let dirs: Vec<String> = selected
+            .iter()
+            .filter(|(_, kind)| kind.as_str() == "dir")
+            .map(|(path, _)| path.clone())
+            .collect();
+        busy.set(true);
+        error.set(None);
+        let args = to_value(&serde_json::json!({
+            "runId": run_id,
+            "files": files,
+            "dirs": dirs,
+        }))
+        .unwrap();
+        spawn_local(async move {
+            match invoke_checked("download_run_files", args).await {
+                Ok(_) => {
+                    selection.set(Default::default());
+                    status.set(Some(t(locale.get_untracked(), "run_review.downloaded")));
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+            busy.set(false);
+        });
+    };
+
+    let delete = move |_| {
+        let Some(run_id) = modal.get_untracked() else {
+            return;
+        };
+        let selected: Vec<String> = selection.get_untracked().keys().cloned().collect();
+        if selected.is_empty() {
+            return;
+        }
+        busy.set(true);
+        error.set(None);
+        let args = to_value(&serde_json::json!({ "runId": run_id, "paths": selected })).unwrap();
+        spawn_local(async move {
+            match invoke_checked("delete_run_files", args).await {
+                Ok(_) => {
+                    selection.set(Default::default());
+                    status.set(Some(t(locale.get_untracked(), "run_review.deleted")));
+                    fetch(false);
+                }
+                Err(value) => {
+                    error.set(Some(localize_backend(
+                        locale.get_untracked(),
+                        &js_error_text(value),
+                    )));
+                    busy.set(false);
+                }
+            }
+        });
+    };
+
+    let cleanup_all = move |_| {
+        let Some(run_id) = modal.get_untracked() else {
+            return;
+        };
+        busy.set(true);
+        error.set(None);
+        // User-explicit whole-workspace cleanup accepts unretrieved data loss.
+        let args = to_value(&serde_json::json!({ "runId": run_id, "force": true })).unwrap();
+        spawn_local(async move {
+            match invoke_checked("cleanup_run_workspace", args).await {
+                Ok(_) => {
+                    show_toast(&t(locale.get_untracked(), "runs.cleanup_done"));
+                    refresh_runs(runs, locale);
+                    modal.set(None);
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+            busy.set(false);
+        });
+    };
+
+    move || {
+        modal.get().map(|run_id| {
+            view! {
+                <div class="overlay">
+                    <div class="modal runs-details run-review-modal" data-testid="run-review-modal">
+                        <div class="ps-head">
+                            <div class="context-modal-title">
+                                <h2>{move || t(locale.get(), "run_review.title")}</h2>
+                                <code>{run_id.clone()}</code>
+                            </div>
+                            <button type="button" class="ps-close"
+                                title=move || t(locale.get(), "settings.cancel")
+                                on:click=move |_| close()>{compose_icon("close")}</button>
+                        </div>
+                        <p class="runtime-config-hint">{move || t(locale.get(), "run_review.hint")}</p>
+                        <div class="run-review-toolbar">
+                            {move || {
+                                let current = path.get();
+                                (!current.is_empty()).then(|| view! {
+                                    <button type="button" class="run-review-up"
+                                        disabled=move || busy.get()
+                                        on:click=move |_| {
+                                            path.update(|value| {
+                                                *value = value.rsplit_once('/')
+                                                    .map(|(parent, _)| parent.to_string())
+                                                    .unwrap_or_default();
+                                            });
+                                            fetch(false);
+                                        }>{move || t(locale.get(), "run_review.up")}</button>
+                                })
+                            }}
+                            <code class="run-review-path">{move || {
+                                let current = path.get();
+                                if current.is_empty() { "/".to_string() } else { format!("/{current}") }
+                            }}</code>
+                            <input type="search" class="run-review-filter" autocomplete="off"
+                                aria-label=move || t(locale.get(), "run_review.filter")
+                                placeholder=move || t(locale.get(), "run_review.filter")
+                                prop:value=move || filter.get()
+                                on:input=move |event| {
+                                    filter.set(event_target_value(&event));
+                                    fetch(false);
+                                } />
+                        </div>
+                        {move || error.get().map(|message| view! {
+                            <div class="settings-status fail">{message}</div>
+                        })}
+                        {move || status.get().map(|message| view! {
+                            <div class="settings-status ok" data-testid="run-review-status">{message}</div>
+                        })}
+                        <div class="run-review-list">
+                            {move || {
+                                let rows = entries.get();
+                                if rows.is_empty() {
+                                    view! { <div class="control-empty">{move || t(locale.get(), "run_review.empty")}</div> }.into_view()
+                                } else {
+                                    rows.into_iter().map(|entry| {
+                                        let is_dir = entry.kind == "dir";
+                                        let toggle_path = entry.path.clone();
+                                        let toggle_kind = entry.kind.clone();
+                                        let enter_path = entry.path.clone();
+                                        let checked_path = entry.path.clone();
+                                        let name = entry.path.rsplit('/').next().unwrap_or(&entry.path).to_string();
+                                        let meta = if is_dir {
+                                            format!(
+                                                "{} · {} files",
+                                                format_bytes(entry.size_bytes),
+                                                entry.file_count.unwrap_or(0)
+                                            )
+                                        } else {
+                                            format_bytes(entry.size_bytes)
+                                        };
+                                        view! {
+                                            <div class="run-review-row" data-testid="run-review-row">
+                                                <label class="run-review-select">
+                                                    <input type="checkbox"
+                                                        prop:checked=move || selection.with(|selected| selected.contains_key(&checked_path))
+                                                        on:change=move |_| selection.update(|selected| {
+                                                            if selected.remove(&toggle_path).is_none() {
+                                                                selected.insert(toggle_path.clone(), toggle_kind.clone());
+                                                            }
+                                                        }) />
+                                                </label>
+                                                {if is_dir {
+                                                    view! {
+                                                        <button type="button" class="run-review-name run-review-dir"
+                                                            on:click=move |_| {
+                                                                path.set(enter_path.clone());
+                                                                fetch(false);
+                                                            }>{compose_icon("folder")}<span>{name}</span></button>
+                                                    }.into_view()
+                                                } else {
+                                                    view! { <span class="run-review-name">{name}</span> }.into_view()
+                                                }}
+                                                <span class="run-review-meta">{meta}</span>
+                                            </div>
+                                        }.into_view()
+                                    }).collect_view()
+                                }
+                            }}
+                            {move || truncated.get().then(|| view! {
+                                <button type="button" class="run-review-more" disabled=move || busy.get()
+                                    on:click=move |_| fetch(true)>{move || t(locale.get(), "run_review.more")}</button>
+                            })}
+                        </div>
+                        <p class="runtime-config-hint">{move || t(locale.get(), "run_review.delete_warning")}</p>
+                        <div class="row">
+                            <button type="button" class="run-review-cleanup"
+                                disabled=move || busy.get()
+                                on:click=cleanup_all>{move || t(locale.get(), "run_review.cleanup_all")}</button>
+                            <button type="button" class="run-review-delete"
+                                disabled=move || busy.get() || selection.with(|selected| selected.is_empty())
+                                on:click=delete>{move || t(locale.get(), "run_review.delete_selected")}</button>
+                            <button type="button" class="primary run-review-download"
+                                disabled=move || busy.get() || selection.with(|selected| selected.is_empty())
+                                on:click=download>{move || t(locale.get(), "run_review.download_selected")}</button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })
     }
 }
 

@@ -1186,6 +1186,17 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     },
   ];
   (window as any).__mockRemoteStaging = remoteStagingEntries;
+  const runWorkspaceFiles: Record<string, Record<string, any[]>> = {
+    "run-kinase-001": {
+      "": [
+        { path: "results", kind: "dir", size_bytes: 3221225472, file_count: 132481 },
+        { path: "qc_table.tsv", kind: "file", size_bytes: 2048, file_count: null },
+      ],
+      results: [
+        { path: "results/summary.tsv", kind: "file", size_bytes: 4096, file_count: null },
+      ],
+    },
+  };
   let defaultExecutionContext: string | null = null;
   let runtimeInfos: any[] = [
     {
@@ -3147,6 +3158,33 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
             if (!run) throw new Error("Run not found");
             return run;
+          }
+          case "list_run_workspace_files": {
+            const runId = String(arg("runId") ?? "");
+            const path = String(arg("path") ?? "");
+            const filter = String(arg("nameFilter") ?? "").toLowerCase();
+            const limit = Number(arg("limit") ?? 200);
+            const offset = Number(arg("offset") ?? 0);
+            const levels = runWorkspaceFiles[runId] ?? {};
+            let rows = (levels[path] ?? []).filter((entry: any) =>
+              !filter || entry.path.split("/").pop().toLowerCase().includes(filter)
+            );
+            const page = rows.slice(offset, offset + limit);
+            return { entries: page, truncated: rows.length > offset + limit };
+          }
+          case "download_run_files":
+            return [];
+          case "delete_run_files": {
+            const runId = String(arg("runId") ?? "");
+            const paths = (arg("paths") ?? []) as string[];
+            const levels = runWorkspaceFiles[runId] ?? {};
+            for (const level of Object.keys(levels)) {
+              levels[level] = levels[level].filter(
+                (entry: any) => !paths.some((p) => entry.path === p || entry.path.startsWith(`${p}/`))
+              );
+            }
+            for (const p of paths) delete levels[p];
+            return null;
           }
           case "cleanup_run_workspace": {
             const run = runs.find((item) => item.id === String(arg("runId") ?? ""));

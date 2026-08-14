@@ -17,6 +17,7 @@ pub(crate) mod remote_files;
 mod tools;
 mod transfer;
 
+pub(crate) use harvest_remote::WorkspaceListing;
 #[cfg(all(test, windows))]
 use remote::scp_local_path;
 #[cfg(test)]
@@ -1283,6 +1284,98 @@ impl RunManager {
                 Err(error)
             }
         }
+    }
+
+    async fn terminal_ssh_remote(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+    ) -> Result<RemoteRun, String> {
+        let run = store
+            .get_run(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Run not found: {run_id}"))?;
+        if !run.status.is_terminal() {
+            return Err(format!(
+                "Run is still {}; wait for it to finish first",
+                run.status.as_str()
+            ));
+        }
+        if run.cleaned_at.is_some() {
+            return Err("Run workspace was already cleaned".into());
+        }
+        let remote = remote_run_from_record(store, &run)
+            .await?
+            .ok_or_else(|| "Run has no server workspace".to_string())?;
+        if remote.handle.is_local_detached() {
+            return Err("This Run executed locally; its files are already in the project".into());
+        }
+        Ok(remote)
+    }
+
+    /// One page of one directory level of a finished Run's server workspace.
+    /// Ephemeral data — nothing here is persisted.
+    pub async fn list_run_workspace_files(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+        path: &str,
+        name_filter: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<harvest_remote::WorkspaceListing, String> {
+        let remote = self.terminal_ssh_remote(store, run_id).await?;
+        harvest_remote::list_run_workspace_files(
+            self.runner.as_ref(),
+            &remote,
+            path,
+            name_filter,
+            offset,
+            limit,
+        )
+        .await
+    }
+
+    /// Download the user's explicit selection from a finished Run's workspace
+    /// and register it (files individually, directories as one archive each).
+    pub async fn download_run_files(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+        files: &[String],
+        dirs: &[String],
+    ) -> Result<Vec<crate::harvest::HarvestedArtifact>, String> {
+        for path in files.iter().chain(dirs) {
+            harvest_remote::validate_workspace_subpath(path)?;
+        }
+        let remote = self.terminal_ssh_remote(store, run_id).await?;
+        if remote.frame_id.is_none() {
+            return Err("Run has no source session to register artifacts under".into());
+        }
+        harvest_remote::download_run_files(
+            store,
+            self.runner.as_ref(),
+            &self.owner_id,
+            &remote,
+            files,
+            dirs,
+        )
+        .await
+    }
+
+    /// Delete selected files/directories inside a finished Run's workspace.
+    /// User-explicit by construction (the review modal is the only caller), so
+    /// no harvest guard applies; whole-workspace deletion still goes through
+    /// `cleanup_run_workspace`.
+    pub async fn delete_run_files(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+        paths: &[String],
+    ) -> Result<(), String> {
+        let remote = self.terminal_ssh_remote(store, run_id).await?;
+        harvest_remote::delete_run_files(self.runner.as_ref(), &remote, paths).await
     }
 
     /// Retry output harvest for a succeeded Run whose outputs were never
