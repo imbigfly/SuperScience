@@ -1875,8 +1875,8 @@ test("composer / suggests the built-in /compact command", async ({ page }) => {
   const composerInput = composer(page);
 
   await composerInput.pressSequentially("/comp");
-  // Filtering to one command collapses the menu to its single section.
-  await expect(page.locator(".mention-menu .mention-group-label")).toHaveText(["Commands"]);
+  // The matching command leads under its own section label.
+  await expect(page.locator(".mention-menu .mention-group-label").first()).toHaveText("Commands");
   const commandItem = page.locator(".mention-menu .mention-item").filter({ hasText: "/compact" });
   await expect(commandItem).toContainText("Archive full history");
   await expect(commandItem.locator(".mention-item-icon svg")).toBeVisible();
