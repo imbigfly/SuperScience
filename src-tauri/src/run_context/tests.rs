@@ -3084,3 +3084,346 @@ async fn cleanup_refuses_while_an_external_reference_points_into_the_workdir() {
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+// --- remote staging ledger ---------------------------------------------------
+
+#[tokio::test]
+async fn ssh_input_staging_ledgers_uploaded_files() {
+    let tmp = std::env::temp_dir().join(format!("wisp_staging_ledger_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("input.fasta"), b">seq\nACGT\n").unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    store
+        .set_session_execution_context_enabled("f", "ssh:gpu", true)
+        .await
+        .unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        ok_output(""),
+        Err("temporary SSH disconnect".into()),
+    ]));
+    runner
+        .synthesize_launch_ack
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let manager = RunManager::with_runner(runner.clone());
+
+    let submitted = manager
+        .submit(
+            store.clone(),
+            "p".into(),
+            Some("f".into()),
+            SubmitRunRequest {
+                context_id: "ssh:gpu".into(),
+                command: "wc -l input.fasta".into(),
+                title: None,
+                timeout_secs: Some(60),
+                input_paths: Some(vec!["input.fasta".into()]),
+                output_specs: None,
+            },
+            Some(tmp.clone()),
+        )
+        .await
+        .unwrap();
+    wait_for_terminal(&store, &submitted.run_id).await;
+
+    let entries = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].source, "run_input");
+    assert_eq!(
+        entries[0].run_id.as_deref(),
+        Some(submitted.run_id.as_str())
+    );
+    assert_eq!(
+        entries[0].remote_path,
+        format!(
+            "~/.wisp-science/runs/{}/inputs/input.fasta",
+            submitted.run_id
+        )
+    );
+    assert_eq!(entries[0].size_bytes, Some(10));
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn remote_files_classify_and_remove_only_ledgered_paths() {
+    let tmp = std::env::temp_dir().join(format!("wisp_remote_files_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    let context = harvest_test_context();
+    store.upsert_execution_context(&context).await.unwrap();
+    // Active: staged input of a succeeded-but-not-cleaned run.
+    seed_cleanup_run(
+        &store,
+        "run-live",
+        wisp_store::RunStatus::Succeeded,
+        "[]",
+        true,
+    )
+    .await;
+    let mut active = wisp_store::RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        Some("run-live".into()),
+        "~/.wisp-science/runs/run-live/inputs/input.fasta",
+        "run_input",
+    );
+    active.created_at = 100;
+    store.record_remote_staging(&active).await.unwrap();
+    // Replaced: an older upload to the same path as a newer one.
+    let mut old_upload = wisp_store::RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        None,
+        "~/wisp/proj/data/matrix.tsv",
+        "transfer",
+    );
+    old_upload.created_at = 200;
+    store.record_remote_staging(&old_upload).await.unwrap();
+    let mut new_upload = wisp_store::RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        None,
+        "~/wisp/proj/data/matrix.tsv",
+        "transfer",
+    );
+    new_upload.created_at = 300;
+    store.record_remote_staging(&new_upload).await.unwrap();
+
+    let files = remote_files::list_remote_files(&store, "p", "ssh:gpu")
+        .await
+        .unwrap();
+    let state_of = |id: &str| {
+        files
+            .iter()
+            .find(|file| file.id == id)
+            .map(|file| file.state)
+            .unwrap()
+    };
+    assert_eq!(state_of(&active.id), remote_files::RemoteFileState::Active);
+    assert_eq!(
+        state_of(&old_upload.id),
+        remote_files::RemoteFileState::Replaced
+    );
+    assert_eq!(
+        state_of(&new_upload.id),
+        remote_files::RemoteFileState::Orphan
+    );
+
+    // Active entries require force; unledgered ids are refused outright.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![]));
+    let manager = RunManager::with_runner(runner.clone());
+    let error = remote_files::remove_remote_files(
+        &store,
+        manager.runner_ref(),
+        "p",
+        &context,
+        &[active.id.clone()],
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("still referenced"), "{error}");
+    let error = remote_files::remove_remote_files(
+        &store,
+        manager.runner_ref(),
+        "p",
+        &context,
+        &["not-ledgered".into()],
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("not ledgered"), "{error}");
+    assert!(runner.commands.lock().unwrap().is_empty());
+
+    // Orphan and replaced entries delete; missing remote files still count.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(&format!(
+        "__WISP_RM__:{}\n__WISP_RM__:{}\n",
+        old_upload.id, new_upload.id
+    ))]));
+    let manager = RunManager::with_runner(runner.clone());
+    let removed = remote_files::remove_remote_files(
+        &store,
+        manager.runner_ref(),
+        "p",
+        &context,
+        &[old_upload.id.clone(), new_upload.id.clone()],
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, 2);
+    {
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 1);
+        let payload = commands[0].stdin.as_deref().unwrap();
+        assert_eq!(payload.matches("rm -rf \"$path\"").count(), 2);
+        assert!(payload.contains("'wisp/proj/data/matrix.tsv'"));
+    }
+    let remaining = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, active.id);
+
+    // Force removes the active entry with explicit user confirmation.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(&format!(
+        "__WISP_RM__:{}\n",
+        active.id
+    ))]));
+    let manager = RunManager::with_runner(runner.clone());
+    let removed = remote_files::remove_remote_files(
+        &store,
+        manager.runner_ref(),
+        "p",
+        &context,
+        &[active.id.clone()],
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, 1);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn workspace_cleanup_marks_staged_inputs_removed() {
+    let tmp = std::env::temp_dir().join(format!("wisp_cleanup_ledger_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    seed_cleanup_run(
+        &store,
+        "run-led",
+        wisp_store::RunStatus::Failed,
+        "[]",
+        false,
+    )
+    .await;
+    store
+        .record_remote_staging(&wisp_store::RemoteStagingEntry::new(
+            "p",
+            "ssh:gpu",
+            Some("run-led".into()),
+            "~/.wisp-science/runs/run-led/inputs/input.fasta",
+            "run_input",
+        ))
+        .await
+        .unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(
+        "__WISP_CLEANUP__:done\n",
+    )]));
+    let manager = RunManager::with_runner(runner);
+
+    manager
+        .cleanup_run_workspace(&store, "run-led", false)
+        .await
+        .unwrap();
+
+    assert!(store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap()
+        .is_empty());
+    let all = store
+        .list_remote_staging("p", "ssh:gpu", true)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 1);
+    assert!(all[0].removed_at.is_some());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn transfer_upload_ledgers_its_destination() {
+    let tmp = std::env::temp_dir().join(format!("wisp_transfer_ledger_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    store
+        .set_session_execution_context_enabled("f", "ssh:gpu", true)
+        .await
+        .unwrap();
+    let source = tmp.join("matrix.tsv");
+    std::fs::write(&source, b"a\tb\n").unwrap();
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output(""), // destination pre-check
+        ok_output(""), // scp upload
+    ]));
+    let manager = RunManager::with_runner(runner);
+    let context = store
+        .get_execution_context("ssh:gpu")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let response = manager
+        .submit_local_upload_to_ssh(
+            store.clone(),
+            "p",
+            Some("f"),
+            &source,
+            &context,
+            "~/wisp/proj/data/matrix.tsv",
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap();
+    wait_for_terminal(&store, &response.run_id).await;
+
+    let entries = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].source, "transfer");
+    assert_eq!(entries[0].remote_path, "~/wisp/proj/data/matrix.tsv");
+    assert_eq!(entries[0].run_id.as_deref(), Some(response.run_id.as_str()));
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}

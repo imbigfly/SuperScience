@@ -1046,7 +1046,7 @@ fi
 
 impl RunManager {
     #[allow(clippy::too_many_arguments)]
-    async fn submit_local_upload_to_ssh(
+    pub(super) async fn submit_local_upload_to_ssh(
         &self,
         store: wisp_store::Store,
         project_id: &str,
@@ -1596,6 +1596,23 @@ async fn local_upload_lifecycle(
         .finish_active_run_owned(run_id, owner_id, status, exit_code)
         .await
         .map_err(|error| error.to_string())?;
+    // Ledger every successful upload so retracted/replaced files can be found
+    // and deleted from the server later.
+    if status == wisp_store::RunStatus::Succeeded {
+        if let Ok(Some(run)) = store.get_run(run_id).await {
+            let mut entry = wisp_store::RemoteStagingEntry::new(
+                run.project_id,
+                format!("ssh:{}", destination.alias),
+                Some(run_id.to_string()),
+                destination_path.clone(),
+                "transfer",
+            );
+            entry.size_bytes = i64::try_from(progress.total_bytes).ok();
+            if let Err(error) = store.record_remote_staging(&entry).await {
+                tracing::warn!(run_id, "remote staging ledger write failed: {error}");
+            }
+        }
+    }
     Ok(())
 }
 

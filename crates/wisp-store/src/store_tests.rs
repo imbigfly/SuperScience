@@ -3273,6 +3273,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             RUN_HARVEST_STATE_MIGRATION.to_string(),
             CONTEXT_STORAGE_PREFS_MIGRATION.to_string(),
             RUN_CLEANUP_STATE_MIGRATION.to_string(),
+            REMOTE_STAGING_MIGRATION.to_string(),
         ]
     );
 
@@ -3346,6 +3347,100 @@ async fn context_storage_prefs_validate_and_round_trip() {
             "{field}={value} should be rejected"
         );
     }
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn remote_staging_ledger_round_trips_and_counts_external_references() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_remote_staging_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+
+    let entry = RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        None,
+        "~/wisp/proj/data/input.fasta",
+        "transfer",
+    );
+    store.record_remote_staging(&entry).await.unwrap();
+    let mut bad = entry.clone();
+    bad.id = "bad".into();
+    bad.source = "mystery".into();
+    assert!(store.record_remote_staging(&bad).await.is_err());
+
+    let listed = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        store
+            .mark_remote_staging_removed(&[entry.id.clone()])
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .mark_remote_staging_removed(&[entry.id.clone()])
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .list_remote_staging("p", "ssh:gpu", true)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // External-reference audit counts only head versions on that server.
+    store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: logical_artifact_id("p", "path:big.bam"),
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "big.bam".into(),
+            content_type: "data".into(),
+            storage_path: "ssh://gpu/scratch/proj/artifacts/r1/big.bam".into(),
+            logical_key: Some("path:big.bam".into()),
+            size_bytes: None,
+            checksum: None,
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::External,
+            capture_timing: ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .count_external_references_on_context("p", "ssh://gpu/")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .count_external_references_on_context("p", "ssh://other/")
+            .await
+            .unwrap(),
+        0
+    );
 
     let _ = std::fs::remove_file(&tmp);
 }

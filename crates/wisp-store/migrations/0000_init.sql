@@ -318,6 +318,20 @@ CREATE TABLE IF NOT EXISTS context_storage_prefs (
     PRIMARY KEY (project_id, context_id)
 );
 
+CREATE TABLE IF NOT EXISTS remote_staging (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    context_id  TEXT NOT NULL,
+    run_id      TEXT,
+    remote_path TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    checksum    TEXT,
+    size_bytes  INTEGER,
+    created_at  INTEGER NOT NULL,
+    removed_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_remote_staging_ctx ON remote_staging(context_id, removed_at);
+
 CREATE TABLE IF NOT EXISTS runs (
     id                 TEXT PRIMARY KEY,
     project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

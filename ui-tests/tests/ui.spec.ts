@@ -5099,6 +5099,60 @@ test("finished run offers server workspace cleanup and shows the cleaned state",
   await expect(run.getByRole("button", { name: "Clean up server workspace" })).toHaveCount(0);
 });
 
+test("remote files view lists ledgered files and deletes retracted ones", async ({ page }) => {
+  await enterApp(page);
+  await selectRemoteContext(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "Remote files" }).click();
+
+  const pane = page.getByTestId("remote-files-pane");
+  await expect(pane).toBeVisible();
+  const rows = pane.getByTestId("remote-file-row");
+  await expect(rows).toHaveCount(3);
+  const active = rows.filter({ hasText: "plates.csv" });
+  await expect(active).toContainText("active");
+  // Active entries stay protected — no delete action.
+  await expect(active.getByRole("button", { name: "Delete from server" })).toHaveCount(0);
+
+  const replaced = rows.filter({ hasText: "matrix.tsv" }).filter({ hasText: "replaced" });
+  await replaced.getByRole("button", { name: "Delete from server" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "remove_remote_files")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    ids: ["stage-old-upload"],
+  });
+  await expect(rows).toHaveCount(2);
+
+  // Escape closes only this modal; the Environment rail stays open.
+  await page.keyboard.press("Escape");
+  await expect(pane).toHaveCount(0);
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
+});
+
+test("dropping a server audits abandoned remote files before removal", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Environments");
+
+  const server = page.locator('.environment-settings-row[data-context-id="ssh:gpu-server"]');
+  await server.locator(".settings-list-remove").click();
+  const confirm = page.getByTestId("host-remove-confirm");
+  await expect(confirm).toBeVisible();
+  await expect(confirm.getByTestId("host-disposal-detail"))
+    .toContainText("3 ledgered file(s)");
+  // Cancel keeps the server.
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(server).toBeVisible();
+  expect(await lastInvokeArgs(page, "remove_ssh_host")).toBeNull();
+
+  // Confirming abandons the remote files and removes the host.
+  await server.locator(".settings-list-remove").click();
+  await page.getByTestId("host-remove-confirm")
+    .getByRole("button", { name: "Remove server" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "remove_ssh_host"))
+    .toMatchObject({ alias: "gpu-server" });
+});
+
 test("method-search Run reviews the frozen contract before start and exposes controls", async ({ page }) => {
   await enterApp(page, "/?mockMethodSearch=1");
   await page.getByRole("button", { name: "Toggle panel" }).click();

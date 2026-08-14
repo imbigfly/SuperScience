@@ -3474,6 +3474,25 @@ pub(crate) struct ExecutionContext {
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct RemoteFileView {
+    pub(crate) id: String,
+    pub(crate) remote_path: String,
+    pub(crate) source: String,
+    pub(crate) run_id: Option<String>,
+    pub(crate) run_status: Option<String>,
+    pub(crate) size_bytes: Option<i64>,
+    pub(crate) created_at: i64,
+    pub(crate) state: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct ContextDisposalReport {
+    pub(crate) context_id: String,
+    pub(crate) external_references: i64,
+    pub(crate) staged_files: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub(crate) struct ContextStoragePrefsView {
     pub(crate) context_id: String,
     pub(crate) remote_data_root: String,

@@ -1880,6 +1880,99 @@ pub(crate) enum ContextModalKind {
     Machine,
     Runtimes,
     Runs,
+    RemoteFiles,
+}
+
+/// Files this project ledgered on one server, with delete actions for
+/// retracted/replaced entries. Fetched on open; never persisted client-side.
+#[component]
+fn RemoteFilesPane(context_id: String, locale: RwSignal<Locale>) -> impl IntoView {
+    let files = create_rw_signal(Vec::<RemoteFileView>::new());
+    let error = create_rw_signal(None::<String>);
+    let fetch_context_id = context_id.clone();
+    let fetch = move || {
+        let context_id = fetch_context_id.clone();
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({ "contextId": context_id })).unwrap();
+            match invoke_checked("list_remote_files", args).await {
+                Ok(value) => {
+                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<RemoteFileView>>(value) {
+                        files.set(list);
+                    }
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+        });
+    };
+    fetch.clone()();
+    let section_context_id = context_id.clone();
+    view! {
+        <section class="control-section context-modal-section remote-files-pane"
+            data-context-id=section_context_id data-testid="remote-files-pane">
+            <div class="control-section-head">
+                <span>{t(locale.get(), "contexts.remote_files")}</span>
+                <span class="control-count">{move || files.get().len().to_string()}</span>
+            </div>
+            {move || error.get().map(|message| view! {
+                <div class="context-error">{message}</div>
+            })}
+            {move || {
+                let rows = files.get();
+                if rows.is_empty() {
+                    view! { <div class="control-empty">{t(locale.get(), "remote_files.empty")}</div> }.into_view()
+                } else {
+                    rows.into_iter().map(|file| {
+                        let state_label = t(locale.get(), &format!("remote_files.state_{}", file.state));
+                        let state_class = format!("remote-file-state {}", file.state);
+                        let deletable = file.state != "active";
+                        let delete_context_id = context_id.clone();
+                        let delete_id = file.id.clone();
+                        let refetch = fetch.clone();
+                        view! {
+                            <div class="remote-file-row" data-testid="remote-file-row">
+                                <div class="remote-file-main">
+                                    <code class="remote-file-path">{file.remote_path.clone()}</code>
+                                    <div class="remote-file-meta">
+                                        <span class=state_class>{state_label}</span>
+                                        <span>{file.source.clone()}</span>
+                                        {file.run_status.map(|status| view! { <span>{status}</span> })}
+                                    </div>
+                                </div>
+                                {deletable.then(|| view! {
+                                    <button type="button" class="icon-btn remote-file-delete"
+                                        title=t(locale.get(), "remote_files.delete")
+                                        aria-label=t(locale.get(), "remote_files.delete")
+                                        on:click=move |_| {
+                                            let context_id = delete_context_id.clone();
+                                            let id = delete_id.clone();
+                                            let refetch = refetch.clone();
+                                            spawn_local(async move {
+                                                let args = to_value(&serde_json::json!({
+                                                    "contextId": context_id,
+                                                    "ids": [id],
+                                                }))
+                                                .unwrap();
+                                                match invoke_checked("remove_remote_files", args).await {
+                                                    Ok(_) => show_toast(&t(locale.get_untracked(), "remote_files.deleted")),
+                                                    Err(value) => show_toast(&localize_backend(
+                                                        locale.get_untracked(),
+                                                        &js_error_text(value),
+                                                    )),
+                                                }
+                                                refetch();
+                                            });
+                                        }>{compose_icon("trash")}</button>
+                                })}
+                            </div>
+                        }.into_view()
+                    }).collect_view()
+                }
+            }}
+        </section>
+    }
 }
 
 #[component]
@@ -1942,6 +2035,7 @@ pub(crate) fn ContextDetailsOverlay(
             ContextModalKind::Machine => t(locale.get(), "contexts.machine_info"),
             ContextModalKind::Runtimes => t(locale.get(), "contexts.runtimes"),
             ContextModalKind::Runs => t(locale.get(), "contexts.runs"),
+            ContextModalKind::RemoteFiles => t(locale.get(), "contexts.remote_files"),
         };
         let body_context_id = context.id.clone();
 
@@ -1965,6 +2059,9 @@ pub(crate) fn ContextDetailsOverlay(
                             on:click=move |_| modal.set(None)>{compose_icon("close")}</button>
                     </div>
                     {match kind {
+                        ContextModalKind::RemoteFiles => view! {
+                            <RemoteFilesPane context_id=body_context_id.clone() locale=locale />
+                        }.into_view(),
                         ContextModalKind::Machine => {
                             let status = context.last_probe_status.clone().unwrap_or_else(|| "unknown".into());
                             let status_class = format!("context-status {status}");

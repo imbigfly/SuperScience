@@ -348,6 +348,71 @@ pub(super) async fn harvest_run(
         .ok_or_else(|| "Run disappeared after harvest".to_string())
 }
 
+/// Ledgered files this project placed on one SSH server, with liveness state.
+#[tauri::command]
+pub(super) async fn list_remote_files(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    context_id: String,
+) -> Result<Vec<crate::run_context::remote_files::RemoteFileView>, String> {
+    let (ap, _) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    crate::run_context::remote_files::list_remote_files(&state.store, &ap.id, &context_id).await
+}
+
+/// Delete ledgered files from a server. `force` carries the user's explicit
+/// confirmation for entries a run still references.
+#[tauri::command]
+pub(super) async fn remove_remote_files(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    context_id: String,
+    ids: Vec<String>,
+    force: Option<bool>,
+) -> Result<Vec<crate::run_context::remote_files::RemoteFileView>, String> {
+    let (ap, _) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let context = state
+        .store
+        .get_execution_context(&context_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
+    if context.kind != wisp_store::ExecutionContextKind::Ssh {
+        return Err("Remote file cleanup requires an SSH context".into());
+    }
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    crate::run_context::remote_files::remove_remote_files(
+        &state.store,
+        state.run_manager.runner_ref(),
+        &ap.id,
+        &context,
+        &ids,
+        force.unwrap_or(false),
+    )
+    .await?;
+    crate::run_context::remote_files::list_remote_files(&state.store, &ap.id, &context_id).await
+}
+
+/// What dropping this server would abandon: still-remote artifact references
+/// and ledgered files.
+#[tauri::command]
+pub(super) async fn context_disposal_report(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    context_id: String,
+) -> Result<crate::run_context::remote_files::ContextDisposalReport, String> {
+    let (ap, _) =
+        exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let context = state
+        .store
+        .get_execution_context(&context_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
+    crate::run_context::remote_files::context_disposal_report(&state.store, &ap.id, &context).await
+}
+
 /// Delete a terminal Run's server-side workspace. `force` carries the user's
 /// explicit confirmation when unharvested outputs would be lost.
 #[tauri::command]

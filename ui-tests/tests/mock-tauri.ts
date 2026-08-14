@@ -1147,6 +1147,45 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     },
   };
   (window as any).__mockStoragePrefs = contextStoragePrefs;
+  const remoteStagingEntries: any[] = [
+    {
+      id: "stage-input-001",
+      context_id: "ssh:gpu-server",
+      run_id: "run-kinase-001",
+      remote_path: "~/.wisp-science/runs/run-kinase-001/inputs/plates.csv",
+      source: "run_input",
+      run_status: "succeeded",
+      size_bytes: 20480,
+      created_at: 1783482605,
+      removed_at: null,
+      state: "active",
+    },
+    {
+      id: "stage-old-upload",
+      context_id: "ssh:gpu-server",
+      run_id: null,
+      remote_path: "~/wisp/demo-project/data/matrix.tsv",
+      source: "transfer",
+      run_status: null,
+      size_bytes: 1048576,
+      created_at: 1783482000,
+      removed_at: null,
+      state: "replaced",
+    },
+    {
+      id: "stage-new-upload",
+      context_id: "ssh:gpu-server",
+      run_id: null,
+      remote_path: "~/wisp/demo-project/data/matrix.tsv",
+      source: "transfer",
+      run_status: null,
+      size_bytes: 2097152,
+      created_at: 1783482500,
+      removed_at: null,
+      state: "orphan",
+    },
+  ];
+  (window as any).__mockRemoteStaging = remoteStagingEntries;
   let defaultExecutionContext: string | null = null;
   let runtimeInfos: any[] = [
     {
@@ -2849,6 +2888,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               identity_file: null,
               notes: "Mock GPU host",
             }];
+          case "remove_ssh_host":
+            return [];
           case "list_execution_contexts":
             return executionContexts;
           case "list_session_execution_context_ids": {
@@ -2867,6 +2908,40 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             else selected.delete(contextId);
             sessionExecutionContexts[sessionId] = [...selected].sort();
             return [...sessionExecutionContexts[sessionId]];
+          }
+          case "list_remote_files": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            return remoteStagingEntries.filter(
+              (entry) => entry.context_id === contextId && !entry.removed_at
+            );
+          }
+          case "remove_remote_files": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            const ids = (arg("ids") ?? []) as string[];
+            const force = Boolean(arg("force"));
+            for (const id of ids) {
+              const entry = remoteStagingEntries.find(
+                (item) => item.id === id && item.context_id === contextId && !item.removed_at
+              );
+              if (!entry) throw new Error(`remote file entry ${id} is not ledgered`);
+              if (entry.state === "active" && !force) {
+                throw new Error(`${entry.remote_path} is still referenced by a run`);
+              }
+              entry.removed_at = Math.floor(Date.now() / 1000);
+            }
+            return remoteStagingEntries.filter(
+              (entry) => entry.context_id === contextId && !entry.removed_at
+            );
+          }
+          case "context_disposal_report": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            return {
+              context_id: contextId,
+              external_references: Number((window as any).__mockExternalRefs ?? 0),
+              staged_files: remoteStagingEntries.filter(
+                (entry) => entry.context_id === contextId && !entry.removed_at
+              ).length,
+            };
           }
           case "get_context_storage_prefs": {
             const contextId = String(arg("contextId") ?? arg("context_id") ?? "");

@@ -13,6 +13,7 @@ mod cleanup;
 mod harvest_remote;
 mod local_detached;
 mod remote;
+pub(crate) mod remote_files;
 mod tools;
 mod transfer;
 
@@ -29,8 +30,8 @@ use remote::{
 #[cfg(test)]
 use remote::{parse_input_progress, remote_poll_delay_secs};
 pub use tools::{
-    CancelRunTool, CleanupRunWorkspaceTool, GetRunTool, HarvestRunTool, MonitorRunTool,
-    RunInContextTool,
+    CancelRunTool, CleanupRunWorkspaceTool, GetRunTool, HarvestRunTool, ListRemoteFilesTool,
+    MonitorRunTool, RemoveRemoteFilesTool, RunInContextTool,
 };
 pub(crate) use transfer::{load_trust_edges, revoke_trust_edge, RevokeTrustResponse, SshTrustEdge};
 pub use transfer::{ConfigureSshTrustTool, TransferBetweenContextsTool};
@@ -623,6 +624,10 @@ impl RunManager {
 
     pub fn new() -> Self {
         Self::with_runner(Arc::new(ProcessRunRunner))
+    }
+
+    pub(crate) fn runner_ref(&self) -> &dyn RunCommandRunner {
+        self.runner.as_ref()
     }
 
     pub fn with_runner(runner: Arc<dyn RunCommandRunner>) -> Self {
@@ -1265,6 +1270,8 @@ impl RunManager {
                     .mark_run_cleaned(run_id)
                     .await
                     .map_err(|e| e.to_string())?;
+                // The workdir took its staged inputs with it.
+                let _ = store.mark_remote_staging_removed_for_run(run_id).await;
                 store
                     .get_run(run_id)
                     .await

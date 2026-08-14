@@ -26,6 +26,7 @@ mod project_transfer;
 mod projects;
 mod provenance;
 mod publications;
+mod remote_staging;
 mod research;
 mod resources;
 mod runs;
@@ -69,6 +70,7 @@ pub use project_sync::ProjectSyncState;
 pub use project_transfer::ProjectTransferStats;
 pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
 pub use provenance::{canonical_json, canonical_json_sha256};
+pub use remote_staging::RemoteStagingEntry;
 pub use sessions::{
     ModelTokenUsage, ProjectTokenUsage, SessionBranchDeltaMessage, SessionBranchLink,
     SessionBranchMerge, SessionBranchMergeCard, SessionBranchMergePreview, SessionTokenUsage,
@@ -156,6 +158,7 @@ const EXPLORATION_PROMOTION_RECOVERY_MIGRATION: &str = "0042_exploration_promoti
 const RUN_HARVEST_STATE_MIGRATION: &str = "0043_run_harvest_state";
 const CONTEXT_STORAGE_PREFS_MIGRATION: &str = "0044_context_storage_prefs";
 const RUN_CLEANUP_STATE_MIGRATION: &str = "0045_run_cleanup_state";
+const REMOTE_STAGING_MIGRATION: &str = "0046_remote_staging";
 
 #[derive(Clone)]
 pub struct Store {
@@ -607,6 +610,10 @@ impl Store {
             )
             .await?;
             Self::record_migration(pool, RUN_CLEANUP_STATE_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, REMOTE_STAGING_MIGRATION).await? {
+            Self::apply_remote_staging(pool).await?;
+            Self::record_migration(pool, REMOTE_STAGING_MIGRATION).await?;
         }
         Ok(())
     }
@@ -1557,6 +1564,27 @@ impl Store {
         .await?;
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS ix_research_edges_project ON research_edges(project_id, source_id, target_id)",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn apply_remote_staging(pool: &SqlitePool) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS remote_staging (\
+             id TEXT PRIMARY KEY, \
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, \
+             context_id TEXT NOT NULL, run_id TEXT, \
+             remote_path TEXT NOT NULL, source TEXT NOT NULL, \
+             checksum TEXT, size_bytes INTEGER, \
+             created_at INTEGER NOT NULL, removed_at INTEGER)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS ix_remote_staging_ctx \
+             ON remote_staging(context_id, removed_at)",
         )
         .execute(pool)
         .await?;

@@ -13615,6 +13615,17 @@ fn App() -> impl IntoView {
                                                                             RuntimeInterpreterForm::from_context(&runtime_config_context)
                                                                         ));
                                                                     }>{compose_icon("edit")}</button>
+                                                                {can_edit_storage.then(|| {
+                                                                    let remote_files_context_id = ctx.id.clone();
+                                                                    view! {
+                                                                    <button type="button" class="context-terminal context-remote-files"
+                                                                        title=t(loc, "contexts.remote_files")
+                                                                        aria-label=t(loc, "contexts.remote_files")
+                                                                        on:click=move |_| {
+                                                                            selected_context_id.set(Some(remote_files_context_id.clone()));
+                                                                            context_details_modal.set(Some((remote_files_context_id.clone(), ContextModalKind::RemoteFiles)));
+                                                                        }>{compose_icon("database")}</button>
+                                                                }})}
                                                                 {can_edit_storage.then(|| view! {
                                                                     <button type="button" class="context-terminal context-storage-prefs"
                                                                         title=t(loc, "contexts.storage_prefs")

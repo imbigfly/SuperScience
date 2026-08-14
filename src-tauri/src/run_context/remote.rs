@@ -438,6 +438,23 @@ pub(super) async fn stage_remote_inputs(
         }
     };
     let result = checked_output("SSH input staging", output).map(|_| ());
+    if result.is_ok() {
+        // Ledger the staged inputs so orphaned files remain findable if the
+        // run record or workdir outlives this app's knowledge of them.
+        for (name, size) in &inputs {
+            let mut entry = wisp_store::RemoteStagingEntry::new(
+                remote.project_id.clone(),
+                format!("ssh:{}", connection.alias),
+                Some(remote.run_id.clone()),
+                format!("~/{workdir}/inputs/{name}"),
+                "run_input",
+            );
+            entry.size_bytes = i64::try_from(*size).ok();
+            if let Err(error) = store.record_remote_staging(&entry).await {
+                tracing::warn!(run_id = %remote.run_id, "remote staging ledger write failed: {error}");
+            }
+        }
+    }
     let final_progress = super::transfer_progress(
         "upload",
         if result.is_ok() { "uploaded" } else { "failed" },

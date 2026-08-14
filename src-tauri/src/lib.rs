@@ -5557,6 +5557,17 @@ async fn send_message_inner(
                 frame_scope.clone(),
             ),
         ));
+        agent.add_tool(Box::new(run_context::ListRemoteFilesTool::new(
+            state.store.clone(),
+            ap.id.clone(),
+            Some(frame_id.clone()),
+        )));
+        agent.add_tool(Box::new(run_context::RemoveRemoteFilesTool::new(
+            state.store.clone(),
+            state.run_manager.clone(),
+            ap.id.clone(),
+            Some(frame_id.clone()),
+        )));
         agent.add_tool(Box::new(method_search::PrepareMethodSearchTool::new(
             state.store.clone(),
             ap.id.clone(),
@@ -7914,6 +7925,9 @@ pub fn run() {
             runtime_commands::cancel_run,
             runtime_commands::harvest_run,
             runtime_commands::cleanup_run_workspace,
+            runtime_commands::list_remote_files,
+            runtime_commands::remove_remote_files,
+            runtime_commands::context_disposal_report,
             storage_prefs::get_context_storage_prefs,
             storage_prefs::set_context_storage_prefs,
             project_commands::get_research_graph,
